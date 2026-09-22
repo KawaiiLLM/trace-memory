@@ -1,12 +1,19 @@
 {
   "stateDir": null,
   "closedSessionScope": "project",
+  "notingModel": "sonnet",
+  "notingThinking": "high",
+  "consolidationModel": "opus",
+  "consolidationThinking": "high",
+  "dreaming.model": "opus",
+  "dreaming.thinking": "high",
   "worker": {
     "claudeExecutable": null,
     "claudeVersion": "2.1.257",
-    "model": "opus",
-    "effort": "high",
-    "contextWindow": null,
+    "contextWindows": {
+      "sonnet": null,
+      "opus": null
+    },
     "cwd": null
   }
 }

@@ -223,14 +223,12 @@ test("19a 2026-09-08: a provider error after the commit keeps the commit and rec
   } finally { release(); await f.dispose(); }
 });
 
-test("19a/29e (case 16): Consolidation's two submissions and its review round run natively in a fork", async () => {
-  // 29e restored the mode 25b removed. The two-submission protocol is core's either way: the candidate
-  // is answered with review guidance as a native user message — here inside the forked conversation —
-  // and only the second submission commits.
+test("64a: Consolidation's first valid submission commits natively in a fork", async () => {
+  // 29e restored the mode 25b removed. The create-only submission commits without a review round.
   const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1, "consolidation.forkModeDefault": true });
   try {
     f.script(body => !worker(body, "Consolidation") ? say("好的。")
-      : toolResults(body) >= 2 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
+      : toolResults(body) >= 1 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
     await f.turn();
     f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
       .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
@@ -240,11 +238,9 @@ test("19a/29e (case 16): Consolidation's two submissions and its review round ru
     expect(run.outcome, run.response ?? "").toBe("success");
     expect(run.mode).toBe("fork"); // 29e: the mode really ran, inherited context and all
     const response = JSON.parse(run.response!);
-    expect(response.toolCalls).toHaveLength(2); // candidate, then the answered resubmission
+    expect(response.toolCalls).toHaveLength(1);
     expect(response.output).toBe("Integrated.");
-    // The review feedback reached the child as a native user message before its second submission.
-    const review = f.sent.at(-2)!.messages.filter((m: Body) => m.role === "user").at(-1);
-    expect(JSON.stringify(review)).toContain("NEAR:");
+    expect(JSON.stringify(f.sent)).not.toContain("NEAR:");
   } finally { await f.dispose(); }
 });
 
@@ -397,11 +393,11 @@ test("19b 2026-09-08: the fresh child activates no inherited extension", async (
   } finally { await f.dispose(); }
 });
 
-test("19b 2026-09-08: Consolidation's two submissions and its review round run in the fresh child", async () => {
+test("64a: Consolidation's first valid submission commits in the fresh child", async () => {
   const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1 });
   try {
     f.script(body => !worker(body, "Consolidation") ? say("好的。")
-      : toolResults(body) >= 2 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
+      : toolResults(body) >= 1 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
     await f.turn();
     f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
       .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
@@ -411,11 +407,9 @@ test("19b 2026-09-08: Consolidation's two submissions and its review round run i
     expect(run.mode).toBe("subagent");
     expect(run.outcome, run.response ?? "").toBe("success");
     const response = JSON.parse(run.response!);
-    expect(response.toolCalls).toHaveLength(2); // candidate, then the answered resubmission
+    expect(response.toolCalls).toHaveLength(1);
     expect(response.output).toBe("Integrated.");
-    // Core's review guidance reached the fresh child as a user message before its second submission.
-    const review = f.sent.at(-2)!.messages.filter((m: Body) => m.role === "user").at(-1);
-    expect(JSON.stringify(review)).toContain("NEAR:");
+    expect(JSON.stringify(f.sent)).not.toContain("NEAR:");
     expect(f.h.conversations).toEqual([]);
   } finally { await f.dispose(); }
 });

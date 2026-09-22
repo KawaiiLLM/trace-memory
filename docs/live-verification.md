@@ -16,10 +16,9 @@ carries `nativeLog`, the child's own JSONL under `runsDir`.
 **24b note.** The command surface the records below used (`/trace status`, `/trace enable`,
 `/trace disable`, `/trace runs`) was retired in 24b. In an rpc or `-p` session, which has no menu,
 the forms are now `/trace` (prints status and the supported forms), `/trace on`, `/trace off`,
-`/trace catchup`, `/trace stop`, `/trace project <name>` and
-`/trace mark K<n>[@<commit>] verified|flagged|clear`; run history and the four global mode/model
-preferences are reachable only from the TUI menu (Current session > Runs, and Settings). Read the
-old records with that substitution; a retired spelling now prints the usage and changes nothing.
+`/trace catchup`, `/trace stop` and `/trace project <name>`; run history and phase preferences
+are reachable from the TUI menu (Current session > Runs, and Settings). Ticket 64 removes knowledge
+marks entirely. Read the old records as historical evidence, not as the current command list.
 
 # Live verification record (2026-09-08, ticket 20c compaction, after fb83b41)
 
@@ -131,10 +130,11 @@ and `memory` calls, `/trace project`, `/trace mark` and `/compact` were not driv
 
 The acceptor should use an isolated database and the README's capture extension
 and reverse-chain verification script, loaded after payload-rewriting extensions.
-Set `noting.forkModeDefault: true`, `noting.triggerTokens: 100`,
-`consolidation.triggerTokens: 1` (20b replaced the removed fact count). Consolidation has no mode to
-set: since 25b it always runs as a subagent, and `consolidation.subagentModeDefault` — which the
-dated records above still show — now fails the load by name.
+Set `noting.forkModeDefault: true`, `noting.triggerTokens: 100` and
+`consolidation.triggerTokens: 1` in the isolated fixture. Consolidation defaults to a fresh
+subagent; its current opt-in fork key is `consolidation.forkModeDefault`. The retired inverse
+`consolidation.subagentModeDefault` still fails by name. These fixture thresholds also change
+the runtime-derived shared allowance; they are not production defaults.
 
 1. Start Pi with all four tools active. Save the captured main-agent body and
    verify its tool schemas are `trace`, `search`, `note`, `memory` (alongside any
@@ -142,17 +142,18 @@ dated records above still show — now fails the load by name.
 2. Produce a turn containing a cut tool result. Obtain a fork Noting that
    actually fetches full evidence through `trace` and submits through `note`.
    If the model elects not to fetch, that attempt does not satisfy this check.
-3. After committed facts have been delivered on the next prompt, let a turn stop
-   trigger Consolidation. Obtain two valid `memory` submissions in one run: review
-   guidance after the first, commit after the second, then a normal stop.
+3. After Noting commits facts, let the next ingested entry check Consolidation eligibility.
+   Its first valid `memory` submission must create knowledge or record skips and commit
+   without a second review submission, then stop normally. Foreground delivery is Knowledge-only.
 4. Save the run records and actual request bodies. For each fork run, apply
    the README script: strip suffixes backwards and verify each previous/new
    hash, unchanged tools/settings and exact captured-prefix bytes. Check native
-   call IDs/results, the single review user message, and the final stored request.
+   call IDs/results and the final stored request. A Noter with lexical neighbours may receive
+   one review message; Consolidation receives no corresponding review round.
 5. Exercise a manual `note` and `memory` call; check immediate kind `manual`
-   receipts and one raw `tool_result` row per call. Exercise `/trace project <name>`
-   and `/trace mark K<n>[@<commit>] verified|flagged|clear`; verify `/trace` alone
-   (which prints status in rpc mode) changes neither stored runs nor watermarks, and
+   receipts and native source entries for the calls and results. Manual `memory` permits
+   create and archive only. Exercise `/trace project <name>`; verify `/trace` alone
+   (which prints status in rpc mode) changes neither stored runs nor progress, and
    that `/trace off` then `/trace on` pause and resume this session alone.
 
 Record Pi/pi-ai versions, model/provider, config, capture and database paths,

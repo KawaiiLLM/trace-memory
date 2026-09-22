@@ -17,7 +17,7 @@ Pending / trigger (~tokens)
 Noting        ██████████ 120.0% 12k/10k
 Consolidation ░░░░░░░░░░   0.0% 0/5k
 Dreaming      █░░░░░░░░░  10.0% 500/5k
-Off | Runs | Project | Mark"
+Off | Runs | Project"
 `;
 
 exports[`exact capacity and trigger output at 100 columns 1`] = `
@@ -33,5 +33,5 @@ Pending / trigger (~tokens)
 Noting        ██████████ 120.0% 12k/10k
 Consolidation ░░░░░░░░░░   0.0% 0/5k
 Dreaming      █░░░░░░░░░  10.0% 500/5k
-Off | Runs | Project | Mark"
+Off | Runs | Project"
 `;

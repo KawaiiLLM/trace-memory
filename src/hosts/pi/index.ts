@@ -10,11 +10,12 @@ import { showSessionPanel, type SessionBody } from "./session-panel.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, directoryAllocation, enrollmentDefault, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
+import { TraceMemory, deriveSharedMaterialAllowance, directoryAllocation, enrollmentDefault, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
 import { visibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
 import { CURRENT_CONTEXT_SNAPSHOT_EVENT, type CurrentContextSnapshotResult } from "./context-snapshot.ts";
+import { PHASE_SETTING_KEYS } from "../phase-settings.ts";
 
 /** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
  * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
@@ -261,7 +262,7 @@ export default function (pi: ExtensionAPI) {
    * frozen boundary beside the promise, because 28b's recovery has to tell a task it may reuse
    * (same target, same frozen boundary, so its completion IS this phase's progress) from unrelated
    * work it may neither count nor cancel. `done` is assigned in the same tick the slot is taken. */
-  type Slot = { target: TaskTarget; boundary?: TaskBoundary; dreamingRangeId?: number; projectId?: number; claimToken?: string; result?: Promise<NotingResult | ConsolidateResult | { outcome: string } | undefined>; done?: Promise<unknown> };
+  type Slot = { target: TaskTarget; boundary?: TaskBoundary; result?: Promise<NotingResult | ConsolidateResult | { outcome: string } | undefined>; done?: Promise<unknown> };
   type WorkerPhase = "noting" | "consolidation" | "dreaming";
   const slots = new Map<WorkerPhase, Slot>();
   /** Same target and same frozen boundary — the compatibility 28 amendment 2 defines, field by field
@@ -347,7 +348,7 @@ export default function (pi: ExtensionAPI) {
   const effectiveMode = (requested: "fork" | "subagent", task?: ForkTask) =>
     forkRefused(requested, task) ? "subagent" as const : requested;
   const modelName = (kind: WorkerPhase) => {
-    const configured = flat[kind === "dreaming" ? "dreaming.model" : `${kind}Model`];
+    const configured = flat[PHASE_SETTING_KEYS[kind].model];
     return String(configured && configured !== "session" ? configured : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
   };
   // Each phase configures its own mode, defaulting to subagent when no override is supplied.
@@ -367,12 +368,12 @@ export default function (pi: ExtensionAPI) {
   /** Ticket 24 "Footer counts and cost" and "Indicator semantics" (24a), scope and colours revised by
    * ticket 51. One status item, one line:
    *
-   *     🧠 ● notes: 24->102 memory: 9->252=>54 cost: $0.12
+   *     🧠 ● notes: 24->102 memory: 9->252/306 cost: $0.12
    *
    * The arrows are stage inputs and outputs, not percentages: `notes` is the entries still to note
    * over every applicable committed fact; `memory` is the facts still to consolidate over the
-   * unprocessed then processed applicable current Knowledge versions. These two exact-version counts
-   * partition the existing current-knowledge total. `cost` is today's memory spend across the whole
+   * changed current Knowledge versions followed by all current Knowledge versions. Changed counts
+   * are scheduling backlog, not a partition by knowledge validity. `cost` is today's memory spend across the whole
    * database — every session's runs created since local midnight (51) — the memory share of the
    * daily total pi-status reports; this session's cumulative spend and its composition by phase
    * are in Current session. Off is the compact `🧠 ○ off`; the stored counts stay available there.
@@ -405,7 +406,7 @@ export default function (pi: ExtensionAPI) {
     try { cost = memory.spendSince(localMidnight()); } catch { /* the same rule for the amount */ }
     const value = (count?: number) => count === undefined ? "?" : String(count);
     const text = `notes: ${value(counts?.entries)}->${value(counts?.facts)}` +
-      ` memory: ${value(counts?.unconsolidated)}->${value(counts?.unprocessedKnowledge)}=>${value(counts?.processedKnowledge)}` +
+      ` memory: ${value(counts?.unconsolidated)}->${value(counts?.changedKnowledge)}/${value(counts?.knowledge)}` +
       ` cost: ${cost === undefined ? "$?" : `$${cost.toFixed(2)}`}`;
     // Routine counts stay quiet; only the indicator uses an activity or warning colour.
     context.ui.setStatus(tag, `🧠 ${indicator} ${paint("dim", text)}`);
@@ -448,7 +449,7 @@ export default function (pi: ExtensionAPI) {
     const configuredModel = carried?.subagentModel ?? modelName(kind);
     const fallbackModel = configuredModel === "session" && context.model
       ? `${context.model.provider}/${context.model.id}` : configuredModel;
-    const configuredThinking = flat[kind === "dreaming" ? "dreaming.thinking" : `${kind}Thinking`];
+    const configuredThinking = flat[PHASE_SETTING_KEYS[kind].thinking];
     const inheritedThinking = carried ? carried.thinkingLevel : pi.getThinkingLevel();
     const subagentThinking = carried ? carried.subagentThinkingLevel
       : configuredThinking && configuredThinking !== "inherit" ? String(configuredThinking) : inheritedThinking;
@@ -545,17 +546,6 @@ export default function (pi: ExtensionAPI) {
       ...(carried ? { forkAttempt: carried, executionId: carried.executionId, ...(carried.cancellation !== undefined ? { cancellation: carried.cancellation } : {}) } : {}) };
     const admitted = (kind === "dreaming" ? memory.dream(common) : kind === "consolidation" ? memory.consolidate(common) : memory.noting(common))
       .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); return result; });
-    if (kind === "dreaming") {
-      // Core freezes synchronously at admission. Keep the retained identity beside this slot so
-      // recovery reuses that exact family, not arbitrary same-path knowledge work.
-      const slot = slots.get(kind);
-      if (slot) {
-        slot.target = target;
-        slot.projectId = memory.store.getSession(target.sessionId)?.projectId;
-        slot.dreamingRangeId = memory.store.retryDreamingRange(target)?.id;
-        slot.claimToken = memory.store.getClaim(target.sessionId, kind)?.token;
-      }
-    }
     if (effective !== "fork") return admitted;
     // 27b: the freeze priced this batch as a fork — the inherited context plus the instructions — and
     // refused it. The same evidence under a fresh child's own price often fits, so that one refusal
@@ -682,17 +672,20 @@ export default function (pi: ExtensionAPI) {
     if (!enabled()) return;
     const leaf = ctx.sessionManager.getLeafId();
     if (state.sessionId && leaf === reconciledLeaf) return;
-    const previous = state.sourceHead;
-    walk();
+    const opportunities = walk();
     // A walk before the memory session exists creates no Turn; the first walk after allocation must run.
     reconciledLeaf = state.sessionId ? leaf : undefined;
-    if (check && state.sourceHead !== previous && state.sourceHead !== undefined) checkQueues();
+    // Scheduling is downstream of the committed ancestry transaction. Each newly ingested native
+    // entry keeps its own persisted id and owning head instead of collapsing a long tool turn into
+    // one agent-end opportunity. A restore/enrollment replay calls reconcile(false) and starts none.
+    if (check) for (const target of opportunities) checkQueues(target);
   };
-  const walk = () => memory.store.transaction(() => {
+  const walk = (): TaskTarget[] => memory.store.transaction(() => {
+    const opportunities: TaskTarget[] = [];
     const ancestry = ctx.sessionManager.getBranch();
     if (!state.sessionId && ancestry.some(e => e.type === "message" && e.message.role === "assistant" &&
       (text(e.message) || e.message.content.some(c => c.type === "toolCall" || c.type === "thinking")))) allocate(ancestry[0]?.timestamp ?? now());
-    if (!state.sessionId) return;
+    if (!state.sessionId) return opportunities;
     const resume = reconciled && reconciled.ids.length <= ancestry.length
       && reconciled.ids.every((id, i) => (ancestry[i] as { id: string }).id === id) ? reconciled : undefined;
     reconciled = undefined; // a walk that throws leaves nothing to resume from
@@ -752,6 +745,7 @@ export default function (pi: ExtensionAPI) {
       const stored = memory.appendEntry({ sessionId: state.sessionId, nativeLineage: lineage, nativeId: entry.id, turnId,
         role: message.role, text: natural, raw: JSON.stringify(message), calls: fragments });
       selected.push(stored.id);
+      opportunities.push({ sessionId: state.sessionId, branch: state.branch, headTurnId: turnId, triggerEntryId: stored.id });
       if (message.role === "assistant") {
         offer(turnId, fragments);
         const value = memory.store.getTurn(turnId)!;
@@ -761,8 +755,13 @@ export default function (pi: ExtensionAPI) {
     if (state.head && !turnId && memory.store.listSourceEntries(state.sessionId).length) missing("selected ancestry contains no available source entries");
     memory.selectEntries(state.sessionId, state.branch, selected);
     state.sourceHead = selected.at(-1);
-    if (turnId) { state.head = turnId; if (current) current.id = turnId; }
+    if (turnId) {
+      state.head = turnId;
+      memory.store.setCurrentPath(state.sessionId, state.branch, turnId, state.piId);
+      if (current) current.id = turnId;
+    }
     reconciled = { ids, lineage, turnId, selected, seen, toolCalls };
+    return opportunities;
   });
 
   const unavailable = (reason: Extract<CurrentContextSnapshotResult, { available: false }>["reason"], message: string): CurrentContextSnapshotResult =>
@@ -810,7 +809,13 @@ export default function (pi: ExtensionAPI) {
   });
 
   const persistState = () => { reconcile(); if (state.sessionId && state.sourceHead !== savedSourceHead) save(); };
-  const flush = (ended = false) => { reconcile(false); if (enabled() && ended && current?.id) memory.store.updateTurn(current.id, { endedAt: now() }); };
+  const flush = (ended = false) => {
+    reconcile(false);
+    if (enabled() && ended && current?.id && state.sessionId && state.head) memory.store.transaction(() => {
+      memory.store.updateTurn(current!.id!, { endedAt: now() });
+      memory.store.setCurrentPath(state.sessionId!, state.branch, state.head!, state.piId);
+    });
+  };
   pi.on("before_provider_request", (event, context) => {
     ensure(context);
     if (!enabled()) { showSpend(context); return; }
@@ -873,9 +878,10 @@ export default function (pi: ExtensionAPI) {
   };
   pi.on("message_update", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
   pi.on("message_end", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
-  // Pi persists the assistant after message_end, before tools start. Ingest without scheduling;
-  // a tool's snapshot request must remain read-only and refer to this node, not the previous one.
-  pi.on("tool_execution_start", (_event, context) => { ensure(context); reconcile(false); });
+  // Pi persists the assistant after message_end and synchronizes the session manager before tool
+  // execution. This is the first authoritative boundary for that assistant entry, so ingest and
+  // schedule it here; the snapshot API itself remains read-only and observes the reconciled node.
+  pi.on("tool_execution_start", (_event, context) => { ensure(context); reconcile(); });
   // 24a: a tool result, the end of an agent run and the settle are the existing boundaries at which
   // this turn's evidence became importable, so they are where the footer's counts are re-read. A
   // streaming update is not one of them: `message_update` fires per delta and refreshes nothing.
@@ -917,10 +923,10 @@ export default function (pi: ExtensionAPI) {
     void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
     return settled;
   };
-  const checkQueues = () => {
+  const checkQueues = (opportunity?: TaskTarget) => {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
-    const own = { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
+    const own = opportunity ?? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
     for (const kind of ["noting", "consolidation", "dreaming"] as const) {
       if (slots.has(kind)) continue;
       const selected = launch(kind);
@@ -939,7 +945,8 @@ export default function (pi: ExtensionAPI) {
       // closed-session work is fresh-context and is never held back by this.
       const waiting = due ? forkWait(context, effective) : undefined;
       const candidates = [...(due && !waiting ? [{ ...own, borrowed: false }] : []),
-        ...memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope).map(target => ({ ...target, borrowed: true }))];
+        ...(kind === "dreaming" ? [] : memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope)
+          .map(target => ({ ...target, borrowed: true })))];
       if (!candidates.length) continue;
       const slot: Slot = { target: own }; // ordinary automatic work: the whole pending set, no frozen boundary
       slots.set(kind, slot); // Reserve before any asynchronous admission or model work.
@@ -1108,28 +1115,9 @@ export default function (pi: ExtensionAPI) {
   const recoverPhase = async (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
       boundary: TaskBoundary | undefined, valid: () => boolean, signal: AbortSignal | undefined, needed: () => boolean): Promise<{ used: boolean; result?: NotingResult | ConsolidateResult | { outcome: string } }> => {
     const phase = PHASE_LABEL[kind];
-    const compatible = (slot: Slot) => {
-      if (kind !== "dreaming") return sameTask(slot, target, boundary);
-      const range = memory.store.retryDreamingRange(target);
-      const claim = memory.store.getClaim(target.sessionId, kind);
-      // D admits the retained range's head, not the moving foreground leaf. N/C above keep their
-      // original head/boundary comparison. The range, live ownership and applicable frozen members
-      // must still match; ignoring the leaf alone would also accept a rewind or a lost claim.
-      if (!range || range.id !== slot.dreamingRangeId || range.branch !== target.branch
-          || !sameTask(slot, { ...target, headTurnId: slot.target.headTurnId }, boundary)
-          || slot.projectId !== memory.store.getSession(target.sessionId)?.projectId
-          || !claim || claim.reserved || claim.token !== slot.claimToken
-          || claim.executorId !== memory.executorId || claim.expiresAt <= Date.now()) return false;
-      const snapshot = memory.store.pathSnapshot(target);
-      if (!snapshot.turns.has(range.headTurnId)) return false;
-      const frozenPath = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
-      const frozen = memory.store.pathSnapshot(frozenPath);
-      return range.eventIds.every(id => {
-        const event = memory.store.knowledgeRevision(id);
-        return !!event && memory.store.commitApplies(event, target, snapshot)
-          && memory.store.commitApplies(event, frozenPath, frozen);
-      });
-    };
+    // Recovery may await the exact task already occupying this phase slot. It never reopens or
+    // retries a Dreamer range: a different target gets at most the existing bounded capacity wait.
+    const compatible = (slot: Slot) => sameTask(slot, target, boundary);
     let occupied = slots.get(kind);
     if (occupied && !compatible(occupied)) {
       context.ui.notify(`Trace Memory: compaction is waiting for the occupied ${phase} slot.`, "info");
@@ -1364,19 +1352,14 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(`${notice}\n${value ? "Available history, including the paused interval, is queued; ordinary completions check thresholds." : "Processing and future injection are paused. Stored memory and already-injected text remain."}`, "info");
   };
   // ---- 24b: the command surface ----
-  // Amendment 1 (user ruling 2026-09-09): seven documented forms, no hidden aliases. `enable`,
-  // `disable`, `status` and `runs` are retired — status and runs live in the menu's Current session —
-  // while `project`, `catchup`, `stop` and `mark` stay as command forms because `-p`/rpc sessions have
-  // no menu at all. The menu is the primary surface for those four; these are not aliases of it but
-  // the same operations, and both paths call the same functions below.
+  // `enable`, `disable`, `status` and `runs` are retired — status and runs live in the menu's
+  // Current session. Project assignment, catchup and stop retain headless command forms.
   const commands = "/trace (menu; status when headless) | /trace on | /trace off | /trace catchup | /trace stop | " +
-    "/trace project <name> | /trace mark K<n>[@<commit>] verified|flagged|clear";
+    "/trace project <name>";
   const retiredForms: Record<string, string> = {
     enable: "/trace on", disable: "/trace off",
     status: "the menu's Current session (headless: bare /trace)", runs: "the menu's Current session > Runs",
   };
-  const markAddress = /^K[1-9]\d*(?:@[1-9]\d*)?$/;
-  const markKinds = ["verified", "flagged", "clear"];
   const runView = (limit = 10) => {
     const runs = state.sessionId ? memory.store.listRuns(state.sessionId).slice(-limit).reverse() : [];
     ctx.ui.notify(runs.length ? runs.map(r => memory.trace(`R${r.id}`).split("\n")[0]!).join("\n") : "Trace Memory: no runs yet.", "info");
@@ -1396,11 +1379,6 @@ export default function (pi: ExtensionAPI) {
     save();
     ctx.ui.notify(marked, "info");
   };
-  /** Knowledge marks, shared by the command form and the menu: core keeps exact-commit handling and
-   * rejects an ambiguous address on divergent tips, from either surface. */
-  const applyMark = (address: string, kind: "verified" | "flagged" | "clear") =>
-    ctx.ui.notify(memory.mark(address, kind, state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null } : undefined), "info");
-
   // 24b's preference descriptions live in hosts/pi/settings.ts; only the foreground model is this
   // session's own, so a fork-mode line can name the model that child would inherit.
   const foregroundModel = () => ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "the session model";
@@ -1507,10 +1485,13 @@ export default function (pi: ExtensionAPI) {
       { field: "project" as const, name: "Project Knowledge budget", line: `Project Knowledge budget: ${budgets.project} tokens per project owner pool (database)` },
       { field: "session" as const, name: "Session Knowledge budget", line: `Session Knowledge budget: ${budgets.session} tokens per session owner pool (database)` },
     ];
+    const knowledgeBaseWindow = budgets.global + budgets.project + budgets.session;
+    const sharedMaterialAllowance = deriveSharedMaterialAllowance(budgets,
+      { noting: memory.config.noting.triggerTokens, consolidation: memory.config.consolidation.triggerTokens });
     const diagnostics = [
-      `Applicable Knowledge capacity: ${budgets.applicable} tokens (derived, read-only)`,
-      `Knowledge injection capacity: ${budgets.injection} tokens (derived, read-only)`,
-      `Dreamer processed-input capacity: ${budgets.dreamingProcessedInput} tokens (derived, read-only)`,
+      `Knowledge base window: ${knowledgeBaseWindow} tokens (derived, read-only)`,
+      `Shared material allowance: ${sharedMaterialAllowance} tokens (derived, read-only)`,
+      `Maximum Knowledge input: ${knowledgeBaseWindow + sharedMaterialAllowance} tokens (derived, read-only)`,
     ];
     const preferenceRows = preferences.map(p => preferenceLine(p, { flat, sources, layers }, foregroundModel()));
     const lines = [...budgetRows.map(row => row.line), ...diagnostics, ...preferenceRows];
@@ -1523,8 +1504,11 @@ export default function (pi: ExtensionAPI) {
       try {
         const value = parseKnowledgeBudgetInput(input, budget.name);
         const saved = memory.setKnowledgeBudget(budget.field, value);
+        const base = saved.policy.global + saved.policy.project + saved.policy.session;
+        const shared = deriveSharedMaterialAllowance(saved.policy,
+          { noting: memory.config.noting.triggerTokens, consolidation: memory.config.consolidation.triggerTokens });
         ctx.ui.notify(saved.changed
-          ? `Trace Memory: saved ${budget.name} = ${value} tokens in database ${dbPath}. Applicable ${saved.policy.applicable}; injection ${saved.policy.injection}; Dreamer processed input ${saved.policy.dreamingProcessedInput}. New admissions use these capacities; running inputs remain frozen.`
+          ? `Trace Memory: saved ${budget.name} = ${value} tokens in database ${dbPath}. Knowledge base window ${base}; shared material allowance ${shared}; maximum Knowledge input ${base + shared}. New admissions use these capacities; running inputs remain frozen.`
           : `Trace Memory: ${budget.name} is already ${value} tokens in database ${dbPath}; nothing was written.`, "info");
       } catch (error) { ctx.ui.notify(`Trace Memory: ${budget.name} unchanged — ${String(error)}`, "error"); }
       return;
@@ -1595,7 +1579,7 @@ export default function (pi: ExtensionAPI) {
     const downgrade = suppressed();
     const participation = enabled() ? "Off" : "On";
     const body = sessionStatus(true);
-    const actions = [participation, "Runs", "Project", "Mark", ...(downgrade ? ["Retry fork"] : [])];
+    const actions = [participation, "Runs", "Project", ...(downgrade ? ["Retry fork"] : [])];
     const choice = ctx.mode === "tui" ? await showSessionPanel(ctx, body, actions)
       : await ctx.ui.select(`Current session\n${body(Math.max(1, (process.stdout.columns ?? 100) - 2))}`, actions);
     if (choice === undefined) return; // cancellation is inert: no write, no request
@@ -1619,16 +1603,6 @@ export default function (pi: ExtensionAPI) {
       try { assignProject(String(name).trim()); } catch (error) { ctx.ui.notify(String(error), "error"); }
       return;
     }
-    if (choice === "Mark") {
-      const address = await ctx.ui.input("Knowledge address: K<n>, or K<n>@<commit> for an exact revision", "K1");
-      if (address === undefined) return;
-      const target = String(address).trim();
-      if (!markAddress.test(target)) { ctx.ui.notify(`Trace Memory: ${target || "(empty)"} is not a knowledge address; use K<n> or K<n>@<commit>. Nothing changed.`, "warning"); return; }
-      const kind = await ctx.ui.select(`Mark ${target}`, markKinds);
-      if (kind === undefined) return;
-      try { applyMark(target, kind as "verified" | "flagged" | "clear"); } catch (error) { ctx.ui.notify(String(error), "error"); }
-      return;
-    }
     if (choice === participation && await ctx.ui.confirm(`Turn Trace Memory ${participation.toLowerCase()} for this session?`, shared + (participation === "Off"
       ? " Processing and future injection stop; stored memory and already-injected text remain."
       : " Available history, including the paused interval, will be queued without a model call."))) toggle(participation === "On");
@@ -1640,7 +1614,7 @@ export default function (pi: ExtensionAPI) {
     else if (selected === "Stop") stopCatchup();
     else if (selected === "Settings") await settingsMenu();
   };
-  pi.registerCommand("trace", { description: "Trace Memory: menu, session participation (on/off), catchup/stop, project assignment and knowledge marks.",
+  pi.registerCommand("trace", { description: "Trace Memory: menu, session participation (on/off), catchup/stop and project assignment.",
     async handler(args, context) {
       ensure(context);
       const parts = args.trim() ? args.trim().split(/\s+/) : [];
@@ -1652,9 +1626,6 @@ export default function (pi: ExtensionAPI) {
       if (verb === "catchup" && !rest.length) { startCatchup(); return; }
       if (verb === "stop" && !rest.length) { stopCatchup(); return; }
       if (verb === "project" && rest.length) { assignProject(rest.join(" ")); return; }
-      if (verb === "mark" && rest.length === 2 && markAddress.test(rest[0]!) && markKinds.includes(rest[1]!)) {
-        applyMark(rest[0]!, rest[1] as "verified" | "flagged" | "clear"); return;
-      }
       // A retired subcommand and a malformed argument end in the same place: the usage, and no
       // mutation. Retirement is documented rather than aliased — the old spelling does nothing.
       const retired = retiredForms[verb!];

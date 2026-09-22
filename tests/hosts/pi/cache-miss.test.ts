@@ -222,7 +222,7 @@ test("19c 2026-09-08: the latch survives reopen and clears only through the menu
     h.ctx.hasUI = true;
     h.answers.push("Current session", "Retry fork");
     await command(h, "");
-    expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project", "Mark", "Retry fork"]); // 24b: Retry fork only while downgraded
+    expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project", "Retry fork"]); // Retry fork only while downgraded
     expect(h.memory.store.forkSuppression(1)).toBeNull();
     expect(h.notices.at(-1)).toContain("fork retry enabled for this session");
     expect(h.memory.store.listRuns(1)).toHaveLength(runs); // the reset launches no extraction
@@ -230,7 +230,7 @@ test("19c 2026-09-08: the latch survives reopen and clears only through the menu
     // Gone from the menu once used, and a later eligible miss may start a new episode and warn again.
     h.answers.push("Current session", undefined);
     await command(h, "");
-    expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project", "Mark"]);
+    expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project"]);
     expect(h.memory.store.suppressFork(1)).toBe(true);
     // No dedicated reset subcommand was registered: the word is only in the menu, and an unknown
     // command form prints the usage (24b) instead of acting.

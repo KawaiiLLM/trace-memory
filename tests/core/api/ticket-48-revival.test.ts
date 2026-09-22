@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
+import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -8,13 +9,14 @@ test("48: the trusted facade revives an archived identity after complete exact r
   let old!: { knowledgeId: number; commit: number };
   let archiveCommit = 0;
   let returned!: { knowledgeId: number; commit: number };
+  let trigger!: { knowledgeId: number; commit: number };
   const memory = TraceMemory(":memory:", async raw => {
     const task = raw as DreamingAgentInput;
     expect(task.prompt).toContain("when a current item continues the same independent claim as an archived one, merge into the archived identity so the history stays traceable");
     expect(task.prompt).toContain("find the archived identity by the object's name with `versions: history`");
     expect(task.prompt).toContain("read the archive commit and its parent completely");
     expect(task.prompt).toContain("topical relation alone does not revive");
-    expect(task.material.changed).toContain("New:");
+    expect(task.material.changed).toContain(`New K${returned.knowledgeId}@${returned.commit}:`);
     expect(task.material.changed).toContain("Returned widget state");
     task.tools.find(tool => tool.name === "check")!.execute({});
     const writer = task.tools.find(tool => tool.name === "memory")!;
@@ -25,17 +27,21 @@ test("48: the trusted facade revives an archived identity after complete exact r
     const trace = task.tools.find(tool => tool.name === "trace")!;
     trace.execute({ address: `K${old.knowledgeId}@${archiveCommit}`, itemBudget: null });
     trace.execute({ address: `K${old.knowledgeId}@${old.commit}`, itemBudget: null });
-    const result = writer.execute({ operations: [operation], skipped: [] });
+    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
+    const result = writer.execute({ operations: [operation, { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`,
+      supports: [], reason: "Retire the explicit revival trigger." }], skipped: [] });
     expect(result).toContain('"committed"');
     expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "revived", request: { exact: "request" } };
-  }, { dreaming: { triggerTokens: 1 } });
+  });
   memories.push(memory);
   const store = memory.store;
   const project = store.createProject({ name: "revival", declaredBy: "mark" });
   const session = store.createSession({ host: "test", enrollmentChoice: true, projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "widget", startedAt: "now" });
-  const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+  const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "widget", role: "user", text: "widget", raw: "widget", calls: [] });
+  memory.selectEntries(session.id, "main", [entry.id]);
+  const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   const factResult = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [
     { turnId: turn.id, actor: "user", category: "decision", text: "Widget state", source: [`T${turn.id}#user`], createdAt: "now" },
   ] });
@@ -48,28 +54,21 @@ test("48: the trusted facade revives an archived identity after complete exact r
   if (!created.ok) throw new Error(created.problems.join("; "));
   old = created.committed[0]!;
 
-  const firstRange = store.retainDreamingRange(path, [old.commit]);
-  const firstClaim = store.acquireClaim(path, "dreaming", "archive")!;
-  const firstExecution = store.beginExecution({ sessionId: session.id, phase: "dreaming", head: firstRange.anchor, origin: firstRange.origin });
-  const firstRun = store.bindDreamingRun(store.bindRunOrigin({ kind: "dreaming", sessionId: session.id, branch: "main",
-    dreamingRangeId: firstRange.id, claim: firstClaim, executionId: firstExecution, createdAt: "now" }, firstRange.origin));
-  const archived = store.commitConsolidationRun({ path, run: firstRun, operations: [{ op: "archive", knowledgeId: old.knowledgeId,
-    baseCommit: old.commit, supports: [], reason: "Widget retired", createdAt: "now" }] });
-  if (!archived.ok) throw new Error(archived.problems.join("; "));
+  const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
+  manual.find(tool => tool.name === "trace")!.execute({ address: `K${old.knowledgeId}@${old.commit}`, itemBudget: null });
+  const archived = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive",
+    id: `K${old.knowledgeId}@${old.commit}`, supports: [`F${fact}`], reason: "Widget retired" }], skipped: [] }));
   archiveCommit = archived.committed[0]!.commit;
-  const firstRunId = store.dreamingRunId(firstRun)!;
-  store.updateRun(firstRunId, { ...firstRun, outcome: "success" });
-  store.completeDreaming(firstRunId, [old.commit], [archiveCommit]);
-  store.releaseClaim(firstClaim);
 
   const returnedResult = store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId: session.id, createdAt: "now" },
     operations: [{ op: "create", handle: "$returned", author: "test", ...content("Returned widget state") }] });
   if (!returnedResult.ok) throw new Error(returnedResult.problems.join("; "));
   returned = returnedResult.committed[0]!;
+  trigger = createDreamerTrigger(memory, path, fact, 1, "project");
 
   const result = await memory.dream(path);
-  expect(result.outcome).toBe("success");
-  const current = store.listCurrentKnowledge(path);
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  const current = store.currentKnowledge(path);
   expect(current).toHaveLength(1);
   expect(current[0]!.knowledge.id).toBe(old.knowledgeId);
   expect(current[0]!.revision.parentId).toBe(archiveCommit);

@@ -11,7 +11,7 @@ import { recorded } from "../../source-fixture.ts";
 
 const at = "2026-09-08T00:00:00.000Z";
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
-const phaseOf = (c: { systemPrompt?: string }) => c.systemPrompt?.includes("### Second-round user message") ? "consolidation" : "noting";
+const phaseOf = (c: { systemPrompt?: string }) => c.systemPrompt?.includes("You are the Consolidator:") ? "consolidation" : "noting";
 function hold(h: ReturnType<typeof host>) {
   const releases: ((reply: Reply) => void)[] = [];
   h.provider(async () => new Promise<Reply>(resolve => releases.push(resolve)));

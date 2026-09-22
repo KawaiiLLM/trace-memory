@@ -9,16 +9,24 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG, NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, visibleTarget, type ConfigOverride, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
-import { budgetFacts, budgetKnowledge, charge, finish, renderFact, renderKnowledge, renderKnowledgeBlock, wholeKnowledge } from "../../../src/core/render/index.ts";
+import { KNOWLEDGE_RECENCY_NOTICE, budgetFacts, budgetKnowledge, charge, finish, renderFact, renderKnowledge, renderKnowledgeBlock, wholeKnowledge } from "../../../src/core/render/index.ts";
 import { budgetMaterial, injectionText, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
-import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
+import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
+import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
-let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: (NotingAgentInput | ConsolidationAgentInput)[];
+let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: (NotingAgentInput | ConsolidationAgentInput)[], scenarios: AdmittedDreamerScenarios;
 const time = "2026-09-08T00:00:00Z";
+
+function fullRead(tool: { execute(input: unknown): string }, address: string) {
+  let page = tool.execute({ address, full: true, itemBudget: null });
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1])
+    page = tool.execute({ address: `cursor=${cursor}`, itemBudget: null });
+}
 const ok = (): RunAgentResult => ({ outcome: "success", output: "[]", request: { fake: true } });
 
 function open(config: ConfigOverride = {}) {
-  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => { calls.push(raw as NotingAgentInput); return ok(); }, config);
+  scenarios = new AdmittedDreamerScenarios(async raw => { calls.push(raw as NotingAgentInput); return ok(); });
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), scenarios.agent, config);
 }
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "trace-memory-material-")); calls = []; open(); });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -41,9 +49,32 @@ function consolidated() {
     .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${t.id}#user`] }] });
   return { s, t, first: memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" }).then(() => note("Keep pnpm")) };
 }
-const knowledgeBlock = "<knowledge>\n<constraint>\n[K1@1] [constraint/project] The project uses pnpm\n  change supports: F1\n</constraint>\n</knowledge>";
+const knowledgeBlock = "<knowledge>\n" + KNOWLEDGE_RECENCY_NOTICE + "\n<constraint>\n[K1@1] [constraint/project] The project uses pnpm\n  change supports: F1\n</constraint>\n</knowledge>";
 const views = (sessionId: number, head: number) =>
   memory.pendingEntries(sessionId, "main", head).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
+
+async function maintain(path: { sessionId: number; branch: string; headTurnId: number }, operation: Record<string, unknown>, address: string) {
+  const factId = Number(/F(\d+)/.exec(JSON.stringify(operation.supports))?.[1] ?? 1);
+  const selectedEntries = memory.store.sourcePath(path.sessionId, path.branch, path.headTurnId);
+  memory.selectEntries(path.sessionId, path.branch, selectedEntries.map(entry => entry.id));
+  const target = { ...path, triggerEntryId: selectedEntries.at(-1)!.id };
+  const trigger = createDreamerTrigger(memory, target, factId, memory.store.listKnowledgeRevisions().length + 1);
+  let committed: { knowledgeId: number; commit: number }[] = [];
+  const dreamed = await scenarios.run(memory, target, input => {
+    const request = { fixture: "material maintenance" }; input.reportRequest(request);
+    fullRead(input.tools.find(tool => tool.name === "trace")!, address);
+    const triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`;
+    const supplied = new Set(input.material.changed.match(/K\d+@\d+/g) ?? []); supplied.delete(address); supplied.delete(triggerAddress);
+    const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [operation,
+      { op: "archive", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit material trigger." }],
+      skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied material item." })) }));
+    committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId);
+    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
+    return { outcome: "success", output: "material maintenance complete", request };
+  });
+  if (dreamed.outcome !== "success") throw new Error(JSON.stringify(dreamed));
+  return committed;
+}
 
 test("25a 2026-09-09: the Noter's fresh order is historical facts, range, the selected Raw, then receipts — and no knowledge block", async () => {
   const { s, t } = seeded();
@@ -82,14 +113,13 @@ test("29b 2026-09-10: a fork whose whole target is visible injects no Raw and ke
   expect(input.supplied.factIds).toEqual([1]);
 });
 
-test("25a 2026-09-09: the Consolidator's fresh order is knowledge, range, the pending facts, the reminders, then receipts — and no already-consolidated block", async () => {
+test("the Consolidator's fresh order is knowledge, range and pending facts, then receipts — with no review cues or already-consolidated block", async () => {
   const { s, first } = consolidated();
   await first;
   await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
   const input = calls[1]! as ConsolidationAgentInput;
   expect(input.text).toBe([knowledgeBlock,
-    "Range: F2..F2", "Range facts:", `[T1] ${time} (selected facts)\n${memory.trace("F2")}`,
-    "Negated-evidence reminder (review cues only; no status derived):", "none"].join("\n\n"));
+    "Range: F2..F2", "Range facts:", `[T1] ${time} (selected facts)\n${memory.trace("F2")}`].join("\n\n"));
   // F1 was consolidated before this task was frozen and is exactly what the removed history block
   // used to carry; it is still stored, still readable, and no longer supplied.
   expect(memory.store.listConsolidatedProjectFacts(memory.store.getSession(s.id)!.projectId).map(f => f.id)).toContain(1);
@@ -131,9 +161,10 @@ test("20a 2026-09-08 scenario 2, retargeted by 25a: two Consolidator tasks with 
   expect(earlier!.text.startsWith(knowledgeBlock)).toBe(true);
   expect(later!.text.startsWith(knowledgeBlock)).toBe(true);
   expect(later!.range.facts.map(f => f.id)).not.toEqual(earlier!.range.facts.map(f => f.id));
-  // The range precedes this task's own facts, which precede the review cues.
-  const order = ["Range: ", "Range facts:", "Negated-evidence reminder"].map(part => later!.text.indexOf(part));
+  // The range precedes this task's own facts, with no review-cue block.
+  const order = ["Range: ", "Range facts:"].map(part => later!.text.indexOf(part));
   expect(order).toEqual([...order].sort((a, b) => a - b));
+  expect(later!.text).not.toContain("Negated-evidence reminder");
   expect(order[0]).toBeGreaterThan(knowledgeBlock.length - 1);
   // Nothing task-specific is inside the leading block.
   expect(knowledgeBlock).not.toContain("Range: ");
@@ -158,18 +189,18 @@ test("20a 2026-09-08 scenario 2: budget receipts follow the dynamic material in 
   memory.config.render.episodicBlockTokens = 20_000;
   // The Consolidator still leads with knowledge, so its receipt is still the knowledge one. Ticket
   // 45 retired its tiny synthetic cap; use the minimum database-derived capacity and an oversized item.
-  const receipt = "omitted 1 constraint knowledge; expand: K1";
+  const receipt = "omitted 2 constraint knowledge; expand: K2, K1";
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  tools.find(tool => tool.name === "trace")!.execute({ address: "K1@1", itemBudget: null });
-  tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: "K1@1", topics: [],
+  tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [],
     reason: "Exercise a database-derived omission boundary.", text: "The project uses pnpm " + "word ".repeat(5_200),
     category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
-  setKnowledgeInjection(memory, 5_000);
+  setKnowledgeCapacity(memory, 5_000);
   tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
   await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
   const consolidation = calls.at(-1)! as ConsolidationAgentInput;
   expect(consolidation.material.receipts).toEqual([receipt]);
-  expect(consolidation.text.endsWith(`Negated-evidence reminder (review cues only; no status derived):\n\nnone\n\nReceipts:\n${receipt}`)).toBe(true);
+  expect(consolidation.text.endsWith(`Receipts:\n${receipt}`)).toBe(true);
+  expect(consolidation.text).not.toContain("Negated-evidence reminder");
 });
 
 // ---------------------------------------------------------------- 20b: the shared material budgets
@@ -257,17 +288,16 @@ test("25a 2026-09-09: at the default limits the Noter sends history within 10,00
 
 test("25a/45: the Consolidator sends knowledge within the database-derived capacity and facts within 10,000", async () => {
   const { s, t } = overloaded();
-  setKnowledgeInjection(memory, 10_000);
+  setKnowledgeCapacity(memory, 10_000);
   await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const input = calls.at(-1)! as ConsolidationAgentInput;
   const material = input.material;
   const knowledgeReceipts = material.receipts.filter(r => r.includes(" knowledge; expand: "));
   expect(knowledgeReceipts.length).toBeGreaterThan(0); // the knowledge cap really binds
-  expect(tokens(knowledgeBlockOf(material)) + charge(knowledgeReceipts)).toBeLessThanOrEqual(memory.knowledgeBudgets().injection);
-  // The pending facts, their review cues and the framing around them share one allowance; there is
-  // no episodic budget beside it any more, and no historical-fact block inside it.
-  expect(charge([`Range: ${input.range.from}..${input.range.to}`, "Range facts:", ...material.rangeFacts,
-    "Negated-evidence reminder (review cues only; no status derived):", ...material.reminders]))
+  expect(tokens(knowledgeBlockOf(material)) + charge(knowledgeReceipts)).toBeLessThanOrEqual(10_000);
+  // The pending facts and their framing share one allowance; there is no review-cue or
+  // historical-fact block inside it.
+  expect(charge([`Range: ${input.range.from}..${input.range.to}`, "Range facts:", ...material.rangeFacts]))
     .toBeLessThanOrEqual(memory.config.consolidation.batchTokens);
   expect(material.receipts.some(r => r.includes(" older facts; expand: "))).toBe(false);
   expect(input.text).not.toContain("Already-consolidated");
@@ -279,10 +309,10 @@ test("25a/45: the Consolidator sends knowledge within the database-derived capac
 test("21b 2026-09-08, narrowed by 25a: the three knowledge consumers render topics through the one renderer, and a multi-topic item appears once", async () => {
   const { s, t, read } = seeded();
   read("K1@1");
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!
-    .execute({ operations: [{ op: "update", id: "K1@1", topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.",
-      text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
-  const labelled = "<knowledge>\n<constraint>\n[K1@2] [constraint/project] The project uses pnpm\n  change supports: F1 · topics: [\"packaging\",\"storage\"]\n</constraint>\n</knowledge>";
+  const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: "K1@1",
+    topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.", text: "The project uses pnpm",
+    category: "constraint", scope: "project", supports: ["F1"] }, "K1@1"))[0]!;
+  const labelled = `<knowledge>\n${KNOWLEDGE_RECENCY_NOTICE}\n<constraint>\n[K1@${changed.commit}] [constraint/project] The project uses pnpm\n  change supports: F1 · topics: ["packaging","storage"]\n</constraint>\n</knowledge>`;
   expect(memory.inject(s.id)).toBe(labelled);
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(labelled)).toBe(true);
   // The Noter is the fourth consumer no longer: 25a gives it no knowledge block in either mode.
@@ -294,15 +324,15 @@ test("21b 2026-09-08, narrowed by 25a: the three knowledge consumers render topi
   const consolidation = calls.at(-1)! as ConsolidationAgentInput;
   expect(consolidation.text.startsWith(labelled)).toBe(true);
   // Two subjects, one automatic copy: grouping is a read projection, never a second injected line.
-  for (const text of [memory.inject(s.id), consolidation.text]) expect(text.match(/\[K1@2\]/g)).toHaveLength(1);
+  for (const text of [memory.inject(s.id), consolidation.text]) expect(text.match(new RegExp(`\\[K1@${changed.commit}\\]`, "g"))).toHaveLength(1);
 });
 
 test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the leading block stays byte-identical across tasks", async () => {
   const { s, t, read } = seeded();
   read("K1@1");
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!
-    .execute({ operations: [{ op: "update", id: "K1@1", topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.",
-      text: "The project uses pnpm " + "word ".repeat(6_000), category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
+  const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: "K1@1",
+    topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.", text: "The project uses pnpm " + "word ".repeat(6_000),
+    category: "constraint", scope: "project", supports: ["F1"] }, "K1@1"))[0]!;
   const value = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!;
   const bare = { ...value, revision: { ...value.revision, topics: [] } };
   // The smallest cap that still keeps this one item whole; below the receipt's own cost the budget
@@ -317,13 +347,13 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   // revision without them, so labels cannot ride along outside the budget.
   expect(minimum(value)).toBeGreaterThan(minimum(bare));
   const exactForeground = tokens(memory.inject(s.id));
-  setKnowledgeInjection(memory, exactForeground - 1);
-  expect(memory.inject(s.id)).toBe(""); // 34c emits no omission-only foreground block
-  setKnowledgeInjection(memory, exactForeground);
-  expect(memory.inject(s.id)).toContain("[K1@2]");
-  // Foreground uses exact deterministic rendering, while worker selection uses the existing pool
-  // accounting. Ticket 45 derives both from the same policy but does not replace either accountant.
-  setKnowledgeInjection(memory, budgetKnowledge([value], Infinity).cost);
+  // Pool budgets trigger maintenance; they do not reject a policy change. Foreground selection
+  // omits a whole body that no longer fits without removing it from storage or dropping its topics.
+  setKnowledgeCapacity(memory, exactForeground - 1);
+  expect(memory.inject(s.id)).not.toContain(`[K1@${changed.commit}]`);
+  expect(memory.store.knowledgeRevision(changed.commit)!.topics).toEqual(["packaging", "storage"]);
+  // Restore enough room for the subject and the explicitly accounted worker trigger.
+  setKnowledgeCapacity(memory, 12_000);
   // Identical selected revisions and topics render the same leading bytes when only the range and the
   // pending facts change. Pinned on the Consolidator since 25a removed the Noter's knowledge block.
   const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
@@ -563,13 +593,13 @@ test("29b 2026-09-10 (case 13): an empty view and zero inherited cost produce th
 test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and stale inherited commits are explained inside its allowance", async () => {
   const { s, t } = seeded();
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  const memoryTool = () => tools.find(tool => tool.name === "memory")!;
   tools[0]!.execute({ address: "K1@1" });
-  memoryTool().execute({ operations: [{ op: "update", id: "K1@1", topics: [], reason: "The rule was restated.", text: "The project uses pnpm only", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
+  const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: "K1@1",
+    topics: [], reason: "The rule was restated.", text: "The project uses pnpm only", category: "constraint", scope: "project", supports: ["F1"] }, "K1@1"))[0]!;
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
     .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
   const current = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!.revision.id;
-  expect(current).toBe(2);
+  expect(current).toBe(changed.commit);
 
   const freeze = (commits: number[], config = memory.config) => freezeConsolidation(memory.store,
     { sessionId: s.id, branch: "main", mode: "fork", effectiveMode: "fork",
@@ -588,15 +618,60 @@ test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and sta
   expect(unchanged.prepared!.supplied.knowledgeCommitIds).toEqual([]);
   // An archived revision is not current authority, and the status says so where the block cannot.
   tools[0]!.execute({ address: `K1@${current}` });
-  memoryTool().execute({ operations: [{ op: "archive", id: `K1@${current}`, reason: "Withdrawn by the user.", supports: ["F1"] }], skipped: [] });
+  await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "archive", id: `K1@${current}`,
+    reason: "Withdrawn by the user.", supports: ["F1"] }, `K1@${current}`);
   expect(freeze([current]).prepared!.material.knowledgeNotes).toEqual([`K1@${current} is archived`]);
   // Ticket 45 keeps 29b's status reservation inside the frozen database-derived allowance.
   const note = `K1@${current} is archived`;
-  setKnowledgeInjection(memory, 5_000);
+  setKnowledgeCapacity(memory, 5_000);
   const squeezed = freeze([current]);
   expect(squeezed.knowledgeCapacity).toBe(5_000);
   expect(squeezed.prepared!.material.knowledgeNotes).toEqual([note]);
   expect(squeezed.prepared!.material.knowledge.map(g => g.text).join("")).toBe("");
+});
+
+test("64c: recency uses commit order across categories, not identity, timestamp or input order", () => {
+  const { s } = seeded();
+  const base = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!;
+  const item = (id: number, commit: number, category: typeof base.revision.category, createdAt: string) => ({
+    knowledge: { ...base.knowledge, id }, revision: { ...base.revision, id: commit, knowledgeId: id,
+      category, createdAt, text: "whole body " + "word ".repeat(300) },
+  });
+  const oldest = item(100, 1, "constraint", "2099"), newest = item(1, 9, "constraint", "1900"), middle = item(2, 6, "reference", "2000");
+  const values = [newest, oldest, middle];
+  const cap = wholeKnowledge([newest, middle]).cost + charge(["omitted 1 constraint knowledge; expand: K100", "Receipts:"]);
+  const selected = budgetKnowledge(values, cap);
+  expect(selected.commits).toEqual([9, 6]); // grouping remains constraint then reference
+  expect(selected.receipts).toEqual(["omitted 1 constraint knowledge; expand: K100"]);
+  expect(budgetKnowledge([...values].reverse(), cap)).toEqual(selected);
+  expect(wholeKnowledge(values).commits).toEqual([1, 9, 6]); // time within a category is commit order
+  const text = finish({ content: renderKnowledgeBlock(selected.groups), receipts: selected.receipts });
+  expect(text).toContain("Larger @commit numbers are newer.");
+  expect(tokens(text)).toBeLessThanOrEqual(selected.cost);
+  expect(selected.cost).toBeLessThanOrEqual(cap);
+});
+
+test("64c: foreground and Consolidator keep the same newer items and receipt omitted older knowledge", () => {
+  const { s, t } = seeded();
+  const write = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!;
+  const receipt = JSON.parse(write.execute({ operations: ["constraint", "mechanism", "reference"].map(category => ({
+    op: "create", category, scope: "project", text: `new ${category} ` + "word ".repeat(2_000),
+    topics: [], supports: ["F1"], reason: "durable conclusion",
+  })), skipped: [] }));
+  const commits = receipt.committed.map((value: { commit: number }) => value.commit);
+  setKnowledgeCapacity(memory, 5_000);
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  const injected = memory.injection(target);
+  const frozen = freezeConsolidation(memory.store, target, memory.config);
+  expect(injected.knowledgeCommitIds).toEqual(commits.slice(1));
+  expect(frozen.prepared!.supplied.knowledgeCommitIds).toEqual(injected.knowledgeCommitIds);
+  for (const text of [injected.text, frozen.prepared!.text]) {
+    expect(text).toContain(KNOWLEDGE_RECENCY_NOTICE);
+    expect(text).toContain("omitted 2 constraint knowledge; expand: K2, K1");
+    expect(text).not.toContain("[K1@");
+    expect(text).not.toContain("[K2@");
+  }
+  expect(tokens(injected.text)).toBeLessThanOrEqual(5_000);
 });
 
 test("32de: required exact versions outrank relevance; optional selection and framing share only the remainder", () => {
@@ -643,7 +718,7 @@ test("32de: required-only, priority-only and ordinary callers preserve their dis
     revision: { ...base.revision, id: id + 10, knowledgeId: id, text: "word ".repeat(100) } }));
   const cap = budgetKnowledge([values[0]!], Infinity).cost + 40;
   const priority = (a: typeof base, b: typeof base) => b.knowledge.id - a.knowledge.id;
-  expect(budgetKnowledge(values, cap).commits).toEqual([11]);
+  expect(budgetKnowledge(values, cap).commits).toEqual([13]);
   expect(budgetKnowledge(values, cap, undefined, undefined, new Set([13])).commits).toEqual([13]);
   expect(budgetKnowledge(values, cap, undefined, undefined, undefined, priority).commits).toEqual([13]);
   expect(budgetKnowledge(values, cap, undefined, undefined, new Set([11]), priority).commits).toEqual([11]);
@@ -678,8 +753,8 @@ test("45: inherited status competes with active bodies and omission receipt floo
     knowledgeBudget: "database-derived Consolidator knowledge capacity", current: "", framing: [],
     caps: { knowledge: cap, episodic: cap } });
   expect(mixed.knowledgeNotes).toHaveLength(1);
-  expect(mixed.knowledgeCommitIds).toEqual([1]);
-  expect(mixed.receipts).toEqual(["omitted 1 constraint knowledge; expand: K2"]);
+  expect(mixed.knowledgeCommitIds).toEqual([2]);
+  expect(mixed.receipts).toEqual(["omitted 1 constraint knowledge; expand: K1"]);
   const emitted = injectionText({ knowledge: mixed.knowledge, receipts: mixed.receipts }, mixed.knowledgeNotes);
   expect(tokens(emitted)).toBeLessThanOrEqual(cap);
 

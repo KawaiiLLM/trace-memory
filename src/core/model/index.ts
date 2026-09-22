@@ -48,9 +48,6 @@ export type RunKind = (typeof RUN_KINDS)[number];
 export const RUN_OUTCOMES = ["success", "failure", "cancelled", "bounced", "conflict"] as const;
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
 
-export const KNOWLEDGE_MARK_KINDS = ["verified", "flagged"] as const;
-export type KnowledgeMarkKind = (typeof KNOWLEDGE_MARK_KINDS)[number];
-
 export const EVENT_STATUSES = ["completed", "reported", "dispatched", "attempted"] as const;
 export type EventStatus = (typeof EVENT_STATUSES)[number];
 
@@ -179,13 +176,6 @@ export interface Run {
   /** Frozen native trigger ancestry. Null is preserved for historical/headless runs with no native proof. */
   origin: TriggerOrigin | null;
   outcome: RunOutcome;
-  createdAt: string;
-}
-
-export interface KnowledgeMark {
-  knowledgeId: number;
-  commitId: number;
-  kind: KnowledgeMarkKind;
   createdAt: string;
 }
 

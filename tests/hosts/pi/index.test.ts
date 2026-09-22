@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from 
 import { join } from "node:path";
 import { host as createHost, reply, notingFact, noteCommitted, consolidationReply, usage, type Reply } from "./test-host.ts";
 import { compacted } from "../../source-fixture.ts";
+import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
@@ -240,23 +241,24 @@ test("in-flight duplicate is dropped; new raw and branch switches cannot change 
   expect(h.conversations[0]!.messages[0]!.content).not.toContain("later raw");
 });
 
-test("consolidation waits for a turn stop after facts arrive and final replays candidate plus one feedback message", async () => {
+test("consolidation waits for a turn stop after facts arrive and commits in one tool round", async () => {
   const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, consolidationModel: "fake/Consolidator" });
   const output = consolidationReply();
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? output : notingFact(c));
+  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? output : notingFact(c));
   await h.turn();
   expect(h.requests).toHaveLength(2); // Only the noting tool loop; no Consolidation trigger.
   await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(5);
-  const candidate = h.conversations[2]!, final = h.conversations[3]!;
-  expect(final.systemPrompt).toBe(candidate.systemPrompt);
-  expect(final.messages.slice(0, 1)).toEqual(candidate.messages);
-  expect(final.messages[1]).toMatchObject({ role: "assistant", content: output.content });
-  expect(final.messages).toHaveLength(4); expect(final.messages[2]!.role).toBe("toolResult"); expect(final.messages[3]!.role).toBe("user");
+  expect(h.requests).toHaveLength(4);
+  const submitted = h.conversations[2]!, completed = h.conversations[3]!;
+  expect(completed.systemPrompt).toBe(submitted.systemPrompt);
+  expect(completed.messages.slice(0, 1)).toEqual(submitted.messages);
+  expect(completed.messages[1]).toMatchObject({ role: "assistant", content: output.content });
+  expect(completed.messages).toHaveLength(3); expect(completed.messages[2]!.role).toBe("toolResult");
+  expect(JSON.stringify(completed.messages)).not.toContain("NEAR:");
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
   expect(runs.map(r => r.outcome)).toEqual(["success"]);
   expect(runs.map(r => r.model)).toEqual(["fake/Consolidator"]);
-  expect(JSON.parse(runs[0]!.request!)).toEqual(h.requests[4]);
+  expect(JSON.parse(runs[0]!.request!)).toEqual(h.requests[3]);
 });
 
 test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) waits for pending runs — superseded 17c 2026-09-08: cancels, launches nothing, and closes the store", async reason => {
@@ -295,7 +297,7 @@ test("provider failures retain captured request and do not advance a watermark",
   expect(h.memory.store.listSourceEntries(1).some(e => h.memory.store.entryNoted(e.id))).toBe(false);
 });
 
-test("consolidation in-flight duplicates cannot erase the candidate continuation", async () => {
+test("consolidation in-flight duplicates cannot erase the single committed submission", async () => {
   const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
   h.provider(async c => notingFact(c)); await h.turn();
   const output = consolidationReply();
@@ -304,7 +306,7 @@ test("consolidation in-flight duplicates cannot erase the candidate continuation
   await h.answer("next completed source"); await h.emit("agent_settled"); await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(3);
   release(output); await h.drain();
-  expect(h.requests).toHaveLength(5);
+  expect(h.requests).toHaveLength(4);
   expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success"]);
 });
 
@@ -590,13 +592,13 @@ test("an consolidation call carries no tools; a noting tool call for a bad addre
   const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, "consolidation.triggerTokens": 1 });
   const call = { type: "toolCall" as const, id: "call-2", name: "trace", arguments: { address: "K999" } };
   const output = consolidationReply();
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? output
+  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? output
     : c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.turn();
   const result = h.conversations[1]!.messages[2] as { isError: boolean; content: { text: string }[] };
   expect(result.isError).toBe(true); expect(result.content[0]!.text).toContain("does not exist");
   await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
-  expect(h.conversations.slice(3).map(c => c.tools!.map(t => t.name))).toEqual(Array.from({ length: 3 }, () => ["trace", "search", "note", "memory"]));
+  expect(h.conversations.slice(3).map(c => c.tools!.map(t => t.name))).toEqual(Array.from({ length: 2 }, () => ["trace", "search", "note", "memory"]));
   expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["consolidation", "success"]]);
 });
 
@@ -622,10 +624,6 @@ test("main facade tools bind each call to the current turn, commit immediately a
   expect(h.memory.store.getKnowledge(1)).not.toBeNull();
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ kind: "manual", rangeFrom: "S1/T2", request: JSON.stringify(batch) });
   expect(h.memory.store.listToolCalls(2)).toHaveLength(1);
-  for (const kind of ["verified", "flagged", "clear"]) {
-    await h.commands.get("trace").handler(`mark K1 ${kind}`, h.ctx);
-    expect(h.notices.at(-1)).not.toContain("rejected:");
-  }
   const before = h.memory.store.listRuns(1);
   await h.commands.get("trace").handler("", h.ctx);
   expect(h.memory.store.listRuns(1)).toEqual(before);
@@ -675,23 +673,22 @@ test("main trace can fetch historical rejected tool evidence without becoming a 
   expect(h.memory.store.listToolCalls(1).map(c => c.status)).toEqual(["failure", "success"]);
 });
 
-test("18:39: two memory submissions in one reply cannot skip the checklist; the second commits only after the feedback was sent", async () => {
+test("18:39: two memory submissions in one reply commit the first and reject the second", async () => {
   const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
   h.provider(async c => notingFact(c)); await h.turn();
   const double = { ...consolidationReply(), content: [consolidationReply().content[0]!, { ...consolidationReply().content[0]!, id: "memory-2" }] } as Reply;
-  h.provider(async c => c.messages.some(m => m.role === "toolResult") ? consolidationReply() : double);
+  h.provider(async c => c.messages.some(m => m.role === "toolResult") ? reply("done") : double);
   await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
-  // The request after the double reply: user, assistant (two calls), two results, then the checklist.
-  const second = h.conversations.find(c => c.messages.length === 5)!.messages;
-  expect(second.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult", "user"]);
-  const results = second.filter(m => m.role === "toolResult") as { content: { text: string }[] }[];
-  expect(results[0]!.content[0]!.text).toContain("feedback");
-  expect(results[1]!.content[0]!.text).toContain("rejected: the review feedback has not been read yet");
+  const completed = h.conversations.find(c => c.messages.filter(m => m.role === "toolResult").length === 2)!.messages;
+  expect(completed.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult"]);
+  const results = completed.filter(m => m.role === "toolResult") as { content: { text: string }[] }[];
+  expect(results[0]!.content[0]!.text).toContain("committed");
+  expect(results[1]!.content[0]!.text).toContain("already committed");
   const run = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation")[0]!;
   expect(run.outcome).toBe("success");
   const calls = JSON.parse(run.response!).toolCalls.map((c: { result: string }) => c.result.slice(0, 40));
-  expect(calls).toHaveLength(3); // feedback, rejected, committed: the commit came from the request after the checklist
-  expect(calls[2]).toContain("committed");
+  expect(calls).toHaveLength(2);
+  expect(calls[0]).toContain("committed"); expect(calls[1]).toContain("already committed");
 });
 
 test("maxToolRounds is a budget: unlimited by default, and a run over an explicit budget fails without committing", async () => {
@@ -734,40 +731,75 @@ test("a run that committed and then hit a provider failure is reported as a warn
   expect(h.notices.some(n => n.startsWith("Error:"))).toBe(false);
 });
 
-test("16b: Pi marks and post-tree injection use the restored head, while explicit commit marks remain unrestricted", async () => {
+test("64b/16b: Pi tree switch drives injection and prompt delivery", async () => {
   const h = host();
   await h.turn();
-  const write = (head: number, branch: string, op: "create" | "update", text: string) => {
-    const tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: head, branch });
-    const fact = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${head}#user`] }] })).factIds[0];
-    if (op === "update") tools[0]!.execute({ address: "K1@1" });
-    expect(tools[3]!.execute({ operations: [{ op, topics: [], ...(op === "update" ? { id: "K1@1" } : {}), text, category: "constraint", scope: "project", supports: [`F${fact}`], reason: `${op} from the ${branch} path` }], skipped: [] })).not.toContain("rejected:");
+  const state = () => h.entries.filter(e => e.type === "custom").at(-1)!.data as { branch: string; head: number };
+  const target = () => {
+    const current = state(), entries = h.memory.store.sourcePath(1, current.branch, current.head);
+    return { sessionId: 1, branch: current.branch, headTurnId: current.head, triggerEntryId: entries.at(-1)!.id };
   };
-  write(1, "main", "create", "Root rule");
+  const note = (text: string) => {
+    const current = state(), tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: current.head, branch: current.branch,
+      triggerEntryId: target().triggerEntryId });
+    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${current.head}#user`] }] }));
+    expect(receipt.results[0]).toMatch(/^ok:/);
+    return receipt.factIds[0] as number;
+  };
   const root = [...h.entries];
   await h.prompt("C rule"); await h.answer();
-  write(2, "main", "update", "C rule");
-  const c = [...h.entries];
+  const cNative = [...h.entries];
   h.entries.splice(0, h.entries.length, ...root); await h.emit("session_tree");
   await h.prompt("D rule"); await h.answer();
-  write(3, h.entries.filter(e => e.type === "custom").at(-1).data.branch, "update", "D rule");
-  await h.commands.get("trace").handler("mark K1 verified", h.ctx);
-  expect(h.notices.at(-1)).toBe("K1@3: verified");
+  const dNative = [...h.entries];
+  h.entries.splice(0, h.entries.length, ...root); await h.emit("session_tree");
+  const rootFact = note("Root rule");
+  const rootTools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: 1, branch: state().branch, triggerEntryId: target().triggerEntryId });
+  const rootReceipt = JSON.parse(rootTools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Create from the root path.",
+    text: "Root rule", category: "constraint", scope: "project", supports: [`F${rootFact}`] }], skipped: [] }));
+  const rootCommit = rootReceipt.committed[0].commit as number;
+
+  const update = async (text: string, factId: number, sequence: number) => {
+    const path = target(); h.memory.store.setCurrentPath(1, path.branch, path.headTurnId, "pi-test");
+    const current = h.memory.store.currentCommit(1, path)[0]!;
+    const trigger = createDreamerTrigger(h.memory, path, factId, sequence), triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`;
+    expect(h.memory.taskEligibility("dreaming", path)).toEqual({ due: true });
+    expect(h.memory.store.getClaim(1, "dreaming")).toBeNull();
+    let round = 0;
+    h.provider(async conversation => {
+      expect(conversation.systemPrompt).toMatch(/^# Dreamer/);
+      if (round++ === 0) return { ...reply(""), stopReason: "toolUse", content: [
+        { type: "toolCall", id: `read-base-${sequence}`, name: "trace", arguments: { address: `K1@${current.id}`, itemBudget: null, pageBudget: 8000 } },
+        { type: "toolCall", id: `read-trigger-${sequence}`, name: "trace", arguments: { address: triggerAddress, itemBudget: null, pageBudget: 8000 } },
+      ] };
+      if (round === 2) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `write-${sequence}`, name: "memory", arguments: {
+        operations: [{ op: "update", id: `K1@${current.id}`, text, category: "constraint", scope: "project", topics: [], supports: [`F${factId}`], reason: `Update from ${path.branch}.` },
+          { op: "archive", id: triggerAddress, supports: [], reason: "Retire explicit host trigger." }], skipped: [],
+      } }] };
+      return reply("Done.");
+    });
+    await h.turn();
+    const run = h.memory.store.listRuns(1).filter(item => item.kind === "dreaming").at(-1)!;
+    expect(run.outcome, JSON.stringify(run)).toBe("success");
+    return h.memory.store.currentCommit(1, h.memory.store.knowledgePath(1))[0]!.id;
+  };
+
+  h.entries.splice(0, h.entries.length, ...cNative); await h.emit("session_tree");
+  const cFact = note("C rule"), cCommit = await update("C rule", cFact, 1);
+  const c = [...h.entries];
+  h.entries.splice(0, h.entries.length, ...dNative); await h.emit("session_tree");
+  const dFact = note("D rule"), dCommit = await update("D rule", dFact, 2);
+  expect(cCommit).not.toBe(rootCommit); expect(dCommit).not.toBe(cCommit);
+
   h.entries.splice(0, h.entries.length, ...c); await h.emit("session_tree");
-  await h.commands.get("trace").handler("mark K1 flagged", h.ctx);
-  expect(h.notices.at(-1)).toBe("K1@2: flagged");
-  await h.commands.get("trace").handler("mark K1@3 clear", h.ctx);
-  expect(h.notices.at(-1)).toBe("K1@3: clear");
-  await expect(h.commands.get("trace").handler("mark K1@57 verified", h.ctx)).rejects.toThrow("does not exist");
-  // The restored branch and head select the current exact revision. Its manual fact has no proven
-  // complete source binding, so the ordinary-prompt predicate delivers it without a command.
-  const restored = h.entries.filter(e => e.type === "custom").at(-1).data;
+  const restored = state();
   const injected = h.memory.injection({ sessionId: 1, headTurnId: restored.head, branch: restored.branch }).text;
-  expect(injected).toContain("[K1@2]"); expect(injected).not.toContain("[K1@3]");
+  expect(injected).toContain(`[K1@${cCommit}]`); expect(injected).not.toContain(`[K1@${dCommit}]`);
   const delivered = (await h.prompt("Continue C"))?.message;
-  expect(delivered.content).toContain("[K1@2]"); expect(delivered.content).not.toContain("[K1@3]");
+  expect(delivered.content).toContain(`[K1@${cCommit}]`); expect(delivered.content).not.toContain(`[K1@${dCommit}]`);
   const carry = await h.emit("session_before_tree");
-  expect(carry.summary.summary).toBe(h.memory.branchSummary(1, h.entries.filter(e => e.type === "custom").at(-1).data.branch, 4));
+  const latestTurn = h.memory.store.listTurns(1).at(-1)!.id;
+  expect(carry.summary.summary).toBe(h.memory.branchSummary(1, state().branch, latestTurn));
   expect(carry.summary.summary).toMatch(/^<branch_carry>\nthis is knowledge from another branch;/);
 });
 
@@ -795,7 +827,7 @@ test("the plugin's spend is a footer status item updated after every run, and th
   h.provider(async c => notingFact(c));
   await h.turn();
   // 24a: idle; nothing left to note, one applicable fact, that fact still to consolidate, no knowledge yet.
-  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: 0->1 memory: 1->0=>0 cost: \$\d+\.\d{2}<\/dim>$/);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: 0->1 memory: 1->0\/0 cost: \$\d+\.\d{2}<\/dim>$/);
   const spend = h.memory.spend(1);
   expect(spend.runs).toEqual({ noting: 1, consolidation: 0, dreaming: 0, manual: 0 });
   expect(spend.input + spend.output).toBeGreaterThan(0);
@@ -852,7 +884,7 @@ test("the footer indicator follows activity: accent while noting runs, error aft
 test("a fork sees consolidation progress exactly when every fact of that consolidation lies on its path", async () => {
   const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "consolidation.maxToolRounds": 4 });
   // The fake Consolidator submits once per round and stops after any rejection instead of resubmitting forever.
-  h.provider(async c => !c.systemPrompt!.includes("### Second-round user message") ? notingFact(c)
+  h.provider(async c => !c.systemPrompt!.includes("You are the Consolidator:") ? notingFact(c)
     : c.messages.some(m => m.role === "toolResult" && m.toolName === "memory" && (m.content[0] as { text: string }).text.startsWith("rejected")) ? reply("stopped") : consolidationReply());
   await h.turn(); // T1 → F1
   const atT1 = [...h.entries];
@@ -876,7 +908,7 @@ test("a fork sees consolidation progress exactly when every fact of that consoli
 test("a dropped duplicate Consolidation trigger neither ends the running indicator nor changes the last outcome", async () => {
   const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
   let release!: (value: Reply) => void, held = false;
-  h.provider(async c => { if (!c.systemPrompt!.includes("### Second-round user message")) return notingFact(c);
+  h.provider(async c => { if (!c.systemPrompt!.includes("You are the Consolidator:")) return notingFact(c);
     if (held) return consolidationReply(); held = true; return new Promise(resolve => { release = resolve; }); });
   await h.turn(); // F1 recorded
   await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain(); // Consolidation starts and waits for the model
@@ -983,9 +1015,9 @@ const knowledgeReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", cont
 
 test("2026-09-07 backfill by consumer — superseded 2026-09-08 and by 25b: the Consolidator subagent gets facts and knowledge changes and waits for no receipt it does not inherit", async () => {
   const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, "consolidation.maxToolRounds": 4 });
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : notingFact(c));
+  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? knowledgeReply() : notingFact(c));
   await h.turn(); // Noting commits F1.
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : reply("No new facts."));
+  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? knowledgeReply() : reply("No new facts."));
   await h.answer("tick"); await h.emit("agent_settled"); await h.drain();
   // The batch is due right after F1 is committed. Before 25b a fork-mode Consolidator would have
   // waited for a receipt; a fresh context reads the pending facts from storage, so it does not.

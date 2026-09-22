@@ -129,42 +129,6 @@ test("32c: corrected refusal and post-success audit failure reset the task; canc
   expect(m.store.db.prepare("SELECT head FROM task_failures").get()!.head).toBe(head);
 });
 
-test("32: the logical task key is target + phase + backlog head; head advance is not success", () => {
-  const db = file(); let m = open(db); const target = seed(m);
-  const f = m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
-    { turnId: target.headTurnId, category: "decision", actor: "user", text: "evidence", source: [`T${target.headTurnId}#user`], createdAt: "now" }] });
-  if (!f.ok) throw Error("fixture failed");
-  const content = { text: "original", category: "constraint" as const, scope: "session" as const, supports: [f.facts[0]!.id], reason: "maintenance", topics: [], createdAt: "now" };
-  const created = m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, path: target,
-    operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
-  if (!created.ok) throw Error("fixture failed");
-  let current = created.committed[0]!;
-  const range = m.store.retainDreamingRange(target, [current.commit]);
-  for (let i = 1; i <= 3; i++) {
-    const retained = m.store.retryDreamingRange(target)!;
-    expect(retained.anchor).toBe(range.anchor);
-    const id = m.store.beginExecution({ sessionId: target.sessionId, phase: "dreaming", head: retained.anchor });
-    const written = m.store.commitConsolidationRun({ path: target,
-      run: { kind: "dreaming", sessionId: target.sessionId, branch: "main", executionId: id, dreamingRangeId: range.id, createdAt: "now" },
-      operations: [{ op: "update", knowledgeId: current.knowledgeId, baseCommit: current.commit, ...content, text: `partial ${i}` }] });
-    if (!written.ok) throw Error(written.problems.join());
-    current = written.committed[0]!;
-    expect(m.store.db.prepare("SELECT outcome FROM task_executions WHERE id = ?").get(id)!.outcome).toBeNull();
-    expect(() => m.store.settleExecution(id, "success", written.runId)).toThrow("business completion");
-    const terminal = m.store.recordRun({ kind: "dreaming", sessionId: target.sessionId, executionId: id, outcome: "failure", createdAt: "now" });
-    const result = m.settleExecution(id, "failure", terminal.id, "final scope check failed");
-    expect(!!result.automaticOff).toBe(i === 3);
-    expect(streaks(m)[0]!.count).toBe(i);
-    expect(streaks(m)[0]!.head).toBe(range.anchor);
-    m.close(); m = open(db);
-    expect(m.store.settleExecution(id, "failure", terminal.id)).toEqual({});
-    expect(m.store.getKnowledgeRevision(current.knowledgeId, current.commit)!.text).toBe(`partial ${i}`);
-    expect(m.store.db.prepare("SELECT * FROM dreaming_completions").all()).toEqual([]);
-  }
-  expect(m.store.retryDreamingRange(target)!.anchor).toBe(range.anchor);
-  expect(m.store.enabled(target.sessionId)).toBe(false);
-});
-
 test("32c: Consolidation uses the selected oldest fact, not the smallest F id or leaf", async () => {
   const m = open(), target = seed(m);
   const next = m.store.appendTurn({ sessionId: target.sessionId, parentTurnId: target.headTurnId, kind: "turn", userPrompt: "later", startedAt: "later" });
@@ -184,29 +148,40 @@ test("32c: Consolidation uses the selected oldest fact, not the smallest F id or
   expect(m.store.consolidationBatch(target.sessionId, "main", next.id).map(f => f.id)).toEqual([2, 1]);
 });
 
-test("32c: Dreamer success settles only with final completion and resets its original task", () => {
-  const m = open(), target = seed(m);
-  const f = m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
+test("64c: Dreamer terminal failure consumes its pair once; a later pair settles independently without retry", async () => {
+  let outcome: "failure" | "success" = "failure";
+  const m = open(":memory:", async () => ({ outcome, output: outcome, request }));
+  const target = seed(m);
+  const facts = m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
     { turnId: target.headTurnId, category: "decision", actor: "user", text: "evidence", source: [`T${target.headTurnId}#user`], createdAt: "now" }] });
-  if (!f.ok) throw Error("fixture failed");
-  const c = m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, path: target, operations: [
-    { op: "create", handle: "$1", author: "test", text: "small", category: "constraint", scope: "session", supports: [f.facts[0]!.id], reason: "test", topics: [], createdAt: "now" }] });
-  if (!c.ok) throw Error("fixture failed");
-  const commit = c.committed[0]!.commit, range = m.store.retainDreamingRange(target, [commit]);
-  const task = { sessionId: target.sessionId, phase: "dreaming" as const, head: range.anchor };
-  const failedId = m.store.beginExecution(task);
-  const failedRun = m.store.recordRun({ kind: "dreaming", sessionId: target.sessionId, executionId: failedId, outcome: "failure", createdAt: "now" });
-  m.store.settleExecution(failedId, "failure", failedRun.id, "first check failed");
-  const id = m.store.beginExecution(task);
-  const run = m.store.recordRun({ kind: "dreaming", sessionId: target.sessionId, executionId: id, dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
-  expect(() => m.store.completeDreaming(run.id, [commit], [commit], () => { throw Error("lost final claim"); })).toThrow("lost final claim");
-  expect(streaks(m)[0]!.count).toBe(1);
-  expect(m.store.db.prepare("SELECT outcome FROM task_executions WHERE id = ?").get(id)!.outcome).toBeNull();
-  m.store.completeDreaming(run.id, [commit], [commit]);
-  expect(streaks(m)[0]!.count).toBe(0);
-  expect(m.store.db.prepare("SELECT outcome FROM task_executions WHERE id = ?").get(id)!.outcome).toBe("success");
-  expect(m.store.settleExecution(id, "failure", run.id, "post-success audit")).toEqual({});
-  expect(streaks(m)[0]!.count).toBe(0);
+  if (!facts.ok) throw Error("fixture failed");
+  const create = (handle: string) => {
+    const result = m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, path: target, operations: [
+      { op: "create", handle, author: "test", text: `${handle} ${"work ".repeat(600)}`, category: "constraint", scope: "session",
+        supports: [facts.facts[0]!.id], reason: "test", topics: [], createdAt: "now" }] });
+    if (!result.ok) throw Error(result.problems.join("; "));
+    return result.committed[0]!;
+  };
+  const first = create("$first"), pool = `session:${target.sessionId}`;
+  m.store.setKnowledgeBudget("session", m.store.pendingPoolWeight(pool, target) * 2);
+  const failed = await m.dream(target);
+  expect(failed.outcome).toBe("failure");
+  if (!("runId" in failed)) throw Error("missing failed run");
+  expect(m.store.db.prepare("SELECT outcome FROM task_executions WHERE id = ?").get(execution(m, failed.runId))!.outcome).toBe("failure");
+  expect(m.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ?").all(pool).map(row => Number(row.revision_id))).toEqual([first.commit]);
+  expect(m.store.openDreamingRange(target.sessionId, target.branch)).toBeNull();
+  expect((await m.dream(target)).outcome).toBe("empty");
+
+  outcome = "success";
+  const second = create("$second");
+  m.store.setKnowledgeBudget("session", m.store.pendingPoolWeight(pool, target) * 2);
+  const succeeded = await m.dream(target);
+  expect(succeeded.outcome).toBe("success");
+  if (!("runId" in succeeded)) throw Error("missing successful run");
+  expect(m.store.db.prepare("SELECT outcome FROM task_executions WHERE id = ?").get(execution(m, succeeded.runId))!.outcome).toBe("success");
+  expect(m.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool).map(row => Number(row.revision_id)))
+    .toEqual([first.commit, second.commit]);
+  expect(m.store.settleExecution(execution(m, succeeded.runId), "failure", succeeded.runId, "post-success audit")).toEqual({});
 });
 
 test("32c: successful Consolidation accounting resets its own task in the commit transaction", () => {

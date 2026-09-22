@@ -1,14 +1,18 @@
 import { expect, test, vi } from "vitest";
-import { host } from "./test-host.ts";
+import { host, reply } from "./test-host.ts";
 
-async function seeded(overflow = 50) {
-  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9,
-    "dreaming.triggerTokens": 10000,
-    "compaction.factsTokens": 10000, "compaction.rawTokens": 10000, "compaction.overflowTokens": overflow });
+async function seeded(sharedAllowance = 50) {
+  const notingTrigger = Math.floor(sharedAllowance / 2), consolidationTrigger = sharedAllowance - notingTrigger;
+  const h = host({ "noting.triggerTokens": notingTrigger, "consolidation.triggerTokens": consolidationTrigger,
+    "compaction.factsTokens": 10000, "compaction.rawTokens": 10000 });
   h.memory.setKnowledgeBudget("global", 0);
   h.memory.setKnowledgeBudget("project", 0);
   h.memory.setKnowledgeBudget("session", 0);
-  await h.turn();
+  // Restore real persisted history without an automatic admission, rather than hiding seed requests.
+  h.persist({ role: "user", content: "Keep this rule", timestamp: 1 });
+  h.persist(reply("Recorded."));
+  await h.emit("session_start");
+  expect(h.requests).toEqual([]);
   const s = h.memory.store;
   const f = s.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, facts: [{ turnId: 1, source: ["T1#user"], actor: "user", category: "decision", text: "Keep this rule", createdAt: "seed" }] });
   if (!f.ok) throw Error(f.problems.join());
@@ -25,9 +29,8 @@ async function saved(h: ReturnType<typeof host>, result: any, summary = result?.
   return entry;
 }
 const status = async (h: ReturnType<typeof host>) => { await h.commands.get("trace").handler("", h.ctx); return h.notices.at(-1)!; };
-
-test.each(["native→custom", "custom→native"] as const)("32f review: %s reports only the actual saved result", async direction => {
-  const { h, s, item } = await seeded(direction === "custom→native" ? 10000 : 50);
+test.each(["budget", "new knowledge"] as const)("64c: publication reprices %s without requiring optional knowledge", async change => {
+  const { h, s } = await seeded(change === "new knowledge" ? 10_000 : 50);
   try {
     let changed = false;
     const notify = h.ctx.ui.notify.bind(h.ctx.ui);
@@ -35,26 +38,31 @@ test.each(["native→custom", "custom→native"] as const)("32f review: %s repor
       notify(message, level);
       if (changed || !/compaction (used|preparing)/.test(message)) return;
       changed = true;
-      if (direction === "native→custom") {
+      if (change === "budget") {
         h.memory.setKnowledgeBudget("project", 7_000);
-        const range = s.retainDreamingRange({ sessionId: 1, branch: "main", headTurnId: 1 }, [item.commit]);
-        const run = s.recordRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
-          outcome: "success", createdAt: "external" });
-        s.completeDreaming(run.id, [item.commit], [item.commit]);
       } else {
-        const update = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "external" }, operations: [{ op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "external ".repeat(20_000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "external", createdAt: "external" }] });
-        expect(update.ok).toBe(true);
+        // A new same-pool item arrives during preparation; it is optional, even before processing.
+        const create = s.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: "external" }, operations: [{
+          op: "create", handle: "$external", author: "consolidation", text: "external ".repeat(20_000), category: "constraint",
+          scope: "project", supports: [1], topics: [], reason: "external concurrent create", createdAt: "external" }] });
+        expect(create.ok).toBe(true);
       }
     });
     const result = await before(h);
     expect(changed).toBe(true);
-    expect(!!result?.compaction).toBe(direction === "native→custom");
+    expect(!!result?.compaction).toBe(true); // pending knowledge never makes the custom material incomplete
+    if (change === "budget") expect(result.compaction.summary).toContain("rule ".repeat(6_000));
+    else {
+      expect(result.compaction.summary).toContain("expand: K2");
+      expect(result.compaction.summary).not.toContain("external ".repeat(20_000));
+    }
+    expect(s.listRuns(1).filter(run => run.kind === "dreaming")).toEqual([]);
     expect(h.requests).toHaveLength(0);
     expect.soft(h.notices.some(n => n.includes("compaction used"))).toBe(false);
     expect.soft(await status(h)).not.toContain("Compaction:");
     const entry = await saved(h, result);
-    expect(!!(entry.details as any)?.traceMemory).toBe(direction === "native→custom");
-    const expected = direction === "native→custom" ? "bounded entry views" : "native delegation";
+    expect(!!(entry.details as any)?.traceMemory).toBe(true);
+    const expected = "bounded entry views";
     expect(h.notices.at(-1)).toContain(`compaction used ${expected}`);
     expect(await status(h)).toContain(`Compaction: ${expected}`);
   } finally { vi.restoreAllMocks(); await h.dispose(); }

@@ -1,4 +1,5 @@
 <knowledge>
+Larger @commit numbers are newer. For claims about the same object, the newer item takes precedence until maintenance merges them.
 <constraint>
 [K1@1] [constraint/project] 地形层和高度层一起读。
   change supports: F1

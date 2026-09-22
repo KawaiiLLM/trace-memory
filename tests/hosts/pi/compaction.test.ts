@@ -58,13 +58,13 @@ test("20c 2026-09-08 scenario 11: the host returns no custom replacement when co
   // reads at all. Each entry alone still fits a batch, so a Noter can run afterwards (review
   // 2026-09-08: a budget the mandatory material cannot fit reduces or holds the task rather than
   // running over it).
-  const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "compaction.factsTokens": 50, "compaction.rawTokens": 50, "compaction.overflowTokens": 50 });
+  const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "compaction.factsTokens": 50, "compaction.rawTokens": 50});
   try {
     h.memory.setKnowledgeBudget("global", 0);
     h.memory.setKnowledgeBudget("project", 0);
     h.memory.setKnowledgeBudget("session", 0);
     failing(h); // repeated Noter failures are what make a session hard to compact
-    for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i}`); await h.answer(); await h.emit("agent_settled"); await h.drain(); }
+    for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i} ` + "word ".repeat(250)); await h.answer(); await h.emit("agent_settled"); await h.drain(); }
     // 32c: repeated failures now disable enrollment. Explicitly resume before testing the
     // compaction boundary itself; this imports the disabled interval and resets its streak.
     await h.commands.get("trace").handler("on", h.ctx);

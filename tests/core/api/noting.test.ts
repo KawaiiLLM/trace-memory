@@ -7,7 +7,7 @@ import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { knowledgeBlock } from "../../../src/core/render/material.ts";
 import fixture from "../../fixtures/noting/turns.json";
 import memories from "../../fixtures/noting/facts.json";
-import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
+import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -263,20 +263,20 @@ test("an oldest entry the episodic budget cannot hold leaves Noting pending (the
 
 // 25a moved this scenario from the Noter to the Consolidator: the Noter has no knowledge block to
 // cap any more, so the cap is pinned where the automatic block still is. The rule is unchanged.
-test("20b 2026-09-08 scenario 4, on the Consolidator since 25a: no knowledge category bypasses the cap, constraints keep first priority, and omitted items stay traceable", async () => {
+test("64c: no knowledge category bypasses the cap, newer commits are kept, and omitted items stay traceable", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: categories.map((category, i) => ({
     op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const,
     text: `${memories.knowledge} ${"word ".repeat(1_000)}`, supports: [1], createdAt: time,
   })) });
-  const item = (id: number) => renderKnowledge(memory.store.listCurrentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!);
+  const item = (id: number) => renderKnowledge(memory.store.currentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!);
   const consolidate = () => memory.consolidate({ sessionId, branch: "main", mode: "subagent" });
-  // Ticket 45 retired the arbitrary tiny per-Consolidator setting. Zero owner budgets derive the
-  // minimum 5k allowance, which still binds this oversized pool and keeps omitted items traceable.
+  // Use the real runtime authorities to make the total Knowledge input exactly 5k. This keeps the
+  // omission boundary meaningful now that the shared allowance is derived from all five triggers.
   memory.close(); open();
-  setKnowledgeInjection(memory, 5_000);
-  const cap = memory.knowledgeBudgets().injection;
+  setKnowledgeCapacity(memory, 5_000);
+  const cap = 5_000;
   script.push(async () => ({ outcome: "success", output: "Done.", request }));
   expect((await consolidate()).outcome).toBe("success");
   const material = calls.at(-1)!.material as unknown as { knowledge: { category: string; text: string }[]; receipts: string[] };
@@ -284,8 +284,8 @@ test("20b 2026-09-08 scenario 4, on the Consolidator since 25a: no knowledge cat
   const kept = material.knowledge.map(g => g.category);
   expect(kept.length).toBeGreaterThan(0);
   expect(kept.length).toBeLessThan(categories.length); // the cap really binds
-  expect(kept).toEqual(categories.slice(0, kept.length)); // category priority, deterministically
-  expect(material.knowledge.map(g => g.text)).toEqual(kept.map((_, i) => item(i + 1))); // whole items, never rewritten
+  expect(kept).toEqual(categories.slice(-kept.length)); // newer commits; stable category presentation
+  expect(material.knowledge.map(g => g.text)).toEqual(kept.map(category => item(categories.indexOf(category as typeof categories[number]) + 1))); // whole items, never rewritten
   const receipts = material.receipts.filter(r => r.includes(" knowledge; expand: "));
   expect(receipts).toHaveLength(categories.length - kept.length);
   expect(tokens(block) + tokens(receipts.join("\n"))).toBeLessThanOrEqual(cap);

@@ -73,3 +73,47 @@ test.each([null, "", "relative.sqlite"])("an explicit invalid database path %j d
   expect(() => resolveCcHostConfig({ ...f.input, dbPath } as CcHostConfig)).toThrow(/dbPath|absolute/);
   expect(existsSync(f.dbPath)).toBe(false);
 });
+
+function executableConfig(home: string): CcHostConfig {
+  return { stateDir: join(home, "state"), notingModel: "sonnet", notingThinking: "high",
+    consolidationModel: "opus", consolidationThinking: "medium", "dreaming.model": "opus", "dreaming.thinking": "xhigh",
+    worker: { claudeExecutable: join(home, "claude"), claudeVersion: "2.1.257", cwd: home,
+      contextWindows: { sonnet: 200_000, opus: 300_000 } } };
+}
+
+test("CC resolves one immutable execution setting per phase from the six flat Pi keys", () => {
+  const f = fixture(), config = resolveCcHostConfig(executableConfig(f.home));
+  expect(config.worker?.phases).toEqual({
+    noting: { model: "sonnet", thinking: "high", capacity: { inputTokens: 190_000, prefixTokens: 0 } },
+    consolidation: { model: "opus", thinking: "medium", capacity: { inputTokens: 290_000, prefixTokens: 0 } },
+    dreaming: { model: "opus", thinking: "xhigh", capacity: { inputTokens: 290_000, prefixTokens: 0 } },
+  });
+  expect(config).toMatchObject({ notingModel: "sonnet", notingThinking: "high", consolidationModel: "opus",
+    consolidationThinking: "medium", "dreaming.model": "opus", "dreaming.thinking": "xhigh" });
+});
+
+test("CC keeps ingestion-only configuration valid but requires all six phase keys with a worker", () => {
+  const f = fixture();
+  expect(resolveCcHostConfig(f.input).worker).toBeUndefined();
+  const configured = executableConfig(f.home);
+  for (const key of ["notingModel", "notingThinking", "consolidationModel", "consolidationThinking", "dreaming.model", "dreaming.thinking"] as const) {
+    const missing = { ...configured } as Record<string, unknown>; delete missing[key];
+    expect(() => resolveCcHostConfig(missing as unknown as CcHostConfig)).toThrow(key);
+  }
+});
+
+test.each([
+  ["missing selected capacity", (value: any) => { delete value.worker.contextWindows.sonnet; }, /no capacity.*sonnet/],
+  ["non-finite capacity", (value: any) => { value.worker.contextWindows.sonnet = Infinity; }, /positive safe integer/],
+  ["capacity at headroom", (value: any) => { value.worker.contextWindows.sonnet = 10_000; }, /must exceed/],
+  ["inherit thinking", (value: any) => { value.notingThinking = "inherit"; }, /inheritance is unavailable/],
+  ["session model", (value: any) => { value.notingModel = "session"; }, /session inheritance is unavailable/],
+  ["unsupported thinking", (value: any) => { value.notingThinking = "minimal"; }, /cannot be coerced/],
+  ["legacy worker model", (value: any) => { value.worker.model = "sonnet"; }, /Legacy CC worker.model/],
+  ["legacy worker effort", (value: any) => { value.worker.effort = "high"; }, /Legacy CC worker.effort/],
+  ["legacy worker capacity", (value: any) => { value.worker.contextWindow = 200_000; }, /Legacy CC worker.contextWindow/],
+  ["parallel phase hierarchy", (value: any) => { value.worker.noting = { model: "sonnet" }; }, /six flat host keys/],
+] as const)("CC rejects %s without fallback", (_label, mutate, message) => {
+  const f = fixture(), value = executableConfig(f.home); mutate(value);
+  expect(() => resolveCcHostConfig(value)).toThrow(message);
+});

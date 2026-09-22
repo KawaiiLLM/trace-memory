@@ -9,23 +9,31 @@ import { join } from "node:path";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { countSourceReads, countGraphResolutions } from "../../perf/fixture.ts";
+import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const time = "2026-09-09T00:00:00Z";
-let dir: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>;
+
+function fullRead(tool: { execute(input: unknown): string }, address: string) {
+  let page = tool.execute({ address, full: true, itemBudget: null });
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1])
+    page = tool.execute({ address: `cursor=${cursor}`, itemBudget: null });
+}
+let dir: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerScenarios;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "trace-memory-22c-"));
   dbPath = join(dir, "trace.db");
-  memory = sourceSeededMemory(dbPath, async () => { throw new Error("these cases call no model"); });
+  scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("these cases call no model"); });
+  memory = sourceSeededMemory(dbPath, scenarios.agent);
 });
 afterEach(() => { memory.close(); rmSync(dir, { recursive: true, force: true }); });
 
-/** Count how often a knowledge hit is formatted: `renderKnowledge`'s marks are read once per line. */
+/** Count knowledge record loads performed while formatting deferred search hits. */
 function countFormattedHits(): { hits: () => number; restore: () => void } {
-  const prototype = Store.prototype as { listKnowledgeMarks: Store["listKnowledgeMarks"] };
-  const original = prototype.listKnowledgeMarks;
+  const prototype = Store.prototype;
+  const original = prototype.getKnowledge;
   let count = 0;
-  prototype.listKnowledgeMarks = function (this: Store, id: number) { count++; return original.call(this, id); };
-  return { hits: () => count, restore: () => { prototype.listKnowledgeMarks = original; } };
+  prototype.getKnowledge = function (this: Store, id: number) { count++; return original.call(this, id); };
+  return { hits: () => count, restore: () => { prototype.getKnowledge = original; } };
 }
 
 /** A session of `turns` Turns; the middle one carries `calls` tool calls and a second native result
@@ -95,7 +103,7 @@ test("22c: a full trace obtains the Turn's occurrences once, whatever the sessio
 
 /** `knowledge` commits, each with `revisions` commits on this path: one create and its updates, so
  * every commit but the last of a chain is historical. All of them match one literal query. */
-function knowledgeCorpus(knowledge: number, revisions: number) {
+async function knowledgeCorpus(knowledge: number, revisions: number) {
   const store = memory.store, { sessionId, headTurnId } = conversation(3, 1);
   const path = { sessionId, branch: "main", headTurnId };
   store.selectSourcePath(sessionId, "main", store.listSourceEntries(sessionId).map(e => e.id));
@@ -110,21 +118,33 @@ function knowledgeCorpus(knowledge: number, revisions: number) {
     const created = store.commitConsolidationRun({ path, run, operations: [{ op: "create", handle: `h${i}`, author: "fake",
       text: `SEARCHNEEDLE conclusion ${i}`, category: "mechanism", scope: "session", supports, reason: "corpus", topics: [], createdAt: time }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
-    let commit = created.committed[0]!.commit;
-    const knowledgeId = created.committed[0]!.knowledgeId;
-    for (let j = 1; j < revisions; j++) {
-      const updated = store.commitConsolidationRun({ path, run, operations: [{ op: "update", knowledgeId, baseCommit: commit,
-        text: `SEARCHNEEDLE conclusion ${i} revision ${j}`, category: "mechanism", scope: "session", supports, reason: "corpus", topics: [], createdAt: time }] });
-      if (!updated.ok) throw new Error(updated.problems.join("; "));
-      commit = updated.committed[0]!.commit;
-    }
-    tips.push({ knowledgeId, commit });
+    tips.push({ knowledgeId: created.committed[0]!.knowledgeId, commit: created.committed[0]!.commit });
   }
+  const trigger = createDreamerTrigger(memory, path, supports[0]!, knowledge + revisions, "session");
+  const dreamed = await scenarios.run(memory, path, input => {
+    const request = { fixture: "paged read corpus" }; input.reportRequest(request);
+    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    const consumed = new Set<string>();
+    for (let i = 0; i < tips.length; i++) for (let j = 1; j < revisions; j++) {
+      const tip = tips[i]!, address = `K${tip.knowledgeId}@${tip.commit}`; consumed.add(address);
+      fullRead(trace, address);
+      const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: address,
+        text: `SEARCHNEEDLE conclusion ${i} revision ${j}`, category: "mechanism", scope: "session", supports: supports.map(id => `F${id}`), reason: "corpus", topics: [] }], skipped: [] }));
+      tip.commit = updated.committed[0]!.commit;
+    }
+    const triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`;
+    const supplied = new Set(input.material.changed.match(/K\d+@\d+/g) ?? []); supplied.delete(triggerAddress); for (const address of consumed) supplied.delete(address);
+    write.execute({ operations: [{ op: "archive", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit paged-read trigger." }],
+      skipped: [...supplied].map(knowledge => ({ knowledge, because: "No further corpus maintenance is needed." })) });
+    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
+    return { outcome: "success", output: "corpus revisions complete", request };
+  });
+  if (dreamed.outcome !== "success") throw new Error(JSON.stringify(dreamed));
   return { sessionId, headTurnId, path, supports, tips, query: "SEARCHNEEDLE" };
 }
 
-test("22c: a search page formats its own hits and resolves the commit graph once for the query", () => {
-  const small = knowledgeCorpus(3, 3), large = knowledgeCorpus(9, 3);
+test("22c: a search page formats its own hits and resolves the commit graph once for the query", async () => {
+  const small = await knowledgeCorpus(3, 3), large = await knowledgeCorpus(9, 3);
   const options = { sessionId: large.sessionId, headTurnId: large.headTurnId, versions: "all" as const };
   const graph = countGraphResolutions(), format = countFormattedHits();
   try {
@@ -144,9 +164,9 @@ test("22c: a search page formats its own hits and resolves the commit graph once
   } finally { graph.restore(); format.restore(); }
 });
 
-test("22c: continuation is complete and stable, and a commit between pages moves no label", () => {
-  const corpus = knowledgeCorpus(4, 3);
-  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, versions: "all" as const, fields: ["text", "status"] as const };
+test("22c: continuation is complete and stable, and a commit between pages moves no label", async () => {
+  const corpus = await knowledgeCorpus(4, 3);
+  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, versions: "all" as const, category: "mechanism" as const, fields: ["text", "status"] as const };
   const addresses = (text: string) => text.split("\n").filter(l => l.startsWith("[K")).map(l => l.slice(1, l.indexOf("]")));
   const whole = memory.search("", "knowledge", options);
   const expected = addresses(whole);
@@ -163,12 +183,23 @@ test("22c: continuation is complete and stable, and a commit between pages moves
       // No transaction may be open while the caller decides to ask for another page: a second
       // connection commits a superseding revision of the last knowledge between the pages.
       expect(memory.store.db.isTransaction).toBe(false);
-      const other = new Store(dbPath);
-      const commit = other.commitConsolidationRun({ path: corpus.path, run: { kind: "consolidation", sessionId: corpus.sessionId, branch: "main", createdAt: time },
-        operations: [{ op: "update", knowledgeId: last.knowledgeId, baseCommit: last.commit, text: "SEARCHNEEDLE later conclusion",
-          category: "mechanism", scope: "session", supports: corpus.supports, reason: "between pages", topics: [], createdAt: time }] });
+      const otherScenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unexpected second-connection phase"); });
+      const other = sourceSeededMemory(dbPath, otherScenarios.agent);
+      const trigger = createDreamerTrigger(other, corpus.path, corpus.supports[0]!, 99, "session");
+      const changed = await otherScenarios.run(other, corpus.path, input => {
+        const request = { fixture: "between paged reads" }; input.reportRequest(request);
+        const trace = input.tools.find(tool => tool.name === "trace")!;
+        fullRead(trace, `K${last.knowledgeId}@${last.commit}`);
+        input.tools.find(tool => tool.name === "memory")!.execute({ operations: [
+          { op: "update", id: `K${last.knowledgeId}@${last.commit}`, text: "SEARCHNEEDLE later conclusion",
+            category: "mechanism", scope: "session", supports: corpus.supports.map(id => `F${id}`), reason: "between pages", topics: [] },
+          { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: corpus.supports.map(id => `F${id}`), reason: "Retire the explicit between-pages trigger." },
+        ], skipped: [] });
+        expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
+        return { outcome: "success", output: "between-pages revision complete", request };
+      });
       other.close();
-      if (!commit.ok) throw new Error(commit.problems.join("; "));
+      expect(changed.outcome).toBe("success");
       written = true;
     }
     page = memory.search("", "knowledge", { ...options, cursor });
@@ -187,8 +218,8 @@ test("22c: continuation is complete and stable, and a commit between pages moves
   expect(addresses(after)).toHaveLength(4);
 });
 
-test("a continuation nobody comes back for is dropped: sixteen are outstanding at once, the oldest expires", () => {
-  const corpus = knowledgeCorpus(4, 3);
+test("a continuation nobody comes back for is dropped: sixteen are outstanding at once, the oldest expires", async () => {
+  const corpus = await knowledgeCorpus(4, 3);
   const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, versions: "all" as const };
   const cursorOf = (page: string) => /cursor=(\S+)/.exec(page)![1]!;
   // Asking for page one and never asking for page two is ordinary use, so a remainder is a cache

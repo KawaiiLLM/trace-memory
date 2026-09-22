@@ -757,39 +757,33 @@ const seedFact = (f: Awaited<ReturnType<typeof fixture>>) => {
   recorded(f.h.memory, 1, "main", 1); // T1 recorded: F1 may enter the Consolidation batch
 };
 
-test("29e 2026-09-10 (cases 16/21): a Consolidation fork that overflows after its candidate restarts candidate and review on the same fact target, and each attempt keeps its own run record", async () => {
+test("29e 2026-09-10 (cases 16/21): a Consolidation fork that overflows before submission retries the same fact target in a fresh child", async () => {
   const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1,
     "consolidation.forkModeDefault": true, consolidationModel: "fake/test-mini" });
   try {
     f.script((body: Body) => {
       if (!worker(body, "Consolidation")) return say("好的。");
-      // The fork attempt: a candidate accepted for review, then the provider rejects the resubmission.
-      // Parent 29 "Preserve two submissions": that candidate is not a business commit, so this is a
-      // capacity refusal the host may re-admit — and the re-admitted run starts its review over.
-      if (!freshConsolidation(body)) return toolResults(body) ? rejected(OVERFLOW) : call("t1", "memory", memoryBatch, wireUsage(11, 3));
-      return toolResults(body) >= 2 ? say("Integrated.", wireUsage(7, 2)) : call(`t${toolResults(body)}`, "memory", memoryBatch, wireUsage(9, 4));
+      if (!freshConsolidation(body)) return rejected(OVERFLOW);
+      return toolResults(body) ? say("Integrated.", wireUsage(7, 2)) : call("t1", "memory", memoryBatch, wireUsage(9, 4));
     });
     await f.turn();
     seedFact(f);
     await f.turn("tick"); // a second real parent turn is the opportunity that admits the phase
     const [attempt, run] = await consolidationRecords(f, 2);
     const first = JSON.parse(attempt!.response!), response = JSON.parse(run!.response!);
-    // 27d, for this phase: the attempt is its own record, on the model it really ran on, and its
-    // candidate is audited there — a submission that committed nothing is still a sent round.
+    // 27d: the refused attempt is its own record on the model that really ran.
     expect([attempt!.mode, attempt!.outcome, attempt!.model]).toEqual(["fork", "failure", "fake/test"]);
     expect(first.requestedMode).toBe("fork");
     expect(first.problems.join(" ")).toContain(OVERFLOW);
-    expect(first.candidate).toBeTruthy();
-    expect(first.toolCalls.map((c: { name: string }) => c.name)).toEqual(["memory"]);
-    expect(first.committed).toBeUndefined(); // nothing was committed, which is why the fallback was allowed
+    expect(first.toolCalls).toEqual([]);
+    expect(first.committed).toBeUndefined();
     // 27c/29e: the re-admission runs fresh, on the CONFIGURED Consolidator model and its capacity.
     expect([run!.mode, run!.model]).toEqual(["subagent", "fake/test-mini"]);
     expect(response.requestedMode).toBe("fork");
     expect(response.fallbackReason).toContain("context overflow");
     expect(response.fallbackReason).toContain(`R${attempt!.id}`); // and names the attempt's own record
-    // The review really started over: candidate, guidance, then the answered resubmission.
-    expect(response.toolCalls.map((c: { name: string }) => c.name)).toEqual(["memory", "memory"]);
-    expect(JSON.stringify(f.sent.at(-2)!.messages.filter((m: Body) => m.role === "user").at(-1))).toContain("NEAR:");
+    expect(response.toolCalls.map((c: { name: string }) => c.name)).toEqual(["memory"]);
+    expect(JSON.stringify(f.sent)).not.toContain("NEAR:");
     // The same frozen fact target across both attempts, and the batch is consolidated once.
     expect([run!.rangeFrom, run!.rangeTo]).toEqual([attempt!.rangeFrom, attempt!.rangeTo]);
     expect(f.h.memory.store.consolidationBatch(1, "main", 1)).toEqual([]);

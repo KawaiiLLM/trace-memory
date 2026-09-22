@@ -1,8 +1,8 @@
-import { existsSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, readdirSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { bindingPath, readBinding, updateBinding, validateNativeSessionId, type CcExecutorBinding, type CcHookInput,
+import { bindingPath, coreHostOf, readBinding, updateBinding, validateNativeSessionId, type CcExecutorBinding, type CcHookInput,
   type CcSessionBinding } from "./binding.ts";
 import { CcImporter, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
 import { startControlServer, type CcControlServer } from "./control.ts";
@@ -34,6 +34,23 @@ const executorLiveness = (executor: CcExecutorBinding): "alive" | "dead" | "unkn
 };
 const samePath = (left: readonly number[], right: readonly number[]): boolean =>
   left.length === right.length && left.every((id, index) => id === right[index]);
+
+/** 63: every other native lineage bound to the same core session, read from the shared bindings
+ * directory. A best-effort scan: an unreadable sibling file is treated as no sibling, never a fault. */
+function siblingLineages(config: ResolvedCcHostConfig, coreSessionId: number, excludeNativeSessionId: string): CcSessionBinding[] {
+  let files: string[];
+  try { files = readdirSync(dirname(bindingPath(config, excludeNativeSessionId))); } catch { return []; }
+  const siblings: CcSessionBinding[] = [];
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    const nativeSessionId = file.slice(0, -".json".length);
+    if (nativeSessionId === excludeNativeSessionId) continue;
+    let binding: CcSessionBinding | null;
+    try { binding = readBinding(config, nativeSessionId); } catch { continue; }
+    if (binding && binding.coreSessionId === coreSessionId) siblings.push(binding);
+  }
+  return siblings;
+}
 
 /** SessionEnd records native close metadata only. It validates but never imports the authoritative persisted projection. */
 export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: CcHookInput): Promise<CcSessionEndResult> {
@@ -93,13 +110,14 @@ export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: Cc
   const store = new Store(config.dbPath);
   try {
     if (imported.coreSessionId === null) return unconfirmed("CC binding has no allocated core session", expected);
-    const selectedEntryIds = selected.records.flatMap(record => {
+    // 63: a cleared-into session's path starts with the prefix inherited from its parent.
+    const selectedEntryIds = [...imported.clearedFrom?.inheritedEntryIds ?? [], ...selected.records.flatMap(record => {
       const source = classifySourceRecord(record);
       if (!source || source.kind === "compaction") return [];
       const entry = store.findSourceEntry(imported.coreSessionId!, nativeSessionId, source.nativeId);
       return entry ? [entry.id] : [];
-    });
-    const expectedSources = selected.records.filter(record => {
+    })];
+    const expectedSources = (imported.clearedFrom?.inheritedEntryIds.length ?? 0) + selected.records.filter(record => {
       const source = classifySourceRecord(record); return source !== null && source.kind !== "compaction";
     }).length;
     const storedPath = store.selectedSourceEntryIds(imported.coreSessionId, imported.branch);
@@ -114,10 +132,18 @@ export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: Cc
           !samePath(store.selectedSourceEntryIds(current.coreSessionId, current.branch) ?? [], selectedEntryIds))
         throw new Error("CC selected projection changed during SessionEnd close");
       const session = store.getSession(current.coreSessionId);
-      if (!session || session.host !== `cc:${nativeSessionId}`) throw new Error("bound core session identity changed during SessionEnd close");
+      if (!session || session.host !== coreHostOf(current)) throw new Error("bound core session identity changed during SessionEnd close");
+      const head = store.getSourceEntry(selectedEntryIds.at(-1)!)?.turnId;
+      if (head === undefined) throw new Error("CC selected projection has no persisted foreground head");
+      // 63: another lineage of the same core session (this one's `clearedFrom` parent, or a lineage
+      // cleared from it) may still have a live executor; this close releases only its own and the
+      // core session stays open until the last live lineage ends.
+      const liveSibling = siblingLineages(config, current.coreSessionId, nativeSessionId)
+        .some(sibling => sibling.executor && executorLiveness(sibling.executor) !== "dead");
       store.transaction(() => {
+        store.setCurrentPath(current.coreSessionId!, current.branch, head, nativeSessionId);
         store.releaseExecutor(expected.executorId);
-        if (session.closedAt === null) store.closeSession(current.coreSessionId!);
+        if (session.closedAt === null && !liveSibling) store.closeSession(current.coreSessionId!);
       });
       return { ...current, executor: null, lastClose: { at: new Date().toISOString(), reason, confirmed: true } };
     }, Math.max(1, deadline - Date.now()));
@@ -141,7 +167,8 @@ export class CcCoordinator {
   private closed = false;
   private readonly startup = new AbortController();
   private readonly config: ResolvedCcHostConfig;
-  readonly nativeSessionId: string;
+  /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
+  nativeSessionId: string;
   private readonly diagnostic: CcDiagnostic;
 
   constructor(config: ResolvedCcHostConfig, nativeSessionId: string,
@@ -160,7 +187,7 @@ export class CcCoordinator {
     if (!binding) return;
     this.observe("attach-start", { final });
     this.importer = new CcImporter(this.config, binding);
-    this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.importer.workerCapacity, this.diagnostic);
+    this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic);
     try {
       const timeout = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
       await startControlServer(this.config, binding, this.importer.memory, timeout, final ? undefined : this.startup.signal, {
@@ -199,9 +226,9 @@ export class CcCoordinator {
     this.observe("startup-begin");
     const bindingDirectory = dirname(bindingPath(this.config, this.nativeSessionId));
     if (existsSync(bindingDirectory)) {
-      const bindingName = basename(bindingPath(this.config, this.nativeSessionId));
+      // The name is read at event time: an adoption (65) re-targets the watch without reopening it.
       this.bindingWatcher = watch(bindingDirectory, (_event, filename) => {
-        if (String(filename) === bindingName) void this.requestReconcile("binding watch");
+        if (String(filename) === basename(bindingPath(this.config, this.nativeSessionId))) void this.requestReconcile("binding watch");
       });
       this.bindingWatcher.on("error", error => {
         this.diagnostic(`binding watch failed: ${String(error)}; stat wake-up remains active`);
@@ -211,6 +238,46 @@ export class CcCoordinator {
     this.poll = setInterval(() => { void this.requestReconcile("stat wake-up"); }, this.config.pollIntervalMs);
     await this.requestReconcile("startup");
     this.observe("startup-complete");
+  }
+
+  /** 65: follow the SessionStart Hook's session id while no binding has been attached. Returns false
+   * once attached — re-targeting a live facade is the handoff of ticket 63, not a rename. */
+  adoptNativeSessionId(nativeSessionId: string): boolean {
+    validateNativeSessionId(nativeSessionId);
+    if (nativeSessionId === this.nativeSessionId) return true;
+    if (this.importer || this.closing || this.closed) return false;
+    const previous = this.nativeSessionId;
+    this.nativeSessionId = nativeSessionId;
+    this.observe("session-id-adopted", { from: previous, to: nativeSessionId });
+    if (this.poll) void this.requestReconcile("session adoption");
+    return true;
+  }
+
+  /** 63: serve the native session this one was cleared into — same facade, same core session, new
+   * lineage. Runs on the reconcile queue so no import is in flight while the projection is swapped.
+   * Returns false when the target is not a clear-child of the current session. */
+  retargetTo(nativeSessionId: string): Promise<boolean> {
+    validateNativeSessionId(nativeSessionId);
+    const done = this.queue.then(async () => {
+      if (this.closed || this.closing || !this.importer || !this.control) return false;
+      const current = this.importer.currentBinding(), next = readBinding(this.config, nativeSessionId);
+      if (!next || next.clearedFrom?.nativeSessionId !== current.nativeSessionId || next.coreSessionId !== current.coreSessionId) return false;
+      this.observe("retarget-start", { from: current.nativeSessionId, to: nativeSessionId });
+      this.transcriptWatcher?.close(); this.transcriptWatcher = null;
+      await this.control.retarget(next);
+      this.importer.retarget(next);
+      this.nativeSessionId = nativeSessionId;
+      this.watchTranscript(next);
+      this.observe("retarget-complete", { to: nativeSessionId });
+      return true;
+    }).then(result => result, error => {
+      this.diagnostic(`retarget to ${nativeSessionId} failed: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    });
+    this.queue = done.then(() => null);
+    const result = done;
+    void result.then(retargeted => { if (retargeted) void this.requestReconcile("retarget"); });
+    return result;
   }
 
   requestReconcile(reason: string, final = false, deadline?: number): Promise<CcReconcileResult | null> {

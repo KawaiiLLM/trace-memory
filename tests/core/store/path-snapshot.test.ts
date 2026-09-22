@@ -69,7 +69,7 @@ test("22a: applicability is answered from one membership per operation, whatever
       measure(() => memory.branchSummary(large.session.id, "main", large.path.headTurnId!))],
     [measure(() => memory.store.citationProblem(small.facts.map(f => f.id), "session", small.path)),
       measure(() => memory.store.citationProblem(large.facts.map(f => f.id), "session", large.path))],
-    [measure(() => memory.store.listCurrentKnowledge(small.path)), measure(() => memory.store.listCurrentKnowledge(large.path))],
+    [measure(() => memory.store.currentKnowledge(small.path)), measure(() => memory.store.currentKnowledge(large.path))],
   ]) {
     expect(a).toBe(b); // twice the facts, the same number of path builds
     expect(a).toBeLessThanOrEqual(3);
@@ -84,7 +84,7 @@ test("22a: an identity question loads no Raw payload, and rendering reads each e
   expect(measure(() => memory.store.listBranchFacts(session.id, "main", path.headTurnId))).toBe(0);
   expect(measure(() => memory.store.consolidationBatch(session.id, "main", path.headTurnId!))).toBe(0);
   expect(measure(() => memory.store.citationProblem([1, 2], "session", path))).toBe(0);
-  expect(measure(() => memory.store.listCurrentKnowledge(path))).toBe(0);
+  expect(measure(() => memory.store.currentKnowledge(path))).toBe(0);
   // Branch carry renders the pending entries, so it reads them — once each, not once per fact.
   expect(measure(() => memory.branchSummary(session.id, "main", path.headTurnId!))).toBeLessThanOrEqual(entries.length);
   reads.restore();
@@ -134,7 +134,7 @@ test("32b performance: batch and ordinary applicability agree for bindings, fall
   if (!archived.ok) throw Error(archived.problems.join());
   // Both public status counts must describe the same selected path, including a rewind or no head.
   for (const p of [path, siblingPath, { ...path, headTurnId: turnIds[0]! }, { ...path, headTurnId: null }]) {
-    const count = store.listCurrentKnowledge(p).length;
+    const count = store.currentKnowledge(p).length;
     const status = memory.status(session.id, p.branch, p.headTurnId);
     expect(status).toContain(`${count} current knowledge (imported evidence on this branch)`);
     expect(status).toContain(`Knowledge: ${count} visible active`);
@@ -152,8 +152,27 @@ test("32b performance: batch and ordinary applicability agree for bindings, fall
     for (const f of [...facts, ...noted.facts, ...foreign.facts])
       expect(store.factOnPath(f, p, store.pathSnapshot(p), input.metadata)).toBe(store.factOnPath(f, p));
   }
-  expect(store.commitGraph(path).current.map(r => r.id)).toContain(base.id);
-  expect(store.commitGraph(siblingPath).current.map(r => r.id)).not.toContain(base.id);
+  // Before the owner has published a foreground, P1 admits facts from both historical branches,
+  // so the sibling archive applies identically to both readers.
+  for (const reader of [path, siblingPath]) {
+    const graph = store.commitGraph(reader);
+    expect(graph.applicable).toContain(archived.committed[0]!.commit);
+    expect(graph.current.map(r => r.id)).not.toContain(base.id);
+  }
+
+  // Once published, the owner's foreground — not the reader's path — controls Knowledge support.
+  store.setCurrentPath(session.id, path.branch!, path.headTurnId!, "test-lineage");
+  for (const reader of [path, siblingPath]) {
+    const graph = store.commitGraph(reader);
+    expect(graph.applicable).not.toContain(archived.committed[0]!.commit);
+    expect(graph.current.map(r => r.id)).toContain(base.id);
+  }
+  store.setCurrentPath(session.id, siblingPath.branch!, siblingPath.headTurnId!, "test-lineage");
+  for (const reader of [path, siblingPath]) {
+    const graph = store.commitGraph(reader);
+    expect(graph.applicable).toContain(archived.committed[0]!.commit);
+    expect(graph.current.map(r => r.id)).not.toContain(base.id);
+  }
 });
 
 test("22a: a snapshot never outlives its operation, so another connection's writes are seen", () => {

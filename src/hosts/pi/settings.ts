@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { CONFIG_ALIASES, CONFIG_SECTIONS, DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type ConfigOverride, type ClosedSessionScope } from "../../core/api/index.ts";
-import { THINKING_LEVELS } from "./native.ts";
+import { PHASE_SETTING_KEYS, THINKING_LEVELS } from "../phase-settings.ts";
 
 /** The section of a Pi settings file this extension owns, and its status/entry identity in the host. */
 export const tag = "trace-memory";
@@ -36,9 +36,10 @@ function settings(cwd: string, agentDir = agentDirectory()) {
 // 26d added `notingThinking`/`consolidationThinking`: each phase's configured worker thinking level,
 // `inherit` (the default) or one of Pi's own levels. Subagent execution only — a fork keeps
 // inheriting the foreground level 26b freezes, so its request prefix still matches the parent's.
-const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir", "notingThinking", "consolidationThinking", "dreaming.model", "dreaming.thinking"];
+const phaseSettingKeys = Object.values(PHASE_SETTING_KEYS).flatMap(keys => [keys.model, keys.thinking]);
+const hostStrings = ["dbPath", "runsDir", ...phaseSettingKeys];
 export const thinkingChoices = ["inherit", ...THINKING_LEVELS];
-const thinkingKeys = ["notingThinking", "consolidationThinking", "dreaming.thinking"];
+const thinkingKeys = Object.values(PHASE_SETTING_KEYS).map(keys => keys.thinking);
 /** One flat `section.key` layer, checked exactly as the load path checks it: every known section key
  * typed against its default, unknown keys and misspellings rejected by name, host strings required to
  * be strings, and core's own `validateConfig` over the result. 24b's settings writer validates the
@@ -132,13 +133,13 @@ export function writeGlobal(settingsFile: string, key: string, value: string | b
 export type Preference = { name: string; key: string } & ({ phase: "noting" | "consolidation"; kind: "mode" | "model" | "thinking" } | { phase: "dreaming"; kind: "model" | "thinking" } | { phase?: never; kind: "scope" });
 export const preferences: Preference[] = [
   { name: "Noter mode", key: "noting.forkModeDefault", phase: "noting", kind: "mode" },
-  { name: "Noter model", key: "notingModel", phase: "noting", kind: "model" },
-  { name: "Noter thinking", key: "notingThinking", phase: "noting", kind: "thinking" },
+  { name: "Noter model", key: PHASE_SETTING_KEYS.noting.model, phase: "noting", kind: "model" },
+  { name: "Noter thinking", key: PHASE_SETTING_KEYS.noting.thinking, phase: "noting", kind: "thinking" },
   { name: "Consolidator mode", key: "consolidation.forkModeDefault", phase: "consolidation", kind: "mode" },
-  { name: "Consolidator model", key: "consolidationModel", phase: "consolidation", kind: "model" },
-  { name: "Consolidator thinking", key: "consolidationThinking", phase: "consolidation", kind: "thinking" },
-  { name: "Dreamer model", key: "dreaming.model", phase: "dreaming", kind: "model" },
-  { name: "Dreamer thinking", key: "dreaming.thinking", phase: "dreaming", kind: "thinking" },
+  { name: "Consolidator model", key: PHASE_SETTING_KEYS.consolidation.model, phase: "consolidation", kind: "model" },
+  { name: "Consolidator thinking", key: PHASE_SETTING_KEYS.consolidation.thinking, phase: "consolidation", kind: "thinking" },
+  { name: "Dreamer model", key: PHASE_SETTING_KEYS.dreaming.model, phase: "dreaming", kind: "model" },
+  { name: "Dreamer thinking", key: PHASE_SETTING_KEYS.dreaming.thinking, phase: "dreaming", kind: "thinking" },
   { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
 ];
 // Each phase stores "runs in fork mode": one preference reads that boolean without inventing a second

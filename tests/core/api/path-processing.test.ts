@@ -1,417 +1,167 @@
 import { afterEach, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
+import { TraceMemory } from "../../../src/core/api/index.ts";
+import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { skipRest } from "../../dreaming-skips.ts";
 
-const memories: ReturnType<typeof TraceMemory>[] = [], dirs: string[] = [];
-afterEach(() => {
-  for (const memory of memories.splice(0)) if (!memory.store.closed) memory.close();
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+const memories: ReturnType<typeof TraceMemory>[] = [];
+afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 const at = "2026-09-12T00:00:00.000Z";
 const success = { outcome: "success", output: "reviewed", request: { exact: "offline" } } as const;
+type Branch = "root" | "left" | "right";
+type Operation = "archive" | "split" | "merge-into" | "merge-absorb";
 
-function pathFixture(agent: (task: DreamingAgentInput) => Promise<typeof success> = async () => success, seedOlderSurvivor = false) {
-  const dir = mkdtempSync(join(tmpdir(), "tm-34b-path-")); dirs.push(dir);
-  const db = join(dir, "memory.sqlite");
-  let runAgent = agent;
-  const memory = TraceMemory(db, task => runAgent(task as DreamingAgentInput), { dreaming: { triggerTokens: 1 } }); memories.push(memory);
+function pathFixture(seedOlderSurvivor = false) {
+  const scenarios = new AdmittedDreamerScenarios(async () => success);
+  const memory = TraceMemory(":memory:", scenarios.agent); memories.push(memory);
   const store = memory.store;
   const project = store.createProject({ name: "shared", declaredBy: "mark" });
   const session = store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
   const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "root", startedAt: at });
-  const append = (nativeId: string, text = nativeId) => memory.appendEntry({ sessionId: session.id, turnId: turn.id,
-    nativeLineage: "native", nativeId, role: "user", text, raw: JSON.stringify({ role: "user", content: text }), calls: [] });
+  const append = (nativeId: string) => memory.appendEntry({ sessionId: session.id, turnId: turn.id,
+    nativeLineage: "native", nativeId, role: "user", text: nativeId, raw: nativeId, calls: [] });
   const root = append("root"), left = append("left"), right = append("right");
   memory.selectEntries(session.id, "root", [root.id]);
   memory.selectEntries(session.id, "left", [root.id, left.id]);
   memory.selectEntries(session.id, "right", [root.id, right.id]);
-  const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: at }, facts: [{
-    turnId: turn.id, entryIds: [root.id], category: "decision", actor: "user", text: "shared evidence", source: [`T${turn.id}#E1`], createdAt: at,
+  const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: at }, facts: [{
+    turnId: turn.id, entryIds: [root.id], category: "decision", actor: "user", text: "shared evidence",
+    source: [`T${turn.id}#E${root.entryOrdinal}`], createdAt: at,
   }] });
-  if (!facts.ok) throw new Error(facts.problems.join("; "));
-  const fact = facts.facts[0]!.id;
-  const path = (branch: "root" | "left" | "right", triggerEntryId: number) => ({ kind: "manual" as const,
-    sessionId: session.id, branch, currentTurnId: turn.id, triggerEntryId });
-  const write = (branch: "root" | "left" | "right", triggerEntryId: number, input: unknown) => {
-    const tools = memory.tools(path(branch, triggerEntryId));
-    return { trace: tools.find(tool => tool.name === "trace")!, memory: tools.find(tool => tool.name === "memory")!, input };
-  };
-  const writer = write("root", root.id, {}).memory;
-  const older = seedOlderSurvivor ? JSON.parse(writer.execute({ operations: [{ op: "create", text: "older survivor", category: "constraint", scope: "project",
-    supports: [`F${fact}`], topics: [], reason: "older identity" }], skipped: [] })).committed[0] as { knowledgeId: number; commit: number } : undefined;
-  const initial = writer.execute({ operations: [{ op: "create", text: "base", category: "constraint", scope: "project",
-    supports: [`F${fact}`], topics: [], reason: "initial" }], skipped: [] });
-  const base = JSON.parse(initial).committed[0] as { knowledgeId: number; commit: number };
-  return { memory, store, db, project, session, turn, root, left, right, fact, older, base, path, write,
-    setAgent: (next: typeof agent) => { runAgent = next; } };
-}
-
-function update(f: ReturnType<typeof pathFixture>, branch: "root" | "left" | "right", trigger: number, text: string) {
-  const bound = f.write(branch, trigger, {});
-  bound.trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-  return bound.memory.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`, text,
-    category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: text }], skipped: [] });
-}
-
-test("34b: shared-evidence sibling origins may consume one base, while equal and ancestor origins cannot", () => {
-  const f = pathFixture();
-  const left = update(f, "left", f.left.id, "left result");
-  expect(left).not.toContain("rejected:");
-  const right = update(f, "right", f.right.id, "right result");
-  expect(right).not.toContain("rejected:");
-  expect(f.store.currentCommit(f.base.knowledgeId, { sessionId: f.session.id, branch: "right", headTurnId: f.turn.id })).toHaveLength(2);
-
-  expect(update(f, "right", f.right.id, "equal-origin competitor")).toContain("competing consuming successor");
-  expect(update(f, "root", f.root.id, "ancestor-origin competitor")).toContain("competing consuming successor");
-  expect(f.store.listKnowledgeRevisions(f.base.knowledgeId).map(revision => revision.text)).toEqual(["base", "left result", "right result"]);
-});
-
-test.each(["update", "archive", "split", "merge-into", "merge-absorb"] as const)(
-  "34b: %s consumption blocks a comparable base but permits a divergent sibling", async operation => {
-    const f = pathFixture(undefined, operation === "merge-absorb");
-    const origin = f.store.triggerOrigin({ sessionId: f.session.id, branch: "left", headTurnId: f.turn.id }, f.left.id);
-    const run = () => f.store.bindRunOrigin({ kind: "manual" as const, sessionId: f.session.id, branch: "left", createdAt: at }, origin);
-    const content = { text: `${operation} result`, category: "constraint" as const, scope: "project" as const,
-      supports: [f.fact], topics: [], reason: operation, createdAt: at };
-    let result;
-    if (operation === "update") result = f.store.commitConsolidationRun({ path: { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id },
-      run: run(), operations: [{ op: "update", knowledgeId: f.base.knowledgeId, baseCommit: f.base.commit, ...content }] });
-    else if (operation === "archive") result = f.store.commitConsolidationRun({ path: { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id },
-      run: run(), operations: [{ op: "archive", knowledgeId: f.base.knowledgeId, baseCommit: f.base.commit,
-        supports: [f.fact], reason: operation, createdAt: at }] });
-    else if (operation === "split") {
-      f.setAgent(async task => {
-        const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "split",
-          id: `K${f.base.knowledgeId}@${f.base.commit}`, children: [{ text: "split one", category: "constraint", topics: [] },
-            { text: "split two", category: "constraint", topics: [] }], supports: [`F${f.fact}`], reason: operation }], skipped: [] }));
-        expect(receipt.committed).toHaveLength(2);
-        return success;
-      });
-      expect((await f.memory.dream({ sessionId: f.session.id, branch: "left", headTurnId: f.turn.id, triggerEntryId: f.left.id })).outcome).toBe("success");
-      result = { ok: true, problems: [] };
-    }
-    else {
-      const created = operation === "merge-into" ? f.store.commitConsolidationRun({ run: run(), operations: [{ op: "create", handle: "$absorbed", author: "test", ...content }] }) : undefined;
-      if (created && !created.ok) throw new Error(created.problems.join("; "));
-      const other = operation === "merge-into" ? created!.committed[0]! : f.older!;
-      // Ticket 44: merge-absorb seeds an older survivor before the target base; no reverse merge fixture bypasses the store rule.
-      result = f.store.commitConsolidationRun({ path: { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id }, run: run(), operations: [{ op: "merge",
-        intoKnowledgeId: operation === "merge-into" ? f.base.knowledgeId : other.knowledgeId,
-        intoBaseCommit: operation === "merge-into" ? f.base.commit : other.commit,
-        absorb: [{ knowledgeId: operation === "merge-into" ? other.knowledgeId : f.base.knowledgeId,
-          baseCommit: operation === "merge-into" ? other.commit : f.base.commit }], ...content }] });
-    }
+  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const fact = noted.facts[0]!.id;
+  const branchFacts = { root: fact } as Record<Branch, number>;
+  for (const branch of ["left", "right"] as const) {
+    const entry = { left, right }[branch];
+    const result = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch, createdAt: at }, facts: [{
+      turnId: turn.id, entryIds: [entry.id], category: "decision", actor: "user", text: `${branch} evidence`,
+      source: [`T${turn.id}#E${entry.entryOrdinal}`], createdAt: at,
+    }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
-    expect(update(f, "left", f.left.id, "comparable competitor")).toContain("competing consuming successor");
-    expect(update(f, "right", f.right.id, "divergent result")).not.toContain("rejected:");
+    branchFacts[branch] = result.facts[0]!.id;
+  }
+  const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "root", currentTurnId: turn.id, triggerEntryId: root.id });
+  const create = (text: string) => JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text,
+    category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: `Create ${text}.` }], skipped: [] })).committed[0] as { knowledgeId: number; commit: number };
+  const older = seedOlderSurvivor ? create("older survivor") : undefined;
+  const base = create("base");
+  const entries = { root, left, right };
+  const path = (branch: Branch) => ({ sessionId: session.id, branch, headTurnId: turn.id, triggerEntryId: entries[branch].id });
+  return { memory, scenarios, store, project, session, turn, entries, fact, branchFacts, older, base, path, create };
+}
+
+async function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, sequence: number,
+  operation: Operation | "update", text: string) {
+  const path = f.path(branch);
+  f.store.setCurrentPath(f.session.id, branch, f.turn.id, "test-lineage");
+  const mergeOther = operation === "merge-into" ? f.create("merge peer") : f.older;
+  const trigger = createDreamerTrigger(f.memory, path, f.fact, sequence);
+  const currentTriggers = f.store.currentKnowledge(path).filter(item => item.revision.text.startsWith("Fixture trigger"));
+  const result = await f.scenarios.run(f.memory, path, async input => {
+    const request = { operation, branch, trigger }; input.reportRequest(request);
+    const trace = input.tools.find(tool => tool.name === "trace")!;
+    const write = input.tools.find(tool => tool.name === "memory")!;
+    trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
+    for (const item of currentTriggers) trace.execute({ address: `K${item.knowledge.id}@${item.revision.id}`, itemBudget: null, pageBudget: 8_000 });
+    const common = { text, category: "constraint", scope: "project", supports: [`F${f.branchFacts[branch]}`], topics: [], reason: `${operation} on ${branch}.` };
+    let operationInput: Record<string, unknown>;
+    if (operation === "archive") operationInput = { op: "archive", id: `K${f.base.knowledgeId}@${f.base.commit}`, supports: common.supports, reason: common.reason };
+    else if (operation === "split") operationInput = { op: "split", id: `K${f.base.knowledgeId}@${f.base.commit}`, supports: common.supports, reason: common.reason,
+      children: [{ text: `${text} one`, category: "constraint", topics: [] }, { text: `${text} two`, category: "constraint", topics: [] }] };
+    else if (operation === "merge-into") {
+      const other = mergeOther ?? (() => { throw new Error("missing merge identity"); })();
+      trace.execute({ address: `K${other.knowledgeId}@${other.commit}`, itemBudget: null });
+      operationInput = { op: "merge", id: `K${f.base.knowledgeId}@${f.base.commit}`, absorb: [`K${other.knowledgeId}@${other.commit}`], ...common };
+    } else if (operation === "merge-absorb") {
+      const survivor = f.older ?? (() => { throw new Error("missing older survivor"); })();
+      trace.execute({ address: `K${survivor.knowledgeId}@${survivor.commit}`, itemBudget: null });
+      operationInput = { op: "merge", id: `K${survivor.knowledgeId}@${survivor.commit}`, absorb: [`K${f.base.knowledgeId}@${f.base.commit}`], ...common };
+    } else operationInput = { op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`, ...common };
+    const receipt = write.execute({ operations: [operationInput, ...currentTriggers.map(item => ({ op: "archive",
+      id: `K${item.knowledge.id}@${item.revision.id}`, supports: [], reason: "Retire explicit trigger." }))], skipped: [] });
+    expect(receipt).toContain('"committed"');
+    const consumed = [`K${f.base.knowledgeId}@${f.base.commit}`,
+      ...currentTriggers.map(item => `K${item.knowledge.id}@${item.revision.id}`)];
+    if (operation === "merge-into" && mergeOther) consumed.push(`K${mergeOther.knowledgeId}@${mergeOther.commit}`);
+    if (operation === "merge-absorb" && f.older) consumed.push(`K${f.older.knowledgeId}@${f.older.commit}`);
+    skipRest(input, consumed);
+    return { ...success, request };
+  });
+  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
+  return result;
+}
+
+// The old update-origin test is retired: ticket-64b.test.ts proves divergent updates and their multi-parent join.
+test.each(["archive", "split", "merge-into", "merge-absorb"] as const)(
+  "64b: %s uses the owner foreground for current-base and divergent behavior", async operation => {
+    const f = pathFixture(operation === "merge-absorb");
+    await runOperation(f, "left", 1, operation, `${operation} result`);
+    const leftPath = f.path("left");
+    const stale = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "left", currentTurnId: f.turn.id, triggerEntryId: f.entries.left.id });
+    stale.find(tool => tool.name === "trace")!.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
+    expect(stale.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", id: `K${f.base.knowledgeId}@${f.base.commit}`,
+      supports: [`F${f.fact}`], reason: "Probe the stale base." }], skipped: [] })).toContain("base is not the latest effective applicable revision");
+    await runOperation(f, "right", 2, "update", `${operation} divergent result`);
+    expect(f.store.currentCommit(f.base.knowledgeId, f.path("right"))[0]!.text).toBe(`${operation} divergent result`);
   },
 );
 
-test("34b: comparable origin rejects a successor whose later evidence is inapplicable at the losing origin", () => {
+test("64b: publishing the owner foreground restores an off-path base for every reader", async () => {
   const f = pathFixture();
-  const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, branch: "left", createdAt: at }, facts: [{
-    turnId: f.turn.id, entryIds: [f.left.id], category: "decision", actor: "user", text: "left-only", source: [`T${f.turn.id}#E2`], createdAt: at,
-  }] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const left = f.memory.tools(f.path("left", f.left.id));
-  left.find(tool => tool.name === "trace")!.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-  const committed = left.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
-    text: "left only", category: "constraint", scope: "project", supports: [`F${noted.facts[0]!.id}`], topics: [], reason: "left" }], skipped: [] });
-  expect(committed).not.toContain("rejected:");
-  const leftCommit = JSON.parse(committed).committed[0].commit as number;
-  expect(f.store.currentCommit(f.base.knowledgeId, { sessionId: f.session.id, branch: "root", headTurnId: f.turn.id }).map(revision => revision.id))
-    .toEqual([f.base.commit]);
-  const refused = update(f, "root", f.root.id, "ancestor competitor");
-  expect(refused).toContain("competing consuming successor");
-  expect(refused).toContain(`K${f.base.knowledgeId}@${leftCommit}`);
-  expect(refused).toContain("no applicable successor exists at the frozen writer path");
-  expect(refused).not.toContain("re-read");
+  await runOperation(f, "left", 1, "update", "left-only successor");
+  expect(f.store.currentCommit(f.base.knowledgeId, f.path("left"))[0]!.text).toBe("left-only successor");
+
+  f.store.setCurrentPath(f.session.id, "root", f.turn.id, "test-lineage");
+  expect(f.store.currentCommit(f.base.knowledgeId, f.path("left")).map(revision => revision.id)).toEqual([f.base.commit]);
+  expect(f.store.currentCommit(f.base.knowledgeId, f.path("right")).map(revision => revision.id)).toEqual([f.base.commit]);
+  await runOperation(f, "root", 2, "update", "restored base correction");
+  expect(f.store.currentCommit(f.base.knowledgeId, f.path("right"))[0]!.text).toBe("restored base correction");
 });
 
-test.each(["missing run", "missing session"] as const)("34b: %s provenance rejects the affected stale write atomically, regardless of successor applicability", missing => {
-  for (const applicable of [false, true]) {
-    const f = pathFixture();
-    const support = applicable ? f.fact : (() => {
-      const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, branch: "left", createdAt: at }, facts: [{
-        turnId: f.turn.id, entryIds: [f.left.id], category: "decision", actor: "user", text: "left-only provenance case",
-        source: [`T${f.turn.id}#E2`], createdAt: at,
-      }] });
-      if (!noted.ok) throw new Error(noted.problems.join("; "));
-      return noted.facts[0]!.id;
-    })();
-    const left = f.memory.tools(f.path("left", f.left.id));
-    left.find(tool => tool.name === "trace")!.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-    const written = left.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
-      text: applicable ? "shared successor" : "left-only successor", category: "constraint", scope: "project",
-      supports: [`F${support}`], topics: [], reason: "first consumer" }], skipped: [] });
-    const successor = JSON.parse(written).committed[0].commit as number;
-    const revision = f.store.knowledgeRevision(successor)!;
-    if (missing === "missing run") f.store.db.prepare("UPDATE knowledge_revisions SET run_id = NULL WHERE id = ?").run(successor);
-    else f.store.db.prepare("UPDATE runs SET session_id = NULL WHERE id = ?").run(revision.runId!);
-
-    const root = f.write("root", f.root.id, {});
-    root.trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-    const beforeKnowledge = f.store.db.prepare("SELECT count(*) count FROM knowledge").get()!.count;
-    const beforeRevisions = f.store.listKnowledgeRevisions().length;
-    const rejected = root.memory.execute({ operations: [
-      { op: "create", text: "must roll back", category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: "rollback probe" },
-      { op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`, text: "must reject", category: "constraint", scope: "project",
-        supports: [`F${f.fact}`], topics: [], reason: "stale write" },
-    ], skipped: [] });
-    expect(rejected).toContain("cannot determine target-session provenance");
-    expect(rejected).toContain(`K${f.base.knowledgeId}@${f.base.commit}`);
-    expect(f.store.db.prepare("SELECT count(*) count FROM knowledge").get()!.count).toBe(beforeKnowledge);
-    expect(f.store.listKnowledgeRevisions()).toHaveLength(beforeRevisions);
-    expect(f.store.knowledgeRevision(successor)?.text).toBe(applicable ? "shared successor" : "left-only successor");
+test.each([false, true])("64b: stale Dreamer completion fails unless corrected (corrected=%s)", async (corrected) => {
+  const f = pathFixture();
+  const path = f.path("left");
+  f.store.setCurrentPath(f.session.id, "left", f.turn.id, "test-lineage");
+  const trigger = createDreamerTrigger(f.memory, path, f.fact, 1);
+  const result = await f.scenarios.run(f.memory, path, input => {
+    const trace = input.tools.find(tool => tool.name === "trace")!;
+    const write = input.tools.find(tool => tool.name === "memory")!;
+    trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
+    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null, pageBudget: 8_000 });
+    const first = JSON.parse(write.execute({ operations: [
+      { op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`, text: "first successor", category: "constraint",
+        scope: "project", supports: [], topics: [], reason: "First maintenance." },
+      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [], reason: "Retire explicit trigger." },
+    ], skipped: [] })).committed[0] as { commit: number };
+    const stale = write.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
+      text: "unresolved stale submission", category: "constraint", scope: "project", supports: [], topics: [], reason: "Must fail." }], skipped: [] });
+    expect(stale).toContain(`base is not the latest effective applicable revision; current: K${f.base.knowledgeId}@${first.commit}`);
+    expect(stale).not.toContain("skipped");
+    if (!corrected) return success;
+    trace.execute({ address: `K${f.base.knowledgeId}@${first.commit}`, itemBudget: null });
+    expect(write.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${first.commit}`,
+      text: "corrected successor", category: "constraint", scope: "project", supports: [], topics: [], reason: "Reread and correct." }], skipped: [] }))
+      .toContain('"committed"');
+    return success;
+  });
+  expect(result.outcome).toBe(corrected ? "success" : "failure");
+  if (!corrected) {
+    if (result.outcome !== "failure") throw new Error("unresolved stale submission must fail completion");
+    expect(result.problems.join("\n")).toContain("base is not the latest effective applicable revision");
   }
+  expect(f.store.currentCommit(f.base.knowledgeId, path)[0]!.text).toBe(corrected ? "corrected successor" : "first successor");
 });
 
-test("34b: proven independent sessions keep the applicability guard even when the prior origin is unknown", () => {
-  const f = pathFixture();
-  const other = TraceMemory(f.db, async () => success); memories.push(other);
-  const session = other.store.createSession({ host: "other", projectId: f.project.id, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
-  const turn = other.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "other", startedAt: at });
-  const entry = other.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "other", nativeId: "other-root", role: "user", text: "other", raw: "{}", calls: [] });
-  other.selectEntries(session.id, "main", [entry.id]);
-  const origin = other.store.triggerOrigin({ sessionId: session.id, branch: "main", headTurnId: turn.id }, entry.id);
-  const run = other.store.bindRunOrigin({ kind: "manual" as const, sessionId: session.id, branch: "main", createdAt: at }, origin);
-  const successor = other.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id }, run,
-    operations: [{ op: "update", knowledgeId: f.base.knowledgeId, baseCommit: f.base.commit, text: "independent applicable successor",
-      category: "constraint", scope: "project", supports: [f.fact], topics: [], reason: "independent", createdAt: at }] });
-  if (!successor.ok) throw new Error(successor.problems.join("; "));
-  const runId = other.store.knowledgeRevision(successor.committed[0]!.commit)!.runId!;
-  other.store.db.prepare("UPDATE runs SET origin_session_id = NULL, origin_entry_ids = NULL WHERE id = ?").run(runId);
-
-  const root = f.write("root", f.root.id, {});
-  root.trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-  const rejected = root.memory.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
-    text: "cross-session stale", category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: "stale" }], skipped: [] });
-  expect(rejected).toContain("applicable consuming successor from independent target session");
-  expect(rejected).not.toContain("cannot determine target-session provenance");
-});
-
-test("34b: an applicable independent-session successor retains the stale-base refusal", () => {
-  const f = pathFixture();
-  const committed = update(f, "left", f.left.id, "left result");
-  expect(committed).not.toContain("rejected:");
-  const successor = JSON.parse(committed).committed[0].commit as number;
-  const other = TraceMemory(f.db, async () => success); memories.push(other);
-  const session = other.store.createSession({ host: "other", projectId: f.project.id, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
-  const turn = other.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "other", startedAt: at });
-  const entry = other.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "other", nativeId: "root", role: "user", text: "other", raw: "{}", calls: [] });
-  other.selectEntries(session.id, "main", [entry.id]);
-  const tools = other.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id, triggerEntryId: entry.id });
-  tools.find(tool => tool.name === "trace")!.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-  const result = tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
-    text: "independent competitor", category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: "compete" }], skipped: [] });
-  expect(result).toContain("applicable consuming successor from independent target session");
-  expect(result).toContain(`current: K${f.base.knowledgeId}@${successor}`);
-  expect(result).toContain("re-read the exact current K@commit and resubmit");
-});
-
-test("34b: a consumed supplied event succeeds with exact settlement and no adopted certificate", async () => {
-  let release!: () => void, entered!: () => void;
-  const held = new Promise<void>(resolve => { release = resolve; });
-  const started = new Promise<void>(resolve => { entered = resolve; });
-  const f = pathFixture(async () => { entered(); await held; return success; });
-  const pending = f.memory.dream({ sessionId: f.session.id, branch: "left", headTurnId: f.turn.id, triggerEntryId: f.left.id });
-  await started;
-  const rival = update(f, "left", f.left.id, "rival result");
-  expect(rival).not.toContain("rejected:");
-  const rivalCommit = JSON.parse(rival).committed[0].commit as number;
-  release();
-  const result = await pending;
-  expect(result.outcome).toBe("success");
-  if (!("runId" in result)) throw new Error("missing run id");
-  const response = JSON.parse(f.store.getRun(result.runId)!.response!);
-  expect(response.check.resultIds).toEqual([]);
-  expect(response.check.eventIds).toEqual([f.base.commit]);
-  expect(response.check.totals).toHaveLength(4);
-  expect(response.check.totals.map((total: { scope: string }) => total.scope)).toEqual([
-    "global", `project:${f.project.id}`, `session:${f.session.id}`, `applicable:S${f.session.id}/left/T${f.turn.id}`,
-  ]);
-  expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events ORDER BY event_id").all().map(row => Number(row.event_id))).toEqual([f.base.commit]);
-  expect(f.store.db.prepare("SELECT commit_id FROM processed_knowledge_versions ORDER BY commit_id").all()).toEqual([]);
-  expect(f.store.isKnowledgeProcessed(rivalCommit)).toBe(false);
-  expect(f.store.pendingKnowledgeEvents({ sessionId: f.session.id, branch: "left", headTurnId: f.turn.id }).map(event => event.id)).toEqual([rivalCommit]);
-});
-
-test("34b: a core-verified stale Dreamer operation is skipped, but an arbitrary stale base is not", async () => {
-  let f!: ReturnType<typeof pathFixture>;
-  f = pathFixture(async task => {
-    const rival = update(f, "left", f.left.id, "rival before stale submission");
-    expect(rival).not.toContain("rejected:");
-    const memory = task.tools.find(tool => tool.name === "memory")!;
-    expect(memory.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`, text: "losing result",
-      category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: "losing write" }], skipped: [] }))
-      .toContain("competing consuming successor");
-    return success;
-  });
-  const result = await f.memory.dream({ sessionId: f.session.id, branch: "left", headTurnId: f.turn.id, triggerEntryId: f.left.id });
-  expect(result.outcome).toBe("success");
-  expect(f.store.taskFailures(f.session.id)).toMatchObject([{ phase: "dreaming", count: 0 }]);
-  expect(f.store.listKnowledgeRevisions(f.base.knowledgeId).map(revision => revision.text)).toEqual(["base", "rival before stale submission"]);
-
-  const other = JSON.parse(update(f, "right", f.right.id, "independent pending result")).committed[0].commit as number;
-  const failed = await f.memory.dream({ sessionId: f.session.id, branch: "right", headTurnId: f.turn.id, triggerEntryId: f.right.id });
-  expect(failed.outcome).toBe("failure");
-  expect(f.store.isKnowledgeProcessed(other)).toBe(false);
-  expect(f.store.taskFailures(f.session.id)).toContainEqual(expect.objectContaining({ phase: "dreaming", count: 1 }));
-});
-
-test("34b: a later invalid batch cannot reuse a prior verified competitive skip", async () => {
-  let f!: ReturnType<typeof pathFixture>;
-  f = pathFixture(async task => {
-    expect(update(f, "left", f.left.id, "rival")).not.toContain("rejected:");
-    const memory = task.tools.find(tool => tool.name === "memory")!;
-    expect(memory.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
-      text: "stale", category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: "stale" }], skipped: [] }))
-      .toContain("competing consuming successor");
-    expect(memory.execute({ operations: [{ op: "create", text: "not allowed", category: "constraint", scope: "project",
-      supports: [], topics: [], reason: "invalid" }], skipped: [] })).toContain("rejected:");
-    return success;
-  });
-  const result = await f.memory.dream({ sessionId: f.session.id, branch: "left", headTurnId: f.turn.id, triggerEntryId: f.left.id });
-  expect(result.outcome).toBe("failure");
-  expect(f.store.db.prepare("SELECT * FROM settled_knowledge_events").all()).toEqual([]);
-  expect(f.store.db.prepare("SELECT * FROM processed_knowledge_versions").all()).toEqual([]);
-  expect(f.store.taskFailures(f.session.id)).toContainEqual(expect.objectContaining({ phase: "dreaming", count: 1 }));
-});
-
-test("34b: shared-result peer propagation blocks the whole oversized group while an independent event completes", async () => {
-  const f = pathFixture();
-  const left = f.memory.tools(f.path("left", f.left.id));
-  const created = JSON.parse(left.find(tool => tool.name === "memory")!.execute({ operations: [
-    { op: "create", text: "second", category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: "second" },
-    { op: "create", text: "independent ".repeat(1000), category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: "independent" },
-  ], skipped: [] }));
-  const second = created.committed[0] as { knowledgeId: number; commit: number };
-  const independent = created.committed[1] as { knowledgeId: number; commit: number };
-  const target = { sessionId: f.session.id, branch: "right", headTurnId: f.turn.id, triggerEntryId: f.right.id };
-  f.store.retainDreamingRange(target, [f.base.commit, second.commit, independent.commit],
-    [f.base.knowledgeId, second.knowledgeId, independent.knowledgeId]);
-
-  left.find(tool => tool.name === "trace")!.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-  left.find(tool => tool.name === "trace")!.execute({ address: `K${second.knowledgeId}@${second.commit}`, itemBudget: null });
-  const merged = JSON.parse(left.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "merge",
-    id: `K${f.base.knowledgeId}@${f.base.commit}`, absorb: [`K${second.knowledgeId}@${second.commit}`],
-    text: "shared ".repeat(6000), category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: "shared merge" }], skipped: [] })).committed[0] as { knowledgeId: number; commit: number };
-  const right = f.memory.tools(f.path("right", f.right.id));
-  right.find(tool => tool.name === "trace")!.execute({ address: `K${second.knowledgeId}@${second.commit}`, itemBudget: null });
-  const peer = JSON.parse(right.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update",
-    id: `K${second.knowledgeId}@${second.commit}`, text: "peer ".repeat(6000), category: "constraint", scope: "project",
-    supports: [`F${f.fact}`], topics: [], reason: "divergent peer" }], skipped: [] })).committed[0] as { knowledgeId: number; commit: number };
-
-  f.setAgent(async task => {
-    expect(task.material.changed).toContain(`K${independent.knowledgeId}@${independent.commit}`);
-    expect(task.material.changed).not.toContain(`K${merged.knowledgeId}@${merged.commit}`);
-    expect(task.material.changed).not.toContain(`K${peer.knowledgeId}@${peer.commit}`);
-    skipRest(task);
-    const receipt = task.tools.find(tool => tool.name === "check")!.execute({});
-    expect(receipt).toContain("- supplied formal events: 1");
-    expect(receipt).toContain("Blockers: none");
-    expect(receipt).not.toContain(`K@${independent.commit}`);
-    return success;
-  });
-  const result = await f.memory.dream(target);
-  expect(result.outcome).toBe("success");
-  expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events").all().map(row => Number(row.event_id))).toEqual([independent.commit]);
-  expect(f.store.db.prepare("SELECT commit_id FROM processed_knowledge_versions").all().map(row => Number(row.commit_id))).toEqual([independent.commit]);
-  const remaining = f.store.pendingKnowledgeEvents(target).map(event => event.id);
-  expect(remaining).toEqual(expect.arrayContaining([f.base.commit, second.commit, merged.commit, peer.commit]));
-  expect(remaining).not.toContain(independent.commit);
-});
-
-test("34b/35b: a restored exact version is reported honestly as pending work by the bound check", async () => {
-  const f = pathFixture();
-  const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, branch: "left", createdAt: at }, facts: [{
-    turnId: f.turn.id, entryIds: [f.left.id], category: "decision", actor: "user", text: "left-only evidence", source: [`T${f.turn.id}#E2`], createdAt: at,
-  }] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const tools = f.memory.tools(f.path("left", f.left.id));
-  tools.find(tool => tool.name === "trace")!.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-  const written = tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
-    text: "left result", category: "constraint", scope: "project", supports: [`F${noted.facts[0]!.id}`], topics: [], reason: "left-only update" }], skipped: [] });
-  const successor = JSON.parse(written).committed[0].commit as number;
-  const leftPath = { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id };
-  const range = f.store.retainDreamingRange(leftPath, [f.base.commit]);
-  const run = f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: leftPath.branch,
-    dreamingRangeId: range.id, createdAt: at, outcome: "success" });
-  f.store.completeDreaming(run.id, [f.base.commit], [successor]);
-  const rootPath = { sessionId: f.session.id, branch: "root", headTurnId: f.turn.id };
-  expect(f.store.currentCommit(f.base.knowledgeId, rootPath).map(revision => revision.id)).toEqual([f.base.commit]);
-  expect(f.store.pendingKnowledgeEvents(rootPath).map(event => event.id)).toEqual([f.base.commit]);
-  expect(f.memory.taskEligibility("dreaming", rootPath)).toEqual({ due: true });
-  f.setAgent(async task => {
-    const receipt = task.tools.find(tool => tool.name === "check")!.execute({});
-    expect(receipt).toContain("- pending obligations: 1 (change events 0; exact versions 1)");
-    return success;
-  });
-  expect((await f.memory.dream(rootPath)).outcome).toBe("success");
-});
-
-test.each([
-  { name: "divergent inapplicable", support: "right" as const, target: "left" as const, certified: true },
-  { name: "divergent applicable", support: "shared" as const, target: "left" as const, certified: false },
-  { name: "descendant inapplicable", support: "right" as const, target: "root" as const, certified: false },
-])("47 certification: $name successor follows lineage-or-applicable", async ({ support, target, certified }) => {
-  let f!: ReturnType<typeof pathFixture>, successorCommit = 0;
-  f = pathFixture(async task => {
-    skipRest(task);
-    let fact = f.fact;
-    if (support === "right") {
-      const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, branch: "right", createdAt: at }, facts: [{
-        turnId: f.turn.id, entryIds: [f.right.id], category: "decision", actor: "user", text: "right-only certification evidence",
-        source: [`T${f.turn.id}#E3`], createdAt: at,
-      }] });
-      if (!noted.ok) throw new Error(noted.problems.join("; "));
-      fact = noted.facts[0]!.id;
-    }
-    const right = f.memory.tools(f.path("right", f.right.id));
-    right.find(tool => tool.name === "trace")!.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-    const successor = right.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update",
-      id: `K${f.base.knowledgeId}@${f.base.commit}`, text: `${support} successor`, category: "constraint", scope: "project",
-      supports: [`F${fact}`], topics: [], reason: "certification successor" }], skipped: [] });
-    expect(successor).not.toContain("rejected:");
-    successorCommit = JSON.parse(successor).committed[0].commit as number;
-    return success;
-  });
-  const selected = target === "root"
-    ? { sessionId: f.session.id, branch: "root", headTurnId: f.turn.id, triggerEntryId: f.root.id }
-    : { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id, triggerEntryId: f.left.id };
-  const result = await f.memory.dream(selected);
-  expect(result.outcome).toBe("success");
-  expect(f.store.isKnowledgeProcessed(f.base.commit)).toBe(certified);
-  const runId = (result as { runId: number }).runId;
-  const completion = f.store.db.prepare("SELECT result_ids FROM dreaming_completions WHERE run_id = ?").get(runId)!;
-  expect(JSON.parse(String(completion.result_ids))).toEqual(certified ? [f.base.commit] : []);
-  if (support === "shared") {
-    expect(f.store.isKnowledgeProcessed(successorCommit)).toBe(false);
-    expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events WHERE event_id = ?").get(successorCommit)).toBeUndefined();
-    expect(f.store.pendingKnowledgeEvents(selected).map(event => event.id)).toContain(successorCommit);
-    const rangeId = Number(f.store.db.prepare("SELECT range_id FROM dreaming_run_ranges WHERE run_id = ?").get(runId)!.range_id);
-    const retained = f.store.dreamingRange(rangeId, true)!;
-    expect([...retained.eventIds, ...retained.versionIds, ...f.store.dreamingOwnCommits(rangeId)]).not.toContain(successorCommit);
-  }
-});
-
-test("47 certification: unknown required same-session successor provenance fails explicitly", async () => {
-  const f = pathFixture();
-  const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, branch: "right", createdAt: at }, facts: [{
-    turnId: f.turn.id, entryIds: [f.right.id], category: "decision", actor: "user", text: "unknown-origin right evidence",
-    source: [`T${f.turn.id}#E3`], createdAt: at,
-  }] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const successor = f.store.commitConsolidationRun({ path: { sessionId: f.session.id, branch: "right", headTurnId: f.turn.id },
-    run: { kind: "manual", sessionId: f.session.id, branch: "right", createdAt: at }, operations: [{ op: "update",
-      knowledgeId: f.base.knowledgeId, baseCommit: f.base.commit, text: "unknown-origin successor", category: "constraint", scope: "project",
-      supports: [noted.facts[0]!.id], topics: [], reason: "unknown", createdAt: at }] });
-  if (!successor.ok) throw new Error(successor.problems.join("; "));
-  const result = await f.memory.dream({ sessionId: f.session.id, branch: "left", headTurnId: f.turn.id, triggerEntryId: f.left.id });
-  expect(result.outcome).toBe("failure");
-  expect("problems" in result ? result.problems.join(" ") : "").toContain("trigger ancestry is unknown");
-  expect(f.store.isKnowledgeProcessed(f.base.commit)).toBe(false);
-});
+// 64c removes settlement/certification and replaces it with one-time pool-event consumption.
+test.skip("34b: a consumed supplied event succeeds with exact settlement and no adopted certificate", () => {});
+// 64c removes retained peer components and oversized-group settlement.
+test.skip("34b: shared-result peer propagation blocks the whole oversized group while an independent event completes", () => {});
+// 64c removes exact-version pending obligations and the processed partition.
+test.skip("34b/35b: a restored exact version is reported honestly as pending work by the bound check", () => {});
+// 64c deletes certification-time successor classification.
+test.skip.each([
+  "divergent inapplicable",
+  "divergent applicable",
+  "descendant inapplicable",
+])("47 certification: '%s' successor follows lineage-or-applicable", () => {});
+// 64c deletes certification and its provenance failure mode.
+test.skip("47 certification: unknown required same-session successor provenance fails explicitly", () => {});

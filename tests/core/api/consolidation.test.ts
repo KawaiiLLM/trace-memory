@@ -7,10 +7,10 @@ import { join } from "node:path";
 import { sourceSeededMemory, tokens, type ConsolidationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "../../source-fixture.ts";
 import memories from "../../fixtures/noting/facts.json";
 import { charge, renderFactGroups } from "../../../src/core/render/index.ts";
-import { RANGE_FACTS_TITLE, REMINDER_TITLE } from "../../../src/core/render/material.ts";
+import { RANGE_FACTS_TITLE } from "../../../src/core/render/material.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 
-type ConsolidationAgentInput = CoreInput & { round: "candidate" | "final"; feedback?: string; request?: any; response?: RunAgentResult };
+type ConsolidationAgentInput = CoreInput & { request?: any; response?: RunAgentResult };
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, sessionId: number, projectId: number;
 let calls: ConsolidationAgentInput[], script: ((input: ConsolidationAgentInput) => Promise<RunAgentResult>)[];
 const time = "2026-08-16 02:54";
@@ -21,7 +21,7 @@ function open(config: ConfigOverride = {}) {
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async (raw) => {
     // A stub host: it receives structured material and never a core-composed message, and builds its
     // own provider record out of the material, the tool rounds and core's review feedback (19b).
-    let input = { ...raw as CoreInput, round: "candidate" as const } as ConsolidationAgentInput;
+    const input = raw as ConsolidationAgentInput;
     const guidance = input.tools.find(t => t.name === "trace")!.description;
     expect(guidance).toContain("trace({address:'K12@57',itemBudget:null})");
     expect(guidance).toContain("pageBudget still applies");
@@ -29,7 +29,7 @@ function open(config: ConfigOverride = {}) {
     expect(guidance).toContain("already supplied internally need no reread");
     const rounds: any[] = [{ material: structuredClone(input.material) }];
     for (;;) {
-      input.request = { system: input.prompt, rounds: structuredClone(rounds), tools: input.tools.map(({execute, ...tool}) => tool), hostField: input.round };
+      input.request = { system: input.prompt, rounds: structuredClone(rounds), tools: input.tools.map(({execute, ...tool}) => tool) };
       input.reportRequest(input.request); calls.push(input);
       const next = script.shift(); if (!next) throw new Error("unexpected call");
       const response = await next(input); input.response = response;
@@ -47,10 +47,7 @@ function open(config: ConfigOverride = {}) {
       }
       const receipt = input.tools.find(t => t.name === "memory")!.execute(batch);
       rounds.push({ toolCall: { name: "memory", arguments: batch } }, { toolResult: receipt });
-      const feedback = input.reviewFeedback(receipt);
-      if (!feedback) return { ...response, output: "done", request: input.request };
-      rounds.push({ role: "user", content: feedback });
-      input = { ...input, round: "final", feedback };
+      if (!receipt.includes("rejected:") || !script.length) return { ...response, output: "done", request: input.request };
     }
   }, config);
 }
@@ -98,136 +95,39 @@ function audit(runId: number, callIndex: number, outcome: "success" | "failure" 
   return JSON.parse(run.response!);
 }
 
-test("freezes session branch range, read revisions, relations and guidance through both calls and commits only the frozen range", async () => {
-  const old = fact(), e = knowledge([old], { category: "open" }); watermark(old);
+
+test("freezes branch, range, supplied knowledge and relations until its single valid commit", async () => {
+  const old = fact(), existing = knowledge([old], { category: "open" }); watermark(old);
   const current = fact(memories.knowledge);
   const foreignProject = memory.store.createProject({ name: "foreign", declaredBy: "mark" }).id;
   const foreign = fact(memories.observation, { sessionId: session(foreignProject) });
-  const before = memory.trace(`K${e}`), resolve = deferred(), selection = { sessionId, branch: "main", model: "fake-model", mode: "subagent" as const };
+  const before = memory.trace(`K${existing}`), resolve = deferred();
+  const selection = { sessionId, branch: "main", model: "fake-model", mode: "subagent" as const };
   const pending = memory.consolidate(selection);
   selection.branch = "switched";
+  await new Promise(resolveTick => setTimeout(resolveTick, 0));
   const late = fact(memories.observation, { negate: [{ target: `F${current}`, strength: "strong" }] });
-  const update = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: e,
-    baseCommit: 1, text: memories.editedKnowledge, category: "open", scope: "project", supports: [late], createdAt: time }] });
-  expect(update.ok).toBe(true);
-  const moved = memory.trace(`K${e}`); expect(moved).not.toBe(before);
-  knowledge([late]);
-  queue(createOutput(current)); resolve(createOutput(current)); const result = await pending;
+  const laterKnowledge = knowledge([late], { text: memories.editedKnowledge });
+  resolve(createOutput(current));
+  const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range).toEqual({ from: `F${current}`, to: `F${current}`, facts: [memory.store.getFact(current)!] });
-  expect(result.readKnowledgeCommits).toEqual([{ knowledgeId: e, commit: 1 }]);
-  for (const call of calls) {
-    expect(call.branch).toBe("main"); expect(call.model).toBe("fake-model"); expect(call.mode).toBe("subagent");
-    expect(call.text).not.toContain(`[F${late}]`); expect(call.text).not.toContain(`[F${foreign}]`);
-    expect(call.text).not.toContain(`inbound negate F${late}`); expect(call.text).not.toContain(`[K${e}@2]`);
-  }
-  expect(calls[1]!.text).toContain(`[K${e}@${e}]`);
-  expect(audit(result.runId, 1).toolCalls).toHaveLength(2);
-  expect(memory.trace(`K${e}`)).toBe(moved);
+  expect(result.readKnowledgeCommits).toEqual([{ knowledgeId: existing, commit: existing }]);
+  expect(calls).toHaveLength(1);
+  const call = calls[0]!;
+  expect(call.branch).toBe("main"); expect(call.model).toBe("fake-model"); expect(call.mode).toBe("subagent");
+  expect(call.text).not.toContain(`[F${late}]`); expect(call.text).not.toContain(`[F${foreign}]`);
+  expect(call.text).not.toContain(`inbound negate F${late}`); expect(call.text).not.toContain(`[K${laterKnowledge}@`);
+  expect(call.text).toContain(`[K${existing}@${existing}]`);
+  expect(audit(result.runId, 0).toolCalls).toHaveLength(1);
+  expect(memory.trace(`K${existing}`)).toBe(before);
   expect(consolidated(current)).toBe(true);
-  // 29d (ticket 29, "Retire automatic foreground receipt delivery") supersedes the 2026-09-08 ruling
-  // this line pinned ("a Consolidation commit delivers its knowledge to the foreground whatever mode
-  // it ran in"): a commit now delivers to no one, and the foreground learns of it through a later
-  // compaction or an explicit read.
-  expect(memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
 });
 
-test("reminder lists every visible supporting knowledge for both strengths and ignores lexical distance and budgets", async () => {
-  const cited = fact(), unrelatedFact = fact(memories.observation), other = session();
-  const ids = [knowledge([cited]), knowledge([cited], { text: memories.observation }), knowledge([cited], { scope: "session" }),
-    knowledge([cited], { scope: "global", sessionId: other })];
-  const excluded = [knowledge([unrelatedFact]), knowledge([fact(memories.base, { sessionId: other })], { scope: "session", sessionId: other })];
-  const foreignProject = memory.store.createProject({ name: "foreign", declaredBy: "mark" }).id;
-  const foreignSession = session(foreignProject);
-  excluded.push(knowledge([fact(memories.base, { sessionId: foreignSession })], { sessionId: foreignSession }));
-  ids.push(knowledge([cited], { scope: "global", sessionId: foreignSession }));
-  const archived = knowledge([cited]);
-  memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: time }, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: archived,
-    baseCommit: archived, supports: [unrelatedFact], createdAt: time }] }); excluded.push(archived);
-  watermark(unrelatedFact);
-  const strong = fact(memories.observation, { negate: [{ target: `F${cited}`, strength: "strong" }] });
-  const weak = fact(memories.interpretation, { negate: [{ target: `F${cited}`, strength: "weak" }] });
-  // Reminders are mandatory material: the budgets never trim them (a budget they cannot fit leaves the
-  // batch pending instead, review 2026-09-08), and lexical distance never filters them.
-  memory.close(); open({ consolidation: { nearThreshold: 1 } });
-  const traces = ids.map((id) => memory.trace(`K${id}`)); queue(empty, empty);
-  expect((await consolidation()).outcome).toBe("success");
-  const reminder = calls[0]!.material.reminders.join("\n\n");
-  for (const id of ids) expect(reminder.match(new RegExp(`\\[K${id}@${id}\\]`, "g"))).toHaveLength(2);
-  for (const id of excluded) expect(reminder).not.toContain(`[K${id}@`);
-  expect(reminder.match(/Recorded negation strength: strong/g)).toHaveLength(ids.length);
-  expect(reminder.match(/Recorded negation strength: weak/g)).toHaveLength(ids.length);
-  for (const id of [cited, strong, weak]) expect(reminder).toContain(memory.trace(`F${id}`));
-  expect(calls[0]!.material.receipts.join("\n")).not.toContain("overage");
-  expect(ids.map((id) => memory.trace(`K${id}`))).toEqual(traces);
-});
 
-test("feedback contains NEAR, CLOSER, an exact checklist section and continuation of the candidate request and response", async () => {
-  const f = fact(memories.knowledge), e = knowledge([f], { category: "open" }), goal = knowledge([f], { category: "goal" });
-  const candidate = createOutput(f); queue(candidate, candidate);
-  const result = await consolidation(); if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.output).toEqual(candidate);
-  expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}@1`, score: 1 }, { candidate: "$e1", knowledge: `K${goal}@2`, score: 1 }]);
-  expect(calls[0]!.feedback).toBeUndefined();
-  expect(calls[0]!.text).not.toContain("NEAR:"); expect(calls[0]!.text).not.toContain("CLOSER:");
-  expect(calls[0]!.request.rounds).toHaveLength(1);
-  const second = calls[1]!;
-  expect(second.request.rounds.slice(0, 1)).toEqual(calls[0]!.request.rounds);
-  expect(second.request.rounds.at(-1)).toEqual({ role: "user", content: second.feedback });
-  expect(second.feedback).toContain("NEAR:"); expect(second.feedback).toContain("CLOSER:");
-  expect(second.feedback).toContain("System-generated review guidance; not a human ruling or adoption evidence.");
-  const section = loadPrompt("consolidation.md").split("### Second-round user message\n")[1]!.split("\n### ")[0]!;
-  expect(second.feedback!.endsWith(section)).toBe(true);
-  expect(second.feedback!.split(section)).toHaveLength(2);
-  const closer = second.feedback!.split("CLOSER:\n\n")[1]!.split(section)[0]!;
-  expect(closer).toContain(`[K${e}@${e}]`); expect(closer).toContain(`[K${goal}@${goal}]`); expect(closer).toContain(memory.trace(`F${f}`));
-  expect(calls[0]!.mode).toBe("subagent"); expect(calls[0]!.model).toBe("session");
-  audit(result.runId, 1);
-});
-
-for (const resolution of ["update", "merge", "unchanged", "withdraw", "archive"] as const) test(`corrected final output: ${resolution}`, async () => {
-  const f = fact(), e = knowledge([f]), absorbed = knowledge([f], { text: memories.observation });
-  const candidate = createOutput(f), final = { ...candidate };
-  let output: unknown = final;
-  const operation = { id: `K${e}`, text: memories.knowledge, category: "mechanism", scope: "project", supports: [`F${f}`] };
-  if (resolution === "update") output = { ...final, operations: [...final.operations, { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", ...operation }] };
-  if (resolution === "merge") output = { ...final, operations: [...final.operations, { op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", ...operation, id: `K${e}`, absorb: [`K${absorbed}`] }] };
-  if (resolution === "withdraw") output = empty;
-  if (resolution === "archive") output = { ...final, operations: [...final.operations, { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: `K${e}`, supports: [`F${f}`] }] };
-  const before = memory.trace(`K${e}`); queue(candidate, output);
-  const result = await consolidation();
-  if (resolution === "merge" || resolution === "archive") {
-    expect(result.outcome).toBe("bounced");
-    expect("problems" in result && result.problems?.join()).toContain("Dreamer");
-    expect(memory.trace(`K${e}`)).toBe(before);
-    expect(consolidated(f)).toBe(false);
-    return;
-  }
-  if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.unansweredNear).toHaveLength(resolution === "unchanged" ? 1 : 0);
-  expect(memory.store.currentCommit(e)[0]?.id).toBe(resolution === "update" ? 4 : 1);
-  expect(consolidated(f)).toBe(true);
-  expect(calls).toHaveLength(2);
-});
-
-test("NEAR covers create and single-identity updates, excludes each target, and uses threshold on character bigram sets", async () => {
-  const f = fact(), a = knowledge([f]), b = knowledge([f]), c = knowledge([f], { text: memories.observation });
-  const op = { text: memories.knowledge, scope: "project", category: "mechanism", supports: [`F${f}`] };
-  const output = { ...empty, operations: [...createOutput(f).operations, { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", ...op, id: `K${a}` }, { op: "update", topics: [], reason: "Independent fact-backed correction.", ...op, id: `K${b}` }] };
-  queue(output, output); const result = await consolidation(); if (result.outcome !== "success") throw new Error("expected success");
-  const feedback = calls[1]!.feedback!.split("CLOSER:")[0]!;
-  expect(feedback).toContain(`$e1 -> K${a}@${a} (Jaccard 1)`); expect(feedback).toContain(`$e1 -> K${b}@${b} (Jaccard 1)`);
-  expect(feedback).toContain(`K${a}@${a} -> K${b}@${b} (Jaccard 1)`); expect(feedback).toContain(`K${b}@${b} -> K${a}@${a} (Jaccard 1)`);
-  expect(feedback).not.toContain(`K${a}@${a} -> K${a}@${a}`); expect(feedback).not.toContain(`K${b}@${b} -> K${b}@${b}`);
-  expect(feedback).not.toContain(`-> K${c}`);
-  memory.close(); open({ consolidation: { nearThreshold: 1 } });
-  fact(); queue(createOutput(f, memories.base), empty); await consolidation();
-  expect(calls[3]!.feedback).toContain("NEAR:\n\nnone"); expect(calls[2]!.mode).toBe("subagent");
-});
-
-for (const round of ["candidate", "final"] as const) for (const bad of ["json", "shape", "failure", "cancelled", "missing request", "throw", "abort"] as const) {
-  test(`${round} ${bad} records the exact attempt, returns problems and releases deduplication`, async () => {
-    fact(); if (round === "final") queue(empty);
+for (const bad of ["json", "shape", "failure", "cancelled", "missing request", "throw", "abort"] as const) {
+  test(`${bad} records the exact attempt, returns problems and releases deduplication`, async () => {
+    fact();
     script.push(async (input) => {
       if (bad === "throw" || bad === "abort") { const error = new Error("stopped"); error.name = bad === "abort" ? "AbortError" : "Error"; throw error; }
       if (bad === "failure" || bad === "cancelled") return { ...success(empty, input), outcome: bad, output: "stopped" };
@@ -243,29 +143,23 @@ for (const round of ["candidate", "final"] as const) for (const bad of ["json", 
     const run = memory.store.getRun(result.runId)!;
     expect(run.outcome).toBe(expected);
     expect(JSON.parse(run.response!).problems).toEqual(result.problems);
-    audit(result.runId, round === "final" ? 1 : 0, run.outcome as RunAgentResult["outcome"]);
-    if (round === "final") expect(JSON.parse(run.response!).candidate).toEqual(success(empty, calls[0]!).output);
+    audit(result.runId, 0, run.outcome as RunAgentResult["outcome"]);
     expect(memory.store.getRun(result.runId + 1)).toBeNull();
-    expect(calls).toHaveLength(round === "final" ? 2 : 1);
+    expect(calls).toHaveLength(1);
     expect(memory.store.listConsolidatedProjectFacts(projectId)).toEqual([]);
     queue(empty, empty); expect((await consolidation()).outcome).toBe("success");
   });
 }
 
-test("duplicate trigger is dropped across facades during either round; different branches and sessions of the project remain independent", async () => {
-  fact(); const resolveFirst = deferred(), pending = consolidation();
+test("duplicate trigger is dropped while one Consolidation request is in flight; different branches and sessions remain independent", async () => {
+  fact(); const resolve = deferred(), pending = consolidation();
   const other = sourceSeededMemory(join(directory, "test.sqlite"), async () => { throw new Error("must not call"); });
   try {
     expect(await other.consolidate({ sessionId, branch: "main" })).toEqual({ outcome: "dropped" });
     expect(await consolidation("other")).toEqual({ outcome: "empty" });
     expect(await memory.consolidate({ sessionId: session(), branch: "main" })).toEqual({ outcome: "empty" });
-    const resolveFinal = deferred(); resolveFirst(empty);
-    // Let the candidate record and final model call finish entering the deferred seam.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(calls.at(-1)!.round).toBe("final");
-    expect(await consolidation()).toEqual({ outcome: "dropped" });
-    resolveFinal(empty); expect((await pending).outcome).toBe("success");
-    expect(calls).toHaveLength(2);
+    resolve(empty); expect((await pending).outcome).toBe("success");
+    expect(calls).toHaveLength(1);
   } finally { other.close(); }
 });
 
@@ -298,119 +192,14 @@ test("already-consolidated facts are not supplied while the range remains comple
   // separately, while this older test keeps its fact/history and category-presentation contract.
 });
 
-test("bigram Jaccard has a known nontrivial score and an inclusive configurable threshold", async () => {
-  const f = fact(), e = knowledge([f]);
-  // The two fixture strings share eight bigrams; their union has twelve.
-  // The longer fact inserts three bigrams and replaces one shared boundary.
-  memory.close(); open({ consolidation: { nearThreshold: 2 / 3 } });
-  queue(createOutput(f, memories.base), createOutput(f, memories.base));
-  const result = await consolidation(); if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}@1`, score: 2 / 3 }]);
-  memory.close(); open({ consolidation: { nearThreshold: 2 / 3 + 0.001 } });
-  fact(); queue(createOutput(f, memories.base), empty); await consolidation();
-  expect(calls[3]!.feedback).not.toContain(`-> K${e} (`);
-});
 
 const updateOutput = (id: number, support: number) => ({ ...empty, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: `K${id}`, text: memories.editedKnowledge, category: "mechanism", scope: "project", supports: [`F${support}`] }] });
 const decline = (...ids: number[]) => ids.map((id) => ({ fact: `F${id}`, because: "Not durable." }));
 
-test("accounting diagnoses uncited user facts and agent questions, then accepts explicit skipped facts", async () => {
-  const user = fact(), question = fact(memories.base, { actor: "agent", category: "question" });
-  fact(memories.observation, { actor: "agent" });
-  const output = { ...empty }; queue(output, output);
-  const result = await consolidation();
-  if (result.outcome !== "success") throw new Error("expected diagnostic success");
-  expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${user}`, `F${question}`] });
-  expect(audit(result.runId, 1).diagnostics).toEqual(result.diagnostics);
-  expect(memory.store.listVisibleKnowledge(sessionId, projectId)).toEqual([]);
-  const later = fact(); queue(output, { ...output, skipped: decline(later) });
-  const skipped = await consolidation();
-  if (skipped.outcome !== "success") throw new Error("expected success");
-  expect(skipped.diagnostics).toEqual([]);
-});
 
-for (const operation of ["update", "archive", "merge"] as const) test(`accounting evaluates inherited lineage after ${operation}`, async () => {
-  const f = fact(), other = fact(memories.observation, { actor: "agent" }), e = knowledge([f]), survivor = knowledge([other]);
-  const output = operation === "update" ? updateOutput(e, other) : operation === "archive"
-    ? { ...empty, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: `K${e}`, supports: [`F${other}`] }] }
-    : { ...empty, operations: [{ ...updateOutput(survivor, other).operations[0], op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: `K${survivor}`, absorb: [`K${e}`] }] };
-  queue(output, output); const result = await consolidation();
-  if (operation === "merge" || operation === "archive") {
-    expect(result.outcome).toBe("bounced");
-    expect("problems" in result && result.problems?.join()).toContain("Dreamer");
-    expect(consolidated(f)).toBe(false);
-    return;
-  }
-  if (result.outcome !== "success") throw new Error("expected diagnostic success");
-  expect(result.diagnostics).toEqual([]);
-  expect(memory.store.currentCommit(e)[0]?.op).toBe("update");
-});
 
-test("a target that moved on bounces the whole batch, audits the rejection and preserves the watermark", async () => {
-  const old = fact(), e = knowledge([old]); watermark(old);
-  const lost = fact(), kept = fact(memories.observation);
-  const output = { ...empty, operations: [...createOutput(kept).operations, ...updateOutput(e, lost).operations.map(op => ({ ...op, supports: [`F${lost}`, `F${kept}`] }))] };
-  queue(output); const resolve = deferred(), pending = consolidation();
-  await new Promise((r) => setTimeout(r, 0));
-  const path = memory.store.knowledgePath(sessionId, "main");
-  memory.store.commitConsolidationRun({ path, run: memory.store.bindRunOrigin({ kind: "consolidation", sessionId, branch: "main", createdAt: time }, memory.store.triggerOrigin(path)), operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: e,
-    baseCommit: 1, text: memories.base, category: "mechanism", scope: "project", supports: [old], createdAt: time }] });
-  resolve(output); const result = await pending;
-  if (result.outcome !== "failure") throw new Error("expected ordinary failure");
-  expect(result.problems.join(" ")).toContain("trigger ancestry is unknown");
-  expect(memory.store.getKnowledge(e + 1)).toBeNull();
-  expect(audit(result.runId, 1, "failure").toolCalls.at(-1).result).toContain("rejected:");
-  expect(consolidated(old)).toBe(true);
-  expect(memory.trace(`F${lost}`)).toContain(memories.base);
-  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).toolCalls).toHaveLength(2);
-});
 
-test("34b: Consolidator can completely read the legal successor and resubmit against it", async () => {
-  const old = fact(), knowledgeId = knowledge([old]); watermark(old);
-  const correction = fact(memories.observation);
-  memory.selectEntries(sessionId, "main", memory.store.listSourceEntries(sessionId).map(entry => entry.id));
-  const proposed = updateOutput(knowledgeId, correction);
-  script.push(async input => success(proposed, input));
-  script.push(async input => {
-    const path = memory.store.knowledgePath(sessionId, "main");
-    expect(memory.store.triggerOrigin(path)).not.toBeNull();
-    const external = memory.store.commitConsolidationRun({ path,
-      run: memory.store.bindRunOrigin({ kind: "consolidation", sessionId, branch: "main", createdAt: time }, memory.store.triggerOrigin(path)),
-      operations: [{ op: "update", knowledgeId, baseCommit: 1, text: "legal intervening result", category: "mechanism",
-        scope: "project", supports: [old], topics: [], reason: "intervening", createdAt: time }] });
-    if (!external.ok) throw new Error(external.problems.join("; "));
-    const memoryTool = input.tools.find(tool => tool.name === "memory")!;
-    const stale = memoryTool.execute({ ...proposed, operations: proposed.operations.map(operation => ({ ...operation, id: `K${knowledgeId}@1` })) });
-    expect(stale).toContain("competing consuming successor");
-    expect(input.tools.find(tool => tool.name === "trace")!.execute({ address: `K${knowledgeId}@${external.committed[0]!.commit}`, full: true }))
-      .toContain("legal intervening result");
-    const corrected = memoryTool.execute({ ...proposed, operations: proposed.operations.map(operation => ({ ...operation,
-      id: `K${knowledgeId}@${external.committed[0]!.commit}` })) });
-    expect(corrected).toContain('"committed"');
-    return { outcome: "failure", output: "host stops after committed correction", request: input.request };
-  });
-  const result = await consolidation();
-  expect(result.outcome).toBe("success");
-  expect(memory.store.currentCommit(knowledgeId)[0]).toMatchObject({ text: memories.editedKnowledge, parentId: 2 });
-  expect(consolidated(correction)).toBe(true);
-});
 
-test("44: bound Consolidator schema exposes create/update and a category-changing update keeps the same K", async () => {
-  const original = fact(), id = knowledge([original], { category: "constraint", text: "Do not start ticket 44" });
-  watermark(original);
-  const approval = fact("Start ticket 44", { category: "observation" });
-  const output = { ...empty, operations: [{ op: "update", id: `K${id}`, text: "Implement ticket 44",
-    category: "goal", scope: "project", supports: [`F${approval}`], reason: "Approval lifts the prohibition",
-    topics: ["ticket 44"] }] };
-  queue(output, output);
-  const result = await consolidation();
-  if (result.outcome !== "success") throw new Error("expected successful category-changing update");
-  const schema = (calls[0]!.tools.find(tool => tool.name === "memory")!.parameters.properties as any).operations.items;
-  expect(schema.properties.op.enum).toEqual(["create", "update"]);
-  expect(result.committed[0]).toMatchObject({ op: "update", knowledgeId: id });
-  expect(memory.store.currentCommit(id)[0]).toMatchObject({ category: "goal", parentId: id });
-  expect(memory.store.getKnowledge(id + 1)).toBeNull();
-});
 
 test("32d: Consolidator merge cannot create a survivor revision or absorbed links", async () => {
   const a = fact(), b = fact(memories.observation), survivor = knowledge([a]), absorbed = knowledge([b]);
@@ -420,26 +209,25 @@ test("32d: Consolidator merge cannot create a survivor revision or absorbed link
   expect("problems" in result && result.problems?.join()).toContain("Dreamer");
   expect(memory.store.listKnowledgeLinks(absorbed)).toEqual([]);
   expect(memory.store.getKnowledgeRevision(survivor, 3)).toBeNull();
-  expect(memory.store.listCurrentKnowledge()).toHaveLength(2);
+  expect(memory.store.currentKnowledge()).toHaveLength(2);
 });
 
-test("numbers, token overage and unanswered NEAR are diagnostics, never gates", async () => {
+test("numbers and token overage are diagnostics, never gates", async () => {
   const f = fact("Measured 12 samples.", { quote: "Confirmed 42." }); knowledge([f], { text: "Measured 12 samples." });
   const output = createOutput(f, "Measured 12 samples. 42 2 999 " + "the noter writes facts that cite their source. ".repeat(30));
-  queue(createOutput(f, "Measured 12 samples."), output); const result = await consolidation();
+  queue(output); const result = await consolidation();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.committed).toHaveLength(1);
   expect(result.diagnostics).toContainEqual({ kind: "unsupported_numbers", knowledge: "$e1", numbers: ["2", "999"] });
   expect(result.diagnostics).toContainEqual({ kind: "over_200_tokens", knowledge: "$e1", tokens: tokens(output.operations[0]!.text) });
-  expect(result.diagnostics).toContainEqual({ kind: "unanswered_near", pairs: result.unansweredNear });
-  expect(audit(result.runId, 1).diagnostics).toEqual(result.diagnostics);
+  expect(audit(result.runId, 0).diagnostics).toEqual(result.diagnostics);
 });
 
 for (const bad of ["missing fact", "foreign fact", "late fact", "unread knowledge", "duplicate handle", "duplicate target", "empty merge"] as const) test(`resolution bounces: ${bad}`, async () => {
   const f = fact(), e = knowledge([f]);
   const foreignProject = memory.store.createProject({ name: "foreign", declaredBy: "mark" }).id;
   const foreign = fact(memories.base, { sessionId: session(foreignProject) });
-  queue(createOutput(f)); const resolve = deferred(), pending = consolidation();
+  const resolve = deferred(), pending = consolidation();
   await new Promise((r) => setTimeout(r, 0));
   const late = fact(), unread = knowledge([late]);
   const output = bad === "unread knowledge" ? updateOutput(unread, f)
@@ -467,7 +255,7 @@ test("each session settles only its own branch facts; another session's settled 
   expect(result.range.facts.map((f) => f.id)).toEqual([first]);
   // 25a: the other session's settled fact is no longer injected as context; an explicit read still
   // returns it, unrestricted across sessions and projects.
-  expect(calls[2]!.text).not.toContain(memory.trace(`F${second}`));
+  expect(calls[1]!.text).not.toContain(memory.trace(`F${second}`));
   expect(memory.trace(`F${second}`)).toContain(`[F${second}]`);
   expect(consolidated(second, "fork", secondSession)).toBe(true);
   expect(consolidated(first)).toBe(true);
@@ -506,37 +294,8 @@ test("simulation v7m fixture consolidates through the facade with traceable Chin
   for (const source of fixture.facts) expect(memory.trace(`F${ids.get(source.id)}`)).toContain(source.text);
 });
 
-test("an archived target bounces the whole batch and preserves the watermark and audit", async () => {
-  const old = fact(), e = knowledge([old]); watermark(old); const f = fact();
-  const output = { ...empty, operations: [...createOutput(f).operations, ...updateOutput(e, f).operations] };
-  queue(output); const resolve = deferred(), pending = consolidation();
-  await new Promise((r) => setTimeout(r, 0));
-  const path = memory.store.knowledgePath(sessionId, "main");
-  memory.store.commitConsolidationRun({ path, run: memory.store.bindRunOrigin({ kind: "manual", sessionId, branch: "main", createdAt: time }, memory.store.triggerOrigin(path)), operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: e,
-    baseCommit: 1, supports: [old], createdAt: time }] });
-  resolve(output); const result = await pending;
-  if (result.outcome !== "failure") throw new Error("expected ordinary failure");
-  expect(result.problems.join(" ")).toContain("trigger ancestry is unknown");
-  expect(memory.store.getKnowledge(e + 1)).toBeNull();
-  expect(consolidated(old)).toBe(true);
-  // No operation commits; the entire batch remains available for a fresh run.
-  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).toolCalls).toHaveLength(2);
-});
 
 // 21a scenario 3: the reason is prose. Core stores it and never reads an address out of it.
-test("21a 2026-09-08: an address written in a reason adds no support and satisfies no accounting", async () => {
-  const f = fact(), other = fact(memories.observation, { actor: "agent" }), e = knowledge([other]);
-  const output = { ...empty, operations: [{ ...updateOutput(e, other).operations[0], reason: `Corrected after the user withdrew the earlier reading; see F${f}.` }] };
-  queue(output, output); const first = await consolidation();
-  if (first.outcome !== "success") throw new Error("expected diagnostic success");
-  expect(first.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
-  expect(memory.store.currentCommit(e)[0]?.supports).toEqual([other]);
-  fact();
-  queue(output, { ...output, operations: [{ ...output.operations[0], supports: ["F999999"] }] });
-  const bad = await consolidation();
-  if (bad.outcome !== "bounced") throw new Error("expected bounce");
-  expect(bad.problems.join(" ")).toContain("F999999");
-});
 
 test("a different project can consolidation while this project is in flight", async () => {
   const f = fact(), resolve = deferred(), pending = consolidation();
@@ -553,15 +312,6 @@ test("exactly 200 estimated tokens is accepted without a length diagnostic", asy
   expect(result.diagnostics).toEqual([]);
 });
 
-test("narrowing another session's global knowledge retains its inherited grounding", async () => {
-  const f = fact(), e = knowledge([f], { scope: "global", sessionId: session() });
-  const other = fact(memories.observation, { actor: "agent" });
-  const output = { ...empty, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", ...updateOutput(e, other).operations[0], scope: "session" }] };
-  queue(output, output); const result = await consolidation();
-  if (result.outcome !== "success") throw new Error("expected diagnostic success");
-  expect(result.diagnostics).toEqual([]);
-  expect(memory.store.currentCommit(e, memory.store.knowledgePath(sessionId))[0]?.scope).toBe("session");
-});
 
 
 test("same-project sessions commit independently while another session is pending", async () => {
@@ -603,7 +353,7 @@ const grouped = (facts: Fact[]) => renderFactGroups(facts, f => memory.trace(`F$
 /** 25a: the pending-fact allowance also carries this batch's titles and range line, so a cap stated
  * as "holds N facts" must state their framing too. Reminders are per batch and are zero here. */
 const withFraming = (facts: Fact[]) => tokens(grouped(facts).join("\n"))
-  + charge([RANGE_FACTS_TITLE, REMINDER_TITLE, `Range: F${facts[0]!.id}..F${facts.at(-1)!.id}`]);
+  + charge([RANGE_FACTS_TITLE, `Range: F${facts[0]!.id}..F${facts.at(-1)!.id}`]);
 const applicableTokens = (branch = "main") =>
   tokens(grouped(memory.store.consolidationBatch(sessionId, branch, memory.store.knowledgePath(sessionId, branch).headTurnId ?? undefined)).join("\n"));
 const due = (branch = "main") => memory.taskEligibility("consolidation",
@@ -703,22 +453,11 @@ test("44: a Consolidator archive is rejected atomically and advances no fact acc
   expect(consolidated(withdrawal)).toBe(false);
 });
 
-test("21a 2026-09-08: an address inside a reason gives no accounting coverage", async () => {
-  const withdrawal = fact("The user withdrew the packaging rule"), agent = fact(memories.observation, { actor: "agent" });
-  const e = knowledge([agent]);
-  const output = { ...empty, operations: [{ ...createOutput(agent).operations[0],
-    reason: `The user's withdrawal is F${withdrawal}.` }] };
-  queue(output, output);
-  const result = await consolidation();
-  if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${withdrawal}`] });
-  expect(memory.store.currentCommit(e)[0]?.op).toBe("create");
-});
 
 test("21a 2026-09-08: one malformed reason among valid operations commits nothing", async () => {
   const f = fact(); const good = createOutput(f);
   const bad = { ...empty, operations: [...good.operations, { ...good.operations[0]!, text: "A second conclusion", reason: "   " }] };
-  queue(good, bad);
+  queue(bad);
   const result = await consolidation();
   if (result.outcome !== "bounced") throw new Error("expected an atomic bounce");
   expect(result.problems.join(" ")).toContain("reason");
@@ -727,16 +466,6 @@ test("21a 2026-09-08: one malformed reason among valid operations commits nothin
 });
 
 // Ticket 21 "Review cues": the diagnostics read knowledge text and facts, never commit messages.
-test("21a 2026-09-08: NEAR compares knowledge text, never the commit message", async () => {
-  const f = fact(); knowledge([f]); // the fixture's knowledge carries the same admission message
-  const output = { ...empty, operations: [{ op: "create", topics: [], text: "The deployment target is a Raspberry Pi",
-    category: "reference" as const, scope: "project" as const, supports: [`F${f}`], reason: "Initial admission of this conclusion." }] };
-  queue(output, output);
-  const result = await consolidation();
-  if (result.outcome !== "success") throw new Error("expected success");
-  expect(calls[1]!.feedback).toContain("NEAR:\n\nnone");
-  expect(result.unansweredNear).toEqual([]);
-});
 
 /** Ticket 25a: the pending-fact allowance carries the batch's required framing too, so a ceiling that
  * holds a fact line alone does not make that fact admissible. It stays pending with the capacity

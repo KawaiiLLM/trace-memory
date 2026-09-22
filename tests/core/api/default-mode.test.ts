@@ -20,8 +20,6 @@ test.each(choices.flatMap(choice => (choice.name === "legacy true" ? ["noting"] 
     else {
       const tool = input.tools.find(t => t.name === "memory")!;
       const batch = { operations: [], skipped: input.range.facts.map(f => ({ fact: `F${f.id}`, because: "Not durable." })) };
-      input.reviewFeedback(tool.execute(batch));
-      input.reportRequest({ round: 2 });
       expect(tool.execute(batch)).toContain("committed");
     }
     return { outcome: "success", output: "Done.", request: { fake: true } };

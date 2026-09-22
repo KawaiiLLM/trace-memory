@@ -1,5 +1,7 @@
 # Ticket 34b verification record
 
+**Historical evidence for Ticket 34b, superseded by Ticket 64.** Test names, commands and outcomes below belong to that branch and do not establish current acceptance. See [the domain glossary](../CONTEXT.md) and [current core behavior](core.md#dreamer-execution) for the replacement contract.
+
 ## Baseline and scope
 
 - **Base:** `5d5c81b` (accepted Ticket 34a).

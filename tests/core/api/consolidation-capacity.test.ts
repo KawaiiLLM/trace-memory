@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
 import { renderKnowledgeBlock, tokens, wholeKnowledge } from "../../../src/core/render/index.ts";
-import { budgetRelevantKnowledge } from "../../../src/core/render/knowledge-selection.ts";
-import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
+import { budgetKnowledge } from "../../../src/core/render/index.ts";
+import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -33,7 +33,7 @@ function fixture(texts: (string | { text: string; category: "constraint" | "open
   })) });
   if (!pending.ok) throw new Error(pending.problems.join("; "));
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, mode: "subagent" as const };
-  return { memory, target, values: memory.store.listCurrentKnowledge(memory.store.knowledgePath(session.id, "main", turn.id)),
+  return { memory, target, values: memory.store.currentKnowledge(memory.store.knowledgePath(session.id, "main", turn.id)),
     commits: created.committed.map(value => value.commit) };
 }
 
@@ -41,7 +41,7 @@ test("45: a whole applicable pool fitting its exact rendered capacity has no omi
   const f = fixture(["whole applicable rule " + "word ".repeat(5_100)]);
   const exact = wholeKnowledge(f.values).cost;
   expect(exact).toBeGreaterThanOrEqual(5_000);
-  setKnowledgeInjection(f.memory, exact);
+  setKnowledgeCapacity(f.memory, exact);
   const frozen = freezeConsolidation(f.memory.store, f.target, f.memory.config);
   expect(frozen.knowledgeCapacity).toBe(exact);
   expect(tokens(renderKnowledgeBlock(frozen.prepared!.material.knowledge))).toBeLessThanOrEqual(exact);
@@ -84,7 +84,7 @@ test("45: receipt-only optional knowledge is dropped before mandatory fact membe
     { category: "open", text: "oversized open " + "word ".repeat(6_000) },
     { category: "reference", text: "oversized reference " + "word ".repeat(6_000) },
   ], ["first mandatory fact", "second mandatory fact"]);
-  setKnowledgeInjection(f.memory, 5_000);
+  setKnowledgeCapacity(f.memory, 5_000);
   const receiptOnly = freezeConsolidation(f.memory.store, f.target, f.memory.config);
   expect(receiptOnly.rangeFacts).toHaveLength(2);
   expect(receiptOnly.prepared!.material.knowledge.every(group => !group.text)).toBe(true);
@@ -112,12 +112,12 @@ test("45: receipt-only optional knowledge is dropped before mandatory fact membe
   expect(tokens(fitted.prepared!.text)).toBeLessThan(tokens(receiptOnly.prepared!.text));
 });
 
-test("45: a shortened fact range rebuilds relevance while the admitted policy stays frozen", () => {
+test("64c: shortening the fact range keeps the newest knowledge while the admitted policy stays frozen", () => {
   const f = fixture([
     "alpha " + "alpha ".repeat(3_000),
     "beta " + "beta ".repeat(3_000),
   ], ["alpha", "beta ".repeat(6_000)]);
-  setKnowledgeInjection(f.memory, 5_000);
+  setKnowledgeCapacity(f.memory, 5_000);
   const full = freezeConsolidation(f.memory.store, f.target, f.memory.config);
   expect(full.rangeFacts).toHaveLength(2);
   expect(full.prepared!.supplied.knowledgeCommitIds).toEqual([f.commits[1]]);
@@ -134,9 +134,9 @@ test("45: a shortened fact range rebuilds relevance while the admitted policy st
   }
   const shortened = at(high - 1);
   expect(shortened.rangeFacts.map(fact => fact.text)).toEqual(["alpha"]);
-  expect(shortened.prepared!.supplied.knowledgeCommitIds).toEqual([f.commits[0]]);
+  expect(shortened.prepared!.supplied.knowledgeCommitIds).toEqual([f.commits[1]]);
 
-  setKnowledgeInjection(f.memory, 10_000);
+  setKnowledgeCapacity(f.memory, 10_000);
   expect(full.knowledgeCapacity).toBe(5_000);
   expect(full.prepared!.supplied.knowledgeCommitIds).toEqual([f.commits[1]]);
   const later = freezeConsolidation(f.memory.store, f.target, f.memory.config);
@@ -144,15 +144,15 @@ test("45: a shortened fact range rebuilds relevance while the admitted policy st
   expect(later.prepared!.supplied.knowledgeCommitIds).toEqual(f.commits);
 });
 
-test("45: over-cap Consolidation retains lexical relevance with stable ties and grants only kept commits", () => {
+test("64c: over-cap Consolidation retains newer commits and grants only kept commits", () => {
   const f = fixture([
     "unrelated archive geometry " + "plain ".repeat(1_800),
     "target batch alpha " + "relevant ".repeat(1_800),
     "target batch alpha " + "relevant ".repeat(1_800),
   ]);
   const cap = 5_000;
-  expect(budgetRelevantKnowledge(f.values, cap, "target batch alpha").commits).toEqual([f.commits[1], f.commits[2]]);
-  setKnowledgeInjection(f.memory, cap);
+  expect(budgetKnowledge(f.values, cap).commits).toEqual([f.commits[1], f.commits[2]]);
+  setKnowledgeCapacity(f.memory, cap);
   const first = freezeConsolidation(f.memory.store, f.target, f.memory.config);
   const second = freezeConsolidation(f.memory.store, f.target, f.memory.config);
   expect(first.prepared).toEqual(second.prepared);

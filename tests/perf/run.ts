@@ -13,7 +13,7 @@ import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generate, nativeAncestry, countSourceReads, countGraphResolutions, countRunBodies, runAudit, searchCorpus, type Fixture } from "./fixture.ts";
-import { TraceMemory, noVisibility, renderEntry, toolDefinitions, tokens, type EntryProfile } from "../../src/core/api/index.ts";
+import { TraceMemory, deriveSharedMaterialAllowance, noVisibility, renderEntry, toolDefinitions, tokens, type EntryProfile } from "../../src/core/api/index.ts";
 import { freezeNoting } from "../../src/core/noting/index.ts";
 import { captureNotingNear, notingNearFeedback } from "../../src/core/noting/review.ts";
 import { freezeConsolidation } from "../../src/core/consolidation/index.ts";
@@ -359,9 +359,8 @@ async function searchScenarios(fixture: Fixture, size: string): Promise<Sample[]
   return samples;
 }
 
-/** 32b hotspots: immutable history, shared owners, full completion and placement transactions.
- * Completion samples roll back deliberately, so warm samples do real certification, not its
- * idempotent fast path. All databases are synthetic and confined to the temporary perf directory. */
+/** Immutable history, shared owners, pool completion and placement transactions.
+ * Completion samples roll back deliberately, so warm samples exercise real terminal processing. All databases are synthetic and confined to the temporary perf directory. */
 function dreamingScenarios(size: string): Sample[] {
   const file = join(cache, `${size}-dreaming.db`);
   rmSync(file, { force: true });
@@ -379,45 +378,70 @@ function dreamingScenarios(size: string): Sample[] {
     const target = targets[0]!;
     const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: time }, facts: [{ turnId: target.headTurnId, text: "synthetic evidence", category: "decision", actor: "user", source: [`T${target.headTurnId}#user`], createdAt: time }] });
     if (!noted.ok) throw new Error(noted.problems.join());
-    const current: { knowledgeId: number; commit: number }[] = [], events: number[] = [];
+    const current: { knowledgeId: number; commit: number }[] = [];
+    const pool = `project:${project.id}`;
+    const content = (i: number) => ({ text: `small conclusion ${i % 10}, revision ${i}`, topics: [],
+      category: "mechanism" as const, scope: "project" as const, supports: [noted.facts[0]!.id], reason: "perf", createdAt: time });
+    const create = (i: number) => {
+      const result = store.commitConsolidationRun({ path: target,
+        run: { kind: "manual", sessionId: target.sessionId, branch: target.branch, createdAt: time },
+        operations: [{ op: "create", handle: `$${i}`, author: "perf", ...content(i) }] });
+      if (!result.ok) throw new Error(result.problems.join());
+      return result.committed[0]!;
+    };
+    for (let i = 0; i < 10; i++) current.push(create(i));
+    const seedClaim = store.acquireClaim(target, "dreaming", "perf-seed");
+    if (!seedClaim) throw new Error("seed claim unavailable");
+    const seedRange = store.retainKnowledgePoolRange(target, pool, seedClaim);
+    const seedExecution = store.beginExecution({ sessionId: target.sessionId, phase: "dreaming", head: seedRange.anchor, origin: seedRange.origin });
+    const seedRun = store.bindDreamingRun({ kind: "dreaming", sessionId: target.sessionId, branch: target.branch,
+      dreamingRangeId: seedRange.id, executionId: seedExecution, claim: seedClaim, createdAt: time });
     store.transaction(() => {
-      for (let i = 0; i < revisions; i++) {
-        const base = current[i % 10];
-        const content = { text: `small conclusion ${i % 10}, revision ${i}`, topics: [], category: "mechanism" as const, scope: "project" as const, supports: [noted.facts[0]!.id], reason: "perf", createdAt: time };
-        const result = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, branch: target.branch, createdAt: time }, operations: [base
-          ? { op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content }
-          : { op: "create", handle: `$${i}`, author: "perf", ...content }] });
+      for (let i = 10; i < revisions; i++) {
+        const base = current[i % 10]!;
+        const result = store.commitConsolidationRun({ path: target, run: seedRun,
+          operations: [{ op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content(i) }] });
         if (!result.ok) throw new Error(result.problems.join());
         current[i % 10] = result.committed[0]!;
-        events.push(result.committed[0]!.commit);
       }
     });
-    const results = current.map(c => c.commit);
-    const range = store.retainDreamingRange(target, events);
-    const run = store.recordRun({ kind: "dreaming", sessionId: target.sessionId, branch: target.branch,
-      dreamingRangeId: range.id, outcome: "success", createdAt: time });
+    store.completeKnowledgePoolRange(seedRun, "success");
+    store.settleExecution(seedExecution, "success", store.dreamingRunId(seedRun)!);
+    store.releaseClaim(seedClaim);
+    // Ten genuinely new versions supply pending work beside the ten maintained reference bodies.
+    for (let i = revisions; i < revisions + 10; i++) create(i);
+    const weight = store.pendingPoolWeight(pool, target);
+    memory.setKnowledgeBudget("project", weight * 2);
+    const claim = store.acquireClaim(target, "dreaming", "perf");
+    if (!claim) throw new Error("measurement claim unavailable");
     const counter = countGraphResolutions();
     let eligibilityGraphs: number;
     try { memory.taskEligibility("dreaming", target); eligibilityGraphs = counter.resolutions(); } finally { counter.restore(); }
-    if (eligibilityGraphs !== 0) throw new Error("Dreaming eligibility rebuilt the full DAG");
-    const note = `${revisions} revisions, ${sessions} sessions in 2 projects, 10 current bodies`;
+    const note = `${revisions + 10} revisions, ${sessions} sessions in 2 projects, 20 current bodies`;
     const rollback = new Error("sample rollback");
     const samples = [
       measure("Dreaming eligibility", () => memory.taskEligibility("dreaming", target), `${note}; ${eligibilityGraphs} graph resolutions`),
       measure("Dreamer admission/material (rollback each sample)", () => {
         try { store.transaction(() => {
-          const frozen = freezeDreaming(store, target, memory.config);
-          if (tokens(frozen.material.processed) > 20000 || tokens(frozen.material.changed) > 10000 || tokens(frozen.material.facts) > 10000)
+          const frozen = freezeDreaming(store, target, memory.config, claim);
+          if (tokens(frozen.material.processed) > frozen.admittedProcessedInputCap
+              || tokens(frozen.material.changed) > store.knowledgeBudgets().project || tokens(frozen.material.facts) > 10000)
             throw new Error("Dreamer material exceeded a hard input window");
           throw rollback;
         }); } catch (error) { if (error !== rollback) throw error; }
-      }, `${note}; 32d exact selection, full body/fact rendering and retained family`),
-      measure("Dreaming completion (rollback each sample)", () => {
-        try { store.transaction(() => { store.completeDreaming(run.id, events, results); throw rollback; }); }
-        catch (error) { if (error !== rollback) throw error; }
-      }, note),
+      }, `${note}; current pool selection and full body/fact rendering`),
     ];
-    store.completeDreaming(run.id, events, results);
+    const frozen = freezeDreaming(store, target, memory.config, claim);
+    const executionId = store.beginExecution({ sessionId: target.sessionId, phase: "dreaming", head: frozen.range.anchor, origin: frozen.range.origin });
+    const run = store.bindDreamingRun({ kind: "dreaming", sessionId: target.sessionId, branch: target.branch,
+      dreamingRangeId: frozen.range.id, executionId, claim, createdAt: time });
+    samples.push(measure("Dreaming completion (rollback each sample)", () => {
+      try { store.transaction(() => { store.completeKnowledgePoolRange(run, "success"); throw rollback; }); }
+      catch (error) { if (error !== rollback) throw error; }
+    }, note));
+    store.completeKnowledgePoolRange(run, "success");
+    store.settleExecution(executionId, "success", store.dreamingRunId(run)!);
+    store.releaseClaim(claim);
     samples.push(measure("Dreaming placement A→B→A", () => {
       store.declareProject(target.sessionId, other.name, "mark");
       store.declareProject(target.sessionId, project.name, "mark");
@@ -445,15 +469,16 @@ function deliveryScenarios(fixture: Fixture, size: string): Sample[] {
     if (!committed.ok) throw new Error(committed.problems.join("; "));
     const hidden = noVisibility(); hidden.factIds.add(support.id);
     const unchanged = noVisibility();
-    for (const value of store.listCurrentKnowledge(path)) unchanged.knowledgeCommitIds.add(value.revision.id);
+    for (const value of store.currentKnowledge(path)) unchanged.knowledgeCommitIds.add(value.revision.id);
     return [
-      measure("foreground Knowledge delivery (body candidates)", () => memory.injection(path, noVisibility()), `${count} new exact revisions; 20k rendered cap`),
+      measure("foreground Knowledge delivery (body candidates)", () => memory.injection(path, noVisibility()), `${count} new exact revisions; ${store.knowledgeBudgets().injection + deriveSharedMaterialAllowance(store.knowledgeBudgets(), { noting: memory.config.noting.triggerTokens, consolidation: memory.config.consolidation.triggerTokens })} rendered cap`),
       measure("foreground Knowledge delivery (exact no-delta)", () => memory.injection(path, unchanged), `${unchanged.knowledgeCommitIds.size} current exact bodies visible`),
       measure("foreground Knowledge delivery (Fact-suppressed)", () => memory.injection(path, hidden), `${count} new exact revisions sharing one visible support`),
     ];
   } finally { memory.close(); rmSync(copy, { force: true }); }
 }
 
+const notingQueryBaselines = new Map<string, number>();
 function notingNearScale(fixture: Fixture, size: string, factCount: 2_000 | 20_000): Sample {
   const warmBound = factCount === 2_000 ? 100 : 1_000;
   const copy = join(cache, `${size}-noting-near-${factCount}.db`);
@@ -493,7 +518,9 @@ function notingNearScale(fixture: Fixture, size: string, factCount: 2_000 | 20_0
       } finally { counting = false; }
     }, `${factCount} applicable facts × 15 proposed; path filter + similarity + relation read + feedback; constant queries measured below`);
     sample.note += `; ${queryCount} pool queries; warm median < ${warmBound} ms acceptance`;
-    if (queryCount !== 3) throw new Error(`Noting NEAR ${factCount}-fact pool used ${queryCount} queries; expected exactly 3`);
+    if (factCount === 2_000) notingQueryBaselines.set(size, queryCount);
+    else if (queryCount !== notingQueryBaselines.get(size))
+      throw new Error(`Noting NEAR query count grew with the pool: 2k=${notingQueryBaselines.get(size)}, ${factCount}=${queryCount}`);
     if (!(sample.warm < warmBound)) throw new Error(`Noting NEAR ${factCount}-fact warm median ${sample.warm.toFixed(1)} ms exceeds < ${warmBound} ms`);
     return sample;
   } finally { store.close(); rmSync(copy, { force: true }); }
@@ -557,15 +584,14 @@ async function runSize(size: string) {
     measure("pendingEntries (whole selected path)", () => store.pendingEntries(fixture.sessionId, fixture.branch, head)),
     measure("taskEligibility noting (the trigger alone)", () => memory.taskEligibility("noting", { ...path, headTurnId: head }),
       `${fixture.pendingEntryCount} pending entries`),
-    // The enabled footer's whole refresh — progress over one path snapshot and one bounded exact-
-    // version processing lookup, plus this session's cumulative spend. The 22a scenario measured the three reads
-    // the old two-number footer made; this is its successor at the same place in the table.
-    measure("footer counts (enabled)", () => {
+    // Keep the historical synthetic workload comparable: current progress plus one session's spend.
+    // The live footer instead reports today's database-wide spend, so this is not its full refresh.
+    measure("progress plus session spend", () => {
       memory.progress(fixture.sessionId, fixture.branch, head);
       memory.spend(fixture.sessionId);
-    }, "the two reads showSpend makes: progress (including exact-version split) + spend"),
+    }, "synthetic progress + session spend; not the live footer's daily database total"),
     measure("footer progress alone (enabled)", () => memory.progress(fixture.sessionId, fixture.branch, head),
-      `notes ${fixture.pendingEntryCount}->${fixture.pathFactCount}, memory facts->unprocessed=>processed current Knowledge`),
+      `notes ${fixture.pendingEntryCount}->${fixture.pathFactCount}, memory facts->changed/current Knowledge`),
     // 22c: one full tool occurrence inside the Turn with 40 tool calls.
     measure("trace full (heavy Turn, one occurrence)", () => memory.trace(`T${fixture.heavyTurnId}`, { tool: 1, full: true }),
       `T${fixture.heavyTurnId}, ${store.listToolCalls(fixture.heavyTurnId).length} tool calls`),

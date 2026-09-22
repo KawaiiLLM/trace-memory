@@ -3,7 +3,7 @@ import { sourceSeededMemory, type ConsolidationAgentInput } from "../../source-f
 
 // These former model-unit cases now drive the host's actual Consolidation seam.
 async function checkMemoryBatch(output: unknown) {
-  const memory = sourceSeededMemory(":memory:", async raw => { const input = raw as ConsolidationAgentInput; input.reportRequest({ fake: true }); const tool = input.tools.find(t => t.name === "memory")!; tool.execute(output); input.reportRequest({ fake: true }); tool.execute(output); return { outcome: "success", output: "done", request: { fake: true } }; }, { consolidation: { nearThreshold: 1 } });
+  const memory = sourceSeededMemory(":memory:", async raw => { const input = raw as ConsolidationAgentInput; input.reportRequest({ fake: true }); input.tools.find(t => t.name === "memory")!.execute(output); return { outcome: "success", output: "done", request: { fake: true } }; });
   try {
     const p = memory.store.createProject({ name: "validation", declaredBy: "mark" });
     const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
@@ -21,16 +21,13 @@ async function checkMemoryBatch(output: unknown) {
 }
 
 describe("checkMemoryBatch", async () => {
-  test("44: accepts Consolidator create/update operations and skipped facts", async () => {
+  test("64a: accepts Consolidator create operations and skipped facts", async () => {
     const { problems, value } = await checkMemoryBatch({ operations: [
       { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] },
-      { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K5@5", text: "Updated wording.", scope: "project", category: "constraint", supports: ["F2"] },
-      { op: "update", topics: [], reason: "Independent fact-backed correction.", id: "K4@4", text: "Corrected single claim.", scope: "project", category: "constraint", supports: ["F2", "F3"] },
     ], skipped: [{ fact: "F6", because: "duplicate of F2" }] });
     expect(problems).toEqual([]);
-    expect(value!.operations.filter((op: any) => op.op === "create")).toHaveLength(1);
-    expect(value!.operations.filter((op: any) => op.op === "update")).toHaveLength(2);
-    expect(value!.operations.some((op: any) => op.op === "merge")).toBe(false);
+    expect(value!.operations).toHaveLength(1);
+    expect(value!.operations[0]!.op).toBe("create");
   });
 
   test("44: rejects Consolidator archive with Dreamer guidance", async () => {

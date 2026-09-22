@@ -190,7 +190,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId); // entry-aware (review 2026-09-08)
   const snapshot = store.pathSnapshot(path); // one membership for this freeze, knowledge and facts alike
   const headEntryId = store.sourceHeadEntryId(session.id, input.branch, input.headTurnId, snapshot);
-  const knowledge = store.listCurrentKnowledge(path, {}, snapshot);
+  const knowledge = store.currentKnowledge(path, {}, snapshot);
   // 26 amendment 2: the history block carries the facts applicable on this freeze's path, never the
   // whole session's — a sibling branch's fact is not this Noter's history. `listSessionFacts`'s
   // freshness order is what `budgetFacts` selects by, so it is filtered, not replaced.
@@ -286,7 +286,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
  * The entry views and the fact lines are supplied by the freeze, which renders each of them once for
  * the whole negotiation (22d): re-freezing a smaller batch changes which of them are used, never what
  * any one of them says. */
-function notingMaterial(frozen: { sessionId: number; headEntryId?: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }) {
+function notingMaterial(frozen: { sessionId: number; headEntryId?: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["currentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }) {
   const { sessionId, entries, turns, knowledge, facts: applicable } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };

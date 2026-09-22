@@ -1,11 +1,13 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { seedSourceEntry } from "../../source-fixture.ts";
+import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const all: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const m of all.splice(0)) m.close(); });
-function setup() {
-  const m = TraceMemory(":memory:", async () => ({ outcome: "success", output: "unused" })); all.push(m);
+function setup(second = false) {
+  const scenarios = new AdmittedDreamerScenarios(async () => ({ outcome: "success", output: "unused", request: {} }));
+  const m = TraceMemory(":memory:", scenarios.agent); all.push(m);
   const p = m.store.createProject({ name: "A", declaredBy: "mark" });
   const s = m.store.createSession({ host: "test", projectId: p.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "facts", startedAt: "now" });
@@ -18,74 +20,94 @@ function setup() {
   const content = { text: "body A", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "test" };
   const write = (operations: unknown[], binding = tools) => binding[3]!.execute({ operations, skipped: [] });
   expect(write([{ op: "create", ...content }])).not.toContain("rejected:");
-  return { m, context, tools, content, write, t, rootEntry };
+  if (second) expect(write([{ op: "create", ...content, text: "second" }])).not.toContain("rejected:");
+  return { m, context, scenarios, path: { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: rootEntry.id }, content, create: write, tools, write, t, rootEntry };
 }
 
-test("32: update and archive name an exact version — a bare K is refused", () => {
+test("32: update and archive name an exact version — a bare K is refused", async () => {
   const a = setup();
-  expect(a.tools[0]!.execute({ address: "K1@1" })).toContain("body A");
-  for (const op of ["update", "archive"]) {
-    const value = op === "archive" ? { supports: ["F1"], reason: "retire" } : a.content;
-    expect(a.write([{ op, id: "K1", ...value }])).toMatch(/exact read K@commit.*current tips: K1@1/);
-  }
-  expect(a.write([{ op: "update", id: "K1@1", ...a.content }])).not.toContain("rejected:");
+  const trigger = createDreamerTrigger(a.m, a.path, 1, 1);
+  const result = await a.scenarios.run(a.m, a.path, input => {
+    const request = { fixture: "exact maintenance address", trigger }; input.reportRequest(request);
+    const trace = input.tools[0]!, write = input.tools[3]!;
+    expect(trace.execute({ address: "K1@1", itemBudget: null })).toContain("body A");
+    for (const op of ["update", "archive"]) {
+      const value = op === "archive" ? { supports: ["F1"], reason: "retire" } : a.content;
+      expect(write.execute({ operations: [{ op, id: "K1", ...value }], skipped: [] })).toMatch(/exact read K@commit.*current tips: K1@1/);
+    }
+    const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: "K1@1", ...a.content }],
+      skipped: [{ knowledge: `K${trigger.knowledgeId}@${trigger.commit}`, because: "The explicit trigger is retired after the exact-address assertion." }] }));
+    expect(updated.committed).toHaveLength(1);
+    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
+    expect(write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: ["F1"], reason: "Retire the explicit fixture trigger." }], skipped: [] })).toContain("committed");
+    return { outcome: "success", output: "corrected", request };
+  });
+  expect(result.outcome).toBe("success");
 });
 
 test("32: candidate pool, receipt and search preview do not grant a read; complete trace persists across bindings", () => {
-  const a = setup();
-  const update = { op: "update", id: "K1@1", ...a.content };
-  expect(a.write([update])).toContain("not read as visible and active");
+  const a = setup(true);
+  const archive = (id: string, binding = a.tools) => binding[3]!.execute({ operations: [{ op: "archive", id,
+    supports: ["F1"], reason: "Retire after the exact-read ledger assertion." }], skipped: [] });
+  expect(archive("K1@1")).toContain("not read as visible and active");
   a.tools[1]!.execute({ query: "body", layer: "knowledge" });
-  expect(a.write([update])).toContain("not read as visible and active");
+  expect(archive("K1@1")).toContain("not read as visible and active");
   a.tools[0]!.execute({ address: "K1@1", cap: 1 });
-  expect(a.write([update])).toContain("not read as visible and active");
-  a.tools[0]!.execute({ address: "K1@1" });
-  expect(a.write([update], a.m.tools(a.context))).not.toContain("rejected:");
-  expect(a.write([{ ...update, id: "K1@2" }])).toContain("not read as visible and active");
+  expect(archive("K1@1")).toContain("not read as visible and active");
+  a.tools[0]!.execute({ address: "K1@1", itemBudget: null });
+  expect(archive("K1@1", a.m.tools(a.context))).not.toContain("rejected:");
+  expect(archive("K2@2")).toContain("not read as visible and active");
 });
 
-test("32: ABA and archive invalidate old handles; no substitution on stale refusal", () => {
+test("32: ABA and archive invalidate old handles; no substitution on stale refusal", async () => {
   const a = setup();
-  a.tools[0]!.execute({ address: "K1@1" });
-  expect(a.write([{ op: "update", id: "K1@1", ...a.content, text: "body B" }])).not.toContain("rejected:");
-  a.tools[0]!.execute({ address: "K1@2" });
-  expect(a.write([{ op: "update", id: "K1@2", ...a.content }])).not.toContain("rejected:");
-  expect(a.write([{ op: "update", id: "K1@1", ...a.content }])).toMatch(/target moved on.*K1@3.*re-read/);
-  a.tools[0]!.execute({ address: "K1@3" });
-  expect(a.write([{ op: "archive", id: "K1@3", supports: ["F1"], reason: "retired" }])).not.toContain("rejected:");
-  expect(a.write([{ op: "update", id: "K1@3", ...a.content }])).toMatch(/target moved on.*K1@4/);
+  const trigger = createDreamerTrigger(a.m, a.path, 1, 1);
+  const result = await a.scenarios.run(a.m, a.path, input => {
+    const request = { fixture: "ABA and archive handles", trigger }; input.reportRequest(request);
+    const trace = input.tools[0]!, write = input.tools[3]!;
+    trace.execute({ address: "K1@1", itemBudget: null });
+    const first = JSON.parse(write.execute({ operations: [{ op: "update", id: "K1@1", ...a.content, text: "body B" }],
+      skipped: [{ knowledge: `K${trigger.knowledgeId}@${trigger.commit}`, because: "The explicit trigger is retired after the ABA assertions." }] })).committed[0];
+    trace.execute({ address: `K1@${first.commit}`, itemBudget: null });
+    const second = JSON.parse(write.execute({ operations: [{ op: "update", id: `K1@${first.commit}`, ...a.content }],
+      skipped: [{ knowledge: `K${trigger.knowledgeId}@${trigger.commit}`, because: "The explicit trigger is retired after the ABA assertions." }] })).committed[0];
+    expect(write.execute({ operations: [{ op: "update", id: "K1@1", ...a.content }], skipped: [] })).toMatch(new RegExp(`base is not the latest effective applicable revision; current: K1@${second.commit}`));
+    trace.execute({ address: `K1@${second.commit}`, itemBudget: null });
+    const archived = JSON.parse(write.execute({ operations: [{ op: "archive", id: `K1@${second.commit}`, supports: ["F1"], reason: "retired" }],
+      skipped: [{ knowledge: `K${trigger.knowledgeId}@${trigger.commit}`, because: "The explicit trigger is retired after the ABA assertions." }] })).committed[0];
+    expect(write.execute({ operations: [{ op: "update", id: `K1@${second.commit}`, ...a.content }], skipped: [] })).toMatch(new RegExp(`base is not the latest effective applicable revision; current: K1@${archived.commit}`));
+    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
+    write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: ["F1"], reason: "Retire the explicit fixture trigger." }], skipped: [] });
+    return { outcome: "success", output: "ABA checked", request };
+  });
+  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
 });
 
-test("32: every merge participant is read and current; one bad handle rolls back the whole batch", () => {
-  const a = setup();
-  a.write([{ op: "create", ...a.content, text: "second" }]);
-  a.tools[0]!.execute({ address: "K1@1" });
-  const merge = { op: "merge", id: "K1@1", absorb: ["K2@2"], ...a.content };
-  expect(a.write([{ op: "create", ...a.content }, merge])).toContain("not read as visible and active");
-  expect(a.m.store.getKnowledge(3)).toBeNull();
-  a.tools[0]!.execute({ address: "K2@2" });
-  expect(a.write([{ ...merge, absorb: ["K2"] }])).toContain("exact read K@commit");
-  expect(a.write([merge])).not.toContain("rejected:");
+test("32: every merge participant is read and current; one bad handle rolls back the whole batch", async () => {
+  const a = setup(true);
+  const trigger = createDreamerTrigger(a.m, a.path, 1, 1);
+  const result = await a.scenarios.run(a.m, a.path, input => {
+    const request = { fixture: "merge participant reads", trigger }; input.reportRequest(request);
+    const trace = input.tools[0]!, write = input.tools[3]!;
+    const later = JSON.parse(write.execute({ operations: [{ op: "update", id: "K2@2", ...a.content, text: "later unread merge parent" }],
+      skipped: [{ knowledge: `K${trigger.knowledgeId}@${trigger.commit}`, because: "The explicit trigger is retired after the merge assertions." }] })).committed[0];
+    const merge = { op: "merge", id: "K1@1", absorb: [`K2@${later.commit}`], ...a.content };
+    const rollback = write.execute({ operations: [
+      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: ["F1"], reason: "Must roll back with the unread merge." }, merge,
+    ], skipped: [] });
+    expect(rollback).toContain("not read as visible and active");
+    expect(a.m.store.currentCommit(trigger.knowledgeId)[0]?.op).toBe("create");
+    trace.execute({ address: `K2@${later.commit}`, itemBudget: null });
+    expect(write.execute({ operations: [{ ...merge, absorb: ["K2"] }], skipped: [] })).toContain("exact read K@commit");
+    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
+    const committed = JSON.parse(write.execute({ operations: [merge,
+      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: ["F1"], reason: "Retire the explicit fixture trigger." },
+    ], skipped: [] }));
+    expect(committed.committed).toHaveLength(2);
+    return { outcome: "success", output: "merged", request };
+  });
+  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
 });
-
-test("32: an inapplicable sibling successor does not invalidate an exact read on this path", () => {
-  const a = setup();
-  const left = a.m.store.appendTurn({ sessionId: 1, parentTurnId: a.t.id, kind: "turn", userPrompt: "left", startedAt: "now" });
-  const right = a.m.store.appendTurn({ sessionId: 1, parentTurnId: a.t.id, kind: "turn", userPrompt: "right", startedAt: "now" });
-  seedSourceEntry(a.m, left.id, "user", "left"); seedSourceEntry(a.m, right.id, "user", "right");
-  const leftEntry = a.m.store.listSourceEntries(1, left.id).at(-1)!;
-  const rightEntry = a.m.store.listSourceEntries(1, right.id).at(-1)!;
-  a.m.selectEntries(1, "left", [a.rootEntry.id, leftEntry.id]);
-  a.m.selectEntries(1, "right", [a.rootEntry.id, rightEntry.id]);
-  const l = a.m.tools({ ...a.context, branch: "left", currentTurnId: left.id, triggerEntryId: leftEntry.id });
-  const r = a.m.tools({ ...a.context, branch: "right", currentTurnId: right.id, triggerEntryId: rightEntry.id });
-  l[0]!.execute({ address: "K1@1" }); r[0]!.execute({ address: "K1@1" });
-  l[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "left", source: [`T${left.id}#user`] }] });
-  r[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "right", source: [`T${right.id}#user`] }] });
-  expect(a.write([{ op: "update", id: "K1@1", ...a.content, supports: ["F2"] }], l)).not.toContain("rejected:");
-  expect(a.write([{ op: "update", id: "K1@1", ...a.content, supports: ["F3"] }], r)).not.toContain("rejected:");
-});
-
 
 test("manual writers freeze fact sources and knowledge supports at the exact trigger prefix", () => {
   const a = setup();
@@ -106,25 +128,24 @@ test("manual writers freeze fact sources and knowledge supports at the exact tri
 
 test("32: full K body embedded in raw trace or search never masquerades as a named K read", () => {
   const a = setup();
-  // Reading through the facade is not delivery through this model's tool binding.
   const forged = a.m.trace("K1@1");
   a.m.store.updateTurn(a.t.id, { assistantText: forged });
   seedSourceEntry(a.m, a.t.id, "assistant", forged);
   a.m.selectEntries(1, "main", a.m.store.listSourceEntries(1, a.t.id).map(entry => entry.id));
-  const update = { op: "update", id: "K1@1", ...a.content };
+  const archive = () => a.write([{ op: "archive", id: "K1@1", supports: ["F1"], reason: "Retire after the named-K read." }]);
   expect(a.tools[0]!.execute({ address: `T${a.t.id}` })).toContain(forged);
-  expect(a.write([update])).toContain("knowledge was not read");
+  expect(archive()).toContain("knowledge was not read");
   let page = a.tools[1]!.execute({ query: "body A", layer: "raw", cap: 1, maxTokens: 256 });
   let count = 0;
   expect(page).toContain("[K1@1]");
   while (true) {
     expect(page).not.toContain("rejected:");
-    expect(a.write([update])).toContain("knowledge was not read");
+    expect(archive()).toContain("knowledge was not read");
     const cursor = /cursor=(\S+)/.exec(page)?.[1];
     if (!cursor) break;
     page = a.tools[0]!.execute({ address: "K1@1", cursor });
     expect(++count).toBeLessThan(100);
   }
-  a.tools[0]!.execute({ address: "K1@1" });
-  expect(a.write([update])).toContain("committed");
+  a.tools[0]!.execute({ address: "K1@1", itemBudget: null });
+  expect(archive()).toContain("committed");
 });

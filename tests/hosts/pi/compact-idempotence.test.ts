@@ -84,7 +84,8 @@ test("persisted hook lifecycle: repeat, N/C, 117 knowledge commits, small turns 
     expect(added.summary).toContain("THIRD"); expect(added.summary).toContain("FOURTH");
     expect(await compact()).toEqual(added);
     expect(store.listSourceEntries(1)).toHaveLength(8);
-    expect(f.sent).toHaveLength(4); // no summarizer or extraction provider calls
+    expect(f.sent).toHaveLength(5); // four foreground requests plus one per-pool Dreamer trigger
+    expect(store.listRuns(1).filter(run => run.kind === "dreaming")).toHaveLength(1);
 
     const tip = f.manager().getLeafId()!;
     f.manager().branch(early);

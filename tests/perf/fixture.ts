@@ -304,9 +304,10 @@ export interface SearchCorpus { query: string; revisions: number; historical: nu
 
 /** Knowledge for the search workload (ticket 22c): `revisions` commits that all match one literal
  * query, on top of an existing long-history fixture, so applicability is decided against real facts
- * and Turns. Every fifth commit opens a new knowledge; the rest are updates, so most hits are
- * historical (superseded on this path). Every tenth knowledge ends in two updates written from two
- * sibling Turns of the head instead of one: two tips of the same base that no single path carries
+ * and Turns. Every fifth commit opens a new knowledge; the rest are explicitly imported historical
+ * Dreamer updates, preserving the immutable revision graph without pretending that a current
+ * Consolidator lifecycle may update. Every tenth knowledge ends in two imported updates grounded in
+ * two sibling Turns of the head instead of one: two tips of the same base that no single path carries
  * together — the divergent revisions, which read as "another branch" from main. */
 export function searchCorpus(dbPath: string, options: { revisions: number; sessionId: number; branch: string; headTurnId: number }): SearchCorpus {
   const query = "SEARCHNEEDLE";
@@ -332,28 +333,38 @@ export function searchCorpus(dbPath: string, options: { revisions: number; sessi
         return { path: { sessionId, branch: name, headTurnId: turn.id }, factId: noted.facts[0]!.id };
       };
       const forks = [fork("corpusC"), fork("corpusD")];
-      const commit = (on: typeof path, operation: Parameters<Store["commitConsolidationRun"]>[0]["operations"][number]) => {
-        const run = store.bindRunOrigin({ kind: "consolidation", sessionId, branch: on.branch, createdAt: time }, store.triggerOrigin(on));
-        const done = store.commitConsolidationRun({ path: on, run, operations: [operation] });
+      const create = (i: number) => {
+        const run = store.bindRunOrigin({ kind: "consolidation" as const, sessionId, branch, createdAt: time }, store.triggerOrigin(path));
+        const done = store.commitConsolidationRun({ path, run, operations: [{ op: "create", handle: `corpus-${i}`, author: "perf",
+          text: `${query} conclusion ${i}`, category: "mechanism", scope: "session", supports, reason: "search corpus",
+          topics: [i % 3 ? "corpus" : query], createdAt: time }] });
         if (!done.ok) throw new Error(done.problems.join("; "));
         return done.committed[0]!;
       };
+      // This workload deliberately needs immutable history which current APIs correctly refuse to
+      // author through the create-only Consolidator. Import only those old update rows, just as a
+      // migrated database preserves them. Reusing the root's real run preserves session ownership;
+      // no Dreamer success or processing record is fabricated.
+      const importHistoricalUpdate = (knowledgeId: number, parentId: number, originRunId: number, text: string, evidence: number[]) =>
+        Number(store.db.prepare(`INSERT INTO knowledge_revisions
+          (knowledge_id, parent_id, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role)
+          VALUES (?, ?, ?, 'mechanism', 'session', ?, 'change', 'update', 'imported historical search corpus', '["corpus"]', ?, ?, 'dreaming')`)
+          .run(knowledgeId, parentId, text, JSON.stringify(evidence), originRunId, time).lastInsertRowid);
       let made = 0, historical = 0, divergent = 0, knowledge = 0;
       for (let i = 0; made < options.revisions; i++) {
-        const created = commit(path, { op: "create", handle: `corpus-${i}`, author: "perf", text: `${query} conclusion ${i}`,
-          category: "mechanism", scope: "session", supports, reason: "search corpus", topics: [i % 3 ? "corpus" : query], createdAt: time });
+        const created = create(i);
+        const originRunId = store.knowledgeRevision(created.commit)!.runId!;
         let base = created.commit;
         made++; knowledge++;
         for (let j = 0; j < 4 && made < options.revisions; j++) {
           if (i % 10 === 9 && j === 3) {
             for (const branchPoint of forks) {
-              commit(branchPoint.path, { op: "update", knowledgeId: created.knowledgeId, baseCommit: base, text: `${query} conclusion ${i} on ${branchPoint.path.branch}`,
-                category: "mechanism", scope: "session", supports: [...supports, branchPoint.factId], reason: "search corpus divergence", topics: ["corpus"], createdAt: time });
+              importHistoricalUpdate(created.knowledgeId, base, originRunId, `${query} conclusion ${i} on ${branchPoint.path.branch}`,
+                [...supports, branchPoint.factId]);
               made++; divergent++;
             }
           } else {
-            base = commit(path, { op: "update", knowledgeId: created.knowledgeId, baseCommit: base, text: `${query} conclusion ${i} revision ${j + 1}`,
-              category: "mechanism", scope: "session", supports, reason: "search corpus revision", topics: ["corpus"], createdAt: time }).commit;
+            base = importHistoricalUpdate(created.knowledgeId, base, originRunId, `${query} conclusion ${i} revision ${j + 1}`, supports);
             made++; historical++;
           }
         }

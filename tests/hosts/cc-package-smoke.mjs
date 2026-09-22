@@ -20,8 +20,17 @@ try {
   const plugin = join(temporary, "plugin"); cpSync(join(root, "plugin"), plugin, { recursive: true });
   assert.match(readFileSync(join(plugin, "README.md"), "utf8"), /Node >=24\.6\.0/);
   const defaults = JSON.parse(readFileSync(join(plugin, "cc.config.json"), "utf8"));
-  assert.equal(defaults.worker.model, "opus");
-  assert.equal(defaults.worker.effort, "high");
+  for (const [modelKey, thinkingKey, model] of [
+    ["notingModel", "notingThinking", "sonnet"],
+    ["consolidationModel", "consolidationThinking", "opus"],
+    ["dreaming.model", "dreaming.thinking", "opus"],
+  ]) {
+    assert.equal(defaults[modelKey], model);
+    assert.equal(defaults[thinkingKey], "high");
+    assert.equal(defaults.worker.contextWindows[model], null, "each model capacity requires explicit preparation");
+  }
+  for (const retired of ["model", "effort", "contextWindow"])
+    assert.equal(Object.hasOwn(defaults.worker, retired), false, `retired shared worker.${retired} must not ship`);
   assert.equal(Object.hasOwn(defaults, "dbPath"), false, "CC shares Pi's default database without sharing model preferences");
   const skill = readFileSync(join(plugin, "skills/trace/SKILL.md"), "utf8");
   assert.match(skill, /^---\nname: trace\n/);

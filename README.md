@@ -1,19 +1,22 @@
 # Trace Memory
 
-Traceable cross-session memory for Pi. A background Noter extracts facts from conversation, a Consolidator turns them into knowledge, and a bounded Dreamer maintains changed knowledge. Each knowledge revision links to its supporting facts and original source messages.
+Traceable cross-session memory for Pi and Claude Code. A background Noter extracts facts from conversation, a Consolidator creates knowledge, and a bounded Dreamer maintains it. Each knowledge revision links to supporting facts and original source messages.
 
-**Beta.7 release (`next`).** The Pi adapter is implemented and tested with Pi 0.85.1 on Node 24.6.0. Claude Code remains an unshipped stub. Real-workflow extraction and recall quality are still being evaluated.
+This checkout includes the Pi adapter and a separately packaged [Claude Code plugin](plugin/README.md). The changes below are unreleased; the historical Beta notes describe their own releases, not the current contract. Real-model extraction and maintenance quality remain separate from offline implementation tests.
 
 ## Unreleased
 
+- **Knowledge maintenance:** Consolidator creates only; Dreamer updates, merges, splits and archives within one pool. Manual writes allow create and archive. Current-version resolution uses directly cited facts and persisted lineage cursors, with commit-order priority and no fallback through archive or scope. Maintenance writes materialize their parents' supports; transactional current-base and claim checks remain.
+- **Per-pool scheduling:** Global/project/session budgets default to 4k/15k/1k. Each ingested entry checks pending current versions against half the corresponding pool budget. Terminal runs record the frozen range and their own outputs once; cancellation before the first commit records nothing. Unchanged residual excess does not retrigger by itself. Budgets trigger maintenance, not write rejection.
+- **Shared material allowance:** The three pool triggers plus Noter and Consolidator triggers derive a 25k shared allowance at defaults. Knowledge/facts/Raw bases are 20k/10k/10k; Knowledge input can use 45k and the compaction envelope at most 65k. Remove retired `dreaming.triggerTokens` and `compaction.overflowTokens` settings. Knowledge marks and the Consolidator review round are removed; Noter NEAR remains.
 - **Current context snapshot:** Other Pi extensions can synchronously request the freshly rendered Trace Memory compact material for the current persisted native node through the shared event bus. The read-only v1 result carries exact native/memory/source-path identity, text, token composition and supplied IDs; disabled, unready and over-capacity states are explicit and never invoke recovery, a worker, a summarizer or native compaction. See [the consumer contract](docs/pi.md#current-context-snapshot-for-other-extensions).
 - **Noter NEAR review:** A valid automatic Noting batch with lexically similar earlier facts now receives one system-generated comparison round before commit. The candidate pool and source membership are frozen at binding time; batches with no neighbours and all manual notes still commit immediately. NEAR is only a prompt to judge `support` or `negate`, never relation evidence or a commit authority.
 - **Noter NEAR audit:** Successful reviewed runs retain the originally shown pairs and record any still-near final fact/neighbour pairs without an explicit relation as the non-gating `unanswered_near` diagnostic. Reordering, dropping or rewriting the final batch is assessed by committed fact identity rather than original position; an absent diagnostic does not prove the comparison was understood.
 - **Proportional context composition:** Current session uses SDK usage and the model window for occupied/free capacity, while the local census supplies only category color proportions. Each positive category gets full cells plus its own partial remainder, so the 20-cell-wide grid can grow beyond 200 glyphs without hiding small categories. Difference and the local-over-SDK single-color fallback are gone; Memory projects Knowledge, Facts, Raw and Unclassified separately, and unavailable or overflowing capacity remains explicit.
 
-## Beta.7 changes — September 13, 2026
+## Historical Beta.7 — September 13, 2026
 
-Beta.7 combines Knowledge lineage and delivery changes, Dreamer workflow and database budgets, and the Current session display fixes.
+The following records the former Beta.7 behavior. Ticket 64 supersedes its applicability, processing, retry and budget rules; use [the domain glossary](CONTEXT.md) for the current contract.
 
 - **Lineage and processing:** New revisions use complete bodies with change-only supports and recursive exact-parent applicability. Path-aware concurrency permits proven sibling origins while rejecting comparable or unprovable consumers. Dreamer settlement separates supplied-event accounting from successor-free exact certification; actual maintenance of processed-reference knowledge inside the frozen family includes this exact run's terminal output without certifying the reference merely because it was read. An unchanged retained task blocked by an indivisible 10k admission item waits for an obligation-graph change or explicit retry instead of relaunching automatically.
 - **Foreground delivery:** Enabled ordinary prompts use one Knowledge-only predicate. Persisted exact bodies and complete state-transition notices share the remaining database-derived allowance (20k at defaults) as deterministic whole items. Visible Facts or source identities can suppress fully covered change evidence. Bounded Raw counts only when its exact database/native pair belongs to the selected session path; a truncated bounded view can still suppress delivery after its evidence text was removed.
@@ -26,7 +29,9 @@ Beta.7 combines Knowledge lineage and delivery changes, Dreamer workflow and dat
 
 ## Install
 
-Back up the database and worker logs before upgrading, then stop all old executors sharing that database. Released `0.1.0-beta.1` through `0.1.0-beta.6` databases upgrade in place using the supported atomic migrations covered by offline tests. Existing project assignments, Raw bytes and historical citations are retained. Remove the retired `render.knowledgeBlockTokens` key from every file/environment configuration layer before loading Beta.7; use Settings to edit the database policy instead. Invalid or retired configuration fails explicitly. This does not promise compatibility with arbitrary, partial development schemas; use a new `dbPath` for an untagged or unsupported development database.
+Back up the database and worker logs, validate on a consistent copy, then stop all older Pi and CC executors sharing the database before upgrading. Supported migrations are atomic and preserve source, fact and knowledge history. Historical empty supports inherit their parents' evidence; an unchanged old-default budget becomes 4k/15k/1k, while custom values remain. Only legacy-processed current visible versions receive processing records in their pools. This does not promise compatibility with arbitrary partial development schemas.
+
+Remove retired `render.knowledgeBlockTokens`, `dreaming.triggerTokens` and `compaction.overflowTokens` keys from all configuration layers; invalid or retired keys fail explicitly. Use Pi Settings for database budgets and [CC configuration instructions](plugin/README.md) for its independently stored phase settings.
 
 **Historical Beta.6 release notes — September 12, 2026:**
 
@@ -71,13 +76,13 @@ Start a new Pi process, run `/trace` (the menu, or status when headless), and us
 
 Enabled sessions make background model requests using your Pi credentials and may incur charges. By default, Noter and Consolidator use fresh subagents and follow the foreground model; Dreamer always uses a fresh subagent. The mode default applies only when no explicit override is supplied; existing `forkModeDefault: true` settings (including the legacy `noting.branchModeDefault` alias) still request fork execution.
 
-- **Inspect:** `/trace` opens the menu — Current session (context composition, three phase queues, status, On/Off, runs, project and marks), Catch up, Stop and Settings.
+- **Inspect:** `/trace` opens the menu — Current session (context composition, three phase queues, status, On/Off, runs and project), Catch up, Stop and Settings.
 - **Catch up:** `/trace catchup` drains a finite snapshot of pending work in subagent mode.
 - **Stop:** `/trace stop` cancels this executor's background work; future automatic triggers remain enabled.
 - **Turn off:** `/trace off` pauses this session's processing and future injection without deleting memory; `/trace on` resumes it. There is no global switch.
-- **Settings:** saves mode/model/thinking for Noter and Consolidator, model/thinking for Dreamer, and `closedSessionScope`: `project` (default, same-project executors), `global` (any executor), or `off` (leave closed-session work pending). It also edits the bound database's Global/Project/Session Knowledge budgets without writing Pi settings and shows the derived applicable, injection and Dreamer capacities. Scope governs all three background phases, not current-session processing or manual catchup. Changes apply to later tasks; running tasks keep their frozen admission ceiling. Use Stop to end running work.
-- **Watch:** the footer says what each stage still owes and what it has produced — `🧠 ● notes: 24->102 memory: 9->252=>54 cost: $0.12` is 24 entries left to note over 102 facts, then 9 facts left to consolidate over 252 unprocessed and 54 processed applicable current Knowledge versions on this branch, plus this session's cumulative memory spend. Processing is shared certification of the exact current version: a new or restored uncertified revision is pending even when an older event was settled; restored certified revisions are not. Archives and superseded versions are excluded. A disabled session shows `🧠 ○ off`.
-- **Share a project:** after the first assistant reply, use `/trace project <name>`. The same name in the same database shares a project across sessions. Without a declaration, each session has its own project. Files, working directories and Git remotes do not declare project membership.
+- **Settings:** saves phase mode/model/thinking and `closedSessionScope`: `project` (default), `global`, or `off`. Closed-session borrowing applies only to Noting and Consolidation; Dreamer processes a due pool visible at the current node. Database budgets are edited separately without writing Pi settings. Running tasks retain their frozen settings and material.
+- **Watch:** `🧠 ● notes: 24->102 memory: 9->252/306 cost: $0.12` means 24 pending entries, 102 facts, 9 unconsolidated facts, and 252 changed out of 306 current Knowledge versions. Processing records are scheduling state, not validity. Cost is today's memory spend across the shared database. A disabled session shows `🧠 ○ off`.
+- **Share a project:** `/trace project <name>` explicitly declares shared membership. New sessions may join the unique project already associated with their repository/directory; home and temporary directories do not select one. The same name in the same database shares a project across both hosts.
 
 The agent gets four tools: `trace`, `search`, `note`, and `memory`. Explicit reads can search across the local database; automatic knowledge selection and write evidence follow scope and conversation ancestry. Topics organize knowledge without changing those permissions.
 
@@ -88,8 +93,8 @@ The agent gets four tools: `trace`, `search`, `note`, and `memory`. Explicit rea
 - **Storage:** the default database is `~/.trace-memory/trace.db`; the installation example uses a separate Beta database. New worker logs default to `<Pi agent directory>/sessions/trace-memory/`; an explicit `runsDir` override is preserved. Existing logs are not moved. The files contain conversation content and model requests: keep them private. Log retention is not automatic.
 - **Evidence:** original stored source entries remain traceable. Facts are attributed records, not certified truth; knowledge revisions preserve their evidence and history.
 - **Compatibility:** Node 24.6.0 or later is required; Pi 0.85.1 is the tested host. Pi 0.85.0 has a known public-SDK import issue. Other host versions and providers are not all verified.
-- **Worker budgets:** default Noter admission uses 10k pending bounded-view tokens and batches at most 10k. Fresh Noter material contains at most 10k historical facts and 10k compressed Raw; Consolidation contains at most 10k knowledge and 10k pending facts. These are material limits, not provider-request limits: a fork inherits the foreground context, and instructions, tools and later tool results also count toward the model-context guard.
-- **Compaction budget:** Knowledge uses the current database-derived injection capacity (20k at defaults); facts and Raw use separate 10k/10k configured base windows, with no lending between them. Unprocessed knowledge, pending facts and pending Raw are required; their excesses share an additional 10k allowance. Processed supplements use only their own window's remaining base: knowledge, then recent Raw, then consolidated facts not fully covered by that Raw or retained context. If required material still does not fit, bounded recovery may use Noting, Consolidation and Dreaming once each, only when eligible, before native fallback.
+- **Worker budgets:** Noter defaults to a 10k trigger and batch; Consolidator to a 5k trigger and 10k fact batch. Consolidator Knowledge has a 45k maximum at defaults. Dreamer handles one due pool, with a frozen range capped by that pool's budget and same-pool references sharing the Knowledge allowance. Instructions, tools and later results also count toward the independent model-context guard.
+- **Compaction budget:** Knowledge/facts/Raw bases default to 20k/10k/10k, plus the runtime-derived shared 25k. Required pending Raw, unconsolidated facts and Knowledge state notices reserve capacity first. Optional current Knowledge, historical Raw and historical facts then use the remainder in that order; bases never lend. Knowledge bodies have no special pending protection. If required material still cannot fit, bounded recovery may use each eligible phase once before native fallback.
 
 See the [Pi configuration and behavior reference](docs/pi.md) and [live verification record](docs/live-verification.md) for details and remaining coverage gaps.
 
@@ -101,7 +106,7 @@ Source, tests and documentation are kept separate:
 src/
   core/          # Host-neutral memory logic and model prompts
   hosts/pi/      # Pi adapter
-  hosts/cc/      # Placeholder; not shipped in the Beta
+  hosts/cc/      # Claude Code adapter; bundled separately under plugin/
 tests/
   core/          # Core regression tests
   hosts/pi/      # Host tests, native fixtures and smoke check
@@ -112,7 +117,7 @@ docs/            # Core, Pi and live-verification references
 CONTEXT.md       # Domain glossary
 ```
 
-The package contains production source and documentation, not tests or development fixtures. See the [core reference](docs/core.md) for module responsibilities.
+The Pi package contains production core/Pi source and documentation, not tests or development fixtures. The Claude Code plugin has its own bundled entry. See the [core reference](docs/core.md) for module responsibilities.
 
 ## Development and release
 

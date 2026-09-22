@@ -8,14 +8,14 @@ const success = { outcome: "success", output: "done", request: { exact: "request
 
 /** One project session with `count` supplied New items, each created on its own fact. */
 function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, texts = ["durable rule"]) {
-  const memory = TraceMemory(":memory:", task => agent(task as DreamingAgentInput), { dreaming: { triggerTokens: 1 } }); memories.push(memory);
+  const memory = TraceMemory(":memory:", task => agent(task as DreamingAgentInput)); memories.push(memory);
   const store = memory.store;
   const project = store.createProject({ name: "P", declaredBy: "mark" });
   const session = store.createSession({ host: "test", enrollmentChoice: true, projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
-  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
   const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "root", role: "user", text: texts.join("\n"), raw: "{}", calls: [] });
   memory.selectEntries(session.id, "main", [entry.id]);
+  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: texts.map(text => ({
     turnId: turn.id, entryIds: [entry.id], category: "decision" as const, actor: "user" as const, text, source: [`T${turn.id}#E1`], createdAt: "now" })) });
   if (!facts.ok) throw Error(facts.problems.join());
@@ -23,34 +23,36 @@ function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, t
   const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" },
     operations: texts.map((_, index) => ({ op: "create" as const, handle: `$${index + 1}`, author: "test", ...content(index) })) });
   if (!created.ok) throw Error(created.problems.join());
-  return { memory, store, items: created.committed, content, target };
+  const pool = `project:${project.id}`;
+  store.setKnowledgeBudget("project", Math.max(1, store.pendingPoolWeight(pool, target) * 2));
+  return { memory, store, project, pool, items: created.committed, content, target };
 }
 const handle = (item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@${item.commit}`;
 const tool = (task: DreamingAgentInput, name: string) => task.tools.find(t => t.name === name)!;
 
-test("59: the memory schema branches on the phase — Dreamer skips name knowledge, the Consolidator's skipped facts are unchanged", () => {
+test("59: the memory schema branches on phase and says skips never change knowledge or scheduling", () => {
   const items = (definitions: { name: string; parameters: Record<string, unknown> }[]) =>
     ((definitions.find(t => t.name === "memory")!.parameters.properties as any).skipped.items) as { required: string[]; properties: Record<string, unknown> };
   expect(items(dreamingToolDefinitions()).required).toEqual(["knowledge", "because"]);
   expect(items(dreamingToolDefinitions()).properties.knowledge).toEqual({ type: "string", pattern: "^K[1-9][0-9]*@[1-9][0-9]*$" });
   expect(items(consolidationToolDefinitions()).required).toEqual(["fact", "because"]);
   expect(items(toolDefinitions as any).required).toEqual(["fact", "because"]);
-  expect(dreamingToolDefinitions().find(t => t.name === "memory")!.description).toContain("a skip accounts for the item and never certifies it");
-  const search = toolDefinitions.find(t => t.name === "search")!.parameters as { properties: Record<string, unknown>; oneOf: unknown[] };
+  expect(dreamingToolDefinitions().find(t => t.name === "memory")!.description)
+    .toContain("a skip accounts for the item and never changes it, and has no scheduling effect");
+  const search = toolDefinitions.find(t => t.name === "search")!.parameters as { properties: Record<string, unknown>; oneOf?: unknown[] };
   expect(search.properties.queries).toMatchObject({ type: "array", minItems: 1 });
-  // No top-level oneOf: headless Claude Code in offline mode (DISABLE_TELEMETRY / CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) drops MCP tools whose input schema has one; query/queries exclusivity is enforced at execute time.
-  expect((search as { oneOf?: unknown }).oneOf).toBeUndefined();
+  expect(search.oneOf).toBeUndefined();
   expect(() => validateReadInput("search", { query: "a", queries: ["a"] })).toThrow("query and queries are exclusive");
   expect(() => validateReadInput("search", { queries: [] })).toThrow("queries must be a non-empty array of strings");
   expect(() => validateReadInput("search", {})).toThrow("query must be a string");
   expect(validateReadInput("search", { queries: ["a"] })).toEqual({ queries: ["a"] });
 });
 
-test("59: a skip of a supplied handle accounts for its event, is recorded with the run, and the successor-free leaf is still certified", async () => {
+test("64c: a skip is audited but terminal success processes the frozen pair independently of the skip", async () => {
   const f = fixture(async task => {
-    const check = tool(task, "check").execute({});
-    expect(check).toContain(`- unaccounted: ${handle(f.items[0]!)}`);
-    const receipt = JSON.parse(tool(task, "memory").execute({ operations: [], skipped: [{ knowledge: handle(f.items[0]!), because: "reads on its own; no duplicate, no conflicting fact" }] }));
+    expect(tool(task, "check").execute({})).toContain("Blockers: none");
+    const receipt = JSON.parse(tool(task, "memory").execute({ operations: [],
+      skipped: [{ knowledge: handle(f.items[0]!), because: "reviewed; no maintenance needed" }] }));
     expect(receipt).toMatchObject({ results: ["ok"], committed: [] });
     expect(tool(task, "check").execute({})).toContain("Blockers: none");
     return success;
@@ -59,69 +61,42 @@ test("59: a skip of a supplied handle accounts for its event, is recorded with t
   expect(result.outcome).toBe("success");
   if (!("runId" in result)) throw Error("missing run");
   const response = JSON.parse(f.store.getRun(result.runId)!.response!);
-  expect(response.skipped).toEqual([{ knowledge: handle(f.items[0]!), because: "reads on its own; no duplicate, no conflicting fact" }]);
-  expect(response.check).toMatchObject({ eventIds: [f.items[0]!.commit], resultIds: [f.items[0]!.commit], problems: [] });
-  expect(f.store.isKnowledgeProcessed(f.items[0]!.commit)).toBe(true);
-  expect(f.store.pendingKnowledgeEvents(f.target)).toEqual([]);
+  expect(response.skipped).toEqual([{ knowledge: handle(f.items[0]!), because: "reviewed; no maintenance needed" }]);
+  expect(response.check).toMatchObject({ pool: f.pool, frozenRevisionIds: [f.items[0]!.commit], ownRevisionIds: [], problems: [] });
+  expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all())
+    .toEqual([{ pool: f.pool, revision_id: f.items[0]!.commit }]);
 });
 
-test("59: an untouched supplied leaf is reported unaccounted, blocks the final transaction and is not certified", async () => {
-  let receipt = "";
-  const f = fixture(async task => { receipt = tool(task, "check").execute({}); return success; }, ["first rule", "second rule"]);
-  const result = await f.memory.dream(f.target);
-  expect(receipt).toContain(`- unaccounted: ${handle(f.items[0]!)}, ${handle(f.items[1]!)}`);
-  expect(result.outcome).toBe("failure");
-  if (!("runId" in result)) throw Error("missing run");
-  expect(result.problems).toContain(`unaccounted: ${handle(f.items[0]!)}, ${handle(f.items[1]!)}`);
-  expect(f.items.every(item => !f.store.isKnowledgeProcessed(item.commit))).toBe(true);
-  expect(f.store.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").all(result.runId)).toEqual([]);
-});
-
-test("59: skips of an unknown, processed-reference, consumed or reasonless handle are rejected like any illegal write", async () => {
-  let reference!: { knowledgeId: number; commit: number };
+test("64c: untouched supplied items are not an admission failure and terminal success processes the exact frozen set", async () => {
   const f = fixture(async task => {
-    const memory = tool(task, "memory");
-    const skip = (skipped: unknown[], operations: unknown[] = []) => memory.execute({ operations, skipped });
-    expect(skip([{ knowledge: "K999@999", because: "x" }])).toContain("rejected: K999@999: not a supplied handle of this run");
-    expect(skip([{ knowledge: handle(reference), because: "x" }])).toContain(`rejected: ${handle(reference)}: not a supplied handle of this run`);
-    expect(skip([{ knowledge: handle(f.items[0]!), because: " " }])).toContain("rejected: skipped requires knowledge and non-empty because only");
-    expect(skip([{ fact: "F1", because: "the Consolidator's shape" }])).toContain("rejected: skipped requires knowledge and non-empty because only");
-    expect(skip([{ knowledge: handle(f.items[0]!), because: "x" }, { knowledge: handle(f.items[0]!), because: "y" }])).toContain("rejected: duplicate skipped knowledge");
-    // Consumed in the same batch, then consumed by an earlier batch of this run.
-    const update = { op: "update", id: handle(f.items[0]!), text: "maintained rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain" };
-    expect(skip([{ knowledge: handle(f.items[0]!), because: "x" }], [update])).toContain(`rejected: ${handle(f.items[0]!)}: already consumed by an operation of this batch`);
-    expect(f.store.listKnowledgeRevisions()).toHaveLength(2); // a rejected batch writes nothing
-    const own = JSON.parse(skip([], [update])).committed[0] as { knowledgeId: number; commit: number };
-    expect(skip([{ knowledge: handle(f.items[0]!), because: "x" }])).toContain(`rejected: ${handle(f.items[0]!)}: already consumed by an operation of this run`);
-    // An own result of this run is a supplied handle.
-    expect(JSON.parse(skip([{ knowledge: handle(own), because: "own result reviewed" }]))).toMatchObject({ results: ["ok"] });
     expect(tool(task, "check").execute({})).toContain("Blockers: none");
     return success;
-  });
-  const created = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "create", handle: "$reference", author: "test", ...f.content(0), text: "processed reference" }] });
-  if (!created.ok) throw Error(created.problems.join());
-  reference = created.committed[0]!;
-  const range = f.store.retainDreamingRange(f.target, [reference.commit]);
-  const run = f.store.recordRun({ kind: "dreaming", sessionId: f.target.sessionId, branch: f.target.branch, dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
-  f.store.completeDreaming(run.id, [reference.commit], [reference.commit]);
-  expect((await f.memory.dream(f.target)).outcome).toBe("success");
-});
-
-test("59: a skipped handle whose root gains a path successor is accounted and, as today, not certified", async () => {
-  const f = fixture(async task => {
-    expect(JSON.parse(tool(task, "memory").execute({ operations: [], skipped: [{ knowledge: handle(f.items[0]!), because: "nothing to change" }] })).results).toEqual(["ok"]);
-    const moved = f.store.commitConsolidationRun({ path: f.target, run: f.store.bindRunOrigin({ kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, f.store.triggerOrigin(f.target)),
-      operations: [{ op: "update", knowledgeId: f.items[0]!.knowledgeId, baseCommit: f.items[0]!.commit, ...f.content(0), text: "external successor after the skip" }] });
-    expect(moved.ok).toBe(true);
-    expect(tool(task, "check").execute({})).toContain("Blockers: none");
-    return success;
-  });
+  }, ["first rule", "second rule"]);
   const result = await f.memory.dream(f.target);
   expect(result.outcome).toBe("success");
-  if (!("runId" in result)) throw Error("missing run");
-  expect(JSON.parse(f.store.getRun(result.runId)!.response!).check).toMatchObject({ eventIds: [f.items[0]!.commit], resultIds: [], consumedInputIds: [f.items[0]!.commit] });
-  expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events").all().map(row => Number(row.event_id))).toEqual([f.items[0]!.commit]);
-  expect(f.store.listKnowledgeRevisions().every(revision => !f.store.isKnowledgeProcessed(revision.id))).toBe(true);
+  expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(f.pool)
+    .map(row => Number(row.revision_id))).toEqual(f.items.map(item => item.commit));
+});
+
+test("64c: malformed, unknown and consumed skips remain rejected atomically; failure still consumes the frozen pair", async () => {
+  const f = fixture(async task => {
+    const memory = tool(task, "memory"), skip = (skipped: unknown[], operations: unknown[] = []) => memory.execute({ operations, skipped });
+    expect(skip([{ knowledge: "K999@999", because: "x" }])).toContain("not a supplied handle of this run");
+    expect(skip([{ knowledge: handle(f.items[0]!), because: " " }])).toContain("skipped requires knowledge and non-empty because only");
+    expect(skip([{ fact: "F1", because: "wrong phase shape" }])).toContain("skipped requires knowledge and non-empty because only");
+    expect(skip([{ knowledge: handle(f.items[0]!), because: "x" }, { knowledge: handle(f.items[0]!), because: "y" }]))
+      .toContain("duplicate skipped knowledge");
+    const update = { op: "update", id: handle(f.items[0]!), text: "maintained rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain" };
+    expect(skip([{ knowledge: handle(f.items[0]!), because: "x" }], [update]))
+      .toContain("already consumed by an operation of this batch");
+    expect(f.store.listKnowledgeRevisions()).toHaveLength(1);
+    return success;
+  });
+  const result = await f.memory.dream(f.target);
+  expect(result.outcome).toBe("failure");
+  expect(f.store.listKnowledgeRevisions()).toHaveLength(1);
+  expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all())
+    .toEqual([{ pool: f.pool, revision_id: f.items[0]!.commit }]);
 });
 
 test("59: a batched search returns one best hit per query under the shared options, echoes the query and names the empty ones", () => {
@@ -157,43 +132,6 @@ test("59: a batched search returns one best hit per query under the shared optio
   const search = bound.find(t => t.name === "search")!;
   expect(search.execute({ queries: ["schema"], layer: "knowledge" })).toContain(`"schema": [${handle(f.items[2]!)}]`);
   expect(search.execute({ query: "schema", queries: ["schema"] })).toContain("rejected: query and queries are exclusive");
-});
-
-/** 59c: settle the item's change event without certifying it, so the next Dreamer run freezes the
- * still-current version as an exact version obligation (kind `version`) rather than a change event. */
-function asVersionObligation(f: ReturnType<typeof fixture>, item: { knowledgeId: number; commit: number }) {
-  const range = f.store.retainDreamingRange(f.target, [item.commit]);
-  const run = f.store.recordRun({ kind: "dreaming", sessionId: f.target.sessionId, branch: f.target.branch, dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
-  f.store.completeDreaming(run.id, [item.commit], []);
-  expect(f.store.pendingKnowledgeEvents(f.target)).toMatchObject([{ id: item.commit, kind: "version" }]);
-}
-
-test("59c: an untouched frozen version obligation is unaccounted and blocks the check; a skipped one is accounted and certified", async () => {
-  let receipt = "";
-  const f = fixture(async task => {
-    expect(task.material.changed).toContain(`Exact version obligations: ${handle(f.items[0]!)}`);
-    receipt = tool(task, "check").execute({});
-    return success;
-  });
-  asVersionObligation(f, f.items[0]!);
-  const untouched = await f.memory.dream(f.target);
-  expect(receipt).toContain(`- unaccounted: ${handle(f.items[0]!)}`);
-  expect(untouched.outcome).toBe("failure");
-  if (!("runId" in untouched)) throw Error("missing run");
-  expect(untouched.problems).toContain(`unaccounted: ${handle(f.items[0]!)}`);
-  expect(f.store.isKnowledgeProcessed(f.items[0]!.commit)).toBe(false);
-  const g = fixture(async task => {
-    expect(JSON.parse(tool(task, "memory").execute({ operations: [], skipped: [{ knowledge: handle(g.items[0]!), because: "reads on its own; no duplicate, no conflicting fact" }] })).results).toEqual(["ok"]);
-    expect(tool(task, "check").execute({})).toContain("Blockers: none");
-    return success;
-  });
-  asVersionObligation(g, g.items[0]!);
-  const skipped = await g.memory.dream(g.target);
-  expect(skipped.outcome).toBe("success");
-  if (!("runId" in skipped)) throw Error("missing run");
-  expect(JSON.parse(g.store.getRun(skipped.runId)!.response!).check).toMatchObject({ suppliedEventIds: [], eventIds: [], resultIds: [g.items[0]!.commit], problems: [] });
-  expect(g.store.isKnowledgeProcessed(g.items[0]!.commit)).toBe(true);
-  expect(g.store.pendingKnowledgeEvents(g.target)).toEqual([]);
 });
 
 const cursorOf = (text: string) => /cursor=(\S+)/.exec(text)?.[1];

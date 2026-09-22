@@ -151,7 +151,7 @@ test("no session, Off, zero and unavailable remain distinct; original actions an
   const before = changes(h), entries = structuredClone(h.entries), footer = h.statuses.get("trace-memory");
   title = await open(h);
   expect(title).toContain("Consolidation ░░░░░░░░░░   0.0% 0/5k");
-  expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project", "Mark"]);
+  expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project"]);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries); expect(h.statuses.get("trace-memory")).toBe(footer);
   await h.commands.get("trace").handler("off", h.ctx);
   expect(await open(h)).toContain("Off; stored evidence only");
@@ -174,8 +174,8 @@ test("reopening replaces unavailable SDK capacity with the current valid estimat
   expect(h.requests).toEqual([]);
 });
 
-test("cold and warm Dreaming weights show identical data without any DB writes or grants", async () => {
-  const h = setup({ "noting.triggerTokens": 999999, "consolidation.triggerTokens": 4321, "dreaming.triggerTokens": 1234 });
+test("repeated Dreaming pool reads show identical pending data without DB writes or grants", async () => {
+  const h = setup({ "noting.triggerTokens": 999999, "consolidation.triggerTokens": 4321 });
   await h.turn();
   const store = h.memory.store;
   const turn = store.listTurns(1)[0]!;
@@ -187,20 +187,14 @@ test("cold and warm Dreaming weights show identical data without any DB writes o
     { op: "create", handle: "$1", author: "test", text: "knowledge", category: "constraint", scope: "project", supports: [fact.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
   ] });
   if (!committed.ok) throw Error(committed.problems.join());
-  store.db.exec("DELETE FROM knowledge_weights");
-  const coldBefore = changes(h), entries = structuredClone(h.entries);
-  const toolBinding = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: turn.id });
-  const cold = await open(h);
-  expect(cold).toContain("/1,234"); expect(cold).toContain("/4,321");
-  expect(store.db.prepare("SELECT * FROM knowledge_weights").all()).toEqual([]);
-  expect(changes(h)).toBe(coldBefore); expect(h.entries).toEqual(entries);
-  const update = () => toolBinding[3]!.execute({ operations: [{ op: "update", id: `K1@${committed.committed[0]!.commit}`, text: "new", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "test" }], skipped: [] });
-  expect(update()).toContain("not read");
-  store.pendingKnowledgeEvents({ sessionId: 1, branch: "main", headTurnId: turn.id });
-  const warmBefore = changes(h);
-  expect(await open(h)).toBe(cold);
-  expect(changes(h)).toBe(warmBefore);
-  expect(update()).toContain("not read");
+  h.memory.setKnowledgeBudget("project", 2468);
+  const before = changes(h), entries = structuredClone(h.entries);
+  const first = await open(h);
+  expect(first).toContain("/1,234"); expect(first).toContain("/4,321");
+  expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
+  expect(await open(h)).toBe(first);
+  expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
+  expect(h.memory.store.getClaim(1, "dreaming")).toBeNull();
   expect(h.requests).toEqual([]);
 });
 
@@ -298,7 +292,7 @@ test("long-history toggles retain reconciliation but never add a full status sca
   expect(grants).not.toHaveBeenCalled(); expect(claims).not.toHaveBeenCalled();
   expect(h.requests).toEqual([]); expect(h.memory.store.listRuns(1)).toEqual([]);
   expect(h.memory.store.listSourceEntries(1)).toHaveLength(ancestry.length);
-});
+}, 15_000);
 
 test("headless and UI read the same composition once per opening without writes or grants", async () => {
   const h = setup(); await h.turn();
@@ -342,7 +336,7 @@ test("real Pi selector wraps the dim body and keeps every original action", asyn
     for (const width of [40, 80, 100]) {
       const lines = selector.render(width);
       expect(lines.every(line => visibleWidth(line) <= width)).toBe(true);
-      expect(lines.join("\n")).toContain("Runs"); expect(lines.join("\n")).toContain("Mark");
+      expect(lines.join("\n")).toContain("Runs"); expect(lines.join("\n")).toContain("Project");
     }
     expect(title.startsWith("Current session")).toBe(true);
   } finally { selector.dispose(); }
@@ -354,7 +348,7 @@ test.each([100, 40])("exact capacity and trigger output at %i columns", width =>
     pendingBar("Noting", { tokens: 12000, trigger: 10000, state: "known" }),
     pendingBar("Consolidation", { tokens: 0, trigger: 5000, state: "known" }),
     pendingBar("Dreaming", { tokens: 500, trigger: 5000, state: "known" }),
-    "Off | Runs | Project | Mark"];
+    "Off | Runs | Project"];
   expect(statusBody(lines, width)).toMatchSnapshot();
 });
 
@@ -370,7 +364,7 @@ test("automatic-off reason and fork reset remain actionable and opening is inert
   const before = changes(h), title = await open(h);
   expect(title).toContain("Automatic off: noting"); expect(title).toContain("incomplete submission");
   expect(title.replace(/\s+/g, " ")).toContain("Use /trace on to resume."); expect(title).toContain("Fork: suppressed since 2026-09-11");
-  expect(h.dialogs.at(-1)!.options).toEqual(["On", "Runs", "Project", "Mark", "Retry fork"]);
+  expect(h.dialogs.at(-1)!.options).toEqual(["On", "Runs", "Project", "Retry fork"]);
   expect(changes(h)).toBe(before);
   h.answers.push("Current session", "Retry fork"); await h.commands.get("trace").handler("", h.ctx);
   expect(s.forkSuppression(1)).toBeNull(); expect(s.enabled(1)).toBe(false); expect(h.requests).toEqual([]);

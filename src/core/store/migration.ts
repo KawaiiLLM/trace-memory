@@ -1,25 +1,188 @@
 import type { DatabaseSync } from "node:sqlite";
 
-/** Placement audits outlive processing certificates. Rebuild the historical table so its commit
- * reference points at the immutable revision rather than the revocable certificate row. */
-export function migratePlacementAudits(db: DatabaseSync): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_placement_validations'").get() as { sql: string } | undefined;
-  if (!row || !row.sql.includes("processed_knowledge_versions")) return;
-  if (!db.isTransaction) throw new Error("Placement-audit store migration requires an active transaction");
-  const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name = 'knowledge_placement_validations' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
-  const sequence = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'knowledge_placement_validations'").get();
-  db.exec(`CREATE TABLE knowledge_placement_validations_49 (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    commit_id INTEGER NOT NULL REFERENCES knowledge_revisions(id),
-    old_owner TEXT NOT NULL, new_owner TEXT NOT NULL,
-    view_version TEXT NOT NULL, created_at TEXT NOT NULL
-  );
-  INSERT INTO knowledge_placement_validations_49(id,commit_id,old_owner,new_owner,view_version,created_at)
-    SELECT id,commit_id,old_owner,new_owner,view_version,created_at FROM knowledge_placement_validations;
-  DROP TABLE knowledge_placement_validations;
-  ALTER TABLE knowledge_placement_validations_49 RENAME TO knowledge_placement_validations;`);
-  if (sequence) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'knowledge_placement_validations'").run(sequence.seq!);
-  for (const object of objects) db.exec(String(object.sql));
+export interface Migration64dReport {
+  legacySchema: boolean;
+  backfilledRevisionIds: number[];
+  remainingEmptyRevisionIds: number[];
+  budgetBefore: { global: number; project: number; session: number } | null;
+  budgetAfter: { global: number; project: number; session: number };
+  budgetSource: "absent" | "old-default" | "custom" | "current";
+  budgetWasCustom: boolean;
+  seeded: { global: number; project: number; session: number };
+}
+
+const RETIRED_64D_TABLES = [
+  "settled_knowledge_events", "processed_knowledge_versions", "dreaming_completions",
+  "dreaming_range_versions", "knowledge_weights", "knowledge_marks",
+  "knowledge_placement_validations", "dreaming_family",
+] as const;
+
+function tableExists(db: DatabaseSync, name: string): boolean {
+  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+}
+
+/** Apply the final knowledge-layer subtraction in Store's all-schema transaction. The callback
+ * must use the shared stateless current-version resolver; it runs after supports are backfilled and
+ * before legacy processing provenance is removed. */
+export function migrateKnowledgeSubtraction(db: DatabaseSync,
+  currentVersions: () => readonly { revisionId: number; pool: string }[],
+  priorPolicy: { global: number; project: number; session: number } | null): Migration64dReport {
+  if (!db.isTransaction) throw new Error("Knowledge subtraction requires an active transaction");
+  const legacySchema = RETIRED_64D_TABLES.some(table => tableExists(db, table));
+  const policyRow = db.prepare(`SELECT global_tokens, project_tokens, session_tokens
+    FROM knowledge_budget_policy WHERE id = 1`).get() as Record<string, number> | undefined;
+  if (!policyRow) throw new Error("Knowledge subtraction requires the budget policy row");
+  const currentPolicy = { global: Number(policyRow.global_tokens), project: Number(policyRow.project_tokens), session: Number(policyRow.session_tokens) };
+  const budgetBefore = priorPolicy;
+  const oldDefault = priorPolicy?.global === 4_000 && priorPolicy.project === 10_000 && priorPolicy.session === 1_000;
+  if (!legacySchema) return { legacySchema: false, backfilledRevisionIds: [], remainingEmptyRevisionIds: [],
+    budgetBefore, budgetAfter: currentPolicy, budgetSource: priorPolicy ? "current" : "absent",
+    budgetWasCustom: false, seeded: { global: 0, project: 0, session: 0 } };
+  if (oldDefault) db.prepare(`UPDATE knowledge_budget_policy SET global_tokens = 4000,
+    project_tokens = 15000, session_tokens = 1000 WHERE id = 1`).run();
+  const resultingPolicy = db.prepare(`SELECT global_tokens, project_tokens, session_tokens
+    FROM knowledge_budget_policy WHERE id = 1`).get() as Record<string, number>;
+  const budgetAfter = { global: Number(resultingPolicy.global_tokens), project: Number(resultingPolicy.project_tokens), session: Number(resultingPolicy.session_tokens) };
+
+  const backfilledRevisionIds: number[] = [];
+  const rows = db.prepare("SELECT id, op, parent_id, supports FROM knowledge_revisions ORDER BY id").all() as
+    { id: number; op: string; parent_id: number | null; supports: string }[];
+  const supports = new Map<number, number[]>();
+  const revisionIds = new Set(rows.map(row => Number(row.id)));
+  const readSupports = (text: string, id: number) => {
+    let value: unknown;
+    try { value = JSON.parse(text); } catch { throw new Error(`K@${id}: malformed supports JSON`); }
+    if (!Array.isArray(value) || value.some(item => !Number.isSafeInteger(item) || Number(item) <= 0))
+      throw new Error(`K@${id}: malformed supports`);
+    return [...new Set(value.map(Number))];
+  };
+  for (const row of rows) {
+    const id = Number(row.id), existing = readSupports(row.supports, id);
+    if (row.op === "create" && row.parent_id !== null) throw new Error(`K@${id}: create must not have a parent`);
+    const parents: number[] = [];
+    if (row.op !== "create") {
+      if (row.parent_id == null || !revisionIds.has(Number(row.parent_id)) || Number(row.parent_id) >= id)
+        throw new Error(`K@${id}: malformed ${row.op} parent`);
+      parents.push(Number(row.parent_id));
+    }
+    if (row.op === "merge") {
+      const links = db.prepare(`SELECT from_commit FROM knowledge_links
+        WHERE kind = 'merged_into' AND to_commit = ? ORDER BY from_commit`).all(id) as { from_commit: number }[];
+      if (!links.length) throw new Error(`K@${id}: merge has no absorbed-parent link`);
+      for (const link of links) {
+        const parent = Number(link.from_commit);
+        if (!revisionIds.has(parent) || parent >= id || parents.includes(parent))
+          throw new Error(`K@${id}: malformed merge parent link`);
+        parents.push(parent);
+      }
+    }
+    if (row.op === "split") {
+      const links = db.prepare(`SELECT from_commit FROM knowledge_links
+        WHERE kind = 'split_from' AND to_commit = ? ORDER BY from_commit`).all(id) as { from_commit: number }[];
+      if (links.length !== 1 || Number(links[0]!.from_commit) !== Number(row.parent_id))
+        throw new Error(`K@${id}: malformed split provenance`);
+    }
+    if (existing.length) { supports.set(id, existing); continue; }
+    const inherited = [...new Set(parents.flatMap(parent => supports.get(parent) ?? (() => { throw new Error(`K@${id}: parent K@${parent} was not processed`); })()))];
+    supports.set(id, inherited);
+    if (inherited.length) {
+      db.prepare("UPDATE knowledge_revisions SET supports = ? WHERE id = ?").run(JSON.stringify(inherited), id);
+      backfilledRevisionIds.push(id);
+    }
+  }
+  const remainingEmptyRevisionIds = rows.map(row => Number(row.id)).filter(id => !(supports.get(id)?.length));
+
+  const selected = new Map(currentVersions().map(value => [value.revisionId, value.pool]));
+  const seeded = { global: 0, project: 0, session: 0 };
+  if (tableExists(db, "processed_knowledge_versions")) {
+    for (const row of db.prepare("SELECT commit_id, run_id FROM processed_knowledge_versions ORDER BY commit_id").all() as
+      { commit_id: number; run_id: number }[]) {
+      const revisionId = Number(row.commit_id), pool = selected.get(revisionId);
+      if (!pool) continue;
+      db.prepare("INSERT OR IGNORE INTO knowledge_processed(pool, revision_id, run_id) VALUES (?, ?, ?)")
+        .run(pool, revisionId, Number(row.run_id));
+      if (pool === "global") seeded.global++;
+      else if (pool.startsWith("project:")) seeded.project++;
+      else if (pool.startsWith("session:")) seeded.session++;
+      else throw new Error(`K@${revisionId}: invalid current owner pool ${pool}`);
+    }
+  }
+
+  const retired = new Set<string>(RETIRED_64D_TABLES);
+  for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()) {
+    const name = String(row.name);
+    if (retired.has(name)) continue;
+    for (const key of db.prepare(`PRAGMA foreign_key_list(${JSON.stringify(name)})`).all()) {
+      if (retired.has(String(key.table))) throw new Error(`Knowledge subtraction refused: ${name} references retired table ${String(key.table)}`);
+    }
+  }
+  for (const table of RETIRED_64D_TABLES) if (tableExists(db, table)) db.exec(`DROP TABLE ${table}`);
+  const budgetSource = priorPolicy === null ? "absent" : oldDefault ? "old-default" : "custom";
+  return { legacySchema, backfilledRevisionIds, remainingEmptyRevisionIds, budgetBefore, budgetAfter,
+    budgetSource, budgetWasCustom: budgetSource === "custom", seeded };
+}
+
+/** Upgrade the retained range audit from the pre-64c shape. Old unfinished ranges are terminal
+ * audit rows, not retry work: close them without manufacturing a completing run. Rebuild is needed
+ * because legacy anchor was NOT NULL and SQLite cannot relax it with ALTER COLUMN. */
+export function migrateDreamingRanges64d(db: DatabaseSync): void {
+  if (!db.isTransaction) throw new Error("Dreaming-range migration requires an active transaction");
+  if (!tableExists(db, "dreaming_ranges")) return;
+  const columns = new Set(db.prepare("PRAGMA table_info(dreaming_ranges)").all().map(row => String(row.name)));
+  const sql = String((db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='dreaming_ranges'").get() as { sql: string }).sql);
+  const required = ["pool", "claim_token", "closed_at", "pending_revisions"];
+  const needsRebuild = required.some(column => !columns.has(column)) || /anchor\s+INTEGER\s+NOT\s+NULL/i.test(sql);
+  if (!needsRebuild) {
+    const index = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_dreaming_open_range'").get() as { sql: string } | undefined;
+    if (!index || !/completed_run\s+IS\s+NULL\s+AND\s+closed_at\s+IS\s+NULL/i.test(index.sql))
+      db.exec("DROP INDEX IF EXISTS idx_dreaming_open_range; CREATE UNIQUE INDEX idx_dreaming_open_range ON dreaming_ranges(session_id,branch) WHERE completed_run IS NULL AND closed_at IS NULL");
+    return;
+  }
+  const allowedIncoming = new Set(["dreaming_range_events", "dreaming_range_versions", "dreaming_run_ranges", "dreaming_family"]);
+  for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name <> 'dreaming_ranges' ORDER BY name").all()) {
+    const name = String(row.name);
+    if (db.prepare(`PRAGMA foreign_key_list(${JSON.stringify(name)})`).all().some(key => key.table === "dreaming_ranges") && !allowedIncoming.has(name))
+      throw new Error(`Dreaming-range migration refused: referenced by ${name}`);
+  }
+  const objects = db.prepare(`SELECT name, sql FROM sqlite_master WHERE tbl_name='dreaming_ranges'
+    AND type IN ('index','trigger') AND sql IS NOT NULL AND name <> 'idx_dreaming_open_range' ORDER BY name`).all() as { name: string; sql: string }[];
+  const sequence = db.prepare("SELECT seq FROM sqlite_sequence WHERE name='dreaming_ranges'").get() as { seq: number } | undefined;
+  db.exec(`DROP INDEX IF EXISTS idx_dreaming_open_range;
+    CREATE TABLE dreaming_ranges_64d (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL REFERENCES sessions(id), branch TEXT NOT NULL,
+      head_turn_id INTEGER NOT NULL REFERENCES turns(id), anchor INTEGER REFERENCES knowledge_revisions(id),
+      completed_run INTEGER REFERENCES runs(id), origin_session_id INTEGER REFERENCES sessions(id), origin_entry_ids TEXT,
+      pool TEXT, claim_token TEXT, closed_at TEXT, pending_revisions TEXT NOT NULL DEFAULT '[]'
+    )`);
+  const value = (column: string, fallback: string) => columns.has(column) ? column : fallback;
+  db.exec(`INSERT INTO dreaming_ranges_64d
+    (id,session_id,branch,head_turn_id,anchor,completed_run,origin_session_id,origin_entry_ids,pool,claim_token,closed_at,pending_revisions)
+    SELECT id,session_id,branch,head_turn_id,anchor,completed_run,
+      ${value("origin_session_id", "NULL")},${value("origin_entry_ids", "NULL")},${value("pool", "NULL")},${value("claim_token", "NULL")},
+      CASE WHEN completed_run IS NULL THEN COALESCE(${value("closed_at", "NULL")}, strftime('%Y-%m-%dT%H:%M:%fZ','now')) ELSE ${value("closed_at", "NULL")} END,
+      ${value("pending_revisions", "'[]'")} FROM dreaming_ranges;
+    DROP TABLE dreaming_ranges;
+    ALTER TABLE dreaming_ranges_64d RENAME TO dreaming_ranges;
+    CREATE UNIQUE INDEX idx_dreaming_open_range ON dreaming_ranges(session_id,branch) WHERE completed_run IS NULL AND closed_at IS NULL`);
+  if (sequence) db.prepare("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='dreaming_ranges'").run(sequence.seq);
+  for (const object of objects) db.exec(object.sql);
+}
+
+/** Remove the obsolete placement audit inside Store's all-schema upgrade transaction. The
+ * audit is expected to be a leaf: refuse an unknown incoming foreign key rather than silently
+ * damaging an extension table while foreign-key enforcement is suspended for schema rebuilds. */
+export function dropPlacementAudits(db: DatabaseSync): void {
+  const table = "knowledge_placement_validations";
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) return;
+  if (!db.isTransaction) throw new Error("Placement-audit removal requires an active transaction");
+  const incoming: string[] = [];
+  for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name <> ? ORDER BY name").all(table)) {
+    const name = String(row.name);
+    if (db.prepare(`PRAGMA foreign_key_list(${JSON.stringify(name)})`).all().some(key => key.table === table)) incoming.push(name);
+  }
+  if (incoming.length) throw new Error(`Placement-audit removal refused: referenced by ${incoming.join(", ")}`);
+  db.exec(`DROP TABLE ${table}`);
 }
 
 /** Ticket 34a is additive except for the immutable revision operation/actor CHECKs. Historical

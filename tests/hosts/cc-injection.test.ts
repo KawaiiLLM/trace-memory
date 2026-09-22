@@ -13,7 +13,7 @@ import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 
 const dirs: string[] = [];
-afterEach(() => { vi.restoreAllMocks(); while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
 const time = (second: number) => `2026-09-18T00:00:${String(second).padStart(2, "0")}.000Z`;
 const line = (value: unknown) => `${JSON.stringify(value)}\n`;
 const binding = { db: "/d", nativeSession: "native-A", coreSession: 7 };
@@ -507,6 +507,9 @@ test("43d startup without a transcript stays disabled unless explicitly enrolled
   expect(await handleCcHook(config, { hook_event_name: "SessionStart", source: "startup", session_id: nativeSession, transcript_path: transcriptPath })).toBeNull();
   expect(readBinding(config, nativeSession)).toMatchObject({ coreSessionId: null, projectId: expect.any(Number), executor: null });
   const cleared = "provisional-clear";
+  // 63: this clear has no bound parent to link, on purpose; force that regardless of the ambient
+  // CLAUDE_PID this process happens to run under (the prior startup Hooks above already published one).
+  vi.stubEnv("CLAUDE_PID", "");
   expect(await handleCcHook(config, { hook_event_name: "SessionStart", source: "clear", session_id: cleared,
     transcript_path: join(dir, "clear-missing.jsonl") })).toBeNull();
   expect(readBinding(config, cleared)).toMatchObject({ nativeSessionId: cleared, coreSessionId: null, projectId: null });

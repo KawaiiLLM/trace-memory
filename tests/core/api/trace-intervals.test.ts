@@ -9,10 +9,20 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, toolDefinitions, type ToolContext } from "../../source-fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
+import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const time = "2026-09-09T00:00:00Z";
-let memory: ReturnType<typeof sourceSeededMemory>;
-beforeEach(() => { memory = sourceSeededMemory(":memory:", async () => { throw new Error("these cases call no model"); }); });
+
+function fullRead(tool: { execute(input: unknown): string }, address: string) {
+  let page = tool.execute({ address, full: true, itemBudget: null });
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1])
+    page = tool.execute({ address: `cursor=${cursor}`, itemBudget: null });
+}
+let memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerScenarios;
+beforeEach(() => {
+  scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("these cases call no model"); });
+  memory = sourceSeededMemory(":memory:", scenarios.agent);
+});
 afterEach(() => { memory.close(); });
 
 /** One enrolled session with one Turn and `count` facts on it, in allocation order. */
@@ -26,6 +36,29 @@ function facts(count: number, projectName = "p") {
       text: `fact ${i + 1}`, source: [`T${turn.id}#user`], createdAt: time })) });
   if (!committed.ok) throw new Error(committed.problems.join("; "));
   return { sessionId, turnId: turn.id, ids: committed.facts.map(f => f.id) };
+}
+
+async function updateKnowledge(path: { sessionId: number; branch: string; headTurnId: number }, factId: number,
+  base: { knowledgeId: number; commit: number }, text: string) {
+  const selectedEntries = memory.store.sourcePath(path.sessionId, path.branch, path.headTurnId);
+  memory.selectEntries(path.sessionId, path.branch, selectedEntries.map(entry => entry.id));
+  const target = { ...path, triggerEntryId: selectedEntries.at(-1)!.id };
+  const trigger = createDreamerTrigger(memory, target, factId, base.commit, "session");
+  let changed!: { knowledgeId: number; commit: number };
+  const result = await scenarios.run(memory, target, input => {
+    input.reportRequest({ fixture: "trace interval revision" });
+    const trace = input.tools.find(tool => tool.name === "trace")!;
+    fullRead(trace, `K${base.knowledgeId}@${base.commit}`);
+    const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [
+      { op: "update", id: `K${base.knowledgeId}@${base.commit}`, text, category: "mechanism", scope: "session", supports: [`F${factId}`], reason: "test", topics: [] },
+      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${factId}`], reason: "Retire the explicit interval trigger." },
+    ], skipped: [] }));
+    changed = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === base.knowledgeId)!;
+    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
+    return { outcome: "success", output: "revision complete", request: { fixture: "trace interval revision" } };
+  });
+  expect(result.outcome).toBe("success");
+  return changed;
 }
 
 /** Count the fact rows a read materializes: the range query's ids and every record it then renders.
@@ -180,7 +213,7 @@ test("a first page of an interval costs the page: one record rendered, one batch
   } finally { records.restore(); relations.restore(); }
 });
 
-test("25d pagination: a fact negated, a knowledge marked or a profile changed between pages does not reach an established page", () => {
+test("25d pagination: a fact relation or profile change between pages does not reach an established page", () => {
   const { sessionId, turnId, ids } = facts(4);
   const store = memory.store;
   const negate = () => {
@@ -193,17 +226,6 @@ test("25d pagination: a fact negated, a knowledge marked or a profile changed be
   expect(relations.joined).toBe(relations.whole);
   expect(relations.whole).not.toContain("later correction");
   expect(memory.trace("F1-F4")).toContain(`inbound negate F${ids.length + 1} strong`); // the write is real
-
-  const consolidated = store.commitConsolidationRun({ path: { sessionId, headTurnId: turnId, branch: "main" },
-    run: { kind: "consolidation", sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "create", handle: "h1", author: "fake", text: "conclusion", category: "mechanism", scope: "session",
-      supports: [ids[0]!], reason: "test", topics: [], createdAt: time }] });
-  if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
-  const knowledgeId = consolidated.committed[0]!.knowledgeId;
-  const marks = paged(`K${knowledgeId}@${consolidated.committed[0]!.commit},F1-F4`, () => { memory.mark(knowledgeId, "flagged"); }, 3);
-  expect(marks.joined).toBe(marks.whole);
-  expect(marks.whole).not.toContain("flagged");
-  expect(memory.trace(`K${knowledgeId}@${consolidated.committed[0]!.commit}`)).toContain("flagged");
 
   store.appendToolCall({ turnId, name: "tool", input: "{}", result: "head " + "value ".repeat(400) + " tail", status: "success" });
   const profile = paged(`T${turnId},F1-F4`, () => { memory.config.render.toolResultTokens = 1_000; }, 3);
@@ -221,7 +243,7 @@ test("25d pagination: an interval cursor belongs to the session that made the re
   expect(mine.execute({ address: "F1-F12", cursor })).toContain("[F2]");
 });
 
-test("25d: the `..` grammars keep their single meaning beside the interval, and the description names both", () => {
+test("25d: the `..` grammars keep their single meaning beside the interval, and the description names both", async () => {
   const { sessionId, turnId, ids } = facts(3);
   const store = memory.store;
   const later = store.commitNotingRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time },
@@ -239,12 +261,8 @@ test("25d: the `..` grammars keep their single meaning beside the interval, and 
       supports: [ids[0]!], reason: "test", topics: [], createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const { knowledgeId, commit } = created.committed[0]!;
-  const updated = store.commitConsolidationRun({ path: { sessionId, headTurnId: turnId, branch: "main" },
-    run: { kind: "consolidation", sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "update", knowledgeId, baseCommit: commit, text: "second", category: "mechanism", scope: "session",
-      supports: [ids[0]!], reason: "test", topics: [], createdAt: time }] });
-  if (!updated.ok) throw new Error(updated.problems.join("; "));
-  const diff = memory.trace(`K${knowledgeId}@${commit}..K${knowledgeId}@${updated.committed[0]!.commit}`);
+  const updated = await updateKnowledge({ sessionId, headTurnId: turnId, branch: "main" }, ids[0]!, { knowledgeId, commit }, "second");
+  const diff = memory.trace(`K${knowledgeId}@${commit}..K${knowledgeId}@${updated.commit}`);
   expect(diff).toContain("{+second+}");
   expect(memory.trace(`K${knowledgeId}..`)).toContain("commit tree (all branches)");
 
@@ -253,7 +271,7 @@ test("25d: the `..` grammars keep their single meaning beside the interval, and 
   expect(description).toContain("cap counts output lines (default 100)"); // the existing unit, documented as it is
 });
 
-test("25d accounting: a mixed batch read is recorded whole and keeps knowledge read-base tracking", () => {
+test("25d accounting: a mixed batch read is recorded whole and keeps knowledge read-base tracking", async () => {
   const { sessionId, turnId, ids } = facts(3);
   const store = memory.store;
   const path = { sessionId, headTurnId: turnId, branch: "main" };
@@ -264,15 +282,12 @@ test("25d accounting: a mixed batch read is recorded whole and keeps knowledge r
   const { knowledgeId, commit } = created.committed[0]!;
   const [trace, , , knowledge] = memory.tools({ kind: "manual", sessionId, currentTurnId: turnId, branch: "main" });
   // The commit this run read at its start is superseded while the run is open.
-  const superseded = store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "update", knowledgeId, baseCommit: commit, text: "second", category: "mechanism", scope: "session",
-      supports: [ids[0]!], reason: "test", topics: [], createdAt: time }] });
-  if (!superseded.ok) throw new Error(superseded.problems.join("; "));
-  const tip = superseded.committed[0]!.commit;
+  const superseded = await updateKnowledge(path, ids[0]!, { knowledgeId, commit }, "second");
+  const tip = superseded.commit;
   const update = (base: number) => knowledge!.execute({ operations: [{ op: "update", id: `K${knowledgeId}@${base}`, text: "third",
     category: "mechanism", scope: "session", supports: [`F${ids[0]!}`], reason: "test", topics: [] }], skipped: [] });
   expect(update(tip)).toContain("rejected:"); // the new tip has not been read by this run
   const read = trace!.execute({ address: `K${knowledgeId}@${tip},F1-F3` });
   expect(read).toContain("[F2]"); expect(read).toContain(`[K${knowledgeId}@${tip}]`);
-  expect(update(tip)).not.toContain("rejected:"); // the knowledge component of a mixed read still tracks the base
+  expect(update(tip)).toContain("update belongs to the Dreamer"); // complete reads do not grant manual maintenance authority
 });

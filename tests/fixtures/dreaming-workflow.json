@@ -1,11 +1,11 @@
 {
   "provenance": "Ticket 35c semantic regression material, informed by the pinned Magic Context 246a1c390e9a81944b867c1cd94ae5b7166e26e3 and pi-observational-memory ce9fc982b3a219a7839f07c9f4a3e054e81a2b21 references without copying their taxonomy, rankings, gates, targets, or schedulers.",
   "semanticReview": {
-    "authority": "The judgments below are human semantic-review expectations for comparing complete claims. They are not runtime validation rules.",
+    "authority": "The retained judgments are historical human semantic-review expectations for comparing complete claims. Ticket 64 applies mechanical fixture maintenance only; these are not runtime validation rules.",
     "limitations": [
       "A fake model executing a scripted sequence proves tool and host behavior, not that a real model will follow the workflow.",
       "Passing deterministic tests does not prove improved recall, semantic equivalence, or model quality.",
-      "Live-model A/B tests, long-term recall experiments, and cost comparisons require separate authorization."
+      "Ticket 64 fixture maintenance is not new human gold or real-model approval; live-model A/B tests and cost comparisons require separate authorization."
     ]
   },
   "promptOrder": [
@@ -13,7 +13,7 @@
     "### B. Merge?",
     "### C. Resolve?",
     "### D. Rewrite?",
-    "### Intensity, set by the failed check"
+    "### Over budget"
   ],
   "examples": [
     {
@@ -50,31 +50,6 @@
         ]
       },
       "review": "The result retains user authority, decision status, the runtime condition, the preparation exception, and all still-valid subjects."
-    },
-    {
-      "id": "qualified-open-reminder",
-      "judgment": "avoid",
-      "parents": [
-        {
-          "text": "The user has not approved the schema migration. It may proceed only after the rollback rehearsal passes; next action is to present the rehearsal result for a decision.",
-          "category": "open",
-          "scope": "project",
-          "topics": [
-            "schema-migration",
-            "rollback"
-          ]
-        }
-      ],
-      "result": {
-        "text": "Schema migration remains unapproved pending a passing rollback rehearsal; next present the result to the user for a decision.",
-        "category": "open",
-        "scope": "project",
-        "topics": [
-          "schema-migration",
-          "rollback"
-        ]
-      },
-      "review": "The parent is already readable on its own; the result changes nothing but its length. An update whose only change is fewer characters is forbidden, even when it keeps uncertainty, the controlling condition, unresolved authority and next action."
     },
     {
       "id": "budget-only-topic-stripping",
@@ -159,7 +134,6 @@
     {
       "id": "equivalent-information-retirement",
       "judgment": "faithful",
-      "archivePriority": 1,
       "parents": [
         {
           "text": "Use exact K@commit handles for every Dreamer write parent.",
@@ -185,12 +159,11 @@
         "survivorParent": 0,
         "reason": "Archive into the named survivor: after comparing both complete claims, the survivor's current body preserves the same rule at the same scope and topics."
       },
-      "review": "Reason (a): a named survivor whose current body preserves the information at a scope no narrower than the archived item's. In the first round the same pair is a merge; archiving redundancy into a named survivor is the second round's work."
+      "review": "Under budget pressure, this same-scope duplicate may be archived into the named survivor because that survivor's current body preserves the complete claim. Budget pressure sets the retirement priority; it does not create a separate permission gate."
     },
     {
       "id": "verified-obsolete-progress-retirement",
       "judgment": "faithful",
-      "archivePriority": 2,
       "parents": [
         {
           "text": "The migration was attempted and stopped at SQLITE_BUSY; retry remains pending.",
@@ -213,14 +186,13 @@
       ],
       "result": {
         "archiveParent": 0,
-        "reason": "Archive the former open state on the cited fact that states the retry completed and was verified against the row-count audit; the exact prior diagnostic survives in the completed record."
+        "reason": "Archive the former open state because the cited new fact negates its unresolved SQLITE_BUSY failure, and the remaining retry reminder fails Admission: it carries no durable unique content beyond the verified result."
       },
-      "review": "Reason (b): an open item whose completion a fact on the path states is archived with that fact in supports and named in reason. This is first-round resolve work, not a budget measure."
+      "review": "The newer fact negates the former unresolved failure. After resolution, the remaining retry reminder has no durable unique content and fails Admission; completion alone would not justify archiving it."
     },
     {
       "id": "deliberate-valid-information-loss",
       "judgment": "honest-loss",
-      "archivePriority": 3,
       "parents": [
         {
           "text": "The agent reported that the staging deploy of 2026-09-10 finished and its smoke test passed; nothing remains open from it.",
@@ -233,9 +205,9 @@
       ],
       "result": {
         "archiveParent": 0,
-        "reason": "Second intensity, after a failed check: low value under the KEEP test. The item is a routine progress note with no unresolved decision, no rule language, no rationale and no external limit, and its object will not return. Lost: the record that the 2026-09-10 staging deploy was reported finished with a passing smoke test."
+        "reason": "Iterative over-budget archiving: this routine progress record is lower priority than the protected contents that remain. Lost: the record that the 2026-09-10 staging deploy was reported finished with a passing smoke test."
       },
-      "review": "Reason (c): only at the second intensity, after a failed check, is a still-valid item retired, and the reason states why it is not KEEP-protected and what is lost. \"Still valid, lower priority, needed for the budget\" is not a reason."
+      "review": "During iterative over-budget archiving, a still-valid lower-priority item may be retired after higher-value contents are protected. The reason must state both the budget trade and the information deliberately lost."
     },
     {
       "id": "avoidable-rewrite-then-archive",
@@ -281,7 +253,7 @@
         ],
         "reason": "New evidence changed the final disposition; the archive was not known when survivor work began."
       },
-      "review": "Tool feedback or new evidence may justify correction. It must not be used to adopt a competing successor into the frozen family."
+      "review": "Tool feedback or new evidence may justify correction. Re-read the exact current base and write only while that base remains within the frozen pool's write authority."
     },
     {
       "id": "spec-clauses-kept-whole",
@@ -304,51 +276,6 @@
         "reason": "Each clause is a separate sentence."
       },
       "review": "The clauses of one approved contract are read and changed together: no later fact would change the record fields while the line format stands, and a reader would always consult both bodies. The split is the compound it started from and is not made; sentence count is not maintenance need."
-    },
-    {
-      "id": "readable-body-left-alone",
-      "judgment": "avoid",
-      "parents": [
-        {
-          "text": "The rollback rehearsal passes on the staging database only; the production rehearsal is deferred (user decision).",
-          "category": "open",
-          "scope": "project",
-          "topics": [
-            "rollback",
-            "production-rehearsal"
-          ]
-        }
-      ],
-      "result": {
-        "text": "The user decided to defer the production rehearsal. At present the rollback rehearsal has passed only on the staging database, so the production rehearsal remains deferred until the user decides otherwise.",
-        "category": "open",
-        "scope": "project",
-        "topics": [
-          "rollback",
-          "production-rehearsal"
-        ]
-      },
-      "review": "The parent already reads on its own: object, claim, condition, status and attribution are all resolvable by a reader who never saw the conversation. Expanding it into full sentences, spelling out attribution it already carries in a few characters and reordering it is the same class of forbidden edit as shortening-only; the body is left as it is."
-    },
-    {
-      "id": "finished-reference-archived-on-completion-fact",
-      "judgment": "faithful",
-      "parents": [
-        {
-          "text": "The export-contract ticket was delivered on its branch, its two review findings were fixed, and the branch was merged; nothing from the ticket remains unresolved.",
-          "category": "reference",
-          "scope": "project",
-          "topics": [
-            "export",
-            "ticket-record"
-          ]
-        }
-      ],
-      "result": {
-        "archiveParent": 0,
-        "reason": "Archive on the cited fact recording the merge: the record is a finished work item with nothing unresolved left in it; the archived version and its cited facts keep the completed work retrievable."
-      },
-      "review": "Reason (b): a finished work item — a ticket's delivery, merge or acceptance record with nothing unresolved left in it — is archived on the fact that finishes it, whatever its category. The protected-meaning entry for useful completed work is satisfied by the archived version and its cited facts, not by keeping the record resident. This is first-round resolve work."
     },
     {
       "id": "split-piece-merges-into-existing-home",
@@ -383,39 +310,6 @@
       "review": "Per-item order: split (A), then the home check (B) for each piece before the item's operations are committed. A piece that would be split out merges into the current item that already carries it instead of becoming a new identity; splitting the whole pool first and searching for duplicates afterwards would have left a split-out duplicate."
     },
     {
-      "id": "finished-status-folded-into-ruling",
-      "judgment": "faithful",
-      "parents": [
-        {
-          "text": "The user ruled that `check` is never called before a maintenance round, because the receipt must not set the agenda. The change removing the opening check passed review and was merged into main; nothing from it remains open.",
-          "category": "constraint",
-          "scope": "project",
-          "topics": [
-            "dreamer",
-            "check"
-          ]
-        }
-      ],
-      "result": {
-        "children": [
-          {
-            "text": "The user ruled that `check` is never called before a maintenance round, because the receipt must not set the agenda (merged into main).",
-            "category": "constraint"
-          },
-          {
-            "text": "The change removing the opening `check` passed review and was merged into main; nothing from it remains open.",
-            "category": "reference"
-          }
-        ],
-        "operations": [
-          "split into the ruling, carrying the finished status as a few characters, and the delivery record",
-          "archive the delivery-record child on the fact recording the merge"
-        ],
-        "reason": "The body cannot be given one category: the ruling is a constraint and the delivery status is progress. The status has no follow-up, so it is folded into the ruling as the traceable pointer and its delivery record is archived on the finishing fact."
-      },
-      "review": "Status beside a ruling is compound by the category test. A finished status with no follow-up is folded into the ruling's body in a few characters, and the delivery record it came from is archived on its finishing fact (reason b); the protected-meaning entry for useful completed work is met by those few characters plus the archived version, not by a resident record."
-    },
-    {
       "id": "over-detailed-body-trimmed-to-claim",
       "judgment": "faithful",
       "parents": [
@@ -439,7 +333,7 @@
         ],
         "reason": "Knowledge is macro: the accessor name and default value are not needed to state the claim; they survive in the cited facts and the original, which `trace` reaches. One rewrite, not a split."
       },
-      "review": "The body is long by detail, not by holding two things, so it is trimmed to the macro claim rather than split (principle 2). This is not shortening-only: the identifier and default value are removed as detail a body does not carry, and the reason names where they survive."
+      "review": "The body is long by detail, not by holding two things, so it is trimmed to the macro claim rather than split. The accessor name and default value fail Admission because the authoritative artifact answers them in one lookup."
     },
     {
       "id": "two-skipped-one-revived",
@@ -492,7 +386,7 @@
           ],
           "layer": "knowledge",
           "versions": "history",
-          "cap": 2
+          "cap": 3
         },
         "hits": [
           "\"offline deployment\": no hit",
@@ -522,7 +416,7 @@
           "reason": "The returning ruling continues the archived widget-cache identity: same object, same independently maintainable rule; revived by merging the New item into it, the body stating the current rule alone."
         }
       },
-      "review": "Every supplied item ends the round accounted for: two in an explicit skip with a reason, one in an operation; the check reports nothing unaccounted, and a skip is accounting only — the skipped leaves are certified because they are successor-free, not because they were skipped. The batched history search runs once, before the first New item is decided, with each item's object in a few words; a query with no hit is named in the receipt, a current self-hit is not a revival, and the archived hit is read in full before the New item is merged into that identity (48)."
+      "review": "Every supplied item has an explicit operation or reasoned skip, which proves disposition coverage. Terminal processing of the frozen range and the run's own revisions is separate scheduling bookkeeping; neither a skip nor successor absence certifies knowledge. The batched history search runs once, before the first New item is decided, with each item's object in a few words; a query with no hit is named in the receipt, a current self-hit is not a revival, and the archived hit is read in full before the New item is merged into that identity (48)."
     },
     {
       "id": "reconstructed-mixed-decision-objects-split",

@@ -242,9 +242,12 @@ export function compositionMap(value: ContextComposition, model: string, width: 
 
 export function pendingBar(label: string, value: ReturnType<TraceMemory["pendingTokens"]>, compact = true, paint: Paint = plain): string {
   const number = compact ? compactNumber : (n: number) => n.toLocaleString("en-US");
-  if (value.tokens === null) return compact ? `${label.padEnd(13)} ?????????? Unknown/${number(value.trigger)} (${value.state})`
-    : `${label}: [??????????] Unknown / ${number(value.trigger)} (${value.state})`;
-  const ratio = value.tokens / value.trigger;
+  if (value.tokens === null) {
+    const trigger = value.trigger === null ? "Unknown" : number(value.trigger);
+    return compact ? `${label.padEnd(13)} ?????????? Unknown/${trigger} (${value.state})`
+      : `${label}: [??????????] Unknown / ${trigger} (${value.state})`;
+  }
+  const ratio = value.trigger === 0 ? (value.tokens === 0 ? 0 : Infinity) : value.tokens / value.trigger;
   const filled = Math.min(10, Math.floor(ratio * 10));
   const partial = filled < 10 && ratio * 10 > filled;
   const percentage = percent(ratio, compact);

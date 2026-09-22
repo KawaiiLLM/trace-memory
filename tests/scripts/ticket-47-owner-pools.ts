@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { Store, type KnowledgePath, type KnowledgeWithRevision } from "../../src/core/store/index.ts";
-import { placementOwner, processedBlock, processedProjection } from "../../src/core/store/processing.ts";
+import { placementOwner, processedBlock } from "../../src/core/store/processing.ts";
 import { tokens } from "../../src/core/render/index.ts";
 
 function argument(name: string): string | undefined {
@@ -38,38 +38,29 @@ try {
       WHERE p.session_id = ? ORDER BY e.turn_id DESC, e.id DESC LIMIT 1`).get(sessionId)?.branch ?? "main");
     const path: KnowledgePath = store.knowledgePath(sessionId, branch);
     if (path.headTurnId === null) throw new Error(`S${sessionId}/${branch} has no selected head`);
-    const all = processedProjection(store);
-    const selected = processedProjection(store, [], undefined, undefined, path).paths[0];
-    if (!selected) throw new Error(`S${sessionId}/${branch} has no projection`);
-
-    const union = new Map<string, Map<number, KnowledgeWithRevision>>();
-    for (const projectedPath of all.paths) for (const [owner, values] of projectedPath.pools) {
-      if (!union.has(owner)) union.set(owner, new Map());
-      for (const [commit, value] of values) union.get(owner)!.set(commit, value);
-    }
     const measured = (values: Iterable<KnowledgeWithRevision>) => {
       const items = [...values];
       return { versions: items.length, tokens: tokens(processedBlock(items)) };
     };
     const owners = ["global", `project:${store.getSession(sessionId)!.projectId}`, `session:${sessionId}`];
-    const active = store.listCurrentKnowledge(path);
+    const active = store.currentKnowledge(path);
     const activePools = new Map(owners.map(owner => [owner, new Map<number, KnowledgeWithRevision>()]));
     for (const value of active) activePools.get(placementOwner(store, value))!.set(value.revision.id, value);
     const report = {
       source: resolvedSource,
       workingCopy: workingPath,
       path,
-      oldUnion: Object.fromEntries(owners.map(owner => [owner, measured(union.get(owner)?.values() ?? [])])),
-      newPath: Object.fromEntries(owners.map(owner => [owner, measured(selected.pools.get(owner)?.values() ?? [])])),
-      applicable: measured(selected.values),
+      pools: store.poolSizes(path),
+      pending: Object.fromEntries(owners.map(owner => [owner, store.pendingVersions(owner, path).length])),
+      due: store.duePools(path).map(value => ({ pool: value.pool, reason: value.reason, pending: value.pending.length })),
       activePath: {
         owners: Object.fromEntries(owners.map(owner => [owner, measured(activePools.get(owner)!.values())])),
         applicable: measured(active),
       },
       activeApplicableVersions: active.length,
-      processedApplicableVersions: selected.values.length,
-      ownerCheck: Object.fromEntries(selected.values.map(value => [value.revision.id, placementOwner(store, value)])),
-      note: "Active applicable versions include unprocessed current revisions; owner pools and applicable above include only current non-archived processed versions. Historical certificates remain stored but are counted only where that exact revision is current on the measured path.",
+      handledCurrentVersions: store.processedCurrentVersions(active).size,
+      ownerCheck: Object.fromEntries(active.map(value => [value.revision.id, placementOwner(store, value)])),
+      note: "Current owner pools include every visible non-archived current version. Pending uses per-pool/version processing records; handling does not change validity. This replaces the old processed-only path/union comparison.",
     };
     console.log(JSON.stringify(report, null, 2));
   } finally {

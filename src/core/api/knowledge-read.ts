@@ -50,9 +50,15 @@ export function knowledgeReadSelection(store: Store, options: ListingOptions, na
     if (current.has(hit.id)) return hit.op === "archive" ? (path ? "archived on this path" : "archived")
       : path ? "current on this path" : "tip (newest-created alternatives)";
     const descendants = graph.descendants(hit.id);
-    const successors = graph.current.filter(r => r.id !== hit.id && descendants.has(r.id));
-    return successors.length && successors.every(r => r.op === "archive") ? (path ? "archived on this path" : "archived")
-      : `superseded${path ? " on this path" : ""} by ${successors.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none"}`;
+    // State is global even when the selected revision's body is outside this reader's scope.
+    // A competing sibling is not a descendant, so fall back to this identity's resolved
+    // alternative rather than emitting the false `superseded by none`.
+    const successors = graph.resolved.filter(r => r.id !== hit.id && descendants.has(r.id));
+    const selected = successors.length ? successors
+      : graph.resolved.filter(r => r.id !== hit.id && r.knowledgeId === hit.knowledgeId);
+    return selected.length && selected.every(r => r.op === "archive") ? (path ? "archived on this path" : "archived")
+      : selected.length ? `superseded${path ? " on this path" : ""} by ${selected.map(r => `K${r.knowledgeId}@${r.id}`).join(", ")}`
+      : path ? "not current on this path" : "not globally current";
   };
   return { input, graph, path, byCommit, matches, representatives, status };
 }

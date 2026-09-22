@@ -7,7 +7,7 @@ A fact is one line of plain text with a `category`, an `actor`, a `status` for e
 - assistant — the assistant's proposals, decisions and interpretations.
 - observation — an `observation` or `event` fact. Direct when its evidence is a tool result or the user's own account; relayed when its text says according to whom, or its status is `reported` or `dispatched`. A relayed observation is its reporter's claim.
 
-**Validity.** A fact is valid while it is on the applicable chain and no later user or observation fact strongly negates it.
+**Validity.** A fact is valid while it is on the applicable chain and no later fact strongly negates it.
 
 **Six categories, one test each.** The category says what the sentence does, not whether it is right, resolved, or who said it. If no test answers yes, it is not that category.
 - **question** — what information or confirmation is sought, by the user or by the assistant asking the user? A course of action phrased as a question is a proposal.

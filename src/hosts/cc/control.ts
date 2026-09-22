@@ -33,6 +33,9 @@ export interface CcControlHandlers {
 export interface CcControlServer {
   executor: CcExecutorBinding;
   close(preserveExecutor?: boolean): Promise<void>;
+  /** 63: serve another native session of the same core session — the executor record moves from the
+   * current binding to `next`, and control requests are checked against `next` from then on. */
+  retarget(next: CcSessionBinding): Promise<void>;
 }
 
 const socketPath = (config: ResolvedCcHostConfig, token: string): string => {
@@ -85,8 +88,9 @@ const closeServer = (server: ReturnType<typeof createServer>): Promise<void> => 
   server.close(() => resolve());
 });
 
-export async function startControlServer(config: ResolvedCcHostConfig, binding: CcSessionBinding, memory: TraceMemory,
+export async function startControlServer(config: ResolvedCcHostConfig, initial: CcSessionBinding, memory: TraceMemory,
   bindingTimeoutMs?: number, signal?: AbortSignal, handlers?: CcControlHandlers): Promise<CcControlServer> {
+  let binding = initial; // 63: re-pointed by `retarget`
   const token = randomUUID(), path = socketPath(config, token);
   const executor: CcExecutorBinding = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: new Date().toISOString() };
   mkdirSync(dirname(path), { recursive: true });
@@ -155,11 +159,27 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
     rmSync(path, { force: true });
     throw error;
   }
+  const attachTo = (target: CcSessionBinding) => updateBinding(config, target.nativeSessionId, current => {
+    if (!current) throw new Error("CC binding disappeared before executor attach");
+    if (current.transcriptPath !== target.transcriptPath) throw new Error("CC binding changed before executor attach");
+    if (current.executor && current.executor.token !== token) {
+      const liveness = executorLiveness(current.executor);
+      if (liveness === "alive") throw new Error(`CC session already has a live executor process ${current.executor.pid}`);
+      if (liveness === "unknown") throw new Error(`cannot establish liveness of CC executor process ${current.executor.pid}`);
+    }
+    return { ...current, executor };
+  }, bindingTimeoutMs);
+  const release = (target: CcSessionBinding) => updateBinding(config, target.nativeSessionId,
+    current => !current || current.executor?.token !== token ? current! : { ...current, executor: null });
   return { executor, close: async (preserveExecutor = false) => {
     await closeServer(server);
     rmSync(path, { force: true });
-    if (!preserveExecutor) await updateBinding(config, binding.nativeSessionId,
-      current => !current || current.executor?.token !== token ? current! : { ...current, executor: null });
+    if (!preserveExecutor) await release(binding);
+  }, retarget: async next => {
+    if (next.coreSessionId !== binding.coreSessionId) throw new Error("CC control retarget must stay on the same core session");
+    await attachTo(next);
+    const previous = binding; binding = next;
+    await release(previous);
   } };
 }
 

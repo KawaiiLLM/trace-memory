@@ -3,10 +3,11 @@ import { knowledgeReadSelection, KNOWLEDGE_REPRESENTATIVE_RECEIPT } from "./know
 import { traceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry } from "../store/index.ts";
-import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeMark, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
-import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
+import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
+import { budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { injectionText, compactText, measuredMemory, type MemoryComposition, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
+import { deriveSharedMaterialAllowance } from "../store/processing.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
  * run's tool binding, never by the model: they decide which knowledge a label is judged against and,
@@ -16,9 +17,9 @@ import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type Suppl
  * reachable from a model's tool arguments. */
 export const READ_VERSIONS = ["current", "history", "all"] as const;
 export type ReadVersions = (typeof READ_VERSIONS)[number];
-export const READ_FIELDS = ["text", "supports", "topics", "status", "reason", "links", "marks"] as const;
+export const READ_FIELDS = ["text", "supports", "topics", "status", "reason", "links"] as const;
 export type ReadField = (typeof READ_FIELDS)[number];
-export const TRACE_DEFAULT_FIELDS: readonly ReadField[] = ["text", "supports", "topics", "status", "links", "marks"];
+export const TRACE_DEFAULT_FIELDS: readonly ReadField[] = ["text", "supports", "topics", "status", "links"];
 export const TRACE_HISTORY_DEFAULT_FIELDS: readonly ReadField[] = [...TRACE_DEFAULT_FIELDS, "reason"];
 export const SEARCH_DEFAULT_FIELDS: readonly ReadField[] = ["text"];
 export const SEARCH_HISTORY_DEFAULT_FIELDS: readonly ReadField[] = ["text", "status"];
@@ -59,10 +60,9 @@ export interface KnowledgeRead { knowledgeId: number; commits: number[]; replace
 export interface TraceRead { text: string; completed: KnowledgeRead[] }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
-/** 21b "Group projection": the topics of the path-selected applicable knowledge, as references to the
- * exact commits they were read from. A commit with several labels is referenced by each of its groups,
- * a commit with none stays available under `unclassified`, and divergent tips remain separate entries:
- * nothing here clones a knowledge record, collapses two tips or picks a winner. */
+/** 21b "Group projection": the topics of current visible knowledge, as references to the exact
+ * commits they were read from. A commit with several labels is referenced by each of its groups,
+ * and a commit with none stays available under `unclassified`; grouping never changes selection. */
 export interface TopicGroups {
   topics: { topic: string; commits: { knowledgeId: number; commit: number }[] }[];
   unclassified: { knowledgeId: number; commit: number }[];
@@ -91,20 +91,19 @@ export type CompactResult = { text: string; supplied: SuppliedMaterial; composit
 
 /** 28a item 6: what one custom replacement charged, window by window, beside the text it produced.
  * Diagnostics — the outcome is still the custom replacement or the native delegation, and nothing
- * reads this to decide between them. `envelope` is the sum of the three bases and shared overflow, the ceiling the
- * three charges together may never exceed. */
+ * reads this to decide between them. `envelope` is the sum of the three bases and the runtime-derived shared
+ * allowance, the ceiling the three charges together may never exceed. */
 export interface ChargedWindows { knowledge: number; facts: number; raw: number; envelope: number;
-  /** What the required material alone charges — the unprocessed knowledge, pending facts and pending Raw with their
-   * framing, before either refill. `facts`/`raw` above minus these is what the refills took. */
+  /** Required pending facts and Raw with framing, before optional fill. Knowledge has no required
+   * pending set; subtract these charges from the totals to measure optional supplements. */
   required: { knowledge: number; facts: number; raw: number } }
 /** Foreground Knowledge delivery and the exact body/state identities its carrier may persist. */
 export interface Injection { text: string; knowledgeCommitIds: number[]; knowledgeStates?: KnowledgeStateReceipt[]; composition?: MemoryComposition }
 
-/** 22c "complete snapshot": one search hit whose formatting the query deferred to a later page, with
- * the mutable state its line would otherwise read from the database then. Everything else a hit
- * prints — the fact and commit records, the path, the labels the commit graph decided — is immutable
- * or already frozen by the query, so these three annotations are the whole remainder. */
-interface FrozenHit { address: string; relations?: FactRelation[]; marks?: KnowledgeMark[]; entryIds?: number[]; profile?: EntryProfile; /** 59: the batched-search query this hit answers, echoed on its line. */ query?: string }
+/** 22c "complete snapshot": one search hit whose formatting the query deferred to a later page.
+ * Fact relations and Raw entry membership are mutable; the commit records, path and labels selected
+ * by a knowledge query are already frozen by that query. */
+interface FrozenHit { address: string; relations?: FactRelation[]; entryIds?: number[]; profile?: EntryProfile; /** 59: the batched-search query this hit answers, echoed on its line. */ query?: string }
 /** 59c: a batched-search query with no hit; its line trails the hits and is paged like them. */
 type Miss = { miss: string };
 
@@ -138,12 +137,33 @@ export function knowledgeStateNotes(store: Store, current: readonly KnowledgeWit
   if (!retained.length) return [];
   const graph = prepared ?? store.commitGraph(path, projectId);
   const active = new Set(current.map(k => k.revision.id));
+  const selected = new Map(current.map(item => [item.revision.knowledgeId, item.revision]));
   const byCommit = new Map(graph.revisions.map(r => [r.id, r]));
-  return retained.filter(id => graph.applicable.has(id) && !active.has(id)).flatMap(id => {
+  return retained.filter(id => !active.has(id)).flatMap(id => {
     const revision = byCommit.get(id);
     if (!revision) return [];
+    const shown = selected.get(revision.knowledgeId);
+    const resolvedIdentity = graph.resolved.filter(candidate => candidate.knowledgeId === revision.knowledgeId);
+    const applicableIdentity = graph.revisions.filter(candidate => candidate.knowledgeId === revision.knowledgeId
+      && graph.applicable.has(candidate.id));
+    if (!graph.applicable.has(id)) {
+      const targets = shown ? [shown] : resolvedIdentity;
+      return [{ receipt: { fromCommit: id, toCommits: targets.length ? targets.map(target => target.id) : [id] },
+        revisions: targets, text: targets.length || applicableIdentity.length
+          ? `K${revision.knowledgeId}@${id} no longer applies`
+          : `K${revision.knowledgeId} no longer applies` }];
+    }
     const descendants = graph.descendants(id);
-    const successors = graph.current.filter(r => r.id !== id && descendants.has(r.id));
+    // Resolution precedes visibility. A hidden successor still invalidates a retained older body;
+    // the notice names only its immutable address and never renders its body. Competing siblings
+    // are not descendants, so the globally selected revision for this identity is the fallback.
+    const descendantsSelected = graph.resolved.filter(candidate => candidate.id !== id && descendants.has(candidate.id));
+    const successors = descendantsSelected.length ? descendantsSelected
+      : resolvedIdentity.filter(candidate => candidate.id !== id);
+    const directBranches = graph.revisions.filter(candidate => candidate.parentId === id);
+    if (shown && shown.id !== id && (directBranches.length > 1 || !descendants.has(shown.id)))
+      return [{ receipt: { fromCommit: id, toCommits: [shown.id] }, revisions: [shown],
+        text: `K${revision.knowledgeId}@${id} is shown as K${shown.knowledgeId}@${shown.id}` }];
     if (!successors.length) return [];
     const split = graph.revisions.some(r => r.op === "split" && r.parentId === id && graph.applicable.has(r.id));
     if (split) return [{ receipt: { fromCommit: id, toCommits: successors.map(r => r.id) }, revisions: successors,
@@ -304,13 +324,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     return value;
   };
   const effectiveOptions = (options: ListingOptions): ListingOptions => ({ ...options, versions: options.versions ?? "current" });
-  // Both read one mutable annotation of an otherwise immutable record. A caller that froze it at
-  // query time (22c) supplies it; everyone else reads it now, exactly as before.
   const factLine = (id: number, relations: readonly FactRelation[] = store.listFactRelations(id)) => renderFact(store.getFact(id)!, [...relations]);
   const factGroups = (facts: Fact[], relations = store.listFactRelationsOf(facts.map(fact => fact.id))) =>
     renderFactGroups(facts, f => factLine(f.id, relations.get(f.id) ?? []), store.factTurnTimes(facts));
-  const knowledgeLine = (value: KnowledgeWithRevision, marks: readonly KnowledgeMark[] = store.listKnowledgeMarks(value.knowledge.id)) =>
-    renderKnowledge(value, [...marks]);
+  const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge(value);
   // The knowledge part of the shared material contract (20a): the applicable commits at one node,
   // under the existing scope and commit-graph rules. Its block layout lives in core/render/material.ts.
   const applicable = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string) =>
@@ -321,7 +338,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * a nonempty current support list; empty and partial evidence never do. */
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility()): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
-    const knowledgeCap = store.knowledgeBudgets().injection;
+    const budgets = store.knowledgeBudgets();
+    const sharedAllowance = deriveSharedMaterialAllowance(budgets,
+      { noting: config.noting.triggerTokens, consolidation: config.consolidation.triggerTokens });
+    const knowledgeCap = budgets.injection + sharedAllowance;
+    if (!Number.isSafeInteger(knowledgeCap)) throw new Error("derived foreground Knowledge capacity must be a safe integer");
     const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
     if (id !== undefined && !store.enabled(id)) return empty();
     const projectId = id === undefined ? (target as { projectId: number }).projectId : session(id).projectId;
@@ -350,37 +371,27 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
 
     const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id) && !covered(revision));
     const states = allStates.filter(state => !(visible.knowledgeStates ?? new Set()).has(knowledgeStateKey(state.receipt))
-      && !state.revisions.every(covered));
+      && !(state.revisions.length > 0 && state.revisions.every(covered)));
     if (!delta.length && !states.length) return empty();
 
     // Historical applicable bodies still retained in context spend the same configured allowance.
     // Re-render one coherent visible view with the same category/status framing; do not sum stored
     // body bytes, averages or candidate counts. Existing acknowledged notices are charged too.
-    const marks = store.listKnowledgeMarksOf([...visibleBodies, ...delta].map(item => item.revision.id));
-    const line = (value: KnowledgeWithRevision) => renderKnowledge(value, marks.get(value.revision.id) ?? []);
+    const line = (value: KnowledgeWithRevision) => renderKnowledge(value);
     const visibleKnowledge = budgetKnowledge(visibleBodies, Infinity, line);
-    const byRevision = new Map(graph.revisions.map(revision => [revision.id, revision]));
-    const acknowledgedStateTexts = [...(visible.knowledgeStates ?? new Set())].flatMap(key => {
-      const [fromText, toText = ""] = key.split(">");
-      const from = byRevision.get(Number(fromText));
-      const successors = toText.split(",").filter(Boolean).map(id => byRevision.get(Number(id))).filter((value): value is KnowledgeRevision => !!value);
-      return from && successors.length && graph.applicable.has(from.id) && successors.every(value => graph.applicable.has(value.id))
-        ? [knowledgeStateText(from, successors)] : [];
-    });
+    const acknowledged = visible.knowledgeStates ?? new Set<string>();
+    // A retained status notice is independent of its old body: hosts may keep the notice alone.
+    // Reconstruct its current matching transition without granting body coverage or producing a new notice.
+    const acknowledgedSources = [...acknowledged].map(key => Number(key.split(">")[0]));
+    const acknowledgedStateTexts = knowledgeStateNotes(store, current, acknowledgedSources, path, path ? undefined : projectId, graph)
+      .filter(state => acknowledged.has(knowledgeStateKey(state.receipt))).map(state => state.text);
     const visibleText = injectionText({ knowledge: visibleKnowledge.groups, receipts: [] }, acknowledgedStateTexts);
     const remaining = knowledgeCap - tokens(visibleText);
     if (remaining <= 0) return empty();
 
-    // Foreground publication has no omission receipts. State transitions retain their established
-    // order ahead of bodies, but each notice is one complete budget item: an unfit later notice does
-    // not erase an already fitting prefix or permit lower-priority bodies to skip past it.
-    const ordered = budgetKnowledge(delta, Infinity, line).commits;
-    const byCommit = new Map(delta.map(value => [value.revision.id, value]));
-    const build = (stateCount: number, bodyCount: number) => {
-      const knowledge = budgetKnowledge(ordered.slice(0, bodyCount).map(id => byCommit.get(id)!), Infinity, line).groups;
-      const material = { knowledge, receipts: [] as string[] };
-      return { material, text: injectionText(material, states.slice(0, stateCount).map(state => state.text)) };
-    };
+    // State transitions retain priority over optional bodies. Then the shared selector preserves
+    // the newest commits and receipts omitted older items, without publishing a receipt alone.
+    const buildStates = (count: number) => injectionText({ knowledge: [], receipts: [] }, states.slice(0, count).map(state => state.text));
     const longest = (high: number, fits: (count: number) => boolean) => {
       let low = 0;
       while (low < high) {
@@ -389,19 +400,28 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       }
       return low;
     };
-    const stateCount = longest(states.length, count => tokens(build(count, 0).text) <= remaining);
+    const stateCount = longest(states.length, count => tokens(buildStates(count)) <= remaining);
     if (stateCount < states.length) {
       if (!stateCount) return empty();
-      const { material, text } = build(stateCount, 0);
-      const rendered = measuredMemory(text, material);
+      const material = { knowledge: [], receipts: [] };
+      const rendered = measuredMemory(buildStates(stateCount), material);
       return { ...rendered, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt) };
     }
-    const bodyCount = longest(ordered.length, count => tokens(build(stateCount, count).text) <= remaining);
-    const { material, text } = build(stateCount, bodyCount);
-    const commits = ordered.slice(0, bodyCount), selectedStates = states.slice(0, stateCount);
-    if (tokens(text) > remaining || (!commits.length && !selectedStates.length)) return empty();
+    const selectedStates = states.slice(0, stateCount);
+    const ordered = [...delta].sort((a, b) => b.revision.id - a.revision.id);
+    const build = (count: number) => {
+      const selected = budgetKnowledge(ordered.slice(0, count), Infinity, line);
+      const material = { knowledge: selected.groups,
+        receipts: count ? renderKnowledgeOmissions(ordered.slice(count)) : [] };
+      return { selected, material, text: injectionText(material, selectedStates.map(state => state.text)) };
+    };
+    // Foreground allowance is charged to the exact rendered body, not the selector's conservative
+    // cost estimate: retained context and state notices already consume part of the same window.
+    const count = longest(ordered.length, count => tokens(build(count).text) <= remaining);
+    const { selected, material, text } = build(count);
+    if (tokens(text) > remaining || (!selected.commits.length && !selectedStates.length)) return empty();
     const rendered = measuredMemory(text, material);
-    return { ...rendered, knowledgeCommitIds: commits,
+    return { ...rendered, knowledgeCommitIds: selected.commits,
       ...(selectedStates.length ? { knowledgeStates: selectedStates.map(state => state.receipt) } : {}) };
   };
   /** 25d "Trace address queries": one comma component read as an inclusive fact-id interval, `F81-F90`.
@@ -465,7 +485,6 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         if (project) {
           const selection = knowledgeReadSelection(store, options, project.id);
           const revisions = selection.representatives(selection.graph.revisions);
-          const marks = store.listKnowledgeMarksOf(revisions.map(r => r.id));
           const records = store.knowledgeRecords(revisions.map(r => r.knowledgeId));
           const fields = new Set(options.fields!);
           const knowledge = revisions.map(revision => {
@@ -473,7 +492,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
             const children = selection.graph.revisions.filter(r => selection.input.parents.get(r.id)?.includes(revision.id));
             const grounds = [...store.revisionGrounds(revision)].sort((a, b) => a - b);
             const status = selection.status(revision);
-            return () => renderKnowledgeTrace({ knowledge: records.get(revision.knowledgeId)!, revision }, marks.get(revision.id) ?? [],
+            return () => renderKnowledgeTrace({ knowledge: records.get(revision.knowledgeId)!, revision },
               parents, children, profile.entryTokens, grounds, fields, false, status);
           });
           const facts = store.listProjectFacts(project.id);
@@ -533,32 +552,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     for (const { usage } of store.listRunUsage(null, since)) if (usage) cost += usage.cost;
     return cost;
   };
-  /** Footer progress/applicability numbers for one session's selected branch and head, answered from
-   * one path snapshot (22a), the pending-entry identities (22b), and one exact-version processed lookup.
-   *
-   * - `entries`: imported source entries of this path that no Noting run has committed yet. The
-   *   `noted_entries` rows a run writes inside its business transaction are what removes an entry
-   *   here, so an admitted, running, failed or cancelled batch is still pending, and a provider
-   *   failure after the commit restores nothing.
-   * - `facts`: every committed fact applicable on this path, the ones already consolidated included.
-   * - `unconsolidated`: those of them Consolidation still owes work for — the same exact membership
-   *   `consolidationBatch` selects, never `facts` minus the cited ones.
-   * - `knowledge`: the applicable current knowledge, in `listCurrentKnowledge`'s own counting unit,
-   *   so two divergent tips of one identity count as the two versions they are. `unprocessedKnowledge`
-   *   and `processedKnowledge` partition those exact current versions; archives and superseded
-   *   versions are absent because `listCurrentKnowledge` already excluded them.
-   *
-   * Nothing here loads a Raw payload, renders or tokenizes, freezes a task, reads a run's audit body,
-   * or scans the processed history. The snapshot is built for this one read and dropped with it, so
-   * another connection's commits are seen by the next call. The branch defaults to `main`, so a
-   * caller without a host path still asks about a named branch rather than about Turn-only membership. */
+  /** Footer progress for one selected path. `knowledge` is the current visible set;
+   * `changedKnowledge` is the subset whose current owner pool has not processed that revision.
+   * Processing is scheduling state only: it is not exposed as a processed/unprocessed partition. */
   const progress = (sessionId: number, branch = "main", headTurnId?: number | null) => {
     session(sessionId);
     const path = store.knowledgePath(sessionId, branch, headTurnId);
     const snapshot = store.pathSnapshot(path);
     const facts = store.listBranchFacts(sessionId, branch, path.headTurnId, snapshot);
-    const knowledge = store.listCurrentKnowledge(path, {}, snapshot);
-    const processedKnowledge = store.processedKnowledgeVersions(knowledge.map(value => value.revision.id)).size;
+    const knowledge = store.currentKnowledge(path, {}, snapshot);
+    const changedKnowledge = knowledge.length - store.processedCurrentVersions(knowledge).size;
     return {
       // No head means no Turn on this path, so nothing of it has been imported: the enumeration's
       // own answer, not a placeholder for one it could not compute.
@@ -566,8 +569,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       facts: facts.length,
       unconsolidated: store.unconsolidated(facts, path, snapshot).length,
       knowledge: knowledge.length,
-      unprocessedKnowledge: knowledge.length - processedKnowledge,
-      processedKnowledge,
+      changedKnowledge,
     };
   };
   return {
@@ -592,8 +594,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // Worker completion alone never delivers material into the foreground.
     injection,
     inject: (target: number | { projectId: number } | KnowledgePath): string => injection(target).text,
-    // One allocator: required exact versions/facts/Raw first, fixed bases plus shared required-only
-    // overflow, then processed knowledge and Raw-first historical refill in each own base remainder.
+    // One allocator: required state notices/facts/Raw first, then optional current knowledge and
+    // Raw-first historical refill in each own base remainder. Scheduling pairs never affect it.
     // No worker, processing mark or coverage persistence is performed by this synchronous render.
     compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = []): CompactResult => {
       if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
@@ -604,15 +606,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // represented and what may refill the spare. The rendering below reads these same sets.
       const sourced = head === undefined ? [] : store.sourcePath(sessionId, branch, head);
       const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head);
-      const knowledge = store.listCurrentKnowledge(path, {}, snapshot);
-      const requiredCommits = new Set(knowledge.filter(k => !store.isKnowledgeProcessed(k.revision.id)).map(k => k.revision.id));
+      const knowledge = store.currentKnowledge(path, {}, snapshot);
       const visible = Array.isArray(retainedView) ? noVisibility() : retainedView as VisibleView;
       const retained = new Set(Array.isArray(retainedView) ? retainedView : visible.raw.keys());
-      // Archives remain real immediately, but unprocessed retirement must retain its accounting.
-      // Reuse the applicable graph (including archives), never the active-only knowledge list.
-      const archives = store.commitGraph(path, undefined, snapshot).current.filter(r => r.op === "archive" && !store.isKnowledgeProcessed(r.id));
-      const notes = [...knowledgeStatusNotes(store, knowledge, visible.knowledgeCommitIds, path),
-        ...archives.map(r => `K${r.knowledgeId}@${r.id} archived; maintenance not completed; parent K${r.knowledgeId}@${r.parentId}; supports: ${r.supports.map(id => `F${id}`).join(", ") || "none"}; reason: ${r.reason}`)];
+      // Knowledge processing is scheduling-only. Current versions are optional window material;
+      // processing pairs do not change selection, capacity failure, or fallback.
+      const notes = knowledgeStatusNotes(store, knowledge, visible.knowledgeCommitIds, path);
       const noteCost = notes.length ? charge([KNOWLEDGE_STATUS_TITLE, ...notes]) : 0;
       // 26 amendment 2: the facts are the ones applicable on the selected path, never the whole
       // session's — a sibling branch's fact is not history here. `listSessionFacts`'s freshness order
@@ -630,8 +629,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // excluded on that account (30 case 10): the exclusions are these two and no other.
       const pendingIds = new Set(pending.map(e => e.id));
       const extracted = sourced.filter(e => !pendingIds.has(e.id) && !retained.has(e.nativeId));
-      const caps = { knowledge: store.knowledgeBudgets().injection, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
-      const envelope = caps.knowledge + caps.facts + caps.raw + config.compaction.overflowTokens;
+      const budgets = store.knowledgeBudgets();
+      const sharedAllowance = deriveSharedMaterialAllowance(budgets,
+        { noting: config.noting.triggerTokens, consolidation: config.consolidation.triggerTokens });
+      const caps = { knowledge: budgets.injection, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
+      const envelope = caps.knowledge + caps.facts + caps.raw + sharedAllowance;
       if (!Number.isSafeInteger(envelope)) throw new Error("derived compact envelope must be a safe integer");
       // Every emitted component is charged inside the window that owns it: the `<episodic>` tag and
       // the facts title with the facts, the Raw title with the Raw, each block's omission receipts
@@ -652,20 +654,25 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (!views) return { native: true, reason: `bounded views of ${pending.length} pending entries exceed the entry view profile `
         + `(E ${config.render.entryTokens}, C ${config.render.toolInputTokens}, R ${config.render.toolResultTokens} tokens): their labels and omission markers do not fit it` };
       const requiredFacts = factsCharge(pendingFacts, []), requiredRaw = rawCharge(views.map(v => v.content));
-      const requiredKnowledge = budgetKnowledge(knowledge.filter(k => requiredCommits.has(k.revision.id)), Infinity, knowledgeLine).cost + noteCost;
+      const requiredKnowledge = noteCost;
       const excess = { knowledge: Math.max(0, requiredKnowledge - caps.knowledge),
         facts: Math.max(0, requiredFacts - caps.facts), raw: Math.max(0, requiredRaw - caps.raw) };
       const totalExcess = excess.knowledge + excess.facts + excess.raw;
-      if (totalExcess > config.compaction.overflowTokens) return { native: true,
+      if (totalExcess > sharedAllowance) return { native: true,
         over: { knowledge: excess.knowledge > 0, facts: excess.facts > 0, raw: excess.raw > 0 },
-        reason: `required material exceeds shared overflow: knowledge ${requiredKnowledge} tokens (excess ${excess.knowledge}, database Knowledge injection capacity ${caps.knowledge}); `
+        reason: `required material exceeds shared allowance: knowledge ${requiredKnowledge} tokens (excess ${excess.knowledge}, database Knowledge injection capacity ${caps.knowledge}); `
           + `${pendingFacts.length} pending facts need ${requiredFacts} tokens (excess ${excess.facts}, compaction.factsTokens ${caps.facts}); `
           + `bounded views of ${pending.length} pending entries need ${requiredRaw} tokens (excess ${excess.raw}, compaction.rawTokens ${caps.raw}); `
-          + `shared allowance ${config.compaction.overflowTokens}, charged excess ${totalExcess}, shortfall ${totalExcess - config.compaction.overflowTokens}` };
-      const active = budgetKnowledge(knowledge, Math.max(caps.knowledge, requiredKnowledge) - noteCost,
-        knowledgeLine, "database Knowledge injection capacity", requiredCommits);
-      // Raw first, independently of facts' spare. The discarded summary is not retained coverage.
-      let rawSpare = Math.max(0, caps.raw - requiredRaw);
+          + `shared allowance ${sharedAllowance}, charged excess ${totalExcess}, shortfall ${totalExcess - sharedAllowance}` };
+      // Reserve required excess once. Optional material keeps the established order: Knowledge,
+      // historical Raw, then historical facts. Each may use only the shared remainder left by earlier
+      // selections; unused base windows do not lend, and processing pairs never affect selection.
+      let shared = sharedAllowance - totalExcess;
+      const active = budgetKnowledge(knowledge, Math.max(0, caps.knowledge - noteCost) + shared,
+        knowledgeLine, "Knowledge base plus remaining shared allowance", new Set());
+      shared -= Math.max(0, active.cost + noteCost - caps.knowledge) - excess.knowledge;
+      // The discarded summary is not retained coverage.
+      let rawSpare = Math.max(0, caps.raw - requiredRaw) + shared;
       const refilledRaw: { entry: SourceEntry; content: string }[] = [];
       for (const entry of [...extracted].reverse()) {
         let content: string;
@@ -673,11 +680,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         if (tokens(content) + 1 > rawSpare) break;
         refilledRaw.push({ entry, content }); rawSpare -= tokens(content) + 1;
       }
+      const selectedRawCost = requiredRaw + charge(refilledRaw.map(value => value.content));
+      shared -= Math.max(0, selectedRawCost - caps.raw) - excess.raw;
       const coverage = new Set([...sourced.filter(e => retained.has(e.nativeId)).map(e => e.id),
         ...pendingIds, ...refilledRaw.map(s => s.entry.id)]);
       const coveredFacts = store.factsCoveredByRaw(consolidated, coverage);
       consolidated = consolidated.filter(f => !coveredFacts.has(f.id));
-      const spare = Math.max(0, caps.facts - requiredFacts);
+      const spare = Math.max(0, caps.facts - requiredFacts) + shared;
       // Refill (a): whole facts, freshness order, into the spare, charged to the facts window and the
       // envelope. The receipt for what is left out is charged with them; when even that receipt does
       // not fit, the refill is empty and silent — optional material may be omitted, never overspent.
@@ -781,20 +790,19 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const addresses = batched ? represented.flatMap((list, index) => list.slice(0, perQuery).map(address => ({ address, query: batched[index]! }))) : represented[0]!;
       // 59c: a query with no hit is a line after every hit, paged like one, never a footer entry.
       const items: (string | FrozenHit | Miss)[] = [...addresses, ...(batched ? batched.filter((_, index) => !represented[index]!.length).map(miss => ({ miss })) : [])];
-      // The graph freezes what a hit is; this freezes mutable annotations and Raw membership for
-      // deferred pages. No open transaction survives the first page.
+      // The graph freezes knowledge hits; this freezes mutable Raw membership for deferred pages.
+      // No open transaction survives the first page.
       const capture = (deferred: readonly unknown[]): (FrozenHit | Miss)[] => {
         // The no-hit lines trail every hit and read nothing mutable; only the hits are frozen.
         const hits = deferred.filter((item): item is string | FrozenHit => typeof item === "string" || !("miss" in (item as object)));
         const queries = hits.map(item => typeof item === "string" ? undefined : item.query);
         const rest = hits.map(item => typeof item === "string" ? item : item.address);
-        const record = (address: string) => Number(address.slice(1)), commitOf = (address: string) => Number(address.split("@")[1]);
+        const record = (address: string) => Number(address.slice(1));
         const ids = (prefix: string, of: (address: string) => number) => rest.filter(a => a.startsWith(prefix)).map(of);
-        const marks = store.listKnowledgeMarksOf(ids("K", commitOf));
         const entries = store.listSourceEntryIdsOf(ids("T", record));
         return [...rest.map((address, index): FrozenHit => ({ ...(address.startsWith("F") ? { address }
           : address.startsWith("T") ? { address, entryIds: entries.get(record(address))!, profile: { entryTokens: config.render.entryTokens, toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } }
-          : { address, marks: marks.get(commitOf(address))! }), ...(queries[index] === undefined ? {} : { query: queries[index] }) })),
+          : { address }), ...(queries[index] === undefined ? {} : { query: queries[index] }) })),
           ...deferred.slice(hits.length) as Miss[]];
       };
       const format = (hits: readonly unknown[]) => (hits as (string | FrozenHit | Miss)[]).map((item) => {
@@ -809,7 +817,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         const hit = revision(address);
         const status = selection!.status(hit);
         const parents = (graphInput!.parents.get(hit.id) ?? []).map(parent => byCommit.get(parent)!).filter(Boolean);
-        return echo + renderKnowledgePreview({ knowledge, revision: hit }, frozen?.marks ?? store.listKnowledgeMarks(id!), status, fields,
+        return echo + renderKnowledgePreview({ knowledge, revision: hit }, status, fields,
           options.itemBudget === null ? Infinity : options.itemBudget!, parents, children.get(hit.id) ?? []);
       }).map(listingLine);
       const material = options.scope === "session" ? "this session; session knowledge" : options.scope === "project"
@@ -821,17 +829,6 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       return page({ items, format, capture, ...(batched ? { queryCap: perQuery } : {}) }, { ...options, ...(batched ? { cap: undefined } : {}),
         maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS },
         `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${KNOWLEDGE_REPRESENTATIVE_RECEIPT}\n${preview}`, [], "search").text;
-    },
-    mark: (address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string => {
-      if (!["verified", "flagged", "clear"].includes(kind)) throw new Error("invalid mark kind");
-      const match = /^K([1-9]\d*)(?:@([1-9]\d*))?$/.exec(typeof address === "number" ? `K${address}` : address);
-      if (!match) throw new Error("invalid knowledge address");
-      const id = Number(match[1]);
-      if (!store.getKnowledge(id) || (match[2] && !store.getKnowledgeRevision(id, Number(match[2])))) throw new Error(`address does not exist: ${address}`);
-      const tips = match[2] ? [store.getKnowledgeRevision(id, Number(match[2]))].filter(r => r !== null) : store.currentCommit(id, path ?? null);
-      if (tips.length !== 1) throw new Error(`K${id}: ${tips.length ? "several tips; specify a commit" : "no current commit"}`);
-      const commitId = store.mark(tips[0]!.id, kind, new Date().toISOString());
-      return `K${id}@${commitId}: ${kind}`;
     },
     status: (sessionId: number, branch?: string, headTurnId?: number | null): string => {
       const s = session(sessionId), runs = store.listRuns(sessionId);

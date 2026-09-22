@@ -25,27 +25,25 @@ function fact(f: ReturnType<typeof base>) {
   return result.facts[0]!;
 }
 
-function knowledge(f: ReturnType<typeof base>) {
+function knowledge(f: ReturnType<typeof base>, scope: "project" | "global" | "session" = "project") {
   const evidence = fact(f);
   const result = f.store.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, operations: [
-    { op: "create", handle: "$1", author: "test", text: "pending knowledge ".repeat(30), category: "constraint", scope: "project",
+    { op: "create", handle: "$1", author: "test", text: "pending knowledge ".repeat(30), category: "constraint", scope,
       supports: [evidence.id], topics: [], reason: "test", createdAt: "now" },
   ], consolidated: [evidence.id] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.committed[0]!;
 }
 
-for (const phase of ["noting", "consolidation", "dreaming"] as const) {
-  test(`49: declaration rejects ${phase} at its configured threshold without flushing`, () => {
+for (const phase of ["noting", "consolidation"] as const) {
+  test(`64c/49: declaration still rejects ${phase} at its configured threshold without flushing`, () => {
     const f = base(phase === "noting");
     if (phase === "consolidation") fact(f);
-    if (phase === "dreaming") knowledge(f);
     const measured = f.memory.pendingTokens(phase, f.path).tokens!;
     expect(measured).toBeGreaterThan(0);
     f.memory.config[phase].triggerTokens = measured;
     if (phase !== "noting") f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
     if (phase !== "consolidation") f.memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
-    if (phase !== "dreaming") f.memory.config.dreaming.triggerTokens = Number.MAX_SAFE_INTEGER;
     expect(() => f.memory.declareProject(f.session.id, `blocked-${phase}`, "mark", f.path))
       .toThrow(new RegExp(`${phase} is due`));
     f.memory.config[phase].triggerTokens = measured - 1;
@@ -61,11 +59,14 @@ test("49: material below all three thresholds moves without an automatic flush",
   const f = base(true);
   knowledge(f);
   const pendingFact = fact(f);
-  for (const phase of ["noting", "consolidation", "dreaming"] as const) {
+  for (const phase of ["noting", "consolidation"] as const) {
     const measured = f.memory.pendingTokens(phase, f.path).tokens!;
     expect(measured).toBeGreaterThan(0);
     f.memory.config[phase].triggerTokens = measured + 1;
   }
+  const dreaming = f.memory.pendingTokens("dreaming", f.path).tokens!;
+  expect(dreaming).toBeGreaterThan(0);
+  f.memory.setKnowledgeBudget("project", dreaming * 2 + 2);
   expect(f.memory.declareProject(f.session.id, "below-target", "mark", f.path)).toContain("below-target");
   expect(f.store.consolidationBatch(f.session.id, f.path.branch, f.path.headTurnId).map(value => value.id)).toContain(pendingFact.id);
   expect(f.memory.pendingTokens("noting", f.path).tokens).toBeGreaterThan(0);
@@ -81,56 +82,71 @@ test("49: declaration uses the host-selected rewind path and accepts material be
   expect(laterTokens).toBeGreaterThan(selectedTokens);
   f.memory.config.noting.triggerTokens = selectedTokens + 1;
   f.memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
-  f.memory.config.dreaming.triggerTokens = Number.MAX_SAFE_INTEGER;
   expect(f.memory.declareProject(f.session.id, "rewind-target", "mark", f.path)).toContain("rewind-target");
   expect(f.memory.pendingTokens("noting", laterPath).tokens).toBe(laterTokens);
 });
 
-test("49: disabled enrollment does not mask a declaration backlog", () => {
-  const f = base(false), commit = knowledge(f);
+test("64c/49: disabled enrollment does not mask the preserved Consolidation declaration guard", () => {
+  const f = base(false), pending = fact(f);
   f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
-  f.memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
-  f.memory.config.dreaming.triggerTokens = f.memory.pendingTokens("dreaming", f.path).tokens!;
+  f.memory.config.consolidation.triggerTokens = f.memory.pendingTokens("consolidation", f.path).tokens!;
   f.store.setEnrollment(f.session.id, false);
-  expect(f.memory.taskEligibility("dreaming", f.path).due).toBe(false);
-  expect(() => f.memory.declareProject(f.session.id, "disabled-target", "mark", f.path)).toThrow(/dreaming is due/);
-  expect(f.store.isKnowledgeProcessed(commit.commit)).toBe(false);
+  expect(f.memory.taskEligibility("consolidation", f.path).due).toBe(false);
+  expect(() => f.memory.declareProject(f.session.id, "disabled-target", "mark", f.path)).toThrow(/consolidation is due/);
+  expect(f.store.consolidationBatch(f.session.id, "main", f.turn.id).map(value => value.id)).toContain(pending.id);
 });
 
-test("49: an open Dreaming range on any session branch and every live phase claim block declaration", () => {
-  const open = base(false), commit = knowledge(open);
-  open.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
-  open.memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
-  open.memory.config.dreaming.triggerTokens = Number.MAX_SAFE_INTEGER;
-  const sibling = { ...open.path, branch: "sibling" };
-  open.store.retainDreamingRange(sibling, [commit.commit]);
-  open.store.db.prepare("INSERT INTO knowledge_placement_validations(commit_id,old_owner,new_owner,view_version,created_at) VALUES (?,?,?,?,?)")
-    .run(commit.commit, `project:${open.own.id}`, `project:${open.own.id}`, "test", "before");
-  const before = {
-    session: open.store.getSession(open.session.id),
-    certificates: open.store.db.prepare("SELECT * FROM processed_knowledge_versions ORDER BY commit_id").all(),
-    settlements: open.store.db.prepare("SELECT * FROM settled_knowledge_events ORDER BY event_id").all(),
-    audits: open.store.db.prepare("SELECT * FROM knowledge_placement_validations ORDER BY id").all(),
-  };
-  expect(Object.fromEntries(["noting", "consolidation", "dreaming"].map(phase =>
-    [phase, open.memory.taskEligibility(phase as "noting" | "consolidation" | "dreaming", open.path).due])))
-    .toEqual({ noting: false, consolidation: false, dreaming: false });
-  expect(() => open.memory.declareProject(open.session.id, "open-range", "mark", open.path)).toThrow(/dreaming has an open range/);
-  expect(open.store.findProjectByName("open-range")).toBeNull();
-  expect(open.store.getSession(open.session.id)).toEqual(before.session);
-  expect(open.store.db.prepare("SELECT * FROM processed_knowledge_versions ORDER BY commit_id").all()).toEqual(before.certificates);
-  expect(open.store.db.prepare("SELECT * FROM settled_knowledge_events ORDER BY event_id").all()).toEqual(before.settlements);
-  expect(open.store.db.prepare("SELECT * FROM knowledge_placement_validations ORDER BY id").all()).toEqual(before.audits);
-  expect(open.store.openDreamingRange(open.session.id, "sibling")).not.toBeNull();
+test.each(["project", "global"] as const)("64c: active affected-project Dreamer blocks a move even while processing %s", scope => {
+  const f = base(false), item = knowledge(f, scope);
+  const pool = scope === "global" ? "global" : `project:${f.own.id}`;
+  f.store.setKnowledgeBudget(scope, f.store.pendingPoolWeight(pool, f.path) * 2);
+  expect(f.memory.taskEligibility("dreaming", f.path).due).toBe(true);
+  const claim = f.store.acquireClaim(f.path, "dreaming", "worker")!;
+  expect(claim).not.toBeNull();
+  const range = f.store.retainKnowledgePoolRange(f.path, pool, claim);
+  const before = { session: f.store.getSession(f.session.id), revisions: f.store.listKnowledgeRevisions() };
+  expect(() => f.memory.declareProject(f.session.id, "move-target", "mark", f.path)).toThrow(/active Dreamer.*affected project/);
+  expect(f.store.findProjectByName("move-target")).toBeNull();
+  expect(f.store.getSession(f.session.id)).toEqual(before.session);
+  expect(f.store.listKnowledgeRevisions()).toEqual(before.revisions);
+  f.store.releaseClaim(claim);
+  expect(f.memory.declareProject(f.session.id, "move-target", "mark", f.path)).toContain("move-target");
+  expect(f.store.dreamingRange(range.id)).not.toBeNull(); // an inactive old range is not a declaration gate
+  const target = f.store.findProjectByName("move-target")!;
+  expect(f.store.pendingVersions(scope === "global" ? "global" : `project:${target.id}`, f.path).map(v => v.revisionId)).toContain(item.commit);
+  expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
+});
 
-  for (const phase of ["noting", "consolidation", "dreaming"] as const) {
-    const f = base(false);
-    const expires = Date.now() + 60_000;
-    f.store.db.prepare("INSERT INTO task_claims VALUES (?,?,?,?,?,?,?)")
-      .run(f.session.id, phase, "worker", `token-${phase}`, expires, 0, 0);
-    expect(() => f.store.declareProject(f.session.id, `claim-${phase}`, "mark", { path: f.path, atTrigger: () => false }))
-      .toThrow(new RegExp(`${phase} has a live claim`));
+test.each(["noting", "consolidation"] as const)("64c/49: %s live claim still blocks declaration", phase => {
+  const f = base(true); fact(f);
+  const held = f.store.acquireClaim(f.path, phase, "worker");
+  expect(held).not.toBeNull();
+  expect(() => f.store.declareProject(f.session.id, `claim-${phase}`, "mark", { path: f.path, atTrigger: () => false }))
+    .toThrow(new RegExp(`${phase} has a live claim`));
+});
+
+test.each(["source", "target", "unrelated"] as const)("64c: a %s project peer's live Dreamer is fenced by affected ownership, not the declaring session's claim", relation => {
+  const f = base(false); knowledge(f);
+  const destination = f.store.createProject({ name: `destination-${relation}`, declaredBy: "mark" });
+  const peerProject = relation === "source" ? f.own : relation === "target" ? destination
+    : f.store.createProject({ name: "unrelated", declaredBy: "mark" });
+  const peerSession = f.store.createSession({ host: "peer", projectId: peerProject.id, projectDeclaration: "mark",
+    enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+  const peerTurn = f.store.appendTurn({ sessionId: peerSession.id, kind: "turn", userPrompt: "peer evidence", startedAt: "now" });
+  const peerPath = { sessionId: peerSession.id, branch: "main", headTurnId: peerTurn.id };
+  knowledge({ ...f, own: peerProject, session: peerSession, turn: peerTurn, path: peerPath });
+  const held = f.store.acquireClaim(peerPath, "dreaming", "peer-executor")!;
+  expect(held).not.toBeNull();
+  const range = f.store.retainKnowledgePoolRange(peerPath, `project:${peerProject.id}`, held);
+  const move = () => f.memory.declareProject(f.session.id, destination.name, "mark", f.path);
+  if (relation === "unrelated") expect(move()).toContain(destination.name);
+  else {
+    expect(move).toThrow(/active Dreamer.*affected project/);
+    expect(f.store.getSession(f.session.id)!.projectId).toBe(f.own.id);
   }
+  expect(f.store.getClaim(peerSession.id, "dreaming")).toEqual(held);
+  expect(f.store.dreamingRange(range.id)!.pool).toBe(`project:${peerProject.id}`);
+  expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
 });
 
 function claimFixture() {

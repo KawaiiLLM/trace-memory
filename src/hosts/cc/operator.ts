@@ -1,7 +1,7 @@
 import { Store } from "../../core/store/index.ts";
 import { TraceMemory } from "../../core/api/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { assertOperatorBinding, readBinding, updateBindingInStoreTransaction, validateNativeSessionId } from "./binding.ts";
+import { assertOperatorBinding, coreHostOf, readBinding, updateBindingInStoreTransaction, validateNativeSessionId } from "./binding.ts";
 import { controlSession, type OperatorControlResult } from "./control.ts";
 
 export type CcOperatorResult =
@@ -51,7 +51,7 @@ export async function declareCcProject(config: ResolvedCcHostConfig, nativeSessi
         throw new Error(`Claude Code session ${id} has no persisted selected source path; project declaration is not ready`);
       result = memory.declareProject(current.coreSessionId, name, "mark", path);
       const session = memory.store.getSession(current.coreSessionId);
-      if (!session || session.host !== `cc:${id}`) throw new Error("CC binding lost its authoritative core session during project declaration");
+      if (!session || session.host !== coreHostOf(current)) throw new Error("CC binding lost its authoritative core session during project declaration");
       coreSessionId = current.coreSessionId;
       return { ...current, projectId: session.projectId };
     });
