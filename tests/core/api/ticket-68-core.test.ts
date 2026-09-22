@@ -46,6 +46,7 @@ test("68 timeout fences tools, settles failure, releases the exact claim, and do
   const f = setup(async value => { task = value; value.acknowledgeRequest(); value.reportRequest(exactRequest); return never; }, { timeoutMs: 25 });
   const item = f.create("project", "timed item");
   const running = f.memory.dream(f.target);
+  expect(task.material.bound).toContain("25 ms");
   await vi.advanceTimersByTimeAsync(25);
   const result = await running;
   expect(result.outcome).toBe("failure");
@@ -69,10 +70,13 @@ test("68 timeout failure wins over a synchronous native cancelled result", async
   expect((await running).outcome).toBe("failure");
 });
 
-test("68 external cancellation remains cancellation when the native worker ignores abort", async () => {
+test("68 external cancellation remains cancellation when its native worker cooperates before the deadline", async () => {
   vi.useFakeTimers();
   const controller = new AbortController();
-  const f = setup(async task => { task.acknowledgeRequest(); task.reportRequest(exactRequest); return new Promise<RunAgentResult>(() => {}); }, { timeoutMs: 25 });
+  const f = setup(async task => new Promise<RunAgentResult>(resolve => {
+    task.acknowledgeRequest(); task.reportRequest(exactRequest);
+    task.signal!.addEventListener("abort", () => resolve({ outcome: "cancelled", output: "stopped", request: exactRequest }), { once: true });
+  }), { timeoutMs: 25 });
   f.create("project", "cancelled item");
   const running = f.memory.dream({ ...f.target, signal: controller.signal });
   controller.abort("stop");
@@ -125,6 +129,7 @@ test("68 flat trigger is independent of pool budget and pending wins over unchan
   const pending = f.store.pendingVersions(pool, f.target);
   f.store.setKnowledgeBudget("session", pending[0]!.tokens + 10);
   expect(f.store.pendingPoolWeight(pool, f.target)).toBeLessThan(5_000);
+  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: 5_000, state: "known" });
   expect(f.store.duePools(f.target, 5_000).find(value => value.pool === pool)?.reason).toBe("over-budget");
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([first.commit, second.commit]);

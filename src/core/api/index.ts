@@ -709,14 +709,15 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     return tokens(renderFactGroups(facts, f => renderFact(f, relations.get(f.id) ?? []), store.factTurnTimes(facts)).join("\n"));
   };
   const pendingTokens: TraceMemory["pendingTokens"] = (phase, target) => {
-    const trigger = phase === "dreaming" ? null : cfg[phase].triggerTokens;
+    const trigger = cfg[phase].triggerTokens;
     if (!target) return { tokens: null, trigger, state: "no session" };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
       if (phase === "dreaming") {
-        const pools = store.knowledgePools(target).map(size => ({ ...size, pending: size.pending.reduce((sum, value) => sum + value.tokens, 0) }));
+        const pools = store.knowledgePools(target, cfg.dreaming.triggerTokens)
+          .map(size => ({ ...size, pending: size.pending.reduce((sum, value) => sum + value.tokens, 0) }));
         const selected = pools.sort((left, right) => right.pending / Math.max(1, right.budget) - left.pending / Math.max(1, left.budget))[0]!;
-        return { tokens: selected.pending, trigger: Math.ceil(selected.budget / 2), state: "known" };
+        return { tokens: selected.pending, trigger: cfg.dreaming.triggerTokens, state: "known" };
       }
       const count = phase === "noting" ? tokens([...notingViews(target)].join("\n\n")) : consolidationTokens(target);
       return { tokens: count, trigger: cfg[phase].triggerTokens, state: "known" };
@@ -823,10 +824,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       task.close();
       try { if (!store.closed && phase !== "dreaming") store.releaseClaim(claim!); }
       catch { /* Finalization retries the same token and reports any remaining release failure. */ }
-      finally {
-        controller.abort(external!.reason);
-        force();
-      }
+      finally { controller.abort(external!.reason); }
     };
     if (external?.aborted) onExternalAbort();
     else external?.addEventListener("abort", onExternalAbort, { once: true });

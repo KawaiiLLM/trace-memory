@@ -21,7 +21,7 @@ export type DreamingResult = { automaticOff?: string } & (
 export interface DreamingAgentInput extends AgentControl {
   kind: "dreaming"; sessionId: number; branch: string; model: string; mode: "subagent";
   prompt: string; promptHash: string; text: string;
-  material: { processed: string; changed: string; facts: string };
+  material: { bound: string; processed: string; changed: string; facts: string };
   admittedProcessedInputCap: number;
   tools: import("../api/tools.ts").ToolDefinition[];
   acknowledgeRequest(): void;
@@ -98,7 +98,8 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const direct = factText(count);
   if (tokens(direct) > 10_000) throw new Error("Dreaming direct fact receipts exceed 10000");
 
-  const material = { processed: old, changed, facts: direct };
+  const material = { bound: `Run wall-clock bound: ${config.dreaming.timeoutMs} ms. Wrap up before this deadline.`,
+    processed: old, changed, facts: direct };
   const text = Object.values(material).join("\n\n");
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
       tokens(prompt) + tokens(JSON.stringify(dreamingToolDefinitions())) + tokens(text) > input.capacity.inputTokens))
@@ -146,8 +147,11 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     ...(requestMissing(result) ? ["runAgent must return the exact provider request"] : [])];
   const skippedRevisionIds = binding.memory.skipped.map(value => Number(/^K[1-9]\d*@([1-9]\d*)$/.exec(value.knowledge)?.[1]))
     .filter(Number.isSafeInteger);
-  const frozenSet = new Set(frozen.frozenIds), parentMap = store.commitGraphInput().parents;
-  const operatedFrozenIds = new Set(checked.ownRevisionIds.flatMap(id => parentMap.get(id) ?? []).filter(id => frozenSet.has(id)));
+  const frozenSet = new Set(frozen.frozenIds);
+  const operatedFrozenIds = new Set(checked.ownRevisionIds.flatMap(id => {
+    const revision = store.knowledgeRevision(id);
+    return revision ? store.commitParents(revision).map(parent => parent.id) : [];
+  }).filter(id => frozenSet.has(id)));
   const deliberatedRevisionIds = [...new Set([...skippedRevisionIds, ...operatedFrozenIds])].sort((a, b) => a - b);
   recordAttempt(run, result, "subagent", { toolCalls: binding.sequence, fetched: binding.fetched, material: frozen.material,
     profile: frozen.profile, admittedProcessedInputCap: frozen.admittedProcessedInputCap, readKnowledgeCommits,
