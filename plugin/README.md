@@ -16,6 +16,27 @@ These are top-level JSON keys, including the literal dots in the Dreamer keys. C
 
 A phase uses its selected model, thinking level and capacity consistently for admission, execution and run records, including borrowed work and catchup. Capacity is looked up by model name, not copied from another phase. Restart CC after configuration changes; an already running executor retains its resolved settings.
 
+Core phase bounds use optional top-level keys in the same file:
+
+| Key | Default | Meaning |
+| --- | ---: | --- |
+| `noting.triggerTokens` | 10,000 | Ordinary Noter trigger; catchup still drains below it |
+| `consolidation.triggerTokens` | 5,000 | Consolidator trigger |
+| `dreaming.triggerTokens` | 5,000 | Dreamer pending trigger for each pool |
+| `dreaming.timeoutMs` | 600,000 | Dreamer wall-clock bound; no tool-round ceiling |
+
+The shared material allowance is their three trigger values summed once each (20,000 by default),
+not another setting. Database pool budgets still size pools and cap Dreamer batches.
+
+Optional `retry: { "maxRetries": 2 }` configures the native request retry count. Omission preserves
+Claude Code's native default; zero disables those retries. Timing, backoff and eligible errors remain
+native policy. The adapter records retry events, specific API errors and received usage, but adds no
+retry loop and does not promise recovery from errors inside an already-started stream.
+
+A narrowly scoped process guard contains the pinned SDK's late control-response abort only when it
+belongs to an already-aborted worker. It records that diagnostic; unrelated unhandled rejections
+remain fatal. This contains the known SDK cancellation defect without modifying the installed SDK.
+
 **Upgrade from the single-model configuration:** remove `worker.model`, `worker.effort` and `worker.contextWindow`; set the six phase keys above and register each selected model's capacity in `worker.contextWindows`. The retired fields are rejected rather than used as a shared fallback. The file is the only mutable plugin configuration surface and must not contain credentials.
 
 Omit `dbPath` to use `~/.trace-memory/trace.db`, the same default as Pi. An existing database is opened in place, never replaced or copied by installation; an absent database is created on first use. Set an explicit absolute `dbPath` only to use another database (or to match a customized Pi path). Database reuse includes the existing Store's normal schema migration checks; it does not reset facts, knowledge, or enrollment. A new session on either host joins the project its repository directory (the git repository root, or the real cwd outside a repository) already has when that is exactly one project; the home directory and temporary directories are excluded, and `project <name>` overrides.

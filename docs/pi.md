@@ -81,9 +81,9 @@ enter this derivation. It has no separate setting or database migration. Require
 and Knowledge state notices reserve shared excess first; optional Knowledge, historical Raw and historical facts then use the remainder in that order.
 The three bases never lend directly to one another.
 
-`render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired.
-`dreaming.triggerTokens` is configurable again, defaulting to 5,000 for every pool. Remove them from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a
-named load error. Consolidator Knowledge and foreground publication may use the Knowledge base plus
+`render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
+from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a named load error.
+`dreaming.triggerTokens` is configurable again, defaulting to 5,000 for every pool. Consolidator Knowledge and foreground publication may use the Knowledge base plus
 the shared allowance. Dreamer uses that same maximum for its Changed-plus-reference input, while a
 single due pool's Changed range is capped by that pool's budget. Database budget edits accept exact
 decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
