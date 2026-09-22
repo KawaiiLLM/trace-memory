@@ -56,7 +56,7 @@ const charged = (result: ReturnType<typeof memory.compact>) => {
 };
 /** Tests set independent bases; a zero allowance isolates each base boundary. */
 const setWindows = (knowledge: number, facts: number, raw: number) => {
-  setKnowledgeCapacity(memory, Math.max(2, knowledge));
+  setKnowledgeCapacity(memory, Math.max(3, knowledge));
   Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw });
 };
 const setRequiredWindows = (value: ReturnType<typeof charged>, factSpare = 0) =>

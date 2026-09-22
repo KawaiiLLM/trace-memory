@@ -44,7 +44,7 @@ afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: tr
  * unused allowance as spare. The knowledge window keeps room for its own omission receipt, which is a
  * capacity floor of its own (20b). */
 const compactionWindows = (knowledge: number, facts: number, raw: number) => {
-  setKnowledgeCapacity(memory, Math.max(2, knowledge));
+  setKnowledgeCapacity(memory, Math.max(3, knowledge));
   memory.config.compaction.factsTokens = facts;
   memory.config.compaction.rawTokens = raw;
 };
@@ -790,7 +790,7 @@ test("a mixed multi-K read authorizes only its completed identities; abandoned c
     expect(maintained.size).toBe(2);
     completeToolRead(trace, `K${trigger.knowledgeId}@${trigger.commit}`);
     const retired = JSON.parse(write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [other.fact],
-      reason: "Retire the explicit fixture trigger." }], skipped: [{ knowledge: `K1@${successor.commit}`, because: "Unrelated fixture successor needs no further maintenance." }] }));
+      reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     expect(retired.committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request };
   });

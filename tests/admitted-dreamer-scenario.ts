@@ -28,30 +28,28 @@ export class AdmittedDreamerScenarios {
   async run(memory: TraceMemory, path: TaskTarget, scenario: DreamerScenario) {
     if (this.pending) throw new Error("a Dreamer fixture scenario is already queued");
     this.pending = scenario;
-    const trigger = memory.config.dreaming.triggerTokens;
-    // These fixtures exercise an explicitly requested admitted run, not threshold policy. Keep their
-    // tiny synthetic pools reachable under ticket 68's production 5k cap.
-    memory.config.dreaming.triggerTokens = 1;
     try {
       return await memory.dream(path);
     } finally {
-      memory.config.dreaming.triggerTokens = trigger;
       this.pending = undefined;
     }
   }
 }
 
-/** A visible, normally-accounted body that crosses the selected pool's current half-budget trigger. */
+/** A visible, normally-accounted body that crosses the selected pool's effective configured trigger. */
 export function createDreamerTrigger(memory: TraceMemory, path: TaskTarget, factId: number, sequence: number,
   scope: "global" | "project" | "session" = "project") {
   const tools = memory.tools({ kind: "manual", sessionId: path.sessionId, branch: path.branch,
     currentTurnId: path.headTurnId });
-  const words = scope === "global" ? 2_100 : scope === "project" ? 7_600 : 600;
-  const receipt = JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ operations: [{
-    op: "create", text: `Fixture trigger ${sequence}: ${"trigger ".repeat(words)}`, category: "reference",
+  const words = scope === "global" ? 3_500 : scope === "project" ? 5_500 : 750;
+  const operation = (text: string) => ({ op: "create", text, category: "reference" as const,
     scope, supports: [`F${factId}`], topics: ["test-fixture"],
-    reason: "Explicit trigger for a genuinely later admitted Dreamer fixture run.",
-  }], skipped: [] }));
+    reason: "Explicit trigger for a genuinely later admitted Dreamer fixture run." });
+  // The default global/session effective trigger equals the pool budget. Two individually admissible
+  // items are therefore required to cross it without making the oldest item itself unfittable.
+  const operations = [operation(`Fixture trigger ${sequence}: ${"trigger ".repeat(words)}`)];
+  if (scope !== "project") operations.push(operation(`Fixture trigger companion ${sequence}: ${"trigger ".repeat(scope === "global" ? 700 : 350)}`));
+  const receipt = JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ operations, skipped: [] }));
   if (!receipt.committed?.[0]) throw new Error(`could not create Dreamer fixture trigger: ${JSON.stringify(receipt)}`);
   return receipt.committed[0] as { knowledgeId: number; commit: number };
 }
