@@ -176,7 +176,10 @@ export async function startControlServer(config: ResolvedCcHostConfig, initial: 
     rmSync(path, { force: true });
     if (!preserveExecutor) await release(binding);
   }, retarget: async next => {
-    if (next.coreSessionId !== binding.coreSessionId) throw new Error("CC control retarget must stay on the same core session");
+    // The binding captured at attach may predate enrollment (a provisional parent turned on later);
+    // compare against what the Hook persisted since, not the stale in-memory copy.
+    const current = readBinding(config, binding.nativeSessionId) ?? binding;
+    if (next.coreSessionId === null || next.coreSessionId !== current.coreSessionId) throw new Error("CC control retarget must stay on the same core session");
     await attachTo(next);
     const previous = binding; binding = next;
     await release(previous);

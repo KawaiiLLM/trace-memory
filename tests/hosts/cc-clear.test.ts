@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { readBinding, updateBinding } from "../../src/hosts/cc/binding.ts";
+import { operateCcSession } from "../../src/hosts/cc/operator.ts";
 import { handleCcHook } from "../../src/hosts/cc/index.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
@@ -257,6 +258,29 @@ test("an attached executor re-targets on the child's clearedFrom assignment", as
       expect(store.findSourceEntry(childBinding.coreSessionId!, f.childId, "ca1")!.sessionId).toBe(childBinding.coreSessionId);
       expect(store.getClaim(childBinding.coreSessionId!, "noting")).toBeNull();
     } finally { store.close(); }
+  } finally { await coordinator.shutdown("test"); }
+});
+
+test("a parent enrolled after its executor attached still re-targets to its clear child", async () => {
+  // Production 2026-09-22 16:02: the executor attached while the parent was provisional, `/trace on` gave it a core
+  // session, and the control server's stale copy of the binding refused the clear child as "another core session".
+  const f = fixture("late-enroll");
+  const provisional = resolveCcHostConfig({ ...f.config, baseline: "2099-01-01T00:00:00.000Z" }); // default off at attach
+  vi.stubEnv("CLAUDE_PID", "90007");
+  await handleCcHook(provisional, { hook_event_name: "SessionStart", source: "startup", session_id: f.parentId, transcript_path: f.parentTranscriptPath });
+  expect(readBinding(provisional, f.parentId)!.coreSessionId).toBeNull();
+  const coordinator = new CcCoordinator(provisional, f.parentId, () => {});
+  try {
+    await coordinator.start();
+    expect((await operateCcSession(provisional, f.parentId, "on")).command).toBe("on");
+    await until(() => readBinding(provisional, f.parentId)!.coreSessionId !== null);
+    const parent = readBinding(provisional, f.parentId)!;
+    await handleCcHook(provisional, { hook_event_name: "SessionStart", source: "clear", session_id: f.childId, transcript_path: f.childTranscriptPath });
+    const child = readBinding(provisional, f.childId)!;
+    expect(child.coreSessionId).toBe(parent.coreSessionId);
+    expect(await coordinator.retargetTo(f.childId)).toBe(true);
+    expect(readBinding(provisional, f.childId)!.executor).not.toBeNull();
+    expect(readBinding(provisional, f.parentId)!.executor).toBeNull();
   } finally { await coordinator.shutdown("test"); }
 });
 

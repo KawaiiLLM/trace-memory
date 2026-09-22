@@ -37816,7 +37816,8 @@ async function startControlServer(config3, initial, memory, bindingTimeoutMs, si
     (0, import_node_fs5.rmSync)(path, { force: true });
     if (!preserveExecutor) await release(binding);
   }, retarget: async (next) => {
-    if (next.coreSessionId !== binding.coreSessionId) throw new Error("CC control retarget must stay on the same core session");
+    const current = readBinding(config3, binding.nativeSessionId) ?? binding;
+    if (next.coreSessionId === null || next.coreSessionId !== current.coreSessionId) throw new Error("CC control retarget must stay on the same core session");
     await attachTo(next);
     const previous = binding;
     binding = next;
