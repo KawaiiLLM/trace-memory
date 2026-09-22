@@ -179,8 +179,8 @@ test("18a/24b, as 29e left it: Settings shows each phase's three preferences wit
     "Project Knowledge budget: 15000 tokens per project owner pool (database)",
     "Session Knowledge budget: 1000 tokens per session owner pool (database)",
     "Knowledge base window: 20000 tokens (derived, read-only)",
-    "Shared material allowance: 15033 tokens (derived, read-only)",
-    "Maximum Knowledge input: 35033 tokens (derived, read-only)",
+    "Shared material allowance: 10033 tokens (derived, read-only)",
+    "Maximum Knowledge input: 30033 tokens (derived, read-only)",
     "Noter mode: fork (Project); Global=subagent masked",
     `Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test`,
     // 26d: a fork inherits the foreground thinking level too, so the Noter's line discloses it here

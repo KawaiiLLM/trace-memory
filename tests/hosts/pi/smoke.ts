@@ -137,8 +137,11 @@ try {
   assert.equal(archive.actorRole, "dreaming");
   assert.deepEqual(store.listFactsByRun(runs[0]!.id), []);
   assert.deepEqual(archive.supports, [facts.facts[0]!.id]);
+  // R1FINAL records the Dreamer's own output, not its superseded input. This protects the output
+  // from immediate reprocessing while the current-lineage projection makes the parent ineligible.
   assert.deepEqual(store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool)
-    .map(row => Number(row.revision_id)), [item.commit, archive.id]);
+    .map(row => Number(row.revision_id)), [archive.id]);
+  assert.deepEqual(store.pendingVersions(pool, store.knowledgePath(1, "main")), []);
   // Exact archive reads preserve the inherited direct support and parent provenance.
   assert.ok(dreamer.memory.trace(`K${item.knowledgeId}@${archive.id}`).includes(`F${facts.facts[0]!.id}`));
   assert.ok(dreamer.notices.some(n => n.includes("compaction preparing")));

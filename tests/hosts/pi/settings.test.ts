@@ -67,14 +67,14 @@ test("35d Settings edits the bound database row, shows derived diagnostics, and 
     "Project Knowledge budget: 15000 tokens per project owner pool (database)",
     "Session Knowledge budget: 1000 tokens per session owner pool (database)",
     "Knowledge base window: 20000 tokens (derived, read-only)",
-    "Shared material allowance: 25000 tokens (derived, read-only)",
-    "Maximum Knowledge input: 45000 tokens (derived, read-only)",
+    "Shared material allowance: 20000 tokens (derived, read-only)",
+    "Maximum Knowledge input: 40000 tokens (derived, read-only)",
   ]);
   await edit(h, "Project Knowledge budget: 15000 tokens per project owner pool (database)", "16000");
   expect(h.memory.knowledgeBudgets()).toMatchObject({ global: 4000, project: 16000, session: 1000,
     applicable: 21000, injection: 21000, dreamingProcessedInput: 21000 });
   expect(h.notices.at(-1)).toContain("saved Project Knowledge budget = 16000 tokens");
-  expect(h.notices.at(-1)).toContain("Knowledge base window 21000; shared material allowance 25500; maximum Knowledge input 46500");
+  expect(h.notices.at(-1)).toContain("Knowledge base window 21000; shared material allowance 20000; maximum Knowledge input 41000");
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   expect(h.requests).toEqual([]);
 
@@ -199,8 +199,8 @@ test("24b: each control writes only its canonical key, and every other setting i
     "Project Knowledge budget: 15000 tokens per project owner pool (database)",
     "Session Knowledge budget: 1000 tokens per session owner pool (database)",
     "Knowledge base window: 20000 tokens (derived, read-only)",
-    "Shared material allowance: 25000 tokens (derived, read-only)",
-    "Maximum Knowledge input: 45000 tokens (derived, read-only)",
+    "Shared material allowance: 20000 tokens (derived, read-only)",
+    "Maximum Knowledge input: 40000 tokens (derived, read-only)",
     "Noter mode: subagent (Global)",
     "Noter model: fake/test-mini (Global)",
     "Noter thinking: inherit (Default)",
@@ -237,8 +237,8 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
     "Project Knowledge budget: 15000 tokens per project owner pool (database)",
     "Session Knowledge budget: 1000 tokens per session owner pool (database)",
     "Knowledge base window: 20000 tokens (derived, read-only)",
-    "Shared material allowance: 25000 tokens (derived, read-only)",
-    "Maximum Knowledge input: 45000 tokens (derived, read-only)",
+    "Shared material allowance: 20000 tokens (derived, read-only)",
+    "Maximum Knowledge input: 40000 tokens (derived, read-only)",
     "Noter mode: subagent (Default)",
     "Noter model: follow foreground (Default)",
     "Noter thinking: high (Global)",

@@ -190,7 +190,7 @@ test("repeated Dreaming pool reads show identical pending data without DB writes
   h.memory.setKnowledgeBudget("project", 2468);
   const before = changes(h), entries = structuredClone(h.entries);
   const first = await open(h);
-  expect(first).toContain("/1,234"); expect(first).toContain("/4,321");
+  expect(first).toContain("/2,468"); expect(first).toContain("/4,321");
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
   expect(await open(h)).toBe(first);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
