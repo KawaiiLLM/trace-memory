@@ -38,7 +38,25 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   if (!claim) throw new Error("Dreaming freeze requires its live claim");
   const path = { sessionId: input.sessionId, branch: input.branch,
     headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
-  const { pool: due, range } = store.freezeKnowledgePool(path, claim);
+  return prepareDreaming(store, input, config, claim, path, store.freezeKnowledgePool(path, claim));
+}
+
+/** Facade admission and material assembly stay in one transaction. No prepared snapshot is accepted
+ * from outside: Store discovers, claims and reserves before the private read-only assembler runs. */
+export function admitDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig, executorId: string) {
+  return store.transaction(() => {
+    const path = { sessionId: input.sessionId, branch: input.branch,
+      headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
+    const admitted = store.admitKnowledgePool(path, executorId, input.borrowed, input.executorSessionId);
+    if (admitted.outcome !== "admitted") return admitted;
+    return { outcome: "admitted" as const, claim: admitted.claim,
+      frozen: prepareDreaming(store, input, config, admitted.claim, path, admitted) };
+  });
+}
+
+function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig, claim: TaskClaim,
+  path: { sessionId: number; branch: string; headTurnId: number },
+  { pool: due, range }: ReturnType<Store["freezeKnowledgePool"]>) {
   const frozenIds = new Set(range.eventIds);
   const pending = due.pending.filter(value => frozenIds.has(value.revisionId));
   const changed = ["Pending current knowledge:", ...pending.map(value => value.material)].join("\n");

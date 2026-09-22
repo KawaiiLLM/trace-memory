@@ -342,6 +342,55 @@ test("67: freeze and terminal consumption each build one fresh pool projection",
   } finally { graph.mockRestore(); }
 });
 
+test("67: atomic admission preserves competing seats, reserved takeover and expired-claim fences", () => {
+  const f = setup(), other = setup(f.store, "B");
+  f.store.setKnowledgeBudget("global", 100);
+  f.create("global", "evidence ".repeat(25));
+  const first = f.store.admitKnowledgePool(f.target, "first");
+  expect(first.outcome).toBe("admitted");
+  if (first.outcome !== "admitted") throw new Error("first admission failed");
+  expect(f.store.admitKnowledgePool(other.target, "competitor")).toEqual({ outcome: "dropped" });
+  expect(f.store.admitKnowledgePool(f.target, "first")).toEqual({ outcome: "dropped" });
+  expect(f.store.getClaim(f.session.id, "dreaming")!.token).toBe(first.claim.token);
+
+  f.store.reopenSession(f.session.id, "replacement");
+  const reserved = f.store.getClaim(f.session.id, "dreaming")!;
+  expect(reserved.reserved).toBe(true);
+  const replacement = f.store.admitKnowledgePool(f.target, "replacement");
+  expect(replacement.outcome).toBe("admitted");
+  if (replacement.outcome !== "admitted") throw new Error("reserved takeover failed");
+  expect(replacement.claim.token).toBe(reserved.token);
+  expect(replacement.claim.reserved).toBe(false);
+  expect(() => f.store.freezeKnowledgePool(f.target, first.claim)).toThrow(/claim/);
+  expect(f.store.dreamingRange(first.range.id)).toBeNull();
+
+  f.store.db.prepare("UPDATE task_claims SET expires_at = ? WHERE token = ?").run(Date.now() - 1, replacement.claim.token);
+  const competing = f.store.admitKnowledgePool(other.target, "competitor");
+  expect(competing.outcome).toBe("admitted");
+  expect(() => f.store.freezeKnowledgePool(f.target, replacement.claim)).toThrow(/claim/);
+  expect(f.store.dreamingRange(replacement.range.id)).toBeNull();
+});
+
+test("67: admission observes intervening knowledge mutation and preserves enrollment/borrowed guards", () => {
+  const f = setup(), executor = setup(f.store, "executor");
+  f.store.setKnowledgeBudget("global", 100);
+  const item = f.create("global", "evidence ".repeat(25));
+  expect(f.store.knowledgePools(f.target).some(pool => pool.reason !== null)).toBe(true);
+  f.store.setEnrollment(executor.session.id, false);
+  expect(f.store.admitKnowledgePool(f.target, "executor", false, executor.session.id)).toEqual({ outcome: "dropped" });
+  expect(f.store.admitKnowledgePool(f.target, "borrowed", true)).toEqual({ outcome: "dropped" });
+  f.store.setEnrollment(f.session.id, false);
+  expect(f.store.admitKnowledgePool(f.target, "disabled")).toEqual({ outcome: "dropped" });
+  f.store.setEnrollment(f.session.id, true);
+  const archived = f.store.commitConsolidationRun({ path: f.target,
+    run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" },
+    operations: [{ op: "archive", knowledgeId: item.knowledgeId, baseCommit: item.commit,
+      supports: [f.fact.id], reason: "no longer required", createdAt: "now" }] });
+  expect(archived.ok).toBe(true);
+  expect(f.store.admitKnowledgePool(f.target, "fresh")).toEqual({ outcome: "empty" });
+  expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
+});
+
 test("67: facade Dreamer eligibility and explicit pending status each share their pool work", () => {
   const memory = TraceMemory(":memory:", async () => { throw new Error("no model expected"); });
   const f = setup(memory.store), graph = vi.spyOn(memory.store, "commitGraphInput");

@@ -41,10 +41,10 @@ test("67: admission, freeze, final check and consumption have bounded independen
   const graph = vi.spyOn(f.store, "commitGraphInput");
   try {
     expect((await f.memory.dream(f.target)).outcome).toBe("success");
-    // Discovery, claim admission and freeze each project once, not once per pool or consumer.
-    expect(admissionGraphs).toBe(3);
+    // Discovery, claim admission and freeze share one unchanged atomic snapshot.
+    expect(admissionGraphs).toBe(1);
     // Final read-only check and terminal writes are separate operations, each seeing fresh state.
-    expect(graph).toHaveBeenCalledTimes(5);
+    expect(graph).toHaveBeenCalledTimes(3);
   } finally { graph.mockRestore(); }
 });
 

@@ -1122,32 +1122,40 @@ export class Store {
   }
 
   acquireClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed = false, eligible: () => boolean = () => true): TaskClaim | null {
-    return this.transaction(() => {
-      if (!executorId || !this.enabled(target.sessionId)) return null;
-      if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
+    return this.transaction(() => this.acquireAvailableClaim(target, phase, executorId, borrowed, () => {
       const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId)
         : phase === "dreaming" ? this.knowledgePools(target).filter(pool => pool.reason !== null || pool.pending.length > 0)
         : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
-      const now = Date.now();
-      if (phase === "dreaming") this.db.prepare(`UPDATE dreaming_ranges AS r SET closed_at = ? WHERE r.pool IS NOT NULL
-        AND r.completed_run IS NULL AND r.closed_at IS NULL AND NOT EXISTS (
-          SELECT 1 FROM task_claims c WHERE c.session_id = r.session_id AND c.phase = 'dreaming'
-            AND c.token = r.claim_token AND c.expires_at > ?)`)
-        .run(new Date().toISOString(), now);
-      const openRange = phase === "dreaming" ? this.openDreamingRange(target.sessionId, target.branch) : null;
-      if ((openRange && openRange.pool !== null) || !pending.length || !eligible()) return null;
-      const current = this.getClaim(target.sessionId, phase);
-      const takeover = current?.reserved && current.expiresAt > now && current.executorId === executorId && !borrowed;
-      if (current && current.expiresAt > now && !takeover) return null;
-      if (phase === "dreaming" && this.otherSessionOwnsDreamerSeat(target.sessionId, now)) return null;
-      const claim: TaskClaim = { sessionId: target.sessionId, phase, executorId,
-        token: takeover ? current.token : randomUUID(), expiresAt: now + 30 * 60_000, borrowed, reserved: false };
-      this.db.prepare(`INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, ?, ?, ?, ?, ?, 0)
-        ON CONFLICT (session_id, phase) DO UPDATE SET executor_id = excluded.executor_id, token = excluded.token,
-        expires_at = excluded.expires_at, borrowed = excluded.borrowed, reserved = 0`)
-        .run(claim.sessionId, phase, executorId, claim.token, claim.expiresAt, Number(borrowed));
-      return claim;
-    });
+      return pending.length > 0;
+    }, eligible));
+  }
+
+  /** Called only by atomic Store operations. Pending discovery is private and synchronous, so
+   * admission can reuse its own projection without accepting prepared authority from a caller. */
+  private acquireAvailableClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed: boolean,
+    hasPending: () => boolean, eligible: () => boolean): TaskClaim | null {
+    if (!executorId || !this.enabled(target.sessionId)) return null;
+    if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
+    const pending = hasPending();
+    const now = Date.now();
+    if (phase === "dreaming") this.db.prepare(`UPDATE dreaming_ranges AS r SET closed_at = ? WHERE r.pool IS NOT NULL
+      AND r.completed_run IS NULL AND r.closed_at IS NULL AND NOT EXISTS (
+        SELECT 1 FROM task_claims c WHERE c.session_id = r.session_id AND c.phase = 'dreaming'
+          AND c.token = r.claim_token AND c.expires_at > ?)`)
+      .run(new Date().toISOString(), now);
+    const openRange = phase === "dreaming" ? this.openDreamingRange(target.sessionId, target.branch) : null;
+    if ((openRange && openRange.pool !== null) || !pending || !eligible()) return null;
+    const current = this.getClaim(target.sessionId, phase);
+    const takeover = current?.reserved && current.expiresAt > now && current.executorId === executorId && !borrowed;
+    if (current && current.expiresAt > now && !takeover) return null;
+    if (phase === "dreaming" && this.otherSessionOwnsDreamerSeat(target.sessionId, now)) return null;
+    const claim: TaskClaim = { sessionId: target.sessionId, phase, executorId,
+      token: takeover ? current.token : randomUUID(), expiresAt: now + 30 * 60_000, borrowed, reserved: false };
+    this.db.prepare(`INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, ?, ?, ?, ?, ?, 0)
+      ON CONFLICT (session_id, phase) DO UPDATE SET executor_id = excluded.executor_id, token = excluded.token,
+      expires_at = excluded.expires_at, borrowed = excluded.borrowed, reserved = 0`)
+      .run(claim.sessionId, phase, executorId, claim.token, claim.expiresAt, Number(borrowed));
+    return claim;
   }
 
   releaseClaim(claim: TaskClaim): boolean {
@@ -2412,6 +2420,21 @@ export class Store {
   private poolBudget(pool: string): number {
     const budgets = this.knowledgeBudgets();
     return pool === "global" ? budgets.global : pool.startsWith("project:") ? budgets.project : budgets.session;
+  }
+
+  /** One atomic admission snapshot covers discovery, claim availability and the frozen range.
+   * Claim/range bookkeeping does not mutate knowledge, processing records or source cursors. */
+  admitKnowledgePool(target: TaskTarget, executorId: string, borrowed = false, executorSessionId?: number) {
+    return this.transaction(() => {
+      if (!this.enabled(target.sessionId) || (executorSessionId !== undefined && !this.enabled(executorSessionId)))
+        return { outcome: "dropped" as const };
+      const pool = this.knowledgePools(target).find(value => value.reason !== null);
+      if (!pool) return { outcome: "empty" as const };
+      const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true);
+      if (!claim) return { outcome: "dropped" as const };
+      const range = this.retainProjectedPoolRange(target, pool, claim);
+      return { outcome: "admitted" as const, claim, pool, range };
+    });
   }
 
   /** Select and reserve from the same atomic projection. Only range/claim bookkeeping mutates

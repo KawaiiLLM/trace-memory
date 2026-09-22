@@ -34,7 +34,7 @@ export type { NotingDiagnostic, NotingNearAudit, NotingUnansweredNearPair } from
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
-import { freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
+import { admitDreaming, freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
 import { freezeConsolidation, runConsolidation, CONSOLIDATION_MEMBERSHIP, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
 export { CONSOLIDATION_CAPACITY, CONSOLIDATION_MEMBERSHIP } from "../consolidation/index.ts";
@@ -748,8 +748,18 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // Candidate discovery is advisory: recheck the executor and borrowing scope atomically
       // with claim acquisition, before loading a closed target's evidence or constructing material.
       if (input.borrowed && !store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope)) return null;
+      if (phase === "dreaming") {
+        const admitted = admitDreaming(store, { ...input, ...target }, cfg, executorId);
+        empty = admitted.outcome === "empty";
+        if (admitted.outcome !== "admitted") return null;
+        claim = admitted.claim;
+        projectId = store.getSession(input.sessionId)!.projectId;
+        const frozen = admitted.frozen;
+        origin = frozen.range.origin;
+        executionId = store.beginExecution({ sessionId: target.sessionId, phase, head: frozen.range.id, origin }, input.executionId);
+        return frozen;
+      }
       const pendingNow = phase === "noting" ? store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
-        : phase === "dreaming" ? store.duePools(target)
         : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
       const boundary = input.boundary;
       // A frozen manual target (18b) counts only entries/facts inside its snapshot; later arrivals
@@ -765,9 +775,6 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (empty) return null;
       claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
         if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;
-        // The preceding due-pool read belongs to this same admission transaction. Claim
-        // bookkeeping cannot change knowledge or pool membership; freeze reprojects after acquisition.
-        if (phase === "dreaming") return !empty;
         if (!input.automatic || input.borrowed) return true;
         return taskEligibility(phase, target).due;
       });
@@ -775,10 +782,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       projectId = store.getSession(input.sessionId)!.projectId;
       const selected = { ...input, ...target, ...(input.borrowed ? { mode: "subagent" as const } : {}) };
       const admittedOrigin = input.executionId ? store.executionOrigin(input.executionId) : store.triggerOrigin(target, target.triggerEntryId);
-      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText)
-        : phase === "dreaming" ? freezeDreaming(store, selected, cfg, claim!, admittedOrigin) : freezeConsolidation(store, selected, cfg);
-      origin = phase === "dreaming" ? (frozen as ReturnType<typeof freezeDreaming>).range.origin : admittedOrigin;
-      const head = "entries" in frozen ? frozen.entries[0]?.id : "rangeFacts" in frozen ? frozen.rangeFacts[0]?.id : frozen.range.id;
+      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText) : freezeConsolidation(store, selected, cfg);
+      origin = admittedOrigin;
+      const head = "entries" in frozen ? frozen.entries[0]?.id : frozen.rangeFacts[0]?.id;
       if (head !== undefined) executionId = store.beginExecution({ sessionId: target.sessionId, phase, head, origin }, input.executionId);
       return frozen;
     }); } catch (error) {
