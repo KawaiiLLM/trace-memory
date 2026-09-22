@@ -38,26 +38,25 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   if (!claim) throw new Error("Dreaming freeze requires its live claim");
   const path = { sessionId: input.sessionId, branch: input.branch,
     headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
-  const due = store.duePools(path)[0];
-  if (!due) throw new Error("No Knowledge pool is due");
-  const range = store.retainKnowledgePoolRange(path, due.pool, claim);
+  const { pool: due, range } = store.freezeKnowledgePool(path, claim);
   const frozenIds = new Set(range.eventIds);
   const pending = due.pending.filter(value => frozenIds.has(value.revisionId));
   const changed = ["Pending current knowledge:", ...pending.map(value => value.material)].join("\n");
   if (tokens(changed) > due.budget)
     throw new Error(`Dreaming pool ${due.pool} changed material exceeds its ${due.budget}-token budget including framing`);
 
-  const references = store.poolVersions(due.pool, path).filter(value => !frozenIds.has(value.revision.id));
+  const references = due.versions.filter(value => !frozenIds.has(value.revision.id));
   const budgets = store.knowledgeBudgets();
   const knowledgeCapacity = budgets.injection + deriveSharedMaterialAllowance(budgets,
     { noting: config.noting.triggerTokens, consolidation: config.consolidation.triggerTokens });
   if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Dreamer Knowledge capacity must be a safe integer");
   // Changed and current references share one Knowledge window, not two independent allowances.
   const processedInputCap = knowledgeCapacity - tokens(changed) - 1;
-  let old = processedBlock(references), oldIds = references.map(value => value.revision.id);
+  const renderReference = (value: (typeof references)[number]) => due.rendered.get(value.revision.id)!;
+  let old = processedBlock(references, renderReference), oldIds = references.map(value => value.revision.id);
   if (tokens(`Current pool knowledge outside this range:\n${old}`) > processedInputCap) {
     const selected = budgetKnowledge(references, Math.max(0, processedInputCap - tokens("Current pool knowledge outside this range:\n")),
-      undefined, "Dreamer current reference input");
+      renderReference, "Dreamer current reference input");
     old = [renderKnowledgeBlock(selected.groups.filter(group => group.text)), ...selected.receipts].join("\n");
     oldIds = selected.commits;
   }
@@ -65,7 +64,7 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   if (tokens(old) > processedInputCap)
     throw new Error(`Dreaming current reference input exceeds ${processedInputCap} tokens including framing`);
 
-  const frozenValues = store.poolVersions(due.pool, path).filter(value => frozenIds.has(value.revision.id));
+  const frozenValues = due.versions.filter(value => frozenIds.has(value.revision.id));
   const facts = [...new Set(frozenValues.flatMap(value => value.revision.supports))].sort((a, b) => a - b).map(id => {
     const fact = store.getFact(id); if (!fact) throw new Error(`Missing direct support F${id}`); return fact;
   });
@@ -104,9 +103,10 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     const ownRevisionIds = runId === undefined ? [] : store.listCommitsByRun(runId).map(revision => revision.id);
     const excluded = new Set([...frozen.frozenIds, ...ownRevisionIds]);
     const operationFailures = [...binding.toolProblems, ...binding.memory.problems];
+    const pools = store.knowledgePools(path);
     return { pool: frozen.pool, frozenRevisionIds: frozen.frozenIds, ownRevisionIds,
-      pendingRevisionIds: store.pendingVersions(frozen.pool, path).map(value => value.revisionId).filter(id => !excluded.has(id)),
-      totals: store.poolSizes(path), operationFailures, problems: operationFailures };
+      pendingRevisionIds: pools.find(value => value.pool === frozen.pool)!.pending.map(value => value.revisionId).filter(id => !excluded.has(id)),
+      totals: pools.map(({ pool, budget, tokens }) => ({ pool, budget, tokens })), operationFailures, problems: operationFailures };
   };
   binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
     range: { from: run.rangeFrom!, to: run.rangeTo! }, readKnowledgeCommits }, run, undefined,

@@ -1,8 +1,10 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { tokens } from "../../../src/core/render/index.ts";
+import * as rendering from "../../../src/core/render/index.ts";
+import { TraceMemory } from "../../../src/core/api/index.ts";
 import { Store, type RunInput, type TaskClaim } from "../../../src/core/store/index.ts";
 
 const stores: Store[] = [];
@@ -261,6 +263,97 @@ test("64c current versions: expired ownership does not reserve revisions and the
   expect(replacement.eventIds).toEqual([item.commit]);
   expect(() => f.store.completeKnowledgePoolRange(stale.run, "failure")).toThrow(/no longer current and unexpired/);
   expect(f.store.pendingVersions("global", f.target).map(v => v.revisionId)).toEqual([item.commit]);
+});
+
+test("67: pool reads batch graph, processing history and rendering independently of identity count", () => {
+  const f = setup();
+  const graphInput = vi.spyOn(f.store, "commitGraphInput"), graph = vi.spyOn(f.store, "commitGraph");
+  const prepare = vi.spyOn(f.store.db, "prepare"), render = vi.spyOn(rendering, "renderKnowledge");
+  try {
+    for (const count of [3, 60]) {
+      for (let i = count === 3 ? 0 : 3; i < count; i++) f.create((["global", "project", "session"] as const)[i % 3]!);
+      graphInput.mockClear(); graph.mockClear(); prepare.mockClear(); render.mockClear();
+      const start = performance.now();
+      const pools = f.store.knowledgePools(f.target);
+      const elapsedMs = performance.now() - start;
+      expect(pools.flatMap(pool => pool.versions)).toHaveLength(count);
+      expect(pools.flatMap(pool => pool.pending)).toHaveLength(count);
+      expect(graphInput).toHaveBeenCalledTimes(1);
+      expect(graph).toHaveBeenCalledTimes(1);
+      expect(render).toHaveBeenCalledTimes(count);
+      expect(prepare.mock.calls.filter(([sql]) => sql.includes("FROM knowledge_processed"))).toHaveLength(1);
+      expect(prepare.mock.calls.length).toBeLessThanOrEqual(25);
+      console.info(JSON.stringify({ fixture: "67 pool projection", count, elapsedMs, prepares: prepare.mock.calls.length }));
+    }
+    graphInput.mockClear();
+    f.store.duePools(f.target);
+    expect(graphInput).toHaveBeenCalledTimes(1);
+  } finally { graphInput.mockRestore(); graph.mockRestore(); prepare.mockRestore(); render.mockRestore(); }
+});
+
+test("67: create batches skip writer graphs while consuming operations recheck after prior mutations", () => {
+  const f = setup(), graph = vi.spyOn(f.store, "commitGraphInput");
+  try {
+    const operations = Array.from({ length: 30 }, (_, i) => ({ op: "create" as const, handle: `$${i}`, author: "test",
+      text: `body ${i}`, category: "constraint" as const, scope: "global" as const, supports: [f.fact.id], topics: [], reason: "test", createdAt: "now" }));
+    const created = f.store.commitConsolidationRun({ path: f.target,
+      run: { kind: "consolidation", sessionId: f.session.id, branch: "main", createdAt: "now" }, operations });
+    expect(created.ok).toBe(true);
+    expect(graph).not.toHaveBeenCalled();
+    const before = f.store.listKnowledgeRevisions();
+    const bad = f.store.commitConsolidationRun({ path: f.target,
+      run: { kind: "consolidation", sessionId: f.session.id, branch: "main", createdAt: "now" },
+      operations: [operations[0]!, { ...operations[1]!, supports: [999_999] }] });
+    expect(bad.ok).toBe(false);
+    expect(f.store.listKnowledgeRevisions()).toEqual(before);
+    const base = before[0]!;
+    const archive = { op: "archive" as const, knowledgeId: base.knowledgeId, baseCommit: base.id,
+      supports: [f.fact.id], reason: "test", createdAt: "now" };
+    graph.mockClear();
+    const consumed = f.store.commitConsolidationRun({ path: f.target,
+      run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" }, operations: [archive, archive] });
+    expect(consumed.ok).toBe(false);
+    expect(graph).toHaveBeenCalledTimes(2);
+    expect(f.store.listKnowledgeRevisions()).toEqual(before);
+  } finally { graph.mockRestore(); }
+});
+
+test("67: freeze and terminal consumption each build one fresh pool projection", () => {
+  const f = setup();
+  f.store.setKnowledgeBudget("global", 100);
+  const first = f.create("global", "evidence ".repeat(25));
+  f.create("project");
+  const held = claim(f), graph = vi.spyOn(f.store, "commitGraphInput");
+  try {
+    const frozen = f.store.freezeKnowledgePool(f.target, held);
+    expect(graph).toHaveBeenCalledTimes(1);
+    expect(frozen.pool.pool).toBe("global");
+    expect(frozen.range.eventIds).toContain(first.commit);
+    const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", head: frozen.range.anchor, origin: frozen.range.origin });
+    const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: f.session.id, branch: "main",
+      dreamingRangeId: frozen.range.id, executionId, claim: held, createdAt: "now" });
+    const own = update(f, run, first, "maintained body");
+    graph.mockClear();
+    f.store.completeKnowledgePoolRange(run, "success");
+    expect(graph).toHaveBeenCalledTimes(1);
+    expect(f.store.pendingVersions("global", f.target)).toEqual([]);
+    expect(f.store.poolVersions("global", f.target).map(value => value.revision.id)).toEqual([own.commit]);
+    expect(f.store.pendingVersions(`project:${f.project.id}`, f.target)).toHaveLength(1);
+  } finally { graph.mockRestore(); }
+});
+
+test("67: facade Dreamer eligibility and explicit pending status each share their pool work", () => {
+  const memory = TraceMemory(":memory:", async () => { throw new Error("no model expected"); });
+  const f = setup(memory.store), graph = vi.spyOn(memory.store, "commitGraphInput");
+  try {
+    f.create("global"); f.create("project"); f.create("session");
+    graph.mockClear();
+    expect(memory.taskEligibility("dreaming", f.target).due).toBe(false);
+    expect(graph).toHaveBeenCalledTimes(1);
+    graph.mockClear();
+    expect(memory.pendingTokens("dreaming", f.target).state).toBe("known");
+    expect(graph).toHaveBeenCalledTimes(1);
+  } finally { graph.mockRestore(); memory.close(); stores.splice(stores.indexOf(memory.store), 1); }
 });
 
 test("64c current versions: same-project relabel is a processing no-op", () => {

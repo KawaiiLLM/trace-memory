@@ -705,7 +705,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
       if (phase === "dreaming") {
-        const pools = store.poolSizes(target).map(size => ({ ...size, pending: store.pendingPoolWeight(size.pool, target) }));
+        const pools = store.knowledgePools(target).map(size => ({ ...size, pending: size.pending.reduce((sum, value) => sum + value.tokens, 0) }));
         const selected = pools.sort((left, right) => right.pending / Math.max(1, right.budget) - left.pending / Math.max(1, left.budget))[0]!;
         return { tokens: selected.pending, trigger: Math.ceil(selected.budget / 2), state: "known" };
       }
@@ -765,7 +765,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (empty) return null;
       claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
         if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;
-        if (phase === "dreaming") return taskEligibility(phase, target).due;
+        // The preceding due-pool read belongs to this same admission transaction. Claim
+        // bookkeeping cannot change knowledge or pool membership; freeze reprojects after acquisition.
+        if (phase === "dreaming") return !empty;
         if (!input.automatic || input.borrowed) return true;
         return taskEligibility(phase, target).due;
       });

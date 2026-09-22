@@ -172,6 +172,51 @@ test("no-cursor owners remain globally applicable and recorded corruption fails 
   } finally { store.close(); }
 });
 
+test("67: projection loads only direct-support owner cursors and reuses reader membership", () => {
+  const store = new Store(":memory:");
+  try {
+    const project = store.createProject({ name: "cursor-locality", declaredBy: "mark" });
+    const owners: { sessionId: number; path: KnowledgePath; factId: number }[] = [];
+    store.transaction(() => {
+      for (let index = 0; index < 12; index++) {
+        const owner = session(store, project.id, `owner-${index}`);
+        const ids: number[] = []; let parent: number | null = null;
+        for (let entry = 0; entry < 200; entry++) {
+          const node = append(store, owner.id, parent, `${index}-${entry}`);
+          parent = node.turn.id; ids.push(node.entry.id);
+        }
+        store.publishSourcePath(owner.id, "main", ids, parent!, "first");
+        store.publishSourcePath(owner.id, "prefix", ids.slice(0, 100), store.getSourceEntry(ids[99]!)!.turnId, "second");
+        owners.push({ sessionId: owner.id, path: { sessionId: owner.id, branch: "main", headTurnId: parent },
+          factId: fact(store, owner.id, "main", parent!, `T${parent}#user`, ids.at(-1)).id });
+      }
+      for (const owner of owners.slice(0, 2)) knowledge(store, owner.path, owner.factId, `supported-${owner.sessionId}`);
+    });
+    const original = store.db.prepare.bind(store.db);
+    let cursorRows = 0, membershipBatches = 0;
+    store.db.prepare = ((sql: string) => {
+      const statement = original(sql);
+      if (sql.includes("FROM session_lineage_cursors c LEFT JOIN source_paths")) {
+        const all = statement.all.bind(statement);
+        statement.all = ((...args: Parameters<typeof statement.all>) => {
+          const rows = all(...args); cursorRows += rows.length; return rows;
+        }) as typeof statement.all;
+      }
+      if (sql.includes("seeds(key, owner, root)")) membershipBatches++;
+      return statement;
+    }) as typeof store.db.prepare;
+    try {
+      const input = store.commitGraphInput();
+      expect([...input.metadata.currentPaths!.keys()]).toEqual(owners.slice(0, 2).map(owner => owner.sessionId));
+      expect(input.metadata.currentSnapshots!.size).toBe(4);
+      expect(cursorRows).toBe(4); // Not all 24 cursors / 3,600 persisted path entries.
+      expect(membershipBatches).toBe(1);
+      const read = store.commitGraph(owners[11]!.path, undefined, undefined, input);
+      expect(read.current).toHaveLength(2); // Global resolution was not narrowed to the reader.
+    } finally { store.db.prepare = original; }
+  } finally { store.close(); }
+});
+
 test("bound facts batch owner work without loading selected-entry addresses", () => {
   const store = new Store(":memory:");
   try {

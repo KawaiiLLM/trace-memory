@@ -1126,11 +1126,7 @@ export class Store {
       if (!executorId || !this.enabled(target.sessionId)) return null;
       if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
       const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId)
-        : phase === "dreaming" ? (() => {
-          const session = this.getSession(target.sessionId)!;
-          const pools = ["global", `project:${session.projectId}`, `session:${session.id}`];
-          return [...this.duePools(target), ...pools.flatMap(pool => this.pendingVersions(pool, target))];
-        })()
+        : phase === "dreaming" ? this.knowledgePools(target).filter(pool => pool.reason !== null || pool.pending.length > 0)
         : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
       const now = Date.now();
       if (phase === "dreaming") this.db.prepare(`UPDATE dreaming_ranges AS r SET closed_at = ? WHERE r.pool IS NOT NULL
@@ -1665,7 +1661,9 @@ export class Store {
     const facts = new Map<number, boolean>(), commits = new Map<number, boolean>();
     const grounded = revisions.filter(revision => this.revisionApplies(revision, metadata, facts, commits));
     const effective = this.effectiveRevisions(revisions, parents, grounded);
-    let readerSnapshot = prepared;
+    const cursor = path && Array.isArray(foreground)
+      ? foreground.find(value => value.branch === path.branch && value.headTurnId === path.headTurnId) : undefined;
+    let readerSnapshot = prepared ?? (cursor ? metadata.currentSnapshots?.get(`${path!.sessionId}:${cursor.lineage}`) : undefined);
     const visible = path ? (revision: KnowledgeRevision) => {
       if (revision.scope === "session") readerSnapshot ??= this.pathSnapshot(path);
       return this.visibleOnPath(revision, path, metadata, readerSnapshot);
@@ -1704,12 +1702,15 @@ export class Store {
     }
     const runIds = JSON.stringify([...new Set(revisions.flatMap(r => r.runId === null ? [] : [r.runId]))]);
     const factIds = JSON.stringify([...new Set(revisions.flatMap(r => r.supports))]);
-    const sessions = this.db.prepare("SELECT id FROM sessions ORDER BY id").all().map(row => Number(row.id));
+    const facts = new Map(this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id WHERE f.id IN (SELECT value FROM json_each(?))`).all(factIds)
+      .map(r => [Number(r.id), { fact: toFact(r), sessionId: Number(r.session_id), runId: Number(r.run_id), entries: [] as number[] }]));
+    const sessions = [...new Set([...facts.values()].map(value => value.sessionId))];
     const cursorRows = this.db.prepare(`SELECT c.session_id, c.lineage, c.branch, c.head_turn_id, p.entry_ids,
       p.session_id IS NOT NULL AS branch_exists,
       EXISTS(SELECT 1 FROM turns t WHERE t.id = c.head_turn_id AND t.session_id = c.session_id) AS head_exists
       FROM session_lineage_cursors c LEFT JOIN source_paths p ON p.session_id = c.session_id AND p.branch = c.branch
-      ORDER BY c.session_id, c.lineage`).all();
+      WHERE c.session_id IN (SELECT value FROM json_each(?))
+      ORDER BY c.session_id, c.lineage`).all(JSON.stringify(sessions));
     const grouped = new Map<number, typeof cursorRows>();
     for (const row of cursorRows) { const id = Number(row.session_id); let values = grouped.get(id); if (!values) { values = []; grouped.set(id, values); } values.push(row); }
     const metadata: ApplicabilityInput = {
@@ -1724,8 +1725,7 @@ export class Store {
         return [sessionId, paths.some(path => path === "invalid") ? "invalid" as const : paths as PersistedKnowledgePath[]];
       })),
       currentSnapshots: new Map(), validatedCurrentPaths: new Set(),
-      facts: new Map(this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id WHERE f.id IN (SELECT value FROM json_each(?))`).all(factIds)
-        .map(r => [Number(r.id), { fact: toFact(r), sessionId: Number(r.session_id), runId: Number(r.run_id), entries: [] }])),
+      facts,
     };
     for (const row of this.db.prepare("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id").all(factIds))
       metadata.facts.get(Number(row.fact_id))!.entries.push(Number(row.entry_id));
@@ -2255,20 +2255,20 @@ export class Store {
       : [{ knowledgeId: op.knowledgeId, baseCommit: op.baseCommit }];
     const revivalSurvivor = dreaming && op.op === "merge"
       && this.getKnowledgeRevision(op.intoKnowledgeId, op.intoBaseCommit)?.op === "archive";
-    const writerInput = this.commitGraphInput();
-    const writerGraph = this.commitGraph(path, undefined, undefined, writerInput);
+    const writerInput = targets.length ? this.commitGraphInput() : undefined;
+    const writerGraph = writerInput ? this.commitGraph(path, undefined, undefined, writerInput) : undefined;
     const seen = new Set<number>();
     for (const target of targets) {
       const base = this.getKnowledgeRevision(target.knowledgeId, target.baseCommit);
       if (dreamingPool !== null && base) {
-        const owner = placementOwner(this, { revision: base }, writerInput.metadata);
+        const owner = placementOwner(this, { revision: base }, writerInput!.metadata);
         if (owner !== dreamingPool)
           return { ok: false, reason: `K${target.knowledgeId}@${target.baseCommit}: base belongs to ${owner}, outside Dreamer pool ${dreamingPool}` };
       }
       const bad = this.baseProblem(target.knowledgeId, target.baseCommit, path,
-        revivalSurvivor && target.knowledgeId === op.intoKnowledgeId && target.baseCommit === op.intoBaseCommit, writerInput.metadata);
+        revivalSurvivor && target.knowledgeId === op.intoKnowledgeId && target.baseCommit === op.intoBaseCommit, writerInput!.metadata);
       if (bad) return { ok: false, reason: bad };
-      const validityProblem = this.resolvedBaseProblem(writerGraph, target);
+      const validityProblem = this.resolvedBaseProblem(writerGraph!, target);
       if (validityProblem) return { ok: false, reason: validityProblem };
       if (seen.has(target.baseCommit)) return { ok: false, reason: "duplicate merge parent; a commit cannot absorb itself" };
       seen.add(target.baseCommit);
@@ -2337,25 +2337,50 @@ export class Store {
    * graph projection chooses one current revision before reader visibility; processing affects only
    * scheduling and never participates in that projection. */
   poolVersions(pool: string, path: KnowledgePath): KnowledgeWithRevision[] {
-    const input = this.commitGraphInput();
-    const knowledge = new Map<number, Knowledge>();
-    return this.commitGraph(path, undefined, undefined, input).current
-      .filter(revision => revision.op !== "archive" && placementOwner(this, { revision }, input.metadata) === pool)
-      .map(revision => {
-        if (!knowledge.has(revision.knowledgeId)) knowledge.set(revision.knowledgeId, this.getKnowledge(revision.knowledgeId)!);
-        return { knowledge: knowledge.get(revision.knowledgeId)!, revision };
-      });
+    return this.knowledgePools(path).find(value => value.pool === pool)?.versions ?? [];
   }
 
   pendingVersions(pool: string, path: KnowledgePath): PendingKnowledgeVersion[] {
-    const processed = new Set((this.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ?")
-      .all(pool) as { revision_id: number }[]).map(row => row.revision_id));
-    return this.poolVersions(pool, path).filter(value => !processed.has(value.revision.id)).map(value => {
-      const changed = !!this.db.prepare(`SELECT 1 FROM knowledge_processed p JOIN knowledge_revisions r ON r.id = p.revision_id
-        WHERE p.pool = ? AND r.knowledge_id = ? LIMIT 1`).get(pool, value.revision.knowledgeId);
-      const material = `${changed ? "Changed" : "New"} K${value.revision.knowledgeId}@${value.revision.id}:\n${renderKnowledge(value)}`;
-      return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material };
-    }).sort((left, right) => left.revisionId - right.revisionId);
+    return this.knowledgePools(path).find(value => value.pool === pool)?.pending ?? [];
+  }
+
+  /** One operation-local value: resolve globally before scope filtering, render each current body
+   * once, and batch processing history. Never retain this value across a mutation or transaction. */
+  knowledgePools(path: KnowledgePath) {
+    const projectId = this.getSession(path.sessionId)?.projectId;
+    if (projectId === undefined) throw new Error(`Unknown session ${path.sessionId}`);
+    const budgets = this.knowledgeBudgets(), input = this.commitGraphInput();
+    const pools = [["global", budgets.global], [`project:${projectId}`, budgets.project], [`session:${path.sessionId}`, budgets.session]] as const;
+    const versions = new Map<string, KnowledgeWithRevision[]>(pools.map(([pool]) => [pool, []]));
+    const current = this.commitGraph(path, undefined, undefined, input).current.filter(revision => revision.op !== "archive");
+    const knowledge = new Map(this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(current.map(revision => revision.knowledgeId))).map(row => [Number(row.id), toKnowledge(row)]));
+    for (const revision of current) versions.get(placementOwner(this, { revision }, input.metadata))?.push({ knowledge: knowledge.get(revision.knowledgeId)!, revision });
+    const history = this.db.prepare(`SELECT p.pool, p.revision_id, r.knowledge_id FROM knowledge_processed p
+      JOIN knowledge_revisions r ON r.id = p.revision_id WHERE p.pool IN (SELECT value FROM json_each(?))`)
+      .all(JSON.stringify(pools.map(([pool]) => pool)));
+    const processed = new Set(history.map(row => `${row.pool}:${row.revision_id}`));
+    const changed = new Set(history.map(row => `${row.pool}:${row.knowledge_id}`));
+    const states = new Map(this.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(pools.map(([pool]) => pool))).map(row => [String(row.pool), row]));
+    return pools.map(([pool, budget]) => {
+      const values = versions.get(pool)!;
+      const rendered = new Map(values.map(value => [value.revision.id, renderKnowledge(value)]));
+      const size = tokens(processedBlock(values, value => rendered.get(value.revision.id)!));
+      const pending = values.filter(value => !processed.has(`${pool}:${value.revision.id}`)).map(value => {
+        const material = `${changed.has(`${pool}:${value.revision.knowledgeId}`) ? "Changed" : "New"} K${value.revision.knowledgeId}@${value.revision.id}:\n${rendered.get(value.revision.id)!}`;
+        return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material };
+      }).sort((left, right) => left.revisionId - right.revisionId);
+      let reason: DueKnowledgePool["reason"] | null = null;
+      if (pending.length && pending.reduce((sum, value) => sum + value.tokens, 0) * 2 >= budget) reason = "pending";
+      else if (size > budget) {
+        const state = states.get(pool);
+        const residual = new Set<number>(state ? JSON.parse(String(state.residual_revisions)) : []);
+        if (pending.some(value => !residual.has(value.revisionId)) || !state || Number(state.last_over_size) < size || Number(state.last_over_budget) !== budget)
+          reason = "over-budget";
+      }
+      return { pool, budget, tokens: size, versions: values, rendered, pending, reason };
+    });
   }
 
   pendingPoolWeight(pool: string, path: KnowledgePath): number {
@@ -2377,28 +2402,11 @@ export class Store {
   }
 
   poolSizes(path: KnowledgePath): KnowledgePoolSize[] {
-    const projectId = this.getSession(path.sessionId)?.projectId;
-    if (projectId === undefined) throw new Error(`Unknown session ${path.sessionId}`);
-    const budgets = this.knowledgeBudgets();
-    return [["global", budgets.global], [`project:${projectId}`, budgets.project], [`session:${path.sessionId}`, budgets.session]]
-      .map(([pool, budget]) => ({ pool: String(pool), budget: Number(budget), tokens: tokens(processedBlock(this.poolVersions(String(pool), path))) }));
+    return this.knowledgePools(path).map(({ pool, budget, tokens }) => ({ pool, budget, tokens }));
   }
 
   duePools(path: KnowledgePath): DueKnowledgePool[] {
-    const result: DueKnowledgePool[] = [];
-    for (const size of this.poolSizes(path)) {
-      const pending = this.pendingVersions(size.pool, path);
-      if (pending.length && pending.reduce((sum, value) => sum + value.tokens, 0) * 2 >= size.budget) {
-        result.push({ ...size, pending, reason: "pending" }); continue;
-      }
-      if (size.tokens <= size.budget) continue;
-      const state = this.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool = ?").get(size.pool);
-      const residual = new Set<number>(state ? JSON.parse(String(state.residual_revisions)) : []);
-      const hasNewPending = pending.some(value => !residual.has(value.revisionId));
-      if (hasNewPending || !state || Number(state.last_over_size) < size.tokens || Number(state.last_over_budget) !== size.budget)
-        result.push({ ...size, pending, reason: "over-budget" });
-    }
-    return result;
+    return this.knowledgePools(path).flatMap(({ pool, budget, tokens, pending, reason }) => reason ? [{ pool, budget, tokens, pending, reason }] : []);
   }
 
   private poolBudget(pool: string): number {
@@ -2406,8 +2414,27 @@ export class Store {
     return pool === "global" ? budgets.global : pool.startsWith("project:") ? budgets.project : budgets.session;
   }
 
-  /** Freeze one pool's current revisions through the existing Dreamer range seam. */
+  /** Select and reserve from the same atomic projection. Only range/claim bookkeeping mutates
+   * inside this operation; no caller can submit a stale prepared projection as write authority. */
+  freezeKnowledgePool(target: TaskTarget, claim: TaskClaim) {
+    return this.transaction(() => {
+      const pool = this.knowledgePools(target).find(value => value.reason !== null);
+      if (!pool) throw new Error("No Knowledge pool is due");
+      return { pool, range: this.retainProjectedPoolRange(target, pool, claim) };
+    });
+  }
+
+  /** Direct callers may reserve a below-trigger pending prefix with the same live-claim fence. */
   retainKnowledgePoolRange(target: TaskTarget, pool: string, claim: TaskClaim): DreamingRange {
+    return this.transaction(() => {
+      const projected = this.knowledgePools(target).find(value => value.pool === pool);
+      if (!projected) throw new Error(`Pool ${pool} is not applicable to S${target.sessionId}`);
+      return this.retainProjectedPoolRange(target, projected, claim);
+    });
+  }
+
+  private retainProjectedPoolRange(target: TaskTarget, due: ReturnType<Store["knowledgePools"]>[number], claim: TaskClaim): DreamingRange {
+    const pool = due.pool;
     return this.transaction(() => {
       this.requireClaim({ kind: "dreaming", sessionId: target.sessionId, branch: target.branch, createdAt: new Date().toISOString(), claim });
       const session = this.getSession(target.sessionId)!;
@@ -2425,12 +2452,7 @@ export class Store {
           ON c.session_id = r.session_id AND c.phase = 'dreaming' AND c.token = r.claim_token
         WHERE r.pool IS NOT NULL AND r.completed_run IS NULL AND r.closed_at IS NULL AND c.expires_at > ?`)
         .all(now) as { event_id: number }[]).map(row => row.event_id));
-      const due = this.duePools(target).find(value => value.pool === pool) ?? (() => {
-        const pending = this.pendingVersions(pool, target);
-        if (!pending.length) throw new Error(`Pool ${pool} is not due`);
-        const size = this.poolSizes(target).find(value => value.pool === pool)!;
-        return { ...size, pending, reason: "pending" as const };
-      })();
+      if (!due.reason && !due.pending.length) throw new Error(`Pool ${pool} is not due`);
       const selected: PendingKnowledgeVersion[] = [];
       for (const revision of due.pending) {
         if (reserved.has(revision.revisionId)) continue;
@@ -2470,9 +2492,8 @@ export class Store {
       if (consumes) {
         const pairs = new Map<string, { pool: string; revisionId: number }>();
         for (const revisionId of range.eventIds) pairs.set(`${range.pool}:${revisionId}`, { pool: range.pool, revisionId });
-        const input = own.length ? this.commitGraphInput() : undefined;
         for (const revision of own) {
-          const owner = placementOwner(this, { revision }, input?.metadata);
+          const owner = placementOwner(this, { revision });
           pairs.set(`${owner}:${revision.id}`, { pool: owner, revisionId: revision.id });
         }
         for (const pair of pairs.values()) this.db.prepare("INSERT OR IGNORE INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)")
@@ -2482,12 +2503,12 @@ export class Store {
         WHERE id = ? AND completed_run IS NULL AND closed_at IS NULL`).run(runId, new Date().toISOString(), range.id);
       if (closed.changes !== 1) throw new Error("Knowledge pool range was not closed atomically");
       const path = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
-      const size = this.poolSizes(path).find(value => value.pool === range.pool)!;
+      const size = this.knowledgePools(path).find(value => value.pool === range.pool)!;
       // A pre-commit cancellation closes its reservation but does not service or suppress the pool.
       if (consumes) {
         if (size.tokens > size.budget) {
           const frozen = new Set(range.pendingRevisionIds);
-          const residual = this.pendingVersions(range.pool, path).map(value => value.revisionId).filter(id => frozen.has(id));
+          const residual = size.pending.map(value => value.revisionId).filter(id => frozen.has(id));
           this.db.prepare(`INSERT INTO knowledge_pool_state(pool,last_over_size,last_over_budget,residual_revisions) VALUES (?,?,?,?)
             ON CONFLICT(pool) DO UPDATE SET last_over_size=excluded.last_over_size,last_over_budget=excluded.last_over_budget,
               residual_revisions=excluded.residual_revisions`).run(size.pool, size.tokens, size.budget, JSON.stringify(residual));
@@ -2732,8 +2753,9 @@ export class Store {
       .all(sessionId, branch, sessionId, turnId ?? null, turnId ?? null) as { id: number }[];
     const hasPath = branch !== undefined && !!this.db.prepare("SELECT 1 FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
     const rows = hasPath ? selected
-      : this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND (? IS NULL OR turn_id = ?) ORDER BY id")
-        .all(sessionId, turnId ?? null, turnId ?? null) as { id: number }[];
+      : (turnId === undefined
+        ? this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId)
+        : this.db.prepare("SELECT id FROM source_entries WHERE turn_id = ? AND session_id = ? ORDER BY id").all(turnId, sessionId)) as { id: number }[];
     return rows.map(r => this.getSourceEntry(r.id)!);
   }
   /** 22c "complete snapshot": the source-entry identities of many Turns in one read, in the order an

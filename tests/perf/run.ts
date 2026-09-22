@@ -417,6 +417,7 @@ function dreamingScenarios(size: string): Sample[] {
     const counter = countGraphResolutions();
     let eligibilityGraphs: number;
     try { memory.taskEligibility("dreaming", target); eligibilityGraphs = counter.resolutions(); } finally { counter.restore(); }
+    if (eligibilityGraphs !== 1) throw new Error(`Dreamer eligibility must share one graph across all pools; got ${eligibilityGraphs}`);
     const note = `${revisions + 10} revisions, ${sessions} sessions in 2 projects, 20 current bodies`;
     const rollback = new Error("sample rollback");
     const samples = [

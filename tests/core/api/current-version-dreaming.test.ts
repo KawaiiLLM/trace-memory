@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 
@@ -30,6 +30,23 @@ function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>) {
 }
 
 const ok = { outcome: "success", output: "done", request: { exact: "request" } } as const;
+
+test("67: admission, freeze, final check and consumption have bounded independent projections", async () => {
+  let admissionGraphs = -1;
+  const f = fixture(async task => { admissionGraphs = graph.mock.calls.length; task.acknowledgeRequest(); return ok; });
+  f.create("project", "due rule");
+  f.create("project", "second rule");
+  f.create("global", "below threshold");
+  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(`project:${f.project.id}`, f.target) * 2);
+  const graph = vi.spyOn(f.store, "commitGraphInput");
+  try {
+    expect((await f.memory.dream(f.target)).outcome).toBe("success");
+    // Discovery, claim admission and freeze each project once, not once per pool or consumer.
+    expect(admissionGraphs).toBe(3);
+    // Final read-only check and terminal writes are separate operations, each seeing fresh state.
+    expect(graph).toHaveBeenCalledTimes(5);
+  } finally { graph.mockRestore(); }
+});
 
 test("64c facade freezes one due pool and terminal success processes its exact current versions", async () => {
   let seen!: DreamingAgentInput;
