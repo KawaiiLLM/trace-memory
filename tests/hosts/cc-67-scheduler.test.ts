@@ -14,7 +14,7 @@ function fixture() {
   const checks: string[] = [], starts: string[] = [];
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
     pendingEntries: () => pending.map(id => ({ id })), cancelTasks: vi.fn(),
-    store: { enabled: () => enabled, consolidationBatch: () => [], getClaim: () => null, closedTasks: () => [],
+    store: { enabled: () => enabled, pendingEntryIds: () => [...pending], consolidationBatch: () => [], getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }) },
     taskEligibility: vi.fn((phase: string) => { checks.push(phase); return { due: true }; }),
     noting: vi.fn(async () => { starts.push("noting"); pending.shift(); return { outcome: "success", facts: [] }; }),
@@ -56,12 +56,13 @@ test("known restart grants no automatic opportunity but explicit catchup still d
   expect(f.memory.consolidate).not.toHaveBeenCalled();
 });
 
-test("last N retains its launched C completion check for D, without a D chain", async () => {
+test("R4 successful checkpoints recheck every phase and stop when each becomes not due", async () => {
   const f = fixture();
   let release!: () => void;
   f.memory.taskEligibility.mockImplementation(phase => {
     f.checks.push(phase);
-    return { due: phase === "dreaming" || f.memory.noting.mock.calls.length === 2 };
+    return { due: phase === "dreaming" ? f.memory.dream.mock.calls.length === 0
+      : phase === "consolidation" && f.memory.noting.mock.calls.length === 2 && f.memory.consolidate.mock.calls.length === 0 };
   });
   f.memory.consolidate.mockImplementation(async () => {
     f.starts.push("consolidation");
@@ -70,12 +71,15 @@ test("last N retains its launched C completion check for D, without a D chain", 
   });
   f.scheduler.startCatchup(projection);
   for (let i = 0; i < 10 && !release; i++) await tick();
-  expect(f.starts).toEqual(["noting", "noting", "consolidation"]);
-  expect(f.scheduler.catchupStatus().state).toBe("waiting");
+  expect(f.starts.filter(phase => phase === "noting")).toHaveLength(2);
+  expect(f.starts).toEqual(expect.arrayContaining(["consolidation", "dreaming"]));
+  expect(["running", "waiting"]).toContain(f.scheduler.catchupStatus().state);
   release();
   for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick();
-  expect(f.checks).toEqual(["consolidation", "consolidation", "dreaming"]);
-  expect(f.starts).toEqual(["noting", "noting", "consolidation", "dreaming"]);
+  expect(f.checks).toEqual(expect.arrayContaining(["consolidation", "dreaming"]));
+  expect(f.starts.filter(phase => phase === "noting")).toHaveLength(2);
+  expect(f.starts.filter(phase => phase === "consolidation")).toHaveLength(1);
+  expect(f.starts.filter(phase => phase === "dreaming")).toHaveLength(1);
   expect(f.scheduler.catchupStatus().state).toBe("completed");
   await tick();
   expect(f.memory.dream).toHaveBeenCalledTimes(1);
@@ -89,20 +93,18 @@ test("busy C discards an N completion opportunity and slot release does not repl
     await new Promise<void>(resolve => { release = resolve; });
     return { outcome: "success" };
   });
-  f.memory.taskEligibility.mockImplementation(phase => { f.checks.push(phase); return { due: phase !== "dreaming" }; });
+  f.memory.taskEligibility.mockImplementation(phase => { f.checks.push(phase); return {
+    due: phase === "consolidation" && f.memory.consolidate.mock.calls.length === 0 }; });
   f.scheduler.startCatchup(projection);
   for (let i = 0; i < 10 && f.memory.noting.mock.calls.length < 2; i++) await tick();
   expect(f.starts).toEqual(["noting", "consolidation", "noting"]);
   expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
   release(); await tick(); await tick();
   expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
-  expect(f.checks).toEqual(["consolidation", "dreaming"]);
+  expect(f.checks).toEqual(expect.arrayContaining(["consolidation", "dreaming"]));
   expect(f.scheduler.catchupStatus().state).toBe("completed");
-  // A later real entry is a new opportunity, not a replay of the busy one.
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [2] });
   await tick();
-  expect(f.memory.consolidate).toHaveBeenCalledTimes(2);
-  release(); await tick();
+  expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
 });
 
 // Retained ordinary-task ownership: catchup does not adopt a worker that predates it.
@@ -115,7 +117,8 @@ test.each([1, 2])("preexisting ordinary N consuming %s entries is not adopted by
     f.consume(consumed); finishedOrdinary = true;
     return { outcome: "success", facts: [] };
   }).mockImplementation(normalNoting);
-  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "noting" || phase === "consolidation" && finishedOrdinary }));
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "noting" ||
+    phase === "consolidation" && finishedOrdinary && f.memory.consolidate.mock.calls.length === 0 }));
   f.scheduler.reconcile({ ...projection, appendedEntryIds: [2] });
   await tick();
   expect(f.memory.noting).toHaveBeenCalledTimes(1);
@@ -125,26 +128,28 @@ test.each([1, 2])("preexisting ordinary N consuming %s entries is not adopted by
   expect(f.memory.noting).toHaveBeenCalledTimes(consumed === 2 ? 1 : 2);
   expect(f.memory.consolidate).toHaveBeenCalledTimes(consumed === 2 ? 0 : 1);
   expect(f.memory.dream).not.toHaveBeenCalled();
-  expect(f.scheduler.catchupStatus().state).toBe("completed");
+  expect(f.scheduler.catchupStatus().state).toBe(consumed === 2 ? "waiting" : "completed");
+  if (consumed === 2) expect(f.scheduler.catchupStatus().phase).toBe("consolidation");
 });
 
 test("preexisting ordinary C is not adopted for catchup's D callback", async () => {
   const f = fixture();
-  let release!: () => void, catchup = false;
+  let release!: () => void;
   f.memory.consolidate.mockImplementation(async () => {
     await new Promise<void>(resolve => { release = resolve; });
     return { outcome: "success" };
   });
-  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "consolidation" || phase === "dreaming" && catchup }));
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "consolidation" }));
   f.scheduler.reconcile({ ...projection, appendedEntryIds: [2] });
-  await tick(); catchup = true;
+  await tick();
   f.scheduler.startCatchup(projection);
   for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick();
   expect(f.memory.noting).toHaveBeenCalledTimes(2);
   expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
-  expect(f.scheduler.catchupStatus().state).toBe("completed");
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase: "consolidation" });
   release(); await tick(); await tick();
   expect(f.memory.dream).not.toHaveBeenCalled();
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase: "consolidation" });
 });
 
 test.each(["consolidation", "dreaming"] as const)("catchup-owned %s terminal failures fence future continuation", async phase => {
@@ -163,6 +168,7 @@ test.each(["consolidation", "dreaming"] as const)("catchup-owned %s terminal fai
     });
     if (phase === "consolidation") f.memory.consolidate = execute as any;
     else f.memory.dream = execute as any;
+    f.memory.taskEligibility.mockImplementation(candidate => ({ due: candidate === phase && execute.mock.calls.length === 0 }));
     f.scheduler.startCatchup({ ...projection, selectedEntryIds: [1, 2, 3] });
     for (let i = 0; i < 10 && (!releaseN || !failDownstream); i++) await tick();
     expect(releaseN).toBeTypeOf("function"); expect(failDownstream).toBeTypeOf("function");
@@ -182,6 +188,7 @@ test.each(["consolidation", "dreaming"] as const)("catchup-owned %s terminal fai
 test.each(["empty", "dropped"] as const)("downstream %s is not a catchup failure or retry", async outcome => {
   const f = fixture();
   f.memory.consolidate.mockImplementation(async () => ({ outcome }) as any);
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "consolidation" && f.memory.consolidate.mock.calls.length === 0 }));
   f.scheduler.startCatchup(projection);
   for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick();
   expect(f.scheduler.catchupStatus().state).toBe("completed");
@@ -198,6 +205,7 @@ test.each(["stop", "off", "path"])("%s fences C completion's D check after N has
     await new Promise<void>(resolve => { release = resolve; });
     return { outcome: "success" };
   });
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "consolidation" }));
   f.scheduler.startCatchup(projection);
   for (let i = 0; i < 10 && f.memory.noting.mock.calls.length < 2; i++) await tick();
   if (action === "stop") f.scheduler.stopCatchup();

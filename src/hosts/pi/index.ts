@@ -218,7 +218,7 @@ export default function (pi: ExtensionAPI) {
     maxEntryId?: number; entryTotal: number; // Noting boundary: undefined means nothing was pending to note
     factIds: Set<number>; factTotal: number; // Progress only: C uses ordinary target eligibility, not a frozen fact drain.
     stopped: boolean;
-    waitingPhase?: "noting";
+    waitingPhase?: WorkerPhase;
     active: Set<WorkerPhase>;
     outcome?: "completed" | "stopped" | "failed";
     diagnostic?: string;
@@ -973,15 +973,16 @@ export default function (pi: ExtensionAPI) {
       activity.running.set(kind, 1); showSpend(context);
       trackSlot(kind, slot, promise.then(result => reportProblems(result, context), error => {
         context.ui.notify(String(error), "error");
-      }), context, () => { showSpend(context); if (catchup) driveCatchup(); });
+      }), context, () => { showSpend(context); if (catchup) driveCatchup(false); });
     }
-    if (catchup) driveCatchup(); // 18b: an ordinary eligible-entry opportunity is the other resumption event.
+    if (catchup) driveCatchup(false); // Ordinary completion may free N's drain slot, but is not an R4 checkpoint.
   };
-  // 67: only Noting drains its frozen Raw boundary. Successful N and C completions
-  // check their downstream phase once through ordinary eligibility and admission.
-  // The explicit controller shares ordinary slots/claims, with no pending-trigger queue.
+  // Ticket 68: one explicit checkpoint starts the drain and follows every successful
+  // catchup-owned completion. It checks all phases; only N ignores its ordinary threshold.
+  const pendingCatchupEntryIds = (c: Catchup) => c.maxEntryId === undefined ? [] :
+    memory.store.pendingEntryIds(c.sessionId, c.branch, c.headTurnId).filter(id => id <= c.maxEntryId!);
   const catchupProgress = (c: Catchup) => {
-    const remainingEntries = c.maxEntryId === undefined ? 0 : memory.pendingEntries(c.sessionId, c.branch, c.headTurnId).filter(e => e.id <= c.maxEntryId!).length;
+    const remainingEntries = pendingCatchupEntryIds(c).length;
     const remainingFacts = memory.store.consolidationBatch(c.sessionId, c.branch, c.headTurnId).filter(f => c.factIds.has(f.id)).length;
     return { entriesDone: c.entryTotal - remainingEntries, remainingEntries, factsDone: c.factIds.size - remainingFacts, remainingFacts };
   };
@@ -996,107 +997,93 @@ export default function (pi: ExtensionAPI) {
     return `Catchup: idle (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts)`;
   };
   const hasBackgroundWork = () => runningKind("noting") || runningKind("consolidation") || runningKind("dreaming") || !!(catchup && !catchup.outcome);
-  // Completion checks use ordinary admission: an occupied slot/claim is not a queued
-  // request. Only Noting is a drain; C and D each get one opportunity per upstream success.
-  const checkCatchupDownstream = (c: Catchup, phase: "consolidation" | "dreaming") => {
-    if (catchup !== c || c.stopped || c.outcome || closed || !enabled() || slots.has(phase)) return;
-    const context = ctx;
+  const finishCatchup = (c: Catchup) => {
+    if (catchup !== c || c.outcome || c.active.size) return;
+    const p = catchupProgress(c);
+    if (p.remainingEntries) { c.waitingPhase = "noting"; return; }
     const own = { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId, triggerEntryId: c.triggerEntryId };
-    try {
-      if (!memory.taskEligibility(phase, own).due) return;
-      const slot: Slot = { target: own };
-      slots.set(phase, slot); c.active.add(phase); activity.running.set(phase, 1);
-      const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) }, { borrowed: false, automatic: true });
-      slot.result = promise.catch(() => undefined);
-      let succeeded = false;
-      const handled = promise.then(result => {
-        reportProblems(result, context);
-        succeeded = result.outcome === "success";
-        if (c.stopped) { c.outcome = "stopped"; return; }
-        if (!["success", "empty", "dropped"].includes(result.outcome)) {
-          c.outcome = result.outcome === "cancelled" ? "stopped" : "failed";
-          c.diagnostic = (result as { problems?: string[] }).problems?.join("; ") ?? result.outcome;
-        }
-        const permanent = (result as { permanent?: string }).permanent;
-        if (permanent) { c.outcome = "failed"; c.diagnostic = permanent; }
-      }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); });
-      trackSlot(phase, slot, handled, context, () => {
-        c.active.delete(phase);
-        if (succeeded && phase === "consolidation") checkCatchupDownstream(c, "dreaming");
-        // Downstream completion never resumes a dropped admission or starts Noting.
-        // It can only close the finite controller after the last N has drained.
-        if (!c.active.size && !catchupProgress(c).remainingEntries) driveCatchup();
-        showSpend(context);
-      });
-    } catch (error) {
-      c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error");
+    for (const phase of ["consolidation", "dreaming"] as const) {
+      try {
+        if (memory.taskEligibility(phase, own).due) { c.waitingPhase = phase; return; }
+      } catch (error) { c.outcome = "failed"; c.diagnostic = String(error); return; }
     }
+    c.outcome = "completed"; c.waitingPhase = undefined;
+    ctx.ui.notify(`Trace Memory: catchup completed (${p.entriesDone} entries noted, ${p.factsDone} facts integrated; below-threshold work may remain pending).`, "info");
+    showSpend(ctx);
   };
-  const driveCatchup = () => {
+  const driveCatchup = (checkAll = true) => {
     const c = catchup;
     if (!c || c.stopped || c.outcome || closed || !enabled()) return;
     const context = ctx;
     const own = { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId, triggerEntryId: c.triggerEntryId };
-    const p = catchupProgress(c);
-    const phase = p.remainingEntries ? "noting" : undefined;
-    if (!phase) {
-      if (c.active.size) return; // Keep the final C completion's D check attached.
-      c.outcome = "completed"; c.waitingPhase = undefined;
-      context.ui.notify(`Trace Memory: catchup completed (${p.entriesDone} entries noted, ${p.factsDone} facts integrated; below-threshold work may remain pending).`, "info");
-      showSpend(context); return;
-    }
-    if (slots.has(phase)) { c.waitingPhase = phase; return; } // 17c's slot is not stolen; wait for its release.
-    const foreign = memory.store.getClaim(own.sessionId, phase);
-    if (foreign && foreign.expiresAt > Date.now() && foreign.executorId !== memory.executorId) {
-      c.waitingPhase = phase; return; // A live foreign claim on our own target is exposed as Waiting, not stolen.
-    }
-    c.waitingPhase = undefined;
-    // 29e: the *allowable* set, never the exact one — a drain takes it in bounded batches (18b).
-    const boundary = { maxEntryId: c.maxEntryId };
-    const slot: Slot = { target: own, boundary };
-    slots.set(phase, slot); c.active.add(phase); activity.running.set(phase, 1); showSpend(context);
-    const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) }, { borrowed: false, automatic: false, boundary });
-    let succeeded = false;
-    let waited = false; // this attempt itself ended in Waiting (a concurrent drive may set waitingPhase too, and that must not stop the chain)
-    const handled = promise.then(result => {
-      if (phase === "noting" && result && Array.isArray((result as { facts?: unknown }).facts))
-        for (const f of (result as { facts: { id: number }[] }).facts) if (!c.factIds.has(f.id)) { c.factIds.add(f.id); c.factTotal++; }
-      reportProblems(result, context);
-      const outcome = (result as { outcome?: string }).outcome;
-      succeeded = outcome === "success";
-      if (c.stopped) { c.outcome = "stopped"; return; } // Stop wins the race: no further chaining, whatever this batch returned.
-      const permanent = (result as { permanent?: string }).permanent;
-      if (outcome === "dropped" && permanent) { c.outcome = "failed"; c.diagnostic = permanent; return; } // a configuration error ends the drain
-      if (outcome === "dropped") { c.waitingPhase = phase; waited = true; return; } // A foreign claim on our own target; retry on the next opportunity.
-      if (outcome !== "success" && outcome !== "empty") {
-        c.outcome = outcome === "cancelled" ? "stopped" : "failed";
-        c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
+    const remainingEntries = pendingCatchupEntryIds(c);
+    if (!checkAll && !remainingEntries.length && c.waitingPhase && c.waitingPhase !== "noting") return;
+    let launched = false, blockedNoting = false;
+    if (checkAll) c.waitingPhase = undefined;
+    const phases: readonly WorkerPhase[] = checkAll ? ["noting", "consolidation", "dreaming"] : ["noting"];
+    for (const phase of phases) {
+      let due = phase === "noting" ? remainingEntries.length > 0 : false;
+      try { if (phase !== "noting") due = memory.taskEligibility(phase, own).due; }
+      catch (error) { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); return; }
+      if (!due || slots.has(phase)) { if (phase === "noting" && due) blockedNoting = true; continue; }
+      if (phase === "noting") {
+        const foreign = memory.store.getClaim(own.sessionId, phase);
+        if (foreign && foreign.expiresAt > Date.now() && foreign.executorId !== memory.executorId) {
+          blockedNoting = true; continue;
+        }
       }
-    }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); });
-    slot.result = promise.catch(() => undefined);
-    trackSlot(phase, slot, handled, context, () => {
-      c.active.delete(phase); showSpend(context);
-      if (succeeded) checkCatchupDownstream(c, "consolidation");
-      // Only this explicit drain chains. A dropped attempt waits for a later opportunity;
-      // immediately re-driving it would loop without a wait.
-      if (!waited) driveCatchup();
-    });
+      launched = true;
+      const boundary = phase === "noting" ? { maxEntryId: c.maxEntryId } : undefined;
+      const slot: Slot = { target: own, ...(boundary ? { boundary } : {}) };
+      slots.set(phase, slot); c.active.add(phase); activity.running.set(phase, 1); showSpend(context);
+      const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) },
+        { borrowed: false, automatic: phase !== "noting", ...(boundary ? { boundary } : {}) });
+      slot.result = promise.catch(() => undefined);
+      let checkpoint = false;
+      const handled = promise.then(result => {
+        if (phase === "noting" && result && Array.isArray((result as { facts?: unknown }).facts))
+          for (const f of (result as { facts: { id: number }[] }).facts) if (!c.factIds.has(f.id)) { c.factIds.add(f.id); c.factTotal++; }
+        reportProblems(result, context);
+        const outcome = (result as { outcome?: string }).outcome;
+        checkpoint = outcome === "success";
+        if (c.stopped) { c.outcome = "stopped"; checkpoint = false; return; }
+        const permanent = (result as { permanent?: string }).permanent;
+        if (outcome === "dropped" && permanent) { c.outcome = "failed"; c.diagnostic = permanent; checkpoint = false; return; }
+        if (outcome === "dropped") { if (phase === "noting") c.waitingPhase = phase; return; }
+        if (outcome !== "success" && outcome !== "empty") {
+          c.outcome = outcome === "cancelled" ? "stopped" : "failed";
+          c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
+          checkpoint = false;
+        }
+      }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); });
+      trackSlot(phase, slot, handled, context, () => {
+        c.active.delete(phase); showSpend(context);
+        if (catchup !== c) return; // A late completion owns no checkpoint in a replacement drain.
+        if (checkpoint) driveCatchup();
+        else finishCatchup(c); // empty/dropped settle this opportunity but never re-arm it.
+      });
+    }
+    if (launched || c.active.size) return;
+    if (remainingEntries.length && blockedNoting) { c.waitingPhase = "noting"; return; }
+    finishCatchup(c);
   };
   const startCatchup = () => {
     if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
-    if (catchup && !catchup.outcome) { ctx.ui.notify(catchupLine()!, "info"); return; } // Repeating catchup reports the active operation, never a second one.
+    if (catchup && !catchup.outcome) { ctx.ui.notify(catchupLine()!, "info"); return; }
     if (!state.sessionId || !state.head) { ctx.ui.notify("Trace Memory: no assistant reply yet; nothing to catch up.", "info"); return; }
-    reconcile(false); // Reconcile available native history (17a) before freezing the boundary.
-    // Refresh the footer even on paths below that start no batch.
+    reconcile(false);
     showSpend(ctx);
     const { sessionId, branch } = state, headTurnId = state.head;
-    const pendingNow = memory.pendingEntries(sessionId, branch, headTurnId);
-    const maxEntryId = pendingNow.length ? Math.max(...pendingNow.map(e => e.id)) : undefined;
+    const pendingNow = memory.store.pendingEntryIds(sessionId, branch, headTurnId);
+    const maxEntryId = pendingNow.length ? Math.max(...pendingNow) : undefined;
     const factsNow = memory.store.consolidationBatch(sessionId, branch, headTurnId).map(f => f.id);
-    catchup = { sessionId, branch, headTurnId, triggerEntryId: state.sourceHead, maxEntryId, entryTotal: pendingNow.length, factIds: new Set(factsNow), factTotal: factsNow.length, stopped: false, active: new Set() };
-    if (!pendingNow.length && !factsNow.length) { catchup.outcome = "completed"; ctx.ui.notify("Trace Memory: catchup found nothing pending; already caught up.", "info"); return; }
-    driveCatchup(); // Starts the cancellable operation and returns; stop remains available while it runs.
-    ctx.ui.notify(catchupLine()!, "info"); // Honestly reports the immediate result: running or Waiting for an occupied phase/claim.
+    catchup = { sessionId, branch, headTurnId, triggerEntryId: state.sourceHead, maxEntryId, entryTotal: pendingNow.length,
+      factIds: new Set(factsNow), factTotal: factsNow.length, stopped: false, active: new Set() };
+    driveCatchup();
+    if (catchup.outcome === "completed" && !catchup.entryTotal && !catchup.factTotal) {
+      ctx.ui.notify("Trace Memory: catchup found nothing pending; already caught up.", "info"); return;
+    }
+    ctx.ui.notify(catchupLine()!, "info");
   };
   const stopCatchup = () => {
     const active = hasBackgroundWork();
@@ -1196,7 +1183,7 @@ export default function (pi: ExtensionAPI) {
       return result;
     },
       error => { context.ui.notify(String(error), "error"); return undefined; }),
-      context, () => { showSpend(context); if (catchup) driveCatchup(); });
+      context, () => { showSpend(context); if (catchup) driveCatchup(false); });
     slot.result = settled;
     const result = await settled;
     return { used: !!result && "runId" in result, result };
@@ -1526,8 +1513,8 @@ export default function (pi: ExtensionAPI) {
       { field: "session" as const, name: "Session Knowledge budget", line: `Session Knowledge budget: ${budgets.session} tokens per session owner pool (database)` },
     ];
     const knowledgeBaseWindow = budgets.global + budgets.project + budgets.session;
-    const sharedMaterialAllowance = deriveSharedMaterialAllowance(budgets,
-      { noting: memory.config.noting.triggerTokens, consolidation: memory.config.consolidation.triggerTokens });
+    const sharedMaterialAllowance = deriveSharedMaterialAllowance({ noting: memory.config.noting.triggerTokens,
+      consolidation: memory.config.consolidation.triggerTokens, dreaming: memory.config.dreaming.triggerTokens });
     const diagnostics = [
       `Knowledge base window: ${knowledgeBaseWindow} tokens (derived, read-only)`,
       `Shared material allowance: ${sharedMaterialAllowance} tokens (derived, read-only)`,
@@ -1545,8 +1532,8 @@ export default function (pi: ExtensionAPI) {
         const value = parseKnowledgeBudgetInput(input, budget.name);
         const saved = memory.setKnowledgeBudget(budget.field, value);
         const base = saved.policy.global + saved.policy.project + saved.policy.session;
-        const shared = deriveSharedMaterialAllowance(saved.policy,
-          { noting: memory.config.noting.triggerTokens, consolidation: memory.config.consolidation.triggerTokens });
+        const shared = deriveSharedMaterialAllowance({ noting: memory.config.noting.triggerTokens,
+          consolidation: memory.config.consolidation.triggerTokens, dreaming: memory.config.dreaming.triggerTokens });
         ctx.ui.notify(saved.changed
           ? `Trace Memory: saved ${budget.name} = ${value} tokens in database ${dbPath}. Knowledge base window ${base}; shared material allowance ${shared}; maximum Knowledge input ${base + shared}. New admissions use these capacities; running inputs remain frozen.`
           : `Trace Memory: ${budget.name} is already ${value} tokens in database ${dbPath}; nothing was written.`, "info");

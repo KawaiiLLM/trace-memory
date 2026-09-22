@@ -769,7 +769,7 @@ test("scheduler reserves independent N/C slots and worker completion does not dr
 
 test("manual catchup reports missing worker, disabled enrollment, and unavailable persisted path", () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-preflight-")); dirs.push(directory);
-  const memory = { store: { enabled: () => true }, pendingEntries: () => [] } as any;
+  const memory = { store: { enabled: () => true, pendingEntryIds: () => [] }, pendingEntries: () => [] } as any;
   const ready = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedEntryIds: [1], appendedEntryIds: [], problems: [], snapshot: {} as any };
   const missing = new CcTaskScheduler(memory, undefined, () => {});
@@ -875,7 +875,7 @@ test("manual catchup reports waiting on a foreign claim and resumes only on a la
   const calls: string[] = []; let foreign = true, pending = true;
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
     pendingEntries: () => pending ? [{ id: 1 }] : [],
-    store: { enabled: () => true, consolidationBatch: () => [], closedTasks: () => [],
+    store: { enabled: () => true, pendingEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [],
       getClaim: () => foreign ? ({ executorId: "foreign", expiresAt: Date.now() + 60_000 }) : null },
     noting: async () => { calls.push("noting"); pending = false; return { outcome: "success", facts: [] }; },
     consolidate: async () => ({ outcome: "success" }), dream: async () => ({ outcome: "success" }),
@@ -939,7 +939,7 @@ test("manual catchup fences pre-admission cancellation, concurrent status, dropp
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
     pendingEntries: () => pending ? [{ id: 1 }] : [],
     cancelTasks: () => { cancelled++; return []; },
-    store: { enabled: () => true, consolidationBatch: () => [], closedTasks: () => [], getClaim: () => null },
+    store: { enabled: () => true, pendingEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [], getClaim: () => null },
     noting: async () => { calls.push("noting"); if (!dropped) pending = false; return { outcome: dropped ? "dropped" : "success", facts: [] }; },
     consolidate: async () => ({ outcome: "success" }), dream: async () => ({ outcome: "success" }),
     taskEligibility: () => ({ due: false }) } as any;

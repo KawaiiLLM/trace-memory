@@ -8,7 +8,7 @@ type CcTaskResult = NotingResult | ConsolidateResult | DreamingResult;
 export type CcCatchupState = "running" | "waiting" | "completed" | "stopped" | "failed";
 export interface CcCatchupStatus {
   state: CcCatchupState;
-  phase?: "noting" | "consolidation";
+  phase?: CcWorkerPhase;
   entriesDone: number;
   entriesTotal: number;
   factsDone: number;
@@ -22,9 +22,10 @@ interface Catchup {
   factIds: Set<number>;
   factTotal: number;
   state: CcCatchupState;
-  phase?: "noting" | "consolidation";
+  phase?: CcWorkerPhase;
   diagnostic?: string;
-  downstream: Set<"consolidation" | "dreaming">;
+  /** Phases launched by this drain. Ordinary work in the shared slots is never adopted. */
+  active: Set<CcWorkerPhase>;
 }
 
 /** One CC-local slot per phase. Core remains the authority for eligibility, claims, borrowing and settlement. */
@@ -70,7 +71,7 @@ export class CcTaskScheduler {
         for (const phase of ["noting", "consolidation", "dreaming"] as const) this.startAutomatic(phase, own);
       }
     }
-    this.driveCatchup();
+    this.driveCatchup(false);
   }
 
   catchupTicket(): number { return this.cancellationEpoch; }
@@ -87,11 +88,11 @@ export class CcTaskScheduler {
     if (!this.memory.store.enabled(reconcile.coreSessionId)) return this.failedStatus("Trace Memory is disabled for this session");
     const target: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
       headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedEntryIds.at(-1)! };
-    const entries = this.memory.pendingEntries(target.sessionId, target.branch, target.headTurnId);
+    const entries = this.pendingEntryIds(target);
     const facts = this.memory.store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).map(fact => fact.id);
-    this.catchup = { target, maxEntryId: entries.length ? Math.max(...entries.map(entry => entry.id)) : undefined,
+    this.catchup = { target, maxEntryId: entries.length ? Math.max(...entries) : undefined,
       entryTotal: entries.length, factIds: new Set(facts), factTotal: facts.length,
-      state: entries.length ? "running" : "completed", downstream: new Set() };
+      state: "running", active: new Set() };
     this.driveCatchup();
     return this.catchupStatus();
   }
@@ -99,9 +100,8 @@ export class CcTaskScheduler {
   catchupStatus(): CcCatchupStatus {
     if (!this.catchup) return this.failedStatus("no catchup has been started");
     const drain = this.catchup;
-    const remainingEntries = drain.maxEntryId === undefined ? 0 : this.memory
-      .pendingEntries(drain.target.sessionId, drain.target.branch, drain.target.headTurnId)
-      .filter(entry => entry.id <= drain.maxEntryId!).length;
+    const remainingEntries = drain.maxEntryId === undefined ? 0 : this.pendingEntryIds(drain.target)
+      .filter(id => id <= drain.maxEntryId!).length;
     const remainingFacts = this.memory.store
       .consolidationBatch(drain.target.sessionId, drain.target.branch, drain.target.headTurnId)
       .filter(fact => drain.factIds.has(fact.id)).length;
@@ -140,7 +140,7 @@ export class CcTaskScheduler {
   }
 
   private reserve(phase: CcWorkerPhase, run: () => Promise<CcTaskResult | undefined>,
-    shouldDrive: () => boolean = () => true): void {
+    shouldDrive: () => boolean = () => { this.driveCatchup(false); return false; }): void {
     const work = Promise.resolve().then(run);
     this.slots.set(phase, work);
     void work.catch(error => this.diagnostic(`${phase} worker failed: ${error instanceof Error ? error.message : String(error)}`))
@@ -185,92 +185,114 @@ export class CcTaskScheduler {
       this.diagnostic(`${phase} worker ${result.outcome} for S${target.sessionId}${"runId" in result ? ` R${result.runId}` : ""}: ${problems.join("; ") || result.outcome}`);
   }
 
-  private driveCatchup(): void {
+  /** ID-only progress keeps control acknowledgement independent of Raw payload size. */
+  private pendingEntryIds(target: TaskTarget): number[] {
+    return this.memory.store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId);
+  }
+
+  /**
+   * One catchup checkpoint. Start and every successful catchup-owned completion enter here and
+   * independently check N, C and D. Busy ordinary slots are observed once and never adopted or queued.
+   */
+  private driveCatchup(checkAll = true): void {
     const drain = this.catchup;
     if (!drain || this.stopped || (drain.state !== "running" && drain.state !== "waiting")) return;
     if (!this.memory.store.enabled(drain.target.sessionId)) { this.stopCatchup("Trace Memory was disabled"); return; }
-    const remainingEntries = drain.maxEntryId === undefined ? [] : this.memory
-      .pendingEntries(drain.target.sessionId, drain.target.branch, drain.target.headTurnId)
-      .filter(entry => entry.id <= drain.maxEntryId!);
-    if (!remainingEntries.length) {
-      drain.state = drain.downstream.size ? "waiting" : "completed";
-      drain.phase = drain.downstream.has("consolidation") ? "consolidation" : undefined;
-      return;
-    }
-    const phase = "noting";
-    drain.phase = phase;
-    if (this.slots.has(phase)) { drain.state = "waiting"; return; }
-    const claim = this.memory.store.getClaim(drain.target.sessionId, phase);
-    if (claim && claim.expiresAt > Date.now() && claim.executorId !== this.memory.executorId) { drain.state = "waiting"; return; }
-    drain.state = "running";
-    const cancellationEpoch = this.cancellationEpoch;
-    const boundary: TaskBoundary = { maxEntryId: drain.maxEntryId };
-    let chain = true;
-    const drainActive = () => drain.state === "running" || drain.state === "waiting";
-    this.reserve(phase, async () => {
-      // Reservation is synchronous, admission is not. Recheck the exact drain after the microtask
-      // boundary so stop/off/path changes cannot launch a task after their cancellation acknowledgement.
-      if (this.stopped || this.catchup !== drain || this.cancellationEpoch !== cancellationEpoch ||
-          !drainActive()) { chain = false; return; }
-      let result: NotingResult;
-      try {
-        result = await this.memory.noting(this.common(phase, drain.target, false, false, boundary));
-      } catch (error) {
-        if (this.catchup === drain && drainActive()) {
-          drain.state = "failed"; drain.phase = undefined; drain.diagnostic = error instanceof Error ? error.message : String(error);
-        }
-        return;
-      }
-      const produced = phase === "noting" && "facts" in result && Array.isArray(result.facts) ? result.facts : [];
-      for (const fact of produced) if (!drain.factIds.has(fact.id)) { drain.factIds.add(fact.id); drain.factTotal++; }
-      this.report(phase, drain.target, result);
-      if (this.catchup !== drain || !drainActive()) return result;
-      if (result.outcome === "dropped") { drain.state = "waiting"; chain = false; return result; }
-      if (result.outcome !== "success" && result.outcome !== "empty") {
-        drain.state = result.outcome === "cancelled" ? "stopped" : "failed"; drain.phase = undefined;
-        drain.diagnostic = result.problems?.join("; ") || result.outcome;
-      }
-      if (result.outcome === "success") this.checkDownstream(drain, "consolidation", cancellationEpoch);
-      return result;
-    }, () => chain);
-  }
-
-  /** Catchup adds completion opportunities, not a second admission policy or a retry queue. */
-  private checkDownstream(drain: Catchup, phase: "consolidation" | "dreaming", epoch: number): void {
+    const epoch = this.cancellationEpoch;
     const owned = () => !this.stopped && this.catchup === drain && this.cancellationEpoch === epoch &&
       (drain.state === "running" || drain.state === "waiting");
-    const active = () => owned() && this.memory.store.enabled(drain.target.sessionId);
-    const fail = (error: unknown) => {
-      this.diagnostic(`${phase} catchup failed: ${String(error)}`);
-      if (owned()) {
+    const remaining = drain.maxEntryId === undefined ? [] : this.pendingEntryIds(drain.target)
+      .filter(id => id <= drain.maxEntryId!);
+    if (!checkAll && !remaining.length && drain.phase && drain.phase !== "noting") return;
+    if (checkAll) drain.phase = undefined;
+    let blockedNoting = false;
+    let launched = false;
+
+    const phases: readonly CcWorkerPhase[] = checkAll ? ["noting", "consolidation", "dreaming"] : ["noting"];
+    for (const phase of phases) {
+      let due = phase === "noting" ? remaining.length > 0 : false;
+      if (phase !== "noting") {
+        try { due = this.memory.taskEligibility(phase, drain.target).due; }
+        catch (error) {
+          drain.state = "failed"; drain.phase = undefined;
+          drain.diagnostic = error instanceof Error ? error.message : String(error);
+          this.diagnostic(`${phase} catchup failed: ${drain.diagnostic}`);
+          return;
+        }
+      }
+      if (!due || this.slots.has(phase)) {
+        if (phase === "noting" && due) blockedNoting = true;
+        continue;
+      }
+      if (phase === "noting") {
+        const claim = this.memory.store.getClaim(drain.target.sessionId, phase);
+        if (claim && claim.expiresAt > Date.now() && claim.executorId !== this.memory.executorId) {
+          blockedNoting = true; continue;
+        }
+      }
+      launched = true; drain.active.add(phase); drain.state = "running";
+      if (phase !== "dreaming") drain.phase = phase;
+      let checkpoint = false;
+      this.reserve(phase, async () => {
+        if (!owned()) return;
+        try {
+          const result = phase === "noting"
+            ? await this.memory.noting(this.common(phase, drain.target, false, false,
+              { maxEntryId: drain.maxEntryId } as TaskBoundary))
+            : await this.runCandidate(phase, drain.target.sessionId, drain.target, false, epoch);
+          if (!result) return;
+          if (phase === "noting" && "facts" in result && Array.isArray(result.facts))
+            for (const fact of result.facts) if (!drain.factIds.has(fact.id)) { drain.factIds.add(fact.id); drain.factTotal++; }
+          if (phase === "noting") this.report(phase, drain.target, result);
+          if (!owned()) return result;
+          checkpoint = result.outcome === "success";
+          if (result.outcome === "dropped") {
+            if (phase === "noting") { drain.state = "waiting"; drain.phase = "noting"; }
+          } else if (result.outcome !== "success" && result.outcome !== "empty") {
+            drain.state = result.outcome === "cancelled" ? "stopped" : "failed";
+            drain.phase = undefined;
+            drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : undefined) || result.outcome;
+          }
+          return result;
+        } catch (error) {
+          if (owned()) {
+            drain.state = "failed"; drain.phase = undefined;
+            drain.diagnostic = error instanceof Error ? error.message : String(error);
+          }
+        }
+      }, () => {
+        drain.active.delete(phase);
+        if (this.catchup !== drain) return false;
+        if (!checkpoint) this.finishWithoutCheckpoint(drain, blockedNoting);
+        return checkpoint;
+      });
+    }
+
+    if (launched || drain.active.size) return;
+    if (remaining.length && blockedNoting) {
+      drain.state = "waiting"; drain.phase = "noting"; return;
+    }
+    this.finishWithoutCheckpoint(drain, blockedNoting);
+  }
+
+  /** Empty/dropped are terminal for their opportunity: settle, but do not create another checkpoint. */
+  private finishWithoutCheckpoint(drain: Catchup, blockedNoting = false): void {
+    if (this.catchup !== drain || drain.active.size || drain.state === "failed" || drain.state === "stopped") return;
+    const remaining = drain.maxEntryId === undefined ? 0 : this.pendingEntryIds(drain.target)
+      .filter(id => id <= drain.maxEntryId!).length;
+    if (remaining || blockedNoting) { drain.state = "waiting"; drain.phase = "noting"; return; }
+    for (const phase of ["consolidation", "dreaming"] as const) {
+      try {
+        if (this.memory.taskEligibility(phase, drain.target).due) {
+          drain.state = "waiting"; drain.phase = phase; return;
+        }
+      } catch (error) {
         drain.state = "failed"; drain.phase = undefined;
         drain.diagnostic = error instanceof Error ? error.message : String(error);
+        return;
       }
-    };
-    if (!active() || this.slots.has(phase)) return;
-    let due: boolean;
-    try { due = this.memory.taskEligibility(phase, drain.target).due; }
-    catch (error) { fail(error); return; }
-    if (!due) return;
-    drain.downstream.add(phase);
-    this.reserve(phase, async () => {
-      if (!active()) return;
-      try {
-        const result = await this.runCandidate(phase, drain.target.sessionId, drain.target, false, epoch);
-        if (owned() && result && result.outcome !== "success" && result.outcome !== "empty" && result.outcome !== "dropped") {
-          drain.state = result.outcome === "cancelled" ? "stopped" : "failed";
-          drain.phase = undefined;
-          drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : undefined) || result.outcome;
-        }
-        if (active() && result?.outcome === "success" && phase === "consolidation")
-          this.checkDownstream(drain, "dreaming", epoch);
-        return result;
-      } catch (error) {
-        if (error instanceof Error && error.cause === "task admission")
-          this.diagnostic(`${phase} admission failed for S${drain.target.sessionId}: ${error.message}`);
-        else fail(error);
-      }
-    }, () => { drain.downstream.delete(phase); return true; });
+    }
+    drain.state = "completed"; drain.phase = undefined;
   }
 
   stop(): void { this.stopCatchup("executor shutdown"); this.stopped = true; }

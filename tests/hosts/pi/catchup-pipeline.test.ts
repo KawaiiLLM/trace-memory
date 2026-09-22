@@ -16,8 +16,8 @@ function backlog(h: ReturnType<typeof host>) {
   }
 }
 
-for (const stop of [false, true]) test(`67: N and C overlap; final C ${stop ? "is fenced by stop" : "checks D after N drains"}; busy C opportunities are discarded`, async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1 });
+for (const stop of [false, true]) test(`68: N and C overlap; successful checkpoints ${stop ? "are fenced by stop" : "drain every due D pool"}; busy opportunities are discarded`, async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1 });
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   try {
@@ -47,17 +47,18 @@ for (const stop of [false, true]) test(`67: N and C overlap; final C ${stop ? "i
     expect(dCalls).toBe(0);
     if (stop) await command(h, "stop");
     release(); await settle(h);
-    expect(dCalls).toBe(stop ? 0 : 1);
-    expect(cCalls).toBe(1); // Busy N→C checks were not retained or replayed on release.
+    if (stop) expect(dCalls).toBe(0); else expect(dCalls).toBeGreaterThan(0);
+    expect(cCalls).toBe(stop ? 1 : 2); // Success creates a fresh checkpoint; busy checks themselves are not queued.
     if (!stop) {
-      expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming" && r.outcome === "success")).toHaveLength(1);
-      expect(h.memory.store.consolidationBatch(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
-      await settle(h); expect(cCalls).toBe(1); expect(dCalls).toBe(1); // D does not chain.
+      expect(h.memory.store.listRuns(1).some(r => r.kind === "dreaming")).toBe(true);
+      expect(h.memory.store.consolidationBatch(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
+      const settledDreams = dCalls;
+      await settle(h); expect(cCalls).toBe(2); expect(dCalls).toBe(settledDreams);
     }
   } finally { release(); await h.dispose(); }
 }, 30000);
 
-test("67: catchup does not adopt an already-running ordinary N's downstream completion", async () => {
+test("68: catchup does not adopt an already-running ordinary N's downstream completion", async () => {
   const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1000, "consolidation.triggerTokens": 1 });
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -73,7 +74,7 @@ test("67: catchup does not adopt an already-running ordinary N's downstream comp
     expect(runs.filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(1);
     expect(runs.filter(r => r.kind === "consolidation")).toEqual([]);
     expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(1); // Above the host's configured 1-token trigger.
-    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: waiting for consolidation");
   } finally { release(); await h.dispose(); }
 });
 
@@ -116,7 +117,7 @@ test("67: successful C checks but does not run D below its normal threshold", as
 });
 
 test("67: a global Dreamer seat conflict discards C's opportunity; release alone never replays it", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1 });
   try {
     await h.turn(); h.memory.setKnowledgeBudget("session", 1000);
     const store = h.memory.store;
@@ -148,7 +149,6 @@ test("67: a global Dreamer seat conflict discards C's opportunity; release alone
     });
     await command(h, "catchup"); await settle(h);
     expect(store.listRuns(1).filter(r => r.kind === "consolidation" && r.outcome === "success")).toHaveLength(1);
-    expect(store.duePools(store.knowledgePath(1)).length).toBeGreaterThan(0);
     expect(dreams).toBe(0); expect(store.getClaim(foreignSession.id, "dreaming")).toEqual(claim);
     expect(store.releaseClaim(claim)).toBe(true);
     await settle(h); expect(dreams).toBe(0);
@@ -157,7 +157,7 @@ test("67: a global Dreamer seat conflict discards C's opportunity; release alone
 });
 
 test.each(["C", "D"] as const)("67: downstream %s business failure ends catchup honestly and never launches more work", async failedPhase => {
-  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1 });
   let release = () => {};
   const gate = new Promise<void>(resolve => { release = resolve; });
   let releaseNextNoter = () => {}, nextNoterHeld = false;

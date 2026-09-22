@@ -408,7 +408,7 @@ test("67: even a many-batch fact backlog remains pending below C's ordinary trig
   } finally { await h.dispose(); }
 }, 60000);
 
-test("67: stop after a C commit preserves the commit and does not force another C batch", async () => {
+test("68: stop after a C commit fences that drain; a fresh catchup reaches the C fixpoint", async () => {
   const h = host({ "consolidation.batchTokens": 400, "consolidation.triggerTokens": 1, "noting.triggerTokens": 1_000_000_000, "consolidation.maxToolRounds": 6 });
   try {
     await h.turn();
@@ -439,10 +439,10 @@ test("67: stop after a C commit preserves the commit and does not force another 
     expect(frozen.every(id => remaining.includes(id) || processed.includes(id))).toBe(true);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");
-    // No pending N means no N-completion opportunity: catchup is not a forced C drain.
+    // A fresh explicit drain starts with an all-phase checkpoint even without pending N.
     await command(h, "catchup");
     await settle(h);
-    expect(h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id)).toEqual(remaining);
+    expect(h.memory.store.consolidationBatch(1, "main", 1)).toEqual([]);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { await h.dispose(); }
