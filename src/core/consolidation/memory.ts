@@ -22,7 +22,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput,
     }
   };
   const allCommitted: import("../store/index.ts").CommittedKnowledgeOp[] = [];
-  // The Dreamer's reasoned skips are audit evidence, not processing records.
+  // Accepted Dreamer skips become exact processing records when the frozen range settles.
   const skipped: { knowledge: string; because: string }[] = [];
   let problems: string[] = [];
   let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[];

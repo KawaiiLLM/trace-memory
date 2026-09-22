@@ -9,7 +9,7 @@ import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, mig
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
-import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
+import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
 import { renderKnowledge, tokens } from "../render/index.ts";
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
 import type {
@@ -2265,7 +2265,7 @@ export class Store {
     dreamingPool: string | null = null): { ok: true; value: CommittedKnowledgeOp[] } | { ok: false; reason: string } {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
     if (op.op === "merge" && (op.absorb.length !== 1 || op.absorb[0]!.baseCommit === op.intoBaseCommit))
-      return { ok: false, reason: "merge requires exactly two distinct parents" };
+      return { ok: false, reason: "merge requires id as the survivor and absorb as exactly one distinct other parent" };
     if (op.op === "merge" && op.intoKnowledgeId > op.absorb[0]!.knowledgeId)
       return { ok: false, reason: `merge survivor K${op.intoKnowledgeId} is newer than absorbed K${op.absorb[0]!.knowledgeId}; swap them: use K${op.absorb[0]!.knowledgeId}@${op.absorb[0]!.baseCommit} as the survivor and absorb K${op.intoKnowledgeId}@${op.intoBaseCommit}` };
     const targets = op.op === "create" ? [] : op.op === "merge"
@@ -2364,7 +2364,7 @@ export class Store {
 
   /** One operation-local value: resolve globally before scope filtering, render each current body
    * once, and batch processing history. Never retain this value across a mutation or transaction. */
-  knowledgePools(path: KnowledgePath) {
+  knowledgePools(path: KnowledgePath, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
     const projectId = this.getSession(path.sessionId)?.projectId;
     if (projectId === undefined) throw new Error(`Unknown session ${path.sessionId}`);
     const budgets = this.knowledgeBudgets(), input = this.commitGraphInput();
@@ -2390,11 +2390,13 @@ export class Store {
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material };
       }).sort((left, right) => left.revisionId - right.revisionId);
       let reason: DueKnowledgePool["reason"] | null = null;
-      if (pending.length && pending.reduce((sum, value) => sum + value.tokens, 0) * 2 >= budget) reason = "pending";
+      const pendingTokens = pending.reduce((sum, value) => sum + value.tokens, 0);
+      if (pending.length && pendingTokens >= dreamingTriggerTokens) reason = "pending";
       else if (size > budget) {
         const state = states.get(pool);
-        const residual = new Set<number>(state ? JSON.parse(String(state.residual_revisions)) : []);
-        if (pending.some(value => !residual.has(value.revisionId)) || !state || Number(state.last_over_size) < size || Number(state.last_over_budget) !== budget)
+        // Pending always wins on the over-budget path. Only a fully deliberated residual may be
+        // suppressed while its measured size and budget remain unchanged.
+        if (pending.length || !state || Number(state.last_over_size) !== size || Number(state.last_over_budget) !== budget)
           reason = "over-budget";
       }
       return { pool, budget, tokens: size, versions: values, rendered, pending, reason };
@@ -2423,8 +2425,8 @@ export class Store {
     return this.knowledgePools(path).map(({ pool, budget, tokens }) => ({ pool, budget, tokens }));
   }
 
-  duePools(path: KnowledgePath): DueKnowledgePool[] {
-    return this.knowledgePools(path).flatMap(({ pool, budget, tokens, pending, reason }) => reason ? [{ pool, budget, tokens, pending, reason }] : []);
+  duePools(path: KnowledgePath, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS): DueKnowledgePool[] {
+    return this.knowledgePools(path, dreamingTriggerTokens).flatMap(({ pool, budget, tokens, pending, reason }) => reason ? [{ pool, budget, tokens, pending, reason }] : []);
   }
 
   private poolBudget(pool: string): number {
@@ -2434,11 +2436,12 @@ export class Store {
 
   /** One atomic admission snapshot covers discovery, claim availability and the frozen range.
    * Claim/range bookkeeping does not mutate knowledge, processing records or source cursors. */
-  admitKnowledgePool(target: TaskTarget, executorId: string, borrowed = false, executorSessionId?: number) {
+  admitKnowledgePool(target: TaskTarget, executorId: string, borrowed = false, executorSessionId?: number,
+    dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
     return this.transaction(() => {
       if (!this.enabled(target.sessionId) || (executorSessionId !== undefined && !this.enabled(executorSessionId)))
         return { outcome: "dropped" as const };
-      const pool = this.knowledgePools(target).find(value => value.reason !== null);
+      const pool = this.knowledgePools(target, dreamingTriggerTokens).find(value => value.reason !== null);
       if (!pool) return { outcome: "empty" as const };
       const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true);
       if (!claim) return { outcome: "dropped" as const };
@@ -2449,9 +2452,9 @@ export class Store {
 
   /** Select and reserve from the same atomic projection. Only range/claim bookkeeping mutates
    * inside this operation; no caller can submit a stale prepared projection as write authority. */
-  freezeKnowledgePool(target: TaskTarget, claim: TaskClaim) {
+  freezeKnowledgePool(target: TaskTarget, claim: TaskClaim, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
     return this.transaction(() => {
-      const pool = this.knowledgePools(target).find(value => value.reason !== null);
+      const pool = this.knowledgePools(target, dreamingTriggerTokens).find(value => value.reason !== null);
       if (!pool) throw new Error("No Knowledge pool is due");
       return { pool, range: this.retainProjectedPoolRange(target, pool, claim) };
     });
@@ -2508,7 +2511,8 @@ export class Store {
   }
 
   /** Record the exact frozen revisions and this run's own commits at terminal outcome. */
-  completeKnowledgePoolRange(boundRun: RunInput, outcome: "success" | "failure" | "cancelled"): void {
+  completeKnowledgePoolRange(boundRun: RunInput, outcome: "success" | "failure" | "cancelled",
+    skippedRevisionIds: readonly number[] = []): void {
     this.transaction(() => {
       const authority = this.dreamingAuthority(boundRun);
       if (!authority || !this.isDreamingRun(boundRun)) throw new Error("Trusted pool Dreamer run binding required");
@@ -2521,32 +2525,30 @@ export class Store {
       if (!priorRun) throw new Error(`run ${runId} does not exist`);
       this.updateRun(runId, { ...boundRun, request: boundRun.request ?? priorRun.request,
         response: boundRun.response ?? priorRun.response, mode: boundRun.mode ?? priorRun.mode, outcome });
-      const consumes = outcome !== "cancelled" || own.length > 0;
-      if (consumes) {
-        const pairs = new Map<string, { pool: string; revisionId: number }>();
-        for (const revisionId of range.eventIds) pairs.set(`${range.pool}:${revisionId}`, { pool: range.pool, revisionId });
-        for (const revision of own) {
-          const owner = placementOwner(this, { revision });
-          pairs.set(`${owner}:${revision.id}`, { pool: owner, revisionId: revision.id });
-        }
-        for (const pair of pairs.values()) this.db.prepare("INSERT OR IGNORE INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)")
-          .run(pair.pool, pair.revisionId, runId);
+      const frozen = new Set(range.eventIds);
+      if (skippedRevisionIds.some(id => !Number.isSafeInteger(id) || !frozen.has(id)))
+        throw new Error("Knowledge pool completion skips must be exact frozen revisions");
+      const pairs = new Map<string, { pool: string; revisionId: number }>();
+      for (const revisionId of skippedRevisionIds)
+        pairs.set(`${range.pool}:${revisionId}`, { pool: range.pool, revisionId });
+      for (const revision of own) {
+        const owner = placementOwner(this, { revision });
+        pairs.set(`${owner}:${revision.id}`, { pool: owner, revisionId: revision.id });
       }
+      for (const pair of pairs.values()) this.db.prepare("INSERT OR IGNORE INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)")
+        .run(pair.pool, pair.revisionId, runId);
       const closed = this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ?, closed_at = ?
         WHERE id = ? AND completed_run IS NULL AND closed_at IS NULL`).run(runId, new Date().toISOString(), range.id);
       if (closed.changes !== 1) throw new Error("Knowledge pool range was not closed atomically");
       const path = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
       const size = this.knowledgePools(path).find(value => value.pool === range.pool)!;
-      // A pre-commit cancellation closes its reservation but does not service or suppress the pool.
-      if (consumes) {
-        if (size.tokens > size.budget) {
-          const frozen = new Set(range.pendingRevisionIds);
-          const residual = size.pending.map(value => value.revisionId).filter(id => frozen.has(id));
-          this.db.prepare(`INSERT INTO knowledge_pool_state(pool,last_over_size,last_over_budget,residual_revisions) VALUES (?,?,?,?)
-            ON CONFLICT(pool) DO UPDATE SET last_over_size=excluded.last_over_size,last_over_budget=excluded.last_over_budget,
-              residual_revisions=excluded.residual_revisions`).run(size.pool, size.tokens, size.budget, JSON.stringify(residual));
-        } else this.db.prepare("DELETE FROM knowledge_pool_state WHERE pool = ?").run(size.pool);
-      }
+      // A run with pending untouched material must not establish an excess-suppression baseline.
+      // residual_revisions remains schema history only; admission no longer reads it.
+      if (size.tokens > size.budget && !size.pending.length) {
+        this.db.prepare(`INSERT INTO knowledge_pool_state(pool,last_over_size,last_over_budget,residual_revisions) VALUES (?,?,?,?)
+          ON CONFLICT(pool) DO UPDATE SET last_over_size=excluded.last_over_size,last_over_budget=excluded.last_over_budget,
+            residual_revisions=excluded.residual_revisions`).run(size.pool, size.tokens, size.budget, "[]");
+      } else if (size.tokens <= size.budget) this.db.prepare("DELETE FROM knowledge_pool_state WHERE pool = ?").run(size.pool);
     });
   }
 

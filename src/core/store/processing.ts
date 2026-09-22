@@ -10,16 +10,14 @@ export interface KnowledgeBudgets extends KnowledgeBudgetValues {
   dreamingProcessedInput: number;
 }
 export const DEFAULT_KNOWLEDGE_BUDGETS: KnowledgeBudgetValues = { global: 4_000, project: 15_000, session: 1_000 };
+export const DEFAULT_DREAMING_TRIGGER_TOKENS = 5_000;
 
-/** One runtime-derived allowance shared by Knowledge, Facts and Raw. Dreamer's three triggers are
- * exactly half their current database pool budgets; Noting and Consolidation contribute their
- * current configured triggers. There is no stored or separately configurable allowance. */
-export function deriveSharedMaterialAllowance(values: KnowledgeBudgetValues,
-  triggers: { noting: number; consolidation: number }): number {
-  for (const [name, value] of Object.entries({ ...values, ...triggers }))
-    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`cannot derive shared material allowance: ${name} trigger or budget must be a nonnegative safe integer`);
-  const allowance = Math.ceil(values.global / 2) + Math.ceil(values.project / 2) + Math.ceil(values.session / 2)
-    + triggers.noting + triggers.consolidation;
+/** One runtime-derived allowance shared by Knowledge, Facts and Raw. Each phase contributes its
+ * single configured trigger. Pool budgets size Dreamer batches but do not affect this allowance. */
+export function deriveSharedMaterialAllowance(triggers: { noting: number; consolidation: number; dreaming: number }): number {
+  for (const [name, value] of Object.entries(triggers))
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`cannot derive shared material allowance: ${name} trigger must be a nonnegative safe integer`);
+  const allowance = triggers.noting + triggers.consolidation + triggers.dreaming;
   if (!Number.isSafeInteger(allowance)) throw new Error("derived shared material allowance must be a safe integer");
   return allowance;
 }

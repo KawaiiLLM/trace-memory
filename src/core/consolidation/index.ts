@@ -131,8 +131,8 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   // Ticket 45: the database policy is part of this admission's frozen material snapshot. The façade
   // wraps this freeze in the claim transaction, so a later Settings edit affects only later tasks.
   const budgets = store.knowledgeBudgets();
-  const knowledgeCapacity = budgets.injection + deriveSharedMaterialAllowance(budgets,
-    { noting: config.noting.triggerTokens, consolidation: config.consolidation.triggerTokens });
+  const knowledgeCapacity = budgets.injection + deriveSharedMaterialAllowance({ noting: config.noting.triggerTokens,
+    consolidation: config.consolidation.triggerTokens, dreaming: config.dreaming.triggerTokens });
   if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Consolidator Knowledge capacity must be a safe integer");
   // 29b "Same builder, different initial state", the twin of the Noting freeze: the host supplies the
   // view only for a task it will really fork; an explicit subagent and a fork re-admitted as one (27c)

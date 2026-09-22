@@ -78,7 +78,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     };
     const dest = op !== "create" ? target(value.id) : undefined;
     const absorb = op === "merge" ? (Array.isArray(value.absorb) && value.absorb.length === 1 ? value.absorb.map(target)
-      : (errors.push("merge requires exactly two distinct parents"), [])) : [];
+      : (errors.push("merge requires id as the survivor and absorb as exactly one distinct other parent"), [])) : [];
     const children = op === "split" && Array.isArray(value.children) && value.children.length === 2 ? value.children.map((raw, childIndex) => {
       const child = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as NonNullable<typeof value.children>[number];
       if (Object.keys(child).some(key => !["text", "category", "topics"].includes(key))) errors.push(`child ${childIndex + 1}: inapplicable field`);

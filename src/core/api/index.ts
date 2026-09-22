@@ -12,6 +12,7 @@ export { knowledgeStateKey, noVisibility } from "./visible.ts";
 export type { InitialContext, KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
+import { DEFAULT_DREAMING_TRIGGER_TOKENS } from "../store/processing.ts";
 
 import { freezeNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
@@ -66,7 +67,14 @@ export interface TraceMemoryConfig {
     maxToolRounds: number;
   };
   /** Bounded fresh-subagent maintenance; no fork mode. */
-  dreaming: { maxToolRounds: number };
+  dreaming: {
+    /** Flat per-pool pending trigger; pool budgets still cap each frozen range. */
+    triggerTokens: number;
+    /** 0 = unlimited. Dreaming is bounded by timeoutMs instead. */
+    maxToolRounds: number;
+    /** Cooperative wall-clock deadline shared by every host. */
+    timeoutMs: number;
+  };
   consolidation: {
     /** 29e (parent 29 "Restore Consolidator fork without weakening review"): the same canonical
      * boolean the Noter has, for the phase that lost its mode preference in 25b. Default `false`:
@@ -108,7 +116,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     nearThreshold: 0.40,
     maxToolRounds: 0,
   },
-  dreaming: { maxToolRounds: 50 },
+  dreaming: { triggerTokens: DEFAULT_DREAMING_TRIGGER_TOKENS, maxToolRounds: 0, timeoutMs: 600_000 },
   consolidation: {
     forkModeDefault: false,
     triggerTokens: 5_000,
@@ -259,7 +267,8 @@ export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
     }
     if ((key === "toolInputTokens" || key === "toolResultTokens") && (value as number) > TOOL_CALL_CEILING) throw new Error(`Invalid ${name}: at most ${TOOL_CALL_CEILING}`);
   }
-  if (cfg.dreaming.maxToolRounds < 1 || cfg.dreaming.maxToolRounds > 50) throw new Error("Invalid dreaming.maxToolRounds: expected 1..50");
+  if (cfg.dreaming.maxToolRounds !== 0) throw new Error("Invalid dreaming.maxToolRounds: Dreamer requires 0 (unlimited); use dreaming.timeoutMs for the run bound");
+  if (cfg.dreaming.timeoutMs > 2_147_483_647) throw new Error("Invalid dreaming.timeoutMs: expected at most 2147483647 for the native timer");
   return cfg;
 }
 
@@ -721,7 +730,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const taskEligibility = (phase: Phase, target: TaskTarget) => {
     if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false };
     return { due: phase === "noting" ? notingDue(target)
-      : phase === "dreaming" ? store.duePools(target).length > 0
+      : phase === "dreaming" ? store.duePools(target, cfg.dreaming.triggerTokens).length > 0
       : consolidationTokens(target) >= cfg.consolidation.triggerTokens };
   };
   const execute = async (phase: Phase, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult | DreamingResult> => {
@@ -796,9 +805,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }
     if (!frozen || !claim) return { outcome: empty ? "empty" : "dropped" };
     const controller = new AbortController();
-    let force!: () => void;
-    const forced = new Promise<RunAgentResult>(resolve => { force = () => resolve({ ...progress, outcome: "cancelled", output: "executor cleanup deadline; provider completion and remaining usage unknown" }); });
+    let force!: (result?: RunAgentResult) => void;
     const progress: Partial<RunAgentResult> = {};
+    const forced = new Promise<RunAgentResult>(resolve => { force = result => resolve(result ?? { ...progress, outcome: "cancelled", output: "executor cleanup deadline; provider completion and remaining usage unknown" }); });
     const task = { sessionId: target.sessionId, phase, executionId: executionId!, claimToken: (claim as TaskClaim).token, controller, force, close: () => {} };
     tasks.add(task);
     // 28b (parent 28 amendment 3): the admitting operation's own cancellation, linked to this task's
@@ -814,7 +823,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       task.close();
       try { if (!store.closed && phase !== "dreaming") store.releaseClaim(claim!); }
       catch { /* Finalization retries the same token and reports any remaining release failure. */ }
-      finally { controller.abort(external!.reason); }
+      finally {
+        controller.abort(external!.reason);
+        force();
+      }
     };
     if (external?.aborted) onExternalAbort();
     else external?.addEventListener("abort", onExternalAbort, { once: true });
@@ -835,12 +847,27 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); } }), forced]);
     };
     let result: NotingResult | ConsolidateResult | DreamingResult | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined, timedOut = false;
+    if (phase === "dreaming") timeout = setTimeout(() => {
+      // External cancellation owns its outcome even when the native worker ignores abort.
+      if (controller.signal.aborted) return;
+      timedOut = true;
+      const reason = new Error(`Dreaming wall-clock limit exceeded (${cfg.dreaming.timeoutMs} ms)`);
+      // Fence model writes before aborting native work. The existing forced-result seam settles the
+      // exact range and claim even when a native worker does not cooperate; Promise.race retains a
+      // rejection handler on that worker, so a late failure is not unowned.
+      task.close();
+      // Resolve the terminal failure before abort listeners can synchronously return "cancelled".
+      force({ ...progress, outcome: "failure", output: `${reason.message}; provider completion and remaining usage unknown` });
+      controller.abort(reason);
+    }, cfg.dreaming.timeoutMs);
     try {
       result = phase === "noting"
         ? await runNoting(store, frozen as ReturnType<typeof freezeNoting>, agent, cfg, bind)
         : phase === "dreaming" ? await runDreaming(store, frozen as ReturnType<typeof freezeDreaming>, agent, bind)
         : await runConsolidation(store, frozen as ReturnType<typeof freezeConsolidation>, agent, cfg, bind);
     } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
       external?.removeEventListener("abort", onExternalAbort);
       task.close(); tasks.delete(task);
       const originalClaim = claim as TaskClaim; // assigned by the successful admission transaction
@@ -853,7 +880,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         if (!store.closed && result && result.outcome !== "empty" && result.outcome !== "dropped") {
           const terminal = result;
           const settled = store.transaction(() => store.settleExecution(executionId!, terminal.outcome === "success" ? "success"
-            : controller.signal.aborted || !owned() || !store.enabled(target.sessionId) || terminal.outcome === "cancelled" ? "cancelled"
+            : (controller.signal.aborted && !timedOut) || !owned() || !store.enabled(target.sessionId) || terminal.outcome === "cancelled" ? "cancelled"
             : terminal.outcome === "conflict" ? "conflict" : "failure",
             terminal.runId, terminal.problems?.join("; ")));
           if (settled.automaticOff) {
@@ -935,7 +962,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const project = store.declareProject(sessionId, name, source, selected && { path: selected, atTrigger: phase => phase === "noting"
         ? notingDue(selected)
         : phase === "consolidation" ? consolidationTokens(selected) >= cfg.consolidation.triggerTokens
-        : store.duePools(selected).length > 0 });
+        : store.duePools(selected, cfg.dreaming.triggerTokens).length > 0 });
       return `S${sessionId} project: ${project.name} (${store.projectDeclaration(sessionId)})`;
     },
   };

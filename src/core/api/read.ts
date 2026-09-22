@@ -339,8 +339,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility()): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
     const budgets = store.knowledgeBudgets();
-    const sharedAllowance = deriveSharedMaterialAllowance(budgets,
-      { noting: config.noting.triggerTokens, consolidation: config.consolidation.triggerTokens });
+    const sharedAllowance = deriveSharedMaterialAllowance({ noting: config.noting.triggerTokens,
+      consolidation: config.consolidation.triggerTokens, dreaming: config.dreaming.triggerTokens });
     const knowledgeCap = budgets.injection + sharedAllowance;
     if (!Number.isSafeInteger(knowledgeCap)) throw new Error("derived foreground Knowledge capacity must be a safe integer");
     const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
@@ -630,8 +630,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const pendingIds = new Set(pending.map(e => e.id));
       const extracted = sourced.filter(e => !pendingIds.has(e.id) && !retained.has(e.nativeId));
       const budgets = store.knowledgeBudgets();
-      const sharedAllowance = deriveSharedMaterialAllowance(budgets,
-        { noting: config.noting.triggerTokens, consolidation: config.consolidation.triggerTokens });
+      const sharedAllowance = deriveSharedMaterialAllowance({ noting: config.noting.triggerTokens,
+        consolidation: config.consolidation.triggerTokens, dreaming: config.dreaming.triggerTokens });
       const caps = { knowledge: budgets.injection, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
       const envelope = caps.knowledge + caps.facts + caps.raw + sharedAllowance;
       if (!Number.isSafeInteger(envelope)) throw new Error("derived compact envelope must be a safe integer");

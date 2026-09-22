@@ -38,7 +38,8 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   if (!claim) throw new Error("Dreaming freeze requires its live claim");
   const path = { sessionId: input.sessionId, branch: input.branch,
     headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
-  return prepareDreaming(store, input, config, claim, path, store.freezeKnowledgePool(path, claim));
+  return prepareDreaming(store, input, config, claim, path,
+    store.freezeKnowledgePool(path, claim, config.dreaming.triggerTokens));
 }
 
 /** Facade admission and material assembly stay in one transaction. No prepared snapshot is accepted
@@ -47,7 +48,8 @@ export function admitDreaming(store: Store, input: DreamingInput, config: TraceM
   return store.transaction(() => {
     const path = { sessionId: input.sessionId, branch: input.branch,
       headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
-    const admitted = store.admitKnowledgePool(path, executorId, input.borrowed, input.executorSessionId);
+    const admitted = store.admitKnowledgePool(path, executorId, input.borrowed, input.executorSessionId,
+      config.dreaming.triggerTokens);
     if (admitted.outcome !== "admitted") return admitted;
     return { outcome: "admitted" as const, claim: admitted.claim,
       frozen: prepareDreaming(store, input, config, admitted.claim, path, admitted) };
@@ -65,8 +67,8 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
 
   const references = due.versions.filter(value => !frozenIds.has(value.revision.id));
   const budgets = store.knowledgeBudgets();
-  const knowledgeCapacity = budgets.injection + deriveSharedMaterialAllowance(budgets,
-    { noting: config.noting.triggerTokens, consolidation: config.consolidation.triggerTokens });
+  const knowledgeCapacity = budgets.injection + deriveSharedMaterialAllowance({ noting: config.noting.triggerTokens,
+    consolidation: config.consolidation.triggerTokens, dreaming: config.dreaming.triggerTokens });
   if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Dreamer Knowledge capacity must be a safe integer");
   // Changed and current references share one Knowledge window, not two independent allowances.
   const processedInputCap = knowledgeCapacity - tokens(changed) - 1;
@@ -128,7 +130,8 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   };
   binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
     range: { from: run.rangeFrom!, to: run.rangeTo! }, readKnowledgeCommits }, run, undefined,
-    { path, check: () => renderDreamingCheckReceipt(check()), skippable: () => undefined });
+    { path, check: () => renderDreamingCheckReceipt(check()), skippable: commit => frozen.frozenIds.includes(commit)
+      ? undefined : "skip must name an exact frozen version from this run" });
   let result: RunAgentResult;
   try {
     result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt, promptHash,
@@ -141,13 +144,19 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   const checked = check();
   const problems = [...checked.problems, ...(result.outcome === "success" ? [] : [String(result.output ?? result.outcome)]),
     ...(requestMissing(result) ? ["runAgent must return the exact provider request"] : [])];
+  const skippedRevisionIds = binding.memory.skipped.map(value => Number(/^K[1-9]\d*@([1-9]\d*)$/.exec(value.knowledge)?.[1]))
+    .filter(Number.isSafeInteger);
+  const frozenSet = new Set(frozen.frozenIds), parentMap = store.commitGraphInput().parents;
+  const operatedFrozenIds = new Set(checked.ownRevisionIds.flatMap(id => parentMap.get(id) ?? []).filter(id => frozenSet.has(id)));
+  const deliberatedRevisionIds = [...new Set([...skippedRevisionIds, ...operatedFrozenIds])].sort((a, b) => a - b);
   recordAttempt(run, result, "subagent", { toolCalls: binding.sequence, fetched: binding.fetched, material: frozen.material,
     profile: frozen.profile, admittedProcessedInputCap: frozen.admittedProcessedInputCap, readKnowledgeCommits,
-    committed: binding.memory.allCommitted, skipped: binding.memory.skipped, check: checked, rounds, problems });
+    committed: binding.memory.allCommitted, skipped: binding.memory.skipped, check: checked, rounds,
+    deliberatedRevisionIds, deliberated: deliberatedRevisionIds.length, frozen: frozen.frozenIds.length, problems });
   const runId = store.dreamingRunId(run)!;
   let outcome: "success" | "failure" | "cancelled" = result.outcome === "cancelled" ? "cancelled"
     : result.outcome === "success" && !requestMissing(result) && !checked.problems.length ? "success" : "failure";
-  try { store.completeKnowledgePoolRange(run, outcome); }
+  try { store.completeKnowledgePoolRange(run, outcome, skippedRevisionIds); }
   catch (error) {
     outcome = "failure";
     problems.push(`pool completion rejected: ${String(error)}`);
