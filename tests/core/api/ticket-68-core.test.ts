@@ -121,6 +121,19 @@ test("68 own output is processed, its superseded parent needs no processing row,
   expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
 });
 
+test("68 Dreamer status selects the pool nearest its effective trigger, not its raw budget ratio", () => {
+  const f = setup(async () => ({ outcome: "success", output: "unused", request: exactRequest }), { triggerTokens: 1 });
+  f.create("global", "global body ".repeat(20));
+  f.create("project", "project body ".repeat(20));
+  const globalWeight = f.store.pendingPoolWeight("global", f.target);
+  const projectPool = `project:${f.project.id}`, projectWeight = f.store.pendingPoolWeight(projectPool, f.target);
+  f.store.setKnowledgeBudget("global", globalWeight * 3);
+  f.store.setKnowledgeBudget("project", projectWeight * 4);
+  f.memory.config.dreaming.triggerTokens = projectWeight;
+  expect(globalWeight / (globalWeight * 3)).toBeGreaterThan(projectWeight / (projectWeight * 4));
+  expect(f.memory.pendingTokens("dreaming", f.target)).toEqual({ tokens: projectWeight, trigger: projectWeight, state: "known" });
+});
+
 test("68 each pool uses min(configured trigger cap, pool budget) and untouched pending stays due", async () => {
   const f = setup(async task => { task.acknowledgeRequest(); return { outcome: "failure", output: "cut", request: exactRequest }; }, { triggerTokens: 5_000 });
   const first = f.create("session", "first ".repeat(80));

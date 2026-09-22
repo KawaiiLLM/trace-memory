@@ -716,7 +716,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (phase === "dreaming") {
         const pools = store.knowledgePools(target, cfg.dreaming.triggerTokens)
           .map(size => ({ ...size, pending: size.pending.reduce((sum, value) => sum + value.tokens, 0) }));
-        const selected = pools.sort((left, right) => right.pending / Math.max(1, right.budget) - left.pending / Math.max(1, left.budget))[0]!;
+        const progress = (pool: (typeof pools)[number]) => pool.pending
+          / Math.max(1, Math.min(cfg.dreaming.triggerTokens, pool.budget));
+        const selected = pools.sort((left, right) => progress(right) - progress(left))[0]!;
         return { tokens: selected.pending, trigger: Math.min(cfg.dreaming.triggerTokens, selected.budget), state: "known" };
       }
       const count = phase === "noting" ? tokens([...notingViews(target)].join("\n\n")) : consolidationTokens(target);
