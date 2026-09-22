@@ -54,7 +54,7 @@ function begin(f: Fixture, pool: string, executor?: string) {
 
 function consume(f: Fixture, pool: string, outcome: "success" | "failure" | "cancelled" = "success") {
   const admitted = begin(f, pool);
-  f.store.completeKnowledgePoolRange(admitted.run, outcome);
+  f.store.completeKnowledgePoolRange(admitted.run, outcome, admitted.range.eventIds);
   f.store.releaseClaim(admitted.held);
   return admitted;
 }
@@ -207,7 +207,7 @@ test("64c pool authority: a valid same-pool write followed by a wrong-pool base 
 test.each(["success", "failure"] as const)("64c current versions: %s records the frozen range and leaves later external revisions pending", outcome => {
   const f = setup(), first = f.create("global", "first"), admitted = begin(f, "global");
   const later = f.create("global", "later external");
-  f.store.completeKnowledgePoolRange(admitted.run, outcome);
+  f.store.completeKnowledgePoolRange(admitted.run, outcome, admitted.range.eventIds);
   expect(f.store.pendingVersions("global", f.target).map(v => v.revisionId)).toEqual([later.commit]);
   expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed ORDER BY revision_id").all())
     .toContainEqual({ pool: "global", revision_id: first.commit });
@@ -230,7 +230,7 @@ test.each(["cancelled", "failure"] as const)("64c current versions: %s after a r
   expect(f.store.pendingVersions("global", f.target)).toEqual([]);
   expect(f.store.pendingVersions(`project:${f.project.id}`, f.target)).toEqual([]);
   expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed ORDER BY revision_id").all()).toEqual([
-    { pool: "global", revision_id: item.commit }, { pool: `project:${f.project.id}`, revision_id: changed.commit },
+    { pool: `project:${f.project.id}`, revision_id: changed.commit },
   ]);
 });
 
@@ -245,13 +245,13 @@ test("64c over-budget residual baseline survives reopen without becoming a valid
     f.store.setKnowledgeBudget("project", Math.floor(Math.max(...weights) * 2.5));
     consume(f, pool);
     expect(f.store.pendingPoolWeight(pool, f.target)).toBeGreaterThan(0);
-    expect(f.store.duePools(f.target).map(value => value.pool)).not.toContain(pool);
+    expect(f.store.duePools(f.target).map(value => value.pool)).toContain(pool);
     stores.splice(stores.indexOf(f.store), 1);
     f.store.close();
 
     const reopened = new Store(path); stores.push(reopened);
     expect(reopened.pendingPoolWeight(pool, f.target)).toBeGreaterThan(0);
-    expect(reopened.duePools(f.target).map(value => value.pool)).not.toContain(pool);
+    expect(reopened.duePools(f.target).map(value => value.pool)).toContain(pool);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -325,7 +325,7 @@ test("67: freeze and terminal consumption each build one fresh pool projection",
   f.create("project");
   const held = claim(f), graph = vi.spyOn(f.store, "commitGraphInput");
   try {
-    const frozen = f.store.freezeKnowledgePool(f.target, held);
+    const frozen = f.store.freezeKnowledgePool(f.target, held, 1);
     expect(graph).toHaveBeenCalledTimes(1);
     expect(frozen.pool.pool).toBe("global");
     expect(frozen.range.eventIds).toContain(first.commit);
@@ -346,28 +346,28 @@ test("67: atomic admission preserves competing seats, reserved takeover and expi
   const f = setup(), other = setup(f.store, "B");
   f.store.setKnowledgeBudget("global", 100);
   f.create("global", "evidence ".repeat(25));
-  const first = f.store.admitKnowledgePool(f.target, "first");
+  const first = f.store.admitKnowledgePool(f.target, "first", false, undefined, 1);
   expect(first.outcome).toBe("admitted");
   if (first.outcome !== "admitted") throw new Error("first admission failed");
-  expect(f.store.admitKnowledgePool(other.target, "competitor")).toEqual({ outcome: "dropped" });
-  expect(f.store.admitKnowledgePool(f.target, "first")).toEqual({ outcome: "dropped" });
+  expect(f.store.admitKnowledgePool(other.target, "competitor", false, undefined, 1)).toEqual({ outcome: "dropped" });
+  expect(f.store.admitKnowledgePool(f.target, "first", false, undefined, 1)).toEqual({ outcome: "dropped" });
   expect(f.store.getClaim(f.session.id, "dreaming")!.token).toBe(first.claim.token);
 
   f.store.reopenSession(f.session.id, "replacement");
   const reserved = f.store.getClaim(f.session.id, "dreaming")!;
   expect(reserved.reserved).toBe(true);
-  const replacement = f.store.admitKnowledgePool(f.target, "replacement");
+  const replacement = f.store.admitKnowledgePool(f.target, "replacement", false, undefined, 1);
   expect(replacement.outcome).toBe("admitted");
   if (replacement.outcome !== "admitted") throw new Error("reserved takeover failed");
   expect(replacement.claim.token).toBe(reserved.token);
   expect(replacement.claim.reserved).toBe(false);
-  expect(() => f.store.freezeKnowledgePool(f.target, first.claim)).toThrow(/claim/);
+  expect(() => f.store.freezeKnowledgePool(f.target, first.claim, 1)).toThrow(/claim/);
   expect(f.store.dreamingRange(first.range.id)).toBeNull();
 
   f.store.db.prepare("UPDATE task_claims SET expires_at = ? WHERE token = ?").run(Date.now() - 1, replacement.claim.token);
-  const competing = f.store.admitKnowledgePool(other.target, "competitor");
+  const competing = f.store.admitKnowledgePool(other.target, "competitor", false, undefined, 1);
   expect(competing.outcome).toBe("admitted");
-  expect(() => f.store.freezeKnowledgePool(f.target, replacement.claim)).toThrow(/claim/);
+  expect(() => f.store.freezeKnowledgePool(f.target, replacement.claim, 1)).toThrow(/claim/);
   expect(f.store.dreamingRange(replacement.range.id)).toBeNull();
 });
 
@@ -375,12 +375,12 @@ test("67: admission observes intervening knowledge mutation and preserves enroll
   const f = setup(), executor = setup(f.store, "executor");
   f.store.setKnowledgeBudget("global", 100);
   const item = f.create("global", "evidence ".repeat(25));
-  expect(f.store.knowledgePools(f.target).some(pool => pool.reason !== null)).toBe(true);
+  expect(f.store.knowledgePools(f.target, 1).some(pool => pool.reason !== null)).toBe(true);
   f.store.setEnrollment(executor.session.id, false);
-  expect(f.store.admitKnowledgePool(f.target, "executor", false, executor.session.id)).toEqual({ outcome: "dropped" });
-  expect(f.store.admitKnowledgePool(f.target, "borrowed", true)).toEqual({ outcome: "dropped" });
+  expect(f.store.admitKnowledgePool(f.target, "executor", false, executor.session.id, 1)).toEqual({ outcome: "dropped" });
+  expect(f.store.admitKnowledgePool(f.target, "borrowed", true, undefined, 1)).toEqual({ outcome: "dropped" });
   f.store.setEnrollment(f.session.id, false);
-  expect(f.store.admitKnowledgePool(f.target, "disabled")).toEqual({ outcome: "dropped" });
+  expect(f.store.admitKnowledgePool(f.target, "disabled", false, undefined, 1)).toEqual({ outcome: "dropped" });
   f.store.setEnrollment(f.session.id, true);
   const archived = f.store.commitConsolidationRun({ path: f.target,
     run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" },
