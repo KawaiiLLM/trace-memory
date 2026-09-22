@@ -39,7 +39,7 @@ function processPool(store: Store, path: TaskTarget, pool: string) {
     const executionId = store.beginExecution({ sessionId: path.sessionId, phase: "dreaming", head: range.anchor, origin: range.origin });
     const run = store.bindDreamingRun({ kind: "dreaming", sessionId: path.sessionId, branch: path.branch,
       dreamingRangeId: range.id, executionId, claim, createdAt: "now" });
-    store.completeKnowledgePoolRange(run, "success");
+    store.completeKnowledgePoolRange(run, "success", range.eventIds);
   } finally { store.releaseClaim(claim); }
 }
 

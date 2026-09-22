@@ -288,8 +288,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
       trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
       trace.execute({ address: `K${second.committed[0]!.knowledgeId}@${second.committed[0]!.commit}`, itemBudget: null });
       const corrected = write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
-        skipped: [{ knowledge: `K${knowledgeId}@${updated.commit}`, because: "The updated conclusion is complete." },
-          { knowledge: `K${second.committed[0]!.knowledgeId}@${second.committed[0]!.commit}`, because: "The rejected archive rolled back." }] });
+        skipped: [{ knowledge: `K${second.committed[0]!.knowledgeId}@${second.committed[0]!.commit}`, because: "The rejected archive rolled back." }] });
       expect(corrected).toContain('"committed"');
       return { outcome: "success", output: "atomicity checked", request };
     });
@@ -543,12 +542,12 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       const self = memory.store.commitConsolidationRun({ path, run: admittedRun, operations: [{ op: "merge", intoKnowledgeId: aId,
         intoBaseCommit: a.committed[0]!.commit, absorb: [{ knowledgeId: aId, baseCommit: a.committed[0]!.commit }], ...common }] });
       expect(self.ok).toBe(false);
-      if (!self.ok) expect(self.problems.join(" ")).toContain("exactly two distinct parents");
+      if (!self.ok) expect(self.problems.join(" ")).toContain("absorb as exactly one distinct other parent");
       const duplicate = memory.store.commitConsolidationRun({ path, run: admittedRun, operations: [{ op: "merge", intoKnowledgeId: aId,
         intoBaseCommit: a.committed[0]!.commit, absorb: [{ knowledgeId: bId, baseCommit: b.committed[0]!.commit },
           { knowledgeId: bId, baseCommit: b.committed[0]!.commit }], ...common, text: "A and B" }] });
       expect(duplicate.ok).toBe(false);
-      if (!duplicate.ok) expect(duplicate.problems.join(" ")).toContain("exactly two distinct parents");
+      if (!duplicate.ok) expect(duplicate.problems.join(" ")).toContain("absorb as exactly one distinct other parent");
       trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
       write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
         skipped: [{ knowledge: `K${aId}@${a.committed[0]!.commit}`, because: "The invalid merges changed nothing." },
@@ -610,7 +609,6 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       trace.execute({ address: `K${independent.knowledgeId}@${independent.commit}`, itemBudget: null });
       const corrected = write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
         skipped: [
-          { knowledge: `K${older.knowledgeId}@${mergeCommit}`, because: "The valid merge is complete." },
           { knowledge: `K${older2.knowledgeId}@${older2.commit}`, because: "The reverse merge rolled back." },
           { knowledge: `K${newer2.knowledgeId}@${newer2.commit}`, because: "The reverse merge rolled back." },
           { knowledge: `K${independent.knowledgeId}@${independent.commit}`, because: "The archive rolled back." },
