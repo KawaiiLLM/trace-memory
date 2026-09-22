@@ -83,7 +83,8 @@ The three bases never lend directly to one another.
 
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
 from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a named load error.
-`dreaming.triggerTokens` is configurable again, defaulting to 5,000 for every pool. Consolidator Knowledge and foreground publication may use the Knowledge base plus
+`dreaming.triggerTokens` is configurable again: its default cap is 5,000, and each pool's effective
+pending trigger is `min(cap, pool budget)` (4,000/5,000/1,000 by default). Consolidator Knowledge and foreground publication may use the Knowledge base plus
 the shared allowance. Dreamer uses that same maximum for its Changed-plus-reference input, while a
 single due pool's Changed range is capped by that pool's budget. Database budget edits accept exact
 decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
@@ -267,7 +268,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 - Dreaming is checked **per pool** on every reconciled eligible entry: `global`, this session's
   project and this session. Pending is each pool's current visible, non-archived revision lacking a
   `(pool, revision)` processing record, one revision per identity at its full rendered size. A pool is
-  due at `dreaming.triggerTokens` (5,000 by default for every pool), or when over budget and re-armed. One run handles one due pool; its Changed range is capped at that pool's full budget,
+  due at `min(dreaming.triggerTokens, pool budget)` (4,000/5,000/1,000 by default), or when over budget and re-armed. One run handles one due pool; its Changed range is capped at that pool's full budget,
   4,000 / 15,000 / 1,000 by default. Changed material and current same-scope references share the
   40,000-token Knowledge-base-plus-derived-allowance window; direct facts have a separate 10,000-token cap.
   There is no automatic Raw block or `note` tool.
@@ -614,7 +615,7 @@ completion. Bars cap at 100%; numbers and percentages do not:
 - **Consolidation:** applicable unconsolidated facts, including group framing and
   relations, through the same renderer and threshold calculation as eligibility.
 - **Dreaming:** rendered pending current revisions of the selected applicable pool. Each pool has its
-  own pending measurement against the configured Dreamer trigger; the panel shows one representative
+  own pending measurement against `min(dreaming.triggerTokens, pool budget)`; the panel shows one representative
   pool, not a sum of all pools. The bar
   does not imply that the database-wide seat or an executable range is available.
 
@@ -768,7 +769,7 @@ no Trace Memory carrier.
 Recovery is attempted only when required facts, Raw or mandatory Knowledge state notices exceed their
 bases plus the shared allowance. Current Knowledge bodies are optional and do not force recovery. A phase must still satisfy ordinary
 eligibility: Noting at 10,000 pending Raw tokens, Consolidation at 5,000 fact tokens, and Dreaming
-when one applicable pool reaches `dreaming.triggerTokens` (5,000 by default) or is re-armed over budget. Overflow alone
+when one applicable pool reaches `min(dreaming.triggerTokens, pool budget)` or is re-armed over budget. Overflow alone
 never makes a phase eligible.
 
 For one compaction attempt, each phase may be launched or compatibly awaited at most once. Independent

@@ -36,12 +36,13 @@ Dreaming maintains one due Knowledge pool in a fresh subagent. The three pool id
 `global`, `project:<id>` and `session:<id>`. After every ingested entry, the host checks the pools
 visible at that node independently. Pending membership is the current visible, non-archived revision
 of each identity for which that pool has no `(pool, revision)` processing record. Intermediate
-revisions do not accumulate weight. A pool is due at the configured Dreamer trigger (5,000 rendered
-pending tokens by default), or when over budget and re-armed.
+revisions do not accumulate weight. A pool is due when pending tokens reach
+`min(dreaming.triggerTokens, pool budget)`, or when over budget and re-armed.
 
 Each run freezes one due pool and an oldest eligible prefix no larger than that pool's full budget.
-The database defaults are Global 4,000, Project 15,000 and Session 1,000 tokens. All pools share the
-configured 5,000-token pending trigger; smaller pools normally reach maintenance through excess. There is one database-wide Dreamer seat. The ordinary target claim,
+The database defaults are Global 4,000, Project 15,000 and Session 1,000 tokens. With the configured
+5,000-token cap, effective pending triggers are 4,000/5,000/1,000. Small pools have a reachable pending
+path at their full budget; budget excess will often trigger first. There is one database-wide Dreamer seat. The ordinary target claim,
 token, expiry, reserved takeover and project/range checks remain commit fences; a stale or lost claim
 cannot commit. Dreaming has no closed-session borrowing, frozen family, pool-budget write gate or
 retry range. Material windows and actual model context capacity remain hard limits.
@@ -520,7 +521,7 @@ block at all — its selected pending facts and their required framing share the
 allowance. Outer framing is never charged against the Noter's inner Raw ceiling, so an otherwise valid
 10,000-token entry stays batchable.
 
-Each database stores one Knowledge policy row: Global 4,000, Project 15,000 and Session 1,000 tokens by default. Their safe-integer sum derives the 20,000-token Knowledge base window. Knowledge, Facts and Raw have 20,000/10,000/10,000 base windows. Their shared allowance is derived from configuration alone: Dreaming 5,000 + Consolidation 5,000 + Noting 10,000 = 20,000 at defaults, without reading database pool budgets. It has no separate configuration key or database migration. Owner pools remain independent: each project has the full Project budget and each session has the full Session budget; they are never multiplied into one global total. Pool sizes count current visible non-archived revisions whether or not they have processing records. Processing state triggers maintenance; it does not change capacity, validity or visibility.
+Each database stores one Knowledge policy row: Global 4,000, Project 15,000 and Session 1,000 tokens by default. Their safe-integer sum derives the 20,000-token Knowledge base window. Knowledge, Facts and Raw have 20,000/10,000/10,000 base windows. Their shared allowance is derived from configuration alone: Dreaming cap 5,000 + Consolidation trigger 5,000 + Noting trigger 10,000 = 20,000 at defaults. It uses the configured cap, not any pool's effective trigger, and never reads database pool budgets. It has no separate configuration key or database migration. Owner pools remain independent: each project has the full Project budget and each session has the full Session budget; they are never multiplied into one global total. Pool sizes count current visible non-archived revisions whether or not they have processing records. Processing state triggers maintenance; it does not change capacity, validity or visibility.
 
 Supported schema creation and upgrade, source/lineage migration, policy initialization and policy
 validation commit as one database transaction. A failed later migration or integrity check therefore
