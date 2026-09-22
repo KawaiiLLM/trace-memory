@@ -704,13 +704,15 @@ export class Store {
     let priorBudgetPolicy: { global: number; project: number; session: number } | null = null;
     try {
       this.db.exec("PRAGMA foreign_keys = ON;");
-      // Another process may hold a short write lock; wait instead of failing. One immediate
-      // transaction owns the supported schema upgrade, source/lineage migrations and policy
-      // publication. Foreign keys must be disabled before it because legacy CHECK rebuilds rename
-      // referenced tables; the complete graph is checked before commit and enforcement restored.
+      // Never change an existing file's journal mode here: WAL conversion is an explicit
+      // stopped-executor cutover, after a consistent backup (67).
+      // One immediate transaction owns schema probes, upgrades and policy publication. Legacy
+      // CHECK rebuilds require foreign keys off before BEGIN. A changed schema is checked once
+      // before commit; an unchanged open must not scan the entire database under its write lock.
       this.db.exec("PRAGMA busy_timeout = 5000;");
       this.db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
       began = true;
+      const schemaBefore = Number(this.db.prepare("PRAGMA schema_version").get()!.schema_version);
       const policyTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_budget_policy'").get();
       if (policyTable) {
         const row = this.db.prepare("SELECT global_tokens,project_tokens,session_tokens FROM knowledge_budget_policy WHERE id=1").get();
@@ -739,6 +741,9 @@ export class Store {
         if (!columns.some(r => r.name === "blocks")) this.db.exec("ALTER TABLE source_entries ADD COLUMN blocks TEXT");
         const newAddresses = !columns.some(r => r.name === "addresses");
         if (newAddresses) this.db.exec("ALTER TABLE source_entries ADD COLUMN addresses TEXT NOT NULL DEFAULT '[]'");
+        // Reopens inspect only undecoded legacy entries, not every immutable Raw body. This
+        // index is maintained by SQLite when the owning host fills blocks; it stores no progress.
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_unnormalized ON source_entries(id) WHERE blocks IS NULL");
         if (newAddresses || normalizeSource) {
           const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
           for (const row of this.db.prepare(`SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id`).iterate()) {
@@ -804,7 +809,9 @@ export class Store {
         return [...visible.values()].map(revision => ({ revisionId: revision.id,
           pool: placementOwner(this, { revision }, input.metadata) }));
       }, priorBudgetPolicy);
-      if (this.db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Store migration: foreign key violations");
+      const schemaChanged = Number(this.db.prepare("PRAGMA schema_version").get()!.schema_version) !== schemaBefore;
+      if (schemaChanged && this.db.prepare("PRAGMA foreign_key_check").all().length)
+        throw new Error("Store migration: foreign key violations");
       this.db.exec("COMMIT");
       began = false;
       this.db.exec("PRAGMA foreign_keys = ON");

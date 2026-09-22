@@ -226,7 +226,9 @@ export function migrateKnowledgeLineage(db: DatabaseSync, transactionOwned = fal
     addOrigin("runs");
     if (taskColumns.length) addOrigin("task_executions");
     if (rangeColumns.length) addOrigin("dreaming_ranges");
-    if (db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Knowledge-lineage migration: foreign key violations");
+    // Store validates the complete schema once before committing its enclosing upgrade.
+    if (!transactionOwned && db.prepare("PRAGMA foreign_key_check").all().length)
+      throw new Error("Knowledge-lineage migration: foreign key violations");
   };
   if (transactionOwned) {
     if (!db.isTransaction) throw new Error("Knowledge-lineage store migration requires an active transaction");
@@ -273,7 +275,8 @@ export function migrateDreaming(db: DatabaseSync, transactionOwned = false): voi
       if (sequence) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq!, name);
       for (const object of objects) db.exec(String(object.sql));
     }
-    if (db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Dreaming migration: foreign key violations");
+    if (!transactionOwned && db.prepare("PRAGMA foreign_key_check").all().length)
+      throw new Error("Dreaming migration: foreign key violations");
   };
   if (transactionOwned) {
     if (!db.isTransaction) throw new Error("Dreaming store migration requires an active transaction");
