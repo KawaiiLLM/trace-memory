@@ -2901,13 +2901,16 @@ ${rendered.get(value.revision.id)}`;
       const closed = this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ?, closed_at = ?
         WHERE id = ? AND completed_run IS NULL AND closed_at IS NULL`).run(runId, (/* @__PURE__ */ new Date()).toISOString(), range.id);
       if (closed.changes !== 1) throw new Error("Knowledge pool range was not closed atomically");
-      const path = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
-      const size = this.knowledgePools(path).find((value) => value.pool === range.pool);
-      if (size.tokens > size.budget && !size.pending.length) {
-        this.db.prepare(`INSERT INTO knowledge_pool_state(pool,last_over_size,last_over_budget,residual_revisions) VALUES (?,?,?,?)
-          ON CONFLICT(pool) DO UPDATE SET last_over_size=excluded.last_over_size,last_over_budget=excluded.last_over_budget,
-            residual_revisions=excluded.residual_revisions`).run(size.pool, size.tokens, size.budget, "[]");
-      } else if (size.tokens <= size.budget) this.db.prepare("DELETE FROM knowledge_pool_state WHERE pool = ?").run(size.pool);
+      const consumes = outcome !== "cancelled" || own.length > 0 || skippedRevisionIds.length > 0;
+      if (consumes) {
+        const path = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
+        const size = this.knowledgePools(path).find((value) => value.pool === range.pool);
+        if (size.tokens > size.budget && !size.pending.length) {
+          this.db.prepare(`INSERT INTO knowledge_pool_state(pool,last_over_size,last_over_budget,residual_revisions) VALUES (?,?,?,?)
+            ON CONFLICT(pool) DO UPDATE SET last_over_size=excluded.last_over_size,last_over_budget=excluded.last_over_budget,
+              residual_revisions=excluded.residual_revisions`).run(size.pool, size.tokens, size.budget, "[]");
+        } else if (size.tokens <= size.budget) this.db.prepare("DELETE FROM knowledge_pool_state WHERE pool = ?").run(size.pool);
+      }
     });
   }
   dreamingRange(id) {
@@ -3956,7 +3959,13 @@ function prepareMemory(store, sessionId, raw, run, frozen, path = store.knowledg
   const touched = /* @__PURE__ */ new Set();
   const dreaming = store.isDreamingRun(run);
   if (!batch || typeof batch !== "object" || Array.isArray(batch) || !Array.isArray(batch.operations) || !Array.isArray(batch.skipped) || Object.keys(batch).some((k) => !["operations", "skipped"].includes(k))) {
-    return { results: ["rejected: memory expects {operations: [...], skipped: [...]} only"], operations, batch, diagnostics: [] };
+    return {
+      results: ["rejected: memory expects {operations: [...], skipped: [...]} only"],
+      operations,
+      batch,
+      diagnostics: [],
+      declinedCommits: /* @__PURE__ */ new Map()
+    };
   }
   const facts = (raw2, errors, nonempty = false) => {
     if (!Array.isArray(raw2) || nonempty && !raw2.length) {
@@ -4056,6 +4065,7 @@ function prepareMemory(store, sessionId, raw, run, frozen, path = store.knowledg
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });
   const declined = /* @__PURE__ */ new Set();
+  const declinedCommits = /* @__PURE__ */ new Map();
   for (const skipped of batch.skipped) {
     const errors = [];
     if (!skipped || typeof skipped !== "object" || Array.isArray(skipped)) errors.push("invalid skipped item");
@@ -4068,6 +4078,7 @@ function prepareMemory(store, sessionId, raw, run, frozen, path = store.knowledg
       if (problem) errors.push(`${handle}: ${problem}`);
       else if (declined.has(commit)) errors.push("duplicate skipped knowledge");
       declined.add(commit);
+      declinedCommits.set(skipped, commit);
     } else {
       const ids = facts(["fact" in skipped ? skipped.fact : void 0], errors);
       if (Object.keys(skipped).some((k) => !["fact", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skipped requires fact and non-empty because only");
@@ -4091,7 +4102,7 @@ ${store.getFact(id).quote ?? ""}`)));
       if (tokens(body.text) > 200) diagnostics.push({ kind: "over_200_tokens", knowledge: body.label, tokens: tokens(body.text) });
     }
   }
-  return { results, operations, batch, diagnostics };
+  return { results, operations, batch, diagnostics, declinedCommits };
 }
 
 // src/core/consolidation/memory.ts
@@ -4113,6 +4124,7 @@ function bindMemory(store, sessionId, run, consolidation, path = store.knowledge
   };
   const allCommitted = [];
   const skipped = [];
+  const skippedCommits = [];
   let problems = [];
   let committed;
   let failure;
@@ -4151,7 +4163,12 @@ function bindMemory(store, sessionId, run, consolidation, path = store.knowledge
     }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch) };
     allCommitted.push(...result.committed);
-    if (skippable) skipped.push(...prepared.batch.skipped.flatMap((skip) => "knowledge" in skip ? [skip] : []));
+    if (skippable) {
+      for (const skip of prepared.batch.skipped) if ("knowledge" in skip) {
+        skipped.push(skip);
+        skippedCommits.push(prepared.declinedCommits.get(skip));
+      }
+    }
     problems = [];
     failure = void 0;
     return receipt(result.committed);
@@ -4162,6 +4179,7 @@ function bindMemory(store, sessionId, run, consolidation, path = store.knowledge
     sequence,
     allCommitted,
     skipped,
+    skippedCommits,
     get readCommits() {
       return [...reads.keys()];
     },
@@ -6098,7 +6116,7 @@ async function runDreaming(store, frozen, runAgent, bind) {
     ...result.outcome === "success" ? [] : [String(result.output ?? result.outcome)],
     ...requestMissing(result) ? ["runAgent must return the exact provider request"] : []
   ];
-  const skippedRevisionIds = binding.memory.skipped.map((value) => Number(/^K[1-9]\d*@([1-9]\d*)$/.exec(value.knowledge)?.[1])).filter(Number.isSafeInteger);
+  const skippedRevisionIds = binding.memory.skippedCommits;
   const frozenSet = new Set(frozen.frozenIds);
   const operatedFrozenIds = new Set(checked.ownRevisionIds.flatMap((id) => {
     const revision = store.knowledgeRevision(id);
@@ -36911,7 +36929,7 @@ function errorOf(reason) {
 function isOwnedSdkControlAbort(reason, owner) {
   if (!owner?.signal.aborted || !(reason instanceof Error)) return false;
   const stack = reason.stack ?? "";
-  return reason.message === "Operation aborted" && stack.includes("ProcessTransport.write") && stack.includes("Query.handleControlRequest") && stack.includes("@anthropic-ai/claude-agent-sdk");
+  return reason.message === "Operation aborted" && stack.includes("ProcessTransport.write") && stack.includes("Query.handleControlRequest");
 }
 var onUnhandledRejection = (reason) => {
   const owner = owners.getStore();
@@ -38250,7 +38268,10 @@ var CcTaskScheduler = class {
   }
   startCatchup(reconcile, ticket = this.cancellationEpoch) {
     if (ticket !== this.cancellationEpoch) return this.failedStatus("catchup was cancelled before admission");
-    if (this.catchup && (this.catchup.state === "running" || this.catchup.state === "waiting")) return this.catchupStatus();
+    if (this.catchup && (this.catchup.state === "running" || this.catchup.state === "waiting")) {
+      if (this.catchup.state === "waiting" && !this.catchup.active.size) this.driveCatchup(true);
+      return this.catchupStatus();
+    }
     if (this.stopped) return this.failedStatus("CC executor is shutting down");
     if (!this.worker)
       return this.failedStatus("CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured");
@@ -38325,15 +38346,26 @@ var CcTaskScheduler = class {
     const cancellationEpoch = this.cancellationEpoch;
     this.reserve(phase, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch));
   }
-  reserve(phase, run, shouldDrive = () => {
-    this.driveCatchup(false);
+  /**
+   * R4: a successful ordinary completion while a drain is active is a full checkpoint (all of N/C/D
+   * checked); any other ordinary outcome (failure, cancelled, empty, dropped, bounced) stays N-only,
+   * matching the per-poll drive.
+   */
+  reserve(phase, run, shouldDrive = (result) => {
+    const drain = this.catchup;
+    const drainActive = !!drain && (drain.state === "running" || drain.state === "waiting");
+    this.driveCatchup(drainActive && result?.outcome === "success");
     return false;
   }) {
-    const work = Promise.resolve().then(run);
+    let settled;
+    const work = Promise.resolve().then(run).then((result) => {
+      settled = result;
+      return result;
+    });
     this.slots.set(phase, work);
     void work.catch((error3) => this.diagnostic(`${phase} worker failed: ${error3 instanceof Error ? error3.message : String(error3)}`)).finally(() => {
       this.slots.delete(phase);
-      if (shouldDrive()) this.driveCatchup();
+      if (shouldDrive(settled)) this.driveCatchup();
     });
   }
   common(phase, target, borrowed, automatic, boundary) {
@@ -38383,8 +38415,10 @@ var CcTaskScheduler = class {
     return this.memory.store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId);
   }
   /**
-   * One catchup checkpoint. Start and every successful catchup-owned completion enter here and
-   * independently check N, C and D. Busy ordinary slots are observed once and never adopted or queued.
+   * One catchup checkpoint (R4). Start, every successful completion (catchup-owned or ordinary) while
+   * a drain is active, and a repeated `catchup` command on an idle waiting drain enter here with
+   * checkAll and independently check N, C and D. The per-poll/per-entry drive stays N-only (checkAll
+   * false). Busy ordinary slots are observed once and never adopted or queued.
    */
   driveCatchup(checkAll = true) {
     const drain = this.catchup;
