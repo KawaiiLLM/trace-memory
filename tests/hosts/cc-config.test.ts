@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig, type CcHostConfig } from "../../src/hosts/cc/config.ts";
 import { handleCcHook } from "../../src/hosts/cc/index.ts";
+import { CcImporter } from "../../src/hosts/cc/importer.ts";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -101,6 +102,24 @@ test("CC retry configuration is a native count only and preserves omission", () 
     expect(() => resolveCcHostConfig({ ...f.input, retry: { maxRetries } })).toThrow("retry.maxRetries");
   expect(() => resolveCcHostConfig({ ...f.input, retry: { maxRetries: 2, backoffMs: 10 } as any }))
     .toThrow("accepts only maxRetries");
+});
+
+test("CC validates flat phase controls once and propagates them through the importer", () => {
+  const f = fixture();
+  const config = resolveCcHostConfig({ ...f.input, closedSessionScope: "global",
+    "noting.triggerTokens": 11_111, "consolidation.triggerTokens": 2_222,
+    "dreaming.triggerTokens": 3_333, "dreaming.timeoutMs": 44_444 });
+  expect(config.coreConfig).toMatchObject({ closedSessionScope: "global", noting: { triggerTokens: 11_111 },
+    consolidation: { triggerTokens: 2_222 }, dreaming: { triggerTokens: 3_333, timeoutMs: 44_444 } });
+  mkdirSync(dirname(config.dbPath), { recursive: true });
+  const importer = new CcImporter(config, { version: 1, nativeSessionId: "config-propagation",
+    transcriptPath: join(f.home, "absent.jsonl"), dbPath: config.dbPath, nativeCreatedAt: null,
+    enrollment: { defaultEnabled: false, choice: null }, coreSessionId: null, projectId: null,
+    branch: "main", selectedLeafUuid: null, executor: null, lastClose: null });
+  try {
+    expect(importer.memory.config).toMatchObject({ closedSessionScope: "global", noting: { triggerTokens: 11_111 },
+      consolidation: { triggerTokens: 2_222 }, dreaming: { triggerTokens: 3_333, timeoutMs: 44_444 } });
+  } finally { importer.close(); }
 });
 
 test("CC keeps ingestion-only configuration valid but requires all six phase keys with a worker", () => {

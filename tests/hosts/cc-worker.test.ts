@@ -95,8 +95,11 @@ test("worker passes only native retry count, records native events, and preserve
       yield { type: "system", subtype: "init", session_id: "retry-child", claude_code_version: "2.1.257", cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 250, error: "server_error" };
-      yield { type: "result", subtype: "success", session_id: "retry-child", is_error: true,
-        result: "API Error: stream closed before response.completed", errors: [],
+      yield { type: "assistant", isApiError: true, session_id: "retry-child", message: { id: "api-error",
+        content: [{ type: "text", text: "API Error: stream closed before response.completed" }],
+        usage: { input_tokens: 20, output_tokens: 2, cache_read_input_tokens: 1, cache_creation_input_tokens: 0 } } };
+      yield { type: "result", subtype: "success", session_id: "retry-child", is_error: false,
+        result: "generic native result", errors: [],
         usage: { input_tokens: 9, output_tokens: 4, cache_read_input_tokens: 2, cache_creation_input_tokens: 1 }, total_cost_usd: 0.2 };
       throw new Error("Claude Code process exited with code 1");
     })() as any;
@@ -111,6 +114,29 @@ test("worker passes only native retry count, records native events, and preserve
     retries: [{ attempt: 1, error: "server_error" }],
     usage: { input: 9, output: 4, cacheRead: 2, cacheWrite: 1, cost: { total: 0.2 } } });
   expect(reportProgress).toHaveBeenCalledWith(expect.objectContaining({ retries: [{ attempt: 1, error: "server_error" }] }));
+});
+
+test("worker preserves assistant usage when an API error exits before an SDK result", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-api-error-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const fakeQuery = (() => {
+    const stream = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "api-child", claude_code_version: "2.1.257", cwd: directory,
+        tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "assistant", is_api_error_message: true, session_id: "api-child", message: { id: "api-error",
+        content: [{ type: "text", text: "API Error: upstream disconnected" }],
+        usage: { input_tokens: 17, output_tokens: 3, cache_read_input_tokens: 2, cache_creation_input_tokens: 1 } } };
+      throw new Error("Claude Code process exited with code 1");
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
+  expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 0)).toMatchObject({
+    outcome: "failure", output: "API Error: upstream disconnected",
+    usage: { input: 17, output: 3, cacheRead: 2, cacheWrite: 1 },
+  });
 });
 
 test("simultaneous phase workers keep model and thinking selection isolated", async () => {

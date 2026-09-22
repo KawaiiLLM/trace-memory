@@ -154,6 +154,33 @@ function workerServer(task: CcAgentTask, origins: CcResponseOrigins, record: (va
 
 const USAGE_COUNTERS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] as const;
 
+function assistantApiError(message: SDKAssistantMessage): string | undefined {
+  const value = message as unknown as { is_api_error_message?: unknown; isApiError?: unknown };
+  if (value.is_api_error_message !== true && value.isApiError !== true) return;
+  const text = message.message.content.filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+    .map(part => part.text).join("\n").trim();
+  return text || "CC native API error";
+}
+
+function assistantUsage(messages: readonly SDKAssistantMessage[]) {
+  const seen = new Set<string>(), totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let observed = false;
+  for (const message of messages) {
+    const id = message.message.id;
+    if (typeof id !== "string" || seen.has(id)) continue;
+    const usage = message.message.usage as unknown;
+    if (!usage || typeof usage !== "object") continue;
+    const counters = usage as Record<string, unknown>;
+    if (USAGE_COUNTERS.some(name => typeof counters[name] !== "number")) continue;
+    seen.add(id); observed = true;
+    totals.input += counters.input_tokens as number;
+    totals.output += counters.output_tokens as number;
+    totals.cacheRead += counters.cache_read_input_tokens as number;
+    totals.cacheWrite += counters.cache_creation_input_tokens as number;
+  }
+  return observed ? totals : undefined;
+}
+
 function coreUsage(results: readonly SDKResultMessage[]) {
   if (!results.length) return;
   const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -275,7 +302,7 @@ export class CcAgentWorker {
     const origins = new CcResponseOrigins(task, this.worker.responseOriginTimeoutMs, maxToolRounds, error => {
       protocolError ??= error; controller.abort(error);
     });
-    const results: SDKResultMessage[] = [];
+    const results: SDKResultMessage[] = [], assistantMessages: SDKAssistantMessage[] = [];
     const input = task.kind === "dreaming" ? new CcUserInput() : null;
     input?.push(userMessage(task.text));
     let initIdentity: string | null = null, nativeSessionId: string | null = null;
@@ -283,7 +310,8 @@ export class CcAgentWorker {
     let nativeFailureOutput: string | null = null;
     let outcome: "success" | "failure" = "failure";
     const retries: { attempt: number; error: string }[] = [];
-    const progress = () => task.reportProgress?.({ retries: [...retries], ...(coreUsage(results) ? { usage: coreUsage(results) } : {}) });
+    const observedUsage = () => coreUsage(results) ?? assistantUsage(assistantMessages);
+    const progress = () => { const usage = observedUsage(); task.reportProgress?.({ retries: [...retries], ...(usage ? { usage } : {}) }); };
     let dreamState: "first" | "repair-authorized" | "complete" = "first";
     const toolsAllowed = () => task.kind !== "dreaming" || dreamState !== "complete";
     return runWithCcNativeAbortOwner(controller.signal, error =>
@@ -322,7 +350,10 @@ export class CcAgentWorker {
             assertModelMetadata(await execution.supportedModels(), settings);
           } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");
         } else if (message.type === "assistant") {
+          assistantMessages.push(message);
+          nativeFailureOutput = assistantApiError(message) ?? nativeFailureOutput;
           origins.observe(message);
+          progress();
           if (task.kind === "dreaming") task.reportRounds(origins.rounds());
         } else if (message.type === "system" && (message as unknown as { subtype?: unknown }).subtype === "api_retry") {
           const retry = message as unknown as { attempt?: unknown; max_retries?: unknown; retry_delay_ms?: unknown; error?: unknown };
@@ -368,7 +399,7 @@ export class CcAgentWorker {
       if (initIdentity === null) throw new Error("CC worker ended without native init metadata");
       if (protocolError) throw protocolError;
       if (!results.length) throw new Error("CC worker ended without an SDK result message");
-      const usage = coreUsage(results);
+      const usage = observedUsage();
       return { outcome, output, ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent", nativeLog,
         audit: { available: false, reason: AUDIT_UNAVAILABLE }, verification: { rounds: origins.rounds() },
         thinking: { requested: settings.thinking, effective: settings.thinking } };
@@ -376,7 +407,7 @@ export class CcAgentWorker {
       controller.abort(error);
       const cancelled = task.signal?.aborted === true;
       const cause = protocolError && !cancelled ? protocolError : error;
-      const usage = coreUsage(results);
+      const usage = observedUsage();
       const specific = nativeFailureOutput ?? (cause instanceof Error ? cause.message : String(cause));
       return { outcome: cancelled ? "cancelled" : "failure", output: specific,
         ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent", nativeLog,
