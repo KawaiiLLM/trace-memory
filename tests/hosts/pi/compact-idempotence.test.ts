@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { fixture, piSession, say } from "./native-fixture.ts";
+import { call, fixture, piSession, say } from "./native-fixture.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
 import extension from "../../../src/hosts/pi/index.ts";
@@ -39,7 +39,7 @@ test("Pi refuses an immediate repeat before the hook; small pending turns preser
 // The native API above refuses a no-Turn repeat before extension dispatch. Drive that missing
 // dispatch explicitly, but persist every result through the real manager and run session_compact.
 test("persisted hook lifecycle: repeat, N/C, 117 knowledge commits, small turns and cold restore", async () => {
-  const quiet = { "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000 };
+  const quiet = { "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000, "dreaming.triggerTokens": 1 };
   const f = await fixture(quiet);
   const compact = async (h = f.h, manager = f.manager()) => {
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 1000 } });
@@ -71,7 +71,16 @@ test("persisted hook lifecycle: repeat, N/C, 117 knowledge commits, small turns 
       consolidated: [fact.id], operations: Array.from({ length: 117 }, (_, i) => ({ op: "create" as const,
         handle: `$k${i}`, topics: [], reason: "Initial admission.", author: "fixture", text: `Durable knowledge ${i}`,
         category: "constraint" as const, scope: "global" as const, supports: [fact.id], createdAt: "seed" })) });
-    expect(consolidated.ok).toBe(true);
+    if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
+    let dreamSubmitted = false;
+    f.script(body => {
+      if (!JSON.stringify(body).includes("# Dreamer")) return say("answer");
+      if (dreamSubmitted) return say("Done");
+      dreamSubmitted = true;
+      return call("skip-all", "memory", { operations: [], skipped: consolidated.committed.map(item => ({
+        knowledge: `K${item.knowledgeId}@${item.commit}`, because: "reviewed; retain",
+      })) });
+    });
     const knowledge = await compact();
     expect(knowledge.details.traceMemory.supplied.knowledgeCommitIds).toHaveLength(117);
     expect(await compact()).toEqual(knowledge);
@@ -84,7 +93,7 @@ test("persisted hook lifecycle: repeat, N/C, 117 knowledge commits, small turns 
     expect(added.summary).toContain("THIRD"); expect(added.summary).toContain("FOURTH");
     expect(await compact()).toEqual(added);
     expect(store.listSourceEntries(1)).toHaveLength(8);
-    expect(f.sent).toHaveLength(5); // four foreground requests plus one per-pool Dreamer trigger
+    expect(f.sent).toHaveLength(6); // four foreground requests plus the Dreamer's skip batch and closing reply
     expect(store.listRuns(1).filter(run => run.kind === "dreaming")).toHaveLength(1);
 
     const tip = f.manager().getLeafId()!;

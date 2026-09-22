@@ -10,7 +10,7 @@ const call = (id: string, name: string, args: unknown): Reply => ({ ...reply("")
 // 59: a scripted Dreamer accounts for the supplied handles it leaves untouched with one explicit skip batch.
 const skip = (...handles: string[]): Reply => call("skip", "memory", { operations: [], skipped: handles.map(knowledge => ({ knowledge, because: "reviewed; no operation needed" })) });
 async function seeded(config: Record<string, unknown> = {}, text = "Keep the user constraint") {
-  const h = host({ "noting.triggerTokens": 1000000, "consolidation.triggerTokens": 1000000, ...config });
+  const h = host({ "noting.triggerTokens": 1000000, "consolidation.triggerTokens": 1000000, "dreaming.triggerTokens": 1, ...config });
   await h.emit("session_start"); await h.turn();
   const store = h.memory.store;
   const f = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, facts: [{ turnId: 1, source: ["T1#user"], actor: "user", category: "decision", text, createdAt: "now" }] });
@@ -45,7 +45,8 @@ test("Dreamer pre-request capacity failure names its own phase and retains its w
     expect(runs[0]!.response).toContain("Dreamer capacity: the child's context");
     expect(runs[0]!.response).not.toContain("Consolidation capacity");
     expect(h.requests).toEqual([]);
-    expect(processedIn(store, pool, item.commit)).toBe(true);
+    expect(processedIn(store, pool, item.commit)).toBe(false);
+    expect(store.pendingVersions(pool, store.knowledgePath(1)).map(value => value.revisionId)).toContain(item.commit);
     expect(store.getClaim(1, "dreaming")).toBeNull();
     expect(store.taskFailures(1)).toMatchObject([{ phase: "dreaming", count: 1 }]);
   } finally { measure.mockRestore(); await h.dispose(); }
@@ -126,7 +127,8 @@ test("64c native host: a fitting residual ends successfully without a repair rou
     expect(run.outcome).toBe("success"); expect(tools).toBe(24); expect(audit.rounds).toBe(24);
     expect(audit.repaired).toBeUndefined(); expect(audit.retries).toBeUndefined();
     expect(audit.problems).toEqual([]);
-    expect(processedIn(store, pool, item.commit)).toBe(true);
+    expect(processedIn(store, pool, item.commit)).toBe(false); // Reads alone do not deliberate or consume the input.
+    expect(store.pendingVersions(pool, store.knowledgePath(1)).map(value => value.revisionId)).toContain(item.commit);
     const log = readFileSync(audit.nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     const repairMessages = log.filter(e => JSON.stringify(e).includes("System-generated Dreamer completion check"));
     expect(initialSystem).toContain("# Dreamer — bounded knowledge maintenance");
@@ -185,7 +187,7 @@ test("64c native host: stop after a commit records the frozen range and own comm
     expect(store.getClaim(1, "dreaming")).toBeNull();
     const changed = store.listCommitsByRun(cancelled.id)[0]!;
     expect(changed.parentId).toBe(item.commit);
-    expect(processedIn(store, pool, item.commit)).toBe(true);
+    expect(processedIn(store, pool, item.commit)).toBe(false); // Superseded input needs no protection row.
     expect(processedIn(store, pool, changed.id)).toBe(true);
     expect(store.taskFailures(1).every(f => f.count === 0)).toBe(true);
     release();
@@ -207,7 +209,7 @@ test("64c native host: provider overflow keeps the archive and consumes the fail
     expect(run.outcome).toBe("failure"); expect(requests).toBe(2);
     const archive = store.listCommitsByRun(run.id)[0]!;
     expect(archive.op).toBe("archive");
-    expect(processedIn(store, pool, item.commit)).toBe(true);
+    expect(processedIn(store, pool, item.commit)).toBe(false); // Superseded input needs no protection row.
     expect(processedIn(store, pool, archive.id)).toBe(true);
     const entries = readFileSync(JSON.parse(run.response!).nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     expect(entries.some(e => e.type === "compaction")).toBe(false);
