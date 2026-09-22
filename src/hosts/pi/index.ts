@@ -1017,7 +1017,10 @@ export default function (pi: ExtensionAPI) {
     const context = ctx;
     const own = { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId, triggerEntryId: c.triggerEntryId };
     const remainingEntries = pendingCatchupEntryIds(c);
-    if (!checkAll && !remainingEntries.length && c.waitingPhase && c.waitingPhase !== "noting") return;
+    if (!checkAll && !remainingEntries.length && c.waitingPhase && c.waitingPhase !== "noting") {
+      finishCatchup(c); // Ordinary release may have cleared all due work; settle only, never replay its busy check.
+      return;
+    }
     let launched = false, blockedNoting = false;
     if (checkAll) c.waitingPhase = undefined;
     const phases: readonly WorkerPhase[] = checkAll ? ["noting", "consolidation", "dreaming"] : ["noting"];

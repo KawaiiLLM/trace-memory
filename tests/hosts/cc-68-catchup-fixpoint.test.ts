@@ -75,6 +75,21 @@ test.each(["consolidation", "dreaming"] as const)("R4 does not adopt, queue, or 
   expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase });
 });
 
+test("R4 ordinary completion may settle a zero-Raw wait when it clears all due work, without replay", async () => {
+  const f = fixture();
+  let due = true, release!: () => void;
+  const execute = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); return { outcome: "success" }; });
+  f.memory.consolidate = execute as any;
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "consolidation" && due }));
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] });
+  await tick();
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(f.scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase: "consolidation" });
+  due = false; release(); await tick(); await tick();
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(f.scheduler.catchupStatus().state).toBe("completed");
+});
+
 test("R4 terminal failure fences every later phase", async () => {
   const f = fixture(); f.c(2); f.d(1); f.entries.push(1);
   f.memory.consolidate.mockImplementation(async () => ({ outcome: "failure", problems: ["terminal"] }) as any);

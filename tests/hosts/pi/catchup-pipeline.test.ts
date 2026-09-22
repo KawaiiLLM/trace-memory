@@ -78,6 +78,32 @@ test("68: catchup does not adopt an already-running ordinary N's downstream comp
   } finally { release(); await h.dispose(); }
 });
 
+test("68: ordinary C completion settles a zero-Raw wait when it clears all due work, without replay", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1e9 });
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await h.turn();
+    const store = h.memory.store, pending = h.memory.pendingEntries(1, "main", 1);
+    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "seed" },
+      facts: [{ turnId: 1, category: "decision", actor: "user", text: "ordinary C clears this due work",
+        source: ["T1#user"], createdAt: "seed" }], entryIds: pending.map(entry => entry.id) });
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    h.provider(async c => { if (phase(c) === "C") await held; return consolidationReply(c); });
+    await h.turn(); await h.drain();
+    expect(store.getClaim(1, "consolidation")).not.toBeNull();
+    const head = store.listTurns(1).at(-1)!.id, later = h.memory.pendingEntries(1, "main", head);
+    const cleared = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "clear" },
+      facts: [], entryIds: later.map(entry => entry.id) });
+    if (!cleared.ok) throw new Error(cleared.problems.join("; "));
+    await command(h, "catchup");
+    expect(h.notices.at(-1)).toContain("waiting for consolidation");
+    release(); await settle(h);
+    expect(store.listRuns(1).filter(run => run.kind === "consolidation" && run.outcome === "success")).toHaveLength(1);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
+  } finally { release(); await h.dispose(); }
+});
+
 test("67: C first launches at a later N completion when committed facts cross its ordinary trigger", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 500 });
   try {

@@ -203,7 +203,10 @@ export class CcTaskScheduler {
       (drain.state === "running" || drain.state === "waiting");
     const remaining = drain.maxEntryId === undefined ? [] : this.pendingEntryIds(drain.target)
       .filter(id => id <= drain.maxEntryId!);
-    if (!checkAll && !remaining.length && drain.phase && drain.phase !== "noting") return;
+    if (!checkAll && !remaining.length && drain.phase && drain.phase !== "noting") {
+      this.finishWithoutCheckpoint(drain); // Ordinary release may have cleared all due work; settle without replaying it.
+      return;
+    }
     if (checkAll) drain.phase = undefined;
     let blockedNoting = false;
     let launched = false;
