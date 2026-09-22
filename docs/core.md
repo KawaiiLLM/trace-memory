@@ -36,12 +36,12 @@ Dreaming maintains one due Knowledge pool in a fresh subagent. The three pool id
 `global`, `project:<id>` and `session:<id>`. After every ingested entry, the host checks the pools
 visible at that node independently. Pending membership is the current visible, non-archived revision
 of each identity for which that pool has no `(pool, revision)` processing record. Intermediate
-revisions do not accumulate weight. A pool is due when pending rendered tokens reach half its stored
-budget or when its current visible content exceeds that budget.
+revisions do not accumulate weight. A pool is due at the configured Dreamer trigger (5,000 rendered
+pending tokens by default), or when over budget and re-armed.
 
 Each run freezes one due pool and an oldest eligible prefix no larger than that pool's full budget.
-The database defaults are Global 4,000, Project 15,000 and Session 1,000 tokens, so their pending
-triggers are 2,000, 7,500 and 500. There is one database-wide Dreamer seat. The ordinary target claim,
+The database defaults are Global 4,000, Project 15,000 and Session 1,000 tokens. All pools share the
+configured 5,000-token pending trigger; smaller pools normally reach maintenance through excess. There is one database-wide Dreamer seat. The ordinary target claim,
 token, expiry, reserved takeover and project/range checks remain commit fences; a stale or lost claim
 cannot commit. Dreaming has no closed-session borrowing, frozen family, pool-budget write gate or
 retry range. Material windows and actual model context capacity remain hard limits.
@@ -97,15 +97,19 @@ when over budget, the prompt continues archiving in its protection order and che
 Budget excess is a maintenance trigger and report, never a write or completion gate.
 
 `check` reports current pool sizes, budgets and operation failures; it is not an acceptance gate.
-At terminal success or failure, one transaction records the run audit and `(pool, revision)` for the
-frozen range and the run's own revisions, then closes the range. Execution settlement and conditional
-claim release follow. Partial Knowledge
-commits survive a later failure. Cancellation before the first commit records no processing; after a
-commit it records the frozen range and own revisions before releasing the claim. A processed range is
-never retried, and the run's own outputs do not immediately trigger the same pool.
+A run records `(pool, revision)` only for frozen versions explicitly skipped and revisions it wrote.
+Skipped versions use the existing processing table; terminal settlement adds own output and closes the
+range, including on failure or cancellation. Untouched frozen versions remain pending. No skip table
+or extra atomicity mechanism is introduced. Partial writes survive; a version already updated does
+not return merely because the model intended another update. A range ends once, and own outputs do
+not immediately trigger the same pool. Run audits report deliberated versus frozen item counts.
 
-An over-budget pool re-arms only after it grows beyond the size recorded by its last over-budget run,
-its budget changes, or new pending material appears. Project relabelling creates no processing event:
+Dreamer has no tool-round ceiling. The shared `dreaming.timeoutMs` default is 600,000 milliseconds
+on both hosts, including Pi where this adds a new time bound. Expiry closes writes, fails the run with
+the bound in its reason, settles partial work and releases its claim; it is not a completed pass.
+
+An over-budget pool with pending material stays due. With none pending, it is suppressed only while
+its recorded size and budget are unchanged; residual revision sets do not decide eligibility. Project relabelling creates no processing event:
 a moved project revision is pending in the destination only when that destination pool lacks its
 exact processing record. Global and session records do not move.
 
@@ -129,7 +133,7 @@ A logical task is `(target session, phase, oldest selected backlog item)`, indep
 
 `Store.beginExecution(task, previous?)` creates a durable execution or continues the same unsettled Noting or Consolidation execution after fork refusal. Each attempt run carries `RunInput.executionId` and is linked through `execution_runs`. Attempt audit outcomes do not settle executions.
 
-`Store.settleExecution(id, outcome, runId, reason?)` records one authoritative terminal outcome and updates the logical task's streak in the same transaction. Successful Noting and Consolidation commits settle inside their business transactions. Dreamer terminal processing records the frozen range and own commits on success or failure, then settles that one execution; cancellation before any commit records no processing. Partial Dreamer writes survive a later failure.
+`Store.settleExecution(id, outcome, runId, reason?)` records one authoritative terminal outcome and updates the logical task's streak in the same transaction. Successful Noting and Consolidation commits settle inside their business transactions. Dreamer processing records skipped frozen versions and own commits, then settles that one execution. Failure and cancellation retain the same partial processing semantics: untouched versions remain pending, and partial writes survive.
 
 Final business failure includes incomplete Noting, unresolved submission refusal and a failed Dreamer run after partial writes. Cancellation, shutdown, busy admission and corrected refusals do not count. `Store.taskFailures(sessionId)` returns each key's count, latest reason, last run and update time. Success resets its key; explicit enrollment on clears all target streaks, while reopen does not.
 
@@ -501,13 +505,13 @@ charged once to the block that emits it:
 
 | Component | Budget | Default |
 | --- | --- | ---: |
-| main knowledge block, category tags, state notices and omission receipts (ordinary-prompt delivery and compact window) | Knowledge base plus remaining derived allowance | 45,000 maximum |
-| Consolidator knowledge references, category tags, inherited status lines and omission receipts | frozen Knowledge base plus derived allowance | 45,000 maximum |
+| main knowledge block, category tags, state notices and omission receipts (ordinary-prompt delivery and compact window) | Knowledge base plus remaining derived allowance | 40,000 maximum |
+| Consolidator knowledge references, category tags, inherited status lines and omission receipts | frozen Knowledge base plus derived allowance | 40,000 maximum |
 | Noter's selected Raw / Consolidator's pending fact lines — views with their own source labels, omission markers and joining separators | `noting.batchTokens` / `consolidation.batchTokens` | 10,000 |
 | Noter: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
 | compact's facts window — the pending facts, then the consolidated refill, with the `<episodic>` tag, the facts title and their receipts | `compaction.factsTokens` | 10,000 |
 | compact's Raw window — the pending entry views, then the already-extracted refill, with the Raw title | `compaction.rawTokens` | 10,000 |
-| shared allowance — borrowed after required reservations | sum of three pool triggers plus Noting and Consolidation triggers | 25,000 |
+| shared allowance — borrowed after required reservations | sum of configured N, C and D triggers, once each | 20,000 |
 | Consolidator: its titles, range line and receipts, charged with the facts they frame | `consolidation.batchTokens` | 10,000 |
 
 Required task material is reserved first; historical facts then fill whatever episodic space is left, in the existing freshness order. A Noter batch consumes at most its own
@@ -516,7 +520,7 @@ block at all — its selected pending facts and their required framing share the
 allowance. Outer framing is never charged against the Noter's inner Raw ceiling, so an otherwise valid
 10,000-token entry stays batchable.
 
-Each database stores one Knowledge policy row: Global 4,000, Project 15,000 and Session 1,000 tokens by default. Their safe-integer sum derives the 20,000-token Knowledge base window. Knowledge, Facts and Raw have 20,000/10,000/10,000 base windows. Their shared allowance is derived at runtime from all trigger thresholds: 2,000 + 7,500 + 500 + 5,000 + 10,000 = 25,000 at defaults. It has no separate configuration key or database migration. Owner pools remain independent: each project has the full Project budget and each session has the full Session budget; they are never multiplied into one global total. Pool sizes count current visible non-archived revisions whether or not they have processing records. Processing state triggers maintenance; it does not change capacity, validity or visibility.
+Each database stores one Knowledge policy row: Global 4,000, Project 15,000 and Session 1,000 tokens by default. Their safe-integer sum derives the 20,000-token Knowledge base window. Knowledge, Facts and Raw have 20,000/10,000/10,000 base windows. Their shared allowance is derived from configuration alone: Dreaming 5,000 + Consolidation 5,000 + Noting 10,000 = 20,000 at defaults, without reading database pool budgets. It has no separate configuration key or database migration. Owner pools remain independent: each project has the full Project budget and each session has the full Session budget; they are never multiplied into one global total. Pool sizes count current visible non-archived revisions whether or not they have processing records. Processing state triggers maintenance; it does not change capacity, validity or visibility.
 
 Supported schema creation and upgrade, source/lineage migration, policy initialization and policy
 validation commit as one database transaction. A failed later migration or integrity check therefore
@@ -538,8 +542,8 @@ Raw ceiling is subtracted whether or not this batch fills it. A small Raw batch 
 fact slice, and a small fact slice never buys a larger Raw batch. No new configuration key expresses
 this; the cap is derived from the two that already exist.
 
-Fresh material is therefore at most 20,000 estimated tokens for the Noter and 55,000 for the
-Consolidator by default: the latter combines the frozen 20,000-token Knowledge base, its derived 25,000-token
+Fresh material is therefore at most 20,000 estimated tokens for the Noter and 50,000 for the
+Consolidator by default: the latter combines the frozen 20,000-token Knowledge base, its derived 20,000-token
 shared allowance and its independent 10,000-token fact/range allowance. System instructions, tool
 definitions, inherited native history and later tool/review messages are additional context costs,
 which is why the host's real-context capacity check stays independent of these domain limits.
@@ -652,7 +656,7 @@ The range is the oldest-first whole-fact prefix within `consolidation.batchToken
 in allocation-id order; the rest stays pending for the next batch. An oldest fact that cannot fit
 alone is a capacity problem and stays pending: it is never clipped, skipped for a smaller later fact
 or marked consolidated unpresented. The range freezes those facts and the visible current Knowledge revisions, including budget omissions, before the model call. Since tickets 25a and 45 the automatic material is exactly two blocks: visible current Knowledge
-within the frozen Knowledge base plus derived allowance (45,000 maximum by default),
+within the frozen Knowledge base plus derived allowance (40,000 maximum by default),
 and pending facts within `consolidation.batchTokens`, which also carry their titles and range line.
 Required framing is charged to the allowance of the material it frames, never to a second budget. A fitting
 knowledge pool retains the stable category/time/id presentation with no omission receipt. An over-cap pool
@@ -744,7 +748,7 @@ are checked on the selected session path; project-only targets use project/globa
 infer path evidence.
 
 Applicable visible Knowledge bodies and persisted state notices are rendered and charged first against
-the Knowledge base plus derived allowance (45,000 maximum under the default policy). Missing state transitions then fit as complete items in
+the Knowledge base plus derived allowance (40,000 maximum under the default policy). Missing state transitions then fit as complete items in
 their stable prefix order, followed by complete candidate bodies in normal category/time/id order. An
 unfit next transition is not skipped for a body; a fitting transition prefix remains publishable. Exact
 fit is accepted; zero or negative remainder and a single unfit item emit nothing, and omission receipts
@@ -772,7 +776,7 @@ three windows since 28a):
 | `{native: true, reason, over?}` | required excess exceeds the shared allowance, or an entry's minima exceed its profile | explicit native delegation; `over` identifies required Raw, Facts or Knowledge state-notice excess |
 
 **Fixed bases and shared allowance.** Knowledge uses the database-derived 20,000-token base; Facts
-and Raw use 10,000-token bases. One runtime-derived allowance, 25,000 tokens at defaults, is shared
+and Raw use 10,000-token bases. One runtime-derived allowance, 20,000 tokens at defaults, is shared
 across the windows; unused base capacity never moves between them. The allocator first reserves every
 selected-path Raw view awaiting Noting, complete fact awaiting Consolidation and required Knowledge
 state notice. It then spends the remaining
@@ -1038,8 +1042,8 @@ bounded caller's snapshot: `freezeNoting` filters `pendingEntries`
 to ids no later than `maxEntryId` before its usual batch-token loop, and
 `freezeConsolidation` filters `consolidationBatch` to `allowedFactIds` (27d's `factIds`) before
 building its range; both reuse the same store readers rather than adding a second
-selection query. Under ticket 67, manual catchup drains only its frozen Noting boundary;
-C and D instead use ordinary eligibility on the target after successful upstream batches.
+selection query. Manual catchup drains its frozen Noting boundary. Ticket 68 checks N, C and D
+at start and after every successful catchup-owned phase completion; C and D use ordinary eligibility.
 It no longer freezes a fact set for forced below-threshold Consolidation. The *exact* target is what a fork fallback re-admits on: `exactEntryIds`
 (27d's `entryIds`) and `exactFactIds` (29e). Under either, the freeze selects exactly those pending
 members, trims optional material to fit them — the Noter's history, the Consolidator's knowledge

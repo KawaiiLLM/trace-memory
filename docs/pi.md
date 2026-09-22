@@ -60,7 +60,9 @@ For example, either settings file can contain:
     "noting.batchTokens": 10000,
     "noting.nearThreshold": 0.4,
     "consolidation.triggerTokens": 5000,
-    "dreaming.maxToolRounds": 50,
+    "dreaming.triggerTokens": 5000,
+    "dreaming.maxToolRounds": 0,
+    "dreaming.timeoutMs": 600000,
     "dreaming.model": "session",
     "dreaming.thinking": "inherit",
     "consolidation.batchTokens": 10000,
@@ -74,13 +76,13 @@ For example, either settings file can contain:
 material bases. The Knowledge base is database-owned: Settings edits Global, Project and Session
 pool budgets for the bound database, defaulting to 4,000, 15,000 and 1,000. Their safe-integer sum
 is the 20,000-token Knowledge base. The shared allowance across Knowledge, facts and Raw is derived
-at runtime from the sum of the three pool triggers and the Noting/Consolidation triggers: 25,000 at
-defaults. It has no separate setting or database migration. Required pending Raw, unconsolidated facts
+from the configured N, C and D triggers, counted once each: 20,000 at defaults. Pool budgets do not
+enter this derivation. It has no separate setting or database migration. Required pending Raw, unconsolidated facts
 and Knowledge state notices reserve shared excess first; optional Knowledge, historical Raw and historical facts then use the remainder in that order.
 The three bases never lend directly to one another.
 
-`render.knowledgeBlockTokens`, `consolidation.knowledgeTokens` and `dreaming.triggerTokens` are
-retired. Remove them from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a
+`render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired.
+`dreaming.triggerTokens` is configurable again, defaulting to 5,000 for every pool. Remove them from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a
 named load error. Consolidator Knowledge and foreground publication may use the Knowledge base plus
 the shared allowance. Dreamer uses that same maximum for its Changed-plus-reference input, while a
 single due pool's Changed range is capped by that pool's budget. Database budget edits accept exact
@@ -99,8 +101,9 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
 - `dreaming.model` and `dreaming.thinking` use the same model/thinking Settings selectors,
   defaults and precedence as the other phases. Dreamer has no fork option or new settings page.
-  Its `dreaming.maxToolRounds` defaults to 50 and accepts 1–50. Provider retries do not reset this
-  bound. Budget checks no longer trigger a host-generated repair pass; the model may correct rejected
+  `dreaming.maxToolRounds` is fixed at 0 (unlimited). The shared `dreaming.timeoutMs` default is
+  600,000 milliseconds; this adds a wall-clock bound to Pi. Expiry fails the run, fences writes and
+  releases its claim. Provider retries do not reset the deadline. Budget checks no longer trigger a host-generated repair pass; the model may correct rejected
   tool calls within the same bounded run.
 - `notingModel` and `consolidationModel` accept `provider/model-id`, or `session`. Omission
   and `session` both resolve to the current session model's audited provider/id.
@@ -200,7 +203,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   identities for archive/supersede/merge/split notices. Notice visibility is separate and never grants
   a replacement body. The publication contains no Fact, Raw, pool-scheduling metadata,
   command-generation metadata or omission-only block. Retained applicable Knowledge bodies and notices
-  consume the Knowledge base plus derived allowance, 45,000 tokens at the default policy. Missing state
+  consume the Knowledge base plus derived allowance, 40,000 tokens at the default policy. Missing state
   transitions fit as a deterministic whole-item prefix before complete new bodies; only selected
   transition receipts persist. Knowledge keeps category groups and chronological display inside each
   group. The common header says larger commit numbers are newer and a newer same-object item stands
@@ -264,21 +267,20 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 - Dreaming is checked **per pool** on every reconciled eligible entry: `global`, this session's
   project and this session. Pending is each pool's current visible, non-archived revision lacking a
   `(pool, revision)` processing record, one revision per identity at its full rendered size. A pool is
-  due at half its budget — by default 2,000 / 7,500 / 500 tokens — or when its current contents exceed
-  the budget. One run handles one due pool; its Changed range is capped at that pool's full budget,
+  due at `dreaming.triggerTokens` (5,000 by default for every pool), or when over budget and re-armed. One run handles one due pool; its Changed range is capped at that pool's full budget,
   4,000 / 15,000 / 1,000 by default. Changed material and current same-scope references share the
-  45,000-token Knowledge-base-plus-derived-allowance window; direct facts have a separate 10,000-token cap.
+  40,000-token Knowledge-base-plus-derived-allowance window; direct facts have a separate 10,000-token cap.
   There is no automatic Raw block or `note` tool.
 
   Dreamer may update, binary-merge, binary-split or archive, but never create. Evidence-driven
   operations cite their direct facts. A trusted maintenance operation may submit empty supports;
   core then materializes the exact parent supports: one parent for update/archive/split and both
   parents' union for merge. Exact current bases and the live database-wide Dreamer claim are checked
-  atomically. On success or failure, terminal processing records the frozen range and the run's own
-  commits. Cancellation before the first commit records neither; cancellation or failure after a
-  commit still performs terminal processing. A range is never retried, and the run's own outputs do
-  not trigger it again. Residual over-budget state re-arms only after pool growth, a budget change or
-  new pending material.
+  atomically. Processing records skipped frozen versions and the run's own commits, including on
+  failure or cancellation. Untouched versions remain pending; own outputs do not trigger themselves.
+  An over-budget pool stays due while pending remains. With no pending material, unchanged recorded
+  size and budget suppress repeat maintenance. A run's range ends once; remaining material may form
+  a later range.
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
   the fact line with its relations and the joining separator — the trigger over the whole applicable
@@ -431,9 +433,8 @@ destination only when that pool has not handled that exact revision.
 
 Normal shutdown stops admission and cancels this executor's model calls under one five-second
 cleanup deadline. Cancellation closes Knowledge tools immediately, but an exact Dreaming claim is
-retained through terminal processing when the run has already committed. The terminal transaction
-records the frozen range and the run's own revisions on success or failure, and also after
-cancellation with a commit; only cancellation before the first commit leaves no processing record.
+retained through terminal processing. Processing covers only skipped frozen versions and own
+revisions, including on cancellation; untouched items remain pending.
 `/trace off` uses the same terminal exception: disabling future work cannot block this bookkeeping.
 Token, expiry, takeover, target project and frozen-range checks remain mandatory. After terminal
 processing or a pre-commit cancellation, the claim is released conditionally.
@@ -613,7 +614,8 @@ completion. Bars cap at 100%; numbers and percentages do not:
 - **Consolidation:** applicable unconsolidated facts, including group framing and
   relations, through the same renderer and threshold calculation as eligibility.
 - **Dreaming:** rendered pending current revisions of the selected applicable pool. Each pool has its
-  own half-budget trigger; the panel shows one representative pool, not a sum of all pools. The bar
+  own pending measurement against the configured Dreamer trigger; the panel shows one representative
+  pool, not a sum of all pools. The bar
   does not imply that the database-wide seat or an executable range is available.
 
 Thresholds come from the live core configuration. Off retains stored measurements;
@@ -741,12 +743,12 @@ returns a complete custom replacement or requests native Pi compaction.
 | `{native: true, reason, over?}` | Required material still exceeds the envelope, or an entry's minimum view cannot fit its profile | Run bounded recovery, then return a fitting replacement or decline so Pi compacts natively |
 
 The default bases are Knowledge 20,000 tokens from the database policy, facts 10,000 and Raw 10,000.
-All three share one allowance derived from their trigger thresholds, 25,000 tokens at defaults.
+All three share one allowance derived from the N, C and D triggers, 20,000 tokens at defaults.
 Required bounded Raw, unconsolidated facts and Knowledge state notices reserve shared excess first. Current Knowledge is optional material, regardless of its pool
 processing record. The remaining capacity is allocated in this order: current Knowledge, newest
 already-extracted Raw, then newest already-consolidated facts. Each base remains independent; only the
 single shared remainder crosses windows. Framing, state notices and omission receipts are charged once.
-The default maximum envelope is therefore 65,000 tokens.
+The default maximum envelope is therefore 60,000 tokens.
 
 Historical Raw is displayed in source order. Historical facts are displayed in chronological Turn
 groups. An optional fact is omitted as redundant only when its complete nonempty source binding is
@@ -766,7 +768,7 @@ no Trace Memory carrier.
 Recovery is attempted only when required facts, Raw or mandatory Knowledge state notices exceed their
 bases plus the shared allowance. Current Knowledge bodies are optional and do not force recovery. A phase must still satisfy ordinary
 eligibility: Noting at 10,000 pending Raw tokens, Consolidation at 5,000 fact tokens, and Dreaming
-when one applicable pool is due at half its pool budget or is re-armed over budget. Overflow alone
+when one applicable pool reaches `dreaming.triggerTokens` (5,000 by default) or is re-armed over budget. Overflow alone
 never makes a phase eligible.
 
 For one compaction attempt, each phase may be launched or compatibly awaited at most once. Independent
@@ -904,23 +906,22 @@ from the key: applicability must observe a new fact or commit even when the nati
 every closed session. Handler order: require enabled (reject with the enable
 instruction otherwise, never silently enrolling); reconcile available native
 history (17a); freeze the Raw target as the highest currently-pending source-entry id
-(`undefined` when nothing is pending). No pending Raw means no drain and no forced
-Consolidation tail. An empty target completes immediately with no model call. Repeating
+(an empty boundary when nothing is pending). Even with no pending Raw, the initial checkpoint
+checks C and D's ordinary eligibility. Only a target with no due work completes without a model call. Repeating
 `/trace catchup` while one is active reports its current state instead of
 starting a second one or extending its snapshot.
 
-Ticket 67 replaces the old N-then-C drain. Noting runs successive bounded subagent
-batches against the frozen entry boundary, ignoring only `noting.triggerTokens`,
-not batch or context limits. Each successful N batch checks C's ordinary threshold;
-each successful catchup-launched C batch checks D's ordinary per-pool thresholds.
-These checks need no foreground entry. C and D do not drain their below-threshold
-tails, and D completion starts no phase. Completion does not promise zero pending
-facts or knowledge.
+Ticket 68 uses one checkpoint at start and after each successful catchup-owned N, C or D completion.
+It checks all three phases: N drains the frozen entry boundary even below `noting.triggerTokens`,
+while C and D use ordinary eligibility, including re-armed over-budget pools. Batch and context
+limits still apply. Several C batches or due D pools can therefore run without another N batch.
+Completion requires no frozen Raw left, neither C nor D due, and no owned task still running.
+Below-threshold tails remain. Empty/dropped results do not re-arm; failure or cancellation ends the
+drain. A waiting state need not imply an in-flight task when a due phase could not progress.
 
-N and C can overlap. The catchup lifetime retains already launched C callbacks
-after the final N batch so their D check is not lost. Stop/off/shutdown/path changes
-fence those callbacks. Chaining remains host-local and is the sole exception to
-ordinary no-completion-chaining; entry events do not expand the frozen N boundary.
+N and C can overlap. Successful owned completions remain checkpoints after the final N batch.
+Stop/off/shutdown/path changes fence those callbacks. This remains the sole exception to ordinary
+no-completion-chaining; entry events do not expand the frozen N boundary.
 Core enforces that boundary through `boundary.maxEntryId`. Other exact-membership
 forms remain available for fork fallback; they do not force a catchup C tail.
 
@@ -1446,10 +1447,10 @@ Three terminal business failures of one **logical task** persistently disable it
 The key is target session, phase and stable oldest selected backlog item: a source entry for Noting,
 the first fact in Consolidation order, or the frozen Dreamer pool range's first revision. A new leaf,
 a growing tail, another executor or partial Dreamer edits do not reset it. Cancellation is not a
-business failure. Dreamer ranges end once and are never retried: terminal success or failure consumes
-the frozen range, while a pre-commit cancellation records nothing. Residual over-budget state alone
-is not a new logical failure and does not loop. Worker completion starts no next task; a later eligible
-entry or bounded compaction recovery supplies the next scheduling opportunity.
+business failure. Dreamer ranges end once: processing covers skips and own output, leaving untouched
+material pending. Residual over-budget state alone is not a new logical failure. Ordinary worker
+completion starts no next task; later eligible entries or bounded compaction recovery supply new
+opportunities. Manual catchup alone rechecks all phases after its own successful completions.
 
 Provider retries and fork fallback share one durable execution identity. A refused fork followed
 by successful fresh execution adds no failure; a terminal fresh failure adds one. Incomplete
