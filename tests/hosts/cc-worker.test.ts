@@ -762,6 +762,48 @@ test("manual catchup drains bounded Noting but leaves below-threshold facts and 
   memory.close();
 });
 
+test("catchup reports a C terminal failure without rolling back its committed knowledge", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-partial-c-")); dirs.push(directory);
+  const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
+    const input = raw as NotingAgentInput | ConsolidationAgentInput;
+    if (input.kind === "noting") {
+      const entry = input.material.entries[0]!;
+      const batch = { facts: [{ category: "observation", actor: "user", text: "A durable synthetic observation.",
+        source: [entry.view.match(/\[T\d+#E\d+/)![0].slice(1)] }] };
+      const note = input.tools.find(tool => tool.name === "note")!;
+      if (input.reviewFeedback(note.execute(batch))) { input.reportRequest({ exact: true }); note.execute(batch); }
+    } else {
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create",
+        text: "Committed before terminal failure.", category: "reference", scope: "session", topics: [],
+        supports: input.range.facts.map(fact => `F${fact.id}`), reason: "Synthetic durable reference." }], skipped: [] });
+    }
+    return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
+  }, { noting: { triggerTokens: 1_000_000, batchTokens: 1000 }, consolidation: { triggerTokens: 1 } });
+  const project = memory.store.createProject({ name: "partial-c", declaredBy: "mark" });
+  const session = memory.store.createSession({ host: "cc:partial-c", projectId: project.id, startedAt: "2026-01-01T00:00:00Z",
+    firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
+  const source = append(memory, session.id, "partial", "The committed knowledge must survive its worker's later failure.");
+  const consolidate = memory.consolidate;
+  const failure = vi.spyOn(memory, "consolidate").mockImplementation(async options => {
+    const result = await consolidate(options);
+    expect(result.outcome).toBe("success");
+    if (result.outcome !== "success") throw new Error("fixture C did not commit");
+    return { outcome: "failure", runId: result.runId, problems: ["terminal failure after commit"] };
+  });
+  const dream = vi.spyOn(memory, "dream");
+  const scheduler = new CcTaskScheduler(memory, workerConfig(directory).worker, () => {});
+  try {
+    scheduler.startCatchup({ state: "ready", coreSessionId: session.id, branch: "main", headTurnId: source.turn.id,
+      selectedEntryIds: source.ids, appendedEntryIds: [], problems: [], snapshot: {} as any });
+    for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "failed"; i++) await tick();
+    expect(scheduler.catchupStatus()).toMatchObject({ state: "failed", diagnostic: "terminal failure after commit" });
+    expect(memory.store.db.prepare("SELECT text FROM knowledge_revisions").all()).toEqual([
+      { text: "Committed before terminal failure." }]);
+    expect(dream).not.toHaveBeenCalled();
+    await tick(); expect(failure).toHaveBeenCalledTimes(1);
+  } finally { scheduler.stop(); await scheduler.settle(); memory.close(); }
+});
+
 test("manual catchup reports waiting on a foreign claim and resumes only on a later opportunity", async () => {
   const calls: string[] = []; let foreign = true, pending = true;
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },

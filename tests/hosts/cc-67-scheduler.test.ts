@@ -22,7 +22,7 @@ function fixture() {
     dream: vi.fn(async () => { starts.push("dreaming"); return { outcome: "success" }; }) };
   const scheduler = new CcTaskScheduler(memory as any, worker, () => {});
   return { scheduler, memory, checks, starts, disable: () => { enabled = false; },
-    consume: (count: number) => { pending.splice(0, count); } };
+    consume: (count: number) => { pending.splice(0, count); }, append: () => pending.push(3) };
 }
 
 test("bootstrap checks the final origin once, including Hook-first, while live entries remain independent", async () => {
@@ -129,6 +129,50 @@ test("preexisting ordinary C is not adopted for catchup's D callback", async () 
   expect(f.scheduler.catchupStatus().state).toBe("completed");
   release(); await tick(); await tick();
   expect(f.memory.dream).not.toHaveBeenCalled();
+});
+
+test.each(["consolidation", "dreaming"] as const)("catchup-owned %s terminal failures fence future continuation", async phase => {
+  for (const outcome of ["failure", "cancelled", "throw"] as const) {
+    const f = fixture(); f.append();
+    let releaseN!: () => void, failDownstream!: () => void;
+    const originalN = f.memory.noting.getMockImplementation()!;
+    f.memory.noting.mockImplementationOnce(originalN).mockImplementation(async () => {
+      await new Promise<void>(resolve => { releaseN = resolve; });
+      return originalN();
+    });
+    const execute = vi.fn(async () => {
+      await new Promise<void>(resolve => { failDownstream = resolve; });
+      if (outcome === "throw") throw new Error("downstream transport failed");
+      return { outcome, problems: ["downstream terminated"] };
+    });
+    if (phase === "consolidation") f.memory.consolidate = execute as any;
+    else f.memory.dream = execute as any;
+    f.scheduler.startCatchup({ ...projection, selectedEntryIds: [1, 2, 3] });
+    for (let i = 0; i < 10 && (!releaseN || !failDownstream); i++) await tick();
+    expect(releaseN).toBeTypeOf("function"); expect(failDownstream).toBeTypeOf("function");
+    failDownstream(); await tick();
+    expect(f.scheduler.catchupStatus()).toMatchObject({ state: outcome === "cancelled" ? "stopped" : "failed",
+      diagnostic: outcome === "throw" ? "downstream transport failed" : "downstream terminated" });
+    const before = { n: f.memory.noting.mock.calls.length, c: f.memory.consolidate.mock.calls.length, d: f.memory.dream.mock.calls.length };
+    // The in-flight N retains ownership, but its completion must not launch another N/C/D.
+    releaseN(); await tick(); await tick();
+    f.scheduler.reconcile(projection, false); await tick();
+    expect({ n: f.memory.noting.mock.calls.length, c: f.memory.consolidate.mock.calls.length, d: f.memory.dream.mock.calls.length }).toEqual(before);
+    expect(f.memory.pendingEntries()).toEqual([{ id: 3 }]);
+    expect(f.memory.cancelTasks).not.toHaveBeenCalled();
+  }
+});
+
+test.each(["empty", "dropped"] as const)("downstream %s is not a catchup failure or retry", async outcome => {
+  const f = fixture();
+  f.memory.consolidate.mockImplementation(async () => ({ outcome }) as any);
+  f.scheduler.startCatchup(projection);
+  for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick();
+  expect(f.scheduler.catchupStatus().state).toBe("completed");
+  expect(f.memory.dream).not.toHaveBeenCalled();
+  const calls = f.memory.consolidate.mock.calls.length;
+  await tick(); f.scheduler.reconcile(projection, false); await tick();
+  expect(f.memory.consolidate).toHaveBeenCalledTimes(calls);
 });
 
 test.each(["stop", "off", "path"])("%s fences C completion's D check after N has drained", async action => {

@@ -157,21 +157,25 @@ export class CcTaskScheduler {
   private async runCandidates(phase: CcWorkerPhase, executorSessionId: number,
     candidates: (TaskTarget & { borrowed: boolean })[], cancellationEpoch: number): Promise<CcTaskResult | undefined> {
     for (const { borrowed, ...target } of candidates) {
-      // Slots are reserved synchronously but provider admission starts in a microtask. The same
-      // cancellation epoch that fences manual catchup also fences ordinary and borrowed candidates,
-      // including continuation after an earlier candidate drops or loses admission.
-      if (this.stopped || this.cancellationEpoch !== cancellationEpoch || !this.memory.store.enabled(executorSessionId)) return;
       try {
-        const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
-        const result = phase === "noting" ? await this.memory.noting(options)
-          : phase === "consolidation" ? await this.memory.consolidate(options) : await this.memory.dream(options);
-        this.report(phase, target, result);
-        if (result.outcome !== "dropped" && result.outcome !== "empty") return result;
+        const result = await this.runCandidate(phase, executorSessionId, target, borrowed, cancellationEpoch);
+        if (!result || result.outcome !== "dropped" && result.outcome !== "empty") return result;
       } catch (error) {
         this.diagnostic(`${phase} admission failed for S${target.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
         if (!(error instanceof Error && error.cause === "task admission")) return;
       }
     }
+  }
+
+  /** One ordinary admission path; callers own continuation and error handling, not claim policy. */
+  private async runCandidate(phase: CcWorkerPhase, executorSessionId: number, target: TaskTarget,
+    borrowed: boolean, epoch: number): Promise<CcTaskResult | undefined> {
+    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) return;
+    const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
+    const result = phase === "noting" ? await this.memory.noting(options)
+      : phase === "consolidation" ? await this.memory.consolidate(options) : await this.memory.dream(options);
+    this.report(phase, target, result);
+    return result;
   }
 
   private report(phase: CcWorkerPhase, target: TaskTarget, result: CcTaskResult): void {
@@ -233,21 +237,39 @@ export class CcTaskScheduler {
 
   /** Catchup adds completion opportunities, not a second admission policy or a retry queue. */
   private checkDownstream(drain: Catchup, phase: "consolidation" | "dreaming", epoch: number): void {
-    const active = () => !this.stopped && this.catchup === drain && this.cancellationEpoch === epoch &&
-      (drain.state === "running" || drain.state === "waiting") && this.memory.store.enabled(drain.target.sessionId);
+    const owned = () => !this.stopped && this.catchup === drain && this.cancellationEpoch === epoch &&
+      (drain.state === "running" || drain.state === "waiting");
+    const active = () => owned() && this.memory.store.enabled(drain.target.sessionId);
+    const fail = (error: unknown) => {
+      this.diagnostic(`${phase} catchup failed: ${String(error)}`);
+      if (owned()) {
+        drain.state = "failed"; drain.phase = undefined;
+        drain.diagnostic = error instanceof Error ? error.message : String(error);
+      }
+    };
     if (!active() || this.slots.has(phase)) return;
     let due: boolean;
     try { due = this.memory.taskEligibility(phase, drain.target).due; }
-    catch (error) { this.diagnostic(`${phase} eligibility failed: ${String(error)}`); return; }
+    catch (error) { fail(error); return; }
     if (!due) return;
     drain.downstream.add(phase);
     this.reserve(phase, async () => {
       if (!active()) return;
-      const result = await this.runCandidates(phase, drain.target.sessionId,
-        [{ ...drain.target, borrowed: false }], epoch);
-      if (active() && result?.outcome === "success" && phase === "consolidation")
-        this.checkDownstream(drain, "dreaming", epoch);
-      return result;
+      try {
+        const result = await this.runCandidate(phase, drain.target.sessionId, drain.target, false, epoch);
+        if (owned() && result && result.outcome !== "success" && result.outcome !== "empty" && result.outcome !== "dropped") {
+          drain.state = result.outcome === "cancelled" ? "stopped" : "failed";
+          drain.phase = undefined;
+          drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : undefined) || result.outcome;
+        }
+        if (active() && result?.outcome === "success" && phase === "consolidation")
+          this.checkDownstream(drain, "dreaming", epoch);
+        return result;
+      } catch (error) {
+        if (error instanceof Error && error.cause === "task admission")
+          this.diagnostic(`${phase} admission failed for S${drain.target.sessionId}: ${error.message}`);
+        else fail(error);
+      }
     }, () => { drain.downstream.delete(phase); return true; });
   }
 

@@ -71,7 +71,7 @@ async function fullChain(entries: number, due: boolean) {
   await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: nativeSessionId, transcript_path: transcriptPath }, at);
   const diagnostics: string[] = [], coordinator = new CcCoordinator(config, nativeSessionId, message => diagnostics.push(message));
   let importer!: CcImporter, eligibility = 0, prepares = 0, inputs = 0, admissionAt = 0;
-  let schedulerMs = 0, scheduledAt = 0;
+  let schedulerMs = 0, scheduledAt = 0, scheduleFinishedAt = 0;
   const phases: string[] = [], origins: number[] = [];
   const phaseWork: Record<string, { calls: number; prepares: number }> = {};
   let maxWriteHoldMs = 0, maxBeginWaitMs = 0;
@@ -120,9 +120,14 @@ async function fullChain(entries: number, due: boolean) {
     const sql = vi.spyOn(store.db, "prepare").mockImplementation((query: string) => { prepares++; return prepare(query); });
     const originalInput = (store as any).commitGraphInput.bind(store);
     const graph = vi.spyOn(store as any, "commitGraphInput").mockImplementation((...params) => { inputs++; return originalInput(...params); });
-    scheduledAt = performance.now();
+    const before = performance.now();
+    scheduledAt ||= before;
     try { originalSchedule.apply(this, args); }
-    finally { schedulerMs += performance.now() - scheduledAt; countEligibility.mockRestore(); sql.mockRestore(); graph.mockRestore(); }
+    finally {
+      scheduleFinishedAt ||= performance.now();
+      schedulerMs += performance.now() - before;
+      countEligibility.mockRestore(); sql.mockRestore(); graph.mockRestore();
+    }
   });
   const workerSpy = vi.spyOn(CcAgentWorker.prototype, "run").mockImplementation(async task => {
     phases.push(task.kind); admissionAt ||= performance.now();
@@ -135,17 +140,28 @@ async function fullChain(entries: number, due: boolean) {
     }
     return { outcome: "success", output: "synthetic worker", audit: { available: false, reason: "deterministic fixture" } };
   });
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
   try {
     const start = performance.now(), startedAt = Date.now();
+    let lastHeartbeat = start, maxHeartbeatGapMs = 0, heartbeatSamples = 0;
+    // Arm before bootstrap, including its asynchronous attach and synchronous import/scheduling.
+    // This reports actual stalls; it does not pretend synchronous 30k ingestion is responsive.
+    heartbeat = setInterval(() => {
+      const now = performance.now();
+      maxHeartbeatGapMs = Math.max(maxHeartbeatGapMs, now - lastHeartbeat);
+      lastHeartbeat = now; heartbeatSamples++;
+    }, 10);
     const result = await coordinator.requestReconcile("startup");
     const bootstrapMs = performance.now() - start, completedAt = Date.now();
     expect(result?.state).toBe("ready");
     expect(result?.selectedEntryIds).toHaveLength(entries);
     expect(result?.appendedEntryIds).toHaveLength(entries);
     expect(result?.bootstrap).toBe(true);
-    const timer = performance.now();
-    await new Promise<void>(resolve => setImmediate(resolve));
-    const responseMs = performance.now() - timer;
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+    clearInterval(heartbeat); heartbeat = undefined;
+    expect(heartbeatSamples).toBeGreaterThan(0);
+    const workerAdmissionFromBootstrapMs = admissionAt - start;
+    const workerAdmissionAfterSchedulingMs = admissionAt - scheduleFinishedAt;
     expect(eligibility).toBe(3);
     expect(origins).toEqual(Array(3).fill(result!.selectedEntryIds.at(-1)));
     expect(inputs).toBe(1);
@@ -155,7 +171,7 @@ async function fullChain(entries: number, due: boolean) {
     expect(phases).toContain("noting");
     expect(phases.includes("dreaming")).toBe(due);
     expect(admissionAt).toBeGreaterThanOrEqual(scheduledAt);
-    expect(responseMs).toBeLessThan(2000);
+    expect(workerAdmissionAfterSchedulingMs).toBeGreaterThanOrEqual(0);
     const idle = await coordinator.requestReconcile("stat wake-up");
     expect(idle?.appendedEntryIds).toEqual([]);
     expect(idle?.bootstrap).toBe(false);
@@ -168,10 +184,12 @@ async function fullChain(entries: number, due: boolean) {
     expect(writerResult.lastAt).toBeGreaterThan(startedAt);
     expect(writerResult.maxMs).toBeLessThan(5000);
     expect(maxWriteHoldMs).toBeLessThan(5000);
-    console.log(JSON.stringify({ fixture: "CC full chain", entries, due, journalMode: "wal", bootstrapMs, schedulerMs, responseMs,
+    console.log(JSON.stringify({ fixture: "CC full chain", entries, due, journalMode: "wal", bootstrapMs, schedulerMs,
+      maxHeartbeatGapMs, heartbeatSamples, workerAdmissionFromBootstrapMs, workerAdmissionAfterSchedulingMs,
       eligibility, graphInputs: inputs, sqlPrepares: prepares, phaseWork, phases, maxWriteHoldMs, maxBeginWaitMs, writer: writerResult }));
     return phaseWork;
   } finally {
+    if (heartbeat) clearInterval(heartbeat);
     await coordinator.shutdown("test");
     importSpy.mockRestore(); scheduleSpy.mockRestore(); workerSpy.mockRestore(); transactionSpy.mockRestore();
     if (writer.connected) writer.send("stop", () => {});
