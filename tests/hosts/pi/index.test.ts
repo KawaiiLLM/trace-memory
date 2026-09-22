@@ -241,14 +241,16 @@ test("in-flight duplicate is dropped; new raw and branch switches cannot change 
   expect(h.conversations[0]!.messages[0]!.content).not.toContain("later raw");
 });
 
-test("consolidation waits for a turn stop after facts arrive and commits in one tool round", async () => {
+test("consolidation admits immediately once facts arrive and commits in one tool round", async () => {
   const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, consolidationModel: "fake/Consolidator" });
   const output = consolidationReply();
   h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? output : notingFact(c));
   await h.turn();
-  expect(h.requests).toHaveLength(2); // Only the noting tool loop; no Consolidation trigger.
+  // Ticket 69: Noting's own completion is a checkpoint that admits the now-due Consolidation
+  // immediately, within this same turn's drain — not deferred to the next entry as it once was.
+  expect(h.requests).toHaveLength(4); // the noting tool loop, then Consolidation's own.
   await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(4);
+  expect(h.requests).toHaveLength(4); // nothing further is due
   const submitted = h.conversations[2]!, completed = h.conversations[3]!;
   expect(completed.systemPrompt).toBe(submitted.systemPrompt);
   expect(completed.messages.slice(0, 1)).toEqual(submitted.messages);
@@ -298,16 +300,22 @@ test("provider failures retain captured request and do not advance a watermark",
 });
 
 test("consolidation in-flight duplicates cannot erase the single committed submission", async () => {
-  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
-  h.provider(async c => notingFact(c)); await h.turn();
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1 });
+  await h.turn(); // allocates S1/T1; nothing is due yet (noting's trigger is out of reach)
+  const committed = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "t" },
+    facts: [{ turnId: 1, category: "observation", actor: "user", text: "seed", source: ["T1#user"], createdAt: "t" }] });
+  if (!committed.ok) throw new Error(committed.problems.join("; "));
+  await h.emit("session_tree"); // ticket 69: a restore/branch-switch arms Consolidation for this out-of-band commit
   const output = consolidationReply();
   let release!: (value: Reply) => void;
   h.provider(async c => c.messages.length === 1 ? new Promise(resolve => { release = resolve; }) : output);
-  await h.answer("next completed source"); await h.emit("agent_settled"); await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(3);
+  // Two agent_settled boundaries fire close together over the same due fact; the second finds
+  // Consolidation's slot already busy (held below) and is discarded, not queued or duplicated.
+  h.persist(reply("trigger")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.emit("agent_settled"); await h.drain();
+  expect(h.requests).toHaveLength(1);
   release(output); await h.drain();
-  expect(h.requests).toHaveLength(4);
-  expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success"]);
+  expect(h.requests).toHaveLength(2);
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "consolidation").map(r => r.outcome)).toEqual(["success"]);
 });
 
 test("knowledge is injected once per visible baseline, only once something exists; later prompts carry nothing (29d)", async () => {
@@ -674,11 +682,15 @@ test("main trace can fetch historical rejected tool evidence without becoming a 
 });
 
 test("18:39: two memory submissions in one reply commit the first and reject the second", async () => {
-  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
-  h.provider(async c => notingFact(c)); await h.turn();
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1 });
+  await h.turn(); // allocates S1/T1; nothing is due yet (noting's trigger is out of reach)
+  const committed = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "t" },
+    facts: [{ turnId: 1, category: "observation", actor: "user", text: "seed", source: ["T1#user"], createdAt: "t" }] });
+  if (!committed.ok) throw new Error(committed.problems.join("; "));
+  await h.emit("session_tree"); // ticket 69: a restore/branch-switch arms Consolidation for this out-of-band commit
   const double = { ...consolidationReply(), content: [consolidationReply().content[0]!, { ...consolidationReply().content[0]!, id: "memory-2" }] } as Reply;
   h.provider(async c => c.messages.some(m => m.role === "toolResult") ? reply("done") : double);
-  await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
+  h.persist(reply("trigger")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
   const completed = h.conversations.find(c => c.messages.filter(m => m.role === "toolResult").length === 2)!.messages;
   expect(completed.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult"]);
   const results = completed.filter(m => m.role === "toolResult") as { content: { text: string }[] }[];
@@ -906,12 +918,16 @@ test("a fork sees consolidation progress exactly when every fact of that consoli
 });
 
 test("a dropped duplicate Consolidation trigger neither ends the running indicator nor changes the last outcome", async () => {
-  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1 });
+  await h.turn(); // allocates S1/T1; nothing is due yet (noting's trigger is out of reach)
+  const committed = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "t" },
+    facts: [{ turnId: 1, category: "observation", actor: "user", text: "seed", source: ["T1#user"], createdAt: "t" }] });
+  if (!committed.ok) throw new Error(committed.problems.join("; "));
+  await h.emit("session_tree"); // ticket 69: a restore/branch-switch arms Consolidation for this out-of-band commit
   let release!: (value: Reply) => void, held = false;
   h.provider(async c => { if (!c.systemPrompt!.includes("You are the Consolidator:")) return notingFact(c);
     if (held) return consolidationReply(); held = true; return new Promise(resolve => { release = resolve; }); });
-  await h.turn(); // F1 recorded
-  await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain(); // Consolidation starts and waits for the model
+  h.persist(reply("trigger")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain(); // Consolidation starts and waits for the model
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <success>●<\/success> /);
   await h.answer("tick"); await h.emit("agent_settled"); await h.drain(); // fresh completion, duplicate Consolidation drops at once
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <success>●<\/success> /); // the first run is still in flight

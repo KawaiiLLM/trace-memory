@@ -38,14 +38,22 @@ test("64a: a model switch during Consolidation does not redirect the admitted ru
 test("64a: consolidation runs one submission in a fresh child on its own model, with nothing to fall back from", async () => {
   const h = createHost({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, notingModel: "fake/noter", consolidationModel: "fake/Consolidator" });
   try {
-    h.provider(async c => c.systemPrompt!.includes("Consolidation (knowledge extraction)") ? consolidationOutput : notingFact(c));
+    // Ticket 69: Noting's own completion in `h.turn()` below now admits this due Consolidation
+    // immediately rather than waiting for the second prompt, so its reply must skip whichever facts
+    // that particular admission's batch actually holds — the static `consolidationOutput` names only
+    // F1 and would loop forever resubmitting an unrecognized skip if a later admission's batch differs.
+    h.provider(async c => c.systemPrompt!.includes("Consolidation (knowledge extraction)") ? consolidationReply(c) : notingFact(c));
     await h.turn();
     await h.prompt(); // the noting's facts reach the conversation first
     await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
     const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
-    expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["subagent", "fake/Consolidator", "success"]]);
-    expect(JSON.parse(runs[0]!.response!).fallbackReason).toBeUndefined(); // nothing was requested and refused
-    expect(JSON.parse(runs[0]!.response!).toolCalls).toHaveLength(1);
+    // Ticket 69: the first admission, right after h.turn()'s own Noting commit, and a second once
+    // the follow-up prompt's Noting run commits again — each still one fresh subagent submission.
+    expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["subagent", "fake/Consolidator", "success"], ["subagent", "fake/Consolidator", "success"]]);
+    for (const run of runs) {
+      expect(JSON.parse(run.response!).fallbackReason).toBeUndefined(); // nothing was requested and refused
+      expect(JSON.parse(run.response!).toolCalls).toHaveLength(1);
+    }
     expect(h.notices.filter(n => n.includes("consolidation fell back"))).toEqual([]);
   } finally { await h.dispose(); }
 });

@@ -169,7 +169,10 @@ test("both modes default to subagent in Settings and ordinary execution; saving 
   h.ctx.hasUI = false;
   await h.turn();
   await h.answer("tick again"); await h.emit("agent_settled"); await h.drain();
-  expect(modes("consolidation")).toEqual([["subagent", "subagent"], ["fork", "subagent"]]);
+  // Ticket 69: this cycle's own default turn is already enough to make Noting due a second time, so
+  // it commits in two separate batches; each commit is a completion checkpoint that admits
+  // Consolidation immediately (not delayed to the next entry), so it also runs twice here, both fork.
+  expect(modes("consolidation")).toEqual([["subagent", "subagent"], ["fork", "subagent"], ["fork", "subagent"]]);
   expect(modes("noting").at(-1)).toEqual(["subagent", "subagent"]);
 });
 

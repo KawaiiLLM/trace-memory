@@ -8,7 +8,7 @@
 // commit, that the indicator is one Pi theme role per running phase (51) while routine text stays dim,
 // and that a refresh loads no Raw, rendered Knowledge or run audit body and builds one path snapshot.
 import { afterEach, expect, test, vi } from "vitest";
-import { host as createHost, reply, notingFact, noteCommitted, consolidationReply, type Reply } from "./test-host.ts";
+import { host as createHost, reply, notingFact, noteCommitted, type Reply } from "./test-host.ts";
 import { countPathBuilds, countRunBodies, countSourceReads } from "../../perf/fixture.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
@@ -320,16 +320,17 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
 
 test("24a/51: the indicator is one theme role per running phase, Noting wins over Consolidation, and no colour support prints the same line unpainted", async () => {
   const h = host({ "noting.triggerTokens": 1, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false });
-  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? consolidationReply() : notingFact(c));
-  await h.turn(); // F1 recorded; idle again
-  expect(footer(h)).toMatchObject({ glyph: "○", role: "dim" });
+  // Ticket 69: this Noting run's own completion immediately admits Consolidation (F1 alone crosses its
+  // trigger) instead of waiting for the next entry, so holding only the Consolidation reply open leaves
+  // it running — not settled — by the time this turn's drain returns.
+  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? new Promise(() => {}) : notingFact(c));
+  await h.turn(); // F1 recorded; its completion admits Consolidation immediately, which stays held at the wire
+  expect(footer(h)).toMatchObject({ glyph: "●", role: "success" });
 
-  // Both phases due at the same boundary, both held at the wire: Noting has display priority.
-  let held = 0;
-  h.provider(async () => new Promise(() => { held++; }));
+  // A new entry makes Noting due again; hold it too, so both phases are genuinely in flight together.
+  h.provider(async () => new Promise(() => {}));
   await h.prompt("second"); await h.answer(); await h.emit("agent_settled"); await h.drain();
-  expect(held).toBe(2); // a Noting and a Consolidation request are both in flight
-  expect(footer(h)).toMatchObject({ glyph: "●", role: "accent" });
+  expect(footer(h)).toMatchObject({ glyph: "●", role: "accent" }); // Noting has display priority over Consolidation
 
   // Off wins over everything, including work still in flight.
   await h.commands.get("trace")!.handler("off", h.ctx);

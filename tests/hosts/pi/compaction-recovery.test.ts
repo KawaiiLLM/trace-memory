@@ -388,7 +388,12 @@ test("28b acceptance 9: an unrelated occupied slot is waited out as capacity, ne
   try {
     let release = () => {};
     const held = new Promise<void>(resolve => { release = resolve; });
-    h.provider(async conversation => { await held; return notes(conversation, "the other operation's fact"); });
+    // Ticket 69: `compact()` below also lowers Consolidation's trigger (its shared reset loop
+    // catches both, which were both 1e9 here), and the fact this test commits arms and admits it
+    // immediately once the held Noting task frees its slot — not deferred to a further entry as
+    // before this ticket. The fixture must answer that admission too, or an unhandled reply shape
+    // (a "note" call answering a Consolidator prompt) loops the run forever.
+    h.provider(async conversation => isNoting(conversation) ? (async () => { await held; return notes(conversation, "the other operation's fact"); })() : consolidates(h, conversation));
     await h.prompt(long("FIRST")); await h.answer(); // the ordinary trigger takes the Noting slot
     await vi.waitFor(() => expect(h.requests.length).toBe(1));
     await h.prompt(long("SECOND")); await h.answer(); // enough real Raw remains eligible after the capacity wait
