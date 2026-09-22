@@ -71,7 +71,7 @@ try {
         assert.equal(screen.length, terminal.rows);
         const plain = screen.map(stripTerminalSequences);
         assert.ok(!plain.some((line: string) => line.includes("background")), "open overlay must cover every viewport row");
-        for (const action of ["Off", "Runs", "Project", "Mark"])
+        for (const action of ["Off", "Runs", "Project"])
           assert.ok(plain.some((line: string) => line.trim().replace(/^→ /, "") === action));
         seen.push(...plain); component.handleInput?.("\x1b[6~");
       }
@@ -104,13 +104,9 @@ try {
   await h.dispose();
 }
 
-// 32f: the distributable must reach native Dreamer through actual bounded compaction recovery.
-const dreamer = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000,
-  "dreaming.triggerTokens": 5000, "compaction.overflowTokens": 50 }, { extension });
+// 64c: an ingested entry starts a real pool Dreamer. Compaction remains separate from processing.
+const dreamer = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000}, { extension });
 try {
-  dreamer.memory.setKnowledgeBudget("global", 0);
-  dreamer.memory.setKnowledgeBudget("project", 0);
-  dreamer.memory.setKnowledgeBudget("session", 0);
   await dreamer.emit("session_start"); await dreamer.turn();
   const store = dreamer.memory.store;
   const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "smoke" }, facts: [{ turnId: 1, category: "decision", actor: "user", text: "Remember the choice", source: ["T1#user"], createdAt: "smoke" }] });
@@ -118,13 +114,18 @@ try {
   const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "smoke" }, operations: [{ op: "create", handle: "$1", author: "smoke", text: "Remember the choice ".repeat(2000), category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: [], reason: "initial", createdAt: "smoke" }] });
   assert.ok(created.ok);
   const item = created.committed[0]!;
+  const pool = `project:${store.getSession(1)!.projectId}`;
+  dreamer.memory.setKnowledgeBudget("project", store.pendingPoolWeight(pool, store.knowledgePath(1, "main")) * 2);
+  let replies = 0;
   dreamer.provider(async conversation => {
     assert.ok(conversation.systemPrompt?.startsWith("# Dreamer"));
     assert.ok(!conversation.tools?.some(t => t.name === "note"));
+    if (replies++) return reply("Retired the supplied rule; history preserved.");
     return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: { operations: [{ op: "archive", id: `K${item.knowledgeId}@${item.commit}`, supports: [], reason: "Deliberate active-memory retirement; history preserved" }], skipped: [] } }] };
   });
+  await dreamer.turn(); await dreamer.drain();
   const compacted = await dreamer.emit("session_before_compact", { preparation: { tokensBefore: 100000 } });
-  assert.ok(compacted?.compaction?.details?.traceMemory, "recovery returns the exact custom carrier");
+  assert.ok(compacted?.compaction?.details?.traceMemory, "compaction returns the exact custom carrier");
   const composition = compacted.compaction.details.traceMemory.composition;
   assert.equal(composition.bodyHash.length, 64);
   assert.ok(composition.raw > 0, "installed compaction carries assembly-time Raw estimates");
@@ -134,21 +135,22 @@ try {
   assert.equal(runs[0]!.mode, "subagent");
   const archive = store.listCommitsByRun(runs[0]!.id)[0]!;
   assert.equal(archive.actorRole, "dreaming");
-  assert.deepEqual(archive.supports, []);
-  assert.ok(store.isKnowledgeProcessed(archive.id));
-  // Current-only trace intentionally gives an archived identity only a compact status pointer;
-  // inspect the exact archive commit to verify its trusted maintenance provenance.
-  assert.ok(dreamer.memory.trace(`K${item.knowledgeId}@${archive.id}`).includes("maintenance judgment"));
+  assert.deepEqual(store.listFactsByRun(runs[0]!.id), []);
+  assert.deepEqual(archive.supports, [facts.facts[0]!.id]);
+  assert.deepEqual(store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool)
+    .map(row => Number(row.revision_id)), [item.commit, archive.id]);
+  // Exact archive reads preserve the inherited direct support and parent provenance.
+  assert.ok(dreamer.memory.trace(`K${item.knowledgeId}@${archive.id}`).includes(`F${facts.facts[0]!.id}`));
   assert.ok(dreamer.notices.some(n => n.includes("compaction preparing")));
   assert.ok(!dreamer.notices.some(n => n.includes("compaction used")), "before returning a carrier is not persisted success");
   const entry = dreamer.compaction(compacted.compaction.summary, { details: compacted.compaction.details });
   await dreamer.emit("session_compact", { compactionEntry: entry, fromExtension: true, reason: "manual", willRetry: false });
-  assert.ok(dreamer.notices.at(-1)!.includes("compaction used bounded entry views (after recovery: Dreamer)"));
+  assert.ok(dreamer.notices.at(-1)!.includes("compaction used bounded entry views"));
   const requestsAfterRecovery = dreamer.requests.length;
   await dreamer.commands.get("trace").handler("", dreamer.ctx);
-  assert.ok(dreamer.notices.at(-1)!.includes("Compaction: bounded entry views (after recovery: Dreamer)"));
+  assert.ok(dreamer.notices.at(-1)!.includes("Compaction: bounded entry views"));
   assert.equal(dreamer.requests.length, requestsAfterRecovery, "reading the persisted recovery warning starts no worker");
-  console.log("Dreamer recovery smoke passed: native fresh child, immediate trusted archive, final certification, persisted custom carrier and read-only success status.");
+  console.log("Dreamer smoke passed: per-entry native child, trusted archive, frozen/own processing pairs, persisted custom carrier and read-only status.");
 } finally { await dreamer.dispose(); }
 
 // 22b: the long-history regression, on the same entry the case above used — the installed one under

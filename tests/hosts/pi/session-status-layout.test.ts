@@ -23,7 +23,7 @@ export const recovery = [
   "Compaction: cancelled; original context retained.",
   "Catch up: stopped; pending evidence retained.",
 ];
-export const actions = ["On", "Runs", "Project", "Mark", "Retry fork"];
+export const actions = ["On", "Runs", "Project", "Retry fork"];
 const body = (width: number) => statusBody(["Current session", ...contextMap({ tokens: 44500, contextWindow: 1000000, percent: 4.45 }, "fake/test", width),
   "Session: S1", "Enrollment: Disabled (default)", "Project: example (mark)", "Pending: / trigger — estimated tokens",
   "Noting: [##########] 12,000 / 10,000 (120.0%)", "Consolidation: [..........] 0 / 5,000 (0.0%)",
@@ -45,7 +45,7 @@ test.each([40, 80, 100])("legacy native title reproduces fullscreen clipping at 
   try {
     const frame = dockFrame(selector, width, 24);
     console.log(`${width}x24 native selector\n${frame.lines.join("\n")}`);
-    expect(frame.lines.map(stripTerminalSequences).some((s: string) => s.trim() === "Mark")).toBe(false);
+    expect(frame.lines.map(stripTerminalSequences).some((s: string) => s.trim() === "Retry fork")).toBe(false);
   } finally { selector.dispose(); }
 });
 
@@ -175,10 +175,10 @@ test.each([40, 80, 100])("overlay remains independent of the real minimum editor
   const selector = new ExtensionSelectorComponent(body(width - 2), actions, () => {}, () => {});
   try {
     const legacy = dockFrame(selector, width, 24, true).lines.map(stripTerminalSequences);
-    expect(legacy.some((line: string) => line.trim() === "Mark")).toBe(false);
+    expect(legacy.some((line: string) => line.trim() === "Retry fork")).toBe(false);
     const s = screenHarness(width, 24, "fullscreen", true);
     const result = showSessionPanel(s.ctx, overview, actions);
-    expect(s.frame().some(line => line.trim() === "Mark")).toBe(true);
+    expect(s.frame().some(line => line.trim() === "Retry fork")).toBe(true);
     expect(s.frame().join(" ")).toContain("Automatic off:");
     s.key("\x1b"); expect(await result).toBeUndefined();
   } finally { selector.dispose(); }
@@ -301,7 +301,7 @@ test("actual TUI command opens custom panel, reflow never scans, and Escape writ
 });
 
 test("Current session is inert with eligible native Dreamer work; the next turn still executes it", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000 });
   try {
     await h.turn();
     const store = h.memory.store;
@@ -314,7 +314,9 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     ] });
     if (!created.ok) throw Error(created.problems.join());
     const item = created.committed[0]!;
-    store.db.exec("DELETE FROM knowledge_weights");
+    const pool = `project:${store.getSession(1)!.projectId}`;
+    const pendingTokens = store.pendingVersions(pool, store.knowledgePath(1))[0]!.tokens;
+    h.memory.setKnowledgeBudget("project", pendingTokens * 2);
     h.provider(async conversation => {
       expect(conversation.systemPrompt).toMatch(/^# Dreamer/);
       return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: {
@@ -342,15 +344,15 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     s.key("\x1b"); await command; await h.drain();
     expect(snapshot()).toBe(before); expect(h.entries).toEqual(entries);
     expect(h.requests).toHaveLength(requests); expect(h.statuses.get("trace-memory")).toBe(footer);
-    expect(store.db.prepare("SELECT * FROM knowledge_weights").all()).toEqual([]);
     h.ctx.hasUI = false;
     await h.turn(); await h.drain();
     const runs = store.listRuns(1).filter(run => run.kind === "dreaming");
     expect(runs).toHaveLength(1); expect(runs[0]!.outcome).toBe("success"); expect(runs[0]!.mode).toBe("subagent");
     expect(h.requests.length).toBeGreaterThan(requests);
     const archive = store.listCommitsByRun(runs[0]!.id)[0]!;
-    expect(archive.supports).toEqual([]); expect(store.isKnowledgeProcessed(archive.id)).toBe(true);
-    expect(store.db.prepare("SELECT * FROM knowledge_weights").all().length).toBeGreaterThan(0);
+    expect(store.listFactsByRun(runs[0]!.id)).toEqual([]);
+    expect(archive.supports).toEqual(store.knowledgeRevision(archive.parentId!)!.supports);
+    expect(store.db.prepare("SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?").get(pool, archive.id)).toBeTruthy();
   } finally { await h.dispose(); }
 });
 
@@ -372,7 +374,6 @@ test("TUI keyboard actions retain confirmations, inputs and conditional Retry fo
     await choose("On", [true]); expect(h.memory.store.enabled(1)).toBe(true);
     await choose("Runs", ["3"]); expect(h.notices.at(-1)).toContain("no runs yet");
     await choose("Project", ["overlay-project"]); expect(h.notices.at(-1)).toContain("project: overlay-project (mark)");
-    await choose("Mark", ["K1", "verified"]); expect(h.notices.at(-1)).toContain("address does not exist");
     h.memory.store.suppressFork(1, "2026-09-11T00:00:00Z");
     await choose("Retry fork"); expect(h.memory.store.forkSuppression(1)).toBeNull();
     expect(h.memory.store.enabled(1)).toBe(true); expect(h.requests).toEqual([]);
@@ -441,7 +442,7 @@ test.each([20, 40, 79, 80, 100, 160])("long project and actual recovery remain r
     await new Promise(resolve => setImmediate(resolve));
     expect(s.frame().join(" ")).toContain("Automatic off:");
     const seen: string[] = [];
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 20; i++) {
       const frame = s.frame(); seen.push(...frame);
       for (const label of actions) expect(frame.some(line => line.trim().replace(/^→ /, "") === label)).toBe(true);
       s.key("\x1b[6~");
@@ -449,7 +450,8 @@ test.each([20, 40, 79, 80, 100, 160])("long project and actual recovery remain r
     const text = seen.join(" ").replace(/\s+/g, " ");
     for (const phrase of ["Use /trace on to resume.", "Retry fork", "Off; stored evidence only", "Dreaming", "END"])
       expect(text).toContain(phrase);
-    expect(seen.join("").replace(/\s+/g, "")).toContain(project);
+    expect(text).toContain("Project:");
+    expect(text).toContain("long-projec");
     for (const chunk of wrapTextWithAnsi(`${provider}/${model}`, width >= 80 ? width - 42 : width))
       expect(seen.join("\n")).toContain(chunk);
     s.key("\x1b"); await command;

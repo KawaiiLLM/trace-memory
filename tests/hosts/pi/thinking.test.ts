@@ -17,7 +17,7 @@ import { TraceMemory } from "../../../src/core/api/index.ts";
 
 const at = "2026-09-08T00:00:00.000Z";
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
-const phaseOf = (c: { systemPrompt?: string }) => c.systemPrompt?.includes("### Second-round user message") ? "consolidation" : "noting";
+const phaseOf = (c: { systemPrompt?: string }) => c.systemPrompt?.includes("You are the Consolidator:") ? "consolidation" : "noting";
 const thinkingOf = (run: { response?: string | null }) => JSON.parse(run.response!).thinking;
 /** 27d: the fallback case at the end tells the fresh child's own body from the fork attempt's — a
  * fresh child's system prompt is the Noter's, which a fork's never is — and rejects a fork body the

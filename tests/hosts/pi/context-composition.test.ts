@@ -456,8 +456,7 @@ test("initial and on/project supplement carriers share assembly measurement; ret
     const saved = JSON.stringify(retained.sm.getEntries());
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: 1, branch: "main" });
     const trace = tools.find(t => t.name === "trace")!, write = tools.find(t => t.name === "memory")!;
-    const edit = () => JSON.parse(write.execute({ operations: [{ op: "update", id: "K2@2", text: "Rule updated",
-      category: "constraint", scope: "global", supports: ["F1"], topics: [], reason: "integration" }], skipped: [] }));
+    const edit = () => JSON.parse(write.execute({ operations: [{ op: "archive", id: "K2@2", supports: ["F1"], reason: "integration mutation" }], skipped: [] }));
     // A retained carrier and raw trace supply no named-K write handle.
     expect(edit().results[0]).toContain("knowledge was not read");
     for (const address of ["T1", "K2@2"]) {
@@ -476,8 +475,9 @@ test("initial and on/project supplement carriers share assembly measurement; ret
       expect(pages).toBeGreaterThan(0);
       if (address === "T1") expect(edit().results[0]).toContain("knowledge was not read");
     }
-    expect(edit().committed[0]).toMatchObject({ knowledgeId: 2 });
-    expect(retained.read()).toEqual(before); // Live DB changes never remeasure a saved carrier.
+    expect(edit().committed[0]).toMatchObject({ knowledgeId: 2, op: "archive" });
+    expect(h.memory.store.currentCommit(2)[0]?.op).toBe("archive");
+    expect(retained.read()).toEqual(before); // Live DB mutation and reads never remeasure a saved carrier.
     expect(h.requests).toEqual([]);
   } finally { await h.dispose(); }
 });

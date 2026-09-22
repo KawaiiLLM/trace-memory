@@ -24,16 +24,15 @@ repository root, run `npm install`, `npm test`, `npm run typecheck`, and
 using the host tests' stub ExtensionAPI and commits one noting through the native
 runner into a temporary database, with the provider stubbed at the wire. See below for launching a real Pi session.
 
-This Beta requires a database created by the current schema. Older development databases,
-including those before commit reasons and versioned topics (21a/21b), are not supported.
-Recent 32-series schemas migrate phase, processing, execution and actor-role metadata in place,
-without marking legacy knowledge processed. Ticket 34a also labels existing revision supports as
-`complete_result`, adds binary split/check constraints and nullable immutable trigger-origin fields
-transactionally; Ticket 34b adds retained exact-version obligations. Revision ids, parents, links,
-Raw, audit, event settlements, marks and certifications are preserved. Historical missing origins
-remain unknown rather than guessed, and ancestry-dependent writes fail explicitly when they need one. Stop older executors before opening
-the upgraded database; mixed-runtime writes are unsupported. Preserve backups and logs.
-See the [installation guide](../README.md#install) before loading the package.
+The current schema migrates supported recent databases transactionally. The 64d migration removes
+the retired Knowledge annotation and legacy acceptance-state schema, backfills historical empty revision
+supports parent-first, migrates unchanged old-default Knowledge budgets from 4,000/10,000/1,000 to
+4,000/15,000/1,000, and retains custom budget rows. It seeds per-pool processing records only for
+legacy-recorded current visible revisions; it does not treat all current Knowledge as handled or
+fabricate records. Revision ids, parents, links, Raw and run audit remain intact. This is the intended
+migration contract, not a claim that a production copy has passed acceptance. Stop older executors
+before opening the upgraded database; mixed-runtime writes are unsupported. Preserve backups and
+logs. See the [installation guide](../README.md#install) before loading the package.
 
 ## Configuration
 
@@ -61,35 +60,35 @@ For example, either settings file can contain:
     "noting.batchTokens": 10000,
     "noting.nearThreshold": 0.4,
     "consolidation.triggerTokens": 5000,
-    "dreaming.triggerTokens": 5000,
     "dreaming.maxToolRounds": 50,
     "dreaming.model": "session",
     "dreaming.thinking": "inherit",
     "consolidation.batchTokens": 10000,
     "compaction.factsTokens": 10000,
-    "compaction.rawTokens": 10000,
-    "compaction.overflowTokens": 10000
+    "compaction.rawTokens": 10000
   }
 }
 ```
 
-`compaction.factsTokens` and `compaction.rawTokens` are 28a's two file-configured compaction
-windows. The Knowledge window is database-owned: Settings edits Global, Project and Session budgets
-for the bound database (defaults 4,000, 10,000 and 1,000). Their sum is the 15,000 applicable
-processed-Knowledge ceiling. A fixed 5,000-token unprocessed-work allowance derives both the 20,000
-ordinary-injection/compaction Knowledge window and the 20,000 Dreamer processed-input window. The
-three compaction bases therefore still total 40,000 by default; `compaction.overflowTokens` adds the
-shared 10,000 required-only allowance. No base lends spare capacity to another window.
+`compaction.factsTokens` and `compaction.rawTokens` are the two file-configured 10,000-token
+material bases. The Knowledge base is database-owned: Settings edits Global, Project and Session
+pool budgets for the bound database, defaulting to 4,000, 15,000 and 1,000. Their safe-integer sum
+is the 20,000-token Knowledge base. The shared allowance across Knowledge, facts and Raw is derived
+at runtime from the sum of the three pool triggers and the Noting/Consolidation triggers: 25,000 at
+defaults. It has no separate setting or database migration. Required pending Raw, unconsolidated facts
+and Knowledge state notices reserve shared excess first; optional Knowledge, historical Raw and historical facts then use the remainder in that order.
+The three bases never lend directly to one another.
 
-`render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove them from every settings file and
-`TRACE_MEMORY_CONFIG`; finding either is a named load error. Consolidator knowledge uses the same database-derived injection capacity as foreground Knowledge and Dreamer's processed input. Stop older executors before opening a
-database with this authority/schema upgrade; mixed old/new runtimes are unsupported. Database budget edits are exact decimal
-nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
-connections to that database. A reduction that would make any already processed owner pool or
-applicable path exceed the proposed cap is rejected with used/cap/overage diagnostics. Running
-Dreamer and Consolidator requests keep their frozen admitted knowledge ceiling; Dreamer's check receipt also shows
-current derived capacities, and later admissions use the current policy. Actual provider context
-capacity remains an independent hard gate.
+`render.knowledgeBlockTokens`, `consolidation.knowledgeTokens` and `dreaming.triggerTokens` are
+retired. Remove them from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a
+named load error. Consolidator Knowledge and foreground publication may use the Knowledge base plus
+the shared allowance. Dreamer uses that same maximum for its Changed-plus-reference input, while a
+single due pool's Changed range is capped by that pool's budget. Database budget edits accept exact
+decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
+connections to that database. Budgets are maintenance triggers, not write gates: an over-budget pool
+is reported and scheduled rather than rejecting a Knowledge write. Running Dreamer and Consolidator
+requests keep their frozen admitted capacities; later admissions use the current policy. Actual
+provider context capacity remains an independent hard gate.
 
 Environment override example:
 
@@ -100,10 +99,9 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
 - `dreaming.model` and `dreaming.thinking` use the same model/thinking Settings selectors,
   defaults and precedence as the other phases. Dreamer has no fork option or new settings page.
-  Its `dreaming.maxToolRounds` defaults to 50 and accepts 1–50; the initial pass and one
-  system-generated repair share that bound. Provider retries do not reset it. Repair feedback is
-  a clearly host-generated user-role message, not a new user assertion. It enters through the public
-  prompt lifecycle so the same Dreamer system instructions survive all repair continuations.
+  Its `dreaming.maxToolRounds` defaults to 50 and accepts 1–50. Provider retries do not reset this
+  bound. Budget checks no longer trigger a host-generated repair pass; the model may correct rejected
+  tool calls within the same bounded run.
 - `notingModel` and `consolidationModel` accept `provider/model-id`, or `session`. Omission
   and `session` both resolve to the current session model's audited provider/id.
 - `notingThinking` and `consolidationThinking` (26d) accept `inherit` (the default) or one of Pi's
@@ -157,11 +155,9 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   still a documented v1 limit: nothing prunes either directory.
 - **Consolidation runs as a subagent unless `consolidation.forkModeDefault` is set** (ticket 29e,
   superseding 25 amendment 2). The ordinary slot follows that preference; borrowed closed-session
-  work and manual catchup stay fresh-context whatever it says, and ticket 28's recovery workers stay
-  subagents too. Both submissions of a run happen in the one child the task was admitted for, fork or
-  fresh: the review guidance is a native user message in either mode. `consolidation.subagentModeDefault`
-  — the retired *inverse* key — stays **removed**: see the removed settings below. Tree navigation
-  launches no extraction.
+  work, manual catchup and compaction recovery stay fresh-context. The first valid `memory`
+  submission commits immediately. `consolidation.subagentModeDefault`
+  — the retired *inverse* key — stays **removed**. Tree navigation launches no extraction.
 
 The peer dependency supplies Pi SDK types. Verification uses the installed
 `@earendil-works/pi-coding-agent` 0.85.1. Tests use Vitest on Node; the standalone
@@ -169,15 +165,21 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 
 ## Host decisions and boundaries
 
-- `/trace project <name>` declares shared project membership, after the first
-  assistant reply. The same name in the same database identifies the same project.
-  A new session also joins, as a `marker` declaration, the project its repository
-  directory's recorded sessions already belong to when that is exactly one (62);
-  otherwise `pi:<Pi session UUID>` names a private project. The home and temporary
-  directories never key; no marker file or Git remote supplies attribution. A project may exist before
-  any assistant reply; a Trace Memory session cannot. The first prompt is buffered
-  until that reply permits its turn row to be appended. Later prompts append
-  immediately. Stored project declarations persist across resume and tree navigation.
+- `/trace project <name>` declares shared project membership after the first assistant reply. The
+  same name in the same database identifies the same project. A new session conservatively joins the
+  one project already associated with its repository-root or real-cwd key; zero or several candidates
+  leave it private. Home and temporary directories never key, and no marker file or Git remote
+  supplies attribution. A project may exist before any assistant reply; a Trace Memory session cannot.
+  The first prompt is buffered until that reply permits its Turn to be appended. Stored declarations
+  persist across resume and tree navigation.
+- Knowledge projection is stateless. Core derives one current revision per identity from the immutable
+  commit graph and the current applicability of each revision's **direct supports**. Parent and
+  merge/split links preserve provenance but do not recursively add applicability conditions. When two
+  applicable operations consume the same base, the branch containing the later applicable commit wins;
+  if it ceases to apply, the earlier branch can return. Archives participate in this resolution before
+  body filtering. Core selects that one global current revision first and then applies reader scope;
+  an invisible current revision hides the identity rather than falling back to an older body. Reads and
+  transactional stale-base checks share this resolver.
 - `before_agent_start` evaluates foreground Knowledge publication on **every enabled ordinary
   prompt**. Worker completion is not itself a delivery trigger, and there are no initial-only or
   `/trace on`/`/trace project` generation triggers. Those commands only change enrollment or project
@@ -196,12 +198,14 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 
   Carriers persist the exact Knowledge commit ids whose bodies were actually returned plus stable
   identities for archive/supersede/merge/split notices. Notice visibility is separate and never grants
-  a replacement body. The publication contains no Fact, Raw, processed/unprocessed marker,
+  a replacement body. The publication contains no Fact, Raw, pool-scheduling metadata,
   command-generation metadata or omission-only block. Retained applicable Knowledge bodies and notices
-  consume the database-derived Knowledge injection capacity (20,000 at the default policy) first. Missing state transitions fit as a
-  deterministic whole-item prefix before complete new bodies; only selected transition receipts persist.
-  An unfit next transition is not skipped, exact fit is accepted, and zero/negative remainder or one
-  unfit item returns no message.
+  consume the Knowledge base plus derived allowance, 45,000 tokens at the default policy. Missing state
+  transitions fit as a deterministic whole-item prefix before complete new bodies; only selected
+  transition receipts persist. Knowledge keeps category groups and chronological display inside each
+  group. The common header says larger commit numbers are newer and a newer same-object item stands
+  until maintenance merges it. Capacity selection omits the oldest optional items first, preserving
+  newer ones. An unfit next mandatory transition is not skipped, and exact fit is accepted.
 
   Immediately before returning a publication, the host revalidates enrollment, Pi/native binding,
   selected leaf, path head/branch and project attribution. Any retarget or disable discards the stale
@@ -216,9 +220,12 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   fork that falls back to a subagent sends the complete subagent material — history
   within 10,000 tokens and bounded Raw within 10,000, independently capped — and is
   priced on it.
-- Source identity is `(Trace Memory session, native session lineage, Pi entry id)`.
-  The host reconciles completed messages from the selected persisted ancestry on
-  attach and at safe subsequent boundaries. Pi runs `message_end` extension hooks
+- Source identity is `(Trace Memory session, native session lineage, Pi entry id)`. Pi publishes one
+  persisted lineage cursor for its selected foreground on reconcile and Turn end. Each lineage moves
+  independently; closing retains its cursor and reopening adopts the same key. Fact liveness requires
+  one complete cursor path to contain its Turn, all source Turns and bound entries — sibling paths are
+  never spliced. A legacy session with no cursor treats all stored paths as active. The host reconciles
+  completed messages from the selected persisted ancestry on attach and at safe subsequent boundaries. Pi runs `message_end` extension hooks
   before `SessionManager.appendMessage`, so a completion event alone supplies no
   entry identity. Streaming content, custom/plugin messages,
   compaction summaries and worker messages are not source entries. Repeated text
@@ -239,8 +246,8 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   with `renderEntry` over `pendingEntries`, including separators. Original Raw size,
   entry count and answered Turns do not trigger runs. Excluded sources contribute nothing.
   `noting.nearThreshold` defaults to **0.40** and accepts a finite number in [0,1]. It controls
-  the pre-commit same-session/path lexical review only; it does not replace Consolidation's
-  independent 0.28 threshold and is not one of the façade's dynamically replaced keys.
+  the Noter's pre-commit same-session/path lexical review and is not one of the façade's dynamically
+  replaced keys. Consolidation has no lexical threshold.
 - `noting.batchTokens` defaults to **10,000** (ticket 20; it was 50,000 through 17b): the oldest
   contiguous whole-entry prefix, without Turn boundaries. An entry is never skipped so that smaller
   later entries can fill the remaining space, and a partly filled batch is valid. Excess waits for
@@ -254,23 +261,24 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   pending with a capacity notification — unless it was a *fork* that could not fit, which 27b
   re-admits once as a subagent instead. Unknown model capacity still leaves work pending.
   Native fork context is additional to the new-material budget and is never compressed.
-- `dreaming.triggerTokens` defaults to **5,000 pending knowledge-change tokens** and must be a
-  positive safe integer. Exactly 5,000 meets the default threshold. Eligible entry completion
-  now admits Dreamer in its independent slot, rechecking threshold and pending membership after
-  claim/slot waits. A frozen unfinished range retains retry eligibility without charging its own
-  edits as new trigger work. Material is 20k processed knowledge, 10k changed knowledge and 10k
-  whole direct facts, with framing and receipts; no automatic Raw block or note tool is supplied.
-  Legal update/binary-merge/binary-split/archive batches commit immediately; parentless create is
-  forbidden. Only trusted Dreamer maintenance may carry empty change supports. Exact operation bases
-  are transactionally guarded by immutable trigger ancestry: comparable same-session origins cannot
-  compete, divergent siblings may, and independent sessions retain applicable-successor rejection.
-  Final processing settles accounted supplied events separately from successor-free candidate
-  certification. Candidates include formal processing versions and this exact authorized run's legal
-  outputs from actual maintenance inside the frozen family, including processed-reference maintenance;
-  untouched references,
-  runtime reads and other runs' outputs gain no processing status. Restored exact-version obligations
-  follow the same rule, as described in
-  [the core contract](core.md#dreamer-execution-34b).
+- Dreaming is checked **per pool** on every reconciled eligible entry: `global`, this session's
+  project and this session. Pending is each pool's current visible, non-archived revision lacking a
+  `(pool, revision)` processing record, one revision per identity at its full rendered size. A pool is
+  due at half its budget — by default 2,000 / 7,500 / 500 tokens — or when its current contents exceed
+  the budget. One run handles one due pool; its Changed range is capped at that pool's full budget,
+  4,000 / 15,000 / 1,000 by default. Changed material and current same-scope references share the
+  45,000-token Knowledge-base-plus-derived-allowance window; direct facts have a separate 10,000-token cap.
+  There is no automatic Raw block or `note` tool.
+
+  Dreamer may update, binary-merge, binary-split or archive, but never create. Evidence-driven
+  operations cite their direct facts. A trusted maintenance operation may submit empty supports;
+  core then materializes the exact parent supports: one parent for update/archive/split and both
+  parents' union for merge. Exact current bases and the live database-wide Dreamer claim are checked
+  atomically. On success or failure, terminal processing records the frozen range and the run's own
+  commits. Cancellation before the first commit records neither; cancellation or failure after a
+  commit still performs terminal processing. A range is never retried, and the run's own outputs do
+  not trigger it again. Residual over-budget state re-arms only after pool growth, a budget change or
+  new pending material.
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
   the fact line with its relations and the joining separator — the trigger over the whole applicable
@@ -279,16 +287,18 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   immediately, even from partly recorded Turns. Selection takes applicable facts
   without Turn grouping; path-aware per-fact progress is unchanged. There is no
   first-Noting gate and no scalar fact cursor. An oldest fact larger than the batch ceiling stays
-  pending with a capacity problem rather than being clipped or skipped.
+  pending with a capacity problem rather than being clipped or skipped. Consolidator accepts only
+  `create`; its first valid submission commits. A changed claim is a new identity until Dreamer later
+  reconciles it. Manual `memory` writes allow fact-backed `create` and `archive` only.
 - `consolidation.triggerUnconsolidatedFacts` is **removed** (ticket 20). Any layer that still supplies
   it fails the load with `Removed setting consolidation.triggerUnconsolidatedFacts: use
   consolidation.triggerTokens (tokens, not a count)`; an old fact count is never reinterpreted as a
   token budget. The menu never offers it: the menu edits mode/model preferences and closed-session scope only,
   and the advanced keys live in the settings files.
-- `consolidation.knowledgeTokens` is **removed** (ticket 45). Consolidator knowledge now uses the
-  bound database's derived injection capacity (`G + P + S + 5,000`) frozen at task admission. Any
-  configuration layer that supplies the old key fails by name and directs the user to the three
-  database Knowledge budgets in Settings; the value is never reinterpreted or ignored.
+- `consolidation.knowledgeTokens` is **removed** (ticket 45). Consolidator Knowledge uses the bound
+  database's Knowledge base plus shared allowance, frozen at task admission. Any configuration layer
+  that supplies the old key fails by name and directs the user to the three database Knowledge budgets
+  in Settings; the value is never reinterpreted or ignored.
 - `consolidation.subagentModeDefault` is **removed** (ticket 25 amendment 2; still removed under 29e,
   which restored the choice under `consolidation.forkModeDefault`). It stays a removed setting rather
   than becoming an alias because it is the **inverse** boolean: reading a saved `true` as fork mode
@@ -356,7 +366,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   and never widens those facts. Project plus session scope rejects rather than
   borrowing the caller's session. Collection receipts describe the actual selection.
   Collections grant no handles, and omitted alternative versions or history reference
-  lines never certify a full-body read. Current search defaults to text-only one-line fact and knowledge
+  lines never prove a full-body read. Current search defaults to text-only one-line fact and knowledge
   previews; knowledge history/all defaults to text plus the existing computed status.
   Explicit fields, including text-only or none, remain authoritative. The item budget
   defaults to 80 tokens; embedded line breaks render as ` ⏎ ` and long bodies keep a
@@ -371,94 +381,73 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   public `maxTokens`/`pageBudget` values are capped at 8,000; `cap` separately
   counts output lines. Every search receipt names the effective filters and preview
   fields and the one-representative/history route. Cursors freeze exact representatives,
-  owner selection, statuses, marks, effective filters, fields, content budgets, page-budget
-  aliases, and line cap; omitted or equivalent repeated values continue, while a
+  owner selection, statuses, effective filters, fields, content budgets, page-budget aliases, and
+  line cap; omitted or equivalent repeated values continue, while a
   changed value rejects without consuming the cursor. Oversized transport content
   continues in lossless Unicode-safe fragments, but a fragment is not a complete
   hit. Follow receipts: continue search with an empty query and trace with its cursor.
   See [the core search contract](core.md) for budget rejection and joining rules.
-  `note({facts})` writes facts and `memory({operations, skipped})` writes
-  knowledge; every knowledge operation carries its own `supports` evidence and a
-  `reason` commit message, and create/update/merge also carry the revision's complete
-  `topics` label set, whose schema core owns. Main-agent executions call `tools(context)` with kind `manual` and
+  `note({facts})` writes facts and `memory({operations, skipped})` writes Knowledge within the
+  caller's authority. Every operation carries `supports` and a `reason`; create/update/merge also
+  carry the revision's complete `topics` set. Consolidator permits only create; manual calls permit
+  fact-backed create/archive; Dreamer alone may update, merge, split or submit support-inheriting
+  maintenance operations. Main-agent executions call `tools(context)` with kind `manual` and
   the current session, branch and turn. Writes commit immediately; `tool_result`
   records each raw call once. No prompt asks the main agent to maintain memory.
-- `/trace` opens the native menu described below, or prints status and the command
-  forms when there is no dialog-capable UI. `/trace on` and `/trace off` change this
-  memory session's participation. `/trace project <name>` declares the project, saves
-  host state and displays refreshed injection. `/trace mark K<n>[@<commit>]
-  verified|flagged|clear` marks a knowledge revision. These are user commands; the
-  former model-facing `mark` tool is removed. `/trace catchup` and `/trace stop` (18b)
-  start and cancel the manual finite drain described below.
+- `/trace` opens the native menu described below, or prints status and the command forms when there
+  is no dialog-capable UI. `/trace on` and `/trace off` change this memory session's participation.
+  `/trace project <name>` declares the project, saves host state and displays refreshed injection.
+  `/trace catchup` and `/trace stop` start and cancel the manual finite drain described below.
 
 ## Executor slots, claims and shutdown
 
-Each enabled active Pi runtime is an executor with one Noting, one Consolidation and one
-Dreaming slot, including borrowed tasks. C and D may overlap; no database-wide seat is held. At
-admission Pi passes the exact persisted source-entry head, so core freezes the target session plus
-ordered native-entry prefix before later same-Turn entries or foreground navigation can move it. Each eligible entry completion checks
-free slots. Own eligible work has priority under the normal trigger thresholds (29d removed the
-branch delivery gate). If no own task can be claimed, one enabled normally closed
-target with a nonempty phase queue may use that slot, even for one entry or one
-fact for Noting/Consolidation. Dreamer borrowing retains its normal threshold or unfinished-range
-eligibility. `closedSessionScope` controls all three phases: `project` (default) requires matching
-project ids, `global` permits any project, and `off` leaves closed tails pending.
-An executor must itself be enabled and open. This setting does not restrict
-current-session work, manual current-session catchup, or explicit reads. Closed targets are ordered by oldest pending entry/fact allocation id, then
-session id and branch name; sibling paths never combine into one writable range.
-Failed claims may try another target. Completion only releases capacity; it never
-launches another batch. New own work does not preempt a borrowed worker.
+Each enabled active Pi runtime has one local slot per phase. Noting and Consolidation may overlap
+and may borrow a normally closed target under `closedSessionScope`; they prefer the executor's own
+eligible work. Dreaming never borrows a closed-session task. All Pi and CC executors and all
+projects sharing this database compete for one database-wide Dreamer seat, represented by the
+live Dreaming claim. Worker completion only releases capacity; it starts no next batch.
 
-The facade shares the trigger threshold with host preselection and
-rechecks eligibility during atomic admission. A SQLite claim excludes other
-workers of the same target phase across branches, hosts and processes. It records
-executor id, a random token and a thirty-minute expiry; no transaction spans a
-provider request. Commits require the current unexpired token and target enrollment.
-Borrowed commits also require a closed target and an enabled, open executor. The
-scope is frozen at admission; under `project`, the two sessions must still share a
-project at commit. Target project changes remain fenced under either scope.
-Release compares token and executor.
-Pi supplies the executor's memory-session id so external disable is rechecked at
-admission and commit as well.
-Borrowed work uses subagent mode and the configured phase model, with `session`
-resolved from the executor's model. Its target project, branch and evidence freeze
-before launch; a later project change rejects the commit. All business results,
-usage and run records remain attributed to that target, and (29d) its results are delivered to no
-conversation at all — neither the executor's nor the target's own.
+Pi passes the exact persisted source-entry head at admission. Core freezes the target, path and
+phase boundary before later entries or navigation can move them. A SQLite claim records executor,
+random token and thirty-minute expiry and excludes another worker of that target phase. Dreaming's
+unexpired claim also occupies the database-wide seat. Commits require the exact live token and
+frozen target checks; reopening replaces another executor's token immediately. An expired or
+replaced worker may leave audit history but cannot commit or release its successor's claim.
 
-Normal shutdown marks only the executor's own memory session closed. Restore clears
-the mark and immediately reserves new tokens for that executor in place of another
-owner's claims. The next eligible completion can consume them under normal
-thresholds without waiting for the old worker. Old commits/releases are fenced.
-Resume also takes abandoned own claims from a crashed runtime; ordinary tree
-navigation does not change worker ownership. Restoring launches no extraction.
+Closed-session scope applies only to Noting and Consolidation: `project` (default) allows a closed
+target in the executor's project, `global` allows any project, and `off` leaves closed tails pending.
+The executor must remain enabled and open. Borrowed work is a fresh subagent on the executor's
+configured phase model, but evidence, commits, costs and run records remain attributed to the target.
+Its target must still be closed, and a frozen project-scoped borrowing relation must still hold at
+commit. Current-session work, manual catchup, explicit reads and Dreaming are independent of this
+setting.
 
-Shutdown/session replacement performs this sequence:
+A project declaration preserves existing Noting and Consolidation due/live-claim guards. Dreaming
+being due or an inactive range being open does not block it. It waits only when the active Dreamer's
+session belongs to an affected project or its frozen range touches an affected project pool. This
+prevents the relabel from invalidating later commits or consuming the wrong pool. Relabel creates no
+Knowledge revision and clears no processing record; a moved project revision is pending in the
+destination only when that pool has not handled that exact revision.
 
-1. Stop admission; invalidate owned tokens before aborting model calls and retry
-   waits. Close bound tools so cancellation cannot permit a late write.
-2. Allow one five-second cleanup deadline across both slots. SQLite busy waiting
-   is disabled for teardown, so lock contention reports errors promptly.
-3. At the deadline close bindings and finish local worker waits, retaining available
-   request/usage and cancellation diagnostics. Consume late provider failures.
-4. Release claims conditionally, mark the own session closed, and close SQLite.
-   Borrowed targets keep their closure state.
+Normal shutdown stops admission and cancels this executor's model calls under one five-second
+cleanup deadline. Cancellation closes Knowledge tools immediately, but an exact Dreaming claim is
+retained through terminal processing when the run has already committed. The terminal transaction
+records the frozen range and the run's own revisions on success or failure, and also after
+cancellation with a commit; only cancellation before the first commit leaves no processing record.
+`/trace off` uses the same terminal exception: disabling future work cannot block this bookkeeping.
+Token, expiry, takeover, target project and frozen-range checks remain mandatory. After terminal
+processing or a pre-commit cancellation, the claim is released conditionally.
 
-A commit that wins before cancellation stays successful. Cancellation that wins
-first preserves the pending batch. No committed batch is restarted to obtain a
-final reply. Audit/cleanup failure is reported without changing a committed result
-or delaying exit indefinitely. Unknown cancelled usage renders as `cost unknown`;
-partial usage identifies known cost only. Session spend totals sum returned counters
-and cannot recover unknown provider charges. If SQLite is locked or unavailable,
-closure/audit writes can fail; the host reports them and still closes. The absence
-of a persisted closed mark is never repaired by guessing.
+A business commit that wins before cancellation survives; no committed batch is replayed to obtain
+a final response. Normal shutdown then marks only the executor's own session closed and closes
+SQLite. Restore clears that closed state and reserves new claim tokens for the executor; it launches
+no phase. A direct synchronous facade close is a hard close rather than this graceful host sequence
+and may abandon terminal bookkeeping, so hosts must await normal shutdown.
 
-The runner wires its per-worker `AbortSignal` into the child `AgentSession`: an abort calls
-`session.abort()`, which stops the in-flight provider request, interrupts a retry backoff and
-leaves the parent session and any sibling worker untouched. Only the child runtime and its
-subscriptions are disposed. No provider-global cancellation or foreground cancellation is used.
-A provider that ignores cancellation may keep its remote request alive, but cannot hold local
-shutdown past cleanup or write through disposed tools.
+The child `AgentSession` receives a per-worker `AbortSignal`. Abort stops its provider request or
+retry wait without touching the foreground or sibling workers. A provider may ignore remote
+cancellation and continue billing, but disposed tools and claim fences prevent late local writes.
+Known usage and cancellation diagnostics are retained; missing cancelled usage remains unknown.
 
 ## Enrollment and native menu
 
@@ -495,16 +484,16 @@ through the same identity-based importer as ordinary entries. It makes no provid
 call and does not synthesize a completion. The next eligible completion checks
 normal queue thresholds. Repeating enable does not duplicate imported sources.
 
-Disabled sessions ingest nothing, inject nothing and start neither worker. Manual
-`note` and `memory` reject with `/trace on`; `trace`, `search` and status remain
-available even before allocation. Compaction and tree hooks return no plugin
-override so Pi proceeds with native context handling. Stored Raw, facts, knowledge,
-runs and knowledge scope stay intact; other sessions still see shared knowledge.
-Already-injected text remains in context.
-The transactional commit checks reject late business writes and leave their batch
-pending; a batch committed before disable remains successful. Disabling this
-executor invalidates its tokens and cancels active model calls and retry waits.
-Another executor still rechecks the disabled target inside its commit transaction.
+Disabled sessions ingest nothing, inject nothing and start no new worker. Manual `note` and
+`memory` reject with `/trace on`; `trace`, `search` and status remain available even before
+allocation. Compaction and tree hooks return no plugin override so Pi proceeds with native context
+handling. Stored Raw, facts, Knowledge, runs and scopes stay intact; other sessions still see shared
+Knowledge. Already-injected text remains in context.
+
+Disabling cancels this executor's active model calls and closes their tools. Ordinary late business
+writes are fenced. A Dreamer that already committed retains its exact claim only long enough to
+perform terminal processing, then releases it; disabling enrollment does not suppress that
+transaction. Another executor still must pass the ordinary target and claim checks.
 
 ### Commands, menu and global settings (24b)
 
@@ -516,32 +505,29 @@ The direct command forms are exactly these, and nothing else acts:
 | `/trace on` / `/trace off` | Enables or disables **this** memory-session identity, at once, without a reload |
 | `/trace catchup` / `/trace stop` | Start and cancel the manual finite drain described below |
 | `/trace project <name>` | Declares the project after the first assistant reply |
-| `/trace mark K<n>[@<commit>] verified\|flagged\|clear` | Marks a knowledge revision |
 
 `enable`, `disable`, `status` and `runs` are **retired without aliases**: status and
 runs live in the menu's Current session, and a headless bare `/trace` prints status.
-A retired spelling, an unknown word or a malformed argument prints the usage above,
-names where the retired function went, and changes nothing — no enrollment change, no
-project declaration, no mark, no worker. The four retained forms exist because `-p`
-and rpc sessions have no menu (parent 24, amendment 1); they are documented forms of
-the same operations the menu performs, not hidden aliases of a menu entry.
+A retired spelling, an unknown word or a malformed argument prints the usage above, names where
+the retired function went, and changes nothing — no enrollment change, project declaration or
+worker. The retained forms exist because `-p` and rpc sessions have no menu; they are documented
+forms of the same operations the menu performs, not hidden aliases.
 
-Bare `/trace` opens a native menu with four entries:
+Bare `/trace` opens a native menu with four top-level entries:
 
 - **Current session:** a compact context-capacity map and pending/trigger estimates,
   enrollment, project, the session's spend by phase and recovery warnings in a scrollable Pi-themed panel, with
   `On`/`Off` with confirmation and shared fork/clone scope, `Runs` with a count input,
-  `Project` with a name input, `Mark` with an address input and a kind selection, and
-  `Retry fork` only while this session is automatically downgraded.
+  `Project` with a name input, and `Retry fork` only while this session is automatically downgraded.
 - **Catch up:** starts (or reports) the manual finite drain described below.
 - **Stop:** cancels this executor's background work, including a running or
   waiting catchup. It never changes participation.
 - **Settings:** the global preferences below.
 
 Cancelling any dialog or input changes nothing and makes no model request. Menu and
-command paths call the same functions, so validation, confirmations and core's own
-rejections (an ambiguous mark address, a project without an assistant reply) are
-identical from either. The catchup handler starts the cancellable drain and returns
+command paths call the same functions, so validation, confirmations and core's own rejection of a
+project declaration without an assistant reply are identical from either. The catchup handler starts
+the cancellable drain and returns
 immediately, so stop can be invoked while it runs.
 
 #### Current session measurements
@@ -576,7 +562,7 @@ colors, caps only the occupied footprint at 200 nominal units, reports the numer
 and shows zero free capacity. Reopening takes a new snapshot, so later valid SDK data
 replaces an unavailable display without reloading the extension.
 
-- **Memory:** every retained initial injection, on/project supplement and marked custom
+- **Memory:** every retained initial injection, on/project supplement and metadata-bearing custom
   compaction, including Pi's summary framing. Repeated occurrences count repeatedly;
   changing project or disabling enrollment does not subtract text still retained. Memory
   remains one local aggregate in the legend, while its positive Knowledge, Facts, Raw and
@@ -626,10 +612,9 @@ completion. Bars cap at 100%; numbers and percentages do not:
   the effective entry profile and Pi result extractor. Only imported evidence counts.
 - **Consolidation:** applicable unconsolidated facts, including group framing and
   relations, through the same renderer and threshold calculation as eligibility.
-- **Dreaming:** applicable unsettled knowledge-event weights, summed exactly as
-  eligibility does. These are change tokens, not a rendered knowledge-block size.
-  A threshold alone does not imply worker readiness or executable work. These
-  bars do not report worker state. Frozen retries are not a percentage of this threshold.
+- **Dreaming:** rendered pending current revisions of the selected applicable pool. Each pool has its
+  own half-budget trigger; the panel shows one representative pool, not a sum of all pools. The bar
+  does not imply that the database-wide seat or an executable range is available.
 
 Thresholds come from the live core configuration. Off retains stored measurements;
 no memory identity and unavailable reads are shown separately from zero. Opening
@@ -650,11 +635,10 @@ available native history through the existing reconciliation path without starti
 **Ticket 18a's read-only settings menu is superseded.** The menu no longer lists every
 effective key with its source; it edits these preferences.
 
-**24b's fourth entry, the Consolidator mode, was withdrawn by ticket 25 amendment 2 and is restored
-by ticket 29e**, on the same select-and-write path as the Noter's: each phase now shows the same
-three lines, and ticket 26d's thinking level sits beside each model. The defaults differ — Noter
-fork, Consolidator subagent — and a Consolidator model or thinking line discloses an inherited
-foreground value exactly when that phase is configured for fork.
+Noter and Consolidator each expose mode, model and thinking preferences on one select-and-write
+path; both default to subagent mode. Dreamer is always a fresh subagent and therefore exposes only
+model and thinking. A model or thinking line discloses an inherited foreground value exactly when
+Noter or Consolidator is configured for fork.
 
 | Preference | Choices | Key | Default |
 |---|---|---|---|
@@ -711,19 +695,20 @@ refused there. A task already running keeps its admission scope, mode, model,
 evidence and budgets. Setting scope to `off` does not cancel it; use Stop to end
 running work. Another Pi process sees the new
 global default through its own settings load; there is no cross-process watcher.
-Editing a setting starts no worker and does not touch the cache-miss latch.
+Editing a preference starts no worker and does not touch the cache-miss latch. The same Settings
+screen separately edits the bound database's Global, Project and Session Knowledge budgets. Those
+values are database policy, not Pi global preferences, and saves never copy them into `settings.json`.
+The screen shows the Knowledge base, shared allowance and their maximum Knowledge input separately.
 
 All configuration layers validate before use, including masked values. Unknown or
 removed keys fail by name. Counts and token limits require positive safe integers;
-`maxToolRounds` retains its documented zero-unlimited sentinel, and both phase-specific
-`nearThreshold` settings are similarities in [0,1]. Mode settings require booleans. Impossible view capacity
-still fails with a capacity message and retains pending sources. Changing `dbPath`
-requires reloading the extension. The enabled footer's `memory: 9->252=>54` means 9 applicable
-facts still need consolidation, followed by 252 unprocessed and 54 processed applicable current
-Knowledge versions. Processing is exact-version state: the two Knowledge counts sum to the existing
-current total, a new revision is unprocessed, and archives and superseded versions are excluded. A
-disabled session's footer is the compact `🧠 ○ off` line (24a); Enabled but idle keeps the dim hollow
-indicator and its counts.
+`maxToolRounds` retains its documented zero-unlimited sentinel, and `noting.nearThreshold` is a
+similarity in [0,1]. Mode settings require booleans. Impossible view capacity
+still fails with a capacity message and retains pending sources. Changing `dbPath` requires reloading the extension. The enabled footer's `memory: 9->54/306`
+means 9 applicable facts still need Consolidation, 306 Knowledge versions are currently visible, and
+54 of those current versions lack a processing record in their owner pool. This is scheduling state,
+not a validity partition. Archives are excluded from the visible count. A disabled session's footer
+is the compact `🧠 ○ off` line; Enabled but idle keeps the dim hollow indicator and its counts.
 
 ## Current context snapshot for other extensions
 
@@ -744,158 +729,75 @@ Only the current persisted, fully ingested node is supported (not unpersisted st
 Unavailable states return `available: false` with `reason` and `message`; capacity refusal never
 triggers recovery or native compaction. Successful results are detached from later changes.
 
-## Compaction and the post-compaction boundary (20c, one view since 30, three windows since 28a, bounded recovery since 28b)
+## Compaction and the post-compaction boundary
 
-`session_before_compact` reconciles persisted history, then asks core to allocate over
-one frozen read snapshot of the selected path. Rendering never changes that set: allocation
-takes no claim and advances no progress, so a Noter finishing concurrently can make the
-snapshot redundant but never incomplete. `memory.compact(...)` returns one of two outcomes
-rather than a string:
+`session_before_compact` reconciles persisted history and asks core to allocate one frozen selected-path
+snapshot. Allocation is local and model-free: it takes no claim and advances no phase. Core either
+returns a complete custom replacement or requests native Pi compaction.
 
-| Outcome | When | What the adapter returns |
+| Outcome | Condition | Adapter result |
 |---|---|---|
-| `{text, supplied, charged}` | all required unprocessed knowledge, complete pending facts and pending entry views fit the fixed bases plus shared allowance | the text, as `compaction.summary` |
-| `{native: true, reason, over?}` | required excesses exceed the shared allowance, or an entry's minima exceed the configured profile | the recovery below, then either the replacement or nothing at all, with a reason naming the window and its numbers |
+| `{text, supplied, charged}` | Required pending Raw and unconsolidated facts fit their bases plus the shared allowance | Return the text as `compaction.summary` |
+| `{native: true, reason, over?}` | Required material still exceeds the envelope, or an entry's minimum view cannot fit its profile | Run bounded recovery, then return a fitting replacement or decline so Pi compacts natively |
 
-32e allocates three fixed bases: the database-derived Knowledge injection capacity (20,000 at
-defaults), facts 10,000 (`compaction.factsTokens`) and Raw 10,000 (`compaction.rawTokens`). Required unprocessed material
-alone may use the shared 10,000-token `compaction.overflowTokens` allowance: required material
-fits exactly when `sum(max(required_i - base_i, 0)) <= overflowTokens`, including framing.
-The bases total 40,000 and the derived maximum is 50,000 at defaults. No window lends its unused
-base to another. Current unprocessed knowledge and unfinished Dreamer outputs remain protected;
-required bodies are never trimmed to fit.
+The default bases are Knowledge 20,000 tokens from the database policy, facts 10,000 and Raw 10,000.
+All three share one allowance derived from their trigger thresholds, 25,000 tokens at defaults.
+Required bounded Raw, unconsolidated facts and Knowledge state notices reserve shared excess first. Current Knowledge is optional material, regardless of its pool
+processing record. The remaining capacity is allocated in this order: current Knowledge, newest
+already-extracted Raw, then newest already-consolidated facts. Each base remains independent; only the
+single shared remainder crosses windows. Framing, state notices and omission receipts are charged once.
+The default maximum envelope is therefore 65,000 tokens.
 
-Price all required material before optional fill. Processed knowledge uses only its own base
-remainder. Select recent already-extracted Raw first within the Raw base remainder, then select
-already-consolidated facts within the facts base remainder. Before fact budget selection, exclude
-an optional fact only when its complete, nonempty source binding is contained in the final Raw
-coverage set (retained sources, required Raw and selected historical Raw). Incomplete or unknown
-bindings remain eligible; required pending facts are never filtered. Display whole recent Raw
-in source order and facts in chronological Turn groups. Optional bodies and their framing use
-neither another window's spare nor shared overflow. An optional omission starts no worker,
-causes no delegation and supplies no carrier identity.
-`render.episodicBlockTokens` and `noting.batchTokens` keep their one meaning each — the
-Noter's history envelope and the Noter's batch ceiling — and compaction reads neither.
+Historical Raw is displayed in source order. Historical facts are displayed in chronological Turn
+groups. An optional fact is omitted as redundant only when its complete nonempty source binding is
+covered by retained originals or bounded Raw selected for this replacement. Unknown, incomplete or
+partly covered bindings stay eligible. Pending facts are never filtered this way. Omitted optional
+material starts no worker and changes no processing state.
 
-The adapter passes the native ids the post-compaction context will keep, so historical Raw never
-supplies an entry twice. The custom replacement represents every pending entry itself, so it
-returns `firstKeptEntryId: ""` and keeps none of them: that retained set is empty today and is
-derived from the same value the adapter returns, never from Pi's own preparation proposal.
+The adapter passes the native ids that Pi will retain, so historical Raw is not duplicated. A custom
+replacement supplies every pending entry as the shared bounded `renderEntry` view and returns
+`firstKeptEntryId: ""`; the replacement, rather than old Pi messages, carries those views. The same
+entry labels, budgets and truncation markers are used by Noting and explicit bounded trace. A carrier
+records only the entries, fact ids and Knowledge commits actually emitted. Native compaction writes
+no Trace Memory carrier.
 
-Ticket 30 retired the second, tighter rendering that used to stand between the custom
-replacement and the delegation: the views compaction emits are `renderEntry` under the one
-configured profile — the same bytes a Noter, the token counters and `trace` use, under the
-ordinary `Raw:` title — and there is no second profile and no second block title (28 amendment 9;
-the bounded N/C/D recovery changes what is pending, never
-how a view is rendered). It stays deterministic local work: entry order, the source
-addresses, user boundaries and the non-text placeholder are preserved; each tool part keeps its
-name, its `T<id>#t<n>` address and, for a result, its status; text is cut with the same
-`[... N characters truncated]` marker. No view or summary becomes a source entry, a fact or a
-processing receipt.
+### Bounded recovery inside the hook
 
-### Bounded recovery inside the hook (28b)
+Recovery is attempted only when required facts, Raw or mandatory Knowledge state notices exceed their
+bases plus the shared allowance. Current Knowledge bodies are optional and do not force recovery. A phase must still satisfy ordinary
+eligibility: Noting at 10,000 pending Raw tokens, Consolidation at 5,000 fact tokens, and Dreaming
+when one applicable pool is due at half its pool budget or is re-armed over budget. Overflow alone
+never makes a phase eligible.
 
-Recovery starts only when the sum of required knowledge/facts/Raw excesses above their fixed
-20k/10k/10k bases exceeds the shared 10k allowance. A covered base excess launches no worker.
-Each useful phase must also pass its existing `taskEligibility` check: pending Raw ≥10k,
-pending facts ≥5k, or pending knowledge-change weight ≥5k at defaults (configured thresholds
-and retained Dreamer retry eligibility are preserved). Overflow is not eligibility.
-Pi awaits this one bounded operation inside its asynchronous hook:
+For one compaction attempt, each phase may be launched or compatibly awaited at most once. Independent
+Noting and Consolidation work may run concurrently; after their committed progress is remeasured,
+Dreaming may run once if an applicable pool is due. A completed Dreamer range is never reopened or
+retried. If required material still does not fit after every useful bounded opportunity, Pi's native
+compaction takes over. Recovery does not enlarge a normal batch to manufacture a fit.
 
-```text
-freeze (the selected path, its pending entries, its initially applicable pending facts)
-  -> allocate -> shared allowance insufficient? -> admit unused eligible N/C/D phases
-     for the overflowing Raw/facts/knowledge windows, independently and concurrently
-  -> await -> reallocate from committed progress and exact processed versions; no launch credit
-  -> still over? -> recheck unused phases (N can enable C, C can enable D); at most three rounds
-  -> persist the replacement with its carrier, or delegate to Pi with the reason
-```
+The Noting boundary is the frozen entry ceiling. Consolidation is limited to the initially frozen fact
+set plus facts created by the exact Noting task this recovery launched or reused. Dreamer processes
+one frozen due pool under the database-wide seat. Reallocation counts actual committed state only;
+launching or awaiting a task grants no credit. Final publication rechecks the selected path and project
+binding immediately before returning the carrier.
 
-**One use per phase per attempt**, including compatible reuse: at most three rounds cover the
-N→C→D dependency chain, with no fourth round or phase restart. Dreamer's 50 tool rounds and one
-system repair remain one task. No eligible unused phase or useful compatible wait means bounded
-native fallback, never waiting for future foreground activity.
-Each task is one ordinary bounded batch admitted through `attemptPhase`: subagent mode on the
-configured phase model, at the levels admission freezes (26d), in a child whose own automatic
-compaction is off (27b), so a recovery worker can never compact recursively and never forks the
-context being compacted. A batch that leaves backlog behind delegates; no larger-than-normal
-batch is ever built to avoid the fallback. The Noting boundary is the frozen entry ceiling
-(`maxEntryId`) rather than exact membership, because exact membership is whole-or-nothing
-against `noting.batchTokens` and would refuse every batch an overflowing Raw window produces;
-ids are allocated in order, so the ceiling is the frozen set minus whatever gets noted. The
-Consolidation allowance is the frozen pending facts plus the facts committed by the exact
-Noting task this operation launched or compatibly reused; unrelated task outputs never join it.
-Dreamer freezes its exact retained event/family range at admission through the existing worker.
+A local slot holding a compatible task — same target and frozen boundary — is awaited and counts as
+that phase's one use. An unrelated occupant is waited out only as capacity, then eligibility is checked
+once; there is no polling queue. A foreign claim refuses admission. Dreamer reuse requires the exact
+open pool range and live claim; foreground head movement does not rewrite that frozen identity.
 
-**Slots, claims and reuse.** The executor's one slot per phase is unchanged, but its entry now
-carries the task's target and frozen boundary beside its promise. A compatible task — same
-target, same frozen boundary — is awaited instead of duplicated and counts as that phase's one
-use (28 amendment 2), because its commits are exactly what the reallocation reads. An occupied
-slot holding anything else is waited out as capacity: not counted as progress, not cancelled,
-and its claim is never taken. After that capacity wait, the new occupant is checked once: a
-compatible task is reused; another unrelated owner ends this recovery opportunity without
-spending the phase allowance or reporting recovery. Eligibility is rechecked before admission
-after the wait. Dreamer reuse checks the retained range identity, applicable frozen members,
-live claim and project. A foreground head advance does not change that retained task's identity;
-Noting and Consolidation retain their own exact head/boundary rules.
-C/D share no global seat. There is no repeated capacity queue.
-A foreign claim on the target refuses this task at admission as
-it refuses any other. The awaited phase is named through the existing `ui.notify` lines and the
-footer's own running indicator; there is no second dialog and no wait loop.
+`event.signal` is Pi's compaction abort controller. It cancels only workers this operation launched;
+cancelling a compatible wait leaves the reused task alone. A cancelled compaction publishes nothing
+and starts no native fallback. Committed N/C progress survives. For Dreaming, a pre-commit cancellation
+records nothing, while cancellation after a commit retains the exact claim through terminal range
+processing as described above. After a non-cancellation worker failure, material is remeasured: a fit
+may still publish, otherwise Pi receives native delegation. A third terminal business failure follows
+the ordinary automatic-off rule.
 
-**Cancellation is Pi's own.** `event.signal` is the compaction abort controller behind Esc and
-`session.abortCompaction()` (`agent-session.js:1476` manual, `:1750` automatic, `:1604` aborts
-both). It travels to the tasks this operation launched — and only those — as
-`TaskOptions.signal`, so an abort closes those tasks' tools and invalidates their claims and
-touches nothing else; cancelling a reused wait cancels the wait, never the task. A cancelled
-compaction returns `{cancel: true}`, which is how Pi ends a compaction as aborted (`:1509`,
-`:1770`): nothing is published, and no native fallback is started, because cancellation is not
-a capacity failure. Committed progress — an explicit empty Noting commit included (26a) —
-survives. After a failure, all admitted work settles and material is remeasured: a fitting custom
-replacement may succeed with the diagnostic, otherwise native compaction takes over. A third
-terminal business failure disables the target through the existing idempotent execution
-settlement; multiple waiters count no extra failures. Recovery then takes the native failure
-route, never an empty disabled-memory custom result; user cancellation still takes precedence.
-The final coherent reprice checks exact processed versions and the selected path/project binding.
-A changed binding cannot publish into a sibling or another project, and newly required knowledge
-cannot hide behind an earlier fit. `/trace off` likewise supplies no custom replacement.
-
-All three of Pi's automatic triggers reach this sequence — after `agent_end`
-(`agent-session.js:1634`), before prompt submission (`:891`) and between tool rounds (`:274`),
-all through `_runAutoCompaction` — and so does `/compact`. Ordinary triggers, drains, tree
-switching, borrowed work and manual catchup are untouched; outside this handler a compaction
-still starts no worker.
-
-The core allocator is model-free; the host's bounded recovery may call memory models before
-either custom publication or native delegation. On native delegation, the adapter declines
-the custom replacement and Pi's own summarizer runs, succeeds, fails or
-is cancelled under its own outcome handling. The adapter manufactures no summary, appends
-no oversized block to Pi's result and starts no extraction flush; an unused custom summary
-prepared before the fallback confirms no injection.
-
-**Preparation is not completion.** `session_before_compact` sends only Preparing/progress
-notifications, including candidate delegation reasons and recovery diagnostics. Their callbacks
-run before the final coherent reprice and cancellation/path/project check. No notification or
-await separates that final check from constructing the returned carrier. Returning a custom
-replacement or declining it does not yet update `Compaction:` or announce success.
-
-Only `session_compact`, after Pi saves the replacement, updates `lastCompaction`, sends the
-completion notification and supplies the `Compaction:` field in Current session or headless
-bare `/trace`. The actual saved, identity-bound carrier determines the path; custom recovery
-labels travel with that carrier. A native success is reported as saved without Trace Memory
-material coverage. Its earlier candidate reason stays in the progress notifications, not an
-unbound cache that could attach one attempt's reason to another. The adapter reads the latest
-saved compaction on the selected ancestry, not summary-text equality (Pi 0.85.1's event lookup
-can select an older equal-summary entry). `session_compact_failed` reports failure or cancellation
-separately and leaves the last successfully saved result unchanged.
-
-**Post-compaction worker mode (rule replaced in 29c).** Ticket 20 refused a fork whenever a
-selected entry preceded the last persisted compaction on the ancestry. That was a position
-test standing in for the real question, and it refused forks a compaction had not actually
-cost anything: an entry Pi retained past the boundary, and one whose primary view a custom
-compaction of ours carried, are both still there to extract from. The rule is now Raw
-availability, below; a persisted compaction matters only through what it removed from the
-context this host builds.
+Pi reaches this sequence from its automatic compaction points and `/compact`. Preparation notifications
+are not completion. Only `session_compact`, after Pi persists the result, updates `lastCompaction` and
+reports success. Failed or cancelled attempts leave the last successful boundary unchanged. A native
+summary is accepted as lossy and carries no promise that pending Raw or facts survived.
 
 ## Noter fork eligibility by Raw availability (29c)
 
@@ -1065,13 +967,11 @@ older vendored implementation:
 | `createAgentSession`, `SessionManager`, `SettingsManager`, `DefaultResourceLoader` | `dist/index.d.ts` (public SDK) |
 | `Context`, `AssistantMessage`, `ProviderRequestOptions.onPayload` | `node_modules/@earendil-works/pi-ai/dist/types.d.ts` |
 
-The registry is used to resolve a configured `provider/model-id` only; nothing in this
-adapter calls a model. Noting and Consolidation run in a child `AgentSession`, which executes
-the model's tool calls through the run-bound façade tools and continues until the model stops.
-Consolidation's first valid `memory` submission returns review guidance, delivered to the child
-as a native user message queued with `deliverAs: "steer"`; the second valid submission commits
-in the same child session and run. Rejected batches can be corrected through further tool
-rounds.
+The registry resolves a configured `provider/model-id`; the adapter itself does not implement a
+provider. Noting and Consolidation run in a child `AgentSession`, which executes model tool calls
+through run-bound façade tools and continues until the model stops. Consolidator's first valid
+`memory` submission commits. Noter retains its own NEAR review when a valid candidate has lexical
+neighbours. Rejected submissions may be corrected in later tool rounds.
 
 `agent.onPayload` snapshots the provider-native body of every round; the last request sent
 embeds all earlier rounds and is stored with tool results, output and usage. The child's own
@@ -1234,13 +1134,11 @@ fresh child — and the titles, block order and separators inside it are core's,
 memoizes by leaf id, entry count and binding, so a streaming token re-reads the cached view while a
 rewind, a new entry, a compaction and the memory-session allocation each invalidate it. Admission
 passes `visible` to core only for a task whose effective mode is `fork`, beside the
-`capacity.prefixTokens` measure it freezes at the same moment. An explicit subagent, and a fork
-re-admitted as a subagent after any refusal (27b/27c: `fallbackReason` makes the effective mode
-subagent), pass none and get the complete fresh material. Noting and Consolidation review guidance is read back from the writer receipt with
-core's own `input.reviewFeedback(result)`; the adapter only chooses how to put that message in front
-of the model (here: a native user message queued with `deliverAs: "steer"`). The next fork/subagent
-request therefore carries the NEAR review without changing the phase's initial-material accounting;
-if that actual request exceeds capacity, the normal overflow/refusal path applies before commit.
+`capacity.prefixTokens` measure it freezes at the same moment. An explicit subagent, and a fork re-admitted as a subagent after any refusal (`fallbackReason` makes
+the effective mode subagent), pass none and get the complete fresh material. Noter's lexical NEAR
+review remains part of its own write path. Consolidation's first valid submission commits. If a
+later corrective request after a rejected tool call exceeds
+capacity, the normal overflow/refusal path applies.
 
 ## The runner (19a/19b, sole runner since 19c)
 
@@ -1275,9 +1173,8 @@ The child is built to reproduce the parent's request bytes through the SDK's own
 - **Identity.** `agent.sessionId` is set to the parent's Pi session id so the provider sees
   the parent's request/transport identity for cache affinity. The child's own SessionManager
   id and file stay its own, as does Trace Memory's target attribution.
-- **Task delivery.** The text core prepared is the child's user prompt; the
-  Consolidation review answer is delivered as a native user message queued with
-  `deliverAs: "steer"`, so the two-submission protocol in core is untouched.
+- **Task delivery.** The text core prepared is the child's user prompt. Noter NEAR guidance is delivered
+  as a native user message; ordinary tool rejections remain tool results.
 - **Thinking level (26b, extended by 26d).** The child is created with Pi's own `thinkingLevel`
   option. Admission freezes **two** levels with the task, beside its model and its material: the
   foreground level the host reads once there (`pi.getThinkingLevel()`), and the phase's subagent
@@ -1364,11 +1261,9 @@ under its own claim, and drops this task with the `NOTING_MEMBERSHIP` / `CONSOLI
 reason instead of re-processing the rest. Evidence that arrived while the attempt was in flight
 waits for the next batch either way.
 
-**Consolidation takes this path unchanged (29e).** A Consolidation fork's candidate is not a
-business commit, so an overflow after it is re-admitted like any other: the fresh child restarts
-candidate and review on the same frozen fact target, and it cannot inherit an approval to skip the
-review. An overflow after the final commit is that run's own failure and starts no second
-execution.
+**Consolidation takes this path unchanged (29e).** Before its first valid submission, a fork overflow
+may be re-admitted on the same exact frozen fact target. A valid submission is already the business
+commit; any later provider failure belongs to that run and starts no second execution.
 
 **One run record per attempt** (user ruling 2026-09-10; it supersedes 27c's "one run record for
 both attempts", which was ticket text and never a ruling). An attempt that **sent a provider
@@ -1547,20 +1442,14 @@ episode and may downgrade once again.
 
 ## Three failures turn memory off (32c)
 
-Three terminal business failures of one **logical task** persistently disable its target's
-memory. The key is the target session, phase and oldest selected backlog item: a source entry
-for Noting, the first fact in Consolidation selection order, or the frozen change event for
-Dreamer. A new leaf, a growing tail, another executor or partial Dreamer edits do not reset it.
-Dreamer uses the same settlement primitives. Its immediate edits do not count as successful
-maintenance until final acceptance. A consumed formally supplied base is an accounted successful
-disposition: its event is settled without certifying or adopting the consumer, and an all-consumed
-batch may finish with no certificates. One precise [user-ruled exception](dreamer-external-conflict.md)
-remains neutral: an independently verified post-freeze successor of reference-only processed
-material, with no other acceptance failure, ends as `conflict`. It leaves the existing streak
-unchanged (two stays two), certifies nothing and preserves the run/usage audit. It is not user
-cancellation and does not exempt Noter, Consolidator, provider errors or illegal writes. Worker
-completion starts no retry; the next eligible entry completion or bounded recovery may admit pending
-outside events or restored exact-version obligations. Independent phase seats remain unchanged.
+Three terminal business failures of one **logical task** persistently disable its target's memory.
+The key is target session, phase and stable oldest selected backlog item: a source entry for Noting,
+the first fact in Consolidation order, or the frozen Dreamer pool range's first revision. A new leaf,
+a growing tail, another executor or partial Dreamer edits do not reset it. Cancellation is not a
+business failure. Dreamer ranges end once and are never retried: terminal success or failure consumes
+the frozen range, while a pre-commit cancellation records nothing. Residual over-budget state alone
+is not a new logical failure and does not loop. Worker completion starts no next task; a later eligible
+entry or bounded compaction recovery supplies the next scheduling opportunity.
 
 Provider retries and fork fallback share one durable execution identity. A refused fork followed
 by successful fresh execution adds no failure; a terminal fresh failure adds one. Incomplete
@@ -1691,31 +1580,29 @@ calls Pi's summarizer itself. The hook's abort signal does not cancel a frozen
 noting. Existing `session_tree` restoration gives an earlier branch point a fresh
 identity and preserves the identity when returning to a saved branch tip.
 
-File-based project discovery has been removed. `.trace-memory` files and directories
-at cwd or any ancestor are ignored, including the default data directory. New
-sessions remain private even when their cwd, clone or worktree is shared. Existing
-stored project assignments are retained; their provenance does not trigger discovery.
-An explicit `/trace project <name>` saves the project name and current project ID
-in the Pi custom state and returns the updated injection immediately in the command
-notification. The database declaration remains authoritative when restoring older
-tree state, so a session's command declaration wins on every branch. Peers remain
-in their existing project. Only an undeclared own space is merged.
-Facts change project membership through their session join; session knowledge
-retain scope, ownership and revisions while their project ID follows the
-session. Duplicate project knowledge now share the next consolidation's NEAR pool;
-merge itself neither consolidates nor deletes duplicates.
+Project attribution uses an explicit declaration or conservative directory inference. A new session
+records its repository root — the parent of Git's common directory, so worktrees agree — or the real
+path of its current directory. It joins that directory's already-recorded project only when exactly
+one project is represented. No match or several matches keeps the session's private project; home and
+temporary directories never key, and pre-62 sessions contribute no directory evidence. Marker files
+and Git remotes are ignored. An explicit `/trace project <name>` always wins, persists in Pi custom
+state and returns refreshed Knowledge immediately.
+
+A declaration relabels the affected sessions and their project-owned Knowledge while preserving
+scope, revisions and pool processing records. Facts follow their owning session's project. Global and
+session pools are unchanged. Dreaming being due does not block the declaration; only the affected
+active-Dreamer guards described above do. Duplicate Knowledge is left for ordinary Dreamer maintenance;
+the declaration itself neither consolidates nor deletes it.
 
 An empty text content block is not an assistant reply. Nonempty text, thinking,
 or a tool call permits allocation; the tool-call case permits `note` or `memory` as the
 first assistant action. A prompt, compaction or tree event without such a reply
 creates neither a session row nor a turn row. Project records may precede replies.
 
-The host tests cover ignored files/directories at cwd and ancestors, private
-sessions in a shared directory, explicit same-name project sharing, persisted
-project assignments, retroactive merge and immediate
-injection, session-knowledge isolation, shared duplicate visibility, deferred noting
-completion with later raw, fresh subagent notings,
-failure/unavailable models, sibling exclusion, and empty/tool-only replies.
+The host tests cover conservative directory inference, worktree identity, ignored home/temp paths,
+ambiguous project membership, explicit same-name sharing, persisted assignments, relabel guards,
+immediate injection, session-Knowledge isolation, deferred Noting, sibling exclusion and empty or
+tool-only replies.
 
 ## Retries
 
@@ -1742,101 +1629,44 @@ count input (the `/trace runs [n]` subcommand was retired in 24b).
 
 ## Footer status item
 
-Background runs never enter Pi's session totals: Pi only counts entries of the
-session file (assistant messages, tool results and summaries carrying usage).
-The host therefore publishes one footer status item through
-`ctx.ui.setStatus("trace-memory", …)`, the shape the ponytail extension uses,
-which a statusline extension renders as a segment:
+Background workers are separate Pi sessions and therefore do not enter the foreground session's own
+usage totals. The host publishes one status item through `ctx.ui.setStatus("trace-memory", …)`:
 
 ```text
-🧠 <indicator> notes: 24->102 memory: 9->252=>54 cost: $0.12
+🧠 <indicator> notes: 24->102 memory: 9->54/306 cost: $0.12
 ```
-
-Every number describes the current memory session's **selected branch and head**
-(24a). The chains show stage inputs and outputs, not percentages or expected
-model-request counts:
 
 | Field | Meaning |
 |---|---|
-| `notes: 24->102` | 24 imported source entries no Noting run has committed yet, over 102 committed facts applicable on this branch (already consolidated facts included) |
-| `memory: 9->252=>54` | 9 applicable facts Consolidation has not taken on this path, over 252 unprocessed then 54 processed applicable current Knowledge versions |
-| `cost` | today's memory-run spend across every session in the database, from local midnight, at the model's configured API rates (Pi's own cost formula); this session's cumulative spend and its composition by phase are in Current session (51) |
+| `notes: 24->102` | 24 imported source entries still await Noting; 102 facts are applicable on this path |
+| `memory: 9->54/306` | 9 applicable facts await Consolidation; 54 of 306 current visible Knowledge revisions are changed for their owner pools |
+| `cost` | Database-wide memory-run spend since local midnight, using recorded model usage and Pi's configured rates |
 
-The two Knowledge counts use `listCurrentKnowledge`'s counting unit: divergent
-applicable tips are separate versions. They partition its existing total. Processing
-is shared certification of the exact commit, so another session's certification
-counts, but a newly applicable successor is unprocessed even when its predecessor
-was processed. Archives and superseded revisions are not current and do not count;
-these are not full Dreamer event-queue counts.
+`changedKnowledge` means the current owner pool has no processing record for that current revision.
+It is a scheduling measurement only, not a validity status and not a second visible partition. A new
+revision may become changed; archives are absent from the current visible total. Pool-level token bars
+in Current session are the authority for Dreamer triggers, because this footer count is revision count,
+not rendered tokens.
 
-While this session's automatic Noting is paused by the incomplete-Noting guard (26a) the line
-ends with ` noting: paused`; nothing else about it is inferable from the counts, which do not move.
-A disabled session shows the compact line `🧠 ○ off`, with no counting at all;
-stored pending material and diagnostics stay available under Current session,
-whose `Pending: / trigger` bars measure estimated tokens rather than these counts. A value that cannot be read is `?` — an
-unknown is never a fabricated zero — and a Pi session that has not yet allocated
-a memory identity shows `notes: ?->? memory: ?->?=>? cost: $0.00` — the counts are
-unknown and say so in its status details rather than fabricating zeros, while the
-cost is today's database-wide figure, which needs no session identity (51).
+A disabled session shows `🧠 ○ off`. Before allocation or when a read fails, counts are `?`, never an
+invented zero. Counts describe imported evidence only: enabling imports available native history and
+then refreshes them. An admitted task remains pending until its business commit; provider failure after
+a commit does not restore the old queue. Below-threshold work is idle, not failed.
 
-The counts describe **imported evidence**. A disabled interval may hold native
-history that was never imported, so a zero is not proof that every available
-native message has been processed; enabling imports the paused interval through
-the ordinary path and the counts then say so. Work stays pending until its
-business commit: an admitted or running batch is still pending, a precommit
-failure or a cancellation advances nothing, and a provider failure *after* the
-commit restores nothing. A nonzero queue below its token trigger is idle, not a
-failure and not a request to drain.
+The indicator uses Pi theme roles: Noting `accent`, Consolidation `success`, Dreaming
+`customMessageLabel`, in that precedence when phases overlap; idle and off use `dim`. It describes this
+executor, including N/C work borrowed for another target. The counts remain this foreground session's.
+Warnings, retries and failures are reported separately and do not recolor the indicator.
 
-`cost` is today's memory spend over every session in the database — each run
-whose record was created at or after the host's local midnight, whichever session
-it was run for — so the figure resets at the day boundary on its own, at the next
-refresh. It is the memory share of the daily total a statusline extension reports
-from the session logs (the worker logs are placed where that reader scans, 24c).
-This session's cumulative spend is the `Cost:` line of Current session, with its
-composition on the two lines beneath (`Noting n runs $x · Consolidation n runs $x`,
-`Dreaming n runs $x · Manual n runs $x`); work another executor performed for this
-session counts there, work this executor performed for a borrowed session is
-charged to that session.
-
-The indicator is a Pi theme role, never a literal colour: one role per running
-phase, in the precedence Noting, Consolidation, Dreaming when phases overlap. A
-retry, a failure or a warning does not colour it — the foreground notify reports
-those (51).
-
-| State | Indicator | Theme role |
-|---|---|---|
-| Off | `○ off` | `dim` |
-| Enabled, idle (a retry waiting, a last failure or warning included) | `○` | `dim` |
-| Noting running | `●` | `accent` |
-| Consolidation running | `●` | `success` |
-| Dreaming running | `●` | `customMessageLabel` |
-
-The indicator describes this executor, including while it works on a borrowed
-target; the counts and the cost stay this session's. Where colour support is
-absent the same line is printed unpainted. Merely staying below a trigger never
-turns it yellow, and colour is not the only way to find a condition: status
-details explain warnings, the actual fallback mode and the target of active work.
-
-A refresh costs a status refresh. The progress values are one core query over one
-path snapshot (22a), the pending-entry identities (22b), and one bounded lookup of
-the selected current commit IDs in `processed_knowledge_versions`; it scans no
-global history, renders no Raw or Knowledge, tokenizes nothing, freezes no task
-and loads no run audit body. Spend projects usage in SQL. There is no timer and no polling scheduler: the
-existing lifecycle, commit, control and status points refresh it — session
-start and restore, tree switch, `tool_result`, `agent_end`, `agent_settled`,
-every phase admission and settle, a scheduled retry, a run's outcome, and the
-enable/disable/stop/retry-fork controls. Streaming `message_update` deltas do
-not. Another connection's commits therefore appear at the next refresh.
-
-`/trace` prints the session's breakdown by run kind. Tree switching contributes
-no extraction usage to Pi totals.
+Progress is one core query over one selected-path snapshot. It renders no Raw or Knowledge, tokenizes
+nothing, freezes no task and loads no run audit body. Spend is projected from stored usage. There is no
+timer: lifecycle, commit, control and status events refresh the line, so another connection's changes
+appear at the next refresh. `/trace` shows the current session's cumulative spend and phase breakdown.
 
 ## Fact presentation
 
-All newly composed fact injections use the same chronological Turn groups: Noter history,
-Consolidator history/current facts and review cues, compaction, and branch carry (29d removed the
-`<noted>` delivery from this list). A heading such as `[T42] 2026-09-09T10:30:00Z (selected facts)` is followed by facts in
+All newly composed fact material uses the same chronological Turn groups: Noter history,
+Consolidator current facts, compaction and branch carry. A heading such as `[T42] 2026-09-09T10:30:00Z (selected facts)` is followed by facts in
 ascending F-id order. Multi-Turn citations remain intact on a single fact under its owning Turn.
 
 Grouping happens after priority selection: recent historical facts still get the available space

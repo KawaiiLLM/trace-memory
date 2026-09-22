@@ -6,8 +6,8 @@ The [entry-address contract](unified-entry.md) supersedes older ticket descripti
 - store/   SQLite: global ids, sessions, project attribution, facts, knowledge, knowledge revisions, run records.
 - noting/    freeze the task material, provide tools, record the last provider request and final text.
 - api/tools.ts  role-bound tools; atomic note/memory validation and commit; Dreamer's read-only check.
-- dreaming/  bounded frozen knowledge/facts material, exact-family checks and transactional completion.
-- consolidation/  freeze the Consolidation material, produce NEAR/CLOSER feedback, validate memory operations, account and commit revisions.
+- dreaming/  freeze one due Knowledge pool, provide maintenance tools, and record terminal pool consumption.
+- consolidation/  freeze pending facts and visible Knowledge, validate create-only submissions, and commit revisions.
 - render/  one renderer for noting material, compaction tail, branch summary, trace; XML injection blocks.
 - render/material.ts  the shared material contract and the block layout of every consumer (20a).
 - prompts/ noting.md, consolidation.md, dreaming.md — the stage prompts, each declaring the shared memory-model blocks it includes (`shared/model.md`, `facts.md`, `knowledge.md` — definitions; `admission.md`, `atomicity.md`, `evidence.md`, `grounding.md`, `identity.md`, `authority.md`, `protection.md`, `body.md`, `reading.md` — principles; `formats.md`, `live.md` — inputs) at `<!-- include: name -->` markers that `load.ts` splices in — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
@@ -21,9 +21,7 @@ the domain prompt and its hash, the frozen range and knowledge commits, the mode
 `reportRequest`, `entryAudit`, one `material` object of rendered, budgeted parts, `text` — one
 prepared string, whatever mode runs the task (29b; the `{fresh, inherited}` pair is gone) — and
 `supplied`, the identities that text actually carries. The host decides which message carries the
-text; it lays out no block of its own and chooses between no representations. Noting and Consolidation
-additionally supply `reviewFeedback(toolResult)`, core's own reader of a writer receipt: the host
-delivers returned guidance as a user message but does not parse either protocol.
+text; it lays out no block of its own and chooses between no representations. Noting additionally supplies `reviewFeedback(toolResult)`, core's own reader of its NEAR receipt: the host delivers returned guidance as a user message but does not parse the protocol. Consolidation has no review round.
 
 **Audit availability.** A host that cannot expose a provider request returns
 `audit: {available: false, reason}` instead of `request`; core records the limitation in the run
@@ -32,225 +30,88 @@ declaration still gets the "runAgent must return the exact provider request" pro
 record's response also carries `requestedMode` beside the run's actual `mode`, so a fallback is
 visible as requested-versus-actual.
 
-## Dreamer execution (34b)
+## Dreamer execution
 
-`dream({sessionId, branch, headTurnId, model?, thinkingLevel?, subagentThinkingLevel?})`
-uses the existing claim/admission/cancellation path, always in subagent mode. Eligibility is
-rechecked at admission. Dreaming keeps its target-scoped claim row, token, expiry and reserved
-takeover, but acquisition also requires the database's single Dreamer seat to be free; Noting and
-Consolidation claims remain independent. The retained range keeps its original anchor, path, event/version obligations and
-writable family through retries; current exact results are resolved afresh. Its membership
-is audit and authority, not a permanently indivisible input batch: a later admission reselects whole
-current results for still-unsettled events within 10k. An enlarged event that cannot fit alone remains
-pending with a capacity diagnostic, without preventing independently fitting retained events from
-completing first. When no component fits, the existing execution audit records the exact obligation/result
-disposition and releases the seat. Unchanged automatic entries do not readmit it; a changed obligation
-graph or explicit catchup/recovery/direct retry can reconsider the same retained task. No event omitted
-from the supplied batch is settled. Earlier legal Dreamer outputs
-remain mandatory candidates. Admission freezes material, model/thinking and profile. It supplies
-processed knowledge within 20k, changed knowledge within 10k and whole direct facts within 10k,
-with framing and explicit omitted-fact receipts. Runtime reads never extend the family or batch. The
-sole revival exception lets a capability-bound Dreamer merge one active family member into an
-applicable archived older survivor: both exact parents require complete reads, and the existing
-derived-identity insert admits the survivor in that merge transaction. No other outside identity or
-operation gains authority.
-Only processed material exceeding 20k uses lexical relevance, with stable category/time/id ties.
-The shared `budgetKnowledge` keeps optional `required` exact-commit IDs in its fifth argument and
-an optional priority comparator in its sixth: required bodies are protected before optional selection,
-including category and receipt framing. Ordinary callers without priority keep their stable order.
+Dreaming maintains one due Knowledge pool in a fresh subagent. The three pool identities are
+`global`, `project:<id>` and `session:<id>`. After every ingested entry, the host checks the pools
+visible at that node independently. Pending membership is the current visible, non-archived revision
+of each identity for which that pool has no `(pool, revision)` processing record. Intermediate
+revisions do not accumulate weight. A pool is due when pending rendered tokens reach half its stored
+budget or when its current visible content exceeds that budget.
 
-The host calls `Store.bindDreamingRun` only after claiming the target and assigning an execution.
-It returns a capability object registered in a Store-local WeakMap, bound to the session, retained
-range, claim token, execution and one run record. Tool arguments and role strings cannot construct
-it; other database connections cannot reuse it. Dreamer may update, binary-merge, binary-split and
-archive inside that family, but cannot create parentless Knowledge. Split is one operation with one
-fully read exact parent and two complete child bodies; the transaction creates both identities and
-`split_from` links or none. Merge accepts exactly two distinct parents and keeps the older Knowledge identity as the survivor.
-An archive base is accepted only as that trusted revival survivor; update, manual and Consolidator
-writes, an archived absorbed parent and ordinary outside-family operations retain the archive/family refusal.
-Consolidator remains limited to fact-backed create/update with candidate review and accounting.
+Each run freezes one due pool and an oldest eligible prefix no larger than that pool's full budget.
+The database defaults are Global 4,000, Project 15,000 and Session 1,000 tokens, so their pending
+triggers are 2,000, 7,500 and 500. There is one database-wide Dreamer seat. The ordinary target claim,
+token, expiry, reserved takeover and project/range checks remain commit fences; a stale or lost claim
+cannot commit. Dreaming has no closed-session borrowing, frozen family, pool-budget write gate or
+retry range. Material windows and actual model context capacity remain hard limits.
 
-Every new revision stores a complete body or archival state while `supports` stores only this
-change's facts. `support_semantics='complete_result'` preserves historical interpretation;
-`'change'` recursively requires the revision's own scope/facts and every exact parent's historical
-applicability. Parent activity is irrelevant. Effective grounding recursively unions direct change
-supports for trace, numeric diagnostics and fact accounting without mutating any stored list.
-Only a capability-bound Dreamer may use empty supports, for any legal maintenance operation; this
-is a maintenance judgment that inherits all parent conditions, not vacuous universal applicability.
-`actor_role` records `consolidation`, `dreaming` or `manual` for new revisions; legacy null remains.
+### Current revisions and write bases
 
-At admission core copies an immutable trigger origin: target memory-session id and the ordered
-`source_entries.id` prefix from native root through the exact triggering entry. Runs reference it,
-executions retain it across fallback/retry, and Dreamer ranges retain it across partial maintenance
-and reopen. A later same-Turn entry or mutable `source_paths` row cannot extend the frozen sequence.
-Historical null remains unknown and malformed new capture fails. `compareTriggerOrigins` returns
-`same`, `ancestor`, `descendant` or `divergent` only within one session, `independent` across sessions,
-and `unknown` when either side is absent. Every write transaction rechecks all exact bases and direct
-update/archive/split/merge consuming edges. Equal and prefix-related origins in one target session
-compete even when the existing successor is no longer applicable at the older path; divergent origins
-may derive independently. Independent target sessions retain the applicable-successor check. An
-ancestry-dependent write with an unknown historical origin fails explicitly rather than guessing.
+Knowledge resolution is stateless. A revision's applicability depends only on its own direct
+`supports`; parent and merge/split links are provenance, not recursively inherited conditions. A fact
+is live when one complete cursor path of its owning session contains its Turn, every source Turn and
+every bound source entry. A session without a cursor treats all stored paths as active.
 
-`DreamingAgentInput.passEnd(rounds)` is a host callback after the native prompt's complete tool
-loop and retries, never after an intermediate tool turn. One host-generated user-role message may
-repair an invalid pass in the same child. It is labelled as a system-generated check, not evidence.
-The public prompt lifecycle reapplies the same Dreamer system instructions for every repair request,
-including tool continuations and retries; it does not create a new worker. `reportRounds` exposes the native counter to check;
-`dreaming.maxToolRounds` defaults to 50 and accepts 1–50, shared across both passes. The child's
-automatic compaction remains disabled through the existing in-memory Settings override.
+Core first resolves one reader-independent valid branch for each identity. Among applicable
+conflicting branches, the subtree containing the greatest applicable commit wins; each base is
+consumed by at most one operation, a split consumes its source once, and a merge result is valid only
+when selected at both parents. An older branch becomes current again when the later branch's direct
+facts cease to apply. No validity state or restoration order is stored.
 
-The check tool and final host check use the existing full `checkProcessedScopes` routine with the
-current database policy; defaults are global 4k, each project 10k, each session 1k and applicable 15k,
-with framing included. No truncated view
-proves fit. The model-facing check receipt is only a deterministic projection of that completed check.
-It reports the target's relevant Global, Project and Session owner totals, including zero-valued pools,
-the maximum applicable path and number of paths checked, separate pending change-event and exact-version
-obligation counts, other canonical completion counts, rounds/repair state and every blocker. It omits
-normal non-maximum paths, per-version rows and exact-set arrays. The full untruncated totals for the frozen run path's three owner pools and applicable block—without unrelated owners or path maxima—plus graph-derived versions, supplied and accounted
-events, candidates, successor-free results, consumed inputs, conflicts and failures remain in
-`runs.response.check`. Finalization reads those exact sets rather than the receipt, while affected-owner
-filtering preserves the existing success rules. Receipt identities are diagnostics only: they grant
-neither a complete-body handle nor write or certification authority.
-Core constructs processing candidates from the formally supplied changed versions and exact
-revisions legally committed by this authorized run inside its frozen writable family. The latter
-includes a terminal result when this run actually maintains processed-reference knowledge. It does not
-include the reference base itself. Model output never enumerates candidates, and committed `run_id`
-provenance plus the bound run capability, claim and family checks identify legal current-run output;
-retained-range membership or an actor label alone does not. Arbitrary runtime reads, untouched
-processed references, writable-family membership, earlier-attempt outputs not formally readmitted and
-outside successors add none. Before completion, core rechecks consuming edges against the frozen path. A successor blocks when it has a same-session trigger origin related as same, ancestor or descendant, or when it applies on the frozen path regardless of origin. A divergent or independent successor that is inapplicable there does not block; unknown required same-session provenance fails explicitly. This certification predicate is intentionally not the write-side guard: divergent siblings retain permission to write. Unchanged formal leaves, terminal own
-reference maintenance, both split children and archive-state leaves remain candidates; consumed
-originals and intermediates do not. Existing certificates are never revoked. The same final transaction
-validates the complete resulting accepted processed pool against current shared caps before inserting
-any certificate or event settlement.
+Visibility is applied only after that global current revision is selected. Session scope requires its
+direct facts on the reader's active branch; project scope requires the fact owners in the reader's
+project and their facts live; global scope requires its direct facts live. If the globally current
+revision is outside the reader's scope, the identity is hidden rather than falling back. Archives
+participate in current selection and then hide the identity.
 
-Each supplied event is accounted separately when its root results are consumed, have own-candidate
-descendants, or were skipped with a reason by this run (ticket 59); an untouched result no longer
-accounts for itself, and the check reports `unaccounted: K12@57, …` as a blocker until it is operated
-on or skipped. A skip accounts and never certifies: a skipped successor-free leaf is certified as any
-other, and a skipped root with a path successor is accounted but not certified. Successful
-completion may therefore settle an all-consumed batch with no new
-certificate. It settles only accounted supplied events and certifies only successor-free candidates;
-the rival result and its own event remain pending. Claim, graph, candidates, exact settlements,
-certificates, processed caps, completion and execution outcome are rechecked and written in one
-transaction. Replay is idempotent. A transactional check rejection persists that exact rejecting check
-in the run audit; a later settlement failure persists the successful check with a distinct finalization
-stage. Both outcomes roll back settlement and certification. Failed/cancelled runs keep prior commits
-but add no settlement or certificate. A settled event does not hide a currently applicable uncertified
-predecessor restored by path navigation: that exact version becomes a deduplicated version obligation, while a restored
-certified predecessor does not.
+An `update`, `archive` or `split` base must be the visible current revision on the writer's branch; a
+`merge` requires both current parents in its authorized pool. The existing revival exception allows
+an applicable archived older survivor to absorb an active item; it does not permit arbitrary writes
+against archives. Resolution, claim validation and mutation happen in one transaction. Exact
+historical reads do not make stale revisions writable.
 
-The explicit `check` call and the host-generated repair message use the same receipt renderer. The
-repair keeps its host-generated, not-evidence heading; the full check remains an audit field rather
-than being repeated into model context. Exact duplicate blocker strings may share one displayed row
-with an occurrence count, but distinct blocker text is never truncated or coalesced.
+### Operations and supports
 
-On the checked-in deterministic fixtures, the existing text estimator measures the receipt at 228
-tokens for the small fixture, 228 for a fixture with 300 normal applicable paths and 400 version rows,
-and 1,434 for 120 distinct failures. These are diagnostic-text fixture measurements, not provider
-billing tokens, prompt savings, or Knowledge-pool tokens. The many-error receipt intentionally grows
-to retain every distinct blocker.
+Only the Dreamer may `update`, `merge` or `split`; it also archives but cannot create a parentless identity.
+A merge joins two identities of one scope and keeps the older identity. It may omit `text`, in which
+case the later parent's body is copied verbatim. A split atomically creates two continuation
+identities and both inherit the parent's scope. Manual Knowledge writes expose only fact-backed
+`create` and `archive`; Consolidation exposes only `create`.
 
-The [external-successor ruling](dreamer-external-conflict.md) now keeps `conflict` only for an
-independently verified post-freeze successor of reference-only processed material that remains the
-sole acceptance blocker after consumed-input accounting and leaf filtering. It preserves the streak
-and advances nothing. Consumed formal input is ordinary successful disposition instead. Provider,
-request, illegal-operation and processed-scope/capacity failures are never hidden. Retained event and
-version obligations are selected as whole shared-result components; an oversized component cannot be
-partially supplied and does not pin an independent fitting retained component. No scheduler, worker
-completion trigger or retry loop is added.
+Evidence-driven maintenance stores the submitted direct facts. A trusted Dreamer maintenance
+operation may submit empty `supports`; core materializes the parents' supports in the same commit:
+`update` and `archive` copy one parent, `merge` takes both parents' union, and both split outputs copy
+the split parent. There is no system maintenance fact. Historical empty supports are repaired by the
+schema migration in parent-before-child order; an all-empty ancestry remains empty.
 
-### Maintenance loop (35c, 54, 56, 57, 59)
+### Material, maintenance and completion
 
-The Dreamer prompt (tickets 54–57, rulings of 2026-09-18) makes pruning and merging the work and
-`check` the acceptance. The unit of work is one item: each `New:`/`Changed:` item is taken through
-split, merge, resolve and rewrite in that order, deciding once, and its operations are committed
-before the next item is taken — never a split pass over the whole pool followed by a search for
-duplicates. Two principles replace lists of cases (ticket 57): one item is one thing, sized by what a
-clear description of it needs — a split when the two pieces would be read and changed apart, a merge
-when one body would describe the thing more clearly than two; and knowledge is macro — decisions,
-mechanisms, constraints and their reasons, with identifiers, names, counts and hashes left in the
-facts and the original unless the claim cannot be stated without them (an over-detailed body is a
-rewrite, not a split). A body mixing a ruling with implementation status is compound: a finished
-status with no follow-up is folded into the ruling's body in a few characters and its delivery record
-archived on the finishing fact; a status with follow-up is its own `open`. Merge: a split-out piece
-that a current item already carries merges there instead of becoming a new identity; only the same
-claim stated twice merges, never two claims about one subject; 48's revival merge is unchanged.
-Resolve: a later user ruling wins over an earlier one, a later proposal, report or assistant choice
-never overrides a ruling, the loser is archived with that fact in `supports`, a persistent object
-state is updated rather than archived, a finished work item of any category is archived on the fact
-that finishes it, and an unsettled conflict becomes one `dispute` item. Rewrite: only the survivor of
-a merge or split and a body that fails the standalone test; a body that already reads on its own is
-left as it is. Then `check`. There is no opening `check`: the receipt must not set the agenda. Every
-supplied item ends the round either in an operation or in an explicit skip with a reason (ticket 59:
-`memory({operations, skipped: [{knowledge: "K12@57", because}]})`, a supplied `New:`/`Changed:`
-handle or an own result of this run, rejected when unknown or already consumed by this run's
-operations); the check lists the rest under one `unaccounted:` blocker, and the skips are recorded
-with the run. Before the first `New:` item is decided, one `search` with `queries` (each New item's
-object in a few words, `layer: knowledge`, `versions: history`) finds revival candidates in one
-response — one best revision per K per query, at most `cap` per query (default 1), the query echoed
-on each hit line and queries with no hit listed as lines after the hits, paged like them; a hit is read in full with `trace`
-before the New item is merged into that identity. No
-blocker finishes the run; a cap exceeded starts another round at the next intensity; a round with
-nothing to do is reported with the changed block named, never as a budget figure. Immutable prompt
-text does not turn current configured amounts, estimated body savings, or item and topic counts into
-budget authority. The final receipt, followed by core's transactional validation, establishes
-completion.
+Changed items and current same-scope references share the Knowledge base plus shared allowance;
+direct facts have a separate 10k cap. Selection keeps complete items and charges framing and receipts.
+The Dreamer processes each supplied item through split, merge, conflict resolution and rewrite,
+committing one decision before moving to the next. It compares only within a scope. A later user
+ruling can displace an older ruling; an assistant proposal or report cannot. Archiving preserves a
+named survivor or cites evidence that the item is obsolete, contradicted, completed or abandoned;
+when over budget, the prompt continues archiving in its protection order and checking until pools fit.
+Budget excess is a maintenance trigger and report, never a write or completion gate.
 
-Protection includes user-versus-agent attribution, proposal-versus-decision status,
-attempted/reported/completed/verified distinctions, uncertainty, conditions, exceptions, rationale,
-identifiers, exact diagnostics, useful completed work, unresolved decisions and valid topics. A
-shared topic or category only identifies candidates for a complete comparison. It does not establish
-equivalence or authorize merging independently changing claims. Topics remain part of the charged
-rendered revision: keeping budget-related text while dropping its valid budget label is invalid,
-while replacing a genuinely obsolete settings-file label with a database-policy label is a valid
-classification correction.
+`check` reports current pool sizes, budgets and operation failures; it is not an acceptance gate.
+At terminal success or failure, one transaction records the run audit and `(pool, revision)` for the
+frozen range and the run's own revisions, then closes the range. Execution settlement and conditional
+claim release follow. Partial Knowledge
+commits survive a later failure. Cancellation before the first commit records no processing; after a
+commit it records the frozen range and own revisions before releasing the claim. A processed range is
+never retried, and the run's own outputs do not immediately trigger the same pool.
 
-Changed input follows its event and exact-version obligation lines with nonempty `New:`, `Changed:`
-and `Archived:` groups in that order. Archives are classified first and carry their predecessor body
-beside the archive line. A nonarchive current result is New only when no version of that K in the
-frozen path's applicable commit graph has an exact processing certificate; otherwise it is Changed.
-Certificates are globally shared, but an inapplicable sibling version is outside that graph. Items
-stay in commit order within each group, each result appears once, and group headings are charged in
-the existing 10k changed-material selection.
+An over-budget pool re-arms only after it grows beyond the size recorded by its last over-budget run,
+its budget changes, or new pending material appears. Project relabelling creates no processing event:
+a moved project revision is pending in the destination only when that destination pool lacks its
+exact processing record. Global and session records do not move.
 
-Readability is the rewrite test, not brevity and not verbosity: full sentences in the conversation's
-language, present tense, the actor stated in a few characters, the project's vocabulary counted as
-understood, the body stating the current rule only. An update whose only change is fewer characters
-is forbidden; a rewrite that removes more than half of a body names in its reason where the detail
-survives. An archive has exactly one of three reasons: a named survivor whose current body preserves
-the information at a scope no narrower than the archived item's; a cited fact showing the item
-obsolete, contradicted, completed or abandoned; or, at the second intensity only, low value under
-the KEEP test. Intensity is set by the failed `check`: the first round splits, merges, resolves and
-rewrites; the second archives redundancy into named survivors and retires low-value items under
-KEEP (user rulings and corrections, rule language, a body that states why, external-system limits,
-an object likely to return, unresolved decisions and blockers are never retired for a cap); the
-third reports to the maintainer and ends uncertified, counted under 32's three-failures rule. Tool
-feedback and new evidence may correct a disposition, but cannot adopt a competing successor into the
-frozen family. Age, completion, shortness and formatting alone prove none of these judgments.
-
-No phase machine, planning message, persisted plan or semantic store gate enforces this loop.
-`tests/fixtures/dreaming-workflow.json` records parent/result examples for human semantic review of authority,
-qualifiers, open reminders, topics, archive reasons and rewrite-then-archive timing. Scripted fake
-workers exercise deterministic rendering and legal tool sequences, but do not prove real-model
-compliance, semantic equivalence, better recall or lower cost. Those claims require separately
-authorized live-model evaluation.
-
-Prompt lineage: pi-observational-memory `ce9fc982b3a219a7839f07c9f4a3e054e81a2b21`,
-`src/agents/dropper/prompts.ts`; Magic Context `246a1c390e9a81944b867c1cd94ae5b7166e26e3`,
-`packages/plugin/src/features/magic-context/dreamer/task-prompts.ts` and
-`curate-memory-safety.ts`. From Magic Context's curate task the prompt adopts, as prompt rules rather
-than host gates, the survivor rule (an archive names the surviving item whose body preserves the
-information; a bare "redundant" verdict is deletion), the content-loss rule (a rewrite that removes
-more than half of a body names where the detail survives) and its KEEP list. Earlier the project had
-declined the survivor gate because hard-budget retirement needed deliberate loss; ticket 54 narrows
-deliberate loss to the second intensity under the KEEP test, so the survivor rule is the ordinary
-archive and loss the exception. The intensity loop closed by `check` and fact-grounded resolution
-(ruling over proposal, the loser archived on the cited fact, an unsettled conflict kept as one
-`dispute`) are this project's own, as is the scope-preserving survivor. Neither reference's
-scheduler, taxonomy, item targets, age/coverage rankings or citation-count scores is imported.
-Magic Context's separate code-verification task (read-only tools, four outcomes) is not part of the
-Dreamer; it is noted as a possible later ticket.
+The old [external-conflict design](dreamer-external-conflict.md) and its
+[verification record](dreamer-external-conflict-verification.md) are historical evidence only; their
+rules are not current runtime contracts.
 
 ## Runtime and verification
 
@@ -264,36 +125,13 @@ Run `npm test` for the Vitest suite, `npm run typecheck` for TypeScript, and
 
 ## Logical-task outcomes (32c)
 
-A logical task is `(target session, phase, oldest selected backlog item)`, independent of its
-execution's run ids and the changing leaf. Noting uses the first frozen source entry;
-Consolidation uses the first selected fact, not a numeric minimum; Dreamer uses its retained
-range's original event anchor, even after committed partial edits.
+A logical task is `(target session, phase, oldest selected backlog item)`, independent of its run ids. Noting uses the first frozen source entry and Consolidation the first selected fact. A Dreamer range is terminal after one run and is never retried.
 
-`Store.beginExecution(task, previous?)` creates a durable execution or continues the same
-unsettled execution after fork refusal. Each attempt run carries `RunInput.executionId` and
-is linked through `execution_runs`. The façade returns that identity with a refused attempt;
-the host carries it in `TaskOptions.executionId` on fallback. Attempt audit outcomes do not
-settle executions. Interrupted executions remain unresolved rather than inheriting an
-intermediate attempt's failure or inventing success.
+`Store.beginExecution(task, previous?)` creates a durable execution or continues the same unsettled Noting or Consolidation execution after fork refusal. Each attempt run carries `RunInput.executionId` and is linked through `execution_runs`. Attempt audit outcomes do not settle executions.
 
-`Store.settleExecution(id, outcome, runId, reason?)` records one authoritative terminal outcome
-and updates the logical task's streak in the same transaction. Replay observes the existing
-outcome without applying it again. Successful Noting/Consolidation commits settle inside the
-business transaction; subsequent provider or audit errors cannot reverse success. Dreamer
-writes do not settle success: `completeDreaming` settles the linked execution only with its
-validated exact completion sets. The Dreamer worker reuses the façade's existing terminal settlement and target cancellation path.
-Its native provider retries and one repair remain inside the same execution; only final failure
-updates the streak.
+`Store.settleExecution(id, outcome, runId, reason?)` records one authoritative terminal outcome and updates the logical task's streak in the same transaction. Successful Noting and Consolidation commits settle inside their business transactions. Dreamer terminal processing records the frozen range and own commits on success or failure, then settles that one execution; cancellation before any commit records no processing. Partial Dreamer writes survive a later failure.
 
-Final business failure includes incomplete Noting, unresolved submission refusal and failed
-Dreamer acceptance after partial writes, except the core-verified reference-only successor
-`conflict` defined above. It neither increments nor resets the existing streak. The public
-`settleExecution` entry point cannot issue this exception from caller-supplied outcome/audit text;
-new conflict settlement requires the live core Dreamer capability and its associated run.
-Cancellation, shutdown, busy admission and corrected
-refusals do not count. `Store.taskFailures(sessionId)` returns each key's count, latest reason,
-last run and update time. Success resets its key; explicit enrollment on clears all target
-streaks, while reopen does not.
+Final business failure includes incomplete Noting, unresolved submission refusal and a failed Dreamer run after partial writes. Cancellation, shutdown, busy admission and corrected refusals do not count. `Store.taskFailures(sessionId)` returns each key's count, latest reason, last run and update time. Success resets its key; explicit enrollment on clears all target streaks, while reopen does not.
 
 The third failure atomically persists enrollment off and expires every target claim. The façade
 then closes and aborts locally owned target tasks. Only the transitioning settlement returns
@@ -562,8 +400,7 @@ their ticket-01 placeholders.
 `src/core/render/material.ts` holds one material contract and the block layout of every memory consumer.
 The shared parts are the rendered knowledge (in category groups), the historical facts, the
 compressed Raw entry views with their source identity, and the budget receipts. A task adds its own
-parts: Noting the head reply and the source index, Consolidation the pending facts (as addresses and
-as lines) and the negated-evidence review cues. The frozen range travels beside the material as the
+parts: Noting the head reply and the source index, Consolidation the pending facts as addresses and lines. The frozen range travels beside the material as the
 run's own label. A consumer whose order has no knowledge, no facts or no Raw block simply omits those
 parts: sharing the type never adds a block to an order, and foreground delivery stays Knowledge-only.
 
@@ -660,41 +497,31 @@ passes the knowledge candidates, its selected current material (Raw entry views,
 pending fact lines), the block titles and mandatory cues it will emit, the frozen range and the
 historical facts, and gets back what fits with the receipts for what did not. The limits are hard,
 measured by the existing estimator over the exact rendered view, and every emitted component is
-charged once, to the block that emits it:
+charged once to the block that emits it:
 
 | Component | Budget | Default |
 | --- | --- | ---: |
-| main knowledge block, category tags, state notices and omission receipts (ordinary-prompt delivery and compact window) | database-derived Knowledge injection capacity | 20,000 |
-| Consolidator knowledge references, category tags, inherited status lines and omission receipts | frozen database-derived Knowledge injection capacity | 20,000 |
+| main knowledge block, category tags, state notices and omission receipts (ordinary-prompt delivery and compact window) | Knowledge base plus remaining derived allowance | 45,000 maximum |
+| Consolidator knowledge references, category tags, inherited status lines and omission receipts | frozen Knowledge base plus derived allowance | 45,000 maximum |
 | Noter's selected Raw / Consolidator's pending fact lines — views with their own source labels, omission markers and joining separators | `noting.batchTokens` / `consolidation.batchTokens` | 10,000 |
 | Noter: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
 | compact's facts window — the pending facts, then the consolidated refill, with the `<episodic>` tag, the facts title and their receipts | `compaction.factsTokens` | 10,000 |
 | compact's Raw window — the pending entry views, then the already-extracted refill, with the Raw title | `compaction.rawTokens` | 10,000 |
-| compact's shared allowance — required excess only, never optional refill | `compaction.overflowTokens` | 10,000 |
-| Consolidator: its titles, range line, mandatory review cues and receipts, charged with the facts they frame | `consolidation.batchTokens` | 10,000 |
+| shared allowance — borrowed after required reservations | sum of three pool triggers plus Noting and Consolidation triggers | 25,000 |
+| Consolidator: its titles, range line and receipts, charged with the facts they frame | `consolidation.batchTokens` | 10,000 |
 
-The current material and the mandatory cues are reserved first; historical facts then fill whatever
-episodic space is left, in the existing freshness order. A Noter batch consumes at most its own
+Required task material is reserved first; historical facts then fill whatever episodic space is left, in the existing freshness order. A Noter batch consumes at most its own
 ceiling, not a guaranteed allocation, and Consolidation has no automatic Raw block and no history
 block at all — its selected pending facts and their required framing share the current-material
 allowance. Outer framing is never charged against the Noter's inner Raw ceiling, so an otherwise valid
 10,000-token entry stays batchable.
 
-Ticket 35d stores one Knowledge policy row in each database: Global 4,000, Project 10,000 and
-Session 1,000 tokens by default. Exact safe-integer addition derives the applicable processed ceiling
-`G + P + S` (15,000), the ordinary-injection/compaction Knowledge capacity `G + P + S + 5,000`
-(20,000), and the Dreamer processed-input capacity by the same formula. The 5,000-token constant is
-an unprocessed-work allowance, not another stored or configurable cap. Owner pools remain independent: each project has the full Project budget and each session has the full Session budget; they are never multiplied into one global total. For any check, each pool contains only current non-archived processed versions applicable on that one path, grouped by effective placement owner. Project and global sharing occur through applicability on the path, not by unioning stored branches. The separately rendered applicable block contains the union of those three item sets; its token count is not the arithmetic sum of three independently framed owner blocks.
+Each database stores one Knowledge policy row: Global 4,000, Project 15,000 and Session 1,000 tokens by default. Their safe-integer sum derives the 20,000-token Knowledge base window. Knowledge, Facts and Raw have 20,000/10,000/10,000 base windows. Their shared allowance is derived at runtime from all trigger thresholds: 2,000 + 7,500 + 500 + 5,000 + 10,000 = 25,000 at defaults. It has no separate configuration key or database migration. Owner pools remain independent: each project has the full Project budget and each session has the full Session budget; they are never multiplied into one global total. Pool sizes count current visible non-archived revisions whether or not they have processing records. Processing state triggers maintenance; it does not change capacity, validity or visibility.
 
 Supported schema creation and upgrade, source/lineage migration, policy initialization and policy
 validation commit as one database transaction. A failed later migration or integrity check therefore
 publishes neither a partial schema upgrade nor a new default-policy row; reopening retries idempotently.
-Single-field edits are separate ordinary database transactions. A reduction retains the existing enumeration of every stored branch and terminal Turn, and validates each path's affected owner pools and applicable block independently in that same transaction; no branch union is measured. Any overage or write/commit
-failure rolls back the policy row. Reads and no-op edits do not rewrite unrelated memory
-or Pi settings. Every new selection, placement, completion, certification, compact allocation and
-ordinary injection reads current database policy. Dreamer and Consolidator freeze their derived input
-ceiling at admission so a running provider request cannot change shape; Dreamer's checks show that frozen
-ceiling beside current capacities, and a later retry uses current policy. Safe-integer overflow is an
+Single-field edits are separate ordinary database transactions. Reads and no-op edits do not rewrite unrelated memory or Pi settings. Every new selection, compact allocation and ordinary injection reads current database policy. Dreamer and Consolidator freeze their input capacity at admission so a running provider request cannot change shape; later runs use the current policy. Safe-integer overflow is an
 explicit error. The retired `render.knowledgeBlockTokens` file/environment key is always a named
 configuration error.
 
@@ -711,9 +538,9 @@ Raw ceiling is subtracted whether or not this batch fills it. A small Raw batch 
 fact slice, and a small fact slice never buys a larger Raw batch. No new configuration key expresses
 this; the cap is derived from the two that already exist.
 
-Fresh material is therefore at most 20,000 estimated tokens for the Noter and 30,000 for the
-Consolidator by default: the latter combines the frozen 20,000-token database-derived Knowledge
-capacity with its independent 10,000-token fact/range/cue allowance. System instructions, tool
+Fresh material is therefore at most 20,000 estimated tokens for the Noter and 55,000 for the
+Consolidator by default: the latter combines the frozen 20,000-token Knowledge base, its derived 25,000-token
+shared allowance and its independent 10,000-token fact/range allowance. System instructions, tool
 definitions, inherited native history and later tool/review messages are additional context costs,
 which is why the host's real-context capacity check stays independent of these domain limits.
 
@@ -728,21 +555,18 @@ no omission advances knowledge lifecycle or processing progress.
 
 The knowledge cap is hard (user confirmation 2026-09-08): constraints, open items and disputes do
 not bypass it. Retained items are whole — a claim is never rewritten to make it fit — and each omitted
-category is named in its own receipt. Foreground delivery remains deterministic. For over-cap worker
-input only, Dreamer and Consolidator select by lexical relevance, with category/time/id as stable ties;
-category grouping remains presentation rather than a globally relevance-sorted block.
+category is named in its own receipt. All Knowledge consumers keep category groups and chronological
+display, but capacity selection retains newer commits before older optional items. The shared header
+explains newer same-object claims; lexical relevance no longer controls this budget cut.
 
 ## Knowledge trace and negation walks (ticket 03a)
 
-`trace("K1")` defaults to active current tips applicable on the path and their parents, children, links,
-and marks. `versions: "history"` additionally admits applicable superseded and archived revisions;
-`versions: "all"` additionally admits other branches' revisions in the selected scope, including their history and archives. Such inapplicable revisions are never write bases on this path, and reading never bypasses write validation. Without a bound session, tips are labelled newest-created and
-all history appears once. `K1@57` reads one immutable global commit,
+`trace("K1")` defaults to the statelessly resolved current revision visible on the path and its parents, children and links. `versions: "history"` additionally admits applicable superseded and archived revisions; `versions: "all"` additionally admits other branches' revisions in the selected scope, including their history and archives. Such inapplicable revisions are never write bases on this path, and reading never bypasses write validation. Without a bound session, the resolved current revision is labelled newest-created and all history appears once. `K1@57` reads one immutable global commit,
 `K1@57..K1@61` compares any two commits of the same identity, and `K1..` shows the
 complete commit tree across branches. These explicit addresses ignore data filters.
 
-Trace fields are `text`, `supports`, `topics`, `status`, `reason`, `links`, and
-`marks`. Current and exact reads default to all except `reason`; history/all reads
+Trace fields are `text`, `supports`, `topics`, `status`, `reason`, and `links`.
+Current and exact reads default to all except `reason`; history/all reads
 and `K1..` additionally default to `reason`, which appears on commit-history lines.
 An explicit `fields` list is authoritative. Commit metadata can include operation,
 stored time, supports, topics, and the authored reason. Supports expand through
@@ -800,7 +624,7 @@ interval relations are frozen in one batched read, not by rendering all facts.
 A short transaction freezes the necessary values, relations and annotations for the
 request snapshot. Named rendering and page estimation happen after it exits; immutable
 interval fact bodies remain lazy. No transaction stays open between pages. The
-annotations 22c freezes for a search (a fact's relations, a commit's marks, a Turn's
+annotations 22c freezes for a search (a fact's relations and a Turn's
 occurrences and Raw profile) cannot move under a later page either. A read through
 a run's tools is recorded and audited as
 the expression the model wrote, and the knowledge components of a mixed expression
@@ -827,24 +651,21 @@ representation, relations and separator the batch selects with — and it only t
 The range is the oldest-first whole-fact prefix within `consolidation.batchTokens` (default 10,000)
 in allocation-id order; the rest stays pending for the next batch. An oldest fact that cannot fit
 alone is a capacity problem and stays pending: it is never clipped, skipped for a smaller later fact
-or marked consolidated unpresented. The range freezes those facts, the visible active knowledge
-revisions (including budget omissions), relation lines and reminders before the
-candidate call. Since tickets 25a and 45 the automatic material is exactly two blocks: active knowledge
-within the database-derived injection capacity frozen in the same admission transaction (20,000 by default),
-and pending facts within `consolidation.batchTokens`, which also carry their review cues, titles and range line.
+or marked consolidated unpresented. The range freezes those facts and the visible current Knowledge revisions, including budget omissions, before the model call. Since tickets 25a and 45 the automatic material is exactly two blocks: visible current Knowledge
+within the frozen Knowledge base plus derived allowance (45,000 maximum by default),
+and pending facts within `consolidation.batchTokens`, which also carry their titles and range line.
 Required framing is charged to the allowance of the material it frames, never to a second budget. A fitting
 knowledge pool retains the stable category/time/id presentation with no omission receipt. An over-cap pool
-uses the Dreamer's shared lexical selection seam, queried by this final range's fact text; whole retained
-versions render in category groups and bounded receipts name the omitted IDs. **There is no already-consolidated
+keeps the newer optional commits first through the shared Knowledge selection rule; retained versions
+render in category groups and bounded receipts name omitted IDs. **There is no already-consolidated
 history block and no automatic Raw block**; both are reached by explicit `trace`. All range facts are
-retained: a batch whose facts and mandatory cues cannot fit that allowance is reduced oldest-first and
+retained: a batch whose facts and framing cannot fit that allowance is reduced oldest-first and
 re-frozen, and one that cannot fit its smallest admissible unit stays pending with the capacity
 diagnostic (`CONSOLIDATION_CAPACITY`). Since 29e the optional knowledge block goes first: it is
 dropped whole — with one receipt line saying so, charged inside the text the freeze prices — before
 any selected fact is given up, the twin of the Noter's history trim. It is dropped whole rather than
 by a lowered cap because a cap small enough to matter is also too small for the block's own omission
-receipt, which `budgetKnowledge` refuses outright. Feedback is unbudgeted so every matching visible
-knowledge and both relation strengths remain available.
+receipt, which `budgetKnowledge` refuses outright.
 
 **Two execution modes (29e, superseding 25b).** `mode` is the request's own or
 `consolidation.forkModeDefault` (default `false`), exactly as Noting reads `noting.forkModeDefault`;
@@ -854,59 +675,28 @@ floor is that same price. There is no Raw prerequisite for this phase: its selec
 present either in the inherited context or in the complete fact block the builder injects (29b case
 14), and inherited unrelated Raw grants no citation authority. A refused fork comes back to the host
 as `{ outcome: "dropped", refused }`, with the `runId` of the attempt's own record when it sent a
-request — the same 27c/27d contract Noting has. A candidate accepted for review is not a business
-commit, so that refusal is reachable after one; the re-admitted run restarts candidate and review on
-the same frozen fact target.
+request — the same 27c/27d contract Noting has. A refused attempt is not a business commit; the re-admitted run restarts on the same frozen fact target.
 
-The host receives one `ConsolidationAgentInput` with frozen `input`, the four bound
-`tools`, and `reportRequest`. It executes tool calls and extends the same conversation
+The host receives one `ConsolidationAgentInput` with frozen `input`, the four bound tools and `reportRequest`. It executes tool calls and extends the same conversation
 until the provider stops. `reportRequest` captures each exact provider request before
 execution; the final returned request is the last one sent.
 
-Consolidator's `memory({operations, skipped})` accepts only create/update. Every operation requires
-non-empty change `supports` and a non-empty `reason`; reason is a commit message and grants no
-evidence, scope, applicability or accounting. Create/update require the complete resulting text,
-category, scope and topics. Manual callers retain fact-backed archive, whose archival state inherits
-its parent body; Dreamer retains archive with its trusted maintenance-support exception. Earlier
-grounding is reached through lineage, never copied into the new support list. Labels remain
-trimmed, deduplicated complete replacement sets. Inapplicable fields and commit-level `because` are
-rejected. Skipped items remain `{fact, because}`.
+Consolidator's `memory({operations, skipped})` accepts only `create`. Each create requires
+non-empty direct `supports`, a non-empty `reason`, and complete text, category, scope and topics. A
+state change, correction or refinement is another created item; its reason may name the older item it
+supersedes so the Dreamer can reconcile them later. Update, merge, split and archive are rejected.
+Manual callers expose only fact-backed `create` and `archive`.
 
-Dreamer's immediate form accepts update/merge/split/archive. It alone may use empty supports. Merge
-has one `id`, exactly one `absorb` and one complete result, and the lower Knowledge id must survive. Split has `id`, supports, reason and exactly
-two `{text, category, topics}` children; both inherit parent scope. Every parent is an exact complete
-read. One merge may revive an applicable archived older `id` by absorbing an active family member;
-the archive commit is the exact survivor base and the archive predecessor is read for semantic
-comparison. Parentless create, every other archive-base use and the historical create-plus-update/archive
-decomposition workaround are rejected atomically.
+The first valid submission commits. A rejected submission may be corrected and resubmitted as a
+whole; a call after commit is rejected. There is no Consolidator NEAR/CLOSER review, second-round
+message, checklist or uncited-fact accounting. The Noter's separate NEAR review is unchanged. A run
+that stops without a submission succeeds with zero created items and advances the frozen fact range.
+The revisions, run record and frozen Consolidation membership commit atomically.
 
-The first valid batch writes nothing. Its tool result contains ordered item results
-and `feedback: {role: "user", content}`. The host appends this feedback once as a user
-message after the tool result. Content combines the system-generated guidance line,
-NEAR, CLOSER, and the exact body between the prompt's second-round heading and the
-next heading. The second valid batch commits; invalid batches can be corrected and
-resubmitted without a further review round. A third submission is already committed.
-Stopping after the first valid batch is bounced and preserves the candidate. Normal
-stopping without any submission succeeds with zero knowledge and advances the range.
+Every create is revalidated in the immediate transaction against the frozen fact range, evidence
+scope and current project. A rejected batch writes nothing. The Knowledge block remains available for
+Admission's duplicate test, but reading an existing revision grants no maintenance authority.
 
-Lexical matching uses Unicode character bigram Jaccard after removing punctuation
-and whitespace. NEAR includes all visible active neighbours at or above
-`consolidation.nearThreshold` (default 0.28); targets exclude themselves. CLOSER lists
-range facts near each open/goal item. Budget omissions do not limit either search.
-Update answers NEAR; retirement remains outside Consolidation. Initial create review
-obligations remain conservatively while creates remain in the final batch, so
-reordering operations cannot silently discard a warning. No acknowledgement field
-or third review round exists.
-
-Targets begin from the exact visible revisions frozen at run start. If a comparable-origin worker
-consumes one before commit, the whole atomic submission is refused. Consolidator may completely read
-an applicable current successor, reconsider the same frozen facts and make a normal fact-backed
-submission against that exact version; it gains no extra facts, applicability bypass or neutral
-outcome, and an unresolved refusal follows ordinary failure accounting. Manual calls use complete
-reads and retain their existing fact-backed binary-merge surface, but gain neither split nor
-empty-support authority; Consolidator still cannot merge. Every item and every merge parent is
-rechecked in the immediate transaction. Any rejected batch writes no operations. The revision, run
-record and frozen Consolidation fact membership commit together.
 Ticket 29d retired automatic foreground receipt delivery, which the 2026-09-08 supersession had made
 unconditional: worker completion itself delivers no receipt to any conversation, in either worker
 mode. A later ordinary prompt may independently publish an applicable current Knowledge revision when
@@ -914,20 +704,12 @@ that prompt's selected persisted context does not already hold the exact body or
 change evidence. A child receiving material does not mean the parent received it. Supports cite
 project facts available at start.
 
-Accounting runs on the post-application active knowledge set inside the same
-transaction, including concurrent changes to untouched knowledge. It recursively follows effective
-grounding through exact parent lineage; explicit skipped facts also count as accounted for. Uncited user
-facts and questions missing from skipped yield `uncited_facts`. Other diagnostics are
-`unanswered_near`, `unsupported_numbers`, and `over_200_tokens`. Numbers compare exact
-numeric lexemes against direct and inherited grounding facts' text and quotes; the reason is never read by
-that diagnostic, and never by any other.
-All diagnostics commit and derive no fact or knowledge status.
+The `unsupported_numbers` and `over_200_tokens` diagnostics remain audit-only: numbers compare
+submitted direct evidence, never the commit reason. Neither diagnostic establishes Knowledge status.
 
-One run record retains tool inputs/results, candidate, fetched evidence, exact last
-request, final output, usage, read revisions and problems. Once committed, business
+One run record retains tool inputs/results, fetched evidence, the exact last request, final output, usage, read revisions and problems. Once committed, business
 outcome is success even if the provider later fails or is cancelled; trailing errors
-only append problems. Before commit, failure/cancellation advances nothing; an
-uncorrected rejection or first-only submission ends bounced. Run admission uses the same target-wide phase claim as Noting, across facades,
+only append problems. Before commit, failure or cancellation advances nothing; an uncorrected rejection ends bounced. Run admission uses the same target-wide phase claim as Noting, across facades,
 branches and processes.
 
 The fixture `tests/fixtures/consolidation.json` copies K2 from v7m's first Consolidation output and its
@@ -935,21 +717,22 @@ supporting facts F2/F35 from facts.jsonl. Chinese memory content is preserved;
 only the knowledge category and candidate handle are adapted to the core contract.
 Tests remap fact addresses to allocated IDs. Existing 03b tests now expect
 application and session/branch ranges, explicitly decline unretained facts, and
-add fresh facts before repeat runs; committed knowledge participate in later NEAR.
+add fresh facts before repeat runs; committed Knowledge participates in later duplicate checks.
 
 ## Read facade contract (ticket 04)
 
+Knowledge marks and the mark API are retired. Trace, search and injection expose no mark field or annotation.
+
 `inject(sessionId, branch = "main")` returns attribute-free `<knowledge>` XML,
 with nonempty category tags in glossary order. Within each category, current
-revision time ascends, with knowledge-id ties. XML text is never escaped (lines stay trace lines byte for byte); shared lines,
-including revision-bound marks, remain the display grammar. Budgets measure
+revision time ascends, with knowledge-id ties. XML text is never escaped; shared lines stay byte-identical trace lines and remain the display grammar. Budgets measure
 shared lines, including framing and receipts. Every category obeys the hard cap;
-whole items form a retained prefix in category order.
+whole items retain category/time display order, while budget selection omits the oldest optional items first.
 Pass `null` explicitly for legacy null branches.
 
 34c: `injection(target, visible?)` is the common predicate for every enabled ordinary prompt. From one
 snapshot and commit graph it starts with applicable current exact revisions, removes exact Knowledge
-bodies already visible, and then suppresses a candidate only when its nonempty direct change supports
+bodies already visible, and then suppresses a candidate only when its nonempty direct supports
 are all visible Facts or all have proven complete Noting bindings to retained original/bounded Raw
 entries. A bounded carrier's database/native pair must name an entry in that exact selected session
 path; a valid row from another or sibling path proves no coverage. Empty supports and missing, partial
@@ -961,15 +744,15 @@ are checked on the selected session path; project-only targets use project/globa
 infer path evidence.
 
 Applicable visible Knowledge bodies and persisted state notices are rendered and charged first against
-the current database-derived Knowledge injection capacity (20,000 under the default policy). Missing state transitions then fit as complete items in
+the Knowledge base plus derived allowance (45,000 maximum under the default policy). Missing state transitions then fit as complete items in
 their stable prefix order, followed by complete candidate bodies in normal category/time/id order. An
 unfit next transition is not skipped for a body; a fitting transition prefix remains publishable. Exact
 fit is accepted; zero or negative remainder and a single unfit item emit nothing, and omission receipts
 alone never create a message. Archive/supersede/merge/split notices have
 stable carrier identities separate from exact body visibility, so persisting a notice never grants a
 replacement body. Fact, Raw, command-generation state and processed/unprocessed status are absent from
-foreground publication. Consolidator references use the same database-derived capacity but their
-worker-only relevance selection does not alter this deterministic foreground order. The reproducible synthetic method and
+foreground publication. Consolidator references use the same Knowledge capacity, header and
+newer-first capacity selection. The reproducible synthetic method and
 250/1,000-candidate measurements are recorded in [perf-34c.md](perf-34c.md).
 
 Successful noting commits record `factIds` in the
@@ -986,26 +769,18 @@ three windows since 28a):
 | Outcome | Condition | Result |
 | --- | --- | --- |
 | `{text, supplied, charged}` | the complete required set fits the fixed bases plus shared overflow | knowledge/status, `<episodic>` facts in chronological Turn groups, then bounded Raw in source order |
-| `{native: true, reason, over?}` | required excess exceeds the shared allowance, or an entry's minima exceed its profile | explicit native delegation; `over` identifies all contributing required windows, including knowledge |
+| `{native: true, reason, over?}` | required excess exceeds the shared allowance, or an entry's minima exceed its profile | explicit native delegation; `over` identifies required Raw, Facts or Knowledge state-notice excess |
 
-**Fixed bases and required-only overflow (32e/35d).** Bases are the current database-derived
-Knowledge injection capacity (20,000 at defaults), facts 10,000 (`compaction.factsTokens`) and Raw
-10,000 (`compaction.rawTokens`). `compaction.overflowTokens` defaults to 10,000 and is shared only by
-required excess. The maximum is their derived sum, 50,000, not a separate total-budget key.
-For charged required sizes U and bases B, admission requires `sum(max(U_i - B_i, 0)) <= overflowTokens`.
-Equality fits; no window lends its unused base. Required 20k/14k/16k fits, but 5k/20k/15k fails
-with 15k excess despite a 40k total. Diagnostics give per-window excess and shared shortfall.
-
-Required knowledge is each current applicable exact version not certified by Dreamer, including
-legacy unclassified knowledge and committed unfinished edits. Consolidating its supporting facts
-does not make it optional. Unprocessed archives retain required accounting/status until completion;
-retained superseded versions receive required status framing. Bodies are never truncated or replaced
-by an ID or omission receipt to pass admission. Titles, labels, source references, status lines,
-separators and emitted receipts are charged to their owning window.
-
-Processed knowledge uses the existing category/version priority, within its own positive base
-remainder. Each optional increment is at most `max(B_i - U_i, 0)`, including extra framing; optional
-material cannot use overflow. Required 25k/8k/6k leaves optional capacities 0/2k/4k.
+**Fixed bases and shared allowance.** Knowledge uses the database-derived 20,000-token base; Facts
+and Raw use 10,000-token bases. One runtime-derived allowance, 25,000 tokens at defaults, is shared
+across the windows; unused base capacity never moves between them. The allocator first reserves every
+selected-path Raw view awaiting Noting, complete fact awaiting Consolidation and required Knowledge
+state notice. It then spends the remaining
+shared allowance on optional current Knowledge, historical Raw and historical facts, in that order.
+Current Knowledge is never required merely because its pool lacks a processing record. Framing,
+state notices and receipts are charged once to the window that emits them. If required Raw and Facts
+still do not fit, core requests bounded recovery or native compaction; it never drops required evidence
+to manufacture a fit.
 
 **Raw-first refill.** Select newest already-extracted Raw as whole bounded E/C/R views, excluding
 exact pending entries and originals or recognized bounded carriers actually retained after compact.
@@ -1020,8 +795,7 @@ complete `fact_sources` bindings are fully covered by retained Raw, required pen
 historical Raw. Unknown, incomplete or partly covered bindings remain eligible. Required pending
 facts are never removed. Select eligible whole facts newest first, deduplicated against pending and
 retained fact IDs, and display chronological Turn groups. Excluded facts gain no supplied fact IDs.
-Raw-first affects filtering, not the independent facts remainder. Pending membership is exact
-processing membership, never a timestamp tail; old pending holes remain protected.
+Raw-first affects filtering, not the independent facts remainder. Pending membership is exact entry/fact processing membership, never a timestamp tail; old pending holes remain protected.
 
 Both refills are optional in the strict sense: an item that does not fit is left out, and that
 omission starts no worker, causes no native delegation, resets no processing and enters no carrier.
@@ -1057,11 +831,10 @@ serialized JSON punctuation and escapes never match, and a commit whose text and
 several labels match is still one result.
 
 `topicGroups(sessionId, headTurnId?, branch?)` projects the same path-selected
-applicable knowledge as `{topics: [{topic, commits}], unclassified}`, where a commit
+visible current Knowledge as `{topics: [{topic, commits}], unclassified}`, where a commit
 is the `{knowledgeId, commit}` reference of the revision it was read from. A
-multi-topic commit appears in each of its groups, divergent applicable tips stay
-separate entries, and nothing is cloned or ranked: this is read organization, not a
-second injection order. This reference projection is distinct from search results.
+multi-topic commit appears in each of its groups, and nothing is cloned or ranked: this is read
+organization, not a second injection order. This reference projection is distinct from search results.
 
 `scope` is the only material-range parameter; obsolete `where` is rejected, including
 on continuations. Search selects material as follows:
@@ -1079,9 +852,7 @@ Only `category` implies `layer: "knowledge"` and rejects another explicit layer.
 Scope works across all layers and does not imply a layer. Exact trace evidence remains
 unrestricted; selection grants no source or write authority.
 
-`versions` defaults to `current`: active current DAG tips applicable on the reader's path inside the selected owner scope. `history` also admits applicable superseded and archived revisions; `all` also admits other branches' revisions inside that same scope, including their history and archives. Inapplicable revisions remain unavailable as write bases; reads do not bypass writer validation. Historical parent
-conditions still constrain path applicability. Without a path, current uses graph
-tips and history/all include the graph history. Versions are candidates inside a K,
+`versions` defaults to `current`: the one statelessly resolved current revision, filtered by reader scope and path visibility inside the selected owner scope. `history` also admits applicable superseded and archived revisions; `all` also admits other branches' revisions inside that same scope, including their history and archives. Inapplicable revisions remain unavailable as write bases; reads do not bypass writer validation. Only a revision's direct supports constrain applicability; parent and merge/split links are provenance. Without a path, current uses the globally resolved revision and history/all include the graph history. Versions are candidates inside a K,
 not separate knowledge identities.
 
 Search and project collections filter candidates first, choose one exact representative
@@ -1101,7 +872,7 @@ not apply to those layers. `itemBudget` defaults to 80 estimated tokens. Long te
 keeps a Unicode-safe head followed inline by `[... N characters truncated]`;
 stored line breaks in text and selected metadata render as ` ⏎ `, including when
 `itemBudget: null` leaves preview text untruncated. Selected `supports`, `topics`,
-`status`, `reason`, `links`, and `marks` appear only when requested; `reason` is
+`status`, `reason`, and `links` appear only when requested; `reason` is
 suppressed for current-only search. Raw hits retain the configured entry profile.
 Search never grants a knowledge write handle and emits no write handle in its
 receipts; use an exact, complete trace read.
@@ -1122,7 +893,7 @@ newline. Receipts are not hit content, and a fragment need not contain a complet
 hit.
 
 Continue search with `search({query: "", cursor: "…"})` and trace with its cursor
-alone. The cursor freezes owner selection, exact representatives, statuses, marks and
+alone. The cursor freezes owner selection, exact representatives, statuses and
 every effective filter, field, content budget, page-budget alias, and line cap. Omit them or repeat equivalent
 effective values; genuinely changed values reject without consuming the cursor. A
 search cursor may continue through trace, but a trace-origin cursor cannot continue
@@ -1142,9 +913,9 @@ every scope and gains no other material. Receipts describe these actual intersec
 Bare `K1` defaults to one current representative. Explicit `K1` with history/all, or
 `K1..`, requests that K's expanded history; a comma list preserves caller order and
 repeats. Exact versions, diffs, F/T selectors and run/lineage references remain intact.
-Collection traces grant no complete-read handles. Named reads certify only delivered
-complete bodies after the final page; suppressed alternative tips and historical
-commit-reference lines certify nothing. Explicit K histories retain default reasons;
+Collection traces grant no complete-read handles. Named reads grant a write handle only for a delivered
+complete body after the final page; suppressed alternatives and historical commit-reference lines
+grant nothing. Explicit K histories retain default reasons;
 queryless collections do not expand histories or acquire that default.
 Listing `cap` counts output lines, not facts or tokens. Display options are
 parameters, never address flags, and expansion hints use the trace parameter form.
@@ -1153,23 +924,15 @@ fact and branching; its terminal sentence is not a current-conclusion claim.
 Cursors freeze rendered output, are single-use, belong to this facade instance
 and calling session/project, and preserve the remaining lines on later pages.
 
-`mark(knowledgeId, kind)` (`verified` | `flagged` | `clear`) replaces or clears
-only the current revision's mark; historical marks remain on their revisions.
 `declareProject(sessionId, name, source, path)` declares attribution through an explicit user
-command; its source defaults to `mark`, and the host supplies the currently selected path. Pi no
-longer discovers project marker files. An undeclared session is accepted only when Raw, fact and
-Knowledge work on that path are each below their configured trigger and it has no open Dreaming
-range or live phase claim. A refusal names the phase; `/trace catchup` drains Noting and
-Consolidation, while due Dreaming is left to its normal trigger. Declaration never flushes work.
-In the same transaction, merging the implicit project into the named target revokes the certificate
-and event settlement of each certified project-scope revision current on any stored path of the
-session. Existing pending-event and Dreamer grouping rules then carry the hand-over; earlier
-certificates, revision identity and placement audits remain. Placement is still revalidated because
-membership can expose other certified knowledge. The storage contract retains `marker` provenance
-and existing assignments, without file-based declarations. New session-owned projects must use
-`createSession({ …, projectDeclaration: "undeclared" })`.
-Only undeclared projects merge via `mergeProject`; leaving a
-named project moves the declaring session and its session knowledge, not peers.
+command and the host's currently selected path. Pi does not discover marker files. Declaration keeps
+Noting and Consolidation protections but is not blocked merely because Dreaming is due or an inactive
+range exists. It waits when an active Dreamer belongs to an affected project or its frozen range
+touches an affected pool. Relabelling creates no Knowledge revision or processing event and clears no
+processing record: moved project revisions are pending in the destination only when that pool lacks
+the exact `(pool, revision)` record. Global and session records are unchanged. Existing project
+assignment provenance is retained. Only undeclared projects merge via `mergeProject`; leaving a named
+project moves the declaring session and its session Knowledge, not peers.
 `status(sessionId)` reports session/project fact counts, visible active knowledge
 count and latest attempts by run id. The derived Turn watermark readers and status line were removed
 by 17b; the pending-delivery count went with the queue in 29d.
@@ -1230,8 +993,7 @@ No Pi SDK or migration enters core. The facade owns an executor id, atomic task
 admission, cancellation signals and conditional claim release. `taskEligibility(phase, target)`
 shares the trigger threshold with host preselection; `automatic: true` rechecks it in admission. Since
 29d it answers `{due}` alone: the delivery pause that used to hold a fork-mode Noting task until its
-predecessor's facts had reached the foreground is gone, so the worker mode no longer changes it. `borrowed: true` requires a closed target and an enabled,
-open `executorSessionId`, and forces subagent mode. `closedSessionScope` defaults to
+predecessor's facts had reached the foreground is gone, so the worker mode no longer changes it. For Noting and Consolidation only, `borrowed: true` requires a closed target and an enabled, open `executorSessionId`, and forces subagent mode. Dreaming never borrows closed-session work. `closedSessionScope` defaults to
 `project` (matching project ids); `global` allows any project and `off` leaves closed
 tails pending. Hosts pass `memory.config.closedSessionScope` to `store.closedTasks`;
 core rechecks the policy transactionally at admission and commit. `configure` accepts
@@ -1261,13 +1023,10 @@ own compaction `AbortSignal` (28b): Esc during a compaction ends that compaction
 recovery work and nothing else. Nothing else about admission, freezing, claims, slots or
 `cancelTasks(stopping?)` changes.
 
-`compact`'s native arm carries `over?: { knowledge: boolean; facts: boolean; raw: boolean }` when
-the sum of required-window excesses exceeds the shared overflow allowance. Each flag identifies a
-positive excess above that window's own base, not whether its processing phase meets the trigger.
+`compact`'s native arm carries `over?: { knowledge: boolean; facts: boolean; raw: boolean }` when required-window excess exceeds the derived shared allowance. Knowledge bodies are optional; its required excess can come only from state notices. Facts and Raw flags identify their required excess above their bases.
 The host separately checks phase eligibility before recovery. A delegation for another reason
 (such as an entry whose minima exceed the view profile) carries no `over` and starts no recovery
-worker. The two outcomes remain a custom replacement or native delegation; `reason` explains the
-required demands, per-window excesses and shared-allowance shortfall.
+worker. The two outcomes remain a custom replacement or native delegation; `reason` explains the required Raw and Facts demands, per-window excesses and shared-allowance shortfall.
 
 ## Manual catchup boundary (18b)
 

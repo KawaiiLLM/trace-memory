@@ -8,6 +8,8 @@ import { join } from "node:path";
 const host = (config: Record<string, unknown>) => {
   const { "noting.triggerTokens": noting, "consolidation.triggerTokens": consolidation, ...rest } = config;
   const h = createHost(rest);
+  // Capacity probes isolate the derived N/C contribution; Dreamer still has real zero-budget
+  // triggers and changed Knowledge remains scheduling-only during compaction.
   h.memory.setKnowledgeBudget("global", 0);
   h.memory.setKnowledgeBudget("project", 0);
   h.memory.setKnowledgeBudget("session", 0);
@@ -32,18 +34,22 @@ const host = (config: Record<string, unknown>) => {
 // session in `compaction-triggers.test.ts`; the cases here drive the hook itself.
 
 const quiet = { "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000 };
-/** Independent bases plus a small shared allowance: pending demand still overflows, while empty
- * window titles can fit after successful recovery even in legacy one-token-base fixtures. */
+/** Independent material bases. The shared allowance is derived after the fixture reloads the real
+ * N/C triggers; pool budgets continue to contribute the three Dreamer triggers. */
 const windows = (_knowledge: number, facts: number, raw: number) =>
-  ({ "compaction.factsTokens": facts, "compaction.rawTokens": raw,
-    // Preserve these recovery probes' deliberately tiny admission allowance; 32e tests the default.
-    "compaction.overflowTokens": 50 });
+  ({ "compaction.factsTokens": facts, "compaction.rawTokens": raw });
 const long = (head: string) => `${head} ` + "word ".repeat(3_000);
 type Host = ReturnType<typeof host>;
 /** The runs this compaction caused: `noted` below seeds one directly in the store, which is state,
  * not work anyone did here. */
 const runs = (h: Host, kind?: string) => h.memory.store.listRuns(1).filter(r => r.createdAt !== "seed" && (!kind || r.kind === kind));
 const facts = (h: Host) => h.memory.store.listSessionFacts(1);
+const currentTarget = (h: Host) => {
+  const path = h.memory.store.knowledgePath(1, "main");
+  if (path.headTurnId === null) throw new Error("fixture requires a persisted current Turn");
+  if (path.branch === undefined) throw new Error("fixture requires a selected branch");
+  return { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId };
+};
 const compact = async (h: Host, signal?: AbortSignal): Promise<any> => {
   const file = join(h.dir, "agent", "settings.json");
   const settings = JSON.parse(readFileSync(file, "utf8"));
@@ -538,15 +544,15 @@ test("28b acceptance 10: a foreground entry arriving during recovery does not ex
 });
 
 const knowledge = (h: Host) => {
-  const c = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$1", author: "test", text: "rule ".repeat(6000), category: "constraint", scope: "project", supports: [facts(h)[0]!.id], topics: [], reason: "seed evidence", createdAt: "seed" }] });
+  const c = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [1, 2].map(i => ({ op: "create" as const, handle: `$${i}`, author: "test", text: `rule ${i} `.repeat(6000), category: "constraint" as const, scope: "project" as const, supports: [facts(h)[0]!.id], topics: [], reason: "seed evidence", createdAt: "seed" })) });
   if (!c.ok) throw Error(c.problems.join());
 };
 const archive = (h: Host): Reply => {
-  const k = h.memory.store.listCurrentKnowledge(h.memory.store.knowledgePath(1))[0]!;
+  const k = h.memory.store.currentKnowledge(h.memory.store.knowledgePath(1))[0]!;
   return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: { operations: [{ op: "archive", id: `K${k.knowledge.id}@${k.revision.id}`, supports: [], reason: "Deliberate retirement for hard budgets" }], skipped: [] } }] };
 };
 
-test("32f: independently eligible N/C/D overlap; each phase is used once with no fourth round", async () => {
+test("64c: independently useful N/C overlap once; pending knowledge does not add compaction Dreamer work", async () => {
   const h = host({ ...quiet, ...windows(100, 1, 1) });
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -555,19 +561,20 @@ test("32f: independently eligible N/C/D overlap; each phase is used once with no
     const inFlight = new Set<string>();
     h.provider(async c => {
       const kind = c.systemPrompt?.startsWith("# Dreamer") ? "D" : isNoting(c) ? "N" : "C";
-      inFlight.add(kind); if (inFlight.size === 3) release();
+      inFlight.add(kind); if (inFlight.size === 2) release();
       await held;
       return kind === "N" ? notes(c, "concurrent new fact remains pending " + "word ".repeat(100)) : kind === "C" ? consolidates(h, c) : archive(h);
     });
     const attempt = compact(h);
-    await vi.waitFor(() => expect([...inFlight].sort()).toEqual(["C", "D", "N"]));
+    await vi.waitFor(() => expect([...inFlight].sort()).toEqual(["C", "N"]));
     expect(await attempt).toBeUndefined(); // new N facts missed the already-used C batch
-    expect(runs(h).map(r => r.kind).sort()).toEqual(["consolidation", "dreaming", "noting"]);
-    expect(h.notices.filter(n => n.includes("compaction is running"))).toHaveLength(3);
+    expect(runs(h).map(r => r.kind).sort()).toEqual(["consolidation", "noting"]);
+    expect(h.memory.taskEligibility("dreaming", currentTarget(h))).toEqual({ due: true });
+    expect(h.notices.filter(n => n.includes("compaction is running"))).toHaveLength(2);
   } finally { release(); await h.dispose(); }
 });
 
-test("32f: exactly three real rounds cover N enables C enables D, then stop", async () => {
+test("64c: real rounds cover N enabling C, then stop without treating changed knowledge as required", async () => {
   const h = host({ ...quiet, ...windows(100, 1, 1) });
   try {
     await turns(h, 1);
@@ -577,13 +584,14 @@ test("32f: exactly three real rounds cover N enables C enables D, then stop", as
       if (c.systemPrompt?.startsWith("# Dreamer")) { starts.push("D"); return archive(h); }
       starts.push("C");
       if (c.messages.filter((m: any) => m.role === "toolResult" && m.toolName === "memory").length >= 2) return reply("Done.");
-      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "create", name: "memory", arguments: { operations: [{ op: "create", text: "rule ".repeat(6000), category: "constraint", scope: "project", supports: facts(h).map(f => `F${f.id}`), topics: [], reason: "new durable evidence" }], skipped: [] } }] };
+      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "create", name: "memory", arguments: { operations: [1, 2].map(i => ({ op: "create", text: `rule ${i} `.repeat(6000), category: "constraint", scope: "project", supports: facts(h).map(f => `F${f.id}`), topics: [], reason: "new durable evidence" })), skipped: [] } }] };
     });
     const result = await compact(h);
-    expect([...new Set(starts)]).toEqual(["N", "C", "D"]);
-    expect(runs(h).map(r => r.kind)).toEqual(["noting", "consolidation", "dreaming"]);
+    expect([...new Set(starts)]).toEqual(["N", "C"]);
+    expect(runs(h).map(r => r.kind)).toEqual(["noting", "consolidation"]);
     expect(runs(h).every(r => r.outcome === "success")).toBe(true);
     expect(result.compaction.summary).toBeTruthy();
-    expect(h.notices.filter(n => n.includes("compaction is running"))).toHaveLength(3);
+    expect(h.memory.taskEligibility("dreaming", currentTarget(h))).toEqual({ due: true });
+    expect(h.notices.filter(n => n.includes("compaction is running"))).toHaveLength(2);
   } finally { await h.dispose(); }
 });

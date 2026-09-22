@@ -56,7 +56,9 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
         return {
           version: 1, nativeSessionId: childId, transcriptPath: input.transcript_path, dbPath: config.dbPath,
           nativeCreatedAt: createdAt, enrollment: synced.enrollment, coreSessionId: core, projectId: synced.projectId,
-          branch: synced.branch, selectedLeafUuid: null, executor: null, lastClose: null,
+          // 64b: each native lineage owns an independent persisted source path. Reusing the
+          // parent's branch would let the child overwrite the parent's retained foreground.
+          branch: `cc:${childId}`, selectedLeafUuid: null, executor: null, lastClose: null,
           ...(synced.cwd !== undefined ? { cwd: synced.cwd } : {}),
           coreHost: coreHostOf(synced), clearedFrom,
         };

@@ -138,7 +138,7 @@ test.each([true, false])("18a 2026-09-08: disable during Noting provider call re
 test.each([true, false])("34c: automatic material ignores the Noter mode (%s); disable preserves work and on rechecks evidence coverage", async (noting) => {
   const h = setup({ "noting.forkModeDefault": noting });
   await h.turn();
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
+  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
     operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"] }], skipped: [] } }] } : h.memory.store.listSessionFacts(1).length ? reply("No new facts") : notingFact(c));
   // The public facade shares this host's durable queues; normal completions drive both workers.
   writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { "noting.triggerTokens": 1, "consolidation.triggerTokens": 1 } }));
@@ -173,14 +173,14 @@ test("18a/24b, as 29e left it: Settings shows each phase's three preferences wit
   h.answers.push("Settings", undefined); await command(h, ""); // opened, then cancelled: inert
   const shown = h.dialogs.at(-1)!.options!;
   expect(shown).toEqual([
-    // 35d: the same editor begins with the bound database's three editable policy values and the
-    // three capacities derived from that exact triple; global preferences retain their own layers.
+    // 64c: the same editor begins with the bound database's three editable pool values, followed
+    // by the base window, the one shared allowance, and their maximum combined Knowledge input.
     "Global Knowledge budget: 4000 tokens (database)",
-    "Project Knowledge budget: 10000 tokens per project owner pool (database)",
+    "Project Knowledge budget: 15000 tokens per project owner pool (database)",
     "Session Knowledge budget: 1000 tokens per session owner pool (database)",
-    "Applicable Knowledge capacity: 15000 tokens (derived, read-only)",
-    "Knowledge injection capacity: 20000 tokens (derived, read-only)",
-    "Dreamer processed-input capacity: 20000 tokens (derived, read-only)",
+    "Knowledge base window: 20000 tokens (derived, read-only)",
+    "Shared material allowance: 15033 tokens (derived, read-only)",
+    "Maximum Knowledge input: 35033 tokens (derived, read-only)",
     "Noter mode: fork (Project); Global=subagent masked",
     `Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test`,
     // 26d: a fork inherits the foreground thinking level too, so the Noter's line discloses it here
@@ -252,7 +252,7 @@ test("18a 2026-09-08: all count/token keys and masked layers validate by key", a
       expect(() => TraceMemory(":memory:", async () => reply("") as never, { [section]: { [key]: invalid } })).toThrow(`${section}.${key}`);
     }
   }
-  for (const [key, invalid] of [["noting.forkModeDefault", "fork"], ["noting.branchModeDefault", "fork"], ["noting.maxToolRounds", -1], ["noting.nearThreshold", 2], ["consolidation.nearThreshold", 2], ["noting.triggerAnsweredTurns", 1], ["deliverFacts", true]]) {
+  for (const [key, invalid] of [["noting.forkModeDefault", "fork"], ["noting.branchModeDefault", "fork"], ["noting.maxToolRounds", -1], ["noting.nearThreshold", 2], ["noting.triggerAnsweredTurns", 1], ["deliverFacts", true]]) {
     writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { [key as string]: invalid } }));
     await expect(h.emit("session_start")).rejects.toThrow(key as string);
   }

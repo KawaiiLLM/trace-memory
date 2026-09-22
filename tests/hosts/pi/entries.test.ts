@@ -211,6 +211,8 @@ test("17a 2026-09-08: forks reuse shared identities and ordinals but native shor
     expect(h.memory.pendingEntries(1, branch, 1)).toEqual([]);
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "two", name: "bash", arguments: { command: "fork tail" } }] }, "collision");
     await h.emit("message_start", { message: reply("") });
+    expect(h.memory.store.db.prepare("SELECT lineage, branch FROM session_lineage_cursors WHERE session_id = 1 ORDER BY lineage").all())
+      .toEqual([{ lineage: "fork-native-session", branch }, { lineage: "pi-test", branch: "main" }]);
     const fork = h.memory.pendingEntries(1, branch, 1)[0]!;
     const manual = h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
     expect(JSON.parse(manual[2]!.execute({ facts: [{ category: "observation", actor: "agent", text: "Sibling result", source: ["T1#t2"] }] })).results[0]).toMatch(/^rejected:/);
@@ -352,7 +354,7 @@ test("review 2026-09-08 P2: an image-only user message still starts a new user T
   } finally { await h.dispose(); }
 });
 
-test("review 2026-09-08 P1b: a shared T1#assistant address does not make a sibling-only assistant entry's fact applicable", async () => {
+test("64b/P1b: frozen Fact isolation remains reader-path local while Knowledge follows the owner's foreground", async () => {
   const h = host(quiet);
   try {
     await h.prompt("Investigate"); await h.answer("Shared interim observation.");
@@ -365,8 +367,10 @@ test("review 2026-09-08 P1b: a shared T1#assistant address does not make a sibli
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(h.memory.store.sourcePath(1, branch, 1).some(e => e.text.includes("ALPHA_ONLY"))).toBe(false);
+    expect(h.memory.store.listBranchFacts(1, branch, 1)).toHaveLength(0);
+    expect(h.memory.store.listBranchFacts(1, "main", 1)).toHaveLength(1);
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("Always use alpha");
-    expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch: "main" })).toContain("Always use alpha");
+    expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch: "main" })).not.toContain("Always use alpha");
   } finally { await h.dispose(); }
 });
 
@@ -421,9 +425,9 @@ test("18a acceptance 2026-09-08: the provisional enrollment receipt is consumed 
   } finally { await h.dispose(); }
 });
 
-// 21a scenario 4 (ticket 21 "Branch scenario"): an archive applies exactly where its own supports do.
-// Both branches share one Turn, so a Turn-only applicability check would wrongly retire on both.
-test("21a 2026-09-08: an archive citing a sibling-entry fact retires knowledge on that path only", async () => {
+// Frozen Raw and Fact selection remains branch-local. Knowledge applicability is shared and follows
+// the fact owner's published foreground, so a reader's branch argument cannot preserve a second view.
+test("64b/21a: an archive follows its support owner's foreground without changing frozen Fact isolation", async () => {
   const h = host(quiet);
   try {
     await h.prompt("Investigate"); await h.answer("Shared interim observation.");
@@ -445,10 +449,13 @@ test("21a 2026-09-08: an archive citing a sibling-entry fact retires knowledge o
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(branch).not.toBe("main");
-    expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch: "main" })).not.toContain("ALPHA_IS_THE_RULE");
+    expect(h.memory.store.listBranchFacts(1, branch, 1).map(fact => fact.id)).toEqual([1]);
+    expect(h.memory.store.listBranchFacts(1, "main", 1).map(fact => fact.id)).toEqual([1, 2]);
+    expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch: "main" })).toContain("ALPHA_IS_THE_RULE");
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).toContain("ALPHA_IS_THE_RULE");
     expect(h.memory.store.currentCommit(1, { sessionId: 1, headTurnId: 1, branch }).map(r => r.op)).toEqual(["create"]);
-    expect(h.memory.store.currentCommit(1, { sessionId: 1, headTurnId: 1, branch: "main" }).map(r => r.op)).toEqual(["archive"]);
+    expect(h.memory.store.currentCommit(1, { sessionId: 1, headTurnId: 1, branch: "main" }).map(r => r.op)).toEqual(["create"]);
+    expect(h.memory.store.knowledgeRevision(2)).toMatchObject({ op: "archive", supports: [2] });
   } finally { await h.dispose(); }
 });
 
@@ -567,5 +574,5 @@ test("23/30: the removed budget keys and a part budget above the ceiling are rej
   expect(() => host({ "compaction.factsTokens": -1 })).toThrow("Invalid compaction.factsTokens");
   expect(() => host({ "compaction.rawTokens": 0 })).toThrow("Invalid compaction.rawTokens: expected a positive safe integer");
   expect(() => host({ "compaction.episodicBlockTokens": 10 })).toThrow("Unknown setting compaction.episodicBlockTokens");
-  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000, overflowTokens: 10_000 });
+  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000 });
 });

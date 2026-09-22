@@ -8,7 +8,7 @@ import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FACTS_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, SOURCES_TITLE } from "../../../src/core/render/material.ts";
+import { FACTS_TITLE, RANGE_FACTS_TITLE, SOURCES_TITLE } from "../../../src/core/render/material.ts";
 import { sourceSeededMemory, renderEntry, toolDefinitions, tokens, ENTRY_VIEW_VERSION,
   compacted, NOTING_INCOMPLETE, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 
@@ -150,8 +150,6 @@ test.each(["noting", "consolidation"] as const)("external abort after a %s commi
     else {
       const tool = input.tools.find(tool => tool.name === "memory")!;
       const batch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
-      input.reviewFeedback(tool.execute(batch));
-      input.reportRequest({ round: 2 });
       expect(tool.execute(batch)).toContain("committed");
     }
     await held;
@@ -252,18 +250,13 @@ test("19b 2026-09-08: a Consolidation stub with unavailable audit runs the two s
     assertNoProviderMessage(input);
     expect(input.material.factAddresses).toEqual(["F1"]);
     const tool = input.tools.find(t => t.name === "memory")!;
-    const first = tool.execute(batch);
-    // Core owns the two-submission protocol and reads its own receipt; the stub only relays it.
-    const feedback = input.reviewFeedback(first);
-    expect(feedback).toContain("NEAR:");
-    input.reportRequest({ round: 2 }); // a second request the host did make: the counter is the protocol's
     expect(tool.execute(batch)).toContain('"committed"');
     return { outcome: "success", output: "integrated", audit: { available: false, reason: "no provider request on this host" } };
   };
   const result = await memory.consolidate({ sessionId, branch: "main", mode: "subagent" });
   expect(result.outcome).toBe("success");
   if (result.outcome !== "success") throw new Error("expected success");
-  expect(memory.store.listCurrentKnowledge(memory.store.knowledgePath(sessionId, "main")).map(k => k.revision.text)).toEqual(["The project uses pnpm"]);
+  expect(memory.store.currentKnowledge(memory.store.knowledgePath(sessionId, "main")).map(k => k.revision.text)).toEqual(["The project uses pnpm"]);
   const response = JSON.parse(memory.store.getRun(result.runId)!.response!);
   expect(response.audit).toEqual({ available: false, reason: "no provider request on this host" });
   expect(response.problems).toEqual([]);
@@ -363,9 +356,6 @@ test("20a 2026-09-08 scenario 1: a host stub with no provider message types runs
     integrated = input.text;
     expect(integrated).toContain(input.material.rangeFacts[0]!);
     const tool = input.tools.find(t => t.name === "memory")!;
-    // Two submissions: core's review guidance is text this stub relays, not a provider message.
-    expect(input.reviewFeedback(tool.execute(batch))).toContain("NEAR:");
-    input.reportRequest({ round: 2 });
     expect(tool.execute(batch)).toContain('"committed"');
     return { outcome: "success", output: "integrated", audit: { available: false, reason: "text-only host" } };
   };
@@ -389,7 +379,7 @@ test("20a 2026-09-08 scenario 1: a host stub with no provider message types runs
 });
 
 test("20a 2026-09-08: no host file lays out the knowledge, fact, Raw or review blocks", () => {
-  const titles = [FACTS_TITLE, RANGE_FACTS_TITLE, SOURCES_TITLE, REMINDER_TITLE,
+  const titles = [FACTS_TITLE, RANGE_FACTS_TITLE, SOURCES_TITLE,
     "<knowledge>", "Range: ${"];
   const directory = new URL("../../../src/hosts/", import.meta.url);
   const files: URL[] = [];

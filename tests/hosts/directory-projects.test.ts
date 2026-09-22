@@ -146,8 +146,12 @@ test("Pi: the first session in a repository owns its project and records the dir
   expect(h.memory.store.getProject(moved.projectId)!.name).toBe("elsewhere");
   expect(h.memory.store.projectDeclaration(2)).toBe("mark");
   expect(moved.directory).toBe(f.root);
+  const beforeCursor = h.memory.store.db.prepare("SELECT lineage, branch, head_turn_id FROM session_lineage_cursors WHERE session_id = 2").all();
   await h.emit("session_start"); await h.turn();
-  expect(h.memory.store.getSession(2)).toEqual(moved);
+  const resumed = h.memory.store.getSession(2)!;
+  expect(resumed).toEqual(moved);
+  expect(h.memory.store.db.prepare("SELECT lineage, branch, head_turn_id FROM session_lineage_cursors WHERE session_id = 2").all())
+    .not.toEqual(beforeCursor);
   expect(h.memory.store.getSession(1)).toEqual(first); // the peer did not move
   // The directory now has two projects: the next session is its own project and still records the directory.
   h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "ambiguous-session"; h.ctx.cwd = join(f.repo, "sub");

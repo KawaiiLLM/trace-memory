@@ -111,11 +111,15 @@ test("22b: tree navigation and a foreign lineage rebuild the reconciled ancestry
   await h.emit("agent_end");
   const all = h.memory.store.sourcePath(1, "main", head(h)).map(e => e.id);
   expect(all).toHaveLength(9);
+  expect(h.memory.store.db.prepare("SELECT branch, head_turn_id FROM session_lineage_cursors WHERE session_id = 1 AND lineage = 'pi-test'").get())
+    .toEqual({ branch: "main", head_turn_id: head(h) });
   h.entries.splice(0, h.entries.length, ...common); // navigate back to an earlier point of the tree
   await h.emit("session_tree");
   const branch = (h.entries.filter(e => e.customType === "trace-memory").at(-1) as { data: { branch: string } }).data.branch;
   expect(branch).not.toBe("main");
   expect(h.memory.store.sourcePath(1, branch, head(h)).map(e => e.id)).toEqual(all.slice(0, 6));
+  expect(h.memory.store.db.prepare("SELECT branch, head_turn_id FROM session_lineage_cursors WHERE session_id = 1 AND lineage = 'pi-test'").get())
+    .toEqual({ branch, head_turn_id: head(h) });
   // A new result on the shorter ancestry matches that ancestry's call, and reports nothing missing.
   persistTurns(h, 1, 2);
   await h.emit("agent_end");
@@ -123,4 +127,6 @@ test("22b: tree navigation and a foreign lineage rebuild the reconciled ancestry
   const calls = h.memory.store.listTurns(1).flatMap(t => h.memory.store.listToolCalls(t.id));
   expect(calls.map(c => JSON.parse(c.result!).content[0].text)).toEqual(["result 1", "result 2", "result 3", "result 3"]);
   expect(h.memory.store.sourcePath(1, branch, head(h))).toHaveLength(9);
+  expect(h.memory.store.db.prepare("SELECT branch, head_turn_id FROM session_lineage_cursors WHERE session_id = 1 AND lineage = 'pi-test'").get())
+    .toEqual({ branch, head_turn_id: head(h) });
 });

@@ -23,7 +23,7 @@ test("24a review: a footer refresh with session-scoped knowledge reads no run au
     const bodies = countRunBodies();
     try {
       await h.emit("agent_end");
-      expect(h.statuses.get("trace-memory")).toMatch(/memory: \d+->1=>0 /); // the scoped current version is unprocessed
+      expect(h.statuses.get("trace-memory")).toMatch(/memory: \d+->1\/1 /); // the scoped current version is unprocessed
       expect(bodies.chars()).toBe(0);
     } finally { bodies.restore(); }
   } finally { await h.dispose(); }
@@ -42,7 +42,7 @@ test("24a review: a worker's committed progress shows in the footer while its tr
     await vi.waitFor(() => { expect(closing).toBe(true); expect(f.h.memory.store.listSessionFacts(1)).toHaveLength(1); }, { timeout: 5000 });
     expect(f.h.memory.progress(1, "main", 1)).toMatchObject({ entries: 0, facts: 1, unconsolidated: 1 });
     const footer = f.h.statuses.get("trace-memory")!;
-    expect(footer).toContain("notes: 0->1 memory: 1->0=>0");
+    expect(footer).toContain("notes: 0->1 memory: 1->0/0");
     expect(footer).toContain("●"); // the worker is still running: the indicator says so
   } finally { release(say("done")); await turn; await f.dispose(); }
 }, 15000);

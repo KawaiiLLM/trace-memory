@@ -8,12 +8,16 @@ test.each(["automatic", "catchup", "recovery"] as const)("%s releases a rejected
     const memory = create(...args); facades.push(memory); return memory;
   });
   const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9,
-    "compaction.rawTokens": 1, "compaction.overflowTokens": 1 });
+    "compaction.rawTokens": 1});
   factory.mockRestore();
   const runtime = facades[0]!;
   try {
     await h.turn();
-    runtime.config.noting.triggerTokens = 20;
+    runtime.setKnowledgeBudget("global", 0);
+    runtime.setKnowledgeBudget("project", 0);
+    runtime.setKnowledgeBudget("session", 0);
+    runtime.config.noting.triggerTokens = 0;
+    runtime.config.consolidation.triggerTokens = 0;
     const start = async () => {
       if (mode === "automatic") { h.persist(reply("next eligible entry")); return h.emit("agent_end"); }
       if (mode === "catchup") return h.commands.get("trace").handler("catchup", h.ctx);

@@ -4,128 +4,59 @@ import { tokens } from "../../../src/core/render/index.ts";
 
 function check(overrides: Partial<DreamingCheckResult> = {}): DreamingCheckResult {
   return {
-    family: [4, 7],
-    suppliedEventIds: [11, 12],
-    eventIds: [11],
-    retainedEventIds: [11, 12],
-    candidateIds: [21, 22, 23],
-    resultIds: [22, 23],
-    consumedInputIds: [21],
-    pendingEventIds: [11, 12, 13],
-    pendingVersionIds: [14],
-    relevantOwnerScopes: ["global", "project:7", "session:9"],
-    versions: [
-      { knowledgeId: 4, commit: 21, processed: false, successorCommits: [22] },
-      { knowledgeId: 4, commit: 22, processed: false, successorCommits: [] },
-      { knowledgeId: 7, commit: 23, processed: true, successorCommits: [] },
-    ],
-    verifiedConsumedBases: [],
+    pool: "project:7",
+    frozenRevisionIds: [11, 12],
+    ownRevisionIds: [21, 22],
+    pendingRevisionIds: [30],
     totals: [
-      { scope: "session:9", tokens: 1_002, cap: 1_000 },
-      { scope: "applicable:S9/side/T45", tokens: 12_000, cap: 15_000 },
-      { scope: "global", tokens: 4_001, cap: 4_000 },
-      { scope: "project:7", tokens: 10_001, cap: 10_000 },
-      { scope: "applicable:S9/main/T44", tokens: 12_000, cap: 15_000 },
+      { pool: "global", tokens: 4_001, budget: 4_000 },
+      { pool: "project:7", tokens: 12_000, budget: 15_000 },
+      { pool: "session:9", tokens: 1_002, budget: 1_000 },
     ],
-    externalSuccessors: [],
     operationFailures: ["memory batch 2 rejected"],
-    failures: ["memory batch 2 rejected", "global is over", "project:7 is over", "session:9 is over"],
-    problems: ["memory batch 2 rejected", "global is over", "project:7 is over", "project:7 is over", "session:9 is over"],
-    remainingRounds: 48,
-    repairAvailable: true,
-    capacities: { applicable: 15_000, injection: 20_000, dreamingProcessedInput: 20_000 },
-    admittedProcessedInputCap: 20_000,
+    problems: ["memory batch 2 rejected"],
     ...overrides,
   };
 }
 
-test("35b: receipt reports actionable owner budgets, a stable equal maximum, canonical counts, and every blocker", () => {
-  const full = check();
-  const before = structuredClone(full);
+test("64c receipt reports the frozen pool, exact processing sets, pool budgets and blockers without mutating audit", () => {
+  const full = check(), before = structuredClone(full);
   const receipt = renderDreamingCheckReceipt(full);
 
   expect(full).toEqual(before);
-  expect(receipt).toContain("Current database capacities: applicable 15000; injection 20000; Dreamer processed input for new admissions 20000.");
-  expect(receipt).toContain("This run's frozen admitted processed-input ceiling: 20000.");
-  expect(receipt).toContain("- global: used 4001 / limit 4000 / headroom -1");
-  expect(receipt).toContain("- project:7: used 10001 / limit 10000 / headroom -1");
-  expect(receipt).toContain("- session:9: used 1002 / limit 1000 / headroom -2");
-  expect(receipt).toContain("Maximum applicable projection (2 checked):\n- applicable:S9/main/T44: used 12000 / limit 15000 / headroom +3000");
-  expect(receipt).not.toContain("applicable:S9/side/T45");
-  expect(receipt).toContain("- frozen family: 2");
-  expect(receipt).toContain("- supplied formal events: 2");
-  expect(receipt).toContain("- accounted formal events: 1");
-  expect(receipt).toContain("- pending obligations: 4 (change events 3; exact versions 1)");
-  expect(receipt).toContain("- host-derived candidates: 3");
-  expect(receipt).toContain("- successor-free results: 2");
-  expect(receipt).toContain("- consumed inputs: 1");
-  expect(receipt).toContain("- external successors: 0");
-  expect(receipt).toContain("- operation failures: 1");
-  expect(receipt).toContain("- remaining tool rounds: 48");
-  expect(receipt).toContain("- repair available: yes");
-  expect(receipt).toContain("- memory batch 2 rejected");
-  expect(receipt).toContain("- global is over");
-  expect(receipt).toContain("- project:7 is over (2 occurrences)");
-  expect(receipt).toContain("- session:9 is over");
+  expect(receipt).toContain("Dreamer pool check:");
+  expect(receipt).toContain("- frozen pool: project:7");
+  expect(receipt).toContain("- frozen current revisions: 2 (11, 12)");
+  expect(receipt).toContain("- own resulting revisions: 2 (21, 22)");
+  expect(receipt).toContain("- newly pending revisions: 1 (30)");
+  expect(receipt).toContain("- global: 4001/4000 tokens");
+  expect(receipt).toContain("- project:7: 12000/15000 tokens");
+  expect(receipt).toContain("- session:9: 1002/1000 tokens");
+  expect(receipt).toContain("- operation failures: memory batch 2 rejected");
+  expect(receipt).toContain("Blockers: memory batch 2 rejected");
+  expect(receipt).not.toMatch(/certif|successor-free|repair available|intensity/i);
 });
 
-test("35b: a passing receipt explicitly has no blockers and handles an empty applicable projection", () => {
+test("64c passing receipt explicitly has no blockers and handles empty exact sets", () => {
   const receipt = renderDreamingCheckReceipt(check({
-    suppliedEventIds: [], eventIds: [], retainedEventIds: [], candidateIds: [], resultIds: [], consumedInputIds: [],
-    pendingEventIds: [], pendingVersionIds: [], versions: [], totals: [{ scope: "global", tokens: 0, cap: 4_000 }], operationFailures: [], failures: [],
-    problems: [], remainingRounds: 0, repairAvailable: false,
+    pool: "global", frozenRevisionIds: [], ownRevisionIds: [], pendingRevisionIds: [],
+    totals: [{ pool: "global", tokens: 0, budget: 4_000 }], operationFailures: [], problems: [],
   }));
-
-  expect(receipt).toContain("Maximum applicable projection (0 checked): none");
+  expect(receipt).toContain("- frozen pool: global");
+  expect(receipt).toContain("- frozen current revisions: 0 (none)");
+  expect(receipt).toContain("- own resulting revisions: 0 (none)");
+  expect(receipt).toContain("- newly pending revisions: 0 (none)");
+  expect(receipt).toContain("- operation failures: none");
   expect(receipt).toContain("Blockers: none");
-  expect(receipt).toContain("- repair available: no");
 });
 
-test("35b: hundreds of normal paths and version rows are omitted, while every distinct failure remains visible", () => {
-  const manyPaths = Array.from({ length: 300 }, (_, index) => ({
-    scope: `applicable:S${index + 1}/main/T${index + 100}`,
-    tokens: 1_000 + index,
-    cap: 15_000,
+test("64c receipt remains bounded by counts rather than serializing version bodies", () => {
+  const ids = Array.from({ length: 400 }, (_, index) => index + 1);
+  const receipt = renderDreamingCheckReceipt(check({
+    frozenRevisionIds: ids, ownRevisionIds: ids.slice(0, 100), pendingRevisionIds: ids.slice(100),
+    operationFailures: [], problems: [],
   }));
-  const versions = Array.from({ length: 400 }, (_, index) => ({
-    knowledgeId: index + 1,
-    commit: index + 10,
-    processed: true,
-    successorCommits: [],
-  }));
-  const normal = check({
-    candidateIds: versions.map(version => version.commit), resultIds: versions.map(version => version.commit), versions,
-    totals: [
-      { scope: "global", tokens: 3_000, cap: 4_000 },
-      { scope: "project:7", tokens: 8_000, cap: 10_000 },
-      { scope: "session:9", tokens: 500, cap: 1_000 },
-      ...manyPaths,
-    ],
-    operationFailures: [], failures: [], problems: [],
-  });
-  const normalReceipt = renderDreamingCheckReceipt(normal);
-  const distinct = Array.from({ length: 120 }, (_, index) => `K${index + 1}@${index + 500}: distinct cause ${index + 1}`);
-  const errors = check({
-    totals: normal.totals, operationFailures: distinct, failures: distinct, problems: [...distinct, distinct[0]!],
-  });
-  const errorReceipt = renderDreamingCheckReceipt(errors);
-
-  expect(normalReceipt).toContain("Maximum applicable projection (300 checked):");
-  expect(normalReceipt).toContain("applicable:S300/main/T399");
-  expect(normalReceipt).not.toContain("applicable:S299/main/T398");
-  expect(normalReceipt).not.toContain('"knowledgeId"');
-  expect(normalReceipt).not.toContain('"successorCommits"');
-  expect(tokens(normalReceipt)).toBeLessThan(tokens(JSON.stringify(normal)) / 10);
-  for (const problem of distinct) expect(errorReceipt).toContain(problem);
-  expect(errorReceipt).toContain(`${distinct[0]} (2 occurrences)`);
-
-  console.log(JSON.stringify({
-    checkReceiptTokens: {
-      small: tokens(renderDreamingCheckReceipt(check({
-        totals: normal.totals.slice(0, 4), operationFailures: [], failures: [], problems: [],
-      }))),
-      manyPaths: tokens(normalReceipt),
-      manyErrors: tokens(errorReceipt),
-    },
-  }));
+  expect(receipt).toContain("frozen current revisions: 400");
+  expect(receipt).not.toContain("knowledgeId");
+  expect(tokens(receipt)).toBeLessThan(tokens(JSON.stringify(ids)) * 3);
 });

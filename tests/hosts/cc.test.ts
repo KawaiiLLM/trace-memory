@@ -230,6 +230,8 @@ test("CC import is idempotent, preserves all source evidence, and projects only 
       .toEqual({ entry_ids: JSON.stringify(first.selectedEntryIds) });
     expect(first.selectedEntryIds.map(id => f.importer.memory.store.getSourceEntry(id)!.nativeId)).toEqual(["u1", "a1", "r1", "u3", "a3"]);
     expect(readBinding(f.config, f.nativeSessionId)).toMatchObject({ selectedLeafUuid: "a3", branch: first.branch });
+    expect(f.importer.memory.store.db.prepare("SELECT branch, head_turn_id FROM session_lineage_cursors WHERE session_id = ? AND lineage = ?")
+      .get(sessionId, f.nativeSessionId)).toEqual({ branch: first.branch, head_turn_id: first.headTurnId });
     expect(Object.hasOwn(readBinding(f.config, f.nativeSessionId)!, "selectedPathUuids")).toBe(false);
     expect(entries.filter(entry => entry.role === "assistant").map(entry => entry.nativeId)).toEqual(["a1", "a2", "a3"]);
     expect(f.importer.memory.trace("T1#E2@call-1", { full: true })).toContain("Read");
@@ -272,6 +274,8 @@ test("a persisted rewind creates a new core branch without deleting its sibling 
     const second = await importer.reconcile();
     expect(second.branch).not.toBe(first.branch);
     expect(second.selectedEntryIds.map(id => importer.memory.store.getSourceEntry(id)!.nativeId)).toEqual(["u1", "a1", "r1", "u3", "a3"]);
+    expect(importer.memory.store.db.prepare("SELECT branch, head_turn_id FROM session_lineage_cursors WHERE session_id = ? AND lineage = ?")
+      .get(second.coreSessionId!, f.nativeSessionId)).toEqual({ branch: second.branch, head_turn_id: second.headTurnId });
     expect(importer.memory.store.listSourceEntries(second.coreSessionId!)).toHaveLength(7);
     expect(importer.memory.store.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(second.coreSessionId!, first.branch))
       .toEqual({ entry_ids: JSON.stringify(first.selectedEntryIds) });

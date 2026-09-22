@@ -64,21 +64,22 @@ test("35d Settings edits the bound database row, shows derived diagnostics, and 
   expect(h.dialogs.at(-1)!.title).toContain(`bound database: ${join(h.dir, "trace.db")}`);
   expect(h.dialogs.at(-1)!.options!.slice(0, 6)).toEqual([
     "Global Knowledge budget: 4000 tokens (database)",
-    "Project Knowledge budget: 10000 tokens per project owner pool (database)",
+    "Project Knowledge budget: 15000 tokens per project owner pool (database)",
     "Session Knowledge budget: 1000 tokens per session owner pool (database)",
-    "Applicable Knowledge capacity: 15000 tokens (derived, read-only)",
-    "Knowledge injection capacity: 20000 tokens (derived, read-only)",
-    "Dreamer processed-input capacity: 20000 tokens (derived, read-only)",
+    "Knowledge base window: 20000 tokens (derived, read-only)",
+    "Shared material allowance: 25000 tokens (derived, read-only)",
+    "Maximum Knowledge input: 45000 tokens (derived, read-only)",
   ]);
-  await edit(h, "Project Knowledge budget: 10000 tokens per project owner pool (database)", "15000");
-  expect(h.memory.knowledgeBudgets()).toMatchObject({ global: 4000, project: 15000, session: 1000,
-    applicable: 20000, injection: 25000, dreamingProcessedInput: 25000 });
-  expect(h.notices.at(-1)).toContain("saved Project Knowledge budget = 15000 tokens");
+  await edit(h, "Project Knowledge budget: 15000 tokens per project owner pool (database)", "16000");
+  expect(h.memory.knowledgeBudgets()).toMatchObject({ global: 4000, project: 16000, session: 1000,
+    applicable: 21000, injection: 21000, dreamingProcessedInput: 21000 });
+  expect(h.notices.at(-1)).toContain("saved Project Knowledge budget = 16000 tokens");
+  expect(h.notices.at(-1)).toContain("Knowledge base window 21000; shared material allowance 25500; maximum Knowledge input 46500");
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   expect(h.requests).toEqual([]);
 
   const rows = Number(h.memory.store.db.prepare("SELECT total_changes() AS n").get()!.n);
-  await edit(h, "Project Knowledge budget: 15000 tokens per project owner pool (database)", "15000");
+  await edit(h, "Project Knowledge budget: 16000 tokens per project owner pool (database)", "16000");
   expect(h.notices.at(-1)).toContain("nothing was written");
   expect(Number(h.memory.store.db.prepare("SELECT total_changes() AS n").get()!.n)).toBe(rows);
   await edit(h, "Global Knowledge budget: 4000 tokens (database)", undefined);
@@ -96,9 +97,9 @@ test("35d cancelled, invalid, stale and failed database-budget edits preserve po
   expect(h.memory.knowledgeBudgets().global).toBe(4000);
   await edit(h, "Global Knowledge budget: 4000 tokens (database)", "01");
   expect(h.notices.at(-1)).toContain("exact nonnegative safe integer");
-  h.memory.setKnowledgeBudget("project", 15_000); // another connection wins after the row was displayed
+  h.memory.setKnowledgeBudget("project", 16_000); // another connection wins after the row was displayed
   await edit(h, "Session Knowledge budget: 1000 tokens per session owner pool (database)", "2000");
-  expect(h.memory.knowledgeBudgets()).toMatchObject({ project: 15_000, session: 2_000 });
+  expect(h.memory.knowledgeBudgets()).toMatchObject({ project: 16_000, session: 2_000 });
 
   h.memory.store.db.exec("CREATE TRIGGER reject_budget BEFORE UPDATE ON knowledge_budget_policy BEGIN SELECT RAISE(ABORT, 'policy write failed'); END");
   await edit(h, "Global Knowledge budget: 4000 tokens (database)", "5000");
@@ -135,7 +136,7 @@ test("both modes default to subagent in Settings and ordinary execution; saving 
     return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: "memory-1", name: "memory",
       arguments: { operations: [], skipped: [...new Set(facts)].map(fact => ({ fact, because: "Not durable." })) } }] };
   };
-  h.provider(async c => c.systemPrompt?.includes("### Second-round user message")
+  h.provider(async c => c.systemPrompt?.includes("You are the Consolidator:")
     || /Range: F\d+/.test(c.messages.map(m => String(m.content)).join("\n")) ? consolidate(c) : notingFact(c));
   await h.emit("session_start");
   h.ctx.hasUI = true;
@@ -193,11 +194,11 @@ test("24b: each control writes only its canonical key, and every other setting i
   h.answers.push("Settings", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
     "Global Knowledge budget: 4000 tokens (database)",
-    "Project Knowledge budget: 10000 tokens per project owner pool (database)",
+    "Project Knowledge budget: 15000 tokens per project owner pool (database)",
     "Session Knowledge budget: 1000 tokens per session owner pool (database)",
-    "Applicable Knowledge capacity: 15000 tokens (derived, read-only)",
-    "Knowledge injection capacity: 20000 tokens (derived, read-only)",
-    "Dreamer processed-input capacity: 20000 tokens (derived, read-only)",
+    "Knowledge base window: 20000 tokens (derived, read-only)",
+    "Shared material allowance: 25000 tokens (derived, read-only)",
+    "Maximum Knowledge input: 45000 tokens (derived, read-only)",
     "Noter mode: subagent (Global)",
     "Noter model: fake/test-mini (Global)",
     "Noter thinking: inherit (Default)",
@@ -231,11 +232,11 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
   h.answers.push("Settings", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
     "Global Knowledge budget: 4000 tokens (database)",
-    "Project Knowledge budget: 10000 tokens per project owner pool (database)",
+    "Project Knowledge budget: 15000 tokens per project owner pool (database)",
     "Session Knowledge budget: 1000 tokens per session owner pool (database)",
-    "Applicable Knowledge capacity: 15000 tokens (derived, read-only)",
-    "Knowledge injection capacity: 20000 tokens (derived, read-only)",
-    "Dreamer processed-input capacity: 20000 tokens (derived, read-only)",
+    "Knowledge base window: 20000 tokens (derived, read-only)",
+    "Shared material allowance: 25000 tokens (derived, read-only)",
+    "Maximum Knowledge input: 45000 tokens (derived, read-only)",
     "Noter mode: subagent (Default)",
     "Noter model: follow foreground (Default)",
     "Noter thinking: high (Global)",

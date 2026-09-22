@@ -38,7 +38,15 @@ The pinned Claude Code version also gives the skill a `/trace` alias. Use the fu
 
 The skill forwards to the same CLI shown below, using the current native session ID. Unlike Pi's direct command callback, a Claude Code skill instructs the foreground model to execute that CLI under normal shell permissions. No permission bypass or model-side security boundary is implied. A bare or invalid invocation shows usage; there is no Pi-style settings menu.
 
-`catchup` requires an enabled session and its live MCP executor. It reconciles the current path, freezes pending entries and facts, then processes bounded Noting batches followed by Consolidation of those facts and the facts those batches produced. Later input is not added to that drain. Normal batch/context limits and claims still apply; trigger thresholds do not. It does not force Dreaming. Repeating the command reports an active drain instead of creating another. Acknowledgement is not completion, and `stop`, `off`, path changes, or shutdown end the drain while retaining committed work.
+`catchup` requires an enabled session and its live MCP executor. It reconciles the current path, freezes pending entries and facts, then processes bounded Noting batches followed by Consolidation of those facts and the facts those batches produced. Later input is not added to that drain. Normal batch/context limits and claims still apply; trigger thresholds do not. It does not force Dreaming. Dreaming is checked independently on each ingested entry: one due global, project or session pool per run, with a shared database-wide seat. Pending counts current visible versions not yet handled in that pool, not historical changes. Repeating the command reports an active drain instead of creating another. Acknowledgement is not completion, and `stop`, `off`, path changes, or shutdown end the drain while retaining committed work.
+
+Project declaration keeps the Noting/Consolidation backlog and live-claim guards; pending Dreaming alone does not block it. It waits for an active Dreamer whose session belongs to an affected project or whose frozen range touches an affected pool. Moving project knowledge preserves its revision identity and existing processing records: only a destination pool that has not handled that version sees it as pending.
+
+## Database upgrade
+
+Stop older Pi and CC executors before opening the shared database with this upgrade; mixed-runtime writes are unsupported. The transaction preserves source, fact, knowledge-history, session and project records. Historical empty support lists inherit their parents' supports; root-empty ancestry remains empty and is reported. Knowledge marks are removed entirely.
+
+The old-default budget policy (4k/10k/1k) becomes 4k/15k/1k; custom policies are kept and reported. Legacy processing records are translated only for current visible versions into their current pools. This translation does not mark every version handled or change knowledge validity. Validate the upgrade on a consistent database copy before deployment.
 
 ## Direct CLI
 

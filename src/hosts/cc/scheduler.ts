@@ -56,9 +56,18 @@ export class CcTaskScheduler {
     }
     if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length) return;
     if (admitAutomatic && opportunityEpoch === this.cancellationEpoch && reconcile.appendedEntryIds.length) {
-      const own: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
-        headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedEntryIds.at(-1)! };
-      for (const phase of ["noting", "consolidation", "dreaming"] as const) this.startAutomatic(phase, own);
+      const selected = new Set(reconcile.selectedEntryIds);
+      // One reconciliation may import several completed native entries. Preserve each selected
+      // entry as its own scheduling opportunity and trigger origin; sibling transcript records that
+      // are not on the published foreground path do not grant this executor a host opportunity.
+      for (const entryId of reconcile.appendedEntryIds) {
+        if (!selected.has(entryId)) continue;
+        const entry = this.memory.store.getSourceEntry(entryId);
+        if (!entry) throw new Error(`CC appended entry ${entryId} disappeared before scheduling`);
+        const own: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
+          headTurnId: entry.turnId, triggerEntryId: entry.id };
+        for (const phase of ["noting", "consolidation", "dreaming"] as const) this.startAutomatic(phase, own);
+      }
     }
     this.driveCatchup();
   }
@@ -118,8 +127,8 @@ export class CcTaskScheduler {
     try { due = this.memory.taskEligibility(phase, own).due; }
     catch (error) { this.diagnostic(`${phase} eligibility failed: ${error instanceof Error ? error.message : String(error)}`); return; }
     const candidates = [...(due ? [{ ...own, borrowed: false }] : []),
-      ...this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope)
-        .map(target => ({ ...target, borrowed: true }))];
+      ...(phase === "dreaming" ? [] : this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope)
+        .map(target => ({ ...target, borrowed: true })))];
     if (!candidates.length) return;
     if (!this.worker) {
       this.diagnostic(`${phase} admission failed: CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured`);

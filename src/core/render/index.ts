@@ -1,5 +1,5 @@
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
-import type { KnowledgeCategory, KnowledgeRevision, KnowledgeMark, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
+import type { KnowledgeCategory, KnowledgeRevision, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import { sourceAddresses } from "../store/index.ts";
 import { entryAddress, fragmentAddress, sourceBlocks, blockText } from "../model/source.ts";
 import type { Selector } from "../model/address.ts";
@@ -638,13 +638,10 @@ export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap =
 // prose. One representation for every consumer, the knowledge budget and the search index.
 // Labels are shown as a JSON array (review 2026-09-08): a joined list cannot tell ["a, b"] from ["a", "b"].
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
-const revisionMarks = (revision: KnowledgeRevision, marks: readonly KnowledgeMark[]): KnowledgeMark[] =>
-  marks.filter(mark => mark.commitId === revision.id);
 
-export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, marks: KnowledgeMark[] = []): string {
+export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision): string {
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
-  const shownMarks = revisionMarks(r, marks);
-  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}${shownMarks.length ? ` · ${shownMarks.map((m) => m.kind).join(", ")}` : ""}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
 const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
@@ -661,28 +658,26 @@ const selectedCommitLine = (r: KnowledgeRevision, fields: ReadonlySet<string>): 
 export const renderCommitHistory = (revisions: KnowledgeRevision[], fields?: ReadonlySet<string>): string =>
   revisions.length ? `Commits:\n${revisions.map(r => fields ? selectedCommitLine(r, fields) : commitLine(r)).join("\n")}` : "Commits: none";
 
-export function renderKnowledgePreview(value: KnowledgeWithRevision, marks: KnowledgeMark[], status: string,
+export function renderKnowledgePreview(value: KnowledgeWithRevision, status: string,
   fields: ReadonlySet<string>, cap = 80, parents: KnowledgeRevision[] = [], children: KnowledgeRevision[] = []): string {
   const r = value.revision, supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
-  const shownMarks = revisionMarks(r, marks);
   const suffix = [
     ...(fields.has("supports") ? [`${supportLabel}: ${factAddresses(r.supports)}`] : []),
     ...(fields.has("topics") && r.topics.length ? [`topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`status: ${status}`] : []),
     ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
     ...(fields.has("links") ? [`parents: ${parents.map(parent => `K${parent.knowledgeId}@${parent.id}`).join(", ") || "none"}`, `children: ${children.map(child => `K${child.knowledgeId}@${child.id}`).join(", ") || "none"}`] : []),
-    ...(fields.has("marks") && shownMarks.length ? [`marks: ${shownMarks.map(mark => mark.kind).join(", ")}`] : []),
   ];
   return renderPreview(`[K${value.knowledge.id}@${r.id}] [${r.category}/${r.scope}] `, r.text,
     suffix.length ? ` · ${suffix.join(" · ")}` : "", cap, fields.has("text"));
 }
 
-export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: KnowledgeMark[], parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity,
+export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity,
   effectiveGrounds: number[] = value.revision.supports, fields?: ReadonlySet<string>, historyLine = false, pathStatus?: string): string {
   const addresses = (commits: KnowledgeRevision[]) => commits.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none";
   const direct = new Set(value.revision.supports), inherited = effectiveGrounds.filter(id => !direct.has(id));
   if (!fields) {
-    const whole = [renderKnowledge(value, marks.filter(m => m.commitId === value.revision.id)),
+    const whole = [renderKnowledge(value),
       ...(value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : []),
       ...(value.revision.supportSemantics === "change" ? [`  inherited lineage supports: ${factAddresses(inherited)}`] : []),
       `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
@@ -690,9 +685,7 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: Knowle
     return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
   }
   const r = value.revision, prefix = `[K${value.knowledge.id}@${r.id}] [${r.category}/${r.scope}] `;
-  const shownMarks = revisionMarks(r, marks);
   const suffix = [
-    ...(fields.has("marks") && shownMarks.length ? [` · ${shownMarks.map(mark => mark.kind).join(", ")}`] : []),
     ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}${fields.has("topics") ? topicList(r.topics) : ""}`,
       ...(r.supportSemantics === "change" ? [`\n  inherited lineage supports: ${factAddresses(inherited)}`] : [])] : []),
     ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
@@ -782,6 +775,14 @@ const EXPAND_LIMIT = 8;
 export const expandList = (addresses: string[]): string => addresses.length <= EXPAND_LIMIT ? addresses.join(", ")
   : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 
+export const KNOWLEDGE_RECENCY_NOTICE = "Larger @commit numbers are newer. For claims about the same object, the newer item takes precedence until maintenance merges them.";
+
+export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision[]): string[] =>
+  KNOWLEDGE_CATEGORIES.flatMap(category => {
+    const members = omitted.filter(value => value.revision.category === category);
+    return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map(value => `K${value.knowledge.id}`))}`] : [];
+  });
+
 interface RenderedKnowledgeItem { category: KnowledgeCategory; text: string; id: number; commit: number; size: number }
 export interface BudgetedKnowledge {
   groups: { category: KnowledgeCategory; text: string }[];
@@ -790,11 +791,9 @@ export interface BudgetedKnowledge {
   commits: number[];
 }
 
-const orderedKnowledge = (knowledge: KnowledgeWithRevision[], line: (knowledge: KnowledgeWithRevision) => string,
-  priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number): RenderedKnowledgeItem[] =>
-  [...knowledge].sort((a, b) => (priority?.(a, b) ?? 0)
-    || KNOWLEDGE_CATEGORIES.indexOf(a.revision.category) - KNOWLEDGE_CATEGORIES.indexOf(b.revision.category)
-    || a.revision.createdAt.localeCompare(b.revision.createdAt) || a.knowledge.id - b.knowledge.id)
+const orderedKnowledge = (knowledge: KnowledgeWithRevision[], line: (knowledge: KnowledgeWithRevision) => string): RenderedKnowledgeItem[] =>
+  [...knowledge].sort((a, b) => KNOWLEDGE_CATEGORIES.indexOf(a.revision.category) - KNOWLEDGE_CATEGORIES.indexOf(b.revision.category)
+    || a.revision.id - b.revision.id)
     .map(value => { const text = line(value); return {
       category: value.revision.category, text, id: value.knowledge.id, commit: value.revision.id, size: tokens(text) + 1,
     }; });
@@ -802,7 +801,7 @@ const orderedKnowledge = (knowledge: KnowledgeWithRevision[], line: (knowledge: 
 const knowledgeBody = (items: RenderedKnowledgeItem[]): Omit<BudgetedKnowledge, "receipts"> => ({
   groups: KNOWLEDGE_CATEGORIES.map(category => ({ category,
     text: items.filter(item => item.category === category).map(item => item.text).join("\n") })),
-  cost: items.length ? tokens(xmlBlock("knowledge", "")) + items.reduce((sum, item) => sum + item.size, 0)
+  cost: items.length ? tokens(xmlBlock("knowledge", KNOWLEDGE_RECENCY_NOTICE)) + items.reduce((sum, item) => sum + item.size, 0)
     + [...new Set(items.map(item => item.category))].reduce((sum, category) => sum + charge([xmlBlock(category, "")]), 0) : 0,
   commits: KNOWLEDGE_CATEGORIES.flatMap(category => items.filter(item => item.category === category).map(item => item.commit)),
 });
@@ -814,27 +813,24 @@ export function wholeKnowledge(knowledge: KnowledgeWithRevision[], line: (knowle
   return { ...knowledgeBody(orderedKnowledge(knowledge, line)), receipts: [] };
 }
 
-/** Whole knowledge items within the caller's cap, including category tags and emitted receipts.
- * Required exact versions cannot be omitted. Optional items follow relevance, then category/time/id;
+/** Whole knowledge items within the caller's cap, including category tags, recency notice and receipts.
+ * Required exact versions cannot be omitted. Optional items keep newest commits first by default;
  * compaction may omit their receipts too rather than spend required overflow on optional framing.
  * No item is rewritten to fit, and omitted items remain stored and traceable. */
 export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge,
   budget = "Knowledge capacity", required?: ReadonlySet<number>,
   priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number): BudgetedKnowledge {
-  // Relevance selects optional whole items before the stable category/time/id tie-break.
-  // Required exact versions are retained independently; category grouping is presentation only.
-  const ordered = orderedKnowledge(knowledge, line, priority);
-  // Compact protects exact unprocessed versions while preserving the same optional priority and
-  // renderer. Other consumers retain the original whole-prefix selection and receipt floor.
-  const optional = ordered.filter(item => !required?.has(item.commit));
+  // Selection is newest-first across categories; presentation stays grouped, oldest-to-newest
+  // within each category. Neither input order, identity number nor timestamps establish recency.
+  const ordered = orderedKnowledge(knowledge, line);
+  const byCommit = new Map(knowledge.map(value => [value.revision.id, value]));
+  const optional = ordered.filter(item => !required?.has(item.commit)).sort((a, b) =>
+    priority ? priority(byCommit.get(a.commit)!, byCommit.get(b.commit)!) : b.commit - a.commit);
   const ranks = new Map(optional.map((item, index) => [item.commit, index]));
   const selected = (kept: number) => ordered.filter(item => required?.has(item.commit) || ranks.get(item.commit)! < kept);
-  const receipts = (kept: number) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
-    const omitted = optional.slice(kept).filter((item) => item.category === category);
-    return omitted.length ? [`omitted ${omitted.length} ${category} knowledge; expand: ${expandList(omitted.map((item) => `K${item.id}`))}`] : [];
-  });
+  const receipts = (kept: number) => renderKnowledgeOmissions(optional.slice(kept).map(item => byCommit.get(item.commit)!));
   // Prefix trials need only scalar costs; build grouped text and commit lists after selection.
-  const outerCost = tokens(xmlBlock("knowledge", ""));
+  const outerCost = tokens(xmlBlock("knowledge", KNOWLEDGE_RECENCY_NOTICE));
   const categoryCosts = new Map(KNOWLEDGE_CATEGORIES.map(category => [category, charge([xmlBlock(category, "")])]));
   const bodyCost = (kept: number) => {
     const items = selected(kept);
@@ -916,6 +912,6 @@ export function budgetFacts(facts: Fact[], line: (fact: Fact) => string, remaini
 export const xmlBlock = (tag: string, text: string): string => `<${tag}>\n${text}\n</${tag}>`;
 export const renderKnowledgeBlock = (groups: { category: string; text: string }[]): string => {
   const blocks = groups.filter((g) => g.text).map((g) => xmlBlock(g.category, g.text));
-  return blocks.length ? `<knowledge>\n${blocks.join("\n")}\n</knowledge>` : ""; // nothing to inject: no block at all
+  return blocks.length ? `<knowledge>\n${KNOWLEDGE_RECENCY_NOTICE}\n${blocks.join("\n")}\n</knowledge>` : ""; // nothing to inject: no block at all
 };
 export const listingLine = (text: string): string => text.replaceAll("\n", " ⏎ ");

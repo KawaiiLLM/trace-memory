@@ -1,45 +1,53 @@
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
-import { processedBlock } from "../../../src/core/store/processing.ts";
+import { TraceMemory, deriveSharedMaterialAllowance, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 
-function fixture() {
-  let captured: DreamingAgentInput | undefined;
+function fixture(runAgent?: Parameters<typeof TraceMemory>[1]) {
+  const captured: DreamingAgentInput[] = [];
   const memory = TraceMemory(":memory:", async raw => {
-    captured = raw as DreamingAgentInput;
-    return { outcome: "failure", output: "capture only", request: {} };
-  }, { dreaming: { triggerTokens: 1 } });
+    captured.push(raw as DreamingAgentInput);
+    return runAgent ? runAgent(raw) : { outcome: "failure", output: "capture only", request: {} };
+  });
   memories.push(memory);
   const project = memory.store.createProject({ name: "budgets", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
+  const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "budget",
+    role: "user", text: "evidence", raw: "evidence", calls: [] });
+  memory.selectEntries(session.id, "main", [entry.id]);
   const noted = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{
     turnId: turn.id, category: "decision", actor: "user", text: "evidence", source: [`T${turn.id}#user`], createdAt: "now",
   }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   let sequence = 0;
   const create = (text: string, scope: "global" | "project" | "session" = "project", topics: string[] = [], category: "constraint" | "open" | "goal" = "constraint") => {
-    const result = memory.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{
-      op: "create", handle: `$${++sequence}`, author: "test", text, category, scope,
-      supports: [noted.facts[0]!.id], topics, reason: "consumer fixture", createdAt: "now",
-    }] });
+    const result = memory.store.commitConsolidationRun({ path: target,
+      run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{
+        op: "create", handle: `$${++sequence}`, author: "test", text, category, scope,
+        supports: [noted.facts[0]!.id], topics, reason: "consumer fixture", createdAt: "now",
+      }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
     return result.committed[0]!;
   };
-  return { memory, session, target, create, captured: () => captured };
+  return { memory, session, target, create, captured };
 }
 
-test("35d ordinary delivery and compact Knowledge use the same increased database-derived capacity", () => {
+function zeroBase(memory: ReturnType<typeof TraceMemory>) {
+  memory.setKnowledgeBudget("global", 0);
+  memory.setKnowledgeBudget("project", 0);
+  memory.setKnowledgeBudget("session", 0);
+}
+
+test("64c foreground and compact Knowledge share the 20k base plus the derived 25k allowance", () => {
   const f = fixture();
-  f.memory.setKnowledgeBudget("project", 15_000); // injection becomes 25,000
-  const large = f.create("body ".repeat(21_000), "project", ["charged-topic"]);
+  const large = f.create("body ".repeat(30_000), "project", ["charged-topic"]);
   const delivery = f.memory.injection(f.target);
   expect(tokens(delivery.text)).toBeGreaterThan(20_000);
-  expect(tokens(delivery.text)).toBeLessThanOrEqual(25_000);
+  expect(tokens(delivery.text)).toBeLessThanOrEqual(45_000);
   expect(delivery.knowledgeCommitIds).toEqual([large.commit]);
   expect(delivery.text).toContain('topics: ["charged-topic"]');
 
@@ -47,117 +55,101 @@ test("35d ordinary delivery and compact Knowledge use the same increased databas
   expect("native" in compact).toBe(false);
   if ("native" in compact) return;
   expect(compact.supplied.knowledgeCommitIds).toEqual([large.commit]);
-  expect(compact.charged!.knowledge).toBeLessThanOrEqual(25_000);
+  expect(compact.charged!.knowledge).toBeGreaterThan(20_000);
+  expect(compact.charged!.knowledge).toBeLessThanOrEqual(45_000);
   expect(compact.text).toContain('topics: ["charged-topic"]');
 });
 
-test("35d a lower or zero policy changes both consumers without changing Fact and Raw bases", () => {
+test("64c zero Knowledge base borrows only the current Noting and Consolidation triggers", () => {
   const f = fixture();
-  f.create("body ".repeat(6_000));
-  f.memory.setKnowledgeBudget("global", 0);
-  f.memory.setKnowledgeBudget("project", 0);
-  f.memory.setKnowledgeBudget("session", 0);
-  expect(f.memory.knowledgeBudgets()).toMatchObject({ applicable: 0, injection: 5_000, dreamingProcessedInput: 5_000 });
+  const item = f.create("body ".repeat(6_000));
+  zeroBase(f.memory);
+  expect(f.memory.knowledgeBudgets()).toEqual({
+    global: 0, project: 0, session: 0, applicable: 0, injection: 0, dreamingProcessedInput: 0,
+  });
+  expect(deriveSharedMaterialAllowance(f.memory.knowledgeBudgets(), {
+    noting: f.memory.config.noting.triggerTokens, consolidation: f.memory.config.consolidation.triggerTokens,
+  })).toBe(15_000);
+  const borrowed = f.memory.injection(f.target);
+  expect(borrowed.knowledgeCommitIds).toEqual([item.commit]);
+  expect(tokens(borrowed.text)).toBeLessThanOrEqual(15_000);
+
+  f.memory.config.noting.triggerTokens = 1;
+  f.memory.config.consolidation.triggerTokens = 1;
   expect(f.memory.injection(f.target).text).toBe("");
   const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId);
-  expect("native" in compact).toBe(false); // required Knowledge may use the existing required-only overflow
+  expect("native" in compact).toBe(false);
   if (!("native" in compact)) {
-    expect(compact.charged!.knowledge).toBeGreaterThan(5_000);
+    expect(compact.supplied.knowledgeCommitIds).toEqual([]);
     expect(compact.charged!.facts).toBeLessThanOrEqual(10_000);
     expect(compact.charged!.raw).toBeLessThanOrEqual(10_000);
   }
 });
 
-test("35d an all-zero policy admits a new Dreamer with the derived 5000-token processed window", async () => {
+test("64c zero changed-pool cap refuses a pending item explicitly without a fake Dreamer run", async () => {
   const f = fixture();
-  f.memory.setKnowledgeBudget("global", 0);
-  f.memory.setKnowledgeBudget("project", 0);
-  f.memory.setKnowledgeBudget("session", 0);
-  f.create("changed");
-  await f.memory.dream(f.target);
-  expect(f.captured()?.admittedProcessedInputCap).toBe(5_000);
+  const created = f.create("changed");
+  zeroBase(f.memory);
+  await expect(f.memory.dream(f.target)).rejects.toThrow(/oldest pending version.*exceeds 0/);
+  expect(f.captured).toEqual([]);
+  expect(f.memory.store.pendingVersions(`project:${f.memory.store.getSession(f.session.id)!.projectId}`, f.target)
+    .map(value => value.revisionId)).toEqual([created.commit]);
+  expect(f.memory.store.getClaim(f.session.id, "dreaming")).toBeNull();
 });
 
-test("35d a larger database window never bypasses actual provider input capacity", async () => {
+test("64c derived allowance refuses an unsafe trigger sum instead of wrapping", () => {
   const f = fixture();
-  f.memory.setKnowledgeBudget("project", 15_000);
+  f.create("changed");
+  f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
+  expect(() => f.memory.injection(f.target)).toThrow(/derived shared material allowance must be a safe integer/);
+  expect(() => f.memory.compact(f.session.id, "main", f.target.headTurnId)).toThrow(/derived shared material allowance must be a safe integer/);
+});
+
+test("64c a larger configured Knowledge window never bypasses actual provider input capacity", async () => {
+  const f = fixture();
   f.create("changed ".repeat(1_000));
+  const pending = f.memory.store.pendingVersions(`project:${f.memory.store.getSession(f.session.id)!.projectId}`, f.target);
+  f.memory.setKnowledgeBudget("project", pending.reduce((sum, value) => sum + value.tokens, 0) * 2);
   await expect(f.memory.dream({ ...f.target, capacity: { inputTokens: 100, prefixTokens: 0 } })).rejects
     .toThrow(/frozen material and tools exceed model input allowance/);
-  expect(f.captured()).toBeUndefined();
-  expect(f.memory.store.pendingKnowledgeEvents(f.target)).not.toEqual([]);
+  expect(f.captured).toEqual([]);
+  expect(f.memory.store.pendingVersions(pending[0]!.pool, f.target)).not.toEqual([]);
 });
 
-test("35d a running Dreamer keeps its admitted ceiling while checks read current policy and a retry uses the new ceiling", async () => {
-  let memory!: ReturnType<typeof TraceMemory>, calls = 0, prompt = "";
-  memory = TraceMemory(":memory:", async raw => {
+test("64c real facade freezes D references to base plus shared minus Changed and separator", async () => {
+  let f!: ReturnType<typeof fixture>;
+  const admitted: number[] = [];
+  f = fixture(async raw => {
     const task = raw as DreamingAgentInput;
-    calls++;
-    if (calls === 1) {
-      prompt = task.prompt;
-      expect(task.admittedProcessedInputCap).toBe(20_000);
-      const check = task.tools.find(tool => tool.name === "check")!;
-      expect(check.execute({})).toContain("Current database capacities: applicable 15000; injection 20000");
-      memory.setKnowledgeBudget("project", 15_000);
-      const current = check.execute({});
-      expect(current).toContain("Current database capacities: applicable 20000; injection 25000");
-      expect(current).toContain("frozen admitted processed-input ceiling: 20000");
-      expect(task.prompt).toBe(prompt);
-    } else {
-      expect(task.admittedProcessedInputCap).toBe(25_000);
-      expect(task.prompt).toBe(prompt);
+    const budgets = f.memory.knowledgeBudgets();
+    admitted.push(budgets.dreamingProcessedInput + deriveSharedMaterialAllowance(budgets, {
+      noting: f.memory.config.noting.triggerTokens, consolidation: f.memory.config.consolidation.triggerTokens,
+    }) - tokens(task.material.changed) - 1);
+    if (admitted.length === 1) {
+      const frozen = task.admittedProcessedInputCap;
+      f.memory.setKnowledgeBudget("global", 5_000);
+      f.memory.config.noting.triggerTokens = 6_000;
+      f.memory.config.consolidation.triggerTokens = 4_000;
+      expect(task.admittedProcessedInputCap).toBe(frozen);
     }
-    return { outcome: "failure", output: "scripted stop", request: { calls } };
-  }, { dreaming: { triggerTokens: 1 } });
-  memories.push(memory);
-  const project = memory.store.createProject({ name: "frozen", declaredBy: "mark" });
-  const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-  const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
-  const fact = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{
-    turnId: turn.id, category: "decision", actor: "user", text: "fact", source: [`T${turn.id}#user`], createdAt: "now",
-  }] });
-  if (!fact.ok) throw new Error(fact.problems.join("; "));
-  const created = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{
-    op: "create", handle: "$1", author: "test", text: "changed", category: "constraint", scope: "project",
-    supports: [fact.facts[0]!.id], topics: [], reason: "trigger", createdAt: "now",
-  }] });
-  if (!created.ok) throw new Error(created.problems.join("; "));
-  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-  expect((await memory.dream(target)).outcome).toBe("failure");
-  expect((await memory.dream(target)).outcome).toBe("failure");
-  expect(calls).toBe(2);
-  expect(memory.store.getClaim(session.id, "dreaming")).toBeNull();
-  expect(memory.store.isKnowledgeProcessed(created.committed[0]!.commit)).toBe(false);
-});
-
-test("35d newly admitted Dreamer request fits above the retired 20k processed-input window", async () => {
-  const f = fixture();
-  f.memory.setKnowledgeBudget("project", 15_000);
-  const commits = [f.create("一".repeat(3_900), "global", [], "constraint"),
-    f.create("一".repeat(14_900), "project", [], "open"), f.create("一".repeat(900), "session", [], "goal")];
-  const values = commits.map(commit => {
-    const revision = f.memory.store.knowledgeRevision(commit.commit)!;
-    return { knowledge: f.memory.store.getKnowledge(revision.knowledgeId)!, revision };
+    return { outcome: "failure", output: "capture only", request: {} };
   });
-  // Fill each independent owner representation exactly to its current cap. Shared applicable
-  // rendering removes duplicate outer framing; Dreamer's own title adds it back to cross 20k.
-  for (const [index, cap] of [4_000, 15_000, 1_000].entries()) {
-    const value = values[index]!;
-    while (tokens(processedBlock([value])) < cap) value.revision.text += "一";
-    while (tokens(processedBlock([value])) > cap) value.revision.text = value.revision.text.slice(0, -1);
-  }
-  for (const value of values) f.memory.store.db.prepare("UPDATE knowledge_revisions SET text = ? WHERE id = ?").run(value.revision.text, value.revision.id);
-  expect(f.memory.store.checkProcessedScopes(commits.map(commit => commit.commit)).problems).toEqual([]);
-  const eventIds = commits.map(commit => commit.commit);
-  const range = f.memory.store.retainDreamingRange(f.target, eventIds);
-  const run = f.memory.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: f.target.branch,
-    dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
-  f.memory.store.completeDreaming(run.id, eventIds, eventIds);
-  f.create("new admission trigger", "project");
-  await f.memory.dream(f.target);
-  const admitted = f.captured();
-  expect(admitted).toBeDefined();
-  expect(tokens(admitted!.text)).toBeGreaterThan(20_000);
-  expect(tokens(admitted!.material.processed)).toBeLessThanOrEqual(25_000);
-  expect(admitted!.material.processed.match(/\[K\d+@/g)).toHaveLength(3);
+  f.memory.setKnowledgeBudget("project", 30_000);
+  f.create("一".repeat(25_000), "project");
+  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
+  const first = f.captured[0]!;
+  expect(first.admittedProcessedInputCap).toBe(admitted[0]);
+
+  f.create("二".repeat(15_000), "project");
+  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
+  const second = f.captured[1]!;
+  const secondBudgets = f.memory.knowledgeBudgets();
+  const secondWindow = secondBudgets.dreamingProcessedInput + deriveSharedMaterialAllowance(secondBudgets, {
+    noting: f.memory.config.noting.triggerTokens, consolidation: f.memory.config.consolidation.triggerTokens,
+  });
+  expect(second.admittedProcessedInputCap).toBe(admitted[1]);
+  expect(second.admittedProcessedInputCap).toBe(secondWindow - tokens(second.material.changed) - 1);
+  expect(tokens(second.material.processed)).toBeGreaterThan(20_000);
+  expect(tokens(second.material.processed)).toBeLessThanOrEqual(second.admittedProcessedInputCap);
+  expect(tokens(second.material.changed) + 1 + tokens(second.material.processed)).toBeLessThanOrEqual(secondWindow);
 });

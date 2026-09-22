@@ -39,6 +39,67 @@ test("19c 2026-09-08: a message completion before persistence launches nothing; 
   } finally { await h.dispose(); }
 });
 
+test("64c: persisted assistant and tool-result entries each grant one mid-turn scheduling opportunity", async () => {
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 10_000,
+    "render.toolResultTokens": 1_000 });
+  try {
+    await h.prompt("Run a long tool sequence");
+    const calls = Array.from({ length: 12 }, (_value, index) => ({ type: "toolCall" as const,
+      id: `long-${index}`, name: "bash", arguments: { command: `step ${index}` } }));
+    const assistant = { ...reply("Working."), content: [{ type: "text" as const, text: "Working." }, ...calls] };
+    await h.emit("message_end", { message: assistant });
+    expect(h.memory.store.listSourceEntries(1).map(entry => entry.role)).toEqual(["user"]);
+
+    // Pi has persisted the assistant by tool preflight. The first hook ingests it; a duplicate hook
+    // sees the same leaf and grants no duplicate opportunity.
+    await h.emit("tool_execution_start", { toolCallId: calls[0]!.id, toolName: "bash", args: calls[0]!.arguments });
+    await h.emit("tool_execution_start", { toolCallId: calls[0]!.id, toolName: "bash", args: calls[0]!.arguments });
+    expect(h.memory.store.listSourceEntries(1).map(entry => entry.role)).toEqual(["user", "assistant"]);
+
+    // Each result is persisted by Pi's final message lifecycle and reconciled before the next model
+    // turn. Twelve bounded result views cross the real 10k Noter threshold before agent_end.
+    for (const call of calls) await h.emit("tool_result", { toolCallId: call.id, toolName: "bash", input: call.arguments,
+      content: [{ type: "text", text: `${call.id} ${"word ".repeat(6_000)}` }], details: {}, isError: false });
+    const run = await vi.waitFor(() => { const values = notingRuns(h); expect(values).toHaveLength(1); return values[0]!; }, { timeout: 5000 });
+    expect(run.origin?.entryIds.at(-1)).toBeLessThanOrEqual(h.memory.store.listSourceEntries(1).at(-1)!.id);
+    expect(h.memory.store.listRuns(1).filter(value => value.kind === "noting")).toHaveLength(1);
+    await h.emit("message_start", { message: reply("") });
+    await h.emit("agent_end");
+    await h.drain();
+    expect(notingRuns(h)).toHaveLength(1); // duplicate lifecycle hooks and worker completion do not drain
+  } finally { await h.dispose(); }
+});
+
+test("64c: Pi does not borrow a due closed-session Dreamer target", async () => {
+  const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000 });
+  try {
+    await h.turn();
+    const store = h.memory.store, projectId = store.getSession(1)!.projectId;
+    const closed = store.createSession({ host: "closed-dreamer", projectId, enrollmentChoice: true,
+      startedAt: "now", firstReplyAt: "now" });
+    const turn = store.appendTurn({ sessionId: closed.id, kind: "turn", userPrompt: "closed evidence", startedAt: "now" });
+    const entry = h.memory.appendEntry({ sessionId: closed.id, turnId: turn.id, nativeLineage: "closed", nativeId: "closed-entry",
+      role: "user", text: "closed evidence", raw: "closed evidence", calls: [] });
+    h.memory.selectEntries(closed.id, "main", [entry.id]);
+    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: closed.id, createdAt: "now" }, entryIds: [entry.id],
+      facts: [{ turnId: turn.id, source: [`T${turn.id}#user`], actor: "user", category: "decision", text: "closed rule", createdAt: "now" }] });
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: closed.id, createdAt: "now" }, operations: [{ op: "create",
+      handle: "$closed", author: "test", text: "closed ".repeat(1_000), category: "constraint", scope: "session",
+      supports: [noted.facts[0]!.id], topics: [], reason: "closed session test", createdAt: "now" }] });
+    if (!created.ok) throw new Error(created.problems.join("; "));
+    store.closeSession(closed.id);
+    expect(h.memory.taskEligibility("dreaming", { sessionId: closed.id, branch: "main", headTurnId: turn.id })).toEqual({ due: true });
+
+    await h.prompt("one executor opportunity");
+    await h.answer("completed");
+    await h.drain();
+    expect(h.conversations.some(conversation => conversation.systemPrompt?.includes("You are the Consolidator:"))).toBe(true);
+    expect(h.conversations.some(conversation => conversation.systemPrompt?.startsWith("# Dreamer"))).toBe(false);
+    expect(store.listRuns(closed.id).filter(run => run.kind === "dreaming")).toEqual([]);
+  } finally { await h.dispose(); }
+});
+
 test("19c 2026-09-08: a fork launches from the persisted checkpoint on the existing capture, without a further provider request", async () => {
   // "No capture dependency", read with gate 1: the fork's first body is still verified against the
   // latest captured parent request, so a capture must exist — but the launch never waits for a NEW

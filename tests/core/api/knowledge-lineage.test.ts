@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { compareTriggerOrigins } from "../../../src/core/model/index.ts";
 import { Store, type KnowledgeOperationInput, type KnowledgePath, type SourceInput } from "../../../src/core/store/index.ts";
+import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const stores: Store[] = [], dirs: string[] = [];
 afterEach(() => {
@@ -14,8 +15,15 @@ afterEach(() => {
 });
 
 const time = "2026-09-12T00:00:00.000Z";
+
+function fullRead(tool: { execute(input: unknown): string }, address: string) {
+  let page = tool.execute({ address, full: true, itemBudget: null });
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1])
+    page = tool.execute({ address: `cursor=${cursor}`, itemBudget: null });
+}
 function fixture() {
-  const store = new Store(":memory:"); stores.push(store);
+  const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unexpected fixture phase"); });
+  const memory = TraceMemory(":memory:", scenarios.agent); const store = memory.store; stores.push(store);
   const project = store.createProject({ name: "lineage", declaredBy: "mark" });
   const session = store.createSession({ host: "test", enrollmentChoice: true, projectId: project.id, startedAt: time, firstReplyAt: time });
   const append = (turnId: number, nativeId: string, text: string): SourceInput => ({ sessionId: session.id, turnId, nativeId,
@@ -31,49 +39,80 @@ function fixture() {
     return result.facts[0]!.id;
   };
   const rootFact = note(rootTurn.id, rootEntry.id, "root evidence");
-  const write = (path: KnowledgePath, operations: KnowledgeOperationInput[]) => {
-    const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: path.branch, createdAt: time }, operations });
-    if (!result.ok) throw new Error(result.problems.join("; "));
-    return result.committed;
+  const write = async (path: KnowledgePath, operations: KnowledgeOperationInput[]) => {
+    if (operations.every(operation => operation.op === "create")) {
+      const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: path.branch, createdAt: time }, operations });
+      if (!result.ok) throw new Error(result.problems.join("; "));
+      return result.committed;
+    }
+    const target = { sessionId: path.sessionId, branch: path.branch!, headTurnId: path.headTurnId! };
+    const factId = operations.flatMap(operation => operation.supports ?? [])[0] ?? rootFact;
+    const trigger = createDreamerTrigger(memory, target, factId, store.listKnowledgeRevisions().length + 1);
+    let committed: { knowledgeId: number; commit: number }[] = [];
+    const dreamed = await scenarios.run(memory, target, input => {
+      const request = { fixture: "lineage maintenance" }; input.reportRequest(request);
+      const trace = input.tools.find(tool => tool.name === "trace")!, tool = input.tools.find(tool => tool.name === "memory")!;
+      const addressed = new Set<string>();
+      const converted = operations.map(operation => {
+        if (operation.op === "update") { const id = `K${operation.knowledgeId}@${operation.baseCommit}`; addressed.add(id); fullRead(trace, id);
+          return { op: "update", id, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
+        if (operation.op === "split") { const id = `K${operation.knowledgeId}@${operation.baseCommit}`; addressed.add(id); fullRead(trace, id);
+          return { op: "split", id, children: operation.children, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
+        if (operation.op === "merge") { const id = `K${operation.intoKnowledgeId}@${operation.intoBaseCommit}`, absorb = operation.absorb.map(parent => `K${parent.knowledgeId}@${parent.baseCommit}`); for (const address of [id, ...absorb]) { addressed.add(address); fullRead(trace, address); }
+          return { op: "merge", id, absorb, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
+        return operation;
+      });
+      const triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`, supplied = new Set(input.material.changed.match(/K\d+@\d+/g) ?? []);
+      supplied.delete(triggerAddress); for (const address of addressed) supplied.delete(address);
+      const receipt = JSON.parse(tool.execute({ operations: [...converted, { op: "archive", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit lineage trigger." }],
+        skipped: [...supplied].map(knowledge => ({ knowledge, because: "No lineage maintenance is needed for this supplied item." })) }));
+      committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId);
+      expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
+      return { outcome: "success", output: "lineage maintenance complete", request };
+    });
+    if (dreamed.outcome !== "success") throw new Error(JSON.stringify(dreamed));
+    return committed;
   };
   const content = (text: string, supports: number[], scope = "project" as const) => ({ text, category: "constraint" as const,
     scope, supports, topics: [], reason: `change to ${text}`, createdAt: time });
   const rootPath = { sessionId: session.id, branch: "root", headTurnId: rootTurn.id };
-  const created = write(rootPath, [{ op: "create", handle: "$root", author: "test", ...content("root conclusion", [rootFact]) }])[0]!;
-  return { store, project, session, rootTurn, rootEntry, rootFact, rootPath, append, note, write, content, created };
+  const initial = store.commitConsolidationRun({ path: rootPath, run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: time },
+    operations: [{ op: "create", handle: "$root", author: "test", ...content("root conclusion", [rootFact]) }] });
+  if (!initial.ok) throw new Error(initial.problems.join("; "));
+  const created = initial.committed[0]!;
+  return { memory, scenarios, store, project, session, rootTurn, rootEntry, rootFact, rootPath, append, note, write, content, created };
 }
 
-test("34a: change-only revisions recurse through exact historical parents and preserve inherited grounding", () => {
+test("64b: change revisions use only direct facts and do not inherit historical grounding", async () => {
   const f = fixture();
   const childTurn = f.store.appendTurn({ sessionId: f.session.id, parentTurnId: f.rootTurn.id, kind: "turn", userPrompt: "child", startedAt: time });
   const childEntry = f.store.appendSourceEntry(f.append(childTurn.id, "child", "child"));
   f.store.selectSourcePath(f.session.id, "child", [f.rootEntry.id, childEntry.id]);
   const childFact = f.note(childTurn.id, childEntry.id, "child-only evidence");
   const childPath = { sessionId: f.session.id, branch: "child", headTurnId: childTurn.id };
-  const first = f.write(childPath, [{ op: "update", knowledgeId: f.created.knowledgeId, baseCommit: f.created.commit,
-    ...f.content("complete child conclusion", [childFact]) }])[0]!;
-  const second = f.write(childPath, [{ op: "update", knowledgeId: f.created.knowledgeId, baseCommit: first.commit,
-    ...f.content("complete later conclusion", [f.rootFact]) }])[0]!;
+  const first = (await f.write(childPath, [{ op: "update", knowledgeId: f.created.knowledgeId, baseCommit: f.created.commit,
+    ...f.content("complete child conclusion", [childFact]) }]))[0]!;
+  const second = (await f.write(childPath, [{ op: "update", knowledgeId: f.created.knowledgeId, baseCommit: first.commit,
+    ...f.content("complete later conclusion", [f.rootFact]) }]))[0]!;
 
   expect(f.store.knowledgeRevision(second.commit)).toMatchObject({ text: "complete later conclusion", supports: [f.rootFact],
     supportSemantics: "change", parentId: first.commit });
-  expect(f.store.currentCommit(f.created.knowledgeId, f.rootPath).map(r => r.id)).toEqual([f.created.commit]);
+  f.store.setCurrentPath(f.session.id, "root", f.rootTurn.id, "test-lineage");
+  expect(f.store.currentCommit(f.created.knowledgeId, f.rootPath).map(r => r.id)).toEqual([second.commit]);
   expect(f.store.currentCommit(f.created.knowledgeId, childPath).map(r => r.id)).toEqual([second.commit]);
-  expect([...f.store.revisionGrounds(f.store.knowledgeRevision(second.commit)!)]).toEqual([f.rootFact, childFact]);
+  expect([...f.store.revisionGrounds(f.store.knowledgeRevision(second.commit)!)]).toEqual([f.rootFact]);
+  f.store.setCurrentPath(f.session.id, "child", childTurn.id, "test-lineage");
+  expect(f.store.currentCommit(f.created.knowledgeId, f.rootPath).map(r => r.id)).toEqual([second.commit]);
+  expect(f.store.currentCommit(f.created.knowledgeId, childPath).map(r => r.id)).toEqual([second.commit]);
 
-  const range = f.store.retainDreamingRange(childPath, [second.commit]);
-  const claim = f.store.acquireClaim(childPath, "dreaming", "split-test")!;
-  const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", head: range.anchor, origin: range.origin });
-  const run = f.store.bindDreamingRun(f.store.bindRunOrigin({ kind: "dreaming", sessionId: f.session.id, branch: "child", dreamingRangeId: range.id,
-    claim, executionId, createdAt: time }, range.origin));
-  const split = f.store.commitConsolidationRun({ path: childPath, run, operations: [{ op: "split", knowledgeId: f.created.knowledgeId,
+  const split = await f.write(childPath, [{ op: "split", knowledgeId: f.created.knowledgeId,
     baseCommit: second.commit, supports: [f.rootFact], reason: "separate the complete result", createdAt: time,
-    children: [{ text: "first complete result", category: "constraint", topics: [] }, { text: "second complete result", category: "goal", topics: [] }] }] });
-  expect(split.ok).toBe(true);
-  if (!split.ok) return;
-  expect(f.store.currentCommit(f.created.knowledgeId, f.rootPath).map(r => r.id)).toEqual([f.created.commit]);
-  expect(f.store.listCurrentKnowledge(childPath).map(v => v.revision.id)).toEqual(split.committed.map(v => v.commit));
-  for (const child of split.committed) expect([...f.store.revisionGrounds(f.store.knowledgeRevision(child.commit)!)]).toEqual([f.rootFact, childFact]);
+    children: [{ text: "first complete result", category: "constraint", topics: [] }, { text: "second complete result", category: "goal", topics: [] }] }]);
+  f.store.setCurrentPath(f.session.id, "root", f.rootTurn.id, "test-lineage");
+  expect(f.store.currentKnowledge(f.rootPath).map(v => v.revision.id)).toEqual(split.map(v => v.commit));
+  f.store.setCurrentPath(f.session.id, "child", childTurn.id, "test-lineage");
+  expect(f.store.currentKnowledge(childPath).map(v => v.revision.id)).toEqual(split.map(v => v.commit));
+  for (const child of split) expect([...f.store.revisionGrounds(f.store.knowledgeRevision(child.commit)!)]).toEqual([f.rootFact]);
 });
 
 test("34a: a caller-supplied Dreamer role cannot forge trusted revision provenance", () => {
@@ -81,49 +120,52 @@ test("34a: a caller-supplied Dreamer role cannot forge trusted revision provenan
   const result = f.store.commitConsolidationRun({ path: f.rootPath, run: { kind: "dreaming", sessionId: f.session.id, branch: "root", createdAt: time }, operations: [{
     op: "update", knowledgeId: f.created.knowledgeId, baseCommit: f.created.commit, ...f.content("spoofed ordinary update", [f.rootFact]),
   }] });
-  expect(result.ok).toBe(true);
-  if (!result.ok) return;
-  expect(f.store.knowledgeRevision(result.committed[0]!.commit)!.actorRole).toBe("manual");
-  const split = f.store.commitConsolidationRun({ path: f.rootPath, run: { kind: "dreaming", sessionId: f.session.id, branch: "root", createdAt: time }, operations: [{
-    op: "split", knowledgeId: f.created.knowledgeId, baseCommit: result.committed[0]!.commit, supports: [], reason: "spoof",
-    children: [{ text: "a", category: "constraint", topics: [] }, { text: "b", category: "goal", topics: [] }], createdAt: time,
-  }] });
-  expect(split.ok).toBe(false);
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.problems.join(" ")).toContain("no knowledge commit authority");
+  expect(f.store.currentCommit(f.created.knowledgeId, f.rootPath).map(revision => revision.id)).toEqual([f.created.commit]);
 });
 
-test("34a: a merge has exactly two parents and cannot apply where either historical parent is inapplicable", () => {
+test("64b: a merge keeps exactly two historical parents but applicability uses only its direct facts", async () => {
   const f = fixture();
   const childTurn = f.store.appendTurn({ sessionId: f.session.id, parentTurnId: f.rootTurn.id, kind: "turn", userPrompt: "child", startedAt: time });
   const childEntry = f.store.appendSourceEntry(f.append(childTurn.id, "child", "child"));
   f.store.selectSourcePath(f.session.id, "child", [f.rootEntry.id, childEntry.id]);
   const childFact = f.note(childTurn.id, childEntry.id, "child-only evidence");
   const childPath = { sessionId: f.session.id, branch: "child", headTurnId: childTurn.id };
-  const childOnly = f.write(childPath, [{ op: "create", handle: "$child", author: "test", ...f.content("child-only conclusion", [childFact]) }])[0]!;
-  const range = f.store.retainDreamingRange(childPath, [f.created.commit, childOnly.commit]);
-  const claim = f.store.acquireClaim(childPath, "dreaming", "test")!;
-  const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", head: range.anchor, origin: range.origin });
-  const run = f.store.bindDreamingRun(f.store.bindRunOrigin({ kind: "dreaming", sessionId: f.session.id, branch: "child", dreamingRangeId: range.id,
-    claim, executionId, createdAt: time }, range.origin));
-  const result = f.store.commitConsolidationRun({ path: childPath, run, operations: [{ op: "merge", intoKnowledgeId: f.created.knowledgeId, intoBaseCommit: f.created.commit,
-    absorb: [{ knowledgeId: childOnly.knowledgeId, baseCommit: childOnly.commit }], ...f.content("complete merged conclusion", [f.rootFact]) }] });
-  if (!result.ok) throw new Error(result.problems.join("; "));
-  const merged = result.committed[0]!;
+  const childOnly = (await f.write(childPath, [{ op: "create", handle: "$child", author: "test", ...f.content("child-only conclusion", [childFact]) }]))[0]!;
+  const merged = (await f.write(childPath, [{ op: "merge", intoKnowledgeId: f.created.knowledgeId, intoBaseCommit: f.created.commit,
+    absorb: [{ knowledgeId: childOnly.knowledgeId, baseCommit: childOnly.commit }], ...f.content("complete merged conclusion", [f.rootFact]) }]))[0]!;
 
   expect(f.store.commitParents(f.store.knowledgeRevision(merged.commit)!).map(r => r.id)).toEqual([f.created.commit, childOnly.commit]);
-  expect(f.store.listCurrentKnowledge(f.rootPath).map(v => [v.knowledge.id, v.revision.id])).toEqual([[f.created.knowledgeId, f.created.commit]]);
-  expect(f.store.listCurrentKnowledge(childPath).map(v => v.revision.id)).toEqual([merged.commit]);
-  const malformed = f.store.commitConsolidationRun({ path: childPath, run, operations: [{
-    op: "merge", intoKnowledgeId: f.created.knowledgeId, intoBaseCommit: merged.commit,
-    absorb: [{ knowledgeId: childOnly.knowledgeId, baseCommit: childOnly.commit }, { knowledgeId: f.created.knowledgeId, baseCommit: f.created.commit }],
-    ...f.content("illegal three-parent merge", [f.rootFact]),
-  }] });
-  expect(malformed.ok).toBe(false);
-  if (!malformed.ok) expect(malformed.problems.join()).toContain("exactly two distinct parents");
+  f.store.setCurrentPath(f.session.id, "root", f.rootTurn.id, "test-lineage");
+  expect(f.store.currentKnowledge(f.rootPath).map(v => [v.knowledge.id, v.revision.id])).toEqual([[f.created.knowledgeId, merged.commit]]);
+  expect(f.store.currentKnowledge(childPath).map(v => [v.knowledge.id, v.revision.id])).toEqual([[f.created.knowledgeId, merged.commit]]);
+  expect([...f.store.revisionGrounds(f.store.knowledgeRevision(merged.commit)!)]).toEqual([f.rootFact]);
+  f.store.setCurrentPath(f.session.id, "child", childTurn.id, "test-lineage");
+  expect(f.store.currentKnowledge(childPath).map(v => v.revision.id)).toEqual([merged.commit]);
+  const trigger = createDreamerTrigger(f.memory, childPath, f.rootFact, 999);
+  const malformedRun = await f.scenarios.run(f.memory, childPath, input => {
+    const request = { fixture: "invalid three-parent merge" }; input.reportRequest(request);
+    const trace = input.tools.find(tool => tool.name === "trace")!, tool = input.tools.find(tool => tool.name === "memory")!;
+    for (const address of [`K${f.created.knowledgeId}@${merged.commit}`, `K${childOnly.knowledgeId}@${childOnly.commit}`, `K${f.created.knowledgeId}@${f.created.commit}`])
+      fullRead(trace, address);
+    const malformed = tool.execute({ operations: [{ op: "merge", id: `K${f.created.knowledgeId}@${merged.commit}`,
+      absorb: [`K${childOnly.knowledgeId}@${childOnly.commit}`, `K${f.created.knowledgeId}@${f.created.commit}`],
+      text: "illegal three-parent merge", category: "constraint", scope: "project", topics: [], supports: [`F${f.rootFact}`], reason: "invalid fixture" }], skipped: [] });
+    expect(malformed).toContain("exactly two distinct parents");
+    const supplied = new Set(input.material.changed.match(/K\d+@\d+/g) ?? []); supplied.delete(`K${trigger.knowledgeId}@${trigger.commit}`);
+    tool.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${f.rootFact}`], reason: "Retire the explicit invalid-merge trigger." }],
+      skipped: [...supplied].map(knowledge => ({ knowledge, because: "The rejected malformed merge makes no valid change." })) });
+    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
+    return { outcome: "success", output: "malformed merge rejected", request };
+  });
+  expect(malformedRun.outcome).toBe("success");
 });
 
-test("34a: trusted Dreamer split is atomic, reaches both child families and certifies only their current descendants", async () => {
+test("64b/34a: trusted Dreamer split is atomic and retains processed current descendants without a frozen family", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-34a-split-")); dirs.push(dir);
   let parent = { knowledgeId: 0, commit: 0 };
+  let trigger = { knowledgeId: 0, commit: 0 };
   let attempted = false;
   const memory = TraceMemory(join(dir, "memory.sqlite"), async raw => {
     const input = raw as DreamingAgentInput;
@@ -135,7 +177,7 @@ test("34a: trusted Dreamer split is atomic, reaches both child families and cert
     const invalid = tool.execute({ operations: [{ op: "split", id: `K${parent.knowledgeId}@${parent.commit}`, supports: [], reason: "separate independent rules",
       children: [{ text: "first rule", category: "constraint", topics: [] }, { text: "", category: "goal", topics: [] }] }], skipped: [] });
     expect(invalid).toContain("rejected:");
-    expect(memory.store.listKnowledgeRevisions()).toHaveLength(1);
+    expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
     const split = JSON.parse(tool.execute({ operations: [{ op: "split", id: `K${parent.knowledgeId}@${parent.commit}`, supports: [], reason: "separate independent rules",
       children: [{ text: "first rule", category: "constraint", topics: ["first"] }, { text: "second rule", category: "goal", topics: ["second"] }] }], skipped: [] }));
     expect(split.committed).toHaveLength(2);
@@ -145,10 +187,13 @@ test("34a: trusted Dreamer split is atomic, reaches both child families and cert
     const update = JSON.parse(tool.execute({ operations: [{ op: "update", id: `K${first!.knowledgeId}@${first!.commit}`,
       text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }], skipped: [] }));
     expect(update.committed).toHaveLength(1);
+    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
+    expect(tool.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`,
+      supports: [], reason: "Retire the explicit split trigger." }], skipped: [] })).toContain("committed");
     expect(input.tools.find(t => t.name === "check")!.execute({})).toContain("Blockers: none");
     attempted = true;
     return { outcome: "success", output: "done", request: { offline: true } };
-  }, { dreaming: { triggerTokens: 1 } });
+  });
   stores.push(memory.store);
   const fstore = memory.store;
   const project = fstore.createProject({ name: "split", declaredBy: "mark" });
@@ -164,37 +209,44 @@ test("34a: trusted Dreamer split is atomic, reaches both child families and cert
       text: "first rule and second rule", category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: ["compound"], reason: "initial", createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join());
   parent = created.committed[0]!;
+  const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
+  trigger = createDreamerTrigger(memory, path, facts.facts[0]!.id, 1, "project");
 
-  const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: turn.id });
-  expect(result.outcome).toBe("success");
+  const result = await memory.dream(path);
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
   expect(attempted).toBe(true);
   const revisions = fstore.listKnowledgeRevisions();
   const children = revisions.filter(r => r.op === "split");
   expect(children).toHaveLength(2);
   expect(new Set(children.map(r => r.knowledgeId)).size).toBe(2);
-  expect(children.every(r => r.parentId === parent.commit && r.scope === "project" && !r.supports.length && r.actorRole === "dreaming")).toBe(true);
+  expect(children.every(r => r.parentId === parent.commit && r.scope === "project" && r.supports.length === 1 && r.actorRole === "dreaming")).toBe(true);
+  if (!("runId" in result)) throw new Error("missing Dreamer run");
+  expect(fstore.listFactsByRun(result.runId)).toEqual([]);
+  expect(children.every(r => r.supports[0] === facts.facts[0]!.id)).toBe(true);
   expect(fstore.listKnowledgeLinks(parent.knowledgeId).filter(link => link.kind === "split_from")).toHaveLength(2);
-  expect(revisions.some(r => r.op === "archive")).toBe(false);
-  const current = fstore.listCurrentKnowledge({ sessionId: session.id, branch: "main", headTurnId: turn.id }).map(v => v.revision);
+  expect(revisions.some(r => r.op === "archive" && r.knowledgeId !== trigger.knowledgeId)).toBe(false);
+  const current = fstore.currentKnowledge({ sessionId: session.id, branch: "main", headTurnId: turn.id }).map(v => v.revision);
   expect(current).toHaveLength(2);
   expect(current.map(r => r.text).sort()).toEqual(["first rule, clarified", "second rule"]);
-  expect(current.every(r => fstore.isKnowledgeProcessed(r.id))).toBe(true);
-  expect(children.find(r => r.text === "first rule") && fstore.isKnowledgeProcessed(children.find(r => r.text === "first rule")!.id)).toBe(false);
-  const retained = fstore.dreamingRange(1, true)!;
-  expect(retained.knowledgeIds).toEqual(expect.arrayContaining(children.map(r => r.knowledgeId)));
-  expect(retained.origin).toEqual({ sessionId: session.id, entryIds: [entry.id] });
-  if (!("runId" in result)) throw new Error("missing Dreamer run");
-  expect(fstore.getRun(result.runId)!.origin).toEqual(retained.origin);
+  const pool = `project:${project.id}`;
+  expect(fstore.pendingVersions(pool, { sessionId: session.id, branch: "main", headTurnId: turn.id })).toEqual([]);
+  const retained = fstore.db.prepare("SELECT * FROM dreaming_ranges WHERE id = 1").get()!;
+  const origin = { sessionId: Number(retained.origin_session_id), entryIds: JSON.parse(String(retained.origin_entry_ids)) };
+  expect(retained.pool).toBe(pool);
+  expect(JSON.parse(String(retained.pending_revisions))).toEqual(expect.arrayContaining([parent.commit, trigger.commit]));
+  expect(origin).toEqual({ sessionId: session.id, entryIds: [entry.id] });
+  expect(fstore.getRun(result.runId)!.origin).toEqual(origin);
   expect(current.every(revision => revision.runId === result.runId)).toBe(true);
   const execution = fstore.db.prepare("SELECT e.* FROM task_executions e JOIN execution_runs x ON x.execution_id = e.id WHERE x.run_id = ?").get(result.runId)!;
-  expect({ sessionId: execution.origin_session_id, entryIds: JSON.parse(String(execution.origin_entry_ids)) }).toEqual(retained.origin);
+  expect({ sessionId: execution.origin_session_id, entryIds: JSON.parse(String(execution.origin_entry_ids)) }).toEqual(origin);
   memory.close();
   const reopened = new Store(join(dir, "memory.sqlite")); stores.push(reopened);
-  expect(reopened.dreamingRange(retained.id, true)!.origin).toEqual(retained.origin);
-  expect(reopened.getRun(result.runId)!.origin).toEqual(retained.origin);
+  const restoredRange = reopened.db.prepare("SELECT * FROM dreaming_ranges WHERE id = ?").get(retained.id!)!;
+  expect(restoredRange).toEqual(retained);
+  expect(reopened.getRun(result.runId)!.origin).toEqual(origin);
 });
 
-test("34a migration labels legacy supports without changing ids, links, marks or certifications", () => {
+test("34a migration labels legacy supports without changing ids, links or processing history", () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-34a-upgrade-")); dirs.push(dir);
   const db = join(dir, "memory.sqlite"), store = new Store(db);
   const project = store.createProject({ name: "upgrade", declaredBy: "mark" });
@@ -208,26 +260,29 @@ test("34a migration labels legacy supports without changing ids, links, marks or
   const first = create("$first"), second = create("$second");
   if (!first.ok || !second.ok) throw new Error("fixture failed");
   store.db.prepare("INSERT INTO knowledge_links VALUES (?,?,'merged_into',?,?)").run(first.committed[0]!.knowledgeId, first.committed[0]!.commit, second.committed[0]!.knowledgeId, second.committed[0]!.commit);
-  store.mark(first.committed[0]!.commit, "verified", time);
   const run = store.recordRun({ kind: "dreaming", sessionId: session.id, createdAt: time, outcome: "success" });
-  store.db.prepare("INSERT INTO dreaming_completions VALUES (?,?,?)").run(run.id, "[]", JSON.stringify([second.committed[0]!.commit]));
-  store.db.prepare("INSERT INTO processed_knowledge_versions VALUES (?,?)").run(second.committed[0]!.commit, run.id);
   const before = { revisions: store.listKnowledgeRevisions().map(r => ({ id: r.id, knowledgeId: r.knowledgeId, supports: r.supports })),
-    links: store.listKnowledgeLinks(first.committed[0]!.knowledgeId), marks: store.listKnowledgeMarks(first.committed[0]!.knowledgeId) };
+    links: store.listKnowledgeLinks(first.committed[0]!.knowledgeId) };
   store.close();
   const raw = new DatabaseSync(db);
-  raw.exec("ALTER TABLE knowledge_revisions DROP COLUMN support_semantics"); raw.close();
+  raw.exec(`ALTER TABLE knowledge_revisions DROP COLUMN support_semantics;
+    CREATE TABLE dreaming_completions(run_id INTEGER PRIMARY KEY REFERENCES runs(id), event_ids TEXT NOT NULL, result_ids TEXT NOT NULL);
+    CREATE TABLE processed_knowledge_versions(commit_id INTEGER PRIMARY KEY REFERENCES knowledge_revisions(id), run_id INTEGER NOT NULL REFERENCES dreaming_completions(run_id));`);
+  raw.prepare("INSERT INTO dreaming_completions VALUES (?,?,?)").run(run.id, "[]", JSON.stringify([second.committed[0]!.commit]));
+  raw.prepare("INSERT INTO processed_knowledge_versions VALUES (?,?)").run(second.committed[0]!.commit, run.id);
+  raw.close();
   const reopened = new Store(db); stores.push(reopened);
   expect(reopened.listKnowledgeRevisions().map(r => ({ id: r.id, knowledgeId: r.knowledgeId, supports: r.supports }))).toEqual(before.revisions);
   expect(reopened.listKnowledgeRevisions().every(r => r.supportSemantics === "complete_result")).toBe(true);
   expect(reopened.listKnowledgeLinks(first.committed[0]!.knowledgeId)).toEqual(before.links);
-  expect(reopened.listKnowledgeMarks(first.committed[0]!.knowledgeId)).toEqual(before.marks);
-  expect(reopened.isKnowledgeProcessed(second.committed[0]!.commit)).toBe(true);
+  expect(reopened.db.prepare("SELECT run_id FROM knowledge_processed WHERE pool=? AND revision_id=?")
+    .get(`project:${project.id}`, second.committed[0]!.commit)).toEqual({ run_id: run.id });
   expect(reopened.getRun(run.id)!.origin).toBeNull();
   reopened.close();
   const stable = new Store(db); stores.push(stable);
   expect(stable.listKnowledgeRevisions().map(r => r.id)).toEqual(before.revisions.map(r => r.id));
-  expect(stable.isKnowledgeProcessed(second.committed[0]!.commit)).toBe(true);
+  expect(stable.db.prepare("SELECT run_id FROM knowledge_processed WHERE pool=? AND revision_id=?")
+    .get(`project:${project.id}`, second.committed[0]!.commit)).toEqual({ run_id: run.id });
 });
 
 test("34a: bound origin freezes the ordered native path through the exact same-Turn trigger", () => {

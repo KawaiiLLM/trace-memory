@@ -1,5 +1,7 @@
 # Dreamer path competition and exact processing
 
+**Historical Ticket 34b design, superseded by Ticket 64.** The rules below describe the former implementation, not the current contract. See [the domain glossary](../CONTEXT.md) and [current core behavior](core.md#dreamer-execution) for the replacement.
+
 ## Path-write rule
 
 Every knowledge operation names immutable exact bases. Inside the write transaction, core rechecks every update, archive and split base and both merge parents against direct consuming update, archive, split and `merged_into` edges.

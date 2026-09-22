@@ -1,10 +1,7 @@
-import type { Store, KnowledgePath, KnowledgeWithRevision, ApplicabilityInput, CommitGraph } from "./index.ts";
-import { renderKnowledge, renderKnowledgeBlock, tokens } from "../render/index.ts";
-import { KNOWLEDGE_CATEGORIES, type KnowledgeRevision, type TriggerOrigin } from "../model/index.ts";
+import type { Store, KnowledgeWithRevision, ApplicabilityInput } from "./index.ts";
+import { renderKnowledge, renderKnowledgeBlock } from "../render/index.ts";
+import { KNOWLEDGE_CATEGORIES, type TriggerOrigin } from "../model/index.ts";
 
-/** Change this whenever the immutable knowledge material rendering changes. Marks are not events. */
-export const KNOWLEDGE_VIEW_VERSION = "50-v1-whitespace-pricing";
-export const KNOWLEDGE_BUDGET_ALLOWANCE = 5_000;
 export type KnowledgeBudgetField = "global" | "project" | "session";
 export interface KnowledgeBudgetValues { global: number; project: number; session: number }
 export interface KnowledgeBudgets extends KnowledgeBudgetValues {
@@ -12,159 +9,102 @@ export interface KnowledgeBudgets extends KnowledgeBudgetValues {
   injection: number;
   dreamingProcessedInput: number;
 }
-export const DEFAULT_KNOWLEDGE_BUDGETS: KnowledgeBudgetValues = { global: 4_000, project: 10_000, session: 1_000 };
+export const DEFAULT_KNOWLEDGE_BUDGETS: KnowledgeBudgetValues = { global: 4_000, project: 15_000, session: 1_000 };
 
-/** Validate the database policy before deriving any capacity. JavaScript addition is accepted only
- * when both the owner sum and its shared allowance remain exact safe integers. */
+/** One runtime-derived allowance shared by Knowledge, Facts and Raw. Dreamer's three triggers are
+ * exactly half their current database pool budgets; Noting and Consolidation contribute their
+ * current configured triggers. There is no stored or separately configurable allowance. */
+export function deriveSharedMaterialAllowance(values: KnowledgeBudgetValues,
+  triggers: { noting: number; consolidation: number }): number {
+  for (const [name, value] of Object.entries({ ...values, ...triggers }))
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`cannot derive shared material allowance: ${name} trigger or budget must be a nonnegative safe integer`);
+  const allowance = Math.ceil(values.global / 2) + Math.ceil(values.project / 2) + Math.ceil(values.session / 2)
+    + triggers.noting + triggers.consolidation;
+  if (!Number.isSafeInteger(allowance)) throw new Error("derived shared material allowance must be a safe integer");
+  return allowance;
+}
+
+/** Database policy owns the base window only. The shared allowance is derived from every
+ * maintenance trigger at runtime; never add a second fixed allowance to this sum. */
 export function deriveKnowledgeBudgets(values: KnowledgeBudgetValues, stored = false): KnowledgeBudgets {
   const label = (field: KnowledgeBudgetField) => `${field[0]!.toUpperCase()}${field.slice(1)} Knowledge budget`;
   for (const field of ["global", "project", "session"] as const) if (!Number.isSafeInteger(values[field]) || values[field] < 0)
     throw new Error(`${stored ? "stored Knowledge budget policy: " : ""}${label(field)} must be an exact nonnegative safe integer`);
   const applicable = values.global + values.project + values.session;
   if (!Number.isSafeInteger(applicable)) throw new Error(`${stored ? "stored Knowledge budget policy: " : ""}derived applicable Knowledge capacity must be a safe integer`);
-  const injection = applicable + KNOWLEDGE_BUDGET_ALLOWANCE;
-  if (!Number.isSafeInteger(injection)) throw new Error(`${stored ? "stored Knowledge budget policy: " : ""}derived injection and Dreamer processed-input capacity must be a safe integer`);
-  return { ...values, applicable, injection, dreamingProcessedInput: injection };
+  return { ...values, applicable, injection: applicable, dreamingProcessedInput: applicable };
 }
 
+/** Only the current per-pool processing state remains after 64d. */
 export const PROCESSING_SQL = `
-CREATE TABLE IF NOT EXISTS knowledge_weights (
-  commit_id INTEGER NOT NULL REFERENCES knowledge_revisions(id),
-  view_version TEXT NOT NULL, tokens INTEGER NOT NULL CHECK(tokens >= 0),
-  PRIMARY KEY(commit_id, view_version)
+CREATE TABLE IF NOT EXISTS knowledge_processed (
+  pool TEXT NOT NULL,
+  revision_id INTEGER NOT NULL REFERENCES knowledge_revisions(id),
+  run_id INTEGER NOT NULL REFERENCES runs(id),
+  PRIMARY KEY(pool, revision_id)
 );
-CREATE TABLE IF NOT EXISTS dreaming_completions (
-  run_id INTEGER PRIMARY KEY REFERENCES runs(id),
-  event_ids TEXT NOT NULL, result_ids TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS settled_knowledge_events (
-  event_id INTEGER PRIMARY KEY REFERENCES knowledge_revisions(id),
-  run_id INTEGER NOT NULL REFERENCES dreaming_completions(run_id)
-);
-CREATE TABLE IF NOT EXISTS processed_knowledge_versions (
-  commit_id INTEGER PRIMARY KEY REFERENCES knowledge_revisions(id),
-  run_id INTEGER NOT NULL REFERENCES dreaming_completions(run_id)
+CREATE TABLE IF NOT EXISTS knowledge_pool_state (
+  pool TEXT PRIMARY KEY,
+  last_over_size INTEGER NOT NULL CHECK(last_over_size >= 0),
+  last_over_budget INTEGER NOT NULL CHECK(last_over_budget >= 0),
+  residual_revisions TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS dreaming_ranges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id INTEGER NOT NULL REFERENCES sessions(id), branch TEXT NOT NULL,
   head_turn_id INTEGER NOT NULL REFERENCES turns(id),
-  anchor INTEGER NOT NULL REFERENCES knowledge_revisions(id),
-  completed_run INTEGER REFERENCES dreaming_completions(run_id),
-  origin_session_id INTEGER REFERENCES sessions(id), origin_entry_ids TEXT
+  anchor INTEGER REFERENCES knowledge_revisions(id),
+  completed_run INTEGER REFERENCES runs(id),
+  origin_session_id INTEGER REFERENCES sessions(id), origin_entry_ids TEXT,
+  pool TEXT,
+  claim_token TEXT,
+  closed_at TEXT,
+  pending_revisions TEXT NOT NULL DEFAULT '[]'
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_dreaming_open_range ON dreaming_ranges(session_id, branch) WHERE completed_run IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dreaming_open_range ON dreaming_ranges(session_id, branch) WHERE completed_run IS NULL AND closed_at IS NULL;
 CREATE TABLE IF NOT EXISTS dreaming_range_events (
   range_id INTEGER NOT NULL REFERENCES dreaming_ranges(id),
   event_id INTEGER NOT NULL REFERENCES knowledge_revisions(id), PRIMARY KEY(range_id,event_id)
 );
-CREATE TABLE IF NOT EXISTS dreaming_range_versions (
-  range_id INTEGER NOT NULL REFERENCES dreaming_ranges(id),
-  commit_id INTEGER NOT NULL REFERENCES knowledge_revisions(id), PRIMARY KEY(range_id,commit_id)
-);
-CREATE TABLE IF NOT EXISTS dreaming_family (
-  range_id INTEGER NOT NULL REFERENCES dreaming_ranges(id),
-  knowledge_id INTEGER NOT NULL REFERENCES knowledge(id), PRIMARY KEY(range_id,knowledge_id)
-);
 CREATE TABLE IF NOT EXISTS dreaming_run_ranges (
   run_id INTEGER PRIMARY KEY REFERENCES runs(id), range_id INTEGER NOT NULL REFERENCES dreaming_ranges(id)
 );
-CREATE TABLE IF NOT EXISTS knowledge_placement_validations (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  commit_id INTEGER NOT NULL REFERENCES knowledge_revisions(id),
-  old_owner TEXT NOT NULL, new_owner TEXT NOT NULL,
-  view_version TEXT NOT NULL, created_at TEXT NOT NULL
-);
 `;
 
-export interface KnowledgeEvent { id: number; knowledgeId: number; tokens: number; kind: "event" | "version" }
-export interface DreamingRange { id: number; sessionId: number; branch: string; headTurnId: number; anchor: number; eventIds: number[]; versionIds: number[]; knowledgeIds: number[]; origin: TriggerOrigin | null }
-
-/** Project selected current results back to caller-chosen exact roots over the prepared parent DAG. */
-export function currentResultsByRoot(current: readonly KnowledgeRevision[], parents: ReadonlyMap<number, readonly number[]>,
-  roots: ReadonlySet<number>): Map<number, Set<number>> {
-  const result = new Map([...roots].map(id => [id, new Set<number>()]));
-  if (!roots.size) return result;
-  for (const revision of current) {
-    const pending = [revision.id], visited = new Set<number>();
-    while (pending.length) {
-      const id = pending.pop()!;
-      if (visited.has(id)) continue;
-      visited.add(id);
-      result.get(id)?.add(revision.id);
-      pending.push(...(parents.get(id) ?? []));
-    }
-  }
-  return result;
+export interface PendingKnowledgeVersion {
+  revisionId: number;
+  knowledgeId: number;
+  pool: string;
+  tokens: number;
+  material: string;
+}
+export interface KnowledgePoolSize { pool: string; tokens: number; budget: number }
+export interface DueKnowledgePool extends KnowledgePoolSize {
+  pending: PendingKnowledgeVersion[];
+  reason: "pending" | "over-budget";
+}
+export interface DreamingRange {
+  id: number;
+  sessionId: number;
+  branch: string;
+  headTurnId: number;
+  /** Zero represents a budget-only range whose persisted anchor is NULL. */
+  anchor: number;
+  eventIds: number[];
+  origin: TriggerOrigin | null;
+  pool: string | null;
+  claimToken: string | null;
+  closedAt: string | null;
+  /** Every pending revision visible when this range froze, including the unselected remainder. */
+  pendingRevisionIds: number[];
 }
 
-export function changeWeight(store: Store, commitId: number, version = KNOWLEDGE_VIEW_VERSION, cache = true): number {
-  const cached = store.db.prepare("SELECT tokens FROM knowledge_weights WHERE commit_id = ? AND view_version = ?").get(commitId, version);
-  if (cached) return Number(cached.tokens);
-  const row = store.db.prepare("SELECT knowledge_id FROM knowledge_revisions WHERE id = ?").get(commitId);
-  if (!row) throw new Error(`Unknown knowledge event ${commitId}`);
-  const event = store.getKnowledgeRevision(Number(row.knowledge_id), commitId)!;
-  const revision = event.op === "archive" ? store.getKnowledgeRevision(event.knowledgeId, event.parentId!) : event;
-  if (!revision) throw new Error(`K${event.knowledgeId}@${commitId}: archive predecessor is unavailable; repair attribution before maintenance`);
-  const weight = tokens(renderKnowledge({ knowledge: store.getKnowledge(event.knowledgeId)!, revision }));
-  if (cache) store.db.prepare("INSERT OR IGNORE INTO knowledge_weights VALUES (?, ?, ?)").run(commitId, version, weight);
-  return weight;
-}
-
-export function pendingEvents(store: Store, path: KnowledgePath, cache = true,
-  snapshot = store.pathSnapshot(path), prepared?: ReturnType<Store["commitGraphInput"]>, preparedGraph?: CommitGraph): KnowledgeEvent[] {
-  const candidates = store.pendingKnowledgeRevisions(path);
-  const retained = new Set(store.db.prepare(`SELECT e.event_id FROM dreaming_range_events e JOIN dreaming_ranges r ON r.id = e.range_id
-    WHERE r.session_id = ? AND r.branch = ? AND r.completed_run IS NULL`).all(path.sessionId, path.branch ?? "").map(r => Number(r.event_id)));
-  const needsVersionProjection = !!prepared || !!store.db.prepare(`SELECT 1 WHERE
-    EXISTS (SELECT 1 FROM settled_knowledge_events) OR EXISTS (
-      SELECT 1 FROM knowledge_revisions k JOIN dreaming_run_ranges d ON d.run_id = k.run_id
-      JOIN dreaming_ranges r ON r.id = d.range_id LEFT JOIN processed_knowledge_versions p ON p.commit_id = k.id
-      WHERE r.completed_run IS NULL AND p.commit_id IS NULL)`).get();
-  const facts = new Map<number, boolean>(), commits = new Map<number, boolean>();
-  const applies = (revision: Parameters<Store["commitApplies"]>[0]) => retained.has(revision.id) ||
-    store.commitApplies(revision, path, snapshot, prepared?.metadata, facts, commits);
-  if (!needsVersionProjection) return candidates.filter(applies)
-    .map(revision => ({ id: revision.id, knowledgeId: revision.knowledgeId,
-      tokens: changeWeight(store, revision.id, KNOWLEDGE_VIEW_VERSION, cache), kind: "event" as const }));
-  const input = prepared ?? store.commitGraphInput();
-  const events = candidates.filter(applies);
-  const graph = preparedGraph ?? store.commitGraph(path, undefined, snapshot, input);
-  const eventIds = new Set(events.map(event => event.id));
-  const represented = new Set([...currentResultsByRoot(graph.current, input.parents, eventIds).values()].flatMap(ids => [...ids]));
-  const processed = store.processedKnowledgeVersions(graph.current.map(revision => revision.id));
-  const restored = graph.current.filter(revision => !processed.has(revision.id) && !represented.has(revision.id));
-  return [...events.map(revision => ({ id: revision.id, knowledgeId: revision.knowledgeId,
-      tokens: changeWeight(store, revision.id, KNOWLEDGE_VIEW_VERSION, cache), kind: "event" as const })),
-    ...restored.map(revision => ({ id: revision.id, knowledgeId: revision.knowledgeId,
-      tokens: changeWeight(store, revision.id, KNOWLEDGE_VIEW_VERSION, cache), kind: "version" as const }))]
-    .sort((left, right) => left.id - right.id || left.kind.localeCompare(right.kind));
-}
-
-/** Full block, never a truncated budget selection. Shared by placement and final certification. */
+/** Full block, never a truncated budget selection. Shared by budget reporting and Dreamer input. */
 export function processedBlock(values: KnowledgeWithRevision[], render = renderKnowledge): string {
   return renderKnowledgeBlock(KNOWLEDGE_CATEGORIES.flatMap(category => {
-    const members = values.filter(v => v.revision.category === category);
+    const members = values.filter(v => v.revision.category === category).sort((a, b) => a.revision.id - b.revision.id);
     return members.length ? [{ category, text: members.map(v => render(v)).join("\n") }] : [];
   }));
-}
-
-/** Include every stored branch and every terminal Turn, not an arbitrary executor subset. */
-export function projectionPaths(store: Store, onlySessionId?: number): KnowledgePath[] {
-  const paths: KnowledgePath[] = [];
-  const sessions = onlySessionId === undefined
-    ? store.db.prepare("SELECT id FROM sessions").all()
-    : store.db.prepare("SELECT id FROM sessions WHERE id = ?").all(onlySessionId);
-  for (const row of sessions) {
-    const sessionId = Number(row.id);
-    paths.push(store.knowledgePath(sessionId));
-    for (const branch of store.db.prepare("SELECT branch FROM source_paths WHERE session_id = ?").all(sessionId))
-      paths.push(store.knowledgePath(sessionId, String(branch.branch)));
-    for (const turn of store.db.prepare(`SELECT t.id FROM turns t WHERE t.session_id = ?
-      AND NOT EXISTS (SELECT 1 FROM turns c WHERE c.parent_turn_id = t.id)`).all(sessionId))
-      paths.push({ sessionId, headTurnId: Number(turn.id) });
-  }
-  return [...new Map(paths.map(path => [JSON.stringify([path.sessionId, path.branch ?? null, path.headTurnId ?? null]), path])).values()];
 }
 
 export function placementOwner(store: Store, value: Pick<KnowledgeWithRevision, "revision">, input?: ApplicabilityInput): string {
@@ -174,85 +114,4 @@ export function placementOwner(store: Store, value: Pick<KnowledgeWithRevision, 
   const projectId = sessionId == null ? undefined : input ? input.projects.get(sessionId) : store.getSession(sessionId)?.projectId;
   if (sessionId == null || projectId === undefined) throw new Error(`K${r.knowledgeId}@${r.id}: missing run-session scope attribution`);
   return r.scope === "session" ? `session:${sessionId}` : `project:${projectId}`;
-}
-
-export interface ProcessedPathProjection {
-  path: KnowledgePath;
-  values: KnowledgeWithRevision[];
-  pools: Map<string, Map<number, KnowledgeWithRevision>>;
-}
-
-export function processedProjection(store: Store, accepted: number[] = [], affected?: Set<string>,
-  prepared?: ReturnType<Store["commitGraphInput"]>, selectedPath?: KnowledgePath) {
-  const processed = new Set([...store.db.prepare("SELECT commit_id FROM processed_knowledge_versions").all().map(r => Number(r.commit_id)), ...accepted]);
-  const owners = new Map<number, string>();
-  const input = prepared ?? store.commitGraphInput();
-  // Historical certificates retain their owner even when an unprocessed successor hides them.
-  for (const revision of input.revisions) if (processed.has(revision.id))
-    owners.set(revision.id, placementOwner(store, { revision }, input.metadata));
-  const knowledge = new Map<number, KnowledgeWithRevision["knowledge"]>();
-  const candidates = selectedPath ? [selectedPath] : projectionPaths(store);
-  const paths = candidates.filter(path => selectedPath !== undefined || !affected || affected.has("global") ||
-    affected.has(`session:${path.sessionId}`) || affected.has(`project:${input.metadata.projects.get(path.sessionId)}`)).map(path => {
-    const values = store.commitGraph(path, undefined, undefined, input).current
-      .filter(r => r.op !== "archive" && processed.has(r.id)).map(revision => {
-        if (!knowledge.has(revision.knowledgeId)) knowledge.set(revision.knowledgeId, store.getKnowledge(revision.knowledgeId)!);
-        return { knowledge: knowledge.get(revision.knowledgeId)!, revision };
-      });
-    // Owner budgets are a partition of this path's current processed versions. Empty rows remain
-    // explicit for the three owners relevant to the path, so a Dreamer receipt never loses a line
-    // merely because maintenance archived the owner's last item.
-    const project = `project:${input.metadata.projects.get(path.sessionId)}`, session = `session:${path.sessionId}`;
-    const pools = new Map<string, Map<number, KnowledgeWithRevision>>([
-      ["global", new Map()], [project, new Map()], [session, new Map()],
-    ]);
-    for (const value of values) {
-      const owner = owners.get(value.revision.id)!;
-      if (!pools.has(owner)) pools.set(owner, new Map());
-      pools.get(owner)!.set(value.revision.id, value);
-    }
-    return { path, values, pools };
-  });
-  return { paths, owners };
-}
-
-/** Check either one frozen run path or every stored branch/terminal Turn used by Settings and
- * placement validation. Affected scopes restrict rejection only; they never erase the reported
- * projection of a supplied path. */
-export function checkProcessedScopes(store: Store, accepted: number[] = [], affected?: Set<string>, limits = store.knowledgeBudgets(),
-  path?: KnowledgePath) {
-  return checkProcessedProjection(processedProjection(store, accepted, affected, undefined, path), affected, limits);
-}
-
-/** Reuse the tentative placement's exact after projection; no reads or new applicability decisions. */
-export function checkProcessedProjection(projection: ReturnType<typeof processedProjection>, affected: Set<string> | undefined,
-  limits: KnowledgeBudgets) {
-  const { paths, owners } = projection;
-  const rendered = new Map<number, string>();
-  const render = (value: KnowledgeWithRevision) => {
-    if (!rendered.has(value.revision.id)) rendered.set(value.revision.id, renderKnowledge(value));
-    return rendered.get(value.revision.id)!;
-  };
-  const measured = new Map<string, number>();
-  const blockTokens = (values: KnowledgeWithRevision[]) => {
-    const key = JSON.stringify(values.map(value => value.revision.id));
-    if (!measured.has(key)) measured.set(key, tokens(processedBlock(values, render)));
-    return measured.get(key)!;
-  };
-  const totals: { scope: string; tokens: number; cap: number; path: KnowledgePath }[] = [];
-  for (const pathProjection of paths) {
-    for (const [scope, values] of pathProjection.pools) totals.push({ scope, path: pathProjection.path,
-      tokens: blockTokens([...values.values()]), cap: scope === "global" ? limits.global : scope.startsWith("project:") ? limits.project : limits.session });
-    totals.push({ scope: `applicable:S${pathProjection.path.sessionId}/${pathProjection.path.branch ?? ""}/T${pathProjection.path.headTurnId ?? ""}`,
-      path: pathProjection.path, tokens: blockTokens(pathProjection.values), cap: limits.applicable });
-  }
-  const relevant = (total: { scope: string; path: KnowledgePath }) => {
-    if (!affected) return true;
-    if (!total.scope.startsWith("applicable:")) return affected.has(total.scope);
-    return paths.find(pathProjection => pathProjection.path === total.path)?.values
-      .some(value => affected.has(owners.get(value.revision.id)!)) === true;
-  };
-  const pathLabel = (path: KnowledgePath) => `S${path.sessionId}/${path.branch ?? ""}/T${path.headTurnId ?? ""}`;
-  return { totals, problems: totals.filter(t => relevant(t) && t.tokens > t.cap)
-    .map(t => `${t.scope} on ${pathLabel(t.path)}: processed knowledge ${t.tokens} exceeds ${t.cap}; reduce the affected processed pool before retrying this operation`) };
 }

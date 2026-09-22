@@ -1,13 +1,11 @@
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
 import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath, KnowledgeWithRevision } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
-import type { freezeConsolidation, NearPair } from "./index.ts";
+import type { freezeConsolidation } from "./index.ts";
 
 export type ConsolidationDiagnostic =
   | { kind: "unsupported_numbers"; knowledge: string; numbers: string[] }
-  | { kind: "over_200_tokens"; knowledge: string; tokens: number }
-  | { kind: "unanswered_near"; pairs: NearPair[] }
-  | { kind: "uncited_facts" | "lost_citations"; facts: string[] };
+  | { kind: "over_200_tokens"; knowledge: string; tokens: number };
 const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 
 /** Validate the complete batch before writes, including every merge participant. */
@@ -50,18 +48,19 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
     const op = value.op;
     const allowed = dreaming ? ["update", "merge", "split", "archive"]
-      : run.kind === "consolidation" ? ["create", "update"] : ["create", "update", "merge", "archive"];
-    if (!allowed.includes(op)) errors.push(run.kind === "consolidation" && op === "archive"
-      ? "archive requires trusted Dreamer authority; update a continuing item or leave retirement to Dreamer"
-      : op === "split" || (op === "merge" && run.kind === "consolidation")
-        ? "structural operation requires trusted Dreamer authority" : "invalid op");
+      : run.kind === "consolidation" ? ["create"] : ["create", "archive"];
+    if (!allowed.includes(op)) errors.push(
+      ["update", "merge", "split", "archive"].includes(op)
+        ? `${op} belongs to the Dreamer and is not available to ${run.kind === "consolidation" ? "the Consolidator" : "manual memory"}`
+        : "invalid op");
     const structural = op === "split";
     const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []),
       ...(structural ? ["children"] : op !== "archive" ? ["text", "category", "scope", "topics"] : [])];
     // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
     // model still writing the old shape is told which two fields replace it.
     for (const key of Object.keys(value)) if (key === "because") errors.push('because: removed field; supply "reason" (a string) and "supports" (the commit\'s evidence)');
-      else if (!keys.includes(key)) errors.push(`${key}: inapplicable field`);
+      else if (!keys.includes(key)) errors.push(key === "absorb" && run.kind === "consolidation"
+        ? "absorb belongs to the Dreamer and is not available to the Consolidator" : `${key}: inapplicable field`);
     if (typeof value.reason !== "string" || !value.reason.trim()) errors.push("reason: expected a non-empty commit message");
     const target = (address: unknown) => {
       const match = typeof address === "string" ? /^K([1-9]\d*)(?:@([1-9]\d*))?$/.exec(address) : null;
@@ -88,7 +87,9 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       return { text: child.text!, category: child.category!, topics: labels(child.topics, errors) };
     }) : op === "split" ? (errors.push("split requires exactly two complete children"), []) : [];
     if (op !== "archive" && op !== "split") {
-      if (typeof value.text !== "string" || !value.text.length || /\b[FK]\d+\b/.test(value.text)) errors.push("text: expected non-empty text without fact or knowledge ids");
+      if (!(op === "merge" && value.text === undefined)
+          && (typeof value.text !== "string" || !value.text.length || /\b[FK]\d+\b/.test(value.text)))
+        errors.push("text: expected non-empty text without fact or knowledge ids");
       if (!KNOWLEDGE_CATEGORIES.includes(value.category!)) errors.push("invalid category");
       if (!KNOWLEDGE_SCOPES.includes(value.scope!)) errors.push("invalid scope");
     }
@@ -102,7 +103,8 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     if (!errors.length) operations.push(op === "create" ? { op: "create", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
       : op === "merge" ? { op: "merge", intoKnowledgeId: dest!.knowledgeId, intoBaseCommit: dest!.baseCommit, absorb, ...content }
       : op === "split" ? { op: "split", ...dest!, children, supports: content.supports, reason: content.reason, createdAt: run.createdAt }
-      : op === "archive" ? { op: "archive", ...dest!, supports: content.supports, reason: content.reason, createdAt: run.createdAt } : { op: "update", ...dest!, ...content });
+      : op === "archive" ? { op: "archive", ...dest!, supports: content.supports, reason: content.reason, createdAt: run.createdAt }
+      : { op: "update", ...dest!, ...content });
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });
   const declined = new Set<number>();
@@ -131,17 +133,14 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   }
   const diagnostics: ConsolidationDiagnostic[] = [];
-  const diagnosticLineageMemo = new Map<number, Set<number>>();
   for (const op of operations) {
     if (op.op === "archive") continue;
     const label = op.op === "create" ? op.handle : `K${op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId}`;
-    const inherited = op.op === "create" ? [] : op.op === "merge"
-      ? [op.intoBaseCommit, ...op.absorb.map(parent => parent.baseCommit)] : [op.baseCommit];
-    const grounding = new Set([...op.supports, ...inherited.flatMap(commit => {
-      const revision = store.knowledgeRevision(commit); return revision ? [...store.revisionGrounds(revision, diagnosticLineageMemo)] : [];
-    })]);
+    const grounding = new Set(op.supports);
     const cited = new Set([...grounding].flatMap(id => numbers(`${store.getFact(id)!.text}\n${store.getFact(id)!.quote ?? ""}`)));
-    const bodies = op.op === "split" ? op.children.map((child, index) => ({ label: `${label}/child${index + 1}`, text: child.text })) : [{ label, text: op.text }];
+    // A shorthand merge copies an existing body in the transaction; it submits no new text to audit.
+    const bodies = op.op === "split" ? op.children.map((child, index) => ({ label: `${label}/child${index + 1}`, text: child.text }))
+      : op.text === undefined ? [] : [{ label, text: op.text }];
     for (const body of bodies) {
       const unsupported = [...new Set(numbers(body.text))].filter(n => !cited.has(n));
       if (unsupported.length) diagnostics.push({ kind: "unsupported_numbers", knowledge: body.label, numbers: unsupported });
@@ -149,15 +148,4 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     }
   }
   return { results, operations, batch, diagnostics };
-}
-
-/** Called after application inside the same immediate transaction. Accounts recursively grounded facts
- * from the post-application active Knowledge set, including concurrent changes to untouched Knowledge,
- * plus the batch's explicit skipped facts. */
-export function accounting(store: Store, batch: MemoryBatch, range: { id: number; actor: string; category: string }[], path: KnowledgePath): ConsolidationDiagnostic[] {
-  const lineageMemo = new Map<number, Set<number>>();
-  const cited = new Set(store.listCurrentKnowledge(path).flatMap(k => [...store.revisionGrounds(k.revision, lineageMemo)]));
-  const skipped = new Set(batch.skipped.flatMap(s => "fact" in s ? [s.fact] : []));
-  const uncited = range.filter(f => (f.actor === "user" || f.category === "question") && !cited.has(f.id) && !skipped.has(`F${f.id}`));
-  return uncited.length ? [{ kind: "uncited_facts", facts: uncited.map(f => `F${f.id}`) }] : [];
 }

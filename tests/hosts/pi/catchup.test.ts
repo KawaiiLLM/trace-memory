@@ -22,7 +22,7 @@ function target(memory: Memory, options: { closed?: boolean; enabled?: boolean; 
   return { ...path, projectId: project.id, entryId: entry.id };
 }
 const tick = async (h: ReturnType<typeof host>) => { h.persist(reply("eligible completion")); await h.emit("agent_end"); await h.drain(); };
-const phaseOf = (conversation: { systemPrompt?: string }) => conversation.systemPrompt?.includes("### Second-round user message") ? "consolidation" : "noting";
+const phaseOf = (conversation: { systemPrompt?: string }) => conversation.systemPrompt?.includes("You are the Consolidator:") ? "consolidation" : "noting";
 function hold(h: ReturnType<typeof host>) {
   const releases: ((reply: Reply) => void)[] = [];
   h.provider(async () => new Promise(resolve => releases.push(resolve)));
@@ -397,10 +397,10 @@ test("17c 2026-09-08: failed own capacity admission leaves the slot free for a s
   try {
     // 27a: the allowance is the window minus the 10,000-token headroom (no 85% multiplier, no output
     // reserve), so 17,800 leaves 7,800 for input — above the small closed tail's updated fixed cost
-    // (about 6,000 after 40's Noter rules, about 6,300 with 61's shared reading block) and below that
-    // plus this session's own entry view, which 30 caps at 2,000 tokens. That is the split this case
-    // needs, at the sizes 30's profile produces.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 17800 };
+    // (about 6,000 after 40's Noter rules, reduced again when 64a removed Consolidator review
+    // framing) and below that plus this session's own entry view, which 30 caps at 2,000 tokens. That
+    // is the split this case needs at the current prompt size.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 17000 };
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);

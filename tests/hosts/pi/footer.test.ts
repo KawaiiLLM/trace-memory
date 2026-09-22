@@ -1,7 +1,7 @@
 // Ticket 24a "Footer counts and indicator" (parent 24, sections "Footer counts and cost" and
 // "Indicator semantics"). The enabled footer is
 //
-//     🧠 <indicator> notes: <pending entries>-><applicable facts> memory: <unconsolidated facts>-><unprocessed current Knowledge>=><processed current Knowledge> cost: $<today, every session>
+//     🧠 <indicator> notes: <pending entries>-><applicable facts> memory: <unconsolidated facts>-><changed current Knowledge>/<current Knowledge> cost: $<today, every session>
 //
 // The off footer is the compact `🧠 ○ off`. These
 // cases pin what each number means on a synthetic branch, that work stays pending until its business
@@ -28,25 +28,22 @@ const raw = (h: Host) => h.statuses.get("trace-memory") ?? "";
 /** The footer as its reader sees it: theme role, glyph and count strings, preserving unknown `?`. */
 const footer = (h: Host) => {
   const status = raw(h);
-  const parsed = /^🧠 (?:<(\w+)>)?([●○])(?:<\/\w+>)? (?:<dim>)?notes: (\S+)->(\S+) memory: (\S+)->(\S+)=>(\S+) cost: \$(\S+?)(?:<\/dim>)?$/.exec(status);
+  const parsed = /^🧠 (?:<(\w+)>)?([●○])(?:<\/\w+>)? (?:<dim>)?notes: (\S+)->(\S+) memory: (\S+)->(\S+)\/(\S+) cost: \$(\S+?)(?:<\/dim>)?$/.exec(status);
   if (!parsed) throw new Error(`unreadable footer: ${status}`);
-  const unprocessedKnowledge = parsed[6]!, processedKnowledge = parsed[7]!;
   return { status, role: parsed[1], glyph: parsed[2]!, entries: parsed[3]!, facts: parsed[4]!,
-    unconsolidated: parsed[5]!, unprocessedKnowledge, processedKnowledge,
-    knowledge: unprocessedKnowledge === "?" || processedKnowledge === "?" ? "?" : String(Number(unprocessedKnowledge) + Number(processedKnowledge)),
-    cost: parsed[8]! };
+    unconsolidated: parsed[5]!, changedKnowledge: parsed[6]!, knowledge: parsed[7]!, cost: parsed[8]! };
 };
 /** Independently enumerate the same selected units; exact processed state is checked per version only
  * in this test oracle, while production uses one bounded lookup. */
 const enumerated = (h: Host, branch = "main") => {
   const head = h.memory.store.knowledgePath(1, branch).headTurnId!;
-  const knowledge = h.memory.store.listCurrentKnowledge(h.memory.store.knowledgePath(1, branch, head));
-  const processedKnowledge = knowledge.filter(value => h.memory.store.isKnowledgeProcessed(value.revision.id)).length;
+  const knowledge = h.memory.store.currentKnowledge(h.memory.store.knowledgePath(1, branch, head));
+  const processed = h.memory.store.processedCurrentVersions(knowledge);
   return { entries: String(h.memory.pendingEntries(1, branch, head).length),
     facts: String(h.memory.store.listBranchFacts(1, branch, head).length),
     unconsolidated: String(h.memory.store.consolidationBatch(1, branch, head).length),
-    unprocessedKnowledge: String(knowledge.length - processedKnowledge), processedKnowledge: String(processedKnowledge),
-    knowledge: String(knowledge.length), cost: h.memory.spendSince(midnight()).toFixed(2) };
+    changedKnowledge: String(knowledge.length - processed.size), knowledge: String(knowledge.length),
+    cost: h.memory.spendSince(midnight()).toFixed(2) };
 };
 /** An existing refresh point, not a new one: `agent_end` is the boundary at which this turn's
  * evidence became importable. */
@@ -61,6 +58,18 @@ function facts(h: Host, count = 3) {
   if (!committed.ok) throw new Error(committed.problems.join("; "));
   return committed.facts;
 }
+function processPool(h: Host, pool: string, createdAt = time, response?: string) {
+  const store = h.memory.store, current = store.knowledgePath(1, "main");
+  const path = { sessionId: 1, branch: "main", headTurnId: current.headTurnId! };
+  const claim = store.acquireClaim(path, "dreaming", "footer-test");
+  if (!claim) throw new Error("dreaming claim unavailable");
+  const range = store.retainKnowledgePoolRange(path, pool, claim);
+  const executionId = store.beginExecution({ sessionId: 1, phase: "dreaming", head: range.anchor, origin: range.origin });
+  const run = store.bindDreamingRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
+    executionId, claim, createdAt, response });
+  store.completeKnowledgePoolRange(run, "success");
+  store.releaseClaim(claim);
+}
 /** Local midnight as the UTC instant the footer compares `runs.created_at` against (51). */
 const midnight = (now = new Date()) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 /** One synthetic run with an observed usage, charged to `sessionId` and executed by `executor`. */
@@ -70,15 +79,15 @@ function priced(h: Host, sessionId: number, executorSessionId: number, cost: num
   if (!committed.ok) throw new Error(committed.problems.join("; "));
 }
 
-test("footer chains facts to consolidate, unprocessed current Knowledge and processed current Knowledge", async () => {
+test("footer chains facts to consolidate, changed current Knowledge and all current Knowledge", async () => {
   const h = host(quiet);
   await h.turn(); // one Turn, two source entries, nothing noted and nothing extracted
   expect(footer(h)).toMatchObject({ ...enumerated(h), glyph: "○", role: "dim" });
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->0 memory: 0->0=>0 cost: $0.00</dim>");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->0 memory: 0->0/0 cost: $0.00</dim>");
 
   const written = facts(h, 3);
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->0=>0 cost: $0.00</dim>"); // committed facts are immediately eligible
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->0/0 cost: $0.00</dim>"); // committed facts are immediately eligible
   expect(footer(h)).toMatchObject(enumerated(h));
 
   // Knowledge cites a fact; citing is not consolidating, so the left number does not move.
@@ -87,14 +96,10 @@ test("footer chains facts to consolidate, unprocessed current Knowledge and proc
       category: "constraint", scope: "session", supports: [`F${written[0]!.id}`] }], skipped: [] });
   expect(knowledge).not.toContain("rejected:");
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->1=>0 cost: $0.00</dim>");
-  const current = h.memory.store.listCurrentKnowledge({ sessionId: 1, branch: "main", headTurnId: 1 })[0]!;
-  const range = h.memory.store.retainDreamingRange({ sessionId: 1, branch: "main", headTurnId: 1 }, [current.revision.id]);
-  const dream = h.memory.store.recordRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
-    outcome: "success", createdAt: time });
-  h.memory.store.completeDreaming(dream.id, [current.revision.id], [current.revision.id]);
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->1/1 cost: $0.00</dim>");
+  processPool(h, `session:${h.memory.store.getSession(1)!.id}`);
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->0=>1 cost: $0.00</dim>");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->0/1 cost: $0.00</dim>");
 
   // A Consolidation commit takes two of the three facts; a Noting commit takes both entries.
   const taken = h.memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, branch: "main", createdAt: time },
@@ -104,7 +109,7 @@ test("footer chains facts to consolidate, unprocessed current Knowledge and proc
     facts: [], entryIds: h.memory.store.sourcePath(1, "main", 1).map(e => e.id) });
   expect(noted.ok).toBe(true);
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->3 memory: 1->0=>1 cost: $0.00</dim>");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->3 memory: 1->0/1 cost: $0.00</dim>");
   expect(footer(h)).toMatchObject(enumerated(h));
 
   // 51: the footer's cost is today's spend across the whole database — another session's run made
@@ -120,10 +125,14 @@ test("footer chains facts to consolidate, unprocessed current Knowledge and proc
   expect(footer(h)).toMatchObject({ ...enumerated(h), cost: "10.24" });
   expect(h.memory.spend(1)).toMatchObject({ cost: 0.37, costs: { noting: 0.37, consolidation: 0, dreaming: 0, manual: 0 }, runs: { noting: 4 } }); // three priced runs and the unpriced facts() run
   expect(h.memory.spend(borrowed.id).cost).toBe(9.99);
-  // Current session carries the composition; headless `/trace` prints the same body.
-  const dreamed = h.memory.store.commitConsolidationRun({ run: { kind: "dreaming", sessionId: 1, branch: "main", createdAt: today,
-    response: JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } } }) }, operations: [] });
-  if (!dreamed.ok) throw new Error(dreamed.problems.join("; "));
+  // Current session carries the composition; headless `/trace` prints the same body. Create real
+  // pending work, then finish it through the current pool facade with observed Dreamer usage.
+  const extra = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, branch: "main", createdAt: today }, operations: [{
+    op: "create", handle: "$priced", author: "test", text: "priced Dreamer item", category: "constraint", scope: "session",
+    supports: [written[0]!.id], topics: [], reason: "exercise Dreamer spend", createdAt: today }] });
+  if (!extra.ok) throw new Error(extra.problems.join("; "));
+  processPool(h, "session:1", today,
+    JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } } }));
   await h.commands.get("trace")!.handler("", h.ctx);
   const panel = h.notices.at(-1)!;
   expect(panel).toContain("Cost: $0.8700");
@@ -145,7 +154,7 @@ test("24a: an in-flight batch is still pending, a failed run advances nothing, a
   release(notingFact(h.conversations[0]!)); await h.drain();
   // The business commit is what moves both queues: the entries are noted and the fact is now pending
   // for Consolidation. Noting decreasing one queue while increasing the other is the ordinary case.
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->1 memory: 1->0=>0 cost: $0.00</dim>");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->1 memory: 1->0/0 cost: $0.00</dim>");
 
   // A run that fails before its commit advances nothing at all.
   h.provider(async () => { throw new Error("offline"); });
@@ -271,8 +280,7 @@ test("an enabled refresh uses one path snapshot and one bounded processed-versio
       category: "mechanism" as const, scope: "session" as const, supports: [fact.id], topics: [], reason: "test", createdAt: time })) });
   expect(created.ok).toBe(true);
   const reads = countSourceReads(), builds = countPathBuilds(), bodies = countRunBodies();
-  const rendered = vi.spyOn(rendering, "renderKnowledge"), processed = vi.spyOn(Store.prototype, "processedKnowledgeVersions");
-  const pointLookup = vi.spyOn(Store.prototype, "isKnowledgeProcessed");
+  const rendered = vi.spyOn(rendering, "renderKnowledge"), processed = vi.spyOn(Store.prototype, "processedCurrentVersions");
   try {
     reads.reset(); builds.reset(); bodies.reset();
     await refresh(h);
@@ -280,11 +288,10 @@ test("an enabled refresh uses one path snapshot and one bounded processed-versio
     expect(builds.builds()).toBe(1);
     expect(bodies.chars()).toBe(0);
     expect(rendered).not.toHaveBeenCalled();
-    expect(pointLookup).not.toHaveBeenCalled();
     expect(processed).toHaveBeenCalledTimes(1);
     expect(processed.mock.calls[0]![0]).toHaveLength(6);
   } finally {
-    reads.restore(); builds.restore(); bodies.restore(); rendered.mockRestore(); processed.mockRestore(); pointLookup.mockRestore();
+    reads.restore(); builds.restore(); bodies.restore(); rendered.mockRestore(); processed.mockRestore();
   }
   expect(footer(h)).toMatchObject(enumerated(h));
 });
@@ -294,7 +301,7 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   h.setHeaderTimestamp("2099-01-01T00:00:00.000Z");
   await h.emit("session_start");
   expect(h.memory.store.getSession(1)).toBeNull();
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: ?->? memory: ?->?=>? cost: $0.00</dim>"); // 51: today's database-wide spend is readable without a session identity
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: ?->? memory: ?->?/? cost: $0.00</dim>"); // 51: today's database-wide spend is readable without a session identity
   await h.commands.get("trace")!.handler("", h.ctx);
   expect(h.notices.at(-1)).toContain("Session: None (no assistant reply)");
   expect(h.notices.at(-1)).toContain("Unknown / 1,000,000,000 (no session)");
@@ -312,7 +319,7 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
 
 test("24a/51: the indicator is one theme role per running phase, Noting wins over Consolidation, and no colour support prints the same line unpainted", async () => {
   const h = host({ "noting.triggerTokens": 1, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false });
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? consolidationReply() : notingFact(c));
+  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? consolidationReply() : notingFact(c));
   await h.turn(); // F1 recorded; idle again
   expect(footer(h)).toMatchObject({ glyph: "○", role: "dim" });
 
@@ -331,7 +338,7 @@ test("24a/51: the indicator is one theme role per running phase, Noting wins ove
   // Pi's native fallback: no theme support, the same line without colour.
   delete (h.ctx.ui as { theme?: unknown }).theme;
   await refresh(h);
-  expect(raw(h)).toMatch(/^🧠 [●○] notes: \d+->\d+ memory: \d+->\d+=>\d+ cost: \$\d+\.\d{2}$/);
+  expect(raw(h)).toMatch(/^🧠 [●○] notes: \d+->\d+ memory: \d+->\d+\/\d+ cost: \$\d+\.\d{2}$/);
   await h.commands.get("trace")!.handler("off", h.ctx);
   expect(raw(h)).toBe("🧠 ○ off");
 });

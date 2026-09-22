@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { call, piSession, say, submitted, usage } from "./native-fixture.ts";
 import { dreamerRecoveryExtension } from "./recovery-fixture.ts";
+import extension from "../../../src/hosts/pi/index.ts";
+import { TraceMemory } from "../../../src/core/api/index.ts";
 
 // Ticket 28 amendment 4: "Pi checks automatic compaction after `agent_end`, before prompt submission
 // and between tool rounds … tests cover all three triggers, not only `agent_end`." These cases run
@@ -22,16 +24,18 @@ const big = "word ".repeat(4_000);
 const worker = (body: unknown) => JSON.stringify(body).includes("# Dreamer");
 /** The real extension and a temporary DB. The hook seeds eligible knowledge beyond this envelope,
  * so every compact reaches Dreamer recovery, with small/below-threshold N/C left untouched. */
-const traceMemory = (dir: string) => ({
+const traceMemory = (dir: string, rawTokens = 10_000) => ({
   dbPath: join(dir, "trace.db"),
   "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000,
-  "compaction.factsTokens": 10_000, "compaction.rawTokens": 10_000, "compaction.overflowTokens": 50,
+  "compaction.factsTokens": 10_000, "compaction.rawTokens": rawTokens,
 });
-const session = async (options: { tools?: Parameters<typeof piSession>[0]["tools"]; contextWindow?: number; keepRecentTokens?: number; automatic?: boolean } = {}) => {
+const session = async (options: { tools?: Parameters<typeof piSession>[0]["tools"]; contextWindow?: number; keepRecentTokens?: number; automatic?: boolean; rawTokens?: number;
+  seedKnowledge?: boolean; memoryConfig?: Record<string, unknown> } = {}) => {
   const store = mkdtempSync(join(tmpdir(), "trace-memory-triggers-"));
   const notices: string[] = [];
   const observe = (context: any) => ({ ...context, ui: { ...context.ui, notify: (message: string) => notices.push(message) } });
-  const factory = (pi: any) => dreamerRecoveryExtension(join(store, "trace.db"))({ ...pi,
+  const selectedExtension = options.seedKnowledge === false ? extension : dreamerRecoveryExtension(join(store, "trace.db"));
+  const factory = (pi: any) => selectedExtension({ ...pi,
     on: (name: string, handler: any) => pi.on(name, (event: any, context: any) => handler(event, observe(context))),
     registerCommand: (name: string, command: any) => pi.registerCommand(name, { ...command,
       handler: (args: string, context: any) => command.handler(args, observe(context)) }),
@@ -41,7 +45,7 @@ const session = async (options: { tools?: Parameters<typeof piSession>[0]["tools
     // tiny session compact while the model still declares a window a memory worker can be admitted on
     // (27a's 10,000-token headroom).
     compaction: { enabled: options.automatic ?? true, keepRecentTokens: options.keepRecentTokens ?? 1, reserveTokens: 199_900 }, ...(options.tools ? { tools: options.tools } : {}),
-    env: { TRACE_MEMORY_CONFIG: JSON.stringify(traceMemory(store)) },
+    env: { TRACE_MEMORY_CONFIG: JSON.stringify({ ...traceMemory(store, options.rawTokens), ...options.memoryConfig }) },
     // A session created after this host's enrollment baseline is enrolled by default (18a), which is
     // what a fresh real session is; the baseline of a fresh agent directory would otherwise be `now`.
     prepare: ({ agentDir }) => writeFileSync(join(agentDir, "trace-memory-baseline.json"), JSON.stringify("2000-01-01T00:00:00.000Z")) });
@@ -70,8 +74,8 @@ test("28 amendment 4: the trigger after agent_end reaches the recovery sequence,
   try {
     scripted(f, [() => say("answered", usage(2_950, 2))]); // usage over the threshold: the post-run check compacts
     await f.session.prompt(`${big} FIRST`);
-    // The hook ran native Dreamer inside Pi's own compaction, and Pi wrote its exact result.
-    expect(f.sent.some(body => JSON.stringify(body).includes("# Dreamer"))).toBe(true);
+    // Pending knowledge is carried as current Knowledge; it does not force Dreamer recovery.
+    expect(f.sent.some(body => JSON.stringify(body).includes("# Dreamer"))).toBe(false);
     expect(compactions(f)).toHaveLength(1);
     expect(compactions(f)[0]!.details?.traceMemory).toBeTruthy(); // a custom replacement, not Pi's own summary
     await completedStatus(f);
@@ -101,7 +105,7 @@ test("28 amendment 4: the trigger before prompt submission reaches the recovery 
     expect(compactions(f)).toHaveLength(0); // and the aborted reply is skipped after `agent_end`
     const before = f.sent.length;
     await f.session.prompt("THIRD");
-    expect(f.sent.slice(before).some(body => JSON.stringify(body).includes("# Dreamer"))).toBe(true);
+    expect(f.sent.slice(before).some(body => JSON.stringify(body).includes("# Dreamer"))).toBe(false);
     expect(compactions(f)).toHaveLength(1);
     expect(compactions(f)[0]!.details?.traceMemory).toBeTruthy();
     await completedStatus(f);
@@ -126,18 +130,18 @@ test("28 amendment 4: the trigger between tool rounds reaches the recovery seque
     expect(compactions(f)).toHaveLength(1);
     expect(compactions(f)[0]!.details?.traceMemory).toBeTruthy();
     await completedStatus(f);
-    expect(f.sent.some(body => JSON.stringify(body).includes("# Dreamer"))).toBe(true);
+    expect(f.sent.some(body => JSON.stringify(body).includes("# Dreamer"))).toBe(false);
   } finally { f.dispose(); }
 });
 
-test("32f: manual compact reaches native Dreamer recovery and persists its exact carrier", async () => {
+test("64c: manual compact carries current knowledge without making pending knowledge required", async () => {
   const f = await session({ automatic: false });
   try {
     scripted(f, [() => say("answered", usage(10, 2))]);
     await f.session.prompt(`${big} FIRST`);
     expect(compactions(f)).toHaveLength(0);
     await f.session.compact();
-    expect(f.sent.some(worker)).toBe(true);
+    expect(f.sent.some(worker)).toBe(false);
     expect(compactions(f)).toHaveLength(1);
     expect(compactions(f)[0]!.details?.traceMemory).toBeTruthy();
     await completedStatus(f);
@@ -145,7 +149,7 @@ test("32f: manual compact reaches native Dreamer recovery and persists its exact
 });
 
 async function completedStatus(f: Awaited<ReturnType<typeof session>>, native = false) {
-  const expected = native ? "native delegation" : "bounded entry views (after recovery: Dreamer)";
+  const expected = native ? "native delegation" : "bounded entry views";
   expect(f.notices.filter(n => n.includes("compaction used"))).toHaveLength(1);
   expect(f.notices.at(-1)).toContain(`compaction used ${expected}`);
   await f.session.prompt("/trace");
@@ -153,12 +157,22 @@ async function completedStatus(f: Awaited<ReturnType<typeof session>>, native = 
 }
 
 test.each(["success", "failure", "cancel"] as const)("32f: real Pi native delegation terminal event (%s)", async terminal => {
-  const f = await session({ automatic: false });
+  const f = await session({ automatic: false, rawTokens: 1, seedKnowledge: false,
+    memoryConfig: { "noting.triggerTokens": 20, "consolidation.triggerTokens": 20 } });
+  const memoryWorker = (body: unknown) => /# (Noter|Consolidator|Dreamer)/.test(JSON.stringify(body));
+  const failed = () => new Response(JSON.stringify({ error: { message: "terminal provider failure" } }),
+    { status: 400, headers: { "content-type": "application/json" } });
   try {
-    f.script(() => say("answered", usage(10, 2)));
+    f.script(body => memoryWorker(body) ? failed() : say("answered", usage(10, 2)));
     await f.session.prompt(`${big} FIRST`);
+    await f.session.prompt("/trace stop");
+    const observer = TraceMemory(join(f.store, "trace.db"), async () => { throw new Error("observer cannot call a model"); });
+    try { for (const scope of ["global", "project", "session"] as const) observer.setKnowledgeBudget(scope, 0); }
+    finally { observer.close(); }
+    // Required Raw exceeds its base plus the derived 40-token allowance. Recovery is eligible,
+    // but its worker fails without a note commit; the real native summarizer must decide next.
     f.script((body, signal) => {
-      if (worker(body) || terminal === "failure") return new Response(JSON.stringify({ error: { message: "terminal provider failure" } }), { status: 400, headers: { "content-type": "application/json" } });
+      if (memoryWorker(body) || terminal === "failure") return failed();
       expect(f.notices.some(n => n.includes("compaction used"))).toBe(false);
       if (terminal === "cancel") {
         setTimeout(() => f.session.abortCompaction(), 0);

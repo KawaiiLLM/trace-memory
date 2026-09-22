@@ -1,7 +1,6 @@
 // Ticket 24b: the command surface and the menu. The direct forms are `/trace`, `/trace on`,
-// `/trace off`, `/trace catchup`, `/trace stop`, `/trace project <name>` and
-// `/trace mark K<n>[@<commit>] verified|flagged|clear` (parent 24, amendment 1); `enable`, `disable`,
-// `status` and `runs` are retired without aliases. No model is called anywhere in this file.
+// `/trace off`, `/trace catchup`, `/trace stop` and `/trace project <name>`; `enable`, `disable`,
+// `status`, `runs` and the removed mark feature have no aliases. No model is called in this file.
 import { afterEach, expect, test } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -92,7 +91,7 @@ test("24b: the retained forms work headless, and bare /trace prints status and t
   await command(h, "");
   expect(h.notices.at(-1)).toContain("Session: S1");
   expect(h.notices.at(-1)).toContain("/trace (menu; status when headless) | /trace on | /trace off | /trace catchup | /trace stop | " +
-    "/trace project <name> | /trace mark K<n>[@<commit>] verified|flagged|clear");
+    "/trace project <name>");
   expect(h.dialogs).toEqual([]);           // no dialog was opened without UI
   await command(h, "project headless-project");
   expect(h.notices.at(-1)).toContain("project: headless-project (mark)");
@@ -100,14 +99,13 @@ test("24b: the retained forms work headless, and bare /trace prints status and t
   expect(h.notices.at(-1)).toContain("Catchup:");
   await command(h, "stop");
   expect(h.notices.at(-1)).toContain("Trace Memory:");
-  // The mark form reaches core's own address handling (which rejects an address that does not exist)
-  // instead of the usage: the routing is what this asserts, not the knowledge.
-  await expect(command(h, "mark K1 verified")).rejects.toThrow("address does not exist");
+  await command(h, "mark K1 verified");
+  expect(h.notices.at(-1)).toContain("is not a command form");
   await command(h, "off"); expect(h.memory.status(1)).toContain("Disabled");
   await command(h, "on"); expect(h.memory.status(1)).toContain("Enabled");
 });
 
-test("24b: the menu has four entries and Current session keeps status, participation, runs, project and marks", async () => {
+test("24b: the menu has four entries and Current session keeps status, participation, runs and project", async () => {
   const h = setup();
   await h.turn();
   h.ctx.hasUI = true;
@@ -117,7 +115,7 @@ test("24b: the menu has four entries and Current session keeps status, participa
   const quiet = h.notices.length;
   h.answers.push("Current session", undefined);
   await command(h, "");
-  expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project", "Mark"]); // no Retry fork while not downgraded
+  expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project"]); // no Retry fork while not downgraded
   expect(h.dialogs.at(-1)!.title).toContain("S1 | On(default) | $0.0000");                      // status, with 24a's counts
   expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger (~tokens)");
   expect(h.notices).toHaveLength(quiet);                                          // cancelling wrote nothing
@@ -130,13 +128,6 @@ test("24b: the menu has four entries and Current session keeps status, participa
   await command(h, "");
   expect(h.notices.at(-1)).toContain("project: menu-project (mark)");
   expect(h.memory.store.getProject(h.memory.store.getSession(1)!.projectId)!.name).toBe("menu-project");
-  // Marks: address and kind, with core's own validation of both.
-  h.answers.push("Current session", "Mark", "not-an-address");
-  await command(h, "");
-  expect(h.notices.at(-1)).toContain("is not a knowledge address");
-  h.answers.push("Current session", "Mark", "K1", "verified");
-  await command(h, "");
-  expect(h.notices.at(-1)).toContain("address does not exist"); // core's rejection, reported not thrown
   expect(h.requests).toEqual([]);
 });
 
@@ -152,8 +143,6 @@ test("24b: cancelling any menu step changes nothing and makes no request", async
     ["Current session", "Off", false],             // the participation confirmation
     ["Current session", "Runs", undefined],        // the count input
     ["Current session", "Project", undefined],     // the name input
-    ["Current session", "Mark", undefined],        // the address input
-    ["Current session", "Mark", "K1", undefined],  // the kind selection
     ["Catch up"],                                  // nothing pending: reports, starts nothing
     ["Settings", undefined],                       // the preference list
     ["Settings", "Noter mode: fork (Default)", undefined], // the value selection

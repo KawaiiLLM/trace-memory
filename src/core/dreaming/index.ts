@@ -1,9 +1,8 @@
 import { loadPrompt } from "../prompts/load.ts";
 import { createHash } from "node:crypto";
-import { DreamingScopeAuditError, type Store, type RunInput } from "../store/index.ts";
-import { checkProcessedScopes, placementOwner, processedBlock } from "../store/processing.ts";
-import { renderFact, renderFactGroups, renderKnowledgeBlock, tokens } from "../render/index.ts";
-import { budgetRelevantKnowledge } from "../render/knowledge-selection.ts";
+import type { Store, RunInput, TaskClaim } from "../store/index.ts";
+import { deriveSharedMaterialAllowance, processedBlock } from "../store/processing.ts";
+import { budgetKnowledge, renderFact, renderFactGroups, renderKnowledgeBlock, tokens } from "../render/index.ts";
 import { dreamingToolDefinitions, type bindTools } from "../api/tools.ts";
 import type { AgentControl, RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
 import type { ConsolidateInput } from "../consolidation/index.ts";
@@ -18,270 +17,123 @@ export type DreamingResult = { automaticOff?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
   | { outcome: "success" | "failure" | "cancelled" | "conflict"; runId: number; problems: string[] });
-export class DreamingAdmissionBlocked extends Error {
-  readonly rangeId: number;
-  readonly signature: string;
-  constructor(rangeId: number, signature: string, message: string) {
-    super(message); this.rangeId = rangeId; this.signature = signature;
-  }
-}
 
 export interface DreamingAgentInput extends AgentControl {
   kind: "dreaming"; sessionId: number; branch: string; model: string; mode: "subagent";
   prompt: string; promptHash: string; text: string;
   material: { processed: string; changed: string; facts: string };
-  /** Admission-time snapshot only; later check receipts use the current database policy. */
   admittedProcessedInputCap: number;
   tools: import("../api/tools.ts").ToolDefinition[];
   acknowledgeRequest(): void;
   reportRequest(request: unknown): void;
-  /** Called by the native host only at a completed pass, never an intermediate tool turn. */
   passEnd(rounds: number): string | undefined;
   reportRounds(rounds: number): void;
 }
 
-export function freezeDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig,
-  origin: TriggerOrigin | null = store.triggerOrigin({ sessionId: input.sessionId, branch: input.branch, headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId }, input.triggerEntryId)) {
-  const retained = store.retryDreamingRange(store.knowledgePath(input.sessionId, input.branch, input.headTurnId));
-  const path = retained ? { sessionId: retained.sessionId, branch: retained.branch, headTurnId: retained.headTurnId }
-    : { sessionId: input.sessionId, branch: input.branch, headTurnId: input.headTurnId! };
-  const ownCommits = retained ? store.dreamingOwnCommits(retained.id) : undefined;
-  const admission = store.dreamingInputSnapshot(path, ownCommits);
-  const changedText = (value: ReturnType<typeof admission.input>) => `Changed knowledge (unsettled events):\n${value.text}`;
-  const selected = admission.select(retained ? [...retained.eventIds, ...retained.versionIds] : undefined, candidate => tokens(changedText(candidate)) <= 10000);
-  const ids = selected.eventIds, versionIds = selected.versionIds, changed = selected.input;
-  if (!ids.length && !versionIds.length && !changed.versions.length) {
-    if (!retained) throw new Error("Dreaming capacity: oldest change with its current body and framing exceeds 10000; left pending");
-    const ownBlocked = selected.blocked.filter(label => label.startsWith("retained task output "));
-    const message = selected.ownBlocked
-      ? `Dreaming capacity: retained task output ${ownBlocked.map(label => label.slice("retained task output ".length)).join(", ")} exceeds 10000 with its current body and framing; left pending`
-      : `Dreaming capacity: retained changes ${selected.blocked.join(", ") || "(none)"} each exceed 10000 with their current body and framing; left pending`;
-    throw new DreamingAdmissionBlocked(retained.id, selected.blockedSignature ?? "[]", message);
-  }
-  if (tokens(changedText(changed)) > 10000) throw new Error("Dreaming capacity: selected retained changed material exceeds 10000; left pending");
-  const processed = store.listCurrentKnowledge(path).filter(v => store.isKnowledgeProcessed(v.revision.id));
-  const processedInputCap = store.knowledgeBudgets().dreamingProcessedInput;
-  let old = processedBlock(processed), oldIds = processed.map(v => v.revision.id);
-  if (tokens(`Processed knowledge:\n${old}`) > processedInputCap) {
-    const query = [...changed.versions, ...changed.predecessors].map(v => v.revision.text).join("\n");
-    const selected = budgetRelevantKnowledge(processed, Math.max(0, processedInputCap - tokens("Processed knowledge:\n")), query,
-      undefined, "Dreamer processed input");
-    old = [renderKnowledgeBlock(selected.groups.filter(g => g.text)), ...selected.receipts].join("\n");
+/** Freeze exactly one due owner pool. Processing is scheduling state: references are the pool's
+ * current revisions outside the selected prefix; Changed contains only that frozen prefix. */
+export function freezeDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig, claim?: TaskClaim,
+  _origin: TriggerOrigin | null = store.triggerOrigin({ sessionId: input.sessionId, branch: input.branch,
+    headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId }, input.triggerEntryId)) {
+  if (!claim) throw new Error("Dreaming freeze requires its live claim");
+  const path = { sessionId: input.sessionId, branch: input.branch,
+    headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
+  const due = store.duePools(path)[0];
+  if (!due) throw new Error("No Knowledge pool is due");
+  const range = store.retainKnowledgePoolRange(path, due.pool, claim);
+  const frozenIds = new Set(range.eventIds);
+  const pending = due.pending.filter(value => frozenIds.has(value.revisionId));
+  const changed = ["Pending current knowledge:", ...pending.map(value => value.material)].join("\n");
+  if (tokens(changed) > due.budget)
+    throw new Error(`Dreaming pool ${due.pool} changed material exceeds its ${due.budget}-token budget including framing`);
+
+  const references = store.poolVersions(due.pool, path).filter(value => !frozenIds.has(value.revision.id));
+  const budgets = store.knowledgeBudgets();
+  const knowledgeCapacity = budgets.injection + deriveSharedMaterialAllowance(budgets,
+    { noting: config.noting.triggerTokens, consolidation: config.consolidation.triggerTokens });
+  if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Dreamer Knowledge capacity must be a safe integer");
+  // Changed and current references share one Knowledge window, not two independent allowances.
+  const processedInputCap = knowledgeCapacity - tokens(changed) - 1;
+  let old = processedBlock(references), oldIds = references.map(value => value.revision.id);
+  if (tokens(`Current pool knowledge outside this range:\n${old}`) > processedInputCap) {
+    const selected = budgetKnowledge(references, Math.max(0, processedInputCap - tokens("Current pool knowledge outside this range:\n")),
+      undefined, "Dreamer current reference input");
+    old = [renderKnowledgeBlock(selected.groups.filter(group => group.text)), ...selected.receipts].join("\n");
     oldIds = selected.commits;
   }
-  old = `Processed knowledge:\n${old}`;
-  if (tokens(old) > processedInputCap) throw new Error(`Dreaming processed input exceeds current ${processedInputCap}-token database-derived ceiling including framing`);
-  const facts = [...new Set(changed.versions.flatMap(v => v.revision.supports))].sort((a, b) => a - b).map(id => {
+  old = `Current pool knowledge outside this range:\n${old}`;
+  if (tokens(old) > processedInputCap)
+    throw new Error(`Dreaming current reference input exceeds ${processedInputCap} tokens including framing`);
+
+  const frozenValues = store.poolVersions(due.pool, path).filter(value => frozenIds.has(value.revision.id));
+  const facts = [...new Set(frozenValues.flatMap(value => value.revision.supports))].sort((a, b) => a - b).map(id => {
     const fact = store.getFact(id); if (!fact) throw new Error(`Missing direct support F${id}`); return fact;
   });
-  const times = store.factTurnTimes(facts);
-  const pathSnapshot = store.pathSnapshot(path);
-  const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, pathSnapshot);
-  const factText = (count: number) => ["Direct supporting facts:", ...renderFactGroups(facts.slice(0, count), f => renderFact(f, relations.get(f.id) ?? []), times),
-    ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count).map(f => `F${f.id}`).join(", ")}; expand with trace.`] : [])].join("\n");
+  const times = store.factTurnTimes(facts), snapshot = store.pathSnapshot(path);
+  const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot);
+  const factText = (count: number) => ["Direct supporting facts:",
+    ...renderFactGroups(facts.slice(0, count), fact => renderFact(fact, relations.get(fact.id) ?? []), times),
+    ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count).map(fact => `F${fact.id}`).join(", ")}; expand with trace.`] : [])].join("\n");
   let count = facts.length;
-  while (count && tokens(factText(count)) > 10000) count--;
+  while (count && tokens(factText(count)) > 10_000) count--;
   const direct = factText(count);
-  if (tokens(direct) > 10000) throw new Error("Dreaming direct fact receipts exceed 10000");
-  const material = { processed: old, changed: changedText(changed), facts: direct };
+  if (tokens(direct) > 10_000) throw new Error("Dreaming direct fact receipts exceed 10000");
+
+  const material = { processed: old, changed, facts: direct };
   const text = Object.values(material).join("\n\n");
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
       tokens(prompt) + tokens(JSON.stringify(dreamingToolDefinitions())) + tokens(text) > input.capacity.inputTokens))
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
-  const supplied = [...processed.filter(v => oldIds.includes(v.revision.id)), ...changed.versions];
-  const range = store.retainDreamingRange(path, ids, supplied.map(v => v.knowledge.id), origin, versionIds);
-  return { sessionId: path.sessionId, branch: path.branch, path, range, eventIds: ids, versionIds, changed, material, text,
-    profile: structuredClone(config.render), model: input.model ?? "session", mode: "subagent" as const,
-    readKnowledgeCommits: supplied.map(v => ({ knowledgeId: v.knowledge.id, commit: v.revision.id })),
-    commitBoundary: Number(store.db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM knowledge_revisions").get()!.id),
+  const supplied = [...references.filter(value => oldIds.includes(value.revision.id)), ...frozenValues];
+  return { sessionId: path.sessionId, branch: path.branch, path, range, pool: due.pool, frozenIds: [...frozenIds],
+    eventIds: [...frozenIds], changed: { versions: frozenValues }, material, text,
+    profile: structuredClone(config.render), model: input.model ?? "session", mode: "subagent" as const, claim,
+    readKnowledgeCommits: supplied.map(value => ({ knowledgeId: value.knowledge.id, commit: value.revision.id })),
     maxToolRounds: config.dreaming.maxToolRounds, admittedProcessedInputCap: processedInputCap };
 }
 
 export async function runDreaming(store: Store, frozen: ReturnType<typeof freezeDreaming>, runAgent: RunAgent,
   bind: (context: Parameters<typeof bindTools>[2], run: RunInput, review?: undefined, dreaming?: Parameters<typeof bindTools>[6]) => ReturnType<typeof bindTools>): Promise<DreamingResult> {
-  const { sessionId, branch, path, range, eventIds, readKnowledgeCommits } = frozen;
-  let rounds = 0, repaired = false;
+  const { sessionId, branch, path, range, readKnowledgeCommits } = frozen;
+  let rounds = 0;
   const run: RunInput = { kind: "dreaming", sessionId, branch, dreamingRangeId: range.id, model: frozen.model, mode: "subagent",
-    promptHash, rangeFrom: `K@${range.anchor}`, rangeTo: `K@${Math.max(range.anchor, ...range.eventIds, ...range.versionIds)}`, createdAt: new Date().toISOString() };
-  // Complete reads grant write handles only. Formal processing membership is the frozen changed
-  // versions. A processed reference remains outside that membership unless this exact authorized
-  // run legally maintains it inside the frozen family; then only the run's own output is added.
-  const admitted = new Set(readKnowledgeCommits.map(v => v.commit));
-  const formal = new Set(frozen.changed.versions.map(v => v.revision.id));
-  const eventResults = new Map(frozen.changed.eventResults.map(value => [value.eventId, value.commits]));
-  const inspect = () => {
-    let family = range.knowledgeIds;
-    const currentRunId = store.dreamingRunId(run);
-    if (currentRunId === undefined) throw new Error("trusted Dreamer run binding required");
-    // The bound run capability, claim and frozen-family write checks make every committed revision
-    // here a legal operation of this pass. Range membership or an actor label is not provenance.
-    const ownCandidates = store.listCommitsByRun(currentRunId).map(revision => revision.id);
-    const graphInput = store.commitGraphInput();
-    const pathSnapshot = store.pathSnapshot(path);
-    const graph = store.commitGraph(null, undefined, undefined, graphInput);
-    const candidates = [...new Set([...formal, ...ownCandidates])].sort((a, b) => a - b);
-    let certificationFailure: string | undefined;
-    let consumers: Map<number, number[]>;
-    try { consumers = store.certificationSuccessors(candidates, path, currentRunId, pathSnapshot, graphInput); }
-    catch (error) { certificationFailure = String(error); consumers = store.consumingSuccessors(candidates); }
-    const resultIds = certificationFailure ? [] : candidates.filter(id => consumers.get(id)!.length === 0);
-
-    // A transaction refusal is forgivable only when core returned an exact consumed base and the
-    // fresh graph still contains that consuming edge for a formal processing version.
-    const verifiedConflicts = binding.memory.competitiveConflicts.filter(conflict => formal.has(conflict.baseCommit) &&
-      conflict.successorCommits.some(id => consumers.get(conflict.baseCommit)?.includes(id)));
-    const memoryFailures = binding.memory.problems.length && (!binding.memory.competitiveConflicts.length ||
-      verifiedConflicts.length !== binding.memory.competitiveConflicts.length) ? binding.memory.problems : [];
-    const operationFailures = [...binding.toolProblems, ...memoryFailures];
-    const failures: string[] = [...operationFailures, ...(certificationFailure ? [certificationFailure] : [])];
-    try { family = store.validateDreamingRun(run, path, true).knowledgeIds; } catch (error) { failures.push(String(error)); }
-
-    // 59: a root result is accounted when consumed, when an own candidate descends from it, or when
-    // this run skipped it with a reason; an untouched result no longer accounts for itself.
-    const skipped = new Set(binding.memory.skipped.map(skip => Number(skip.knowledge.split("@")[1])));
-    const unaccountedRoots = new Set<number>();
-    const accounted = (id: number) => formal.has(id) && (consumers.get(id)!.length > 0 || skipped.has(id) ||
-      ownCandidates.some(own => graph.descendants(id).has(own)));
-    const accountedEventIds = eventIds.filter(eventId => {
-      const roots = eventResults.get(eventId) ?? [];
-      const missing = roots.filter(id => !accounted(id));
-      for (const id of missing) unaccountedRoots.add(id);
-      return roots.length > 0 && !missing.length;
-    });
-    // 59c: a frozen version obligation is its own root result and owes the same accounting.
-    const unaccountedVersionIds = frozen.versionIds.filter(id => !accounted(id));
-    for (const id of unaccountedVersionIds) unaccountedRoots.add(id);
-    if (accountedEventIds.length !== eventIds.length || unaccountedVersionIds.length)
-      failures.push(`unaccounted: ${[...unaccountedRoots].sort((a, b) => a - b).map(id => `K${store.knowledgeRevision(id)?.knowledgeId}@${id}`).join(", ") || eventIds.filter(id => !accountedEventIds.includes(id)).map(id => `K@${id}`).join(", ")}`);
-
-    // Preserve the sole neutral outcome only for a post-freeze external successor of reference-only
-    // processed material. Consumed formal inputs and filtered leaves are successful dispositions.
-    const pathGraph = store.commitGraph(path, undefined, pathSnapshot, graphInput);
-    const ownSet = new Set(ownCandidates);
-    const externalSuccessors: { knowledgeId: number; commit: number }[] = [];
-    for (const reference of [...admitted].filter(id => !formal.has(id))) {
-      const descendants = pathGraph.descendants(reference);
-      for (const revision of pathGraph.current) if (revision.id > frozen.commitBoundary && descendants.has(revision.id) &&
-          revision.id !== reference && !ownSet.has(revision.id) && !externalSuccessors.some(value => value.commit === revision.id))
-        externalSuccessors.push({ knowledgeId: revision.knowledgeId, commit: revision.id });
-    }
-
-    const affected = new Set(candidates.map(id => placementOwner(store, { revision: store.knowledgeRevision(id)! })));
-    const versions = candidates.map(commit => { const revision = store.knowledgeRevision(commit)!; return {
-      knowledgeId: revision.knowledgeId, commit, processed: store.isKnowledgeProcessed(commit),
-      successorCommits: consumers.get(commit),
-    }; });
-    const pending = store.pendingKnowledgeEvents(path, pathSnapshot, graphInput, pathGraph);
-    const target = store.getSession(path.sessionId);
-    if (!target) failures.push(`Dreamer target session ${path.sessionId} is unavailable`);
-    const relevantOwnerScopes = ["global", ...(target ? [`project:${target.projectId}`, `session:${target.id}`] : [])];
-    const finish = (scopes: ReturnType<typeof checkProcessedScopes>, currentBudgets: ReturnType<Store["knowledgeBudgets"]>): DreamingCheckResult => {
-      const finalFailures = [...failures, ...scopes.problems];
-      const problems = [...finalFailures, ...externalSuccessors.map(value =>
-        `K${value.knowledgeId}@${value.commit}: independently verified external successor of reference-only processed material after freeze; reading alone cannot certify it`)];
-      return { family, suppliedEventIds: eventIds, eventIds: accountedEventIds, retainedEventIds: range.eventIds,
-        candidateIds: candidates, resultIds,
-        consumedInputIds: [...formal].filter(id => candidates.includes(id) && consumers.get(id)!.length > 0),
-        pendingEventIds: pending.filter(value => value.kind === "event").map(value => value.id),
-        pendingVersionIds: pending.filter(value => value.kind === "version").map(value => value.id),
-        relevantOwnerScopes, versions,
-        verifiedConsumedBases: verifiedConflicts, ...scopes, externalSuccessors, operationFailures, failures: finalFailures, problems,
-        remainingRounds: Math.max(0, frozen.maxToolRounds - rounds), repairAvailable: !repaired,
-        capacities: { applicable: currentBudgets.applicable, injection: currentBudgets.injection,
-          dreamingProcessedInput: currentBudgets.dreamingProcessedInput },
-        admittedProcessedInputCap: frozen.admittedProcessedInputCap };
-    };
-    return { eventIds: accountedEventIds, resultIds, affected, externalSuccessors, finish };
-  };
+    promptHash, rangeFrom: `${frozen.pool}#${range.id}`, rangeTo: `${frozen.pool}#${range.id}`, createdAt: new Date().toISOString() };
+  let binding!: ReturnType<typeof bindTools>;
   const check = (): DreamingCheckResult => {
-    const state = inspect();
-    // Awaited pass-end and post-run checks always read current policy/projection; they are never
-    // reused across the provider await. Only the later final transaction shares its own snapshot.
-    const currentBudgets = store.knowledgeBudgets();
-    return state.finish(checkProcessedScopes(store, state.resultIds, state.affected, currentBudgets, path), currentBudgets);
+    const runId = store.dreamingRunId(run);
+    const ownRevisionIds = runId === undefined ? [] : store.listCommitsByRun(runId).map(revision => revision.id);
+    const excluded = new Set([...frozen.frozenIds, ...ownRevisionIds]);
+    const operationFailures = [...binding.toolProblems, ...binding.memory.problems];
+    return { pool: frozen.pool, frozenRevisionIds: frozen.frozenIds, ownRevisionIds,
+      pendingRevisionIds: store.pendingVersions(frozen.pool, path).map(value => value.revisionId).filter(id => !excluded.has(id)),
+      totals: store.poolSizes(path), operationFailures, problems: operationFailures };
   };
-  const binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
+  binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
     range: { from: run.rangeFrom!, to: run.rangeTo! }, readKnowledgeCommits }, run, undefined,
-    { path, check: () => renderDreamingCheckReceipt(check()),
-      // 59: a skip names a version of the frozen block or an own result of this run, not yet consumed
-      // by this run's own operations; a successor written elsewhere is the check's business, not the skip's.
-      skippable: commit => {
-        const own = new Set(store.listCommitsByRun(store.dreamingRunId(run)!).map(revision => revision.id));
-        if (!formal.has(commit) && !own.has(commit)) return "not a supplied handle of this run";
-        if (store.consumingSuccessors([commit]).get(commit)!.some(id => own.has(id))) return "already consumed by an operation of this run; a skip names an untouched handle";
-        return undefined;
-      } });
-  const passEnd = (used: number): string | undefined => {
-    rounds = used;
-    const checked = check();
-    if (!checked.problems.length || repaired || rounds >= frozen.maxToolRounds) return;
-    repaired = true;
-    return `System-generated Dreamer completion check (not evidence). One repair, ${checked.remainingRounds} tool rounds remain:\n${renderDreamingCheckReceipt({ ...checked, repairAvailable: false })}`;
-  };
+    { path, check: () => renderDreamingCheckReceipt(check()), skippable: () => undefined });
   let result: RunAgentResult;
-  try { result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt, promptHash,
-    text: frozen.text, material: frozen.material, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
-    tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest,
-    passEnd, reportRounds: (used: number) => { rounds = used; } } satisfies DreamingAgentInput); }
-  catch (error) { result = agentException(error); }
+  try {
+    result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt, promptHash,
+      text: frozen.text, material: frozen.material, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
+      tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest,
+      passEnd: (used: number) => { rounds = used; return undefined; }, reportRounds: (used: number) => { rounds = used; } } satisfies DreamingAgentInput);
+  } catch (error) { result = agentException(error); }
   binding.close();
   if (store.closed) return { outcome: "dropped" };
   const checked = check();
-  const problems = [...checked.problems, ...(result.outcome !== "success" ? [String(result.output ?? result.outcome)] : []),
+  const problems = [...checked.problems, ...(result.outcome === "success" ? [] : [String(result.output ?? result.outcome)]),
     ...(requestMissing(result) ? ["runAgent must return the exact provider request"] : [])];
   recordAttempt(run, result, "subagent", { toolCalls: binding.sequence, fetched: binding.fetched, material: frozen.material,
-    profile: frozen.profile, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
-    readKnowledgeCommits, commitBoundary: frozen.commitBoundary,
-    committed: binding.memory.allCommitted, skipped: binding.memory.skipped, check: checked, rounds, repaired, problems });
+    profile: frozen.profile, admittedProcessedInputCap: frozen.admittedProcessedInputCap, readKnowledgeCommits,
+    committed: binding.memory.allCommitted, skipped: binding.memory.skipped, check: checked, rounds, problems });
   const runId = store.dreamingRunId(run)!;
-  let finalCheck: DreamingCheckResult | undefined;
-  let finalization: { stage: "canonical-check" | "settlement"; error: string } | undefined;
-  if (result.outcome === "success" && !requestMissing(result) && !checked.failures.length) {
-    try {
-      return store.transaction(() => {
-        // Both successful completion and the sole non-penalizing business exception are decided
-        // against a coherent final graph. Persist audit + settlement together, before returning.
-        // Keep the returned value outside SQLite rollback so a rejection can retain the exact state
-        // that rejected it rather than the earlier optimistic check.
-        const state = inspect();
-        if (state.externalSuccessors.length) {
-          const currentBudgets = store.knowledgeBudgets();
-          finalCheck = state.finish(checkProcessedScopes(store, state.resultIds, state.affected, currentBudgets, path), currentBudgets);
-          if (finalCheck.failures.length) throw new Error(finalCheck.problems.join("; "));
-          run.response = JSON.stringify({ ...JSON.parse(run.response!), check: finalCheck, problems: finalCheck.problems });
-          store.updateRun(runId, { ...run, outcome: "conflict" });
-          store.settleDreamingConflict(run, finalCheck.problems.join("; "));
-          return { outcome: "conflict" as const, runId, problems: [...finalCheck.problems] };
-        }
-
-        // completeDreamingWithScopeAudit owns the only canonical processed projection in this
-        // transaction and exposes it only after enforcing it. Core then finishes the audit; any
-        // final graph/audit/settlement failure rolls back the provisional completion in the outer
-        // transaction. Rejected scope receipts carry blockers without certifying anything.
-        store.updateRun(runId, { ...run, outcome: "success" });
-        let audit: ReturnType<Store["completeDreamingWithScopeAudit"]>;
-        try {
-          audit = store.completeDreamingWithScopeAudit(runId, state.eventIds, state.resultIds);
-        } catch (error) {
-          if (error instanceof DreamingScopeAuditError) finalCheck = state.finish(error.audit.check, error.audit.budgets);
-          throw error;
-        }
-        finalCheck = state.finish(audit.check, audit.budgets);
-        if (finalCheck.failures.length) throw new Error(finalCheck.problems.join("; "));
-        run.response = JSON.stringify({ ...JSON.parse(run.response!), check: finalCheck, problems: finalCheck.problems });
-        store.updateRun(runId, { ...run, outcome: "success" });
-        return { outcome: "success" as const, runId, problems: [...finalCheck.problems] };
-      });
-    } catch (error) {
-      const message = String(error);
-      finalization = { stage: !finalCheck || finalCheck.failures.length ? "canonical-check" : "settlement", error: message };
-      if (finalCheck) for (const problem of finalCheck.problems) if (!problems.includes(problem)) problems.push(problem);
-      if (!problems.includes(message)) problems.push(message);
-    }
+  let outcome: "success" | "failure" | "cancelled" = result.outcome === "cancelled" ? "cancelled"
+    : result.outcome === "success" && !requestMissing(result) && !checked.problems.length ? "success" : "failure";
+  try { store.completeKnowledgePoolRange(run, outcome); }
+  catch (error) {
+    outcome = "failure";
+    problems.push(`pool completion rejected: ${String(error)}`);
+    store.updateRun(runId, { ...run, outcome, response: JSON.stringify({ ...JSON.parse(run.response!), problems }) });
   }
-  const outcome = result.outcome === "cancelled" ? "cancelled" : "failure";
-  run.response = JSON.stringify({ ...JSON.parse(run.response!), ...(finalCheck ? { check: finalCheck } : {}),
-    ...(finalization ? { finalization } : {}), problems });
-  store.updateRun(runId, { ...run, outcome });
   return { outcome, runId, problems };
 }

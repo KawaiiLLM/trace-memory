@@ -1,11 +1,12 @@
 import { expect, test } from "vitest";
-import { TraceMemory, tokens } from "../../../src/core/api/index.ts";
+import { TraceMemory, tokens, type RunAgent } from "../../../src/core/api/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { wholeTrace } from "../../trace-pages.ts";
+import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const time = "2026-09-01T00:00:00Z";
-function setup() {
-  const m = TraceMemory(":memory:", async () => { throw new Error("offline only"); }, {}, undefined, piSourceBlocks);
+function setup(agent: RunAgent = async () => { throw new Error("offline only"); }) {
+  const m = TraceMemory(":memory:", agent, {}, undefined, piSourceBlocks);
   const projectId = m.store.createProject({ name: 'alpha"beta', declaredBy: "mark" }).id;
   const sessionId = m.store.createSession({ host: "test", projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true }).id;
   const turn = m.store.appendTurn({ sessionId, kind: "turn", startedAt: time });
@@ -70,35 +71,57 @@ test("33: Turn facts use ownership rather than citation overlap; collections sor
   } finally { m.close(); }
 });
 
-test("33: default semantic preview completion grants no handle; itemBudget null completes K without unpaging", () => {
-  const { m, sessionId, turn } = setup();
+test("33: default semantic preview completion grants no handle; itemBudget null completes K without unpaging", async () => {
+  const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unexpected model call"); });
+  const { m, sessionId, turn } = setup(scenarios.agent);
   try {
     const tools = m.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" });
     const note = tools.find(t => t.name === "note")!, memory = tools.find(t => t.name === "memory")!, trace = tools.find(t => t.name === "trace")!;
     expect(note.execute({ facts: [{ category: "event", actor: "agent", status: "attempted", text: "Started the check.", source: ["T1#E1@actual"] }] })).not.toContain("rejected:");
-    const text = "A complete durable claim has its conditions and evidence. ".repeat(300);
-    expect(memory.execute({ operations: [{ op: "create", text, category: "mechanism", scope: "session", supports: ["F1"], reason: "Initial evidence", topics: [] }], skipped: [] })).not.toContain("rejected:");
-    // A new reader must earn the exact handle independently of the creator's write receipt.
-    const reader = m.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" });
-    const read = reader.find(t => t.name === "trace")!, write = reader.find(t => t.name === "memory")!;
-    const edit = () => write.execute({ operations: [{ op: "update", id: "K1@1", text: "Revised claim", category: "mechanism", scope: "session", supports: ["F1"], reason: "Correction", topics: [] }], skipped: [] });
-    const drain = (first: string) => {
-      let page = first, count = 0;
-      for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
-        expect(++count).toBeLessThan(100);
-        expect(edit()).toContain("knowledge was not read");
-        for (const address of ["K1@2..", "T1#E0", "F9-F1"]) expect(read.execute({ address, cursor })).toContain("rejected:");
-        page = read.execute({ address: `cursor=${cursor}` });
-        expect(tokens(page)).toBeLessThanOrEqual(2000);
-      }
-      return page;
-    };
-    drain(read.execute({ address: "K1@1" }));
-    expect(edit()).toContain("knowledge was not read");
-    drain(read.execute({ address: "K1@1", itemBudget: null }));
-    expect(edit()).not.toContain("rejected:");
-    expect(wholeTrace(m, "K1@1..2", { full: true })).toBe(wholeTrace(m, "K1@1..K1@2", { full: true }));
-    expect(m.trace("K1@1..2", { itemBudget: 200, pageBudget: null })).toContain("characters truncated");
+    const text = "A complete durable claim has its conditions and evidence. ".repeat(500);
+    expect(memory.execute({ operations: [{ op: "create", text, category: "mechanism", scope: "project", supports: ["F1"], reason: "Initial evidence", topics: [] }], skipped: [] })).not.toContain("rejected:");
+    const path = { sessionId, headTurnId: turn.id, branch: "main" };
+    const firstTrigger = createDreamerTrigger(m, path, 1, 1, "project");
+    let currentCommit = 0;
+    const settled = await scenarios.run(m, path, input => {
+      const request = { fixture: "make read target historical" }; input.reportRequest(request);
+      const trace = input.tools.find(t => t.name === "trace")!, write = input.tools.find(t => t.name === "memory")!;
+      trace.execute({ address: "K1@1", itemBudget: null });
+      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: "K1@1", text: "Current replacement", category: "mechanism", scope: "project",
+        supports: ["F1"], reason: "Make the large revision historical for the read-ledger test.", topics: [] },
+      { op: "archive", id: `K${firstTrigger.knowledgeId}@${firstTrigger.commit}`, supports: ["F1"], reason: "Retire the initial fixture trigger." }], skipped: [] }));
+      currentCommit = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1).commit;
+      return { outcome: "success", output: "settled", request };
+    });
+    if (settled.outcome !== "success") throw new Error(JSON.stringify(settled));
+    const trigger = createDreamerTrigger(m, path, 1, 2, "project");
+    const result = await scenarios.run(m, path, input => {
+      const request = { fixture: "unified source pagination", trigger }; input.reportRequest(request);
+      const read = input.tools.find(t => t.name === "trace")!, write = input.tools.find(t => t.name === "memory")!;
+      const edit = () => write.execute({ operations: [{ op: "update", id: "K1@1", text: "Revised claim", category: "mechanism", scope: "project", supports: ["F1"], reason: "Correction", topics: [] }],
+        skipped: [{ knowledge: `K${trigger.knowledgeId}@${trigger.commit}`, because: "The explicit later-run trigger is retired after the ledger assertion." }] });
+      const drain = (first: string) => {
+        let page = first, count = 0;
+        for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
+          expect(++count).toBeLessThan(100);
+          expect(edit()).toContain("knowledge was not read");
+          for (const address of [`K1@${currentCommit}..`, "T1#E0", "F9-F1"]) expect(read.execute({ address, cursor })).toContain("rejected:");
+          page = read.execute({ address: `cursor=${cursor}` });
+          expect(tokens(page)).toBeLessThanOrEqual(2000);
+        }
+        return page;
+      };
+      drain(read.execute({ address: "K1@1" }));
+      expect(edit()).toContain("knowledge was not read");
+      drain(read.execute({ address: "K1@1", itemBudget: null }));
+      expect(edit()).toContain(`base is not the latest effective applicable revision; current: K1@${currentCommit}`);
+      read.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
+      write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: ["F1"], reason: "Retire the explicit fixture trigger." }], skipped: [] });
+      return { outcome: "success", output: "read ledger checked", request };
+    });
+    if (result.outcome !== "success") throw new Error(JSON.stringify(result));
+    expect(wholeTrace(m, `K1@1..${currentCommit}`, { full: true })).toBe(wholeTrace(m, `K1@1..K1@${currentCommit}`, { full: true }));
+    expect(m.trace(`K1@1..${currentCommit}`, { itemBudget: 200, pageBudget: null })).toContain("characters truncated");
     expect(trace.execute({ address: "K1", pageBudget: null })).toContain("internal-only");
   } finally { m.close(); }
 });

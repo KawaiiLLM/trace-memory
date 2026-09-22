@@ -68,7 +68,7 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
         throw new Error("Conflict settlement requires the core Dreamer termination authority");
     }
     if (outcome === "success" && (run.outcome !== "success" || (row.phase === "dreaming" &&
-        !store.db.prepare("SELECT 1 FROM dreaming_completions WHERE run_id = ?").get(runId))))
+        !store.db.prepare("SELECT 1 FROM dreaming_ranges WHERE completed_run = ? AND closed_at IS NOT NULL").get(runId))))
       throw new Error("Execution success requires established business completion");
     const now = new Date().toISOString();
     store.db.prepare("UPDATE task_executions SET outcome = ?, terminal_run = ?, reason = ?, updated_at = ? WHERE id = ?")

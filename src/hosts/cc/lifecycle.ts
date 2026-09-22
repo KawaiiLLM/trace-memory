@@ -133,12 +133,15 @@ export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: Cc
         throw new Error("CC selected projection changed during SessionEnd close");
       const session = store.getSession(current.coreSessionId);
       if (!session || session.host !== coreHostOf(current)) throw new Error("bound core session identity changed during SessionEnd close");
+      const head = store.getSourceEntry(selectedEntryIds.at(-1)!)?.turnId;
+      if (head === undefined) throw new Error("CC selected projection has no persisted foreground head");
       // 63: another lineage of the same core session (this one's `clearedFrom` parent, or a lineage
       // cleared from it) may still have a live executor; this close releases only its own and the
       // core session stays open until the last live lineage ends.
       const liveSibling = siblingLineages(config, current.coreSessionId, nativeSessionId)
         .some(sibling => sibling.executor && executorLiveness(sibling.executor) !== "dead");
       store.transaction(() => {
+        store.setCurrentPath(current.coreSessionId!, current.branch, head, nativeSessionId);
         store.releaseExecutor(expected.executorId);
         if (session.closedAt === null && !liveSibling) store.closeSession(current.coreSessionId!);
       });

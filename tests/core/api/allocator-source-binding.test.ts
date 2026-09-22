@@ -51,8 +51,14 @@ for (const count of [1, 40]) test(`coverage SQL count is bounded per batch: ${co
     spy.mockClear();
     f.compact();
     const queries = spy.mock.calls.filter(([sql]) => /fact_sources|json_extract\(content/.test(sql));
+    const operations = queries.map(([sql]) => String(sql).replace(/\s+/g, " ").trim());
     process.stdout.write(`coverage SQL: ${count} facts, batch=2, compact related=${queries.length}\n`);
-    expect(queries.length).toBe(3);
+    expect(operations).toHaveLength(2);
+    expect(operations).toEqual([
+      expect.stringContaining("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?))"),
+      expect.stringContaining("FROM fact_sources b JOIN facts f ON f.id = b.fact_id WHERE f.id IN (SELECT value FROM json_each(?))"),
+    ]);
+    expect(operations.some(sql => /WHERE (?:f\.)?id = \?$/.test(sql))).toBe(false);
     spy.mockRestore();
   } finally { f.m.close(); }
 });

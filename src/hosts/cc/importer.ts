@@ -367,9 +367,12 @@ export class CcProjection {
             // 63: the child's path continues the parent's persisted path; before the first child entry the head is the compaction Turn.
             const inherited = this.binding.clearedFrom?.inheritedEntryIds ?? [];
             if (inherited.length && !inherited.every((id, index) => selectedEntryIds[index] === id)) selectedEntryIds = [...inherited, ...selectedEntryIds];
-            this.memory.selectEntries(sessionId, branch, selectedEntryIds);
             headTurnId = [...selectedNodes].reverse().find(node => node.turnId !== undefined)?.turnId ?? this.lastResult?.headTurnId
               ?? this.binding.clearedFrom?.compactionTurnId ?? null;
+            this.memory.store.transaction(() => {
+              this.memory.selectEntries(sessionId, branch, selectedEntryIds);
+              if (headTurnId !== null) this.memory.store.setCurrentPath(sessionId, branch, headTurnId, this.binding.nativeSessionId);
+            });
           }
         }
       }

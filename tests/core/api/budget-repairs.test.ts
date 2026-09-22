@@ -6,39 +6,41 @@ import { sourceSeededMemory, tokens, renderEntry, type ConsolidationAgentInput, 
 import type { Fact } from "../../../src/core/model/index.ts";
 import { renderFact } from "../../../src/core/render/index.ts";
 import { budgetMaterial, notingText, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
-import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
+import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
+import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 function seeded(config: Record<string, unknown> = {}) {
   const calls: (ConsolidationAgentInput | NotingAgentInput)[] = [];
   // 26a: a Noting run completes its batch by submitting; an empty one is `{facts: []}`.
-  const m = sourceSeededMemory(":memory:", async raw => { const input = raw as ConsolidationAgentInput | NotingAgentInput; calls.push(input);
+  const fallback = async (raw: unknown) => { const input = raw as ConsolidationAgentInput | NotingAgentInput; calls.push(input);
     if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-    return { outcome: "success", output: "", request: { probe: true } }; }, config);
+    return { outcome: "success" as const, output: "", request: { probe: true } }; };
+  const scenarios = new AdmittedDreamerScenarios(fallback);
+  const m = sourceSeededMemory(":memory:", scenarios.agent, config);
   const p = m.store.createProject({ name: "review", declaredBy: "mark" });
   const s = m.store.createSession({ host: "review", startedAt: "2026-09-08", firstReplyAt: "2026-09-08", projectId: p.id, enrollmentChoice: true });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });
   const tools = m.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "observation", actor: "user", text, source: [`T${t.id}#user`], ...extra }] });
   const knowledge = (text: string) => tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
-  return { m, calls, s, t, note, knowledge };
+  return { m, calls, s, t, note, knowledge, scenarios };
 }
 
-test("review 2026-09-08: mandatory reminders over the episodic budget reduce the Consolidation batch oldest-first and re-freeze; the excluded fact stays pending", async () => {
+test("Consolidation framing over the episodic budget reduces the batch oldest-first and leaves excluded facts pending", async () => {
   const f = seeded();
   try {
     expect(f.note("Original evidence")).toContain("ok: F1");
     for (let i = 0; i < 20; i++) expect(f.knowledge(`Rule ${i}: ` + "word ".repeat(1000))).toContain("committed");
-    // F2 negates F1, which twenty knowledge items cite: with F2 selected the review cues alone exceed
-    // the episodic budget, so the batch shrinks to F1 and F2 waits for its own turn.
+    // F2 negates F1, which twenty knowledge items cite. With 64a's review cues removed, that
+    // knowledge no longer consumes the episodic allowance and both facts fit in one batch.
     expect(f.note("Withdraw the original evidence " + "word ".repeat(1000), { negate: [["F1", "strong"]] })).toContain("ok: F2");
     const r = await f.m.consolidate({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
     expect(r.outcome).toBe("success");
     const input = f.calls[0] as ConsolidationAgentInput;
-    expect(input.range.facts.map(fact => fact.id)).toEqual([1]);
-    expect(input.material.reminders).toEqual([]);
+    expect(input.range.facts.map(fact => fact.id)).toEqual([1, 2]);
     expect(tokens(input.text)).toBeLessThanOrEqual(30000);
     expect(input.material.receipts.some(receipt => receipt.includes("overage"))).toBe(false);
-    expect(f.m.store.consolidationBatch(f.s.id, "main", f.t.id).map(fact => fact.id)).toEqual([2]); // still pending, never marked
+    expect(f.m.store.consolidationBatch(f.s.id, "main", f.t.id)).toEqual([]);
   } finally { f.m.close(); }
 });
 
@@ -55,7 +57,7 @@ test("review 2026-09-08: a Noting batch that cannot fit the episodic budget stay
 test("34c: a knowledge cap that cannot hold a complete foreground item emits nothing", () => {
   const f = seeded();
   try {
-    setKnowledgeInjection(f.m, 5_000);
+    setKnowledgeCapacity(f.m, 5_000);
     f.note("Evidence");
     expect(f.knowledge("A complete rule " + "word ".repeat(6_000))).toContain("committed");
     expect(f.m.inject(f.s.id)).toBe("");
@@ -119,7 +121,7 @@ test("review 2026-09-08, as 30 left it: a view that cannot hold its labels deleg
 test("review 2026-09-08: the Receipts heading is charged to the budgets it is emitted under", () => {
   const f = seeded();
   try {
-    setKnowledgeInjection(f.m, 5_000);
+    setKnowledgeCapacity(f.m, 5_000);
     f.note("Evidence");
     expect(f.knowledge("word ".repeat(6_000))).toContain("committed");
     // 34c foreground publication emits no omission-only block when no complete item fits.
@@ -157,16 +159,28 @@ test("review 2026-09-08: Noting runs the prepared material the capacity negotiat
   } finally { f.m.close(); }
 });
 
-test("review 2026-09-08: topic sets that join to the same text are still different sets in the diff and the knowledge line", () => {
+test("review 2026-09-08: topic sets that join to the same text are still different sets in the diff and the knowledge line", async () => {
   const f = seeded();
   try {
     expect(f.note("Use SQLite")).toContain("ok: F1");
     const memory = f.m.tools({ kind: "manual", sessionId: f.s.id, branch: "main", currentTurnId: f.t.id }).find(tool => tool.name === "memory")!;
     const content = { text: "Use SQLite", category: "constraint", scope: "project", supports: ["F1"], reason: "Classify this conclusion." };
     expect(memory.execute({ operations: [{ op: "create", ...content, topics: ["a, b"] }], skipped: [] })).toContain("committed");
-    f.m.tools({ kind: "manual", sessionId: f.s.id, branch: "main", currentTurnId: f.t.id })[0]!.execute({ address: "K1@1" });
-    expect(memory.execute({ operations: [{ op: "update", id: "K1@1", ...content, topics: ["a", "b"] }], skipped: [] })).toContain("committed");
-    expect(f.m.trace("K1@1..K1@2")).toContain('topics: ["a, b"] -> ["a","b"]');
+    const entries = f.m.store.sourcePath(f.s.id, "main", f.t.id);
+    f.m.selectEntries(f.s.id, "main", entries.map(entry => entry.id));
+    const path = { sessionId: f.s.id, branch: "main", headTurnId: f.t.id, triggerEntryId: entries.at(-1)!.id };
+    createDreamerTrigger(f.m, path, 1, 1, "project");
+    let updatedCommit = 0;
+    const result = await f.scenarios.run(f.m, path, input => {
+      const request = { fixture: "topic-set diff" }; input.reportRequest(request);
+      const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+      trace.execute({ address: "K1@1", itemBudget: null });
+      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: "K1@1", ...content, topics: ["a", "b"] }], skipped: [] }));
+      updatedCommit = receipt.committed[0].commit;
+      return { outcome: "success", output: "updated", request };
+    });
+    expect(result.outcome).toBe("success");
+    expect(f.m.trace(`K1@1..K1@${updatedCommit}`)).toContain('topics: ["a, b"] -> ["a","b"]');
     expect(f.m.trace("K1@1")).toContain('topics: ["a, b"]');
   } finally { f.m.close(); }
 });

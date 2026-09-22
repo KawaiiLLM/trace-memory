@@ -2,17 +2,24 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { wholeTrace } from "../../trace-pages.ts";
 import { readFileSync } from "node:fs";
 import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION } from "../../source-fixture.ts";
-import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
+import { setKnowledgeCapacity, setKnowledgeInjection, setSharedAllowance } from "../../knowledge-budget-fixture.ts";
+import { deriveSharedMaterialAllowance } from "../../../src/core/api/index.ts";
+import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/facts.json", import.meta.url), "utf8"));
 const rawFixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/turns.json", import.meta.url), "utf8"));
 const time = "2026-09-06T00:00:00Z";
-let memory: ReturnType<typeof sourceSeededMemory>, calls: number;
+let memory: ReturnType<typeof sourceSeededMemory>, calls: number, admittedScenarios: AdmittedDreamerScenarios;
 // 26a: a Noting run completes its batch by submitting; with nothing to record it sends `{facts: []}`.
-beforeEach(() => { calls = 0; memory = sourceSeededMemory(":memory:", async raw => { calls++;
-  const input = raw as { kind: string; tools: { name: string; execute(input: unknown): string }[] };
-  if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-  return { outcome: "success", output: [], request: {} }; }); });
+beforeEach(() => { calls = 0;
+  const fallback = async (raw: unknown) => { calls++;
+    const input = raw as { kind: string; tools: { name: string; execute(input: unknown): string }[] };
+    if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    return { outcome: "success" as const, output: [], request: {} };
+  };
+  admittedScenarios = new AdmittedDreamerScenarios(fallback);
+  memory = sourceSeededMemory(":memory:", admittedScenarios.agent);
+});
 afterEach(() => memory.close());
 function session(projectId?: number, declaration: "marker" | "undeclared" = "marker") {
   const project = projectId ?? memory.store.createProject({ name: "mapC", declaredBy: "marker" }).id;
@@ -49,16 +56,19 @@ const charged = (result: ReturnType<typeof memory.compact>) => {
 };
 /** Tests set independent bases; a zero allowance isolates each base boundary. */
 const setWindows = (knowledge: number, facts: number, raw: number) => {
-  setKnowledgeInjection(memory, Math.max(5_000, Math.max(1, knowledge)));
-  Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw, overflowTokens: 0 });
+  setKnowledgeCapacity(memory, Math.max(2, knowledge));
+  Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw });
 };
 const setRequiredWindows = (value: ReturnType<typeof charged>, factSpare = 0) =>
   setWindows(value.knowledge, value.required.facts + factSpare, value.required.raw);
 const defaultWindows = () => {
-  setKnowledgeInjection(memory, Math.max(5_000, 20_000));
+  memory.setKnowledgeBudget("global", 4_000);
+  memory.setKnowledgeBudget("project", 15_000);
+  memory.setKnowledgeBudget("session", 1_000);
+  memory.config.noting.triggerTokens = 10_000;
+  memory.config.consolidation.triggerTokens = 5_000;
   memory.config.compaction.factsTokens = 10_000;
   memory.config.compaction.rawTokens = 10_000;
-  memory.config.compaction.overflowTokens = 10_000;
 };
 
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
@@ -90,12 +100,12 @@ test("visibility includes global, own project and own session only, excluding in
   }
 });
 
-test("category order, chronological ties, whole trailing category omissions; lines are never escaped", () => {
+test("64c category display and commit recency retain whole newer items; lines are never escaped", () => {
   const { s, f } = populated();
   const ids = ["reference", "term", "mechanism", "goal", "dispute", "open"].map((c) => knowledge(s.id, f.id, c as "goal"));
   const earlier = knowledge(s.id, f.id, "constraint", "project", "<&> " + "word ".repeat(6_000), "2020");
   const all = memory.inject(s.id);
-  expect(all.indexOf(`[K${earlier}@`)).toBeLessThan(all.indexOf("[K1@"));
+  expect(all.indexOf(`[K${earlier}@`)).toBeGreaterThan(all.indexOf("[K1@")); // older timestamp, newer commit
   // Injected lines are trace lines byte for byte (ruling 15:14); tags only delimit blocks.
   expect(all).toContain("<&>");
   expect(all).not.toContain("&lt;");
@@ -103,16 +113,29 @@ test("category order, chronological ties, whole trailing category omissions; lin
   expect(tags.map((tag) => all.indexOf(`<${tag}>`))).toEqual(tags.map((tag) => all.indexOf(`<${tag}>`)).sort((a, b) => a - b));
   // 34c: the foreground cap is hard, and a zero remainder emits neither a clipped item nor an
   // omission-only block. Receipt accounting for compaction and worker material remains separate.
-  setKnowledgeInjection(memory, 5_000);
+  setKnowledgeCapacity(memory, 5_000);
   expect(memory.inject(s.id)).toBe("");
-  // A budget that holds part of the list keeps a whole prefix of the priority order without acknowledging omissions.
-  setKnowledgeInjection(memory, 7_000);
+  // A binding cap drops the oldest commits regardless of category; receipts grant no body visibility.
+  setKnowledgeCapacity(memory, tokens(all) - 50);
   const partial = memory.inject(s.id);
   const kept = tags.filter(tag => partial.includes(`<${tag}>`));
   expect(kept.length).toBeGreaterThan(0);
-  expect(kept).toEqual(tags.slice(0, kept.length));
-  expect(partial).not.toContain("Receipts:"); // foreground omissions remain eligible and unacknowledged
+  const visibleIds = [...partial.matchAll(/\[K(\d+)@/g)].map(match => Number(match[1]));
+  expect(new Set(visibleIds)).toEqual(new Set([1, ...ids, earlier].sort((a, b) => b - a).slice(0, visibleIds.length)));
+  expect(partial).toContain("Receipts:"); // omitted bodies remain eligible and unacknowledged
   for (const id of ids.slice(0, 4)) expect(memory.trace(`K${id}`)).toContain(`[K${id}@${id}]`);
+});
+
+test("64c compaction is identical across scheduling records and large changed Knowledge is optional", () => {
+  const s = session(), t = turn(s.id), f = noting(s.id, t.id).facts[0]!;
+  const id = knowledge(s.id, f.id, "constraint", "project", "large knowledge ".repeat(2_000));
+  setWindows(5_000, 10_000, 10_000);
+  const before = memory.compact(s.id, "main", t.id);
+  expect("native" in before).toBe(false);
+  const revision = memory.store.getKnowledgeRevision(id, id)!;
+  memory.store.db.prepare("INSERT INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)")
+    .run(`project:${s.projectId}`, revision.id, revision.runId);
+  expect(memory.compact(s.id, "main", t.id)).toEqual(before);
 });
 
 test("compaction retains oversized raw with standard tool cuts, in its bounded views", () => {
@@ -235,7 +258,7 @@ test("20c/23 scenario 10, as 30 left it: one bounded view of every entry under t
   expect("native" in delegated).toBe(true);
   expect("native" in delegated && delegated.reason).toContain("compaction.rawTokens");
   expect("native" in delegated && delegated.reason).toContain(`bounded views of ${pending.length} pending entries`);
-  expect("native" in delegated && delegated.reason).toContain("required material exceeds shared overflow");
+  expect("native" in delegated && delegated.reason).toContain("required material exceeds shared allowance");
   expect(memory.pendingEntries(s.id, "main", next.id).map(e => e.id)).toEqual(pending.map(e => e.id));
   defaultWindows();
   // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled
@@ -339,7 +362,8 @@ test("20c 2026-09-08 scenario 11: when the bounded views miss a cap compact asks
 // ---- Ticket 25, amendment 3 (25c), as 28a left it: three windows over one envelope, required
 // material reserved out of it before either refill ----
 
-test("32e: consolidated history stays inside its own base and yields only to its own required material", () => {
+test("64c: a tight derived allowance bounds consolidated history", () => {
+  setKnowledgeCapacity(memory, 2);
   const { s, t } = populated();
   // Already-consolidated facts, large enough that "some space" and "no space" are far apart: about
   // 830 tokens each. Consolidated, so they are refill (a) — optional history in the spare — and not
@@ -365,6 +389,7 @@ test("32e: consolidated history stays inside its own base and yields only to its
     role: "assistant", text: "word ".repeat(1_940), raw: "", calls: [] });
   const pending = memory.pendingEntries(s.id, "main", t.id);
   expect(pending).toHaveLength(10);
+  setSharedAllowance(memory, 20_000); // measure the actual required material before isolating its exact window
   const measured = charged(memory.compact(s.id, "main", t.id));
   // An envelope of exactly the required material plus the refill's own omission receipt: the pending
   // views are all kept, the optional facts are all left out, and the receipt says so.
@@ -451,22 +476,6 @@ test("branch facts use run ownership independently of audit JSON", () => {
   const empty = memory.store.recordRun({ sessionId: s.id, kind: "manual", createdAt: time, outcome: "success", response: "{}" });
   memory.store.updateRun(empty.id, empty);
   expect(JSON.parse(memory.store.getRun(empty.id)!.response!)).toEqual({});
-});
-
-test("marks bind to current revision, replace its mark, clear it, and do not carry into an edit", () => {
-  const { s, f, e } = populated();
-  expect(memory.mark(e, "verified")).toBe(`K${e}@1: verified`);
-  expect(memory.inject(s.id)).toContain("· verified");
-  expect(memory.trace(`K${e}`)).toContain("· verified");
-  const edit = memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{
-    op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: e, baseCommit: 1, text: fixture.editedKnowledge, category: "constraint", scope: "project", supports: [f.id], createdAt: time }] });
-  expect(edit.ok).toBe(true); expect(memory.inject(s.id)).not.toContain("verified");
-  expect(memory.trace(`K${e}`)).not.toContain("· verified");
-  expect(memory.trace(`K${e}@1`)).toContain("· verified");
-  memory.mark(e, "flagged"); expect(memory.inject(s.id)).toContain("· flagged");
-  memory.mark(e, "verified"); expect(memory.store.listKnowledgeMarks(e).filter((m) => m.commitId === 2)).toHaveLength(1);
-  memory.mark(e, "clear"); expect(memory.inject(s.id)).not.toContain("verified");
-  expect(memory.store.listKnowledgeMarks(e).map((m) => m.commitId)).toEqual([1]);
 });
 
 test("literal search finds facts, historical knowledge and raw across projects", () => {
@@ -617,35 +626,75 @@ test("first-prompt injection by project needs no session: global and project kno
   expect(() => memory.inject({ projectId: 999 })).toThrow("does not exist");
 });
 
-test("search marks historical, merged and archived knowledge hits so they do not read like current rules", () => {
+test("search marks historical, merged and archived knowledge hits so they do not read like current rules", async () => {
   const s = session(), t = turn(s.id, "rule raw"), n = noting(s.id, t.id, "pnpm rule fact");
   const a = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "Use pnpm for installs");
   const b = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm is the package manager");
   const c = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm lockfile is committed");
-  const run = { sessionId: s.id, kind: "consolidation" as const, createdAt: time };
-  memory.store.commitConsolidationRun({ run, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: a, baseCommit: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
-  memory.store.commitConsolidationRun({ run: { ...run, kind: "manual" }, operations: [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
-  memory.store.commitConsolidationRun({ run: { ...run, kind: "manual" }, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: b, baseCommit: 5, supports: [1], createdAt: time }] });
+  const selectedEntries = memory.store.listSourceEntries(s.id, t.id);
+  memory.selectEntries(s.id, "main", selectedEntries.map(entry => entry.id));
+  const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: selectedEntries.at(-1)!.id };
+  const trigger1 = createDreamerTrigger(memory, path, n.facts[0]!.id, 1);
+  let updated!: { knowledgeId: number; commit: number }, merged!: { knowledgeId: number; commit: number };
+  await admittedScenarios.run(memory, path, input => {
+    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    for (const address of [`K${a}@1`, `K${b}@${b}`, `K${c}@${c}`, `K${trigger1.knowledgeId}@${trigger1.commit}`]) trace.execute({ address, itemBudget: null });
+    const receipt = JSON.parse(write.execute({ operations: [
+      { op: "update", id: `K${a}@1`, topics: [], reason: "Substantive correction of the recorded conclusion.", text: "Use npm for installs", category: "constraint", scope: "project", supports: ["F1"] },
+      { op: "merge", id: `K${b}@${b}`, absorb: [`K${c}@${c}`], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: ["F1"] },
+      { op: "archive", id: `K${trigger1.knowledgeId}@${trigger1.commit}`, supports: ["F1"], reason: "Retire the explicit fixture trigger." },
+    ], skipped: [] }));
+    updated = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === a)!;
+    merged = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === b)!;
+    return { outcome: "success", output: "maintenance complete", request: { fixture: "history statuses", trigger: trigger1 } };
+  });
+  const trigger2 = createDreamerTrigger(memory, path, n.facts[0]!.id, 2);
+  await admittedScenarios.run(memory, path, input => {
+    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    trace.execute({ address: `K${b}@${merged.commit}`, itemBudget: null });
+    trace.execute({ address: `K${trigger2.knowledgeId}@${trigger2.commit}`, itemBudget: null });
+    write.execute({ operations: [
+      { op: "archive", id: `K${b}@${merged.commit}`, supports: ["F1"], reason: "Retired: the cited evidence withdraws this conclusion." },
+      { op: "archive", id: `K${trigger2.knowledgeId}@${trigger2.commit}`, supports: ["F1"], reason: "Retire the explicit fixture trigger." },
+    ], skipped: [] });
+    return { outcome: "success", output: "maintenance complete", request: { fixture: "archive merged result", trigger: trigger2 } };
+  });
   const hits = memory.search("pnpm", "knowledge", { versions: "all", fields: ["text", "status"] });
-  expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`status: superseded by K${a}@4`);
+  expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`status: superseded by K${a}@${updated.commit}`);
   expect(hits.split("\n").find(l => l.startsWith(`[K${c}@3]`))).toContain("status: archived");
   expect(hits).toContain("status: archived");
-  const current = memory.search("for installs", "knowledge", { versions: "all", fields: ["text", "status"] }).split("\n").find((l) => l.startsWith(`[K${a}@4]`))!;
+  const current = memory.search("for installs", "knowledge", { versions: "all", fields: ["text", "status"] }).split("\n").find((l) => l.startsWith(`[K${a}@${updated.commit}]`))!;
   expect(current).toContain("status: tip"); // unbound reads label tips without claiming current
 });
 
-test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", () => {
+test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", async () => {
   const s = session(), t = turn(s.id, "scope raw"), n = noting(s.id, t.id, "scoped fact");
   const k = knowledge(s.id, n.facts[0]!.id, "goal", "project", "shared-then-private goal");
-  memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: k, baseCommit: 1, text: "private goal now", category: "goal", scope: "session", supports: [1], createdAt: time }] });
+  const selectedEntries = memory.store.listSourceEntries(s.id, t.id);
+  memory.selectEntries(s.id, "main", selectedEntries.map(entry => entry.id));
+  const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: selectedEntries.at(-1)!.id };
+  const trigger = createDreamerTrigger(memory, path, n.facts[0]!.id, 1);
+  let privateRevision!: { knowledgeId: number; commit: number };
+  await admittedScenarios.run(memory, path, input => {
+    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    trace.execute({ address: `K${k}@1`, itemBudget: null });
+    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
+    const receipt = JSON.parse(write.execute({ operations: [
+      { op: "update", id: `K${k}@1`, topics: [], reason: "Substantive correction of the recorded conclusion.", text: "private goal now",
+        category: "goal", scope: "session", supports: ["F1"] },
+      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: ["F1"], reason: "Retire the explicit fixture trigger." },
+    ], skipped: [] }));
+    privateRevision = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === k)!;
+    return { outcome: "success", output: "maintenance complete", request: { fixture: "cross-session history", trigger } };
+  });
   const peer = session(memory.store.getSession(s.id)!.projectId), pt = turn(peer.id, "peer raw");
   memory.store.updateTurn(pt.id, { assistantText: "ok" });
   const trace = memory.tools({ kind: "manual", sessionId: peer.id, branch: "main", currentTurnId: pt.id }).find((d) => d.name === "trace")!;
-  expect(memory.search("shared-then-private", "knowledge", { sessionId: peer.id })).toContain(`[K${k}@${k}]`);
+  expect(memory.search("shared-then-private", "knowledge", { sessionId: peer.id })).not.toContain(`[K${k}@`);
   expect(trace.execute({ address: `K${k}@1` })).toContain("shared-then-private goal");
-  expect(trace.execute({ address: `K${k}` })).toContain("shared-then-private goal");
-  expect(trace.execute({ address: `K${k}@2` })).toContain("private goal now");
-  expect(trace.execute({ address: `K${k}@3` })).toContain("does not exist");
+  expect(trace.execute({ address: `K${k}` })).not.toContain("shared-then-private goal");
+  expect(trace.execute({ address: `K${k}@${privateRevision!.commit}` })).toContain("private goal now");
+  expect(trace.execute({ address: `K${k}@${privateRevision!.commit + 100}` })).toContain("does not exist");
 });
 
 // ---- 21b 2026-09-08: topic grouping and literal label retrieval ----
@@ -711,7 +760,7 @@ function consolidate(sessionId: number, ids: number[], branch = "main") {
 const entry = (sessionId: number, turnId: number, nativeId: string, text: string) =>
   memory.appendEntry({ sessionId, nativeLineage: "x", nativeId, turnId, role: "assistant", text, raw: "", calls: [] });
 
-test("32a / 28 acceptance 1: 18k knowledge, 14k facts and 6k Raw fit using required-only shared overflow without a worker", () => {
+test("64c: 18k knowledge, 14k facts and 6k Raw fit one shared allowance without a worker", () => {
   const s = session(), t = turn(s.id, "head");
   const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
   consolidate(s.id, [seed.id]);
@@ -726,7 +775,7 @@ test("32a / 28 acceptance 1: 18k knowledge, 14k facts and 6k Raw fit using requi
   expect(windows.facts).toBeGreaterThan(10_000);
   expect(windows.knowledge).toBeGreaterThan(17_000);
   expect(windows.raw).toBeGreaterThan(5_000);
-  expect(windows.envelope).toBe(50_000);
+  expect(windows.envelope).toBe(65_000);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
   for (let i = 0; i < 3; i++) expect(text).toContain(`RAW_${i}`);
@@ -734,12 +783,13 @@ test("32a / 28 acceptance 1: 18k knowledge, 14k facts and 6k Raw fit using requi
   expect(calls).toBe(0);
 });
 
-test("32e: required legacy knowledge and pending windows share overflow without trimming, then delegate with excess diagnostics", () => {
+test("64c: optional knowledge borrows only shared space left after required facts and Raw", () => {
+  setSharedAllowance(memory, 15_000);
   const s = session(), t = turn(s.id, "head");
   const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
   consolidate(s.id, [seed.id]);
   // A knowledge corpus far past its own window, 7k of pending facts and 12k of pending Raw.
-  for (let i = 0; i < 13; i++) knowledge(s.id, seed.id, "constraint", "project", `K${i} ` + "word ".repeat(1_950), `20${10 + i}`);
+  for (let i = 0; i < 20; i++) knowledge(s.id, seed.id, "constraint", "project", `K${i} ` + "word ".repeat(1_950), `20${10 + i}`);
   const facts = pendingFacts(s.id, t.id, [...Array(7)].map((_, i) => `FACT_${i} ` + "word ".repeat(990)));
   for (let i = 0; i < 6; i++) entry(s.id, t.id, `raw${i}`, `RAW_${i} ` + "word ".repeat(1_940));
   const result = memory.compact(s.id, "main", t.id);
@@ -748,10 +798,12 @@ test("32e: required legacy knowledge and pending windows share overflow without 
   // The facts window keeps everything inside its own baseline although Raw wants more than its own…
   for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
   expect(windows.raw).toBeGreaterThan(10_000);
-  // Legacy knowledge is unprocessed: all complete bodies remain required above the base.
-  expect(windows.knowledge).toBeGreaterThan(25_000);
-  expect(windows.knowledge).toBeGreaterThanOrEqual(memory.knowledgeBudgets().injection - 2_000);
-  expect(text).not.toContain("knowledge; expand: K"); // legacy knowledge is required in full
+  // Optional current bodies may borrow only what required excess did not consume; scheduling
+  // records still have no compaction meaning, and whole older bodies are omitted with a receipt.
+  expect(windows.knowledge).toBeGreaterThan(memory.knowledgeBudgets().injection);
+  const rawExcess = Math.max(0, windows.required.raw - memory.config.compaction.rawTokens);
+  expect(windows.knowledge).toBeLessThanOrEqual(memory.knowledgeBudgets().injection + deriveSharedMaterialAllowance(memory.knowledgeBudgets(), { noting: memory.config.noting.triggerTokens, consolidation: memory.config.consolidation.triggerTokens }) - rawExcess);
+  expect(text).toContain("knowledge; expand: K");
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   // Required material that still does not fit after all of that lending delegates, naming the window
   // and its numbers — the pending window is never trimmed to force a success.
@@ -760,7 +812,7 @@ test("32e: required legacy knowledge and pending windows share overflow without 
   expect("native" in delegated).toBe(true);
   expect("native" in delegated && delegated.reason).toContain("compaction.factsTokens");
   expect("native" in delegated && delegated.reason).toContain("pending facts need");
-  expect("native" in delegated && delegated.reason).toContain("required material exceeds shared overflow");
+  expect("native" in delegated && delegated.reason).toContain("required material exceeds shared allowance");
   expect(memory.pendingEntries(s.id, "main", t.id)).toHaveLength(7); // nothing was processed or erased
   expect(calls).toBe(0);
 });

@@ -60,7 +60,7 @@ test.each([true, false])("thinking: historical facts and knowledge remain visibl
       expect(f.m.store.factOnPath(fact, { sessionId: 1, branch: "main", headTurnId: 1 })).toBe(true);
       expect(f.m.trace(`F${fact.id}`)).toContain("Historical inference");
     }
-    expect(f.m.store.listCurrentKnowledge({ sessionId: 1, branch: "main", headTurnId: 1 })).toHaveLength(1);
+    expect(f.m.store.currentKnowledge({ sessionId: 1, branch: "main", headTurnId: 1 })).toHaveLength(1);
     expect(f.m.trace("K1")).toContain("Historical knowledge");
     expect(f.m.trace("T1#E1@thinking")).toContain("Private inference");
     expect(f.m.store.getSourceEntry(f.pure.id)!.raw).toBe(raw);

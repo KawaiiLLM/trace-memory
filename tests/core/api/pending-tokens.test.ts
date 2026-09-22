@@ -68,6 +68,8 @@ test("Dreaming projection follows the selected head and current project, not dat
     s.declareProject(session.id, "B", "mark");
     expect(memory.pendingTokens("dreaming", reader).tokens).toBe(large);
     const sibling = s.appendTurn({ sessionId: targetB.sessionId, kind: "turn", userPrompt: "unrelated sibling", startedAt: "now" });
+    s.selectSourcePath(targetB.sessionId, "sibling", []);
+    s.setCurrentPath(targetB.sessionId, "sibling", sibling.id, "test-lineage");
     expect(memory.pendingTokens("dreaming", { ...targetB, branch: "sibling", headTurnId: sibling.id }).tokens).toBe(0);
   } finally { memory.close(); }
 });

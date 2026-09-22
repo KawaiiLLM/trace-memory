@@ -43,7 +43,6 @@ import type { Fact } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";
 import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, wholeKnowledge, xmlBlock,
   type BudgetedKnowledge, type FactTurns } from "./index.ts";
-import { budgetRelevantKnowledge } from "./knowledge-selection.ts";
 
 /** One knowledge category group as `budgetKnowledge` returns it: the category and its rendered lines. */
 export interface KnowledgeGroup { category: string; text: string }
@@ -95,18 +94,15 @@ export interface NotingMaterial extends SharedMaterial {
   sources: string[];
 }
 
-/** The frozen task material of one Consolidation run. Task-specific parts: the pending facts (as
- * addresses and as lines) and the negated-evidence review cues. No field is a composed message.
- * 25a: there is no already-consolidated history part — that block is removed, and those facts stay
- * reachable through explicit reads. */
+/** The frozen task material of one Consolidation run. Task-specific parts are the pending facts,
+ * as addresses and rendered lines. No field is a composed message. 25a: there is no
+ * already-consolidated history part; those facts stay reachable through explicit reads. */
 export interface ConsolidationMaterial extends SharedMaterial {
   knowledge: KnowledgeGroup[];
   /** The facts to integrate, as addresses: an inherited context already carries their lines. */
   factAddresses: string[];
   /** The same selected facts, rendered with relations in chronological Turn groups. */
   rangeFacts: string[];
-  /** Visible knowledge whose supports a range fact negates, with both facts: review cues only. */
-  reminders: string[];
   /** 29b (parent 29 "Version-aware knowledge"): one line per knowledge commit the child inherited
    * that is no longer this path's current authority — superseded, archived or merged. The block above
    * carries only what is current, so without these lines stale inherited text would read as current
@@ -118,7 +114,6 @@ export const FACTS_TITLE = "Recent facts (by Turn):";
 export const RAW_TITLE = "Raw:";
 export const RANGE_FACTS_TITLE = "Range facts:";
 export const SOURCES_TITLE = "Sources:";
-export const REMINDER_TITLE = "Negated-evidence reminder (review cues only; no status derived):";
 /** 29b: the title of `ConsolidationMaterial.knowledgeNotes`, emitted only when there are notes. */
 export const KNOWLEDGE_STATUS_TITLE = "Inherited knowledge status (these commits are not current authority):";
 /** Between blocks, and between a block's title and its body. Entry views use the same separator. */
@@ -147,12 +142,10 @@ const rangeLine = (range: TaskRange): string => `Range: ${range.from}..${range.t
 export interface MaterialBudget {
   /** Knowledge candidates; omitted by a consumer whose order has no knowledge block (25a: the Noter). */
   knowledge?: KnowledgeWithRevision[];
-  /** How one knowledge item renders; the read facade adds its marks. */
+  /** How one knowledge item renders. */
   knowledgeLine?: (value: KnowledgeWithRevision) => string;
-  /** A worker query opts into the shared relevance-bounded selection used by Consolidation and Dreaming. */
-  knowledgeQuery?: string;
   /** Optional pre-render of exactly `knowledge` with `knowledgeLine`. A freeze may reuse this
-   * range-independent complete-pool measurement while only its relevance query changes. */
+   * range-independent complete-pool measurement while its evidence batch changes. */
   knowledgeWhole?: BudgetedKnowledge;
   /** The owning capacity, used only in capacity diagnostics and omission receipts. */
   knowledgeBudget?: string;
@@ -218,13 +211,11 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
     ? [`omitted ${allNotes.length - keptNotes} inherited knowledge status lines; ${input.knowledgeBudget ?? "Knowledge capacity"} is full`] : [];
   const knowledgeCap = Math.max(0, cap - noteCost - receiptCost(noteReceipts));
   const stable = input.knowledge ? input.knowledgeWhole ?? wholeKnowledge(input.knowledge, input.knowledgeLine) : undefined;
-  // As in Dreaming, relevance changes retention only when the complete stable block is over capacity.
-  // A fitting pool keeps its existing category/time/id presentation and has no omission receipt.
+  // A fitting pool needs no trimming. Over capacity, preserve newer commits with the same
+  // category/commit presentation and oldest-item omission receipts as every other consumer.
   const active = !stable ? { groups: [] as KnowledgeGroup[], receipts: [] as string[], commits: [] as number[] }
     : stable.cost <= knowledgeCap ? stable
-    : input.knowledgeQuery !== undefined
-      ? budgetRelevantKnowledge(input.knowledge!, knowledgeCap, input.knowledgeQuery, input.knowledgeLine, input.knowledgeBudget)
-      : budgetKnowledge(input.knowledge!, knowledgeCap, input.knowledgeLine, input.knowledgeBudget);
+    : budgetKnowledge(input.knowledge!, knowledgeCap, input.knowledgeLine, input.knowledgeBudget);
   const label = input.label ?? "raw", kept = label === "raw" ? "unrecorded raw" : "range facts";
   const current = tokens(input.current);
   const ceiling = input.caps.current; // absent: this consumer's current material has no inner cap (25c)
@@ -294,10 +285,9 @@ export const notingText = (material: NotingMaterial, range: TaskRange): string =
   ]), receipts: material.receipts });
 
 /** The Consolidator's one layout (29b): the current knowledge this run supplies, the status of the
- * inherited commits that are no longer current, the range, the pending fact bodies this run supplies,
- * the negation reminders, then receipts. 25a: no already-consolidated history block — those facts are
- * read by address. With an empty visible view this is the layout a fresh Consolidator has always had. */
+ * inherited commits that are no longer current, the range and the pending fact bodies this run
+ * supplies, then receipts. 25a: no already-consolidated history block — those facts are read by
+ * address. */
 export const consolidationText = (material: ConsolidationMaterial, range: TaskRange): string =>
   finish({ content: block([...leading(material), ...statusBlock(material.knowledgeNotes),
-    rangeLine(range), RANGE_FACTS_TITLE, material.rangeFacts.join("\n"),
-    REMINDER_TITLE, material.reminders.join(BLOCK) || "none"]), receipts: material.receipts });
+    rangeLine(range), RANGE_FACTS_TITLE, material.rangeFacts.join("\n")]), receipts: material.receipts });

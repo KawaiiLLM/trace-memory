@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { readBinding, updateBinding } from "../../src/hosts/cc/binding.ts";
@@ -62,7 +63,8 @@ test("SessionStart clear with a bound parent links the same core session and inj
   const child = readBinding(f.config, f.childId)!;
   expect(child.coreSessionId).toBe(parent.coreSessionId);
   expect(child.projectId).toBe(parent.projectId);
-  expect(child.branch).toBe(parent.branch);
+  expect(child.branch).toBe(`cc:${f.childId}`);
+  expect(child.branch).not.toBe(parent.branch);
   expect(child.enrollment).toEqual(parent.enrollment);
   expect(child.coreHost).toBe(`cc:${f.parentId}`);
   expect(child.clearedFrom).toMatchObject({ nativeSessionId: f.parentId, compactionTurnId: expect.any(Number) });
@@ -174,6 +176,7 @@ test("the child's first Turn descends from the compaction Turn, its path is the 
     const childEntryIds = [store.findSourceEntry(core, f.childId, "cu1")!.id, store.findSourceEntry(core, f.childId, "ca1")!.id];
     const persistedPath = store.selectedSourceEntryIds(core, child.branch)!;
     expect(persistedPath).toEqual([...child.clearedFrom!.inheritedEntryIds, ...childEntryIds]);
+    expect(store.selectedSourceEntryIds(core, parent.branch)).toEqual(child.clearedFrom!.inheritedEntryIds);
 
     // Mark the inherited prefix noted (as the parent's own Noting, or the child's after retarget,
     // would have) and put one fact on it; both must stay applicable and un-duplicated on the child.
@@ -194,6 +197,36 @@ test("the child's first Turn descends from the compaction Turn, its path is the 
     // noted, is not offered again.
     expect(store.pendingEntryIds(core, child.branch, childHead).sort((a, b) => a - b)).toEqual([...childEntryIds].sort((a, b) => a - b));
   } finally { store.close(); }
+
+  // Reopening the parent facade adopts its retained lineage cursor; it neither copies nor moves the
+  // child's cursor. An edit-resend in the child then moves only that lineage to a fresh stable branch.
+  const reopenedParent = new CcImporter(f.config, readBinding(f.config, f.parentId)!);
+  expect((await reopenedParent.reconcile()).state).toBe("ready");
+  reopenedParent.close();
+  f.writeChild([
+    { uuid: "cu2", parentUuid: null, type: "user", timestamp: "2026-01-01T00:20:00.000Z", ...sdkPrompt("cp2"), message: { role: "user", content: "edited child question" } },
+    { uuid: "ca2", parentUuid: "cu2", type: "assistant", timestamp: "2026-01-01T00:20:01.000Z", message: { role: "assistant", content: [{ type: "text", text: "edited child answer" }] } },
+  ]);
+  const editedChild = new CcImporter(f.config, readBinding(f.config, f.childId)!);
+  const edited = await editedChild.reconcile();
+  editedChild.close();
+  expect(edited).toMatchObject({ state: "ready", branch: "cc:ca2" });
+
+  const reopened = new Store(f.config.dbPath);
+  const database = new DatabaseSync(f.config.dbPath);
+  try {
+    const inherited = child.clearedFrom!.inheritedEntryIds;
+    const firstChildIds = [reopened.findSourceEntry(core, f.childId, "cu1")!.id, reopened.findSourceEntry(core, f.childId, "ca1")!.id];
+    const editedChildIds = [reopened.findSourceEntry(core, f.childId, "cu2")!.id, reopened.findSourceEntry(core, f.childId, "ca2")!.id];
+    expect(reopened.selectedSourceEntryIds(core, parent.branch)).toEqual(inherited);
+    expect(reopened.selectedSourceEntryIds(core, child.branch)).toEqual([...inherited, ...firstChildIds]);
+    expect(reopened.selectedSourceEntryIds(core, edited.branch)).toEqual([...inherited, ...editedChildIds]);
+    const cursors = database.prepare(`SELECT lineage, branch FROM session_lineage_cursors WHERE session_id = ? ORDER BY lineage`).all(core);
+    expect(cursors).toEqual([
+      { lineage: f.childId, branch: "cc:ca2" },
+      { lineage: f.parentId, branch: parent.branch },
+    ]);
+  } finally { database.close(); reopened.close(); }
 });
 
 test("an attached executor re-targets on the child's clearedFrom assignment", async () => {

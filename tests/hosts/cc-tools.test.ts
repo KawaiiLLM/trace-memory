@@ -86,7 +86,7 @@ test("CC foreground reads keep one core cursor and complete-read ledger across c
     while (/cursor=([^\s]+)/.test(text(page))) page = await f.tools.call("trace", { address: "", cursor: /cursor=([^\s]+)/.exec(text(page))![1] }, undefined);
     const update = await f.tools.call("memory", { operations: [{ op: "update", id: "K1@1", text: "updated", category: "reference", scope: "session",
       supports: ["F1"], reason: "fully read", topics: [] }], skipped: [] }, { "claudecode/toolUseId": "call-memory" });
-    expect(update.isError, text(update)).toBeUndefined();
+    expect(update.isError).toBe(true); expect(text(update)).toContain("update belongs to the Dreamer");
     const second = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
     try {
       const projection = await second.reconcile();
@@ -118,7 +118,7 @@ test("CC character pages withhold exact-K write authority until the final page",
     expect(text(second)).not.toContain("cursor=");
     const update = await f.tools.call("memory", { operations: [{ op: "update", id: "K1@1", text: "fully read", category: "reference",
       scope: "session", supports: ["F1"], reason: "after final page", topics: [] }], skipped: [] }, { "claudecode/toolUseId": "call-memory" });
-    expect(update.isError, text(update)).toBeUndefined();
+    expect(update.isError).toBe(true); expect(text(update)).toContain("update belongs to the Dreamer");
     const hidden = await f.tools.call("trace", { address: "K1@2", maxChars: 1 }, undefined);
     expect(hidden.isError).toBe(true); expect(text(hidden)).toContain("unexpected parameter");
   } finally { f.importer.close(); }
@@ -135,9 +135,10 @@ test("ticket 41 filters, representatives, cursors and ceilings execute through t
     ], skipped: [] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
     let exact = await f.tools.call("trace", { address: "K1@1", itemBudget: null }, undefined);
     while (/cursor=([^\s]+)/.test(text(exact))) exact = await f.tools.call("trace", { address: "", cursor: /cursor=([^\s]+)/.exec(text(exact))![1] }, undefined);
-    expect((await f.tools.call("memory", { operations: [{ op: "update", id: "K1@1", text: "session alpha current",
+    const maintenance = await f.tools.call("memory", { operations: [{ op: "update", id: "K1@1", text: "session alpha current",
       category: "reference", scope: "session", supports: ["F1"], reason: "current", topics: ["alpha"] }], skipped: [] },
-      { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
+      { "claudecode/toolUseId": "call-memory" });
+    expect(maintenance.isError).toBe(true); expect(text(maintenance)).toContain("update belongs to the Dreamer");
     const defaults = text(await f.tools.call("search", { query: "", layer: "knowledge" }, undefined));
     expect(defaults).toContain("One representative per K"); expect(defaults).toContain("session alpha"); expect(defaults).toContain("global beta");
     const session = text(await f.tools.call("search", { query: "", layer: "knowledge", scope: "session" }, undefined));
@@ -145,7 +146,7 @@ test("ticket 41 filters, representatives, cursors and ceilings execute through t
     const category = text(await f.tools.call("search", { query: "", category: "open", scope: "global", fields: [] }, undefined));
     expect(category).toContain("K2@2"); expect(category).not.toContain("global beta");
     const history = text(await f.tools.call("search", { query: "alpha", layer: "knowledge", versions: "history" }, undefined));
-    expect(history).toContain("status"); expect(history.match(/\[K1@/g)).toHaveLength(1); expect(history).toContain("session alpha current");
+    expect(history).toContain("[K1@1]"); expect(history).toContain("session alpha"); expect(history).not.toContain("session alpha current");
     const all = text(await f.tools.call("search", { query: "alpha", layer: "knowledge", versions: "all" }, undefined));
     expect(all.match(/\[K1@/g)).toHaveLength(1);
     const page = await f.tools.call("search", { query: "", layer: "knowledge", cap: 1 }, undefined);
