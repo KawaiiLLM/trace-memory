@@ -2610,12 +2610,18 @@ export class Store {
       if (!bindings.has(id)) bindings.set(id, new Set());
       bindings.get(id)!.add(Number(row.entry_id));
     }
+    // A fact is covered only when every entry it is bound to lies in `covered` (the final check below
+    // demands exactly that), so a fact bound outside the Raw window can never qualify. Filter on it
+    // first: the proof lookup then reads only the Noting runs of window-bound facts, bounded by the
+    // window, instead of every noted entry of every run behind every candidate fact on the path.
+    for (const [id, bound] of bindings) if (![...bound].every(entry => covered.has(entry))) bindings.delete(id);
+    if (!bindings.size) return result;
     const sources = new Map<number, Map<string, Set<number>>>();
     for (const row of this.db.prepare(`SELECT n.run_id, e.id, e.addresses
       FROM noted_entries n JOIN runs r ON r.id = n.run_id
       JOIN source_entries e ON e.id = n.entry_id AND e.session_id = r.session_id
       WHERE r.kind = 'noting' AND r.outcome = 'success' AND r.id IN (SELECT value FROM json_each(?))`)
-      .all(JSON.stringify([...new Set(runs.values())]))) {
+      .all(JSON.stringify([...new Set([...bindings.keys()].map(id => runs.get(id)!))]))) {
       const run = Number(row.run_id);
       if (!sources.has(run)) sources.set(run, new Map());
       const addresses = sources.get(run)!;

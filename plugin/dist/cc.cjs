@@ -3015,11 +3015,13 @@ var Store = class {
       if (!bindings.has(id)) bindings.set(id, /* @__PURE__ */ new Set());
       bindings.get(id).add(Number(row.entry_id));
     }
+    for (const [id, bound] of bindings) if (![...bound].every((entry) => covered.has(entry))) bindings.delete(id);
+    if (!bindings.size) return result;
     const sources = /* @__PURE__ */ new Map();
     for (const row of this.db.prepare(`SELECT n.run_id, e.id, e.addresses
       FROM noted_entries n JOIN runs r ON r.id = n.run_id
       JOIN source_entries e ON e.id = n.entry_id AND e.session_id = r.session_id
-      WHERE r.kind = 'noting' AND r.outcome = 'success' AND r.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify([...new Set(runs.values())]))) {
+      WHERE r.kind = 'noting' AND r.outcome = 'success' AND r.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify([...new Set([...bindings.keys()].map((id) => runs.get(id)))]))) {
       const run = Number(row.run_id);
       if (!sources.has(run)) sources.set(run, /* @__PURE__ */ new Map());
       const addresses = sources.get(run);
