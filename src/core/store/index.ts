@@ -678,21 +678,18 @@ function toRun(row: any): Run {
   };
 }
 
-// `entry_ordinal` is a nullable column (legacy rows written before ordinals existed, never
-// backfilled): `Number(null)` is `0`, a real ordinal value, so a bare `Number()` would silently turn
-// an unordered legacy entry into "ordinal 0" instead of leaving it unordered. Pre-79 `getSourceEntry`
-// passed the column through unconverted (`entryOrdinal: row.entry_ordinal`), so this keeps that same
-// null exactly where it already was, for output identity.
-const toOrdinal = (value: unknown): number => (value === null ? (null as unknown as number) : Number(value));
+// 83: `entry_ordinal` is `NOT NULL` from the upgrade transaction's backfill onward (a pre-83
+// database's stray NULLs — a stale writer's omission, never a migration gap — are numbered then),
+// so a plain `Number()` is correct here and no longer needs a null passthrough for output identity.
 /** 79: the hot columns alone, shared by every metadata list read. */
 function toSourceEntryMeta(row: any): SourceEntryMeta {
   return { id: Number(row.id), sessionId: Number(row.session_id), nativeLineage: row.native_lineage, nativeId: row.native_id,
-    turnId: Number(row.turn_id), entryOrdinal: toOrdinal(row.entry_ordinal), addresses: JSON.parse(row.addresses), digest: row.digest };
+    turnId: Number(row.turn_id), entryOrdinal: Number(row.entry_ordinal), addresses: JSON.parse(row.addresses), digest: row.digest };
 }
 /** 79: the hot row joined to its Raw payload row, the one shape every full-entry reader builds. */
 function toSourceEntry(row: any): SourceEntry {
   const blocks = row.blocks === null ? undefined : JSON.parse(row.blocks) ?? undefined;
-  return { ...JSON.parse(row.content), id: Number(row.id), entryOrdinal: toOrdinal(row.entry_ordinal), ...(blocks ? { blocks } : {}) };
+  return { ...JSON.parse(row.content), id: Number(row.id), entryOrdinal: Number(row.entry_ordinal), ...(blocks ? { blocks } : {}) };
 }
 const SOURCE_ENTRY_META_COLUMNS = "id, session_id, native_lineage, native_id, turn_id, entry_ordinal, addresses, digest";
 
@@ -1047,7 +1044,11 @@ export class Store {
       // re-add a dropped `origin_entry_ids` column if this ran earlier. `content`/`request` column
       // presence is the idempotency signal (both absent from a fresh database's SCHEMA_SQL-created
       // table only after this same rebuild ran once), so a second open does no work at all.
-      this.transaction(() => this.migrateHotColdSplit());
+      // 83: the ordinal backfill runs first, in the same transaction, strictly before 79's rebuild of
+      // `source_entries` -- a pre-split database gets its `NOT NULL` constraint from that same
+      // rebuild (its `createSql` already declares it); an already-split database gets it from the
+      // backfill's own rebuild instead, since 79's rebuild has nothing left to do there.
+      this.transaction(() => { this.migrateEntryOrdinalBackfill(); this.migrateHotColdSplit(); });
       const schemaChanged = Number(this.db.prepare("PRAGMA schema_version").get()!.schema_version) !== schemaBefore;
       if (schemaChanged && this.db.prepare("PRAGMA foreign_key_check").all().length)
         throw new Error("Store migration: foreign key violations");
@@ -1060,6 +1061,85 @@ export class Store {
       try { this.db.close(); } catch { /* Preserve the initialization error. */ }
       throw error;
     }
+  }
+
+  /** Shared table-rebuild procedure (SQLite's documented ALTER-TABLE-by-rebuild recipe): preserve
+   * ids and the AUTOINCREMENT sequence, drop and recreate indexes/triggers not explicitly dropped.
+   * Foreign keys are verified once, by the caller's caller, at the end of the whole schema
+   * transaction. Used by 79's hot/cold split and 83's `NOT NULL` rebuild alike -- the same recipe,
+   * two different column-shape changes. */
+  private rebuildTable(table: string, drop: readonly string[], dropIndexes: readonly string[], createSql: string): void {
+    const keep = (this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[])
+      .map(row => row.name).filter(name => !drop.includes(name));
+    const objects = this.db.prepare(`SELECT name, sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index','trigger')
+      AND sql IS NOT NULL AND name NOT IN (${dropIndexes.map(() => "?").join(",") || "''"}) ORDER BY name`).all(table, ...dropIndexes) as { name: string; sql: string }[];
+    const sequence = this.db.prepare("SELECT seq FROM sqlite_sequence WHERE name = ?").get(table) as { seq: number } | undefined;
+    this.db.exec(createSql.replace(/CREATE TABLE (?:IF NOT EXISTS )?\S+/, `CREATE TABLE ${table}_migrate`));
+    this.db.exec(`INSERT INTO ${table}_migrate (${keep.join(",")}) SELECT ${keep.join(",")} FROM ${table};
+      DROP TABLE ${table}; ALTER TABLE ${table}_migrate RENAME TO ${table}`);
+    if (sequence) this.db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq, table);
+    for (const object of objects) this.db.exec(String(object.sql));
+  }
+
+  /** 83: give every source entry whose `entry_ordinal` is NULL the ordinal it should have had, then
+   * make the column `NOT NULL`. This codebase's write path (`appendSourceEntry`) always assigns an
+   * ordinal, and the ALTER two blocks above numbers every row that existed the first time
+   * `entry_ordinal` was added -- a NULL only enters through a stale writer's raw INSERT that omitted
+   * the column, never through this migration itself. Backfilled per Turn, in id order, continuing
+   * after the Turn's highest existing ordinal (a Turn with no numbered entry starts at E1); each
+   * backfilled row's `addresses` is then recomputed with the same function a writer uses
+   * (`sourceAddresses`), and its `#tN` legacy tool-call addresses -- which never depended on
+   * `entry_ordinal` -- are asserted unchanged before the row commits. Idempotent: decided by the
+   * column's declared `notnull` flag (Pi review of 2964522), never by "no NULL rows right now", so a
+   * database with 0 NULLs but a still-nullable column still gets the constraint, and a database
+   * already `NOT NULL` does nothing. A pre-split database gets its constraint from 79's own rebuild
+   * of `source_entries`, called right after this method returns (its `createSql` already declares
+   * it, since backfilling here guarantees no NULL survives into it); an already-split database, with
+   * no such rebuild left to piggyback on, gets a dedicated one here. */
+  private migrateEntryOrdinalBackfill(): void {
+    if (!this.db.isTransaction) throw new Error("Ordinal backfill requires an active transaction");
+    const ordinalColumn = (this.db.prepare("PRAGMA table_info(source_entries)").all() as { name: string; notnull: number }[])
+      .find(column => column.name === "entry_ordinal");
+    if (!ordinalColumn || ordinalColumn.notnull) return; // already NOT NULL: idempotent no-op
+    const alreadySplit = !(this.db.prepare("PRAGMA table_info(source_entries)").all() as { name: string }[]).some(c => c.name === "content");
+    const missing = this.db.prepare("SELECT id, turn_id FROM source_entries WHERE entry_ordinal IS NULL ORDER BY turn_id, id").all() as { id: number; turn_id: number }[];
+    if (missing.length) {
+      const maxOrdinal = new Map((this.db.prepare("SELECT turn_id, MAX(entry_ordinal) AS max FROM source_entries WHERE entry_ordinal IS NOT NULL GROUP BY turn_id").all() as
+        { turn_id: number; max: number }[]).map(row => [row.turn_id, Number(row.max)]));
+      const setOrdinal = this.db.prepare("UPDATE source_entries SET entry_ordinal = ? WHERE id = ?");
+      const getBody = this.db.prepare(alreadySplit
+        ? "SELECT r.content, r.blocks FROM source_entry_raw r WHERE r.entry_id = ?"
+        : "SELECT content, blocks FROM source_entries WHERE id = ?");
+      const getAddresses = this.db.prepare("SELECT addresses FROM source_entries WHERE id = ?");
+      const setAddresses = this.db.prepare("UPDATE source_entries SET addresses = ? WHERE id = ?");
+      const legacyToolCalls = (addresses: string[]) => addresses.filter(address => /#t\d+$/.test(address)).sort();
+      const next = new Map<number, number>();
+      for (const row of missing) {
+        const ordinal = (next.get(row.turn_id) ?? maxOrdinal.get(row.turn_id) ?? 0) + 1;
+        next.set(row.turn_id, ordinal);
+        setOrdinal.run(ordinal, row.id);
+        const body = getBody.get(row.id) as { content: string; blocks: string | null };
+        const blocks = body.blocks == null ? undefined : JSON.parse(body.blocks) ?? undefined;
+        const entry = { ...JSON.parse(body.content), id: row.id, entryOrdinal: ordinal, ...(blocks ? { blocks } : {}) };
+        const before = legacyToolCalls(JSON.parse((getAddresses.get(row.id) as { addresses: string }).addresses));
+        const after = sourceAddresses(entry);
+        const afterToolCalls = legacyToolCalls(after);
+        if (before.length !== afterToolCalls.length || before.some((address, index) => address !== afterToolCalls[index]))
+          throw new Error(`ordinal backfill: entry ${row.id}'s #tN addresses changed (${JSON.stringify(before)} -> ${JSON.stringify(afterToolCalls)})`);
+        setAddresses.run(JSON.stringify(after), row.id);
+      }
+    }
+    if (alreadySplit) this.rebuildTable("source_entries", [], [], `CREATE TABLE source_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL REFERENCES sessions(id),
+      native_lineage TEXT NOT NULL,
+      native_id TEXT NOT NULL,
+      turn_id INTEGER NOT NULL REFERENCES turns(id),
+      entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal > 0),
+      addresses TEXT NOT NULL DEFAULT '[]',
+      digest TEXT,
+      UNIQUE (session_id, native_lineage, native_id)
+    )`);
   }
 
   /** 79 item 0: split `content`/`blocks` out of `source_entries` into `source_entry_raw`, and
@@ -1077,30 +1157,22 @@ export class Store {
     this.db.exec(`CREATE TABLE IF NOT EXISTS run_bodies (
       run_id INTEGER PRIMARY KEY REFERENCES runs(id), request TEXT, response TEXT, origin_entry_ids TEXT)`);
     const columns = (table: string) => this.db.prepare(`PRAGMA table_info(${table})`).all().map(row => String(row.name));
-    const rebuild = (table: string, drop: readonly string[], dropIndexes: readonly string[], createSql: string) => {
-      const keep = columns(table).filter(c => !drop.includes(c));
-      const objects = this.db.prepare(`SELECT name, sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index','trigger')
-        AND sql IS NOT NULL AND name NOT IN (${dropIndexes.map(() => "?").join(",") || "''"}) ORDER BY name`).all(table, ...dropIndexes) as { name: string; sql: string }[];
-      const sequence = this.db.prepare("SELECT seq FROM sqlite_sequence WHERE name = ?").get(table) as { seq: number } | undefined;
-      this.db.exec(createSql.replace(/CREATE TABLE (?:IF NOT EXISTS )?\S+/, `CREATE TABLE ${table}_79`));
-      this.db.exec(`INSERT INTO ${table}_79 (${keep.join(",")}) SELECT ${keep.join(",")} FROM ${table};
-        DROP TABLE ${table}; ALTER TABLE ${table}_79 RENAME TO ${table}`);
-      if (sequence) this.db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq, table);
-      for (const object of objects) this.db.exec(String(object.sql));
-    };
     if (columns("source_entries").includes("content")) {
       this.db.exec("INSERT INTO source_entry_raw (entry_id, content, blocks) SELECT id, content, blocks FROM source_entries");
       // 71's idx_source_membership and 74's idx_source_identity existed only to dodge the wide
       // content/blocks columns; the split makes both redundant (measured, reported per the ticket).
       // idx_source_unnormalized is a partial index on `blocks IS NULL`, recreated below on the table
       // that now actually holds `blocks`.
-      rebuild("source_entries", ["content", "blocks"], ["idx_source_membership", "idx_source_identity", "idx_source_unnormalized"], `CREATE TABLE source_entries (
+      // 83: `entry_ordinal` is declared `NOT NULL` here -- safe unconditionally, since
+      // `migrateEntryOrdinalBackfill` (called just before this method, same transaction) already
+      // guarantees no NULL survives to this rebuild, on every database this branch runs for.
+      this.rebuildTable("source_entries", ["content", "blocks"], ["idx_source_membership", "idx_source_identity", "idx_source_unnormalized"], `CREATE TABLE source_entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id INTEGER NOT NULL REFERENCES sessions(id),
         native_lineage TEXT NOT NULL,
         native_id TEXT NOT NULL,
         turn_id INTEGER NOT NULL REFERENCES turns(id),
-        entry_ordinal INTEGER CHECK(entry_ordinal > 0),
+        entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal > 0),
         addresses TEXT NOT NULL DEFAULT '[]',
         digest TEXT,
         UNIQUE (session_id, native_lineage, native_id)
@@ -1118,7 +1190,7 @@ export class Store {
       // split makes their covering trailing columns redundant. The filter columns themselves
       // (created_at, session_id) still need a lookup index -- idx_runs_created_at below, and
       // idx_runs_session from SCHEMA_SQL, which the split leaves untouched.
-      rebuild("runs", ["request", "response", "origin_entry_ids"], ["idx_runs_daily_usage", "idx_runs_session_usage"], `CREATE TABLE runs (
+      this.rebuildTable("runs", ["request", "response", "origin_entry_ids"], ["idx_runs_daily_usage", "idx_runs_session_usage"], `CREATE TABLE runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         kind TEXT NOT NULL CHECK (kind IN ('noting','consolidation','dreaming','manual')),
         session_id INTEGER REFERENCES sessions(id),

@@ -1319,7 +1319,6 @@ function toRun(row) {
     createdAt: row.created_at
   };
 }
-var toOrdinal = (value) => value === null ? null : Number(value);
 function toSourceEntryMeta(row) {
   return {
     id: Number(row.id),
@@ -1327,14 +1326,14 @@ function toSourceEntryMeta(row) {
     nativeLineage: row.native_lineage,
     nativeId: row.native_id,
     turnId: Number(row.turn_id),
-    entryOrdinal: toOrdinal(row.entry_ordinal),
+    entryOrdinal: Number(row.entry_ordinal),
     addresses: JSON.parse(row.addresses),
     digest: row.digest
   };
 }
 function toSourceEntry(row) {
   const blocks2 = row.blocks === null ? void 0 : JSON.parse(row.blocks) ?? void 0;
-  return { ...JSON.parse(row.content), id: Number(row.id), entryOrdinal: toOrdinal(row.entry_ordinal), ...blocks2 ? { blocks: blocks2 } : {} };
+  return { ...JSON.parse(row.content), id: Number(row.id), entryOrdinal: Number(row.entry_ordinal), ...blocks2 ? { blocks: blocks2 } : {} };
 }
 var SOURCE_ENTRY_META_COLUMNS = "id, session_id, native_lineage, native_id, turn_id, entry_ordinal, addresses, digest";
 var Store = class {
@@ -1593,7 +1592,10 @@ var Store = class {
           pool: placementOwner(this, { revision }, input.metadata)
         }));
       }, priorBudgetPolicy);
-      this.transaction(() => this.migrateHotColdSplit());
+      this.transaction(() => {
+        this.migrateEntryOrdinalBackfill();
+        this.migrateHotColdSplit();
+      });
       const schemaChanged = Number(this.db.prepare("PRAGMA schema_version").get().schema_version) !== schemaBefore;
       if (schemaChanged && this.db.prepare("PRAGMA foreign_key_check").all().length)
         throw new Error("Store migration: foreign key violations");
@@ -1618,6 +1620,78 @@ var Store = class {
       throw error3;
     }
   }
+  /** Shared table-rebuild procedure (SQLite's documented ALTER-TABLE-by-rebuild recipe): preserve
+   * ids and the AUTOINCREMENT sequence, drop and recreate indexes/triggers not explicitly dropped.
+   * Foreign keys are verified once, by the caller's caller, at the end of the whole schema
+   * transaction. Used by 79's hot/cold split and 83's `NOT NULL` rebuild alike -- the same recipe,
+   * two different column-shape changes. */
+  rebuildTable(table, drop, dropIndexes, createSql) {
+    const keep = this.db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name).filter((name) => !drop.includes(name));
+    const objects = this.db.prepare(`SELECT name, sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index','trigger')
+      AND sql IS NOT NULL AND name NOT IN (${dropIndexes.map(() => "?").join(",") || "''"}) ORDER BY name`).all(table, ...dropIndexes);
+    const sequence = this.db.prepare("SELECT seq FROM sqlite_sequence WHERE name = ?").get(table);
+    this.db.exec(createSql.replace(/CREATE TABLE (?:IF NOT EXISTS )?\S+/, `CREATE TABLE ${table}_migrate`));
+    this.db.exec(`INSERT INTO ${table}_migrate (${keep.join(",")}) SELECT ${keep.join(",")} FROM ${table};
+      DROP TABLE ${table}; ALTER TABLE ${table}_migrate RENAME TO ${table}`);
+    if (sequence) this.db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq, table);
+    for (const object7 of objects) this.db.exec(String(object7.sql));
+  }
+  /** 83: give every source entry whose `entry_ordinal` is NULL the ordinal it should have had, then
+   * make the column `NOT NULL`. This codebase's write path (`appendSourceEntry`) always assigns an
+   * ordinal, and the ALTER two blocks above numbers every row that existed the first time
+   * `entry_ordinal` was added -- a NULL only enters through a stale writer's raw INSERT that omitted
+   * the column, never through this migration itself. Backfilled per Turn, in id order, continuing
+   * after the Turn's highest existing ordinal (a Turn with no numbered entry starts at E1); each
+   * backfilled row's `addresses` is then recomputed with the same function a writer uses
+   * (`sourceAddresses`), and its `#tN` legacy tool-call addresses -- which never depended on
+   * `entry_ordinal` -- are asserted unchanged before the row commits. Idempotent: decided by the
+   * column's declared `notnull` flag (Pi review of 2964522), never by "no NULL rows right now", so a
+   * database with 0 NULLs but a still-nullable column still gets the constraint, and a database
+   * already `NOT NULL` does nothing. A pre-split database gets its constraint from 79's own rebuild
+   * of `source_entries`, called right after this method returns (its `createSql` already declares
+   * it, since backfilling here guarantees no NULL survives into it); an already-split database, with
+   * no such rebuild left to piggyback on, gets a dedicated one here. */
+  migrateEntryOrdinalBackfill() {
+    if (!this.db.isTransaction) throw new Error("Ordinal backfill requires an active transaction");
+    const ordinalColumn = this.db.prepare("PRAGMA table_info(source_entries)").all().find((column) => column.name === "entry_ordinal");
+    if (!ordinalColumn || ordinalColumn.notnull) return;
+    const alreadySplit = !this.db.prepare("PRAGMA table_info(source_entries)").all().some((c) => c.name === "content");
+    const missing = this.db.prepare("SELECT id, turn_id FROM source_entries WHERE entry_ordinal IS NULL ORDER BY turn_id, id").all();
+    if (missing.length) {
+      const maxOrdinal = new Map(this.db.prepare("SELECT turn_id, MAX(entry_ordinal) AS max FROM source_entries WHERE entry_ordinal IS NOT NULL GROUP BY turn_id").all().map((row) => [row.turn_id, Number(row.max)]));
+      const setOrdinal = this.db.prepare("UPDATE source_entries SET entry_ordinal = ? WHERE id = ?");
+      const getBody = this.db.prepare(alreadySplit ? "SELECT r.content, r.blocks FROM source_entry_raw r WHERE r.entry_id = ?" : "SELECT content, blocks FROM source_entries WHERE id = ?");
+      const getAddresses = this.db.prepare("SELECT addresses FROM source_entries WHERE id = ?");
+      const setAddresses = this.db.prepare("UPDATE source_entries SET addresses = ? WHERE id = ?");
+      const legacyToolCalls = (addresses) => addresses.filter((address) => /#t\d+$/.test(address)).sort();
+      const next = /* @__PURE__ */ new Map();
+      for (const row of missing) {
+        const ordinal = (next.get(row.turn_id) ?? maxOrdinal.get(row.turn_id) ?? 0) + 1;
+        next.set(row.turn_id, ordinal);
+        setOrdinal.run(ordinal, row.id);
+        const body = getBody.get(row.id);
+        const blocks2 = body.blocks == null ? void 0 : JSON.parse(body.blocks) ?? void 0;
+        const entry = { ...JSON.parse(body.content), id: row.id, entryOrdinal: ordinal, ...blocks2 ? { blocks: blocks2 } : {} };
+        const before = legacyToolCalls(JSON.parse(getAddresses.get(row.id).addresses));
+        const after = sourceAddresses(entry);
+        const afterToolCalls = legacyToolCalls(after);
+        if (before.length !== afterToolCalls.length || before.some((address, index) => address !== afterToolCalls[index]))
+          throw new Error(`ordinal backfill: entry ${row.id}'s #tN addresses changed (${JSON.stringify(before)} -> ${JSON.stringify(afterToolCalls)})`);
+        setAddresses.run(JSON.stringify(after), row.id);
+      }
+    }
+    if (alreadySplit) this.rebuildTable("source_entries", [], [], `CREATE TABLE source_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL REFERENCES sessions(id),
+      native_lineage TEXT NOT NULL,
+      native_id TEXT NOT NULL,
+      turn_id INTEGER NOT NULL REFERENCES turns(id),
+      entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal > 0),
+      addresses TEXT NOT NULL DEFAULT '[]',
+      digest TEXT,
+      UNIQUE (session_id, native_lineage, native_id)
+    )`);
+  }
   /** 79 item 0: split `content`/`blocks` out of `source_entries` into `source_entry_raw`, and
    * `request`/`response`/`origin_entry_ids` out of `runs` into `run_bodies`, each keyed by the owning
    * row's id. Runs inside Store's one all-schema upgrade transaction. Rebuilds follow the codebase's
@@ -1633,26 +1707,15 @@ var Store = class {
     this.db.exec(`CREATE TABLE IF NOT EXISTS run_bodies (
       run_id INTEGER PRIMARY KEY REFERENCES runs(id), request TEXT, response TEXT, origin_entry_ids TEXT)`);
     const columns = (table) => this.db.prepare(`PRAGMA table_info(${table})`).all().map((row) => String(row.name));
-    const rebuild = (table, drop, dropIndexes, createSql) => {
-      const keep = columns(table).filter((c) => !drop.includes(c));
-      const objects = this.db.prepare(`SELECT name, sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index','trigger')
-        AND sql IS NOT NULL AND name NOT IN (${dropIndexes.map(() => "?").join(",") || "''"}) ORDER BY name`).all(table, ...dropIndexes);
-      const sequence = this.db.prepare("SELECT seq FROM sqlite_sequence WHERE name = ?").get(table);
-      this.db.exec(createSql.replace(/CREATE TABLE (?:IF NOT EXISTS )?\S+/, `CREATE TABLE ${table}_79`));
-      this.db.exec(`INSERT INTO ${table}_79 (${keep.join(",")}) SELECT ${keep.join(",")} FROM ${table};
-        DROP TABLE ${table}; ALTER TABLE ${table}_79 RENAME TO ${table}`);
-      if (sequence) this.db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq, table);
-      for (const object7 of objects) this.db.exec(String(object7.sql));
-    };
     if (columns("source_entries").includes("content")) {
       this.db.exec("INSERT INTO source_entry_raw (entry_id, content, blocks) SELECT id, content, blocks FROM source_entries");
-      rebuild("source_entries", ["content", "blocks"], ["idx_source_membership", "idx_source_identity", "idx_source_unnormalized"], `CREATE TABLE source_entries (
+      this.rebuildTable("source_entries", ["content", "blocks"], ["idx_source_membership", "idx_source_identity", "idx_source_unnormalized"], `CREATE TABLE source_entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id INTEGER NOT NULL REFERENCES sessions(id),
         native_lineage TEXT NOT NULL,
         native_id TEXT NOT NULL,
         turn_id INTEGER NOT NULL REFERENCES turns(id),
-        entry_ordinal INTEGER CHECK(entry_ordinal > 0),
+        entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal > 0),
         addresses TEXT NOT NULL DEFAULT '[]',
         digest TEXT,
         UNIQUE (session_id, native_lineage, native_id)
@@ -1662,7 +1725,7 @@ var Store = class {
     if (columns("runs").includes("request")) {
       const originExpr = columns("runs").includes("origin_entry_ids") ? "origin_entry_ids" : "NULL";
       this.db.exec(`INSERT INTO run_bodies (run_id, request, response, origin_entry_ids) SELECT id, request, response, ${originExpr} FROM runs`);
-      rebuild("runs", ["request", "response", "origin_entry_ids"], ["idx_runs_daily_usage", "idx_runs_session_usage"], `CREATE TABLE runs (
+      this.rebuildTable("runs", ["request", "response", "origin_entry_ids"], ["idx_runs_daily_usage", "idx_runs_session_usage"], `CREATE TABLE runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         kind TEXT NOT NULL CHECK (kind IN ('noting','consolidation','dreaming','manual')),
         session_id INTEGER REFERENCES sessions(id),
