@@ -177,6 +177,28 @@ test("off/on transitions publish through the reconcile the binding watch already
   } finally { await coordinator.shutdown("test"); }
 });
 
+test("an automatic off recorded only in the Store publishes off, never the binding's stale on", async () => {
+  // Production S136: three failed Noting runs switched the core session off (executions.ts), which
+  // never touches the CC binding. The status file kept publishing the binding's `choice: true` while
+  // every reconcile imported nothing because the session was off.
+  const f = fixture("autooff", { pollIntervalMs: 60_000, "noting.triggerTokens": 1_000_000_000 });
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, "2026-01-01T00:00:00.000Z");
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  try {
+    await coordinator.start();
+    expect(readCcStatus(f.stateDir, f.nativeSessionId)!.enabled).toBe(true);
+    const coreSessionId = readBinding(f.config, f.nativeSessionId)!.coreSessionId!;
+    const store = new Store(f.config.dbPath);
+    try { store.setEnrollment(coreSessionId, false); } finally { store.close(); }
+    expect(readBinding(f.config, f.nativeSessionId)!.enrollment.choice).not.toBe(false); // the binding still says on
+    await coordinator.requestReconcile("binding watch");
+    const status = readCcStatus(f.stateDir, f.nativeSessionId)!;
+    expect(status.enabled).toBe(false);
+    expect(status.counts).toBeUndefined(); // off counts nothing, as Pi's footer (24a)
+    expect(status.cost).toBeUndefined();
+  } finally { await coordinator.shutdown("test"); }
+});
+
 test("retarget writes under the new native session id and removes the old file", async () => {
   const f = fixture("retarget", { pollIntervalMs: 60_000 });
   const parentId = f.nativeSessionId, childId = "native-retarget-child", childTranscript = join(f.dir, "child.jsonl");

@@ -7691,6 +7691,9 @@ var import_node_fs2 = require("node:fs");
 var import_node_path3 = require("node:path");
 var import_node_crypto9 = require("node:crypto");
 var import_node_sqlite2 = require("node:sqlite");
+function sessionEnabled(binding, store) {
+  return binding.coreSessionId === null ? binding.enrollment.choice ?? binding.enrollment.defaultEnabled : store.enabled(binding.coreSessionId);
+}
 var coreHostOf = (binding) => binding.coreHost ?? `cc:${validateNativeSessionId(binding.nativeSessionId)}`;
 var NATIVE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 var wait = (milliseconds, signal) => new Promise((resolve4, reject) => {
@@ -39598,18 +39601,19 @@ var CcCoordinator = class {
     try {
       const binding = readBinding(this.config, this.nativeSessionId);
       if (!binding?.executor || !this.control || binding.executor.token !== this.control.executor.token) return;
-      const enabled2 = binding.enrollment.choice ?? binding.enrollment.defaultEnabled;
+      if (binding.coreSessionId !== null && !this.importer) return;
+      const enabled2 = sessionEnabled(binding, this.importer?.memory.store ?? { enabled: () => false });
       const running = new Set(this.scheduler?.running() ?? []);
       let counts, cost;
       const reconcile = this.lastReconcile;
-      if (this.importer && reconcile && reconcile.coreSessionId !== null) {
+      if (enabled2 && this.importer && reconcile && reconcile.coreSessionId !== null) {
         try {
           counts = this.importer.memory.progress(reconcile.coreSessionId, reconcile.branch, reconcile.headTurnId ?? null);
         } catch (error3) {
           this.diagnostic(`status counts unavailable (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
         }
       }
-      if (this.importer) {
+      if (enabled2 && this.importer) {
         try {
           cost = this.importer.memory.spendSince(localMidnight());
         } catch (error3) {
@@ -40156,7 +40160,7 @@ function ccVisibleView(records, binding) {
   }
   return view;
 }
-var enabled = (binding, memory) => binding.coreSessionId === null ? binding.enrollment.choice ?? binding.enrollment.defaultEnabled : memory.store.enabled(binding.coreSessionId);
+var enabled = (binding, memory) => sessionEnabled(binding, memory.store);
 async function lockedInjectionBinding(config3, nativeSessionId, transcriptPath, memory) {
   return updateBinding(config3, nativeSessionId, (current) => {
     if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== transcriptPath)

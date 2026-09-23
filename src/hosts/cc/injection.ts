@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { TraceMemory, knowledgeStateKey, noVisibility, type Injection, type KnowledgeStateReceipt, type VisibleView } from "../../core/api/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { coreHostOf, implicitCcProject, readBinding, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
+import { coreHostOf, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
 import { CcProjection } from "./importer.ts";
 import { ccSourceBlocks, classifySourceRecord, nativeParentId, readCompleteTranscript, selectedNativePath, type CcNativeRecord } from "./transcript.ts";
 
@@ -243,9 +243,7 @@ export function ccVisibleView(records: readonly CcNativeRecord[], binding: CcVis
   return view;
 }
 
-const enabled = (binding: CcSessionBinding, memory: ReturnType<typeof TraceMemory>): boolean => binding.coreSessionId === null
-  ? binding.enrollment.choice ?? binding.enrollment.defaultEnabled
-  : memory.store.enabled(binding.coreSessionId);
+const enabled = (binding: CcSessionBinding, memory: ReturnType<typeof TraceMemory>): boolean => sessionEnabled(binding, memory.store);
 
 async function lockedInjectionBinding(config: ResolvedCcHostConfig, nativeSessionId: string,
   transcriptPath: string, memory: ReturnType<typeof TraceMemory>): Promise<CcSessionBinding> {

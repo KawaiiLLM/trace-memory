@@ -2,7 +2,7 @@ import { existsSync, readdirSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { bindingPath, coreHostOf, readBinding, updateBinding, validateNativeSessionId, type CcExecutorBinding, type CcHookInput,
+import { bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, validateNativeSessionId, type CcExecutorBinding, type CcHookInput,
   type CcSessionBinding } from "./binding.ts";
 import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
 import type { CcWorkerJournal } from "./worker.ts";
@@ -237,15 +237,19 @@ export class CcCoordinator {
     try {
       const binding = readBinding(this.config, this.nativeSessionId);
       if (!binding?.executor || !this.control || binding.executor.token !== this.control.executor.token) return;
-      const enabled = binding.enrollment.choice ?? binding.enrollment.defaultEnabled;
+      // The same rule injection uses: the Store's enrollment once a core session exists, so an
+      // automatic off is published as off. Without an open Store there is nothing true to publish.
+      if (binding.coreSessionId !== null && !this.importer) return;
+      const enabled = sessionEnabled(binding, this.importer?.memory.store ?? { enabled: () => false });
       const running = new Set(this.scheduler?.running() ?? []);
       let counts: CcStatusFile["counts"], cost: number | undefined;
       const reconcile = this.lastReconcile;
-      if (this.importer && reconcile && reconcile.coreSessionId !== null) {
+      // Off counts nothing (24a, as Pi's footer): no path, Raw or run reads for a line that shows `○ off`.
+      if (enabled && this.importer && reconcile && reconcile.coreSessionId !== null) {
         try { counts = this.importer.memory.progress(reconcile.coreSessionId, reconcile.branch, reconcile.headTurnId ?? null); }
         catch (error) { this.diagnostic(`status counts unavailable (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
       }
-      if (this.importer) {
+      if (enabled && this.importer) {
         try { cost = this.importer.memory.spendSince(localMidnight()); }
         catch (error) { this.diagnostic(`status cost unavailable (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
       }
