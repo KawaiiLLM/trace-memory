@@ -1111,7 +1111,8 @@ var Store = class {
     if (captured.some((id) => !Number.isInteger(id) || Number(id) <= 0) || new Set(captured).size !== captured.length)
       throw new Error("trigger origin path is malformed");
     if (!captured.length) return null;
-    const rows = this.db.prepare("SELECT id, session_id, turn_id FROM source_entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(captured));
+    const rows = this.db.prepare(`SELECT id, session_id, turn_id FROM source_entries INDEXED BY idx_source_membership
+      WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))`).all(path.sessionId, JSON.stringify(captured));
     if (rows.length !== captured.length || rows.some((entry) => entry.session_id !== path.sessionId)) throw new Error("trigger origin path contains a missing or foreign entry");
     const byId = new Map(rows.map((entry) => [entry.id, entry]));
     const turns = this.pathTurns(path);
@@ -2461,7 +2462,8 @@ var Store = class {
     const candidates = /* @__PURE__ */ new Set([...carried.keys(), ...selected]);
     if (!path || !candidates.size || !carried.size && ![...raw.values()].includes("source")) return /* @__PURE__ */ new Set();
     const result = /* @__PURE__ */ new Set();
-    for (const row of this.db.prepare("SELECT id, session_id, native_id FROM source_entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...candidates]))) {
+    for (const row of this.db.prepare(`SELECT id, session_id, native_id FROM source_entries INDEXED BY idx_source_identity
+      WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))`).all(path.sessionId, JSON.stringify([...candidates]))) {
       if (row.session_id !== path.sessionId || !selected.has(row.id)) continue;
       if (carried.get(row.id) === row.native_id || raw.get(row.native_id) === "source") result.add(row.id);
     }
@@ -3340,7 +3342,8 @@ ${rendered.get(value.revision.id)}`;
       if (typeof lineage !== "string" || !lineage) throw new Error("current path requires a non-empty lineage");
       if (!branch || new Set(entryIds).size !== entryIds.length || entryIds.some((id) => !Number.isSafeInteger(id) || id < 1))
         throw new Error("invalid source path");
-      const rows = this.db.prepare("SELECT id, turn_id, session_id FROM source_entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(entryIds));
+      const rows = this.db.prepare(`SELECT id, turn_id, session_id FROM source_entries INDEXED BY idx_source_membership
+        WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))`).all(sessionId, JSON.stringify(entryIds));
       const entries = new Map(rows.map((row) => [Number(row.id), { turnId: Number(row.turn_id), sessionId: Number(row.session_id) }]));
       if (entryIds.some((id) => entries.get(id)?.sessionId !== sessionId)) throw new Error("invalid source path");
       const headAncestry = this.pathTurns({ sessionId, headTurnId });
@@ -3377,7 +3380,7 @@ ${rendered.get(value.revision.id)}`;
   selectSourcePath(sessionId, branch, entryIds) {
     return this.transaction(() => {
       this.requireEnabled(sessionId);
-      const owned = this.db.prepare("SELECT COUNT(*) n FROM source_entries WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))").get(sessionId, JSON.stringify(entryIds)).n;
+      const owned = this.db.prepare("SELECT COUNT(*) n FROM source_entries INDEXED BY idx_source_membership WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))").get(sessionId, JSON.stringify(entryIds)).n;
       if (!branch || new Set(entryIds).size !== entryIds.length || owned !== entryIds.length) throw new Error("invalid source path");
       this.writeSourcePath(sessionId, branch, entryIds);
     });
