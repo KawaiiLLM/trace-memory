@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, tokens, toolDefinitions, type NotingAgentInput } from "../../source-fixture.ts";
 import { countRunBodies } from "../../perf/fixture.ts";
+import { Store } from "../../../src/core/store/index.ts";
 
 const time = "2026-09-09T00:00:00Z";
 let directory: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>;
@@ -165,4 +166,53 @@ test("22d: an unknown or non-JSON usage counts its run and contributes no observ
   memory.store.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ output: "empty", usage: {} }), cancelled);
   expect(memory.store.listRunUsage(sessionId).map(r => r.usage === null)).toEqual([false, false, true]);
   expect(memory.spend(sessionId)).toMatchObject({ input: one.input, cost: one.cost });
+});
+
+// 71: listRunUsage stopped reparsing every response through six SQL json1 calls; these cases pin
+// that the replacement (a) never parses one response more than once, (b) always reads the row fresh
+// — an amendment from a second connection is seen with no cache to invalidate — and (c) still keeps
+// `since` an inclusive UTC boundary across midnight, the shape spendSince's daily figure depends on.
+test("71: listRunUsage parses each response at most once, whatever its shape", async () => {
+  expect((await noting()).outcome).toBe("success");
+  const runId = memory.store.listRuns(sessionId)[0]!.id;
+  const write = (response: unknown) => memory.store.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify(response), runId);
+  write({ usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } } });
+  memory.store.recordRun({ kind: "consolidation", sessionId, branch: "main", outcome: "cancelled", createdAt: time,
+    response: JSON.stringify({ usage: null }) });
+  memory.store.recordRun({ kind: "manual", sessionId, branch: "main", outcome: "failure", createdAt: time, response: "not json at all" });
+  memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: time, response: null as unknown as string });
+
+  const rows = memory.store.listRuns(sessionId);
+  const original = JSON.parse;
+  let parses = 0;
+  (JSON as unknown as { parse: typeof JSON.parse }).parse = ((...args: Parameters<typeof JSON.parse>) => { parses++; return original(...args); }) as typeof JSON.parse;
+  let usage: ReturnType<typeof memory.store.listRunUsage>;
+  try { usage = memory.store.listRunUsage(sessionId); } finally { (JSON as unknown as { parse: typeof JSON.parse }).parse = original; }
+  const responded = rows.filter(r => r.response !== null).length; // JSON.parse(null-column) is never attempted
+  expect(parses).toBe(responded); // exactly one parse attempt per row that has a response body, never more
+  expect(usage.map(u => u.usage === null)).toEqual([false, true, true, true]);
+});
+
+test("71: an amendment from a second connection to the same file is reflected with no stale cache", async () => {
+  expect((await noting()).outcome).toBe("success");
+  const runId = memory.store.listRuns(sessionId)[0]!.id;
+  const second = new Store(dbPath);
+  try {
+    second.db.prepare("UPDATE runs SET response = ? WHERE id = ?")
+      .run(JSON.stringify({ usage: { input: 500, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.2 } } }), runId);
+    expect(memory.spend(sessionId)).toMatchObject({ input: 500, output: 50, cost: 0.2 });
+    second.db.prepare("UPDATE runs SET response = ? WHERE id = ?")
+      .run(JSON.stringify({ usage: { input: 900, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.4 } } }), runId);
+    expect(memory.spend(sessionId)).toMatchObject({ input: 900, cost: 0.4 }); // no cache stuck on the first read
+  } finally { second.close(); }
+});
+
+test("71: spendSince keeps an inclusive UTC midnight boundary", async () => {
+  memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: "2026-09-08T23:59:59.000Z",
+    response: JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 1 } } }) });
+  memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: "2026-09-09T00:00:00.000Z",
+    response: JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 2 } } }) });
+  memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: "2026-09-09T00:00:01.000Z",
+    response: JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 4 } } }) });
+  expect(memory.spendSince("2026-09-09T00:00:00.000Z")).toBe(6); // midnight itself counts; the run just before it does not
 });
