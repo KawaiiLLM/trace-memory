@@ -761,8 +761,8 @@ export class Store {
         // so an `id IN (...)` lookup against the table walks every row's overflow pages to reach it.
         // A redundant covering index keyed by `id` (already the rowid) lets SQLite answer these
         // reads as an index-only scan instead: verified with EXPLAIN QUERY PLAN, "USING COVERING
-        // INDEX". No query changes elsewhere; the planner selects it over the rowid table scan on
-        // its own. About 9 MB at today's size; idempotent, like the two indexes just above.
+        // INDEX". The planner does not choose it on its own without fresh statistics, so every query that
+        // relies on it names it with INDEXED BY. About 9 MB at today's size; idempotent, like the two indexes just above.
         this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_membership ON source_entries(id, session_id, turn_id, addresses)");
         if (newAddresses || normalizeSource) {
           const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
@@ -2935,7 +2935,7 @@ export class Store {
   private pathEntryIds(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number[] {
     const turns = prepared?.turns ?? this.pathTurns({ sessionId, headTurnId });
     const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch) as { entry_ids: string } | undefined;
-    const rows = (row ? this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e ON e.id = j.value ORDER BY j.key").all(row.entry_ids)
+    const rows = (row ? this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e INDEXED BY idx_source_membership ON e.id = j.value ORDER BY j.key").all(row.entry_ids)
       : this.db.prepare("SELECT id, turn_id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId)) as { id: number; turn_id: number }[];
     return rows.filter(r => turns.has(r.turn_id)).map(r => r.id);
   }

@@ -65,7 +65,9 @@ test("71: current membership and a path snapshot read source_entries only throug
     const { result: input, statements } = captureSql(store, () => store.commitGraphInput());
     expect(input.metadata.currentSnapshots!.size).toBeGreaterThan(0); // membership was actually built
     const { statements: snapshotStatements } = captureSql(store, () => store.pathSnapshot(readerPath));
-    const sourceStatements = [...statements, ...snapshotStatements].filter(sql => sql.includes("source_entries"));
+    // The footer's live `entries` count reaches the path's entry list on every refresh, cached or not.
+    const { statements: pendingStatements } = captureSql(store, () => store.pendingEntryIds(reader.id, "main", readNode.turn.id));
+    const sourceStatements = [...statements, ...snapshotStatements, ...pendingStatements].filter(sql => sql.includes("source_entries"));
     expect(sourceStatements.length).toBeGreaterThan(0);
     for (const sql of sourceStatements) {
       expect(sql).not.toMatch(/\bcontent\b/); // 8.1 KB Raw payload column, never selected for membership
