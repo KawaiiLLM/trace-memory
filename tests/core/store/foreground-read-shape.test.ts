@@ -82,6 +82,37 @@ test("71: current membership and a path snapshot read source_entries only throug
   } finally { store.close(); }
 });
 
+test("71: publishing, selecting, trigger origins and visible Raw read whole-path metadata only from covering indexes", () => {
+  // Live Pi 2026-09-23: publishSourcePath runs on every appended entry and its rowid lookup cost
+  // 0.5-1.4 s whenever the pages were cold (12 ms through the covering index on the same path).
+  const dbPath = database(), store = new Store(dbPath);
+  try {
+    const project = store.createProject({ name: "publish", declaredBy: "mark" });
+    const owner = session(store, project.id, "owner"), other = session(store, project.id, "other");
+    const root = append(store, owner.id, null, "root"), child = append(store, owner.id, root.turn.id, "child");
+    const foreign = append(store, other.id, null, "foreign");
+    const path: KnowledgePath = { sessionId: owner.id, branch: "main", headTurnId: child.turn.id };
+    const ids = [root.entry.id, child.entry.id];
+    const { statements } = captureSql(store, () => {
+      store.selectSourcePath(owner.id, "main", ids);
+      store.publishSourcePath(owner.id, "main", ids, child.turn.id, "L");
+      store.triggerOrigin(path, child.entry.id);
+      store.visibleSourceEntryIds(path, store.pathSnapshot(path), new Map([["child", "source"]]), new Map());
+    });
+    const sourceStatements = statements.filter(sql => sql.includes("source_entries") && sql.includes("json_each"));
+    expect(sourceStatements.length).toBeGreaterThanOrEqual(4);
+    for (const sql of sourceStatements) {
+      expect(sql).not.toMatch(/\bcontent\b|\bblocks\b/);
+      const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(sql.match(/\?/g)!.length === 2 ? [owner.id, JSON.stringify(ids)] : [JSON.stringify(ids)]))
+        .map(row => String((row as { detail: string }).detail)).join("\n");
+      expect(plan, sql).toMatch(/COVERING INDEX idx_source_(membership|identity)/);
+    }
+    // The ownership checks still reject a foreign entry.
+    expect(() => store.publishSourcePath(owner.id, "main", [root.entry.id, foreign.entry.id], child.turn.id, "L")).toThrow("invalid source path");
+    expect(() => store.selectSourcePath(owner.id, "main", [root.entry.id, foreign.entry.id])).toThrow("invalid source path");
+  } finally { store.close(); }
+});
+
 test("71: a footer miss issues no per-fact turns lookup", () => {
   const dbPath = database(), store = new Store(dbPath);
   try {
