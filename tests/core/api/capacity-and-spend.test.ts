@@ -11,6 +11,24 @@ import { sourceSeededMemory, tokens, toolDefinitions, type NotingAgentInput } fr
 import { countRunBodies } from "../../perf/fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
 
+/** 77: every real writer stores `response` and its five usage columns in one statement (Store's
+ * private `usageColumns` helper), so a raw-SQL amendment that only sets `response` -- exactly what
+ * these tests used before 77 -- now leaves a run's usage columns stale (null, "no observation"),
+ * which is no longer a valid fixture: spend reads the columns, never `response`. This mirrors that
+ * derivation for the well-formed shapes these tests write (an object `usage`, or none); the
+ * deliberately odd shapes -- scalars, booleans, non-JSON -- are pinned separately below against 71's
+ * own extraction SQL, not re-derived by hand here. */
+function writeRunResponse(store: Store, runId: number, response: unknown): void {
+  const usage = response && typeof response === "object" && "usage" in (response as object) ? (response as { usage?: unknown }).usage : undefined;
+  const columns = usage && typeof usage === "object" ? [
+    (usage as { input?: number }).input ?? 0, (usage as { output?: number }).output ?? 0,
+    (usage as { cacheRead?: number }).cacheRead ?? 0, (usage as { cacheWrite?: number }).cacheWrite ?? 0,
+    (usage as { cost?: { total?: number } }).cost?.total ?? 0,
+  ] : [null, null, null, null, null];
+  store.db.prepare(`UPDATE runs SET response = ?, usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`)
+    .run(JSON.stringify(response), ...columns, runId);
+}
+
 const time = "2026-09-09T00:00:00Z";
 let directory: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>;
 let calls: NotingAgentInput[], renders: number;
@@ -120,7 +138,7 @@ test("27a 2026-09-10: the freeze admits material the allowance exactly fits and 
 test("22d: spend totals come from the recorded usage without loading a run's request or response body", async () => {
   expect((await noting()).outcome).toBe("success");
   const usage = { input: 1_200, output: 300, cacheRead: 4_000, cacheWrite: 100, cost: { total: 0.25 } };
-  const write = (runId: number, response: unknown) => memory.store.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify(response), runId);
+  const write = (runId: number, response: unknown) => writeRunResponse(memory.store, runId, response);
   const runId = memory.store.listRuns(sessionId)[0]!.id;
   write(runId, { output: "x".repeat(200_000), usage, problems: [] });
   // The pre-change implementation, computed here from the bodies: the same totals, read the slow way.
@@ -151,7 +169,7 @@ test("22d: an unknown or non-JSON usage counts its run and contributes no observ
   expect((await noting()).outcome).toBe("success");
   const runId = memory.store.listRuns(sessionId)[0]!.id;
   const observed = { input: 900, output: 90, cacheRead: 10, cacheWrite: 1, cost: { total: 0.125 } };
-  memory.store.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ output: "done", usage: observed }), runId);
+  writeRunResponse(memory.store, runId, { output: "done", usage: observed });
   const one = memory.spend(sessionId);
   const cancelled = memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "cancelled", createdAt: time,
     response: JSON.stringify({ output: "cancelled", usage: null, usageStatus: "unknown" }) }).id;
@@ -163,23 +181,24 @@ test("22d: an unknown or non-JSON usage counts its run and contributes no observ
   expect(after.runs).toEqual({ noting: 2, consolidation: 1, dreaming: 0, manual: 0 }); // counted as runs, never as usage
   // A run that did record an all-zero usage is an observation, and stays one: the totals are unchanged
   // by it, but it is not confused with the two above — its usage is present in the projection.
-  memory.store.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ output: "empty", usage: {} }), cancelled);
+  writeRunResponse(memory.store, cancelled, { output: "empty", usage: {} });
   expect(memory.store.listRunUsage(sessionId).map(r => r.usage === null)).toEqual([false, false, true]);
   expect(memory.spend(sessionId)).toMatchObject({ input: one.input, cost: one.cost });
 });
 
-// 71: listRunUsage keeps 22d's invariant — the request and response audit bodies never enter
-// JavaScript — while stopping the six-SQL-json1-call reparse per row. These cases pin that (a) SQL
-// hands JavaScript only the small usage extraction, never the response text itself, whatever the
-// response's shape (a large body, a stray scalar `usage`, a string that itself looks like JSON, a
-// non-JSON response, or no response at all), (b) an amendment from a second connection is seen with
-// no cache to invalidate, and (c) `since` stays an inclusive UTC boundary across midnight.
-test("71: listRunUsage hands JavaScript only the extracted usage, never the response body", async () => {
+// 77: listRunUsage now reads only the five usage columns through `idx_runs_session_usage`, never
+// `request` or `response` -- superseding 71's read-time reparse (a per-refresh multi-path
+// `json_extract`), whose one-parse query survives only as the schema upgrade's backfill. These cases
+// pin that (a) the statement it issues never mentions `response`/`request` and is answered by the
+// covering index alone, whatever the response's shape at write time (a large body, a stray scalar
+// `usage`, a string that itself looks like JSON, a non-JSON response, or no response at all), (b) an
+// amendment from a second connection is seen with no cache to invalidate, and (c) `since` stays an
+// inclusive UTC boundary across midnight (in `spendSince`, below).
+test("77: listRunUsage never selects response or request, served by its covering index alone", async () => {
   expect((await noting()).outcome).toBe("success");
   const runId = memory.store.listRuns(sessionId)[0]!.id;
-  const write = (response: unknown) => memory.store.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify(response), runId);
   const bigOutput = "x".repeat(200_000);
-  write({ output: bigOutput, usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } } });
+  writeRunResponse(memory.store, runId, { output: bigOutput, usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } } });
   memory.store.recordRun({ kind: "consolidation", sessionId, branch: "main", outcome: "cancelled", createdAt: time,
     response: JSON.stringify({ usage: null }) });
   memory.store.recordRun({ kind: "manual", sessionId, branch: "main", outcome: "failure", createdAt: time, response: "not json at all" });
@@ -190,32 +209,26 @@ test("71: listRunUsage hands JavaScript only the extracted usage, never the resp
     response: JSON.stringify({ usage: '{"input":999}' }) });
 
   const original = memory.store.db.prepare.bind(memory.store.db);
-  const resultChars: number[] = [];
-  (memory.store.db as unknown as { prepare: typeof memory.store.db.prepare }).prepare = ((sql: string) => {
-    const statement = original(sql);
-    if (!sql.includes("json_extract")) return statement;
-    const all = statement.all.bind(statement);
-    statement.all = ((...args: Parameters<typeof statement.all>) => {
-      const rows = all(...args) as unknown as { fields: string | null }[];
-      for (const row of rows) resultChars.push(row.fields?.length ?? 0);
-      return rows;
-    }) as unknown as typeof statement.all;
-    return statement;
-  }) as typeof memory.store.db.prepare;
+  const statements: string[] = [];
+  (memory.store.db as unknown as { prepare: typeof memory.store.db.prepare }).prepare = ((sql: string) => { statements.push(sql); return original(sql); }) as typeof memory.store.db.prepare;
   let usage: ReturnType<typeof memory.store.listRunUsage>;
   try { usage = memory.store.listRunUsage(sessionId); }
   finally { (memory.store.db as unknown as { prepare: typeof memory.store.db.prepare }).prepare = original; }
 
-  expect(resultChars).toHaveLength(5);
-  for (const chars of resultChars) expect(chars).toBeLessThan(200); // never anywhere near the 200,000-char response
+  expect(statements).toHaveLength(1); // one statement, no per-row follow-up query
+  expect(statements[0]).not.toMatch(/\bresponse\b|\brequest\b/); // the audit bodies are never named
+  expect(statements[0]).toMatch(/INDEXED BY idx_runs_session_usage/); // answered by the covering index, not a planner guess
   expect(usage.map(u => u.usage === null)).toEqual([false, true, true, true, false]);
   expect(usage[4]!.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }); // the string usage: all zero, not reparsed
 });
 
-test("71: listRunUsage matches the per-field SQL extraction for every scalar shape, booleans included", async () => {
+test("77: listRunUsage's persisted columns match 71's extraction SQL for every scalar shape, booleans included", async () => {
   expect((await noting()).outcome).toBe("success");
-  // Historical responses can carry odd scalar types. The pre-71 query extracted each field as an SQL
-  // scalar (JSON true -> 1, false -> 0), so the multi-path version must reproduce that, not drop it.
+  // Historical responses can carry odd scalar types. `usageColumns` (the one write-time helper every
+  // writer of `response` routes through) must reproduce the same result the old read-time SQL
+  // extracted (JSON true -> 1, false -> 0), not drop it. `recordRun` writes both in one statement, so
+  // this reads them straight back through `listRunUsage`'s covering index, not the SQL below --
+  // which is independent ground truth, computed here against the same `response` text for comparison.
   const shapes: unknown[] = [
     { usage: { input: true, output: false, cacheRead: "7", cacheWrite: null, cost: { total: true } } },
     { usage: { input: 3, output: 2.5, cacheRead: -1, cacheWrite: [1], cost: { total: { nested: 1 } } } },
@@ -238,16 +251,14 @@ test("71: listRunUsage matches the per-field SQL extraction for every scalar sha
   expect(memory.store.listRunUsage(sessionId)).toEqual(expected);
 });
 
-test("71: an amendment from a second connection to the same file is reflected with no stale cache", async () => {
+test("77: an amendment from a second connection to the same file is reflected with no stale cache", async () => {
   expect((await noting()).outcome).toBe("success");
   const runId = memory.store.listRuns(sessionId)[0]!.id;
   const second = new Store(dbPath);
   try {
-    second.db.prepare("UPDATE runs SET response = ? WHERE id = ?")
-      .run(JSON.stringify({ usage: { input: 500, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.2 } } }), runId);
+    writeRunResponse(second, runId, { usage: { input: 500, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.2 } } });
     expect(memory.spend(sessionId)).toMatchObject({ input: 500, output: 50, cost: 0.2 });
-    second.db.prepare("UPDATE runs SET response = ? WHERE id = ?")
-      .run(JSON.stringify({ usage: { input: 900, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.4 } } }), runId);
+    writeRunResponse(second, runId, { usage: { input: 900, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.4 } } });
     expect(memory.spend(sessionId)).toMatchObject({ input: 900, cost: 0.4 }); // no cache stuck on the first read
   } finally { second.close(); }
 });
