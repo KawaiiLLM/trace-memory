@@ -394,6 +394,13 @@ export default function (pi: ExtensionAPI) {
    * taskEligibility computation this ticket removes from the per-entry path, and never triggered by
    * ingesting Raw alone, since Store.progressSignal deliberately excludes the source/entry tables. */
   let lastArmSignal: string | undefined;
+  /** Ticket 72: fences the completion checkpoint below the same way CC's `cancellationEpoch` fences
+   * its own — a task admitted before a stop or a branch switch must not use a late completion to
+   * launch C or D. Bumped by `stopCatchup` (every call, not only while a catchup is active) and by a
+   * restore (session start or branch switch, beside `armCD()` there). "Off" needs no bump: `toggle`
+   * runs fully synchronously, so `enabled()` — already checked at `checkQueues`' own top — is correct
+   * by the time any later completion callback (always a later microtask) can run. */
+  let cancellationEpoch = 0;
   /** Ticket 24 "Footer counts and cost" and "Indicator semantics" (24a), scope and colours revised by
    * ticket 51. One status item, one line:
    *
@@ -663,6 +670,7 @@ export default function (pi: ExtensionAPI) {
     current = undefined;
     reconciledLeaf = undefined; reconciled = undefined; // 22b: a restored session reconciles its ancestry from the start
     armCD(); // ticket 69: a restore (session start or branch switch) rebuilds the selected path, so C and D are re-checked at the next opportunity
+    cancellationEpoch++; // ticket 72: fences a completion admitted against the path this restore left behind
     reconcile(false);
     showSpend(ctx);
     if (state.sessionId) {
@@ -959,6 +967,7 @@ export default function (pi: ExtensionAPI) {
     const context = ctx;
     const own = opportunity ?? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
     const signal = memory.store.progressSignal(own.sessionId);
+    const epoch = cancellationEpoch; // ticket 72: every phase launched by this call shares this opportunity's admission epoch
     if (signal !== lastArmSignal) { lastArmSignal = signal; armCD(); }
     for (const kind of phases) {
       if (slots.has(kind)) continue;
@@ -1034,7 +1043,14 @@ export default function (pi: ExtensionAPI) {
         // synchronous loop with no throttling entry between attempts; it falls back to the ordinary
         // next-entry pace instead, exactly as before this ticket. A run that did commit something
         // always changes this signal, so the immediate check still fires for it.
-        if (settled && memory.store.progressSignal(own.sessionId) !== signal) { armCD(); checkQueues(undefined, ["consolidation", "dreaming"], false); }
+        // Ticket 72: a `cancelled` outcome (stop, off, or a branch switch aborted this task mid-flight)
+        // must not launch C or D on the strength of its late completion, and neither may a task admitted
+        // before a stop or a branch switch that happened to settle afterward with some other outcome —
+        // `epoch` fences both. `checkQueues` re-checks `closed`/`enabled()` at its own top, which is
+        // sufficient for "off": `toggle` runs fully synchronously, so by the time this later microtask
+        // runs, `enabled()` already reflects it.
+        if (settled && settled.outcome !== "cancelled" && epoch === cancellationEpoch &&
+          memory.store.progressSignal(own.sessionId) !== signal) { armCD(); checkQueues(undefined, ["consolidation", "dreaming"], false); }
         // R4: a successful ordinary completion while a drain is active is a full checkpoint; any other
         // outcome (failure, cancelled, empty, dropped, bounced) stays N-only, matching the per-poll drive.
         if (catchup) driveCatchup(settled?.outcome === "success");
@@ -1173,6 +1189,7 @@ export default function (pi: ExtensionAPI) {
   };
   const stopCatchup = () => {
     const active = hasBackgroundWork();
+    cancellationEpoch++; // ticket 72: fences the completion checkpoint of any task admitted before this stop
     if (catchup && !catchup.outcome) { catchup.stopped = true; if (!catchup.active.size) catchup.outcome = "stopped"; }
     memory.cancelTasks(); // Not the `stopping` form: future ordinary/explicit admission for this executor remains possible.
     showSpend(ctx);
