@@ -589,8 +589,9 @@ test.each([false, true])("production MCP Consolidation commits its first valid b
       const client = new Client({ name: "consolidation-worker-test", version: "1" }); await client.connect(clientTransport);
       const listed = await client.listTools();
       const memorySchema = (listed.tools.find(tool => tool.name === "memory") as any).inputSchema.properties.operations.items;
-      expect(memorySchema.properties.op.enum).toEqual(["create"]);
-      expect(memorySchema.properties).not.toHaveProperty("id");
+      // 76: the Consolidator also updates and archives; id is present but forbidden for create (the
+      // invalidFirst submission below still exercises that).
+      expect(memorySchema.properties.op.enum).toEqual(["create", "update", "archive"]);
       expect(memorySchema.properties).not.toHaveProperty("absorb");
       yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
         tools: listed.tools.map(tool => `mcp__trace_memory__${tool.name}`), plugins: [], skills: [], slash_commands: [],

@@ -80,24 +80,25 @@ test("48: a trusted Dreamer revives an archived older identity through merge onl
     .toEqual([[old.knowledgeId, revived.commit]]);
 });
 
-test("64b/48: an archive base still requires merge-survivor revival", async () => {
+test("76: an archive base accepts a Dreamer revival through update as well as through merge", async () => {
   const f = fixture();
   const old = f.create("Old identity"), archived = await archive(f, old, 1), active = f.create("Returned identity");
   const trigger = createDreamerTrigger(f.memory, f.path, f.fact, 2, "project");
   const result = await f.scenarios.run(f.memory, f.path, input => {
-    const request = { fixture: "archive requires merge revival" }; input.reportRequest(request);
+    const request = { fixture: "archive accepts update revival" }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
     for (const value of [archived, active, trigger]) trace.execute({ address: `K${value.knowledgeId}@${value.commit}`, itemBudget: null });
+    // 76: baseProblem's archived-base acceptance for a Dreamer revival now covers a plain update too,
+    // not merge alone ("D reviews an archive... to revoke or adjust it, D updates the archived version").
     expect(write.execute({ operations: [{ op: "update", id: `K${old.knowledgeId}@${archived.commit}`,
-      text: "Updated archive", category: "constraint", scope: "project", topics: ["object"], supports: [], reason: "Archive cannot update" }], skipped: [] })).toContain("rejected:");
-    expect(write.execute({ operations: [{ op: "merge", id: `K${old.knowledgeId}@${archived.commit}`,
-      absorb: [`K${active.knowledgeId}@${active.commit}`], text: "Returned without family admission", category: "constraint",
-      scope: "project", topics: ["object"], supports: [], reason: "Revive through merge" },
-      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [], reason: "Retire revival trigger" }], skipped: [] }))
-      .toContain("committed");
-    return { outcome: "success", output: "revived by merge", request };
+      text: "Updated archive", category: "constraint", scope: "project", topics: ["object"], supports: [], reason: "Revive through update" }],
+      skipped: [{ knowledge: `K${active.knowledgeId}@${active.commit}`, because: "Not merged here." }] })).toContain('"committed"');
+    expect(write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`,
+      supports: [], reason: "Retire revival trigger" }], skipped: [] })).toContain("committed");
+    return { outcome: "success", output: "revived by update", request };
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");
+  expect(f.store.currentCommit(old.knowledgeId, f.path)[0]?.text).toBe("Updated archive");
 });
 
 test("64b/48: a later invalid operation rolls revival, links and revisions back atomically", async () => {
