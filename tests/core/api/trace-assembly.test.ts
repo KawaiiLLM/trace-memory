@@ -9,7 +9,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory, renderEntry, renderEntryWhole, type ConfigOverride } from "../../source-fixture.ts";
+import { sourceSeededMemory, renderEntry, renderEntryWhole, type ConfigOverride , hydrate } from "../../source-fixture.ts";
 import { wholeTrace } from "../../trace-pages.ts";
 
 const time = "2026-09-09T00:00:00Z";
@@ -56,7 +56,7 @@ test("23b golden: a call with several native result occurrences shows each occur
 
 test("23b golden: a sibling branch's entries never appear in this branch's trace", () => {
   const t = turn("shared question", "shared reply");
-  const shared = memory.store.listSourceEntries(sessionId, t.id).map(e => e.id);
+  const shared = hydrate(memory.store.listSourceEntries(sessionId, t.id), memory.store).map(e => e.id);
   const sibling = occurrence(t.id, "sibling-reply", { text: "abandoned reply" });
   memory.selectEntries(sessionId, "main", shared);
   memory.selectEntries(sessionId, "fork", [...shared, sibling.id]);
@@ -101,7 +101,7 @@ test("23c golden: full is the same renderer with no budget — the same labels, 
     .toBe(`[T${t.id}#E2@call-1] bash(command=${JSON.stringify(command)}, timeout=30)\n[T${t.id}#E3@call-1] bash success: ${result}`);
   expect(memory.trace(`T${t.id}#t1`)).not.toContain(command); // without full, the same evidence under B
   // Each of the Turn's native entries, in entry order, is the unbounded path's rendering of it.
-  const entries = memory.store.listSourceEntries(sessionId, t.id);
+  const entries = hydrate(memory.store.listSourceEntries(sessionId, t.id), memory.store);
   expect(memory.trace(`T${t.id}`, { full: true }))
     .toBe([header(t.id), ...entries.map(e => renderEntryWhole(e).content)].join("\n"));
 });
@@ -109,7 +109,7 @@ test("23c golden: full is the same renderer with no budget — the same labels, 
 test("33: full is a compression alias and cannot change a bound read's selected branch",  () => {
   const t = turn("shared question", "shared reply");
   memory.store.appendToolCall({ turnId: t.id, name: "bash", input: JSON.stringify({ command: "echo main" }), result: "main result", status: "success" });
-  const shared = memory.store.listSourceEntries(sessionId, t.id).map(e => e.id);
+  const shared = hydrate(memory.store.listSourceEntries(sessionId, t.id), memory.store).map(e => e.id);
   const sibling = occurrence(t.id, "fork-result", { role: "toolResult",
     calls: [{ ordinal: 1, name: "bash", callId: "call-1", result: "fork result", status: "failure" }] });
   memory.selectEntries(sessionId, "main", shared);
@@ -141,7 +141,7 @@ test("23c (GPT review 2026-09-09): a displayed non-text user address is readable
 test("23b: a read of a tool result without full is the entry renderer's tier-1 rendering of that entry", () => {
   const t = turn("render me");
   memory.store.appendToolCall({ turnId: t.id, name: "bash", input: JSON.stringify({ command: "echo hi" }), result: "r".repeat(4_000), status: "success" });
-  const entries = memory.store.listSourceEntries(sessionId, t.id);
+  const entries = hydrate(memory.store.listSourceEntries(sessionId, t.id), memory.store);
   const views = entries.map(e => renderEntry(e, memory.config.render, memory.resultText).content);
   expect(memory.trace(`T${t.id}`)).toBe([header(t.id), ...views].join("\n") +
     `\n\nReceipts:\nT${t.id}: 1 omitted calls (including partial calls)\nexpand: trace({"address":"T${t.id}#E3@call-1","itemBudget":null,"toolCallBudget":null,"toolResultBudget":null})`);

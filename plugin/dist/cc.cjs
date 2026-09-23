@@ -183,16 +183,26 @@ function sourceKey(address) {
   const base = `T${parsed2.turn}#E${parsed2.entries[0].from}`, selector2 = parsed2.selector;
   return selector2?.kind === "call" ? `${base}@${callSelector(selector2.id)}` : address;
 }
-function resolveSource(entries, address) {
+function parseSourceAddress(address) {
   let parsed2;
   try {
     parsed2 = parseTurnAddress(address);
   } catch {
-    return [];
+    return null;
   }
-  if (!parsed2 || parsed2.session !== void 0) return [];
+  if (!parsed2 || parsed2.session !== void 0) return null;
+  const { legacy, entries: selection } = parsed2;
+  if (!legacy && (selection?.length !== 1 || selection[0].to !== void 0)) return null;
+  return parsed2;
+}
+function sourceAddressScope(address) {
+  const parsed2 = parseSourceAddress(address);
+  return parsed2 ? { turn: parsed2.turn, ordinal: parsed2.legacy ? void 0 : parsed2.entries[0].from } : null;
+}
+function resolveSource(entries, address) {
+  const parsed2 = parseSourceAddress(address);
+  if (!parsed2) return [];
   const { turn, legacy, selector: selector2, entries: selection } = parsed2;
-  if (!legacy && (selection?.length !== 1 || selection[0].to !== void 0)) return [];
   return entries.flatMap((entry) => {
     if (entry.turnId !== turn) return [];
     let blocks2 = sourceBlocks(entry).filter((block2) => block2.kind !== "marker");
@@ -722,7 +732,7 @@ function migrateKnowledgeLineage(db, transactionOwned = false) {
   const taskColumns = columns("task_executions");
   const rangeColumns = columns("dreaming_ranges");
   const needsRebuild = !revision.sql.includes("'split'") || revision.sql.includes("actor_role = 'dreaming'");
-  const actions = !revisionColumns.includes("support_semantics") || !revisionColumns.includes("actor_role") || needsRebuild || !runColumns.includes("origin_session_id") || !runColumns.includes("origin_entry_ids") || taskColumns.length > 0 && (!taskColumns.includes("origin_session_id") || !taskColumns.includes("origin_entry_ids")) || rangeColumns.length > 0 && (!rangeColumns.includes("origin_session_id") || !rangeColumns.includes("origin_entry_ids"));
+  const actions = !revisionColumns.includes("support_semantics") || !revisionColumns.includes("actor_role") || needsRebuild || !runColumns.includes("origin_session_id") || taskColumns.length > 0 && (!taskColumns.includes("origin_session_id") || !taskColumns.includes("origin_entry_ids")) || rangeColumns.length > 0 && (!rangeColumns.includes("origin_session_id") || !rangeColumns.includes("origin_entry_ids"));
   if (!actions) return;
   const apply = () => {
     const lockedRevisionColumns = columns("knowledge_revisions");
@@ -738,12 +748,12 @@ function migrateKnowledgeLineage(db, transactionOwned = false) {
       if (sequence) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'knowledge_revisions'").run(sequence.seq);
       for (const object7 of objects) db.exec(String(object7.sql));
     }
-    const addOrigin = (table) => {
+    const addOrigin = (table, entryIds = true) => {
       const existing = columns(table);
       if (!existing.includes("origin_session_id")) db.exec(`ALTER TABLE ${table} ADD COLUMN origin_session_id INTEGER REFERENCES sessions(id)`);
-      if (!existing.includes("origin_entry_ids")) db.exec(`ALTER TABLE ${table} ADD COLUMN origin_entry_ids TEXT`);
+      if (entryIds && !existing.includes("origin_entry_ids")) db.exec(`ALTER TABLE ${table} ADD COLUMN origin_entry_ids TEXT`);
     };
-    addOrigin("runs");
+    addOrigin("runs", false);
     if (taskColumns.length) addOrigin("task_executions");
     if (rangeColumns.length) addOrigin("dreaming_ranges");
     if (!transactionOwned && db.prepare("PRAGMA foreign_key_check").all().length)
@@ -1309,6 +1319,23 @@ function toRun(row) {
     createdAt: row.created_at
   };
 }
+function toSourceEntryMeta(row) {
+  return {
+    id: Number(row.id),
+    sessionId: Number(row.session_id),
+    nativeLineage: row.native_lineage,
+    nativeId: row.native_id,
+    turnId: Number(row.turn_id),
+    entryOrdinal: Number(row.entry_ordinal),
+    addresses: JSON.parse(row.addresses),
+    digest: row.digest
+  };
+}
+function toSourceEntry(row) {
+  const blocks2 = row.blocks === null ? void 0 : JSON.parse(row.blocks) ?? void 0;
+  return { ...JSON.parse(row.content), id: Number(row.id), entryOrdinal: Number(row.entry_ordinal), ...blocks2 ? { blocks: blocks2 } : {} };
+}
+var SOURCE_ENTRY_META_COLUMNS = "id, session_id, native_lineage, native_id, turn_id, entry_ordinal, addresses, digest";
 var Store = class {
   db;
   migration64d;
@@ -1339,7 +1366,7 @@ var Store = class {
     if (captured.some((id) => !Number.isInteger(id) || Number(id) <= 0) || new Set(captured).size !== captured.length)
       throw new Error("trigger origin path is malformed");
     if (!captured.length) return null;
-    const rows = this.db.prepare(`SELECT id, session_id, turn_id FROM source_entries INDEXED BY idx_source_membership
+    const rows = this.db.prepare(`SELECT id, session_id, turn_id FROM source_entries
       WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))`).all(path.sessionId, JSON.stringify(captured));
     if (rows.length !== captured.length || rows.some((entry) => entry.session_id !== path.sessionId)) throw new Error("trigger origin path contains a missing or foreign entry");
     const byId = new Map(rows.map((entry) => [entry.id, entry]));
@@ -1462,25 +1489,34 @@ var Store = class {
           this.db.exec("UPDATE source_paths SET hwm_entry_id = (SELECT IFNULL(MAX(value), 0) FROM json_each(entry_ids))");
         }
         const columns = this.db.prepare("PRAGMA table_info(source_entries)").all();
-        if (!columns.some((r) => r.name === "blocks")) this.db.exec("ALTER TABLE source_entries ADD COLUMN blocks TEXT");
+        const alreadySplit = !columns.some((r) => r.name === "content");
+        if (!alreadySplit) {
+          if (!columns.some((r) => r.name === "blocks")) this.db.exec("ALTER TABLE source_entries ADD COLUMN blocks TEXT");
+        } else if (!this.db.prepare("PRAGMA table_info(source_entry_raw)").all().some((r) => r.name === "blocks")) {
+          this.db.exec("ALTER TABLE source_entry_raw ADD COLUMN blocks TEXT");
+        }
+        this.db.exec(alreadySplit ? "CREATE INDEX IF NOT EXISTS idx_source_unnormalized ON source_entry_raw(entry_id) WHERE blocks IS NULL" : "CREATE INDEX IF NOT EXISTS idx_source_unnormalized ON source_entries(id) WHERE blocks IS NULL");
         const newAddresses = !columns.some((r) => r.name === "addresses");
         if (newAddresses) this.db.exec("ALTER TABLE source_entries ADD COLUMN addresses TEXT NOT NULL DEFAULT '[]'");
-        this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_unnormalized ON source_entries(id) WHERE blocks IS NULL");
-        this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_membership ON source_entries(id, session_id, turn_id, addresses)");
         const newDigest = !columns.some((r) => r.name === "digest");
         if (newDigest) {
           this.db.exec("ALTER TABLE source_entries ADD COLUMN digest TEXT");
           const updateDigest = this.db.prepare("UPDATE source_entries SET digest = ? WHERE id = ?");
-          for (const row of this.db.prepare("SELECT id, json_extract(content, '$.raw') AS raw FROM source_entries ORDER BY id").iterate())
+          const digestSelect = alreadySplit ? "SELECT e.id, json_extract(r.content, '$.raw') AS raw FROM source_entries e JOIN source_entry_raw r ON r.entry_id = e.id ORDER BY e.id" : "SELECT id, json_extract(content, '$.raw') AS raw FROM source_entries ORDER BY id";
+          for (const row of this.db.prepare(digestSelect).iterate())
             updateDigest.run(sourceDigest(String(row.raw)), Number(row.id));
         }
-        this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_identity ON source_entries(session_id, native_lineage, native_id, turn_id, digest)");
-        if (!hadSourceEntryCalls) this.db.exec(`INSERT INTO source_entry_calls (entry_id, turn_id, call_id, ordinal, name)
-          SELECT source_entries.id, turn_id, json_extract(value, '$.callId'), json_extract(value, '$.ordinal'), json_extract(value, '$.name')
-          FROM source_entries, json_each(source_entries.content, '$.calls')`);
+        if (!hadSourceEntryCalls) this.db.exec(alreadySplit ? `INSERT INTO source_entry_calls (entry_id, turn_id, call_id, ordinal, name)
+             SELECT e.id, e.turn_id, json_extract(value, '$.callId'), json_extract(value, '$.ordinal'), json_extract(value, '$.name')
+             FROM source_entries e JOIN source_entry_raw r ON r.entry_id = e.id, json_each(r.content, '$.calls')` : `INSERT INTO source_entry_calls (entry_id, turn_id, call_id, ordinal, name)
+             SELECT source_entries.id, turn_id, json_extract(value, '$.callId'), json_extract(value, '$.ordinal'), json_extract(value, '$.name')
+             FROM source_entries, json_each(source_entries.content, '$.calls')`);
         if (newAddresses || normalizeSource) {
-          const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
-          for (const row of this.db.prepare(`SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id`).iterate()) {
+          const updateAddresses = this.db.prepare("UPDATE source_entries SET addresses = ? WHERE id = ?");
+          const updateBlocks = alreadySplit ? this.db.prepare("UPDATE source_entry_raw SET blocks = ? WHERE entry_id = ?") : this.db.prepare("UPDATE source_entries SET blocks = ? WHERE id = ?");
+          const selectSql = !alreadySplit ? `SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id` : newAddresses ? `SELECT e.id, r.content, e.entry_ordinal, r.blocks FROM source_entries e JOIN source_entry_raw r ON r.entry_id = e.id ORDER BY e.id` : `SELECT r.entry_id AS id, r.content, e.entry_ordinal, r.blocks FROM source_entry_raw r JOIN source_entries e ON e.id = r.entry_id
+               WHERE r.blocks IS NULL ORDER BY r.entry_id`;
+          for (const row of this.db.prepare(selectSql).iterate()) {
             const input = JSON.parse(String(row.content));
             let blocks2, sealMismatch = false;
             if (row.blocks == null) {
@@ -1493,7 +1529,9 @@ var Store = class {
               }
             } else blocks2 = JSON.parse(String(row.blocks));
             const entry = { ...input, id: Number(row.id), entryOrdinal: Number(row.entry_ordinal), ...blocks2 ? { blocks: blocks2 } : {} };
-            update.run(JSON.stringify(sourceAddresses(entry)), blocks2 ? JSON.stringify(blocks2) : sealMismatch || row.blocks === "null" ? "null" : null, entry.id);
+            const blocksValue = blocks2 ? JSON.stringify(blocks2) : sealMismatch || row.blocks === "null" ? "null" : null;
+            updateAddresses.run(JSON.stringify(sourceAddresses(entry)), entry.id);
+            updateBlocks.run(blocksValue, entry.id);
           }
         }
       });
@@ -1510,8 +1548,10 @@ var Store = class {
           for (const row of this.db.prepare(`SELECT id, ${usageFieldsSql("response")} fields FROM runs ORDER BY id`).iterate())
             setUsage.run(...usageFromFields(row.fields), Number(row.id));
         }
-        this.db.exec("CREATE INDEX IF NOT EXISTS idx_runs_daily_usage ON runs(created_at, id, usage_cost)");
-        this.db.exec("CREATE INDEX IF NOT EXISTS idx_runs_session_usage ON runs(session_id, id, kind, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost)");
+        if (runColumns.some((r) => r.name === "request")) {
+          this.db.exec("CREATE INDEX IF NOT EXISTS idx_runs_daily_usage ON runs(created_at, id, usage_cost)");
+          this.db.exec("CREATE INDEX IF NOT EXISTS idx_runs_session_usage ON runs(session_id, id, kind, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost)");
+        }
       });
       migrateDreamingRanges64d(this.db);
       this.db.exec(PROCESSING_SQL);
@@ -1552,6 +1592,10 @@ var Store = class {
           pool: placementOwner(this, { revision }, input.metadata)
         }));
       }, priorBudgetPolicy);
+      this.transaction(() => {
+        this.migrateEntryOrdinalBackfill();
+        this.migrateHotColdSplit();
+      });
       const schemaChanged = Number(this.db.prepare("PRAGMA schema_version").get().schema_version) !== schemaBefore;
       if (schemaChanged && this.db.prepare("PRAGMA foreign_key_check").all().length)
         throw new Error("Store migration: foreign key violations");
@@ -1574,6 +1618,129 @@ var Store = class {
       } catch {
       }
       throw error3;
+    }
+  }
+  /** Shared table-rebuild procedure (SQLite's documented ALTER-TABLE-by-rebuild recipe): preserve
+   * ids and the AUTOINCREMENT sequence, drop and recreate indexes/triggers not explicitly dropped.
+   * Foreign keys are verified once, by the caller's caller, at the end of the whole schema
+   * transaction. Used by 79's hot/cold split and 83's `NOT NULL` rebuild alike -- the same recipe,
+   * two different column-shape changes. */
+  rebuildTable(table, drop, dropIndexes, createSql) {
+    const keep = this.db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name).filter((name) => !drop.includes(name));
+    const objects = this.db.prepare(`SELECT name, sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index','trigger')
+      AND sql IS NOT NULL AND name NOT IN (${dropIndexes.map(() => "?").join(",") || "''"}) ORDER BY name`).all(table, ...dropIndexes);
+    const sequence = this.db.prepare("SELECT seq FROM sqlite_sequence WHERE name = ?").get(table);
+    this.db.exec(createSql.replace(/CREATE TABLE (?:IF NOT EXISTS )?\S+/, `CREATE TABLE ${table}_migrate`));
+    this.db.exec(`INSERT INTO ${table}_migrate (${keep.join(",")}) SELECT ${keep.join(",")} FROM ${table};
+      DROP TABLE ${table}; ALTER TABLE ${table}_migrate RENAME TO ${table}`);
+    if (sequence) this.db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq, table);
+    for (const object7 of objects) this.db.exec(String(object7.sql));
+  }
+  /** 83: give every source entry whose `entry_ordinal` is NULL the ordinal it should have had, then
+   * make the column `NOT NULL`. This codebase's write path (`appendSourceEntry`) always assigns an
+   * ordinal, and the ALTER two blocks above numbers every row that existed the first time
+   * `entry_ordinal` was added -- a NULL only enters through a stale writer's raw INSERT that omitted
+   * the column, never through this migration itself. Backfilled per Turn, in id order, continuing
+   * after the Turn's highest existing ordinal (a Turn with no numbered entry starts at E1); each
+   * backfilled row's `addresses` is then recomputed with the same function a writer uses
+   * (`sourceAddresses`), and its `#tN` legacy tool-call addresses -- which never depended on
+   * `entry_ordinal` -- are asserted unchanged before the row commits. Idempotent: decided by the
+   * column's declared `notnull` flag (Pi review of 2964522), never by "no NULL rows right now", so a
+   * database with 0 NULLs but a still-nullable column still gets the constraint, and a database
+   * already `NOT NULL` does nothing. A pre-split database gets its constraint from 79's own rebuild
+   * of `source_entries`, called right after this method returns (its `createSql` already declares
+   * it, since backfilling here guarantees no NULL survives into it); an already-split database, with
+   * no such rebuild left to piggyback on, gets a dedicated one here. */
+  migrateEntryOrdinalBackfill() {
+    if (!this.db.isTransaction) throw new Error("Ordinal backfill requires an active transaction");
+    const ordinalColumn = this.db.prepare("PRAGMA table_info(source_entries)").all().find((column) => column.name === "entry_ordinal");
+    if (!ordinalColumn || ordinalColumn.notnull) return;
+    const alreadySplit = !this.db.prepare("PRAGMA table_info(source_entries)").all().some((c) => c.name === "content");
+    const missing = this.db.prepare("SELECT id, turn_id FROM source_entries WHERE entry_ordinal IS NULL ORDER BY turn_id, id").all();
+    if (missing.length) {
+      const maxOrdinal = new Map(this.db.prepare("SELECT turn_id, MAX(entry_ordinal) AS max FROM source_entries WHERE entry_ordinal IS NOT NULL GROUP BY turn_id").all().map((row) => [row.turn_id, Number(row.max)]));
+      const setOrdinal = this.db.prepare("UPDATE source_entries SET entry_ordinal = ? WHERE id = ?");
+      const getBody = this.db.prepare(alreadySplit ? "SELECT r.content, r.blocks FROM source_entry_raw r WHERE r.entry_id = ?" : "SELECT content, blocks FROM source_entries WHERE id = ?");
+      const getAddresses = this.db.prepare("SELECT addresses FROM source_entries WHERE id = ?");
+      const setAddresses = this.db.prepare("UPDATE source_entries SET addresses = ? WHERE id = ?");
+      const legacyToolCalls = (addresses) => addresses.filter((address) => /#t\d+$/.test(address)).sort();
+      const next = /* @__PURE__ */ new Map();
+      for (const row of missing) {
+        const ordinal = (next.get(row.turn_id) ?? maxOrdinal.get(row.turn_id) ?? 0) + 1;
+        next.set(row.turn_id, ordinal);
+        setOrdinal.run(ordinal, row.id);
+        const body = getBody.get(row.id);
+        const blocks2 = body.blocks == null ? void 0 : JSON.parse(body.blocks) ?? void 0;
+        const entry = { ...JSON.parse(body.content), id: row.id, entryOrdinal: ordinal, ...blocks2 ? { blocks: blocks2 } : {} };
+        const before = legacyToolCalls(JSON.parse(getAddresses.get(row.id).addresses));
+        const after = sourceAddresses(entry);
+        const afterToolCalls = legacyToolCalls(after);
+        if (before.length !== afterToolCalls.length || before.some((address, index) => address !== afterToolCalls[index]))
+          throw new Error(`ordinal backfill: entry ${row.id}'s #tN addresses changed (${JSON.stringify(before)} -> ${JSON.stringify(afterToolCalls)})`);
+        setAddresses.run(JSON.stringify(after), row.id);
+      }
+    }
+    if (alreadySplit) this.rebuildTable("source_entries", [], [], `CREATE TABLE source_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL REFERENCES sessions(id),
+      native_lineage TEXT NOT NULL,
+      native_id TEXT NOT NULL,
+      turn_id INTEGER NOT NULL REFERENCES turns(id),
+      entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal > 0),
+      addresses TEXT NOT NULL DEFAULT '[]',
+      digest TEXT,
+      UNIQUE (session_id, native_lineage, native_id)
+    )`);
+  }
+  /** 79 item 0: split `content`/`blocks` out of `source_entries` into `source_entry_raw`, and
+   * `request`/`response`/`origin_entry_ids` out of `runs` into `run_bodies`, each keyed by the owning
+   * row's id. Runs inside Store's one all-schema upgrade transaction. Rebuilds follow the codebase's
+   * established table-rebuild procedure (as `migrateDreaming`/`migrateKnowledgeLineage` above):
+   * preserve ids and the AUTOINCREMENT sequence, drop and recreate indexes/triggers, foreign keys
+   * verified once at the end of the whole schema transaction. `content`/`request` column presence is
+   * the one idempotency signal: absent (already split, or a fresh database that never had them here)
+   * means nothing to do. */
+  migrateHotColdSplit() {
+    if (!this.db.isTransaction) throw new Error("Hot/cold split requires an active transaction");
+    this.db.exec(`CREATE TABLE IF NOT EXISTS source_entry_raw (
+      entry_id INTEGER PRIMARY KEY REFERENCES source_entries(id), content TEXT NOT NULL, blocks TEXT)`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS run_bodies (
+      run_id INTEGER PRIMARY KEY REFERENCES runs(id), request TEXT, response TEXT, origin_entry_ids TEXT)`);
+    const columns = (table) => this.db.prepare(`PRAGMA table_info(${table})`).all().map((row) => String(row.name));
+    if (columns("source_entries").includes("content")) {
+      this.db.exec("INSERT INTO source_entry_raw (entry_id, content, blocks) SELECT id, content, blocks FROM source_entries");
+      this.rebuildTable("source_entries", ["content", "blocks"], ["idx_source_membership", "idx_source_identity", "idx_source_unnormalized"], `CREATE TABLE source_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL REFERENCES sessions(id),
+        native_lineage TEXT NOT NULL,
+        native_id TEXT NOT NULL,
+        turn_id INTEGER NOT NULL REFERENCES turns(id),
+        entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal > 0),
+        addresses TEXT NOT NULL DEFAULT '[]',
+        digest TEXT,
+        UNIQUE (session_id, native_lineage, native_id)
+      )`);
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_unnormalized ON source_entry_raw(entry_id) WHERE blocks IS NULL");
+    }
+    if (columns("runs").includes("request")) {
+      const originExpr = columns("runs").includes("origin_entry_ids") ? "origin_entry_ids" : "NULL";
+      this.db.exec(`INSERT INTO run_bodies (run_id, request, response, origin_entry_ids) SELECT id, request, response, ${originExpr} FROM runs`);
+      this.rebuildTable("runs", ["request", "response", "origin_entry_ids"], ["idx_runs_daily_usage", "idx_runs_session_usage"], `CREATE TABLE runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL CHECK (kind IN ('noting','consolidation','dreaming','manual')),
+        session_id INTEGER REFERENCES sessions(id),
+        branch TEXT,
+        range_from TEXT,
+        range_to TEXT,
+        prompt_hash TEXT,
+        model TEXT,
+        mode TEXT,
+        origin_session_id INTEGER REFERENCES sessions(id),
+        outcome TEXT NOT NULL CHECK (outcome IN ('success','failure','cancelled','bounced','conflict')),
+        created_at TEXT NOT NULL,
+        usage_input INTEGER, usage_output INTEGER, usage_cache_read INTEGER, usage_cache_write INTEGER, usage_cost REAL
+      )`);
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at, id)");
     }
   }
   beginShutdown() {
@@ -2134,8 +2301,9 @@ var Store = class {
       const factIds = this.db.prepare("SELECT id FROM facts WHERE run_id = ? ORDER BY id").all(id).map((f) => f.id);
       const response = JSON.parse(input.response ?? "{}");
       const nextResponse = JSON.stringify({ ...response, ...input.entryAudit ? { entryAudit: input.entryAudit } : {}, ...previous.kind === "noting" || factIds.length ? { factIds } : {} });
-      this.db.prepare(`UPDATE runs SET request = ?, response = ?, outcome = ?, mode = ?,
-          usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`).run(input.request ?? null, nextResponse, input.outcome, input.mode ?? null, ...this.usageColumns(nextResponse), id);
+      this.db.prepare("UPDATE run_bodies SET request = ?, response = ? WHERE run_id = ?").run(input.request ?? null, nextResponse, id);
+      this.db.prepare(`UPDATE runs SET outcome = ?, mode = ?,
+          usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`).run(input.outcome, input.mode ?? null, ...this.usageColumns(nextResponse), id);
     });
   }
   /** The session a run was run for, as metadata: one column, never the request and response bodies.
@@ -2144,8 +2312,11 @@ var Store = class {
   runSessionId(runId) {
     return this.db.prepare("SELECT session_id FROM runs WHERE id = ?").get(runId)?.session_id ?? null;
   }
+  /** 79 item 0: a legitimate full-row reader (the ticket's own list: "run audits, `listRuns`
+   * consumers that show responses, and the trace readers") — joins the body in, unlike every
+   * metadata-only run reader above. */
   getRun(id) {
-    const row = this.db.prepare("SELECT * FROM runs WHERE id = ?").get(id);
+    const row = this.db.prepare("SELECT r.*, b.request, b.response, b.origin_entry_ids FROM runs r JOIN run_bodies b ON b.run_id = r.id WHERE r.id = ?").get(id);
     return row ? toRun(row) : null;
   }
   // -- facts --
@@ -2218,7 +2389,8 @@ var Store = class {
           response = { output: input.run.response };
         }
         const finalResponse = JSON.stringify({ ...response, ...input.run.entryAudit ? { entryAudit: input.run.entryAudit } : {}, factIds: batchIds });
-        this.db.prepare(`UPDATE runs SET response = ?, usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`).run(finalResponse, ...this.usageColumns(finalResponse), runId);
+        this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(finalResponse, runId);
+        this.db.prepare(`UPDATE runs SET usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`).run(...this.usageColumns(finalResponse), runId);
         for (const id of input.entryIds ?? []) {
           if (this.getSourceEntry(id)?.sessionId !== sessionId) throw new Error("entry does not belong to the run session");
           this.db.prepare("INSERT INTO noted_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
@@ -2247,29 +2419,36 @@ var Store = class {
     if (!this.getSession(run.sessionId)) throw new Error(`session S${run.sessionId} does not exist`);
     return run.sessionId;
   }
+  /** 79 item 0: writes the hot row and the body row (`request`/`response`/`origin_entry_ids`)
+   * together, in the caller's transaction — the one helper every run writer routes through, so a
+   * failure between the two inserts leaves neither. `origin_session_id` (hot) and `origin_entry_ids`
+   * (body) are both derived from the same `origin` value here and never written elsewhere, so their
+   * old same-table CHECK's invariant ("both null or both set") still holds by construction even
+   * though it can no longer be a single-table CHECK once they live in different tables. */
   insertRun(input) {
     const origin = this.runOrigin(input);
     const response = input.entryAudit ? JSON.stringify({ ...JSON.parse(input.response ?? "{}"), entryAudit: input.entryAudit }) : input.response ?? null;
-    const info = this.db.prepare(`INSERT INTO runs (kind, session_id, branch, range_from, range_to, prompt_hash, model, mode, request, response, origin_session_id, origin_entry_ids, outcome, created_at,
-        usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      input.kind,
-      input.sessionId ?? null,
-      input.branch ?? null,
-      input.rangeFrom ?? null,
-      input.rangeTo ?? null,
-      input.promptHash ?? null,
-      input.model ?? null,
-      input.mode ?? null,
-      input.request ?? null,
-      response,
-      origin?.sessionId ?? null,
-      origin ? JSON.stringify(origin.entryIds) : null,
-      input.outcome,
-      input.createdAt,
-      ...this.usageColumns(response)
-    );
-    const id = Number(info.lastInsertRowid);
+    const id = this.transaction(() => {
+      const info = this.db.prepare(`INSERT INTO runs (kind, session_id, branch, range_from, range_to, prompt_hash, model, mode, origin_session_id, outcome, created_at,
+          usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        input.kind,
+        input.sessionId ?? null,
+        input.branch ?? null,
+        input.rangeFrom ?? null,
+        input.rangeTo ?? null,
+        input.promptHash ?? null,
+        input.model ?? null,
+        input.mode ?? null,
+        origin?.sessionId ?? null,
+        input.outcome,
+        input.createdAt,
+        ...this.usageColumns(response)
+      );
+      const runId = Number(info.lastInsertRowid);
+      this.db.prepare("INSERT INTO run_bodies (run_id, request, response, origin_entry_ids) VALUES (?, ?, ?, ?)").run(runId, input.request ?? null, response, origin ? JSON.stringify(origin.entryIds) : null);
+      return runId;
+    });
     linkExecutionRun(this, id, input);
     if (input.dreamingRangeId !== void 0) {
       const range = this.dreamingRange(input.dreamingRangeId);
@@ -2474,7 +2653,7 @@ var Store = class {
     }
     if (!paths.size) return;
     const selectedIds = [...new Set([...paths.values()].flatMap((value) => value.ids))];
-    const entryRows = selectedIds.length ? this.db.prepare(`SELECT id, turn_id, session_id FROM source_entries INDEXED BY idx_source_membership
+    const entryRows = selectedIds.length ? this.db.prepare(`SELECT id, turn_id, session_id FROM source_entries
       WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(selectedIds)) : [];
     const entries = new Map(entryRows.map((row) => [Number(row.id), { turnId: Number(row.turn_id), sessionId: Number(row.session_id) }]));
     const seeds = [];
@@ -2536,7 +2715,7 @@ var Store = class {
       }
       snapshots.set(key, { owner: value.owner, turns, selected, addresses: /* @__PURE__ */ new Map() });
     }
-    if (addressCandidates.size) for (const row of this.db.prepare(`SELECT id, session_id, turn_id, addresses FROM source_entries INDEXED BY idx_source_membership
+    if (addressCandidates.size) for (const row of this.db.prepare(`SELECT id, session_id, turn_id, addresses FROM source_entries
       WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify([...addressCandidates]))) {
       let parsed2;
       try {
@@ -2698,7 +2877,7 @@ var Store = class {
     const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(path.sessionId, path.branch);
     if (!row) return null;
     const ids = /* @__PURE__ */ new Set(), addresses = /* @__PURE__ */ new Map();
-    for (const { id, turn_id, addresses: raw } of this.db.prepare("SELECT e.id, e.turn_id, e.addresses FROM json_each(?) j JOIN source_entries e INDEXED BY idx_source_membership ON e.id = j.value").all(row.entry_ids)) {
+    for (const { id, turn_id, addresses: raw } of this.db.prepare("SELECT e.id, e.turn_id, e.addresses FROM json_each(?) j JOIN source_entries e ON e.id = j.value").all(row.entry_ids)) {
       if (!turns.has(turn_id)) continue;
       ids.add(id);
       if (!addresses.has(turn_id)) addresses.set(turn_id, /* @__PURE__ */ new Set());
@@ -2720,7 +2899,7 @@ var Store = class {
     const candidates = /* @__PURE__ */ new Set([...carried.keys(), ...selected]);
     if (!path || !candidates.size || !carried.size && ![...raw.values()].includes("source")) return /* @__PURE__ */ new Set();
     const result = /* @__PURE__ */ new Set();
-    for (const row of this.db.prepare(`SELECT id, session_id, native_id FROM source_entries INDEXED BY idx_source_identity
+    for (const row of this.db.prepare(`SELECT id, session_id, native_id FROM source_entries
       WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))`).all(path.sessionId, JSON.stringify([...candidates]))) {
       if (row.session_id !== path.sessionId || !selected.has(row.id)) continue;
       if (carried.get(row.id) === row.native_id || raw.get(row.native_id) === "source") result.add(row.id);
@@ -2952,7 +3131,8 @@ var Store = class {
         for (const factId2 of input.consolidated ?? []) this.markConsolidated(factId2, runId, projectId);
         if (input.finalizeResponse) {
           const finalResponse = input.finalizeResponse({ committed });
-          this.db.prepare(`UPDATE runs SET response = ?, usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`).run(finalResponse, ...this.usageColumns(finalResponse), runId);
+          this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(finalResponse, runId);
+          this.db.prepare(`UPDATE runs SET usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`).run(...this.usageColumns(finalResponse), runId);
         }
         if (input.run.kind === "consolidation") this.completeExecution(runId);
         return { runId, committed };
@@ -3348,8 +3528,9 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   projectSessionIds(projectId) {
     return this.db.prepare("SELECT id FROM sessions WHERE project_id = ? ORDER BY id").all(projectId).map((row) => row.id);
   }
+  /** 79 item 0: a legitimate full-row reader (`listRuns` consumers that show responses); joins the body. */
   listRuns(sessionId) {
-    return this.db.prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
+    return this.db.prepare("SELECT r.*, b.request, b.response, b.origin_entry_ids FROM runs r JOIN run_bodies b ON b.run_id = r.id WHERE r.session_id = ? ORDER BY r.id").all(sessionId).map(toRun);
   }
   /** 22d: one row per run of a session, carrying its kind and the usage it recorded. `usage` is null
    * exactly when the run recorded no usage observation — a response without one, a cancelled run
@@ -3358,23 +3539,25 @@ ${archivedBody}${evidenceLine}${diffLine}`;
    * for a missing one (parent 22, "Capacity and accounting").
    *
    * 77: reads the five columns every writer of `response` now keeps in step with it (`usageColumns`),
-   * never `response` itself — `idx_runs_session_usage` answers `session_id = ?`, `id` (the order kept
-   * for summation) and the five columns as a covering index, so this never walks a row past
-   * `request`/`response` to reach them. A direct `session_id = ?` condition, not the optional-
-   * parameter form: that form lets the planner scan the whole table or index as history grows. */
+   * never `response` itself. 79: `request`/`response` are no longer even on this table, so the split
+   * makes the old covering `idx_runs_session_usage` redundant (dropped, item 0) — SCHEMA_SQL's plain
+   * `idx_runs_session` answers `session_id = ?` and the now tiny row (no body columns) is cheap to
+   * read directly for `kind`/`usage_*`, measured on the split tables. A direct `session_id = ?`
+   * condition, not the optional-parameter form: that form lets the planner scan the whole table or
+   * index as history grows. */
   listRunUsage(sessionId) {
     const rows = this.db.prepare(`SELECT kind, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost
-      FROM runs INDEXED BY idx_runs_session_usage WHERE session_id = ? ORDER BY id`).all(sessionId);
+      FROM runs INDEXED BY idx_runs_session WHERE session_id = ? ORDER BY id`).all(sessionId);
     return rows.map((row) => ({ kind: row.kind, usage: row.usage_cost === null ? null : { input: row.usage_input, output: row.usage_output, cacheRead: row.usage_cache_read, cacheWrite: row.usage_cache_write, cost: row.usage_cost } }));
   }
   /** 51/77: the footer's daily figure — every run's cost, created at or after `since` (77 replaces a
    * per-refresh reparse of every run's `response`, 71's ruling, with the same figure read from the
-   * persisted usage columns). `idx_runs_daily_usage` answers the range condition, `id` (the order the
-   * summation below keeps, so floating-point totals do not drift) and `usage_cost` as a covering
-   * index — rows read grow with the day's runs, not with history. A direct `created_at >= ?`
-   * condition, not the optional-parameter form, for the same reason as `listRunUsage` above. */
+   * persisted usage columns). 79: the split still needs a `created_at` lookup index (the ticket's own
+   * "lookup indexes a query still needs stay"), but its old covering trailing columns (`id`,
+   * `usage_cost`) are redundant now that the row has no body to dodge — `idx_runs_created_at`
+   * replaces `idx_runs_daily_usage` (item 0). Rows read still grow with the day's runs, not history. */
   spendSince(since) {
-    const rows = this.db.prepare(`SELECT id, usage_cost FROM runs INDEXED BY idx_runs_daily_usage
+    const rows = this.db.prepare(`SELECT id, usage_cost FROM runs INDEXED BY idx_runs_created_at
       WHERE created_at >= ? ORDER BY id`).all(since);
     let cost = 0;
     for (const row of rows) if (row.usage_cost !== null) cost += row.usage_cost;
@@ -3547,17 +3730,16 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       if (!input.text && !input.calls.length && input.role !== "user" && !blocks2?.length) throw new Error("empty source entry");
       const ordinal = Number(this.db.prepare("SELECT COALESCE(MAX(entry_ordinal), 0) + 1 AS n FROM source_entries WHERE turn_id = ?").get(input.turnId).n);
       if (!Number.isSafeInteger(ordinal)) throw new Error("Turn entry ordinal exhausted");
-      const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content, entry_ordinal, addresses, blocks, digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+      const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, entry_ordinal, addresses, digest) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
         input.sessionId,
         input.nativeLineage,
         input.nativeId,
         input.turnId,
-        JSON.stringify(input),
         ordinal,
         JSON.stringify(sourceAddresses({ ...input, id: 0, entryOrdinal: ordinal, blocks: blocks2 })),
-        blocks2 ? JSON.stringify(blocks2) : this.normalizeSource ? "null" : null,
         sourceDigest(input.raw)
       );
+      this.db.prepare("INSERT INTO source_entry_raw (entry_id, content, blocks) VALUES (?, ?, ?)").run(result.lastInsertRowid, JSON.stringify(input), blocks2 ? JSON.stringify(blocks2) : this.normalizeSource ? "null" : null);
       if (input.calls.length) {
         const insertCall = this.db.prepare("INSERT INTO source_entry_calls (entry_id, turn_id, call_id, ordinal, name) VALUES (?, ?, ?, ?, ?)");
         for (const call of input.calls) insertCall.run(result.lastInsertRowid, input.turnId, call.callId, call.ordinal, call.name);
@@ -3565,23 +3747,39 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       return this.getSourceEntry(Number(result.lastInsertRowid));
     });
   }
+  /** 79 item 0: the one full-row reader every hydrator (bounded or one-shot) goes through. Joins the
+   * hot row to its Raw payload row — the only place `source_entry_raw` is read. */
   getSourceEntry(id) {
-    const row = this.db.prepare("SELECT id, content, entry_ordinal, blocks FROM source_entries WHERE id = ?").get(id);
-    if (!row) return null;
-    const blocks2 = row.blocks === null ? void 0 : JSON.parse(row.blocks) ?? void 0;
-    return { ...JSON.parse(row.content), id: row.id, entryOrdinal: row.entry_ordinal, ...blocks2 ? { blocks: blocks2 } : {} };
+    const row = this.db.prepare(`SELECT e.id, e.entry_ordinal, r.content, r.blocks FROM source_entries e
+      JOIN source_entry_raw r ON r.entry_id = e.id WHERE e.id = ?`).get(id);
+    return row ? toSourceEntry(row) : null;
+  }
+  /** 79: hydrate exactly the ids a consumer already chose, in one statement, in the requested order.
+   * Never a loop of single `getSourceEntry` calls over a whole list (item 1). A consumer that decides
+   * membership incrementally against a budget (compact's Raw span, the Noting batch, the branch-carry
+   * suffix) instead hydrates one candidate at a time through `getSourceEntry`, because its final id
+   * set is not known until each candidate is priced — the acceptance criteria's explicit allowance. */
+  hydrateSourceEntries(ids) {
+    const unique = [...new Set(ids)];
+    if (!unique.length) return [];
+    const rows = this.db.prepare(`SELECT e.id, e.entry_ordinal, r.content, r.blocks FROM source_entries e
+      JOIN source_entry_raw r ON r.entry_id = e.id WHERE e.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(unique));
+    const byId = new Map(rows.map((row) => [Number(row.id), toSourceEntry(row)]));
+    return ids.map((id) => byId.get(id)).filter((entry) => entry !== void 0);
   }
   findSourceEntry(sessionId, nativeLineage, nativeId2) {
     const row = this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND native_lineage = ? AND native_id = ?").get(sessionId, nativeLineage, nativeId2);
     return row ? this.getSourceEntry(row.id) : null;
   }
   /** 74: what a rebuild's known-entry check needs — never `content`/`blocks` (8.1 KB/4.2 KB on
-   * average). `idx_source_identity` answers `id`, `turnId` and `digest` as a covering index; this
-   * entry's own call identities (never its `input`/`result`) come from `source_entry_calls`. The
-   * caller compares `digest` against `sourceDigest` of the same string it compares today — a
-   * mismatch is reported exactly as a content mismatch was before this existed. */
+   * average). 79: `content`/`blocks` are no longer even on this table, so the plain unique index the
+   * table's own `UNIQUE (session_id, native_lineage, native_id)` constraint already creates answers
+   * this lookup and the small row it returns needs no covering index of its own (74's idx_source_identity
+   * dropped, item 0). This entry's own call identities (never its `input`/`result`) come from
+   * `source_entry_calls`. The caller compares `digest` against `sourceDigest` of the same string it
+   * compares today — a mismatch is reported exactly as a content mismatch was before this existed. */
   findKnownSourceEntry(sessionId, nativeLineage, nativeId2) {
-    const row = this.db.prepare(`SELECT id, turn_id, digest FROM source_entries INDEXED BY idx_source_identity
+    const row = this.db.prepare(`SELECT id, turn_id, digest FROM source_entries
       WHERE session_id = ? AND native_lineage = ? AND native_id = ?`).get(sessionId, nativeLineage, nativeId2);
     if (!row) return null;
     return { id: Number(row.id), turnId: Number(row.turn_id), digest: row.digest, calls: this.entryCallIdentities(row.id) };
@@ -3600,15 +3798,17 @@ ${archivedBody}${evidenceLine}${diffLine}`;
    * order, so an occurrence only a sibling branch selected is not part of this branch's trace. A
    * stored path restricts membership even when its selection is empty. Only an unbound read or
    * legacy data without a stored path falls back to session occurrences. Neither form loads Raw
-   * payloads to decide membership. */
+   * payloads to decide membership. 79: returns metadata alone (item 1); a caller that renders any of
+   * these occurrences hydrates the exact ids it kept through `hydrateSourceEntries`, once. */
   listSourceEntries(sessionId, turnId, branch) {
     const selected = branch === void 0 ? [] : this.db.prepare(
-      `SELECT e.id FROM source_paths p JOIN json_each(p.entry_ids) j JOIN source_entries e ON e.id = j.value
+      `SELECT e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")} FROM source_paths p JOIN json_each(p.entry_ids) j
+       JOIN source_entries e ON e.id = j.value
        WHERE p.session_id = ? AND p.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.key`
     ).all(sessionId, branch, sessionId, turnId ?? null, turnId ?? null);
     const hasPath = branch !== void 0 && !!this.db.prepare("SELECT 1 FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
-    const rows = hasPath ? selected : turnId === void 0 ? this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId) : this.db.prepare("SELECT id FROM source_entries INDEXED BY idx_source_turn_ordinal WHERE turn_id = ? AND session_id = ? ORDER BY id").all(turnId, sessionId);
-    return rows.map((r) => this.getSourceEntry(r.id));
+    const rows = hasPath ? selected : turnId === void 0 ? this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries WHERE session_id = ? ORDER BY id`).all(sessionId) : this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries INDEXED BY idx_source_turn_ordinal WHERE turn_id = ? AND session_id = ? ORDER BY id`).all(turnId, sessionId);
+    return rows.map(toSourceEntryMeta);
   }
   /** 22c "complete snapshot": the source-entry identities of many Turns in one read, in the order an
    * unbound `listSourceEntries` returns them. Identities only — no Raw is loaded to freeze which
@@ -3645,7 +3845,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       if (typeof lineage !== "string" || !lineage) throw new Error("current path requires a non-empty lineage");
       if (!branch || new Set(entryIds).size !== entryIds.length || entryIds.some((id) => !Number.isSafeInteger(id) || id < 1))
         throw new Error("invalid source path");
-      const rows = this.db.prepare(`SELECT id, turn_id, session_id FROM source_entries INDEXED BY idx_source_membership
+      const rows = this.db.prepare(`SELECT id, turn_id, session_id FROM source_entries
         WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))`).all(sessionId, JSON.stringify(entryIds));
       const entries = new Map(rows.map((row) => [Number(row.id), { turnId: Number(row.turn_id), sessionId: Number(row.session_id) }]));
       if (entryIds.some((id) => entries.get(id)?.sessionId !== sessionId)) throw new Error("invalid source path");
@@ -3683,25 +3883,34 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   selectSourcePath(sessionId, branch, entryIds) {
     return this.transaction(() => {
       this.requireEnabled(sessionId);
-      const owned = this.db.prepare("SELECT COUNT(*) n FROM source_entries INDEXED BY idx_source_membership WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))").get(sessionId, JSON.stringify(entryIds)).n;
+      const owned = this.db.prepare("SELECT COUNT(*) n FROM source_entries WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))").get(sessionId, JSON.stringify(entryIds)).n;
       if (!branch || new Set(entryIds).size !== entryIds.length || owned !== entryIds.length) throw new Error("invalid source path");
       this.writeSourcePath(sessionId, branch, entryIds);
     });
   }
-  /** The selected path's entry ids, in the branch's own order, decided by `turn_id` alone: no Raw
-   * payload is loaded to answer membership (22b). `json_each`'s key is the position in the stored
-   * array, so the branch order survives the join. */
-  pathEntryIds(sessionId, branch, headTurnId, prepared) {
+  /** The selected path's source-entry metadata, in the branch's own order, decided by `turn_id`
+   * alone: no Raw payload is loaded to answer membership (22b), and none is joined here either (79
+   * item 1). `json_each`'s key is the position in the stored array, so the branch order survives
+   * the join. */
+  pathSourceMeta(sessionId, branch, headTurnId, prepared) {
     const turns = prepared?.turns ?? this.pathTurns({ sessionId, headTurnId });
     const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
-    const rows = row ? this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e INDEXED BY idx_source_membership ON e.id = j.value ORDER BY j.key").all(row.entry_ids) : this.db.prepare("SELECT id, turn_id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId);
-    return rows.filter((r) => turns.has(r.turn_id)).map((r) => r.id);
+    const rows = row ? this.db.prepare(`SELECT e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")}
+        FROM json_each(?) j JOIN source_entries e ON e.id = j.value ORDER BY j.key`).all(row.entry_ids) : this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries WHERE session_id = ? ORDER BY id`).all(sessionId);
+    return rows.filter((r) => turns.has(Number(r.turn_id))).map(toSourceEntryMeta);
+  }
+  pathEntryIds(sessionId, branch, headTurnId, prepared) {
+    return this.pathSourceMeta(sessionId, branch, headTurnId, prepared).map((e) => e.id);
   }
   sourceHeadEntryId(sessionId, branch, headTurnId, prepared) {
     return this.pathEntryIds(sessionId, branch, headTurnId, prepared).at(-1);
   }
+  /** 79 item 1: metadata only, read from the hot table; no list read touches the payload table. A
+   * consumer that renders any of these entries hydrates the exact ids it chose, through
+   * `hydrateSourceEntries` (already decided) or one `getSourceEntry` per candidate while it is still
+   * deciding membership against a budget (compact, the Noting batch, the branch-carry suffix). */
   sourcePath(sessionId, branch, headTurnId) {
-    return this.pathEntryIds(sessionId, branch, headTurnId).map((id) => this.getSourceEntry(id));
+    return this.pathSourceMeta(sessionId, branch, headTurnId);
   }
   entryNoted(id) {
     return !!this.db.prepare("SELECT 1 FROM noted_entries WHERE entry_id = ? LIMIT 1").get(id);
@@ -3713,8 +3922,11 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     const noted = new Set(this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)).map((r) => r.entry_id));
     return ids.filter((id) => !noted.has(id));
   }
+  /** 79 item 1: metadata only, same contract as `sourcePath` above. */
   pendingEntries(sessionId, branch, headTurnId) {
-    return this.pendingEntryIds(sessionId, branch, headTurnId).map((id) => this.getSourceEntry(id));
+    const all = this.pathSourceMeta(sessionId, branch, headTurnId);
+    const noted = new Set(this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))").all(JSON.stringify(all.map((e) => e.id))).map((r) => r.entry_id));
+    return all.filter((e) => !noted.has(e.id));
   }
 };
 
@@ -5440,7 +5652,7 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       {
         let rawBaseUsed = charge([RAW_TITLE]), allowanceUsed = 0;
         for (let i = candidates.length - 1; i >= 0; i--) {
-          const entry = candidates[i];
+          const entry = store.getSourceEntry(candidates[i].id);
           let rendered;
           try {
             rendered = view(entry);
@@ -5482,14 +5694,6 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       const suppliedRaw = [...rawFinalSteps].reverse();
       const rawOmitted = candidates.slice(0, candidates.length - suppliedRaw.length);
       const rawOmittedPending = rawOmitted.filter((e) => pendingIds.has(e.id));
-      const rawOmittedPendingTokens = rawOmittedPending.reduce((sum, e) => {
-        try {
-          return sum + tokens(view(e).content) + 1;
-        } catch (error3) {
-          if (/capacity/.test(String(error3))) return sum;
-          throw error3;
-        }
-      }, 0);
       const coverage = /* @__PURE__ */ new Set([...sourced.filter((e) => retained.has(e.nativeId)).map((e) => e.id), ...suppliedRaw.map((s) => s.entry.id)]);
       const factCandidates = applicable2.filter((f) => !visible.factIds.has(f.id));
       const coveredFactIds = store.factsCoveredByRaw(factCandidates, coverage);
@@ -5527,7 +5731,7 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       const factsOmittedPending = eligibleFacts.slice(finalFacts.length).filter((f) => pendingFactIds.has(f.id));
       const factsOmittedPendingTokens = factsOmittedPending.length ? charge(lines(factsOmittedPending)) : 0;
       const truncated2 = {};
-      if (rawOmittedPending.length) truncated2.raw = { entries: rawOmittedPending.length, tokens: rawOmittedPendingTokens };
+      if (rawOmittedPending.length) truncated2.raw = { entries: rawOmittedPending.length };
       if (factsOmittedPending.length) truncated2.facts = { count: factsOmittedPending.length, tokens: factsOmittedPendingTokens };
       const material = {
         knowledge: active.groups,
@@ -5557,7 +5761,7 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       let omitted = pending.length, used = charge([title]);
       const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget; read them with trace]`] : [];
       for (let i = pending.length - 1; i >= 0; i--) {
-        const view = renderEntry(pending[i], config3.render, resultText);
+        const view = renderEntry(store.getSourceEntry(pending[i].id), config3.render, resultText);
         const cost = charge([view.content, ...view.receipts]);
         if (used + cost > config3.render.episodicBlockTokens) break;
         omitted--;
@@ -5972,10 +6176,18 @@ function bindTools(store, read, supplied, metadata, consolidation, reads = /* @_
     const sourcePath = context.kind === "noting" ? initialPath : context.kind === "manual" && context.entryIds ? manualEntries : store.sourcePath(session.id, context.branch, path.headTurnId);
     const candidates = context.kind === "noting" ? sourcePath.filter((entry) => frozenIds.has(entry.id)) : sourcePath;
     const positions = new Map(candidates.map((entry, index) => [entry.id, index]));
+    const hydrated = /* @__PURE__ */ new Map();
+    const hydrate = (ids) => {
+      const missing = ids.filter((id) => !hydrated.has(id));
+      if (missing.length) for (const entry of store.hydrateSourceEntries(missing)) hydrated.set(entry.id, entry);
+    };
     const resolution = /* @__PURE__ */ new Map();
     const resolve4 = (source) => {
       if (!resolution.has(source)) {
-        const matches = resolveFactSource(sourcePath, source);
+        const scope = sourceAddressScope(source);
+        const scoped = scope ? candidates.filter((entry) => entry.turnId === scope.turn && (scope.ordinal === void 0 || entry.entryOrdinal === scope.ordinal)) : [];
+        hydrate(scoped.map((entry) => entry.id));
+        const matches = resolveFactSource(scoped.map((entry) => hydrated.get(entry.id)), source);
         resolution.set(source, context.kind === "noting" ? matches.filter((hit) => frozenIds.has(hit.entry.id)) : matches);
       }
       return resolution.get(source);
@@ -6217,10 +6429,11 @@ var notingPending = (store, input, pendingAll = store.pendingEntries(input.sessi
   const exact = input.boundary?.exactEntryIds;
   return { exact, pending: exact ? pendingAll.filter((e) => exact.includes(e.id)) : input.boundary?.maxEntryId === void 0 ? pendingAll : pendingAll.filter((e) => e.id <= input.boundary.maxEntryId) };
 };
-var notingBatch = (pending, config3, resultText) => {
+var notingBatch = (store, pending, config3, resultText) => {
   const entries = [], views = [];
   const rendered = /* @__PURE__ */ new Map();
-  for (const entry of pending) {
+  for (const meta3 of pending) {
+    const entry = store.getSourceEntry(meta3.id);
     const view = renderEntry(entry, config3.render, resultText);
     if (tokens([...views, view.content].join(BLOCK)) > config3.noting.batchTokens) break;
     entries.push(entry);
@@ -6258,7 +6471,7 @@ function freezeNoting(store, input, config3, resultText = rawResultText, pending
   const mandatory = inheriting ? (input.capacity?.prefixTokens ?? 0) + instructions : instructions + tools;
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
     throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${instructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`} already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
-  const { entries, views, rendered } = notingBatch(pending, config3, resultText);
+  const { entries, views, rendered } = notingBatch(store, pending, config3, resultText);
   if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
   if (exact && entries.length !== pending.length)
     throw new Error(`${NOTING_CAPACITY}the frozen batch of ${pending.length} entries exceeds noting.batchTokens (${config3.noting.batchTokens}); left pending`);
@@ -7075,6 +7288,15 @@ function validateConfig(override) {
   return cfg;
 }
 var CANCELLED_BEFORE_FALLBACK = "cancelled before fallback";
+function selectByOrdinal(entries, selection, turnId) {
+  const byOrdinal = new Map(entries.map((entry) => [entry.entryOrdinal, entry]));
+  return selection.flatMap((sel) => {
+    if (sel.to !== void 0) return entries.filter((entry2) => entry2.entryOrdinal >= sel.from && entry2.entryOrdinal <= sel.to);
+    const entry = byOrdinal.get(sel.from);
+    if (!entry) throw new Error(`entry T${turnId}#E${sel.from} does not exist on this path`);
+    return [entry];
+  });
+}
 function TraceMemory(dbPath, runAgent, config3 = {}, resultText = rawResultText, normalizeSource) {
   const cfg = validateConfig(config3);
   const store = new Store(dbPath, normalizeSource);
@@ -7256,15 +7478,14 @@ relations retained by explicit Fact read; other endpoints not applicable on this
     }
     const calls = store.listToolCalls(turn.id);
     if (options.tool !== void 0 && !calls.some((c) => c.ordinal === options.tool)) throw new Error(`tool #t${options.tool} does not exist in ${target}`);
-    let occurrences = display.entryIds ? display.entryIds.map((id) => store.getSourceEntry(id)).filter((entry) => entry !== null) : store.listSourceEntries(turn.sessionId, turn.id, display.branch);
-    if (parsed2.entries) {
-      const byOrdinal = new Map(occurrences.map((entry) => [entry.entryOrdinal, entry]));
-      occurrences = parsed2.entries.flatMap((selection) => {
-        if (selection.to !== void 0) return occurrences.filter((entry2) => entry2.entryOrdinal >= selection.from && entry2.entryOrdinal <= selection.to);
-        const entry = byOrdinal.get(selection.from);
-        if (!entry) throw new Error(`entry T${turn.id}#E${selection.from} does not exist on this path`);
-        return [entry];
-      });
+    let occurrences;
+    if (display.entryIds) {
+      occurrences = store.hydrateSourceEntries(display.entryIds);
+      if (parsed2.entries) occurrences = selectByOrdinal(occurrences, parsed2.entries, turn.id);
+    } else {
+      const meta3 = store.listSourceEntries(turn.sessionId, turn.id, display.branch);
+      const selected = parsed2.entries ? selectByOrdinal(meta3, parsed2.entries, turn.id) : meta3;
+      occurrences = store.hydrateSourceEntries(selected.map((entry) => entry.id));
     }
     if (turn.kind === "compaction" && parsed2.entries) return () => "";
     const selector2 = parsed2.selector;
@@ -7554,7 +7775,7 @@ ${view}` : view;
     appendEntry: (input, known) => store.appendSourceEntry(input, known),
     selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
-    notingBatch: (target, boundary) => notingBatch(notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
+    notingBatch: (target, boundary) => notingBatch(store, notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
     tools: (context) => {
       const key = `${context.sessionId}/${context.branch}`;
       if (!manualReads.has(key)) manualReads.set(key, /* @__PURE__ */ new Map());
@@ -40515,7 +40736,7 @@ async function ccHandleClear(config3, input) {
     await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: turn.id, inheritedEntryIds });
     const omitted = compacted.truncated;
     const systemMessage = omitted ? `Trace Memory: compaction omitted ${[
-      ...omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"} (${omitted.raw.tokens} tokens)`] : [],
+      ...omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : [],
       ...omitted.facts ? [`${omitted.facts.count} unconsolidated ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []
     ].join(" and ")}; they remain pending for Noting and Consolidation.` : void 0;
     if (!injection.text) return { handled: true, output: systemMessage ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }, systemMessage } : null };

@@ -32,7 +32,7 @@ export type { TriggerOrigin, TriggerOriginRelation } from "../model/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
 export type { NotingDiagnostic, NotingNearAudit, NotingUnansweredNearPair } from "../noting/review.ts";
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
-import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
+import { Store, type SourceInput, type SourceEntry, type SourceEntryMeta, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
 import { admitDreaming, freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
@@ -446,7 +446,7 @@ export interface TraceMemory {
    * exact identity in the same synchronous flow; see `Store.appendSourceEntry`. */
   appendEntry(input: SourceInput, known?: SourceEntry | null): SourceEntry;
   selectEntries(sessionId: number, branch: string, entryIds: number[]): void;
-  pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntry[];
+  pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntryMeta[];
   /** Ticket 29c: the entries a Noting freeze of this target would really select — the pending set the
    * boundary admits, cut to the oldest prefix that fits `noting.batchTokens` — without freezing,
    * claiming or diagnosing anything. The Pi host decides a fork's Raw availability against exactly
@@ -486,6 +486,20 @@ export interface TraceMemory {
     input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
   /** Cost of every session's runs created at or after a UTC instant (51: the footer's figure for today, from the host's local midnight). */
   spendSince(since: string): number;
+}
+
+/** 79 item 2 (Pi review of 5ee34b5): an ordinal/range selection (`#E2`, `#E2..E7`) is decidable from
+ * `entryOrdinal` alone, a field both `SourceEntryMeta` and hydrated `SourceEntry` carry — so the same
+ * narrowing applies whether it runs before hydration (metadata) or after (an explicit id set already
+ * hydrated for another reason). */
+function selectByOrdinal<T extends { entryOrdinal: number }>(entries: readonly T[], selection: readonly { from: number; to?: number }[], turnId: number): T[] {
+  const byOrdinal = new Map(entries.map(entry => [entry.entryOrdinal, entry]));
+  return selection.flatMap(sel => {
+    if (sel.to !== undefined) return entries.filter(entry => entry.entryOrdinal >= sel.from && entry.entryOrdinal <= sel.to!);
+    const entry = byOrdinal.get(sel.from);
+    if (!entry) throw new Error(`entry T${turnId}#E${sel.from} does not exist on this path`);
+    return [entry];
+  });
 }
 
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {},
@@ -677,17 +691,20 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     // Full is now only a content-ceiling alias: it never widens a bound selection. Unbound reads
     // still include every occurrence. A paged read's exact entryIds override branch discovery,
     // so no continuation can pick up a newly added sibling.
-    let occurrences = display.entryIds
-      ? display.entryIds.map(id => store.getSourceEntry(id)).filter(entry => entry !== null)
-      : store.listSourceEntries(turn.sessionId, turn.id, display.branch);
-    if (parsed.entries) {
-      const byOrdinal = new Map(occurrences.map(entry => [entry.entryOrdinal, entry]));
-      occurrences = parsed.entries.flatMap(selection => {
-        if (selection.to !== undefined) return occurrences.filter(entry => entry.entryOrdinal >= selection.from && entry.entryOrdinal <= selection.to!);
-        const entry = byOrdinal.get(selection.from);
-        if (!entry) throw new Error(`entry T${turn.id}#E${selection.from} does not exist on this path`);
-        return [entry];
-      });
+    // 79 item 1 and item 2 (Pi review of 5ee34b5): the Turn's occurrences are chosen by id first
+    // (metadata for the unbound case), then hydrated in one batched read — never a loop of single
+    // reads over the whole list. An ordinal/range selection (`T792#E1`, on a 2,000-entry Turn) is
+    // decided on that metadata *before* hydration, so it hydrates only the selected entries, not
+    // the whole Turn; a caller-chosen id set (paging continuation) is already the exact page and is
+    // narrowed the same way, after hydration, exactly as before.
+    let occurrences: SourceEntry[];
+    if (display.entryIds) {
+      occurrences = store.hydrateSourceEntries(display.entryIds);
+      if (parsed.entries) occurrences = selectByOrdinal(occurrences, parsed.entries, turn.id);
+    } else {
+      const meta = store.listSourceEntries(turn.sessionId, turn.id, display.branch);
+      const selected = parsed.entries ? selectByOrdinal(meta, parsed.entries, turn.id) : meta;
+      occurrences = store.hydrateSourceEntries(selected.map(entry => entry.id));
     }
     if (turn.kind === "compaction" && parsed.entries) return () => "";
     const selector = parsed.selector;
@@ -825,7 +842,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // 70: `pendingNow` above already read this exact session/branch/head's full pending set inside
       // this same admission transaction; nothing between there and here can mark an entry noted, so
       // the freeze reuses it instead of reading it again.
-      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText, pendingNow as SourceEntry[])
+      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText, pendingNow as SourceEntryMeta[])
         : freezeConsolidation(store, selected, cfg);
       origin = admittedOrigin;
       const head = "entries" in frozen ? frozen.entries[0]?.id : frozen.rangeFacts[0]?.id;
@@ -978,7 +995,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     appendEntry: (input, known) => store.appendSourceEntry(input, known),
     selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
-    notingBatch: (target, boundary) => notingBatch(notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
+    notingBatch: (target, boundary) => notingBatch(store, notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
     tools: (context) => {
       const key = `${context.sessionId}/${context.branch}`;
       if (!manualReads.has(key)) manualReads.set(key, new Map());

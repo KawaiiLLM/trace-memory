@@ -60,14 +60,24 @@ test("73: windows with no room even for a bare receipt emit nothing — no title
   } finally { memory.close(); }
 });
 
-test("73: counting an omitted entry's tokens raises a data error instead of counting it as zero", () => {
+// 79 item 4 (ruled, superseding this case's earlier name): omitted pending Raw is reported as an
+// exact count only. The old per-entry token figure rendered every omitted entry to size it — reading
+// the whole omitted backlog on every compaction — which is exactly the cost this ticket removes.
+// An older entry the newest-first walk never reaches (because a newer, larger candidate already
+// exceeded the budget and stopped the walk) is never rendered at all, so a render-time data error on
+// it no longer surfaces through compact; only a candidate the walk actually tries can raise one.
+test("79: an omitted entry the walk never reaches is not rendered, and the truncation count is exact", () => {
   const { memory, session, turn } = setup(text => { if (text === "broken") throw new Error("corrupt result payload"); return { text }; });
   try {
     memory.store.appendToolCall({ turnId: turn.id, name: "bash", input: "test", result: "broken", status: "success" });
     memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeId: "new", nativeLineage: "fixture", role: "assistant",
       text: "word ".repeat(1000), raw: "", calls: [] });
     Object.assign(memory.config.compaction, { rawTokens: 30, sharedAllowanceTokens: 1 });
-    expect(() => memory.compact(session.id, "main", turn.id)).toThrow("corrupt result payload");
+    let result: ReturnType<typeof memory.compact> | undefined;
+    expect(() => { result = memory.compact(session.id, "main", turn.id); }).not.toThrow();
+    if (!result || "native" in result) throw new Error("expected a bounded compact result");
+    expect(result.truncated?.raw?.entries).toBe(4); // the whole pending set, none of which fit the tiny budget; the "broken" tool result is never rendered
+    expect(result.truncated?.raw).not.toHaveProperty("tokens"); // count only, never a token figure
   } finally { memory.close(); }
 });
 

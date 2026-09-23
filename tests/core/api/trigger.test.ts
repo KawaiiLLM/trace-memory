@@ -52,7 +52,10 @@ test("22b: the trigger fires at the boundary the whole-backlog estimate fired at
   const counter = countSourceReads();
   try {
     const own = backlog(120);
-    const views = own.store.pendingEntries(1, "main", own.head).map(e => renderEntry(e, own.memory.config.render).content);
+    // Hydrated in one batched read (never via getSourceEntry, which countSourceReads below hooks) so
+    // computing this reference view does not itself count against the bounded-reads assertions.
+    const views = own.store.hydrateSourceEntries(own.store.pendingEntries(1, "main", own.head).map(e => e.id))
+      .map(e => renderEntry(e, own.memory.config.render).content);
     const whole = tokens(views.join(BLOCK));
     // The entry at which the joined estimate first reaches 10,000 tokens: a known boundary, not a count.
     const crossing = views.findIndex((_view, i) => tokens(views.slice(0, i + 1).join(BLOCK)) >= 10_000);

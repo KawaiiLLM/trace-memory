@@ -26,7 +26,7 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { host, reply } from "./test-host.ts";
 // This suite explicitly requests forks to exercise their refusal and re-admission paths.
 import { forkFixture as fixture, say, call, worker, submitted, memoryBatch, noteBatch, settled, toolResults, usage as wireUsage, type Body } from "./native-fixture.ts";
-import { recorded } from "../../source-fixture.ts";
+import { recorded , hydrate } from "../../source-fixture.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
 import { forkable, runNative } from "../../../src/hosts/pi/native.ts";
 import { toolDefinitions, type NotingAgentInput } from "../../../src/core/api/index.ts";
@@ -77,7 +77,7 @@ test("27b 2026-09-10: a fork prefix the freeze cannot fit is re-admitted once as
     // Fresh material, and only the evidence the second freeze selected is committed.
     expect(h.conversations[0]!.systemPrompt).toContain("Noting (fact extraction)");
     expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId)).toEqual(["e1"]);
-    expect(h.memory.pendingEntries(1, "main", 1).map(e => e.nativeId)).toEqual(["e2"]);
+    expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.nativeId)).toEqual(["e2"]);
     // No latch, no configuration change.
     expect(h.memory.store.forkSuppression(1)).toBeNull();
     // Settings belongs to the executor; `h.memory` is only an independent database observer.
@@ -158,7 +158,7 @@ test("27b 2026-09-10: a provider context-overflow rejection with nothing committ
     expect(response.fallbackReason).toContain(`R${attempt!.id}`); // and names the attempt's own record
     // The same frozen membership, and the evidence committed once.
     expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId))
-      .toEqual(f.h.memory.store.listSourceEntries(1).map(e => e.nativeId));
+      .toEqual(hydrate(f.h.memory.store.listSourceEntries(1), f.h.memory.store).map(e => e.nativeId));
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
     // Usage is the fresh child's two real responses and nothing else: the rejected request reported
     // the SDK's placeholder zeros, which are unknown, never a paid successful generation.
@@ -227,7 +227,7 @@ test.each([
     expect(f.sent.filter(fresh)).toEqual([]); // no fresh child was launched
     expect(f.h.notices.filter(n => n.includes("fell back to subagent mode"))).toEqual([]);
     expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
-    expect(f.h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
+    expect(hydrate(f.h.memory.pendingEntries(1, "main", 1), f.h.memory.store).length).toBeGreaterThan(0);
   } finally { await f.dispose(); }
 }, 30000);
 
@@ -249,7 +249,7 @@ test.each([
     expect(f.sent.filter(fresh)).toEqual([]);
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(facts);
     expect(JSON.parse(run.response!).problems.join(" ")).toContain("provider failed after commit");
-    expect(f.h.memory.pendingEntries(1, "main", 1)).toEqual([]); // the committed batch advanced
+    expect(hydrate(f.h.memory.pendingEntries(1, "main", 1), f.h.memory.store)).toEqual([]); // the committed batch advanced
   } finally { await f.dispose(); }
 }, 30000);
 
@@ -305,7 +305,7 @@ test("27c 2026-09-10: a fresh rebuild the re-admission cannot fit leaves the fro
     expect(runs[0]!.outcome).toBe("failure");
     expect(JSON.parse(runs[0]!.response!).problems.join(" ")).toContain(OVERFLOW);
     expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
-    expect(f.h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0); // the evidence waits
+    expect(hydrate(f.h.memory.pendingEntries(1, "main", 1), f.h.memory.store).length).toBeGreaterThan(0); // the evidence waits
   } finally { await f.dispose(); }
 }, 30000);
 
@@ -333,7 +333,7 @@ test("27b 2026-09-10: at most one transition per task — the fresh child's own 
     expect(JSON.parse(attempt!.response!).usage).toBeNull();
     expect(response.usage).toBeNull();
     expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
-    expect(f.h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
+    expect(hydrate(f.h.memory.pendingEntries(1, "main", 1), f.h.memory.store).length).toBeGreaterThan(0);
   } finally { await f.dispose(); }
 }, 30000);
 
@@ -491,7 +491,7 @@ test("27c 2026-09-10: the re-admission keeps the frozen entry membership — evi
       // The fork attempt is in flight when new foreground evidence lands, and the provider then
       // rejects this body for context capacity.
       if (frozen.length) return rejected(OVERFLOW);
-      frozen = f.h.memory.store.listSourceEntries(1).map(e => e.nativeId);
+      frozen = hydrate(f.h.memory.store.listSourceEntries(1), f.h.memory.store).map(e => e.nativeId);
       f.manager().appendMessage({ role: "user", content: "LATER EVIDENCE " + "word ".repeat(400), timestamp: 1 } as never);
       f.manager().appendMessage({ ...reply("later answer " + "word ".repeat(400)), timestamp: 1 } as never);
       await f.h.emit("message_start", { message: reply("") });
@@ -501,7 +501,7 @@ test("27c 2026-09-10: the re-admission keeps the frozen entry membership — evi
     const run = await settled(f);
     const response = JSON.parse(run.response!);
     expect(frozen.length).toBeGreaterThan(0);
-    expect(f.h.memory.store.listSourceEntries(1).length).toBeGreaterThan(frozen.length); // the newcomers were recorded
+    expect(hydrate(f.h.memory.store.listSourceEntries(1), f.h.memory.store).length).toBeGreaterThan(frozen.length); // the newcomers were recorded
     // 18b's boundary: the re-admission selects the batch the refused attempt was frozen on, never the
     // range that grew under it, and the evidence that arrived meanwhile stays pending.
     expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId)).toEqual(frozen);
@@ -572,7 +572,7 @@ test("27d 2026-09-10: an unavailable fallback model leaves the paid attempt's ow
     expect(JSON.parse(attempt!.response!).usage.input).toBe(1234); // the spend is accounted, not lost
     expect(f.sent.filter(fresh)).toEqual([]);
     expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
-    expect(f.h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0); // and the evidence waits
+    expect(hydrate(f.h.memory.pendingEntries(1, "main", 1), f.h.memory.store).length).toBeGreaterThan(0); // and the evidence waits
   } finally { await f.dispose(); }
 }, 30000);
 
@@ -590,7 +590,7 @@ test("27d 2026-09-10 (parent 27 amendment 6): a fallback model that cannot hold 
     f.script((body: Body) => {
       if (!worker(body)) return say("word ".repeat(3000));
       if (fresh(body)) throw new Error("a batch that does not fit whole must send nothing");
-      frozen = f.h.memory.store.listSourceEntries(1).map(e => e.id);
+      frozen = hydrate(f.h.memory.store.listSourceEntries(1), f.h.memory.store).map(e => e.id);
       return rejected(OVERFLOW);
     });
     await f.turn("word ".repeat(3000));
@@ -637,7 +637,7 @@ test.each([
   ["the whole target survives as legacy tier-2 views",
     (h: ReturnType<typeof host>) => {
       const head = h.memory.store.listTurns(1).at(-1)!.id;
-      h.compaction("legacy tier-2 views", { details: carrier(h, h.memory.pendingEntries(1, "main", head)
+      h.compaction("legacy tier-2 views", { details: carrier(h, hydrate(h.memory.pendingEntries(1, "main", head), h.memory.store)
         .map(e => ({ id: e.id, nativeId: e.nativeId, tier: 2 as const }))) });
     }, undefined],
   ["a compaction Pi wrote itself: a summary and nothing else", (h: ReturnType<typeof host>) => h.compaction(), (older: Older) => older[0]!],
@@ -684,7 +684,7 @@ test.each([
       // contain it (a later task, once the head has moved on) holds it as an ordinary retained source,
       // because `buildContextEntries()` carries it. A target whose only non-inherited entry is the head
       // reply forks, and this row is that case.
-      const headReply = h.memory.store.listSourceEntries(1).at(-1)!;
+      const headReply = hydrate(h.memory.store.listSourceEntries(1), h.memory.store).at(-1)!;
       expect(headReply.role).toBe("assistant");
       expect(frozen).not.toContain(headReply.id);
       expect(String(response.fallbackReason)).not.toContain("Raw availability");

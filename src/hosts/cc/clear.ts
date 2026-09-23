@@ -95,8 +95,9 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
     // `hookSpecificOutput.additionalContext` — Claude Code 2.1.280 shows it to the user (capped at
     // 4,000 characters; this stays well under it).
     const omitted = compacted.truncated;
+    // 79 item 4 (ruled): Raw is an exact count only, never a token figure -- the Pi warning's twin.
     const systemMessage = omitted ? `Trace Memory: compaction omitted ${[
-      ...(omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"} (${omitted.raw.tokens} tokens)`] : []),
+      ...(omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : []),
       ...(omitted.facts ? [`${omitted.facts.count} unconsolidated ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []),
     ].join(" and ")}; they remain pending for Noting and Consolidation.` : undefined;
     if (!injection.text) return { handled: true, output: systemMessage

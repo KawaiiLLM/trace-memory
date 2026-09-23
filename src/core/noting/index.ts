@@ -1,7 +1,7 @@
 import { loadPrompt } from "../prompts/load.ts";
 import { createHash } from "node:crypto";
 import { type Fact, type Turn } from "../model/index.ts";
-import type { Store, RunInput, SourceEntry } from "../store/index.ts";
+import type { Store, RunInput, SourceEntry, SourceEntryMeta } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import { reviewFeedback, toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
@@ -123,7 +123,7 @@ export const NOTING_INCOMPLETE = "incomplete Noting: the run ended without calli
  * already read the same session/branch/head's full pending set inside the same admission
  * transaction (70: discovery and the freeze would otherwise each read it once) reuses that read. */
 export const notingPending = (store: Store, input: { sessionId: number; branch: string; headTurnId: number; boundary?: TaskBoundary },
-  pendingAll: SourceEntry[] = store.pendingEntries(input.sessionId, input.branch, input.headTurnId)) => {
+  pendingAll: SourceEntryMeta[] = store.pendingEntries(input.sessionId, input.branch, input.headTurnId)) => {
   const exact = input.boundary?.exactEntryIds;
   return { exact, pending: exact ? pendingAll.filter(e => exact.includes(e.id))
     : input.boundary?.maxEntryId === undefined ? pendingAll : pendingAll.filter(e => e.id <= input.boundary!.maxEntryId!) };
@@ -133,11 +133,15 @@ export const notingPending = (store: Store, input: { sessionId: number; branch: 
  * `noting.batchTokens`. 22d: an entry's view is immutable within one freeze — the same stored entry,
  * the same profile, the same result extractor — so selection renders it once and every re-freeze
  * reuses it. 29c: the Pi host asks the same question at admission, to decide a fork against the
- * entries this task would really select rather than against everything still pending. */
-export const notingBatch = (pending: readonly SourceEntry[], config: TraceMemoryConfig, resultText: ResultExtractor) => {
+ * entries this task would really select rather than against everything still pending.
+ * 79 item 2: `pending` is metadata; each candidate is hydrated only as this loop reaches it, oldest
+ * first, and the loop stops at the first that does not fit — the ruling's explicit allowance that the
+ * candidate which fails the budget must still be rendered to know it does. */
+export const notingBatch = (store: Store, pending: readonly SourceEntryMeta[], config: TraceMemoryConfig, resultText: ResultExtractor) => {
   const entries: SourceEntry[] = [], views: string[] = [];
   const rendered = new Map<number, ReturnType<typeof renderEntry>>();
-  for (const entry of pending) {
+  for (const meta of pending) {
+    const entry = store.getSourceEntry(meta.id)!;
     const view = renderEntry(entry, config.render, resultText);
     if (tokens([...views, view.content].join(BLOCK)) > config.noting.batchTokens) break;
     entries.push(entry); views.push(view.content); rendered.set(entry.id, view);
@@ -146,7 +150,7 @@ export const notingBatch = (pending: readonly SourceEntry[], config: TraceMemory
 };
 
 export function freezeNoting(store: Store, input: NotingInput, config: TraceMemoryConfig, resultText: ResultExtractor = rawResultText,
-  pendingAll?: SourceEntry[]) {
+  pendingAll?: SourceEntryMeta[]) {
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
   if (typeof input.branch !== "string" || !input.branch) throw new Error("noting requires a non-empty branch");
@@ -183,7 +187,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
     throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${instructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`}`
       + ` already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
-  const { entries, views, rendered } = notingBatch(pending, config, resultText);
+  const { entries, views, rendered } = notingBatch(store, pending, config, resultText);
   if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
   // 27d: the same whole-or-nothing rule against the batch ceiling the selection loop above stops at.
   // A membership selected under that ceiling once can only fail this on a configuration change, and
@@ -291,7 +295,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
  * The entry views and the fact lines are supplied by the freeze, which renders each of them once for
  * the whole negotiation (22d): re-freezing a smaller batch changes which of them are used, never what
  * any one of them says. */
-function notingMaterial(frozen: { sessionId: number; headEntryId?: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["currentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }) {
+function notingMaterial(frozen: { sessionId: number; headEntryId?: number; entries: SourceEntry[]; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["currentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }) {
   const { sessionId, entries, turns, knowledge, facts: applicable } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };

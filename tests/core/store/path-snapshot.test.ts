@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory, hydrate } from "../../source-fixture.ts";
 import { Store, type KnowledgePath } from "../../../src/core/store/index.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { countPathBuilds, countSourceReads } from "../../perf/fixture.ts";
@@ -35,7 +35,7 @@ function history(turns: number, options: { unbound?: number } = {}) {
     store.updateTurn(turn.id, { assistantText: `answer ${i}`, endedAt: time });
     parent = turn.id; turnIds.push(turn.id);
   }
-  const entries = store.listSourceEntries(session.id);
+  const entries = hydrate(store.listSourceEntries(session.id), store);
   memory.selectEntries(session.id, "main", entries.map(e => e.id));
   const committed = store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
     entryIds: entries.map(e => e.id),

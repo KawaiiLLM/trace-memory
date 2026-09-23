@@ -25,8 +25,10 @@ function writeRunResponse(store: Store, runId: number, response: unknown): void 
     (usage as { cacheRead?: number }).cacheRead ?? 0, (usage as { cacheWrite?: number }).cacheWrite ?? 0,
     (usage as { cost?: { total?: number } }).cost?.total ?? 0,
   ] : [null, null, null, null, null];
-  store.db.prepare(`UPDATE runs SET response = ?, usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`)
-    .run(JSON.stringify(response), ...columns, runId);
+  // 79: `response` moved to `run_bodies`; the usage columns stay on `runs`.
+  store.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(JSON.stringify(response), runId);
+  store.db.prepare(`UPDATE runs SET usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`)
+    .run(...columns, runId);
 }
 
 const time = "2026-09-09T00:00:00Z";
@@ -76,7 +78,8 @@ test("22d: the rejection costs the same whatever the pending backlog is, and a w
   expect(renders).toBe(0);
   // The same freeze under a workable allowance: every pending tool result is rendered once, and the
   // re-freezing capacity negotiation reuses those views instead of rendering the batch per candidate.
-  const results = memory.pendingEntries(sessionId, "main", turnId).filter(entry => entry.role === "toolResult").length;
+  const results = memory.store.hydrateSourceEntries(memory.pendingEntries(sessionId, "main", turnId).map(e => e.id))
+    .filter(entry => entry.role === "toolResult").length;
   expect(results).toBe(24);
   renders = 0;
   expect((await noting()).outcome).toBe("success");
@@ -217,7 +220,9 @@ test("77: listRunUsage never selects response or request, served by its covering
 
   expect(statements).toHaveLength(1); // one statement, no per-row follow-up query
   expect(statements[0]).not.toMatch(/\bresponse\b|\brequest\b/); // the audit bodies are never named
-  expect(statements[0]).toMatch(/INDEXED BY idx_runs_session_usage/); // answered by the covering index, not a planner guess
+  // 79: the split (item 0) retired the covering idx_runs_session_usage -- `runs` has no body columns
+  // to dodge anymore, so SCHEMA_SQL's plain idx_runs_session answers the same lookup on a tiny row.
+  expect(statements[0]).toMatch(/INDEXED BY idx_runs_session\b/);
   expect(usage.map(u => u.usage === null)).toEqual([false, true, true, true, false]);
   expect(usage[4]!.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }); // the string usage: all zero, not reparsed
 });
@@ -236,14 +241,15 @@ test("77: listRunUsage's persisted columns match 71's extraction SQL for every s
   ];
   for (const response of shapes) memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success",
     createdAt: time, response: JSON.stringify(response) });
-  const legacy = memory.store.db.prepare(`SELECT kind,
-      CASE WHEN json_valid(response) THEN json_type(response, '$.usage') END recorded,
-      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.input') END input,
-      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.output') END output,
-      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheRead') END cacheRead,
-      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheWrite') END cacheWrite,
-      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cost.total') END cost
-    FROM runs WHERE session_id = ? ORDER BY id`).all(sessionId) as Record<string, unknown>[];
+  // 79: `response` lives in `run_bodies` now; join it back in for this independent-ground-truth query.
+  const legacy = memory.store.db.prepare(`SELECT r.kind,
+      CASE WHEN json_valid(b.response) THEN json_type(b.response, '$.usage') END recorded,
+      CASE WHEN json_valid(b.response) THEN json_extract(b.response, '$.usage.input') END input,
+      CASE WHEN json_valid(b.response) THEN json_extract(b.response, '$.usage.output') END output,
+      CASE WHEN json_valid(b.response) THEN json_extract(b.response, '$.usage.cacheRead') END cacheRead,
+      CASE WHEN json_valid(b.response) THEN json_extract(b.response, '$.usage.cacheWrite') END cacheWrite,
+      CASE WHEN json_valid(b.response) THEN json_extract(b.response, '$.usage.cost.total') END cost
+    FROM runs r JOIN run_bodies b ON b.run_id = r.id WHERE r.session_id = ? ORDER BY r.id`).all(sessionId) as Record<string, unknown>[];
   const count = (value: unknown) => (typeof value === "number" ? value : 0);
   const expected = legacy.map(row => ({ kind: row.kind, usage: !row.recorded || row.recorded === "null" ? null
     : { input: count(row.input), output: count(row.output), cacheRead: count(row.cacheRead), cacheWrite: count(row.cacheWrite), cost: count(row.cost) } }));

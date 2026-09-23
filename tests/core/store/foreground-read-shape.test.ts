@@ -42,7 +42,7 @@ function captureSql<T>(store: Store, run: () => T): { result: T; statements: str
   finally { (store.db as unknown as { prepare: typeof store.db.prepare }).prepare = original; }
 }
 
-test("71: current membership and a path snapshot read source_entries only through the covering index, never content or blocks", () => {
+test("71/79: current membership and a path snapshot read source_entries only through an index, never content or blocks", () => {
   const dbPath = database(), store = new Store(dbPath);
   try {
     const project = store.createProject({ name: "shape", declaredBy: "mark" });
@@ -73,16 +73,21 @@ test("71: current membership and a path snapshot read source_entries only throug
       expect(sql).not.toMatch(/\bcontent\b/); // 8.1 KB Raw payload column, never selected for membership
       expect(sql).not.toMatch(/\bblocks\b/); // 4.2 KB derived-block column, never selected for membership
     }
-    // Every source_entries statement here is answerable from the covering index alone.
+    // 79: 71's covering index (idx_source_membership) is retired -- content/blocks moved off this
+    // table entirely (item 0), so an ordinary indexed row lookup is cheap without one. Every
+    // source_entries statement here is still an indexed search (by its bare name or its query
+    // alias), never a full scan of any table.
     for (const sql of sourceStatements) {
       const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(JSON.stringify([child.entry.id, root.entry.id]))
-        .map(row => String((row as { detail: string }).detail)).join("\n");
-      expect(plan).toMatch(/COVERING INDEX idx_source_membership/);
+        .map(row => String((row as { detail: string }).detail));
+      expect(plan.join("\n")).toMatch(/SEARCH/);
+      // A json_each VIRTUAL TABLE scan is the input array itself, not source_entries.
+      expect(plan.some(line => /^SCAN/.test(line) && !/VIRTUAL TABLE/.test(line))).toBe(false);
     }
   } finally { store.close(); }
 });
 
-test("71: publishing, selecting, trigger origins and visible Raw read whole-path metadata only from covering indexes", () => {
+test("71/79: publishing, selecting, trigger origins and visible Raw read whole-path metadata only from indexed lookups", () => {
   // Live Pi 2026-09-23: publishSourcePath runs on every appended entry and its rowid lookup cost
   // 0.5-1.4 s whenever the pages were cold (12 ms through the covering index on the same path).
   const dbPath = database(), store = new Store(dbPath);
@@ -104,8 +109,13 @@ test("71: publishing, selecting, trigger origins and visible Raw read whole-path
     for (const sql of sourceStatements) {
       expect(sql).not.toMatch(/\bcontent\b|\bblocks\b/);
       const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(sql.match(/\?/g)!.length === 2 ? [owner.id, JSON.stringify(ids)] : [JSON.stringify(ids)]))
-        .map(row => String((row as { detail: string }).detail)).join("\n");
-      expect(plan, sql).toMatch(/COVERING INDEX idx_source_(membership|identity)/);
+        .map(row => String((row as { detail: string }).detail));
+      // 79: 71's/74's covering indexes are retired (item 0); the implicit unique index over
+      // (session_id, native_lineage, native_id) -- or, for an id-list membership check, the rowid
+      // itself -- answers these small, now-cheap rows without one. A json_each VIRTUAL TABLE scan is
+      // the input array itself, not source_entries.
+      expect(plan.join("\n"), sql).toMatch(/SEARCH/);
+      expect(plan.some(line => /^SCAN/.test(line) && !/VIRTUAL TABLE/.test(line)), sql).toBe(false);
     }
     // The ownership checks still reject a foreign entry.
     expect(() => store.publishSourcePath(owner.id, "main", [root.entry.id, foreign.entry.id], child.turn.id, "L")).toThrow("invalid source path");

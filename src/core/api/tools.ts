@@ -1,8 +1,8 @@
-import { resolveFactSource, type SourceResolution } from "../model/source.ts";
+import { resolveFactSource, sourceAddressScope, type SourceResolution } from "../model/source.ts";
 import { bindMemory } from "../consolidation/memory.ts";
 import type { freezeConsolidation } from "../consolidation/index.ts";
 import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact } from "../model/index.ts";
-import type { Store, RunInput, FactCommitInput, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
+import type { Store, RunInput, FactCommitInput, KnowledgeWithRevision, KnowledgePath, SourceEntry } from "../store/index.ts";
 import { DEFAULT_READ_TOKENS, MAX_PUBLIC_READ_TOKENS, READ_FIELDS, READ_VERSIONS, SEARCH_PREVIEW_TOKENS, validateBudgets, type ListingOptions, type SearchScope, type TraceRead } from "./read.ts";
 import { captureNotingNear, notingNearAudit, notingNearFeedback, unansweredNotingNear, type NotingDiagnostic, type NotingNearSnapshot } from "../noting/review.ts";
 
@@ -216,10 +216,25 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       ? manualEntries : store.sourcePath(session.id, context.branch, path.headTurnId!);
     const candidates = context.kind === "noting" ? sourcePath.filter(entry => frozenIds.has(entry.id)) : sourcePath;
     const positions = new Map(candidates.map((entry, index) => [entry.id, index]));
+    // 79 item 2 (Pi review of 5ee34b5): a source string names one Turn and, unless it is a legacy
+    // alias, one entry ordinal -- both metadata fields (`sourceAddressScope`) -- so candidates narrow
+    // to that before any body is read. Resolution then needs the actual block content (text/call/
+    // result) to match a selector, so only the narrowed candidates are hydrated, and only once each
+    // across the whole batch (`hydrated` memoizes): an empty batch, or one that cites a single entry,
+    // never reads a body resolution does not need, even on a path of thousands of entries.
+    const hydrated = new Map<number, SourceEntry>();
+    const hydrate = (ids: number[]) => {
+      const missing = ids.filter(id => !hydrated.has(id));
+      if (missing.length) for (const entry of store.hydrateSourceEntries(missing)) hydrated.set(entry.id, entry);
+    };
     const resolution = new Map<string, SourceResolution[]>();
     const resolve = (source: string) => {
       if (!resolution.has(source)) {
-        const matches = resolveFactSource(sourcePath, source);
+        const scope = sourceAddressScope(source);
+        const scoped = scope ? candidates.filter(entry => entry.turnId === scope.turn
+          && (scope.ordinal === undefined || entry.entryOrdinal === scope.ordinal)) : [];
+        hydrate(scoped.map(entry => entry.id));
+        const matches = resolveFactSource(scoped.map(entry => hydrated.get(entry.id)!), source);
         resolution.set(source, context.kind === "noting" ? matches.filter(hit => frozenIds.has(hit.entry.id)) : matches);
       }
       return resolution.get(source)!;

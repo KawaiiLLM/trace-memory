@@ -19,7 +19,8 @@ test("67: per-Turn resume lookup uses the Turn index, never a session scan with 
     expect(store.listSourceEntries(session.id, turns[150]).map(value => value.id)).toEqual([entries[150]]);
     const queries = prepare.mock.calls.map(([sql]) => sql);
     prepare.mockRestore();
-    const query = queries.find(sql => sql.startsWith("SELECT id FROM source_entries"))!;
+    // 79: listSourceEntries returns metadata (item 1), so its SELECT names every hot column, not `id` alone.
+    const query = queries.find(sql => sql.startsWith("SELECT id, session_id, native_lineage, native_id, turn_id") && sql.includes("FROM source_entries"))!;
     expect(query).not.toContain("IS NULL OR");
     const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${query}`).all(turns[150]!, session.id);
     expect(plan.map(row => String(row.detail)).join("\n")).toMatch(/SEARCH source_entries USING INDEX .*\(turn_id=\?\)/);

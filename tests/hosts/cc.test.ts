@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { TraceMemory } from "../../src/core/api/index.ts";
+import { hydrate } from "../source-fixture.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { piSourceBlocks } from "../../src/hosts/pi/source.ts";
@@ -146,7 +147,7 @@ test("pinned native command sequences preserve command ownership and exclude loc
     expect(result).toMatchObject({ state: "ready", problems: [] });
     const turns = skill.importer.memory.store.listTurns(result.coreSessionId!);
     expect(turns.map(turn => turn.userPrompt)).toEqual(["fixture root", toSpecPrompt]);
-    const entries = skill.importer.memory.store.listSourceEntries(result.coreSessionId!);
+    const entries = hydrate(skill.importer.memory.store.listSourceEntries(result.coreSessionId!), skill.importer.memory.store);
     expect(entries.map(entry => entry.nativeId)).toEqual([
       "fixture-root", "ad9dd570-96fc-439c-b695-d2f7ffa931f3", "76daf7a6-7627-43f9-8d70-022fe70111ad",
       "d94f596d-76c6-4fcf-921f-4a2fa4103e95", "431be203-fb8e-44b4-9c21-b714d748cc5c",
@@ -222,7 +223,7 @@ test("CC import is idempotent, preserves all source evidence, and projects only 
     expect(f.importer.memory.store.listTurns(sessionId).map(turn => ({ kind: turn.kind, parent: turn.parentTurnId, user: turn.userPrompt })))
       .toEqual([{ kind: "turn", parent: null, user: "first" }, { kind: "compaction", parent: 1, user: null },
         { kind: "turn", parent: 2, user: "abandoned" }, { kind: "turn", parent: 1, user: "replacement" }]);
-    const entries = f.importer.memory.store.listSourceEntries(sessionId);
+    const entries = hydrate(f.importer.memory.store.listSourceEntries(sessionId), f.importer.memory.store);
     expect(entries.map(entry => entry.nativeId)).toEqual(["u1", "a1", "r1", "u2", "a2", "u3", "a3"]);
     expect(entries.filter(entry => entry.turnId === 1).map(entry => entry.entryOrdinal)).toEqual([1, 2, 3]);
     expect(entries.find(entry => entry.nativeId === "r1")!.calls[0]).toMatchObject({ ordinal: 1, name: "Read", status: "success" });
@@ -518,7 +519,9 @@ test("disabled provisional sessions do not allocate and mixed-host legacy Raw st
   try { expect((await importer.reconcile()).state).toBe("disabled"); expect(importer.currentBinding().coreSessionId).toBeNull(); }
   finally { importer.close(); }
   const db = new DatabaseSync(f.config.dbPath);
-  expect(JSON.parse(String(db.prepare("SELECT blocks FROM source_entries WHERE native_id = 'pi-entry'").get()!.blocks)))
+  // 79: blocks lives in source_entry_raw now.
+  expect(JSON.parse(String(db.prepare(`SELECT r.blocks FROM source_entries e JOIN source_entry_raw r ON r.entry_id = e.id
+      WHERE e.native_id = 'pi-entry'`).get()!.blocks)))
     .toEqual([{ kind: "text", text: "foreign" }]); db.close();
   expect(readBinding(f.config, f.nativeSessionId)!.enrollment).toEqual({ defaultEnabled: false, choice: null });
 });

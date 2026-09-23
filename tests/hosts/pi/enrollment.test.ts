@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { host, reply, notingFact } from "./test-host.ts";
 import { TraceMemory, DEFAULT_CONFIG } from "../../../src/core/api/index.ts";
-import { compacted } from "../../source-fixture.ts";
+import { compacted , hydrate } from "../../source-fixture.ts";
 const hosts: ReturnType<typeof host>[] = [];
 const setup = (config: Record<string, unknown> = {}) => { const h = host(config); hosts.push(h); return h; };
 afterEach(async () => { for (const h of hosts.splice(0)) await h.dispose(); });
@@ -109,12 +109,12 @@ test("18a 2026-09-08: core gates admissions and late commits through another fac
     expect(binding.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).toContain("/trace on");
     expect(await h.memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
     expect(await h.memory.consolidate({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
-    expect(() => h.memory.appendEntry({ ...h.memory.pendingEntries(1, "main", 1)[0]!, nativeId: "blocked" })).toThrow("/trace on");
+    expect(() => h.memory.appendEntry({ ...hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)[0]!, nativeId: "blocked" })).toThrow("/trace on");
     const run = { kind: "noting" as const, sessionId: 1, branch: "main", createdAt: "now" };
-    const entries = h.memory.pendingEntries(1, "main", 1);
+    const entries = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
     expect(h.memory.store.commitNotingRun({ run, facts: [], entryIds: entries.map(e => e.id) }).ok).toBe(false);
     expect(h.memory.store.commitConsolidationRun({ run: { ...run, kind: "consolidation" }, operations: [], consolidated: [] }).ok).toBe(false);
-    expect(h.memory.pendingEntries(1, "main", 1)).toEqual(entries);
+    expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)).toEqual(entries);
     expect(h.memory.inject(1)).toBe("");
     other.store.setEnrollment(1, true);
   } finally { other.close(); }
@@ -129,7 +129,7 @@ test.each([true, false])("18a 2026-09-08: disable during Noting provider call re
   release(submit ? notingFact(h.conversations[0]!) : reply("No facts"));
   await h.drain();
   expect(h.memory.store.listSessionFacts(1)).toEqual([]);
-  expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(2);
+  expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)).toHaveLength(2);
   expect(h.memory.store.listRuns(1).every(r => r.outcome !== "success")).toBe(true);
 });
 
@@ -301,7 +301,7 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
   `], { stdio: ["ignore", "ignore", "inherit"] });
   expect((await once(child, "exit"))[0]).toBe(0);
   const run = { kind: "noting" as const, sessionId: 1, branch: "main", createdAt: "now" };
-  expect(h.memory.store.commitNotingRun({ run, facts: [], entryIds: h.memory.pendingEntries(1, "main", 1).map(e => e.id) }).ok).toBe(false);
+  expect(h.memory.store.commitNotingRun({ run, facts: [], entryIds: hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.id) }).ok).toBe(false);
   expect(h.memory.store.commitConsolidationRun({ run: { ...run, kind: "consolidation" }, operations: [], consolidated: [1] }).ok).toBe(false);
   expect(h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id)).toEqual([1]);
   expect(h.memory.store.listRuns(1).slice(0, before.length)).toEqual(before);

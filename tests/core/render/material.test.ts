@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, visibleTarget, type ConfigOverride, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import { DEFAULT_CONFIG, NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, visibleTarget, type ConfigOverride, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
 import { KNOWLEDGE_RECENCY_NOTICE, budgetFacts, budgetKnowledge, charge, finish, renderFact, renderKnowledge, renderKnowledgeBlock, wholeKnowledge } from "../../../src/core/render/index.ts";
@@ -51,11 +51,11 @@ function consolidated() {
 }
 const knowledgeBlock = "<knowledge>\n" + KNOWLEDGE_RECENCY_NOTICE + "\n<constraint>\n[K1@1] [constraint/project] The project uses pnpm\n  change supports: F1\n</constraint>\n</knowledge>";
 const views = (sessionId: number, head: number) =>
-  memory.pendingEntries(sessionId, "main", head).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
+  hydrate(memory.pendingEntries(sessionId, "main", head), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
 
 async function maintain(path: { sessionId: number; branch: string; headTurnId: number }, operation: Record<string, unknown>, address: string) {
   const factId = Number(/F(\d+)/.exec(JSON.stringify(operation.supports))?.[1] ?? 1);
-  const selectedEntries = memory.store.sourcePath(path.sessionId, path.branch, path.headTurnId);
+  const selectedEntries = hydrate(memory.store.sourcePath(path.sessionId, path.branch, path.headTurnId), memory.store);
   memory.selectEntries(path.sessionId, path.branch, selectedEntries.map(entry => entry.id));
   const target = { ...path, triggerEntryId: selectedEntries.at(-1)!.id };
   const trigger = createDreamerTrigger(memory, target, factId, memory.store.listKnowledgeRevisions().length + 1);
@@ -464,7 +464,7 @@ test("29b 2026-09-10: a fork is priced as its inherited measure plus the instruc
   // the full material — and the fork's allowance minus its inherited measure does not cover them.
   await expect(memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent",
     capacity: { inputTokens: forkPrice - prefix, prefixTokens: 0 } })).rejects.toThrow(/Noting capacity/);
-  expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0);
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0);
 });
 
 // ---- 29b 2026-09-10: one material builder, two initial states (parent 29, cases 10, 12, 13, 15) ----
@@ -519,7 +519,7 @@ test("29b 2026-09-10 (case 10): visible facts leave the history allowance before
 test("29b 2026-09-10 (case 12): a fork with no newly supplied Raw still commits its whole frozen target, and no call is still incomplete", async () => {
   const { s, t } = seeded();
   const seen = visibleTarget(memory, s.id, "main", t.id);
-  const pending = memory.pendingEntries(s.id, "main", t.id).map(e => e.id);
+  const pending = hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id);
   let committed: string | undefined;
   memory.close(); open();
   calls.length = 0;
@@ -536,7 +536,7 @@ test("29b 2026-09-10 (case 12): a fork with no newly supplied Raw still commits 
     expect(input.material.entries).toEqual([]); // nothing repeated
     expect(input.entryIds).toEqual(pending); // the whole frozen target all the same
     expect(committed).toContain("ok: F");
-    expect(noter.pendingEntries(s.id, "main", t.id)).toEqual([]); // every frozen entry advanced
+    expect(hydrate(noter.pendingEntries(s.id, "main", t.id), noter.store)).toEqual([]); // every frozen entry advanced
   } finally { noter.close(); }
   // The other half: the same fork that ends without calling note is incomplete, not an empty success.
   const silent = sourceSeededMemory(join(directory, "test.sqlite"), async () => ({ outcome: "success", output: "nothing to record", request: { fake: true } }));
@@ -546,7 +546,7 @@ test("29b 2026-09-10 (case 12): a fork with no newly supplied Raw still commits 
       visible: visibleTarget(silent, s.id, "main", t.id) });
     expect(result.outcome).toBe("failure");
     expect((result as { problems: string[] }).problems).toEqual([NOTING_INCOMPLETE]);
-    expect(silent.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0);
+    expect(hydrate(silent.pendingEntries(s.id, "main", t.id), silent.store).length).toBeGreaterThan(0);
   } finally { silent.close(); }
 });
 

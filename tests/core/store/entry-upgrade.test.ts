@@ -42,7 +42,7 @@ test("upgrade isolates recognized malformed rows, preserves evidence and ordinal
     run_id INTEGER NOT NULL REFERENCES runs(id), session_id INTEGER NOT NULL REFERENCES sessions(id),
     branch TEXT, delivered_at TEXT)`);
   f.store.db.prepare("INSERT INTO pending_deliveries VALUES (?, ?, 'main', NULL)").run(fact.runId, f.sessionId);
-  const before = f.store.db.prepare("SELECT id, content, entry_ordinal FROM source_entries ORDER BY id").all();
+  const before = f.store.db.prepare("SELECT e.id, r.content, e.entry_ordinal FROM source_entries e JOIN source_entry_raw r ON r.entry_id = e.id ORDER BY e.id").all();
   const facts = f.store.db.prepare("SELECT * FROM facts").all();
   const bindings = f.store.db.prepare("SELECT * FROM fact_sources").all();
   const deliverySchema = f.store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get();
@@ -58,14 +58,14 @@ test("upgrade isolates recognized malformed rows, preserves evidence and ordinal
       expect(line).toMatch(/entry=\d+ turn=1; call mapping mismatch$/);
       expect(line).not.toMatch(/private|original|legacy projection/);
     }
-    expect(m.store.db.prepare("SELECT id, content, entry_ordinal FROM source_entries ORDER BY id").all()).toEqual(before);
+    expect(m.store.db.prepare("SELECT e.id, r.content, e.entry_ordinal FROM source_entries e JOIN source_entry_raw r ON r.entry_id = e.id ORDER BY e.id").all()).toEqual(before);
     expect(m.store.db.prepare("SELECT * FROM facts").all()).toEqual(facts);
     expect(m.store.db.prepare("SELECT * FROM fact_sources").all()).toEqual(bindings);
     expect(m.store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get()).toEqual(deliverySchema);
     expect(m.store.db.prepare("SELECT * FROM pending_deliveries").all()).toEqual(deliveryRows);
     for (const entry of entries.slice(1, 5)) {
       expect(m.store.getSourceEntry(entry.id)).toEqual(entry);
-      expect(m.store.db.prepare("SELECT blocks FROM source_entries WHERE id = ?").get(entry.id)!.blocks).toBe("null");
+      expect(m.store.db.prepare("SELECT blocks FROM source_entry_raw WHERE entry_id = ?").get(entry.id)!.blocks).toBe("null");
       const note = m.tools({ kind: "manual", sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }).find(t => t.name === "note")!;
       for (const selector of ["text", "thinking", "private-call-id"]) expect(note.execute({ facts: [{ category: "observation", actor: "agent", text: "No invented fragments", source: [`T1#E${entry.entryOrdinal}@${selector}`] }] })).toContain("invalid source");
     }
@@ -91,7 +91,7 @@ test("a decoder that declines another host's Raw does not seal that row as malfo
   f.store.close();
   let store = new Store(f.path, piSourceBlocks);
   expect(store.getSourceEntry(entry.id)!.blocks).toBeUndefined();
-  expect(store.db.prepare("SELECT blocks FROM source_entries WHERE id = ?").get(entry.id)!.blocks).toBeNull();
+  expect(store.db.prepare("SELECT blocks FROM source_entry_raw WHERE entry_id = ?").get(entry.id)!.blocks).toBeNull();
   store.close();
   store = new Store(f.path, input => JSON.parse(input.raw).foreign ? [{ kind: "text", text: "decoded by owner" }] : undefined);
   try { expect(store.getSourceEntry(entry.id)!.blocks).toEqual([{ kind: "text", text: "decoded by owner" }]); }
@@ -107,9 +107,9 @@ test("upgrade never swallows unexpected decoder or database transaction errors",
   const failure = new Error("unexpected decoder failure");
   expect(() => new Store(f.path, () => { throw failure; })).toThrow(failure);
   const db = new DatabaseSync(f.path);
-  db.exec("CREATE TRIGGER refuse_upgrade BEFORE UPDATE ON source_entries WHEN NEW.id = 2 BEGIN SELECT RAISE(ABORT, 'transaction refused'); END");
+  db.exec("CREATE TRIGGER refuse_upgrade BEFORE UPDATE ON source_entry_raw WHEN NEW.entry_id = 2 BEGIN SELECT RAISE(ABORT, 'transaction refused'); END");
   expect(() => new Store(f.path, piSourceBlocks)).toThrow("transaction refused");
-  expect(db.prepare("SELECT blocks FROM source_entries").all().map(row => row.blocks)).toEqual([null, null]);
+  expect(db.prepare("SELECT blocks FROM source_entry_raw").all().map(row => row.blocks)).toEqual([null, null]);
   db.exec("DROP TRIGGER refuse_upgrade"); db.close();
   const store = new Store(f.path, piSourceBlocks);
   try {

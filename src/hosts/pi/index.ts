@@ -818,11 +818,14 @@ export default function (pi: ExtensionAPI) {
       if (memory.store.getSession(sessionId)?.projectId !== projectId)
         return unavailable("node-not-ready", "The memory binding changed");
       if (!memory.store.enabled(sessionId)) return unavailable("disabled", "Trace Memory is disabled");
+      // 79 item 3: the integrity check reads no Raw. It compares metadata alone -- id, native id and
+      // 74's stored digest -- against `sourceDigest` of the live native message, catching exactly what
+      // yesterday's `entry.raw !== JSON.stringify(...)` caught (a persisted message whose content
+      // changed under the same id after the last walk), without loading a single stored `content`.
       const sources = memory.store.sourcePath(sessionId, branch, head);
-      // Compare the full source membership, including same-Turn entries; metadata needs no ingestion.
       if (sources.length !== selected.length || sources.length !== nativeSources.length
           || sources.some((entry, index) => entry.id !== selected[index] || entry.nativeId !== nativeSources[index]!.id
-            || entry.raw !== JSON.stringify(nativeSources[index]!.message)))
+            || entry.digest !== sourceDigest(JSON.stringify(nativeSources[index]!.message))))
         return unavailable("node-not-ready", "The current native source path is not completely reconciled");
       const compact = memory.compact(sessionId, branch, head, []);
       if ("native" in compact) return unavailable("capacity", compact.reason);
@@ -1277,8 +1280,10 @@ export default function (pi: ExtensionAPI) {
     publishedTruncation = undefined;
     if (omitted) {
       const { raw, facts } = omitted;
+      // 79 item 4 (ruled): Raw is an exact count only, never a token figure -- rendering every omitted
+      // entry to size it would read the whole omitted backlog on every compaction. Facts keep both.
       const parts = [
-        ...(raw ? [`${raw.entries} pending Raw ${raw.entries === 1 ? "entry" : "entries"} (${raw.tokens} tokens)`] : []),
+        ...(raw ? [`${raw.entries} pending Raw ${raw.entries === 1 ? "entry" : "entries"}`] : []),
         ...(facts ? [`${facts.count} unconsolidated ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens)`] : []),
       ];
       context.ui.notify(`Trace Memory: compaction omitted ${parts.join(" and ")}; they remain pending for Noting and Consolidation.`, "warning");

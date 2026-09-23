@@ -63,10 +63,13 @@ test("74: known-entry identity and Turn call-identity reads never load content o
     expect(f.store.turnCallIdentities(f.turn.id)).toHaveLength(1);
     expect(counter.reads()).toBe(0); // neither read loaded/parsed a Raw row
     counter.restore();
-    const identityQuery = prepare.mock.calls.map(([sql]) => sql).find(sql => sql.includes("idx_source_identity"))!;
+    // 79: 74's covering idx_source_identity is retired (item 0) -- the row it dodged (content/blocks)
+    // no longer lives on this table, so the implicit unique index over
+    // (session_id, native_lineage, native_id) answers this lookup at no extra cost.
+    const identityQuery = prepare.mock.calls.map(([sql]) => sql).find(sql => sql.includes("FROM source_entries") && sql.includes("native_lineage"))!;
     prepare.mockRestore();
     const identityPlan = f.store.db.prepare(`EXPLAIN QUERY PLAN ${identityQuery}`).all(f.session.id, "native", "a1");
-    expect(identityPlan.map(row => String(row.detail)).join("\n")).toMatch(/USING (COVERING )?INDEX idx_source_identity/);
+    expect(identityPlan.map(row => String(row.detail)).join("\n")).toMatch(/SEARCH source_entries USING (COVERING )?INDEX sqlite_autoindex_source_entries_\d/);
     const entryCallsPlan = f.store.db.prepare("EXPLAIN QUERY PLAN SELECT call_id, ordinal, name FROM source_entry_calls WHERE entry_id = ? ORDER BY id").all(1);
     expect(entryCallsPlan.map(row => String(row.detail)).join("\n")).toContain("idx_source_entry_calls_entry");
     const turnCallsPlan = f.store.db.prepare("EXPLAIN QUERY PLAN SELECT call_id, ordinal, name FROM source_entry_calls WHERE turn_id = ? ORDER BY id").all(f.turn.id);
@@ -104,7 +107,8 @@ test("74: the digest and call-identity backfill covers every pre-existing entry,
     const u1 = store.appendSourceEntry({ sessionId: f.session.id, turnId: f.turn.id, nativeLineage: "native", nativeId: "u1",
       role: "user", text: "a question", raw: raws.u1!, calls: [] });
     // Simulate a database that predates both the digest column and the source_entry_calls table.
-    store.db.exec("DROP INDEX idx_source_identity; ALTER TABLE source_entries DROP COLUMN digest;");
+    // 79: idx_source_identity no longer exists to drop (item 0: retired by the hot/cold split).
+    store.db.exec("ALTER TABLE source_entries DROP COLUMN digest;");
     store.db.exec("DROP TABLE source_entry_calls;");
     store.close();
     store = new Store(f.path);

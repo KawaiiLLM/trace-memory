@@ -241,14 +241,14 @@ test("35d a later upgrade failure rolls back the newly introduced policy and reo
   const turn = legacy.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "legacy", startedAt: "now" });
   const entry = legacy.appendSourceEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "legacy", nativeId: "entry",
     role: "user", text: "legacy", raw: "legacy", calls: [] });
-  legacy.db.prepare("UPDATE source_entries SET blocks = NULL WHERE id = ?").run(entry.id);
+  legacy.db.prepare("UPDATE source_entry_raw SET blocks = NULL WHERE entry_id = ?").run(entry.id);
   legacy.db.exec("DROP TABLE knowledge_budget_policy");
   legacy.close(); stores.splice(stores.indexOf(legacy), 1);
 
   expect(() => new Store(path, () => { throw new Error("injected later migration failure"); })).toThrow("injected later migration failure");
   const failed = new DatabaseSync(path);
   expect(failed.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_budget_policy'").get()).toBeUndefined();
-  expect(failed.prepare("SELECT blocks FROM source_entries WHERE id = ?").get(entry.id)!.blocks).toBeNull();
+  expect(failed.prepare("SELECT blocks FROM source_entry_raw WHERE entry_id = ?").get(entry.id)!.blocks).toBeNull();
   failed.close();
 
   const reopened = new Store(path, () => [{ kind: "text", text: "legacy" }]); stores.push(reopened);

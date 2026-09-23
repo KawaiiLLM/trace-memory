@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult, type ConfigOverride, renderEntry } from "../../source-fixture.ts";
+import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult, type ConfigOverride, renderEntry , hydrate } from "../../source-fixture.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { knowledgeBlock } from "../../../src/core/render/material.ts";
 import fixture from "../../fixtures/noting/turns.json";
@@ -60,7 +60,7 @@ function deferred() {
 }
 function unchanged(_branch = "main") {
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
-  expect(memory.store.listSourceEntries(sessionId).some(e => memory.store.entryNoted(e.id))).toBe(false);
+  expect(hydrate(memory.store.listSourceEntries(sessionId), memory.store).some(e => memory.store.entryNoted(e.id))).toBe(false);
 }
 
 test("a turn arriving during the model call waits for the next trigger", async () => {
@@ -72,15 +72,15 @@ test("a turn arriving during the model call waits for the next trigger", async (
   resolve(success([batch(first.id)]));
   const result = await pending;
   expect(result.outcome).toBe("success");
-  expect(memory.store.sourcePath(sessionId, "main", first.id).length).toBeGreaterThan(0);
-  expect(memory.store.sourcePath(sessionId, "main", first.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
+  expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).length).toBeGreaterThan(0);
+  expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
   script.push(async () => success([batch(second.id, [fact({ source: [`T${second.id}#user`], support: [["F1", "weak"]] })])]));
   await noting(second.id);
   expect(calls[1]!.text).toContain(second.userPrompt!);
   expect(calls[1]!.material.facts[0]).toContain("[F1]");
   expect(calls[1]!.text).not.toContain(first.userPrompt!);
-  expect(memory.store.sourcePath(sessionId, "main", second.id).length).toBeGreaterThan(0);
-  expect(memory.store.sourcePath(sessionId, "main", second.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
+  expect(hydrate(memory.store.sourcePath(sessionId, "main", second.id), memory.store).length).toBeGreaterThan(0);
+  expect(hydrate(memory.store.sourcePath(sessionId, "main", second.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.listSessionFacts(sessionId)).toHaveLength(2);
   expect(await noting(second.id)).toEqual({ outcome: "empty" });
   expect(calls).toHaveLength(2);
@@ -98,10 +98,10 @@ test("switching branch while pending keeps the old branch's progress and exclude
   resolve(success([batch(old.id)]));
   await pending;
   await memory.noting(selection);
-  expect(memory.store.sourcePath(sessionId, "old", old.id).length).toBeGreaterThan(0);
-  expect(memory.store.sourcePath(sessionId, "old", old.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  expect(memory.store.sourcePath(sessionId, "new", sibling.id).length).toBeGreaterThan(0);
-  expect(memory.store.sourcePath(sessionId, "new", sibling.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
+  expect(hydrate(memory.store.sourcePath(sessionId, "old", old.id), memory.store).length).toBeGreaterThan(0);
+  expect(hydrate(memory.store.sourcePath(sessionId, "old", old.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
+  expect(hydrate(memory.store.sourcePath(sessionId, "new", sibling.id), memory.store).length).toBeGreaterThan(0);
+  expect(hydrate(memory.store.sourcePath(sessionId, "new", sibling.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(calls[1]!.text).not.toContain(`[S${sessionId}/T${old.id}]`);
   expect(memory.store.getRun(1)?.branch).toBe("old");
 });
@@ -167,8 +167,8 @@ test("26a: final text is never parsed and never an implicit submission; a succes
   const next = turn(t.id);
   script.push(async () => success([]));
   expect((await noting(next.id)).outcome).toBe("success"); // the explicit empty batch does advance them
-  expect(memory.store.sourcePath(sessionId, "main", t.id).length).toBeGreaterThan(0);
-  expect(memory.store.sourcePath(sessionId, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
+  expect(hydrate(memory.store.sourcePath(sessionId, "main", t.id), memory.store).length).toBeGreaterThan(0);
+  expect(hydrate(memory.store.sourcePath(sessionId, "main", t.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
 });
 
 test("model cannot write to a late turn outside the frozen range", async () => {
@@ -183,7 +183,7 @@ test("an explicit empty submission notings the range; compactions cannot acquire
   expect((await noting(t.id)).outcome).toBe("empty");
   expect(calls).toHaveLength(0);
   const raw = turn(t.id); script.push(async () => success([])); await noting(raw.id);
-  expect(memory.pendingEntries(sessionId, "main", raw.id)).toEqual([]);
+  expect(hydrate(memory.pendingEntries(sessionId, "main", raw.id), memory.store)).toEqual([]);
 });
 
 test("read knowledge revisions and exact provider request are recorded, even when a knowledge item moves", async () => {
@@ -216,7 +216,7 @@ test("fixture turn golden and noting input use identical rendering with receipts
   expect(memory.trace("T2")).toBe(golden("read"));
   script.push(async (input) => {
     // 17a: automatic Raw uses completed entries; explicit trace retains its independent full read.
-    const views = memory.pendingEntries(sessionId, "main", first.id).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
+    const views = hydrate(memory.pendingEntries(sessionId, "main", first.id), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
     expect(input.material.entries.map(e => e.view).join("\n\n")).toBe(views);
     expect(input.tools[0]!.execute({ address: "T1", tool: 2, full: true })).toBe(memory.trace("T1", { tool: 2, full: true }));
     return success([]);
@@ -255,10 +255,10 @@ test("an oldest entry the episodic budget cannot hold leaves Noting pending (the
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   memory.close(); open({ render: { episodicBlockTokens: 1 } });
   const second = turn(first.id, 1);
-  const before = memory.pendingEntries(sessionId, "main", second.id);
+  const before = hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store);
   await expect(noting(second.id)).rejects.toThrow(/Noting capacity/);
   expect(calls).toHaveLength(1); // no model call ran over the budget
-  expect(memory.pendingEntries(sessionId, "main", second.id)).toEqual(before);
+  expect(hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store)).toEqual(before);
 });
 
 // 25a moved this scenario from the Noter to the Consolidator: the Noter has no knowledge block to
@@ -303,8 +303,8 @@ test("reopening the database preserves the run, facts and watermark", async () =
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const traced = memory.trace("F1"); memory.close(); open();
   expect(memory.trace("F1")).toBe(traced);
-  expect(memory.store.sourcePath(sessionId, "main", first.id).length).toBeGreaterThan(0);
-  expect(memory.store.sourcePath(sessionId, "main", first.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
+  expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).length).toBeGreaterThan(0);
+  expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.getRun(1)?.outcome).toBe("success");
 });
 
@@ -314,13 +314,13 @@ test("reopening the database preserves the run, facts and watermark", async () =
  * progress. */
 test("20b 2026-09-08 scenario 8: an entry whose mandatory metadata cannot fit is a capacity failure, never an oversized success", async () => {
   const first = turn();
-  const views = memory.pendingEntries(sessionId, "main", first.id).map(e => renderEntry(e, memory.config.render).content);
+  const views = hydrate(memory.pendingEntries(sessionId, "main", first.id), memory.store).map(e => renderEntry(e, memory.config.render).content);
   for (const view of views) expect(tokens(view)).toBeLessThanOrEqual(memory.config.render.entryTokens); // bounded, labels included
-  const before = memory.pendingEntries(sessionId, "main", first.id);
+  const before = hydrate(memory.pendingEntries(sessionId, "main", first.id), memory.store);
   memory.close(); open({ render: { entryTokens: 4, toolInputTokens: 4, toolResultTokens: 4 } });
   script.push(async () => success([]));
   await expect(noting(first.id)).rejects.toThrow("entry view capacity cannot hold source labels and omission markers");
   expect(calls).toEqual([]);
   expect(memory.store.listRuns(sessionId)).toEqual([]);
-  expect(memory.pendingEntries(sessionId, "main", first.id)).toEqual(before);
+  expect(hydrate(memory.pendingEntries(sessionId, "main", first.id), memory.store)).toEqual(before);
 });

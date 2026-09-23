@@ -198,8 +198,13 @@ export function migrateKnowledgeLineage(db: DatabaseSync, transactionOwned = fal
   const taskColumns = columns("task_executions");
   const rangeColumns = columns("dreaming_ranges");
   const needsRebuild = !revision.sql.includes("'split'") || revision.sql.includes("actor_role = 'dreaming'");
+  // 79: `runs.origin_entry_ids` moved to `run_bodies` (item 0); its absence on `runs` is the split's
+  // own steady state, not a sign this pre-34a migration still owes the column. `origin_session_id`
+  // alone is this table's completion signal now -- a database that has it, split or not, needs
+  // nothing further from `addOrigin` below. `task_executions`/`dreaming_ranges` are untouched by the
+  // split and keep both columns as before.
   const actions = !revisionColumns.includes("support_semantics") || !revisionColumns.includes("actor_role") || needsRebuild ||
-    !runColumns.includes("origin_session_id") || !runColumns.includes("origin_entry_ids") ||
+    !runColumns.includes("origin_session_id") ||
     (taskColumns.length > 0 && (!taskColumns.includes("origin_session_id") || !taskColumns.includes("origin_entry_ids"))) ||
     (rangeColumns.length > 0 && (!rangeColumns.includes("origin_session_id") || !rangeColumns.includes("origin_entry_ids")));
   if (!actions) return;
@@ -218,12 +223,17 @@ export function migrateKnowledgeLineage(db: DatabaseSync, transactionOwned = fal
       if (sequence) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'knowledge_revisions'").run(sequence.seq!);
       for (const object of objects) db.exec(String(object.sql));
     }
-    const addOrigin = (table: string) => {
+    const addOrigin = (table: string, entryIds = true) => {
       const existing = columns(table);
       if (!existing.includes("origin_session_id")) db.exec(`ALTER TABLE ${table} ADD COLUMN origin_session_id INTEGER REFERENCES sessions(id)`);
-      if (!existing.includes("origin_entry_ids")) db.exec(`ALTER TABLE ${table} ADD COLUMN origin_entry_ids TEXT`);
+      if (entryIds && !existing.includes("origin_entry_ids")) db.exec(`ALTER TABLE ${table} ADD COLUMN origin_entry_ids TEXT`);
     };
-    addOrigin("runs");
+    // 79: never add `origin_entry_ids` to `runs` here. A truly pre-34a `runs` (missing
+    // origin_session_id too) gets that one column added in this table's pre-split shape; ticket 79's
+    // split later in the same open is what gives it `origin_entry_ids`, on `run_bodies` (item 0). An
+    // already-79-split `runs` needs neither: it already has `origin_session_id`, and its lack of
+    // `origin_entry_ids` is the split's own steady state, never this migration's to fill back in.
+    addOrigin("runs", false);
     if (taskColumns.length) addOrigin("task_executions");
     if (rangeColumns.length) addOrigin("dreaming_ranges");
     // Store validates the complete schema once before committing its enclosing upgrade.

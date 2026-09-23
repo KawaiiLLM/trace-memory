@@ -239,6 +239,18 @@ export function countSourceReads(): { reads: () => number; reset: () => void; re
   return { reads: () => count, reset: () => { count = 0; }, restore: () => { prototype.getSourceEntry = original; } };
 }
 
+/** Count the Raw rows a batched hydration joins -- `hydrateSourceEntries`'s one statement still walks
+ * one row (and its overflow pages) per distinct id, so this is the batched twin of `countSourceReads`
+ * above: same cost per row, one round trip instead of one per id. Counts distinct ids requested, the
+ * same dedup `hydrateSourceEntries` itself applies before the `IN (...)` join. */
+export function countHydratedRows(): { reads: () => number; reset: () => void; restore: () => void } {
+  const prototype = Store.prototype as { hydrateSourceEntries: Store["hydrateSourceEntries"] };
+  const original = prototype.hydrateSourceEntries;
+  let count = 0;
+  prototype.hydrateSourceEntries = function (this: Store, ids: readonly number[]) { count += new Set(ids).size; return original.call(this, ids); };
+  return { reads: () => count, reset: () => { count = 0; }, restore: () => { prototype.hydrateSourceEntries = original; } };
+}
+
 export interface NativeEntry { id: string; parentId: string | null; timestamp: string; type: "message"; message: Record<string, unknown> }
 
 /** The same long history as `generate`, in the shape a host reconciles: the native Pi ancestry of one

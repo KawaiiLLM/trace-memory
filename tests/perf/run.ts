@@ -13,7 +13,7 @@ import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generate, nativeAncestry, countSourceReads, countGraphResolutions, countRunBodies, runAudit, searchCorpus, type Fixture } from "./fixture.ts";
-import { TraceMemory, noVisibility, renderEntry, toolDefinitions, tokens, type EntryProfile } from "../../src/core/api/index.ts";
+import { TraceMemory, noVisibility, renderEntry, toolDefinitions, tokens, type EntryProfile, type SourceEntry } from "../../src/core/api/index.ts";
 import { freezeNoting } from "../../src/core/noting/index.ts";
 import { captureNotingNear, notingNearFeedback } from "../../src/core/noting/review.ts";
 import { freezeConsolidation } from "../../src/core/consolidation/index.ts";
@@ -112,8 +112,11 @@ async function triggerBacklog(fixture: Fixture, size: string): Promise<Sample[]>
   const head = fixture.headTurnId;
   const target = { sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: head };
   try {
-    const entries = memory.pendingEntries(fixture.sessionId, fixture.branch, head);
-    const pending = entries.length;
+    const meta = memory.pendingEntries(fixture.sessionId, fixture.branch, head);
+    const pending = meta.length;
+    // 79: `viewTokens` renders every entry, so it hydrates the whole chosen set in one batched read;
+    // the `measure` below still calls the metadata-only `pendingEntries` itself, unhydrated.
+    const entries = memory.store.hydrateSourceEntries(meta.map(e => e.id));
     return [
       measure("pendingEntries (whole backlog pending)", () => memory.pendingEntries(fixture.sessionId, fixture.branch, head), `${pending} pending entries`),
       measure("taskEligibility noting (whole backlog pending)", () => memory.taskEligibility("noting", target), `${pending} pending entries`),
@@ -128,7 +131,7 @@ async function triggerBacklog(fixture: Fixture, size: string): Promise<Sample[]>
  * Ticket 30 retired the second tier, so there is one profile left to render. */
 const VIEW_TOKENS_BEFORE_23: Record<string, number> = { baseline: 553_980, large: 1_086_050 };
 
-function viewTokens(memory: ReturnType<typeof TraceMemory>, entries: ReturnType<typeof memory.pendingEntries>, size: string): Sample[] {
+function viewTokens(memory: ReturnType<typeof TraceMemory>, entries: SourceEntry[], size: string): Sample[] {
   // A profile whose `E` cannot hold one entry's minima raises the capacity error; that entry is
   // counted, not rendered smaller, and compaction delegates over it exactly as it does in production.
   const total = (profile: EntryProfile) => {
