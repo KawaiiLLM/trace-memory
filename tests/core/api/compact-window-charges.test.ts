@@ -70,3 +70,31 @@ test("73: counting an omitted entry's tokens raises a data error instead of coun
     expect(() => memory.compact(session.id, "main", turn.id)).toThrow("corrupt result payload");
   } finally { memory.close(); }
 });
+
+test("73: processed material never borrows — its receipts and framing fit its own base too", () => {
+  // Pi review of 8ac7be8: with nothing pending, the noted Raw window was charged 134 of a 110 base
+  // and the consolidated facts window 172 of a 160 base, their receipts drawing on the allowance.
+  const { memory, session, turn } = setup();
+  try {
+    let parent = turn.id;
+    for (let i = 0; i < 12; i++) {
+      const next = memory.store.appendTurn({ sessionId: session.id, parentTurnId: parent, kind: "turn", startedAt: at, userPrompt: `q${i} ${"word ".repeat(20)}` });
+      memory.appendEntry({ sessionId: session.id, turnId: next.id, nativeId: `a${i}`, nativeLineage: "fixture", role: "assistant",
+        text: `answer ${i} ${"word ".repeat(20)}`, raw: "", calls: [] });
+      parent = next.id;
+    }
+    const path = memory.store.sourcePath(session.id, "main", parent);
+    const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: at },
+      entryIds: path.map(entry => entry.id),
+      facts: Array.from({ length: 12 }, (_, i) => ({ turnId: parent, text: `fact ${i} ${"word ".repeat(15)}`, category: "observation" as const,
+        actor: "user" as const, source: [`T${parent}#user`], createdAt: at })) });
+    if (!noted.ok) throw new Error(JSON.stringify(noted));
+    for (const fact of noted.facts) memory.store.markConsolidated(fact.id, noted.runId, memory.store.getSession(session.id)!.projectId);
+    Object.assign(memory.config.compaction, { rawTokens: 110, factsTokens: 160, sharedAllowanceTokens: 10_000 });
+    const result = memory.compact(session.id, "main", parent);
+    if ("native" in result) throw new Error("native");
+    expect(memory.store.pendingEntryIds(session.id, "main", parent)).toEqual([]);
+    expect(result.charged!.raw).toBeLessThanOrEqual(110);
+    expect(result.charged!.facts).toBeLessThanOrEqual(160);
+  } finally { memory.close(); }
+});

@@ -713,11 +713,15 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         const steps = rawSteps.slice(0, kept);
         return (kept ? opener(RAW_TITLE) + charge(steps.map(s => s.content)) : 0) + receiptCharge([...steps.flatMap(s => s.receipts), ...receipt]);
       };
-      const rawEnvelope = caps.raw + sharedAfterKnowledge;
+      // Only unprocessed material borrows (73): the whole window — framing and receipts included —
+      // may exceed its base by at most what its kept pending entries cost, and never by more than
+      // the allowance Knowledge left. Without pending entries it fits its base.
+      const rawLimit = (kept: number) => caps.raw + Math.min(sharedAfterKnowledge,
+        rawSteps.slice(0, kept).reduce((sum, s) => sum + (pendingIds.has(s.entry.id) ? tokens(s.content) + 1 : 0), 0));
       let rawKept = rawSteps.length;
-      while (rawKept > 0 && rawWindowCost(rawKept, rawReceipt(rawKept)) > rawEnvelope) rawKept--;
+      while (rawKept > 0 && rawWindowCost(rawKept, rawReceipt(rawKept)) > rawLimit(rawKept)) rawKept--;
       // With nothing kept, a receipt that does not fit either leaves the Raw window empty.
-      const rawFinalReceipt = rawWindowCost(rawKept, rawReceipt(rawKept)) <= rawEnvelope ? rawReceipt(rawKept) : [];
+      const rawFinalReceipt = rawWindowCost(rawKept, rawReceipt(rawKept)) <= rawLimit(rawKept) ? rawReceipt(rawKept) : [];
       const rawFinalSteps = rawSteps.slice(0, rawKept);
       const rawCharged = rawWindowCost(rawKept, rawFinalReceipt);
       // What the whole window took beyond its base — receipts and framing included — leaves the allowance.
@@ -744,6 +748,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         ? (rawKept ? charge([FACTS_TITLE]) : opener(FACTS_TITLE)) + charge(lines(eligibleFacts.slice(0, kept))) : 0) + receiptCharge(receipt);
       const factsTotalCost = (kept: number) => factsWindowCost(kept, omission(eligibleFacts.slice(kept)));
       let factsKept = 0, factsBaseUsed = 0, factsAllowanceUsed = 0, prevFactsCost = 0;
+      const pendingFactCost: number[] = []; // per kept fact, its marginal cost when unconsolidated, else 0
       for (const fact of eligibleFacts) {
         const nextCost = factsWindowCost(factsKept + 1, []);
         const marginal = nextCost - prevFactsCost;
@@ -757,13 +762,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           if (marginal > availableBase) break;
           factsBaseUsed += marginal;
         }
+        pendingFactCost.push(pendingFactIds.has(fact.id) ? marginal : 0);
         factsKept++; prevFactsCost = nextCost;
       }
-      const factsEnvelope = caps.facts + sharedAfterRaw;
-      while (factsKept > 0 && factsTotalCost(factsKept) > factsEnvelope) factsKept--;
+      // As for Raw: the window may exceed its base only by what its kept unconsolidated facts cost.
+      const factsLimit = (kept: number) => caps.facts + Math.min(sharedAfterRaw,
+        pendingFactCost.slice(0, kept).reduce((sum, cost) => sum + cost, 0));
+      while (factsKept > 0 && factsTotalCost(factsKept) > factsLimit(factsKept)) factsKept--;
       const finalFacts = eligibleFacts.slice(0, factsKept);
       // With nothing kept, a receipt that does not fit either leaves the facts window empty.
-      const finalFactReceipts = factsTotalCost(factsKept) <= factsEnvelope ? omission(eligibleFacts.slice(factsKept)) : [];
+      const finalFactReceipts = factsTotalCost(factsKept) <= factsLimit(factsKept) ? omission(eligibleFacts.slice(factsKept)) : [];
       const factsOmittedPending = eligibleFacts.slice(finalFacts.length).filter(f => pendingFactIds.has(f.id));
       const factsOmittedPendingTokens = factsOmittedPending.length ? charge(lines(factsOmittedPending)) : 0;
 
