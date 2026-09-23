@@ -94,6 +94,18 @@ test("30k-record bootstrap: writer wait during ingest, per-phase timing, and loo
   phases["parse/index/sort"] = { wallMs: indexMs, longestGapMs: 0 };
   phases.ingest = { wallMs: ingestMs, longestGapMs: longestIngestGap };
   phases["path publish"] = { wallMs: pathPublishMs, longestGapMs: pathPublishMs };
+  // The heartbeat bound gated for the ingest phase only: the longest gap stays near the slice
+  // length (40 ms), not the whole multi-second scan.
+  expect(longestIngestGap).toBeLessThan(100);
+  // Lookups removed by the dedup fixes stay removed: getTurn 165,000 -> 105,000 (appendTurn's and
+  // updateTurn's own before/after reads are untouched; bindNativeTurn's, appendSourceEntry's and
+  // ingest's owner-check/assistant-text-append's duplicate-within-one-call reads are gone).
+  // findSourceEntry+getSourceEntry 90,000 -> 60,000 (appendSourceEntry's internal duplicate check is
+  // skipped when the importer already knows the answer). enrollment 60,000 -> 30,003 (memoized once
+  // per transaction instead of once per write method's own check).
+  expect(counts.getTurn).toBe(105_000);
+  expect(counts.findSourceEntry + counts.getSourceEntry).toBe(60_000);
+  expect(counts.enrollment).toBe(30_003);
 
   if (writer.connected) writer.send("stop", () => {});
   const writerResult = await finished;
