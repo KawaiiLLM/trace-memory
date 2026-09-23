@@ -1,4 +1,4 @@
-import { TraceMemory, directoryAllocation, type TraceMemory as TraceMemoryFacade } from "../../core/api/index.ts";
+import { TraceMemory, directoryAllocation, sourceDigest, type TraceMemory as TraceMemoryFacade } from "../../core/api/index.ts";
 import type { SourceEntry } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
@@ -219,11 +219,13 @@ export class CcProjection {
       // records descend from the compaction Turn the clear appended under the parent's head.
       return this.binding.clearedFrom?.compactionTurnId ?? null;
     };
+    // 74: call identities alone (`turnCallIdentities`), never every entry of the Turn — the same
+    // identities `listSourceEntries` used to expose only by loading each entry's full Raw.
     const knownCalls = (turnId: number): Map<string, CallIdentity> => {
       const loaded = this.callsByTurn.get(turnId);
       if (this.loadedCallTurns.has(turnId)) return loaded ?? new Map();
       const values = new Map<string, CallIdentity>();
-      for (const entry of this.memory.store.listSourceEntries(sessionId, turnId)) for (const value of entry.calls) {
+      for (const value of this.memory.store.turnCallIdentities(turnId)) {
         const prior = values.get(value.callId);
         if (prior && (prior.ordinal !== value.ordinal || prior.name !== value.name))
           throw new CcIntegrityError(`native tool call ${value.callId} changed within one Turn`);
@@ -254,9 +256,12 @@ export class CcProjection {
           return { association: { turnId: turn.id } };
         });
       }
-      const known = this.memory.store.findSourceEntry(sessionId, lineage, source.nativeId);
+      // 74: identity without Raw — `digest` compares against `sourceDigest(raw)` in place of
+      // `known.raw !== raw`, and `known.calls` (call id, ordinal, name only) comes from the compact
+      // side table instead of this entry's full stored content.
+      const known = this.memory.store.findKnownSourceEntry(sessionId, lineage, source.nativeId);
       if (known) {
-        if (known.raw !== raw) throw new CcIntegrityError(`native source ${source.nativeId} changed after persistence`);
+        if (known.digest !== sourceDigest(raw)) throw new CcIntegrityError(`native source ${source.nativeId} changed after persistence`);
         if (source.kind === "user" && !this.memory.store.findNativeTurn(sessionId, lineage, source.nativeId))
           this.memory.store.transaction(() => this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, known.turnId, "turn"));
         const calls = new Map(knownCalls(known.turnId));
