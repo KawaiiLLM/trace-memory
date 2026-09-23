@@ -1,11 +1,23 @@
 import { TraceMemory, directoryAllocation, type TraceMemory as TraceMemoryFacade } from "../../core/api/index.ts";
-import type { SourceEntry } from "../../core/store/index.ts";
+import type { SourceEntry, Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
 import { coreHostOf, implicitCcProject, readBinding, withCcBindingLock, type CcBindingLock, type CcSessionBinding } from "./binding.ts";
 import { CcTranscriptCursor, CcTranscriptScan, CcTranscriptScanFailure, ccSourceBlocks, classifySourceRecord,
   nativeParentId, readTranscriptBootstrap, readTranscriptMetadata, type CcNativeRecord, type CcSourceRecord,
   type CcTranscriptSnapshot } from "./transcript.ts";
+
+/** Measurement and test-only hooks; every field is optional. `onIngestGap` reports each cooperative
+ * pause point of the ingest loop (its length before the pause and once more at the end for the
+ * final slice); `onPhase` reports the unsliced read and parse/index/sort phases. `sliceMs`/`pauseMs`
+ * override the production cooperative-scan constants — unset in production, used by tests that need
+ * several real pauses over a small fixture instead of waiting out a 30k-record scan. */
+export interface CcImportInstrumentation {
+  onIngestGap?: (ms: number) => void;
+  onPhase?: (phase: "read" | "index", ms: number) => void;
+  sliceMs?: number;
+  pauseMs?: number;
+}
 
 export interface CcReconcileResult {
   state: "ready" | "provisional" | "disabled" | "not-ready" | "unavailable";
@@ -144,7 +156,7 @@ export class CcProjection {
       appendedEntryIds: [], problems, ...values };
   }
 
-  async synchronize(): Promise<CcReconcileResult> {
+  async synchronize(signal?: AbortSignal, instrumentation?: CcImportInstrumentation): Promise<CcReconcileResult> {
     const observedBinding = readBinding(this.config, this.binding.nativeSessionId);
     if (this.lastResult && observedBinding && JSON.stringify(observedBinding) === JSON.stringify(this.binding) &&
         (observedBinding.coreSessionId === null || this.memory.store.enabled(observedBinding.coreSessionId))) {
@@ -158,12 +170,12 @@ export class CcProjection {
     }
     return withCcBindingLock(this.config, this.binding.nativeSessionId, async locked => {
       this.lockedBinding = locked;
-      try { return await this.reconcileLocked(); }
+      try { return await this.reconcileLocked(signal, instrumentation); }
       finally { this.lockedBinding = null; }
-    });
+    }, undefined, signal);
   }
 
-  private async reconcileLocked(): Promise<CcReconcileResult> {
+  private async reconcileLocked(signal?: AbortSignal, instrumentation: CcImportInstrumentation = {}): Promise<CcReconcileResult> {
     if (!this.lockedBinding) throw new Error("CC projection binding lock is unavailable");
     const current = this.lockedBinding.read();
     if (!current || current.dbPath !== this.config.dbPath || current.transcriptPath !== this.binding.transcriptPath)
@@ -270,15 +282,19 @@ export class CcProjection {
       }
       return this.memory.store.transaction(() => {
         let turnId: number;
+        // The owning Turn is fetched once here and reused below for the assistant-text append
+        // (70: it is read once for the ownership check and once more for the append otherwise).
+        let ownerTurn: ReturnType<Store["getTurn"]> = null;
         if (source.kind === "user") {
           const parentTurnId = nearestTurn(record, scan);
           turnId = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: source.text, startedAt: timestamp }).id;
           this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turnId, "turn");
         } else {
           const owner = nearestTurn(record, scan);
-          if (owner === null || this.memory.store.getTurn(owner)?.kind !== "turn")
+          ownerTurn = owner === null ? null : this.memory.store.getTurn(owner);
+          if (!ownerTurn || ownerTurn.kind !== "turn")
             throw new CcIntegrityError(`owning user Turn for native source ${source.nativeId} is unavailable`);
-          turnId = owner;
+          turnId = ownerTurn.id;
         }
         const calls = source.kind === "user" ? new Map<string, CallIdentity>() : new Map(knownCalls(turnId));
         const fragments: SourceEntry["calls"] = [];
@@ -297,9 +313,9 @@ export class CcProjection {
           for (const call of fragments) this.memory.store.completeToolCall(turnId, call.ordinal, call.result ?? "", call.status);
         }
         const stored = this.memory.appendEntry({ sessionId, nativeLineage: lineage, nativeId: source.nativeId, turnId,
-          role: source.kind, text: source.text, raw, calls: fragments });
+          role: source.kind, text: source.text, raw, calls: fragments }, null);
         if (source.kind === "assistant") {
-          const turn = this.memory.store.getTurn(turnId)!;
+          const turn = ownerTurn!;
           this.memory.store.updateTurn(turnId, { assistantText: [turn.assistantText, source.text].filter(Boolean).join("\n"), endedAt: source.timestamp });
         }
         return { association: { turnId, entryId: stored.id }, calls, appendedEntryId: stored.id };
@@ -326,7 +342,9 @@ export class CcProjection {
     let scan: CcTranscriptScan | CcTranscriptSnapshot;
     let branch = this.binding.branch, selectedEntryIds: number[] = [], headTurnId: number | null = null, projectionReady = true;
     try {
-      scan = this.transcript.scan(this.binding.transcriptPath, visit);
+      scan = await this.transcript.scanCooperative(this.binding.transcriptPath, visit,
+        { signal, onIngestGap: instrumentation.onIngestGap, onPhase: instrumentation.onPhase,
+          sliceMs: instrumentation.sliceMs, pauseMs: instrumentation.pauseMs });
       if (scan instanceof CcTranscriptScan) {
         for (const problem of scan.problems) addProblem(problem);
         if (!scan.reset && scan.selectedLeafUuid === this.binding.selectedLeafUuid && this.lastResult) {
@@ -452,8 +470,8 @@ export class CcImporter {
   persistedCall(toolUseId: string, toolName: "note" | "memory"): CcPersistedCall | null {
     return this.projection.persistedCall(toolUseId, toolName);
   }
-  async reconcile(): Promise<CcReconcileResult> {
-    const result = await this.projection.synchronize();
+  async reconcile(signal?: AbortSignal, instrumentation?: CcImportInstrumentation): Promise<CcReconcileResult> {
+    const result = await this.projection.synchronize(signal, instrumentation);
     if (!this.reopened && result.coreSessionId !== null && result.state !== "disabled") {
       this.memory.store.reopenSession(result.coreSessionId, this.memory.executorId);
       this.reopened = true;
