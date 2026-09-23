@@ -212,3 +212,101 @@ test("a selected-path retarget aborts a scan running across a real pause instead
     expect(diagnostics.some(message => message.includes('"startup-cancelled"') && message.includes("grown parent transcript"))).toBe(true);
   } finally { await coordinator.shutdown("test"); }
 });
+
+// 70 follow-up: `requestReconcile` coalesces to at most one queued wake, and the poll/transcript
+// watch guarantee one is queued during any multi-second import. `abortCurrentImport` only aborts the
+// reconcile *currently running* — the queued one behind it starts the instant the current one settles,
+// grabs the binding lock immediately and runs a full, unaborted import before off/retarget/shutdown
+// (which wait for that same lock, or for the queue) ever get a look-in. These three tests reproduce
+// that: a reconcile is queued behind the running scan before the preempting operation is issued.
+
+test("off does not wait behind a reconcile already queued ahead of it", async () => {
+  const f = fixture("off-queued-behind");
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, at(0));
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {}, TUNING);
+  try {
+    const starting = coordinator.start();
+    await sleep(30); // well inside the running scan's real-pause window
+    const executor = readBinding(f.config, f.nativeSessionId)!.executor!;
+    // A second reconcile coalesces behind the running scan, exactly as a real transcript watch would.
+    const queued = coordinator.requestReconcile("transcript watch");
+    const before = entryCount(f.config.dbPath);
+    const startedAt = Date.now();
+    const [offReply, queuedResult] = await Promise.all([directControl(executor, "off"), queued]);
+    const elapsed = Date.now() - startedAt;
+    expect(offReply).toMatchObject({ ok: true, verb: "off" });
+    // A full unaborted scan of this fixture takes well over a second (120 records * 10ms pauses).
+    // A prompt ack proves the queued reconcile did not run one first — regardless of whether it
+    // settled null (held) or saw the enrollment off's own disable already persisted, nothing it
+    // could still import survived: either way stamp/offset never advance past what's asserted below.
+    expect(elapsed).toBeLessThan(400);
+    expect(queuedResult && (queuedResult as { state: string }).state).not.toBe("ready");
+    expect(entryCount(f.config.dbPath)).toBeLessThan(PAIRS * 2);
+    expect(entryCount(f.config.dbPath)).toBeGreaterThanOrEqual(before);
+    await starting;
+    expect(readBinding(f.config, f.nativeSessionId)!.enrollment.choice).toBe(false);
+  } finally { await coordinator.shutdown("test"); }
+});
+
+test("retarget does not wait behind a reconcile already queued ahead of it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm-cc-70-retarget-queued-")); dirs.push(dir);
+  const stateDir = mkdtempSync("/tmp/tmcc-70-retarget-queued-"); dirs.push(stateDir);
+  const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
+    pollIntervalMs: 100_000, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2 });
+  const parentId = "retarget-parent-queued", childId = "retarget-child-queued";
+  const parentPath = join(dir, "parent.jsonl"), childPath = join(dir, "child.jsonl");
+  const seed = records(1);
+  writeFileSync(parentPath, seed.map(line).join(""));
+  writeFileSync(childPath, "");
+  vi.stubEnv("CLAUDE_PID", "90098");
+  const parentInput = { hook_event_name: "SessionStart" as const, session_id: parentId, transcript_path: parentPath };
+  await recordSessionStart(config, parentInput, at(0));
+  publishNativeSession(config, parentInput, 90098);
+  const coordinator = new CcCoordinator(config, parentId, () => {}, TUNING);
+  try {
+    await coordinator.start(); // small seed transcript: allocates the core session and finishes fast
+    await handleCcHook(config, { hook_event_name: "SessionStart", source: "clear", session_id: childId, transcript_path: childPath });
+    const beforeGrow = entryCount(config.dbPath);
+    writeFileSync(parentPath, [...seed, ...records(PAIRS).slice(2)].map(line).join(""));
+    const growing = coordinator.requestReconcile("grown parent transcript");
+    await sleep(30); // well inside the growing scan's real-pause window
+    // A second reconcile coalesces behind the growing scan, exactly as a real transcript watch would.
+    const queued = coordinator.requestReconcile("second transcript watch");
+    const startedAt = Date.now();
+    const [retargeted, queuedResult] = await Promise.all([coordinator.retargetTo(childId), queued]);
+    const elapsed = Date.now() - startedAt;
+    await growing;
+    // A full unaborted continuation of the growing scan takes well over a second; a prompt retarget,
+    // with the queued reconcile settling just as fast, proves it did not run one first.
+    expect(elapsed).toBeLessThan(400);
+    expect(queuedResult).toBeNull();
+    expect(retargeted).toBe(true);
+    expect(coordinator.nativeSessionId).toBe(childId);
+    expect(entryCount(config.dbPath)).toBeGreaterThanOrEqual(beforeGrow);
+    expect(entryCount(config.dbPath)).toBeLessThan(beforeGrow + PAIRS * 2);
+  } finally { await coordinator.shutdown("test"); }
+});
+
+test("shutdown does not wait behind a reconcile already queued ahead of it", async () => {
+  const f = fixture("shutdown-queued-behind");
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, at(0));
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {}, TUNING);
+  const starting = coordinator.start();
+  await sleep(30); // well inside the running scan's real-pause window
+  // A second reconcile coalesces behind the running scan, exactly as a real transcript watch would.
+  const queued = coordinator.requestReconcile("transcript watch");
+  const before = entryCount(f.config.dbPath);
+  const shuttingDown = coordinator.shutdown("test shutdown"); // may itself legitimately take a while
+  // (finalReconcile's own continuation scan) — measure the queued reconcile's own settlement instead.
+  const startedAt = Date.now();
+  const queuedResult = await queued;
+  const elapsed = Date.now() - startedAt;
+  expect(elapsed).toBeLessThan(400);
+  expect(queuedResult).toBeNull();
+  expect(entryCount(f.config.dbPath)).toBeLessThan(PAIRS * 2);
+  expect(entryCount(f.config.dbPath)).toBeGreaterThanOrEqual(before);
+  await shuttingDown;
+  await starting;
+});
