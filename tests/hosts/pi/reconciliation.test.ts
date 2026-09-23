@@ -100,6 +100,23 @@ test("22b: a persisted message changed under a known identity is still reported 
   expect(h.memory.store.getSourceEntry(stored.id)!.raw).toBe(stored.raw); // and the original Raw is kept
 });
 
+test("74: a persisted assistant whose native role changed still offers its calls to a later result", async () => {
+  // Review 2026-09-23: a digest mismatch is only reported, so the walk goes on, and it must decide by
+  // the persisted role as 22b did — the native message's new role would drop the call map.
+  const h = setup(quiet);
+  await h.prompt("Question");
+  h.persist({ ...reply(""), content: [{ type: "toolCall", id: "call-original", name: "bash", arguments: { command: "echo original" } }] });
+  await h.emit("agent_end");
+  const native = h.entries.find(e => e.type === "message" && e.message.role === "assistant") as unknown as { id: string; message: unknown };
+  native.message = { role: "user", content: "modified native role", timestamp: 1 };
+  await h.emit("session_start");
+  h.persist({ role: "toolResult", toolCallId: "call-original", toolName: "bash", content: [{ type: "text", text: "result" }], isError: false, timestamp: 2 });
+  await h.emit("agent_end");
+  expect(h.notices.some(n => n.includes(`entry ${native.id} changed after persistence`))).toBe(true);
+  expect(h.notices.some(n => n.includes("tool call call-original"))).toBe(false);
+  expect(h.memory.store.listSourceEntries(1).map(e => e.role)).toContain("toolResult");
+});
+
 test("22b: tree navigation and a foreign lineage rebuild the reconciled ancestry", async () => {
   const h = setup(quiet);
   h.setHeaderTimestamp("2000-01-01T00:00:00Z");

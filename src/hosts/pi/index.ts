@@ -758,14 +758,18 @@ export default function (pi: ExtensionAPI) {
       if (!source) continue;
       const { message, text: natural, calls } = source;
       // 74: identity without Raw — `digest` compares against the same string (`JSON.stringify(message)`)
-      // `known.raw` used to, without loading `content`/`blocks`. `message.role` decides `offer` in place
-      // of the persisted role: they agree whenever the digest matches, which is every case but the one
-      // `missing(...)` below already flags as changed.
+      // `known.raw` used to, without loading `content`/`blocks`. A matching digest is the same
+      // serialized message, so its role is the persisted one. A changed entry is reported and the walk
+      // goes on, still deciding `offer` by the persisted role as before; only that entry pays a full read.
       const known = memory.store.findKnownSourceEntry(state.sessionId, lineage, entry.id);
       if (known) {
-        if (known.digest !== sourceDigest(JSON.stringify(message))) missing(`entry ${entry.id} changed after persistence`);
+        let role = message.role;
+        if (known.digest !== sourceDigest(JSON.stringify(message))) {
+          missing(`entry ${entry.id} changed after persistence`);
+          role = memory.store.getSourceEntry(known.id)!.role;
+        }
         selected.push(known.id); turnId = known.turnId;
-        if (message.role === "assistant") offer(known.turnId, known.calls);
+        if (role === "assistant") offer(known.turnId, known.calls);
         continue;
       }
       if (message.role === "user") {
