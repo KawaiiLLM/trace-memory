@@ -18,7 +18,7 @@ function fixture() {
   const memory = { executorId: "ours", config: { closedSessionScope: "project" }, cancelTasks: vi.fn(),
     pendingEntries: vi.fn(() => { throw new Error("catchup progress hydrated Raw"); }),
     store: { enabled: () => true, pendingEntryIds: () => [...entries], consolidationBatch: () => [],
-      getClaim: () => null, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }) },
+      getClaim: () => null, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     taskEligibility: vi.fn((phase: string) => ({ due: phase === "consolidation" ? cDue > 0 : phase === "dreaming" ? dDue > 0 : entries.length > 0 })),
     noting: vi.fn(async () => { starts.push("N"); entries.shift(); return { outcome: "success", facts: [] }; }),
     consolidate: vi.fn(async () => { starts.push("C"); cDue--; return { outcome: "success" }; }),

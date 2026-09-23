@@ -15,7 +15,7 @@ function fixture() {
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
     pendingEntries: () => pending.map(id => ({ id })), cancelTasks: vi.fn(),
     store: { enabled: () => enabled, pendingEntryIds: () => [...pending], consolidationBatch: () => [], getClaim: () => null, closedTasks: () => [],
-      getSourceEntry: (id: number) => ({ id, turnId: 1 }) },
+      getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     taskEligibility: vi.fn((phase: string) => { checks.push(phase); return { due: true }; }),
     noting: vi.fn(async () => { starts.push("noting"); pending.shift(); return { outcome: "success", facts: [] }; }),
     consolidate: vi.fn(async () => { starts.push("consolidation"); return { outcome: "success" }; }),
@@ -32,6 +32,8 @@ test("bootstrap collapses new selected history only; known resumes and Hook-firs
   f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [99] });
   expect(f.memory.taskEligibility).not.toHaveBeenCalled();
   f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [1] });
+  // Ticket 72: attach starts C and D armed, so this first opportunity still checks all three; each
+  // comes back not due, which disarms C and D (noting has no arming state) for the opportunities below.
   expect(f.memory.taskEligibility).toHaveBeenCalledTimes(3);
   for (const [, target] of f.memory.taskEligibility.mock.calls as any)
     expect(target).toMatchObject({ triggerEntryId: 2, headTurnId: 1 });
@@ -39,8 +41,10 @@ test("bootstrap collapses new selected history only; known resumes and Hook-firs
   f.scheduler.reconcile({ ...projection, bootstrap: false });
   expect(f.memory.taskEligibility).not.toHaveBeenCalled();
   f.scheduler.reconcile({ ...projection, bootstrap: false, appendedEntryIds: [1, 2] });
-  expect(f.memory.taskEligibility).toHaveBeenCalledTimes(6);
-  expect((f.memory.taskEligibility.mock.calls as any).map((call: any) => call[1].triggerEntryId)).toEqual([1, 1, 1, 2, 2, 2]);
+  // Ticket 72: with nothing armed and the completed signal unchanged, each of these two appended-entry
+  // opportunities evaluates Noting only — the acceptance case "per appended entry with nothing armed".
+  expect(f.memory.taskEligibility).toHaveBeenCalledTimes(2);
+  expect((f.memory.taskEligibility.mock.calls as any).map((call: any) => call[1].triggerEntryId)).toEqual([1, 2]);
 });
 
 test("known restart grants no automatic opportunity but explicit catchup still drains frozen Raw", async () => {
