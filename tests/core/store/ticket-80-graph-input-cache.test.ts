@@ -1,5 +1,5 @@
 // Ticket 80 item 2 "The knowledge graph input, reused while nothing it depends on changed": memoizes
-// `commitGraphInput()`'s full (unseeded) build per session, keyed on `Store.progressSignal` (72's own
+// `commitGraphInput()`'s full (unseeded) build per Store, keyed on `Store.progressSignal` (72's own
 // pattern, completed by this ticket with every session's project assignment, ruled "B"). Pins: cache
 // reuse via one `db.prepare` statement capture, every listed signal input invalidating it through a
 // second connection, a pure Raw append reusing it, writers always rebuilding, and the cross-connection
@@ -41,6 +41,52 @@ function seeded(store: Store) {
 
 const revisionsQuery = (sql: unknown) => /SELECT \* FROM knowledge_revisions ORDER BY id/.test(String(sql));
 
+test.each(["consolidation", "budget", "cursor-back", "branch-switch", "path-rewrite", "project-merge", "processing", "pool-state"] as const)(
+  "80: %s invalidates the reader memo through a second connection", kind => {
+    const dir = mkdtempSync(join(tmpdir(), "trace-memory-80-input-")); dirs.push(dir);
+    const file = join(dir, "trace.db"), writer = new Store(file); stores.push(writer);
+    const context = seeded(writer), { sessionId, turnId, entry, factId, project } = context;
+    const child = writer.appendTurn({ sessionId, parentTurnId: turnId, kind: "turn", userPrompt: "child", startedAt: time });
+    const tail = writer.appendSourceEntry({ sessionId, turnId: child.id, nativeLineage: "n", nativeId: "child",
+      role: "user", text: "child", raw: "child", calls: [] });
+    writer.publishSourcePath(sessionId, "main", [entry.id, tail.id], child.id, "lineage-a");
+    writer.selectSourcePath(sessionId, "side", [entry.id]);
+    const path = { sessionId, branch: "main", headTurnId: child.id };
+    const created = writer.commitConsolidationRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time }, path,
+      operations: [{ op: "create", handle: "$k", author: "test", text: "supported session knowledge",
+        category: "constraint", scope: "session", supports: [factId], topics: [], reason: "fixture", createdAt: time }] });
+    if (!created.ok) throw new Error(created.problems.join("; "));
+    let mutate: () => void;
+    if (kind === "consolidation") {
+      const run = writer.recordRun({ kind: "consolidation", sessionId, branch: "main", outcome: "success", createdAt: time });
+      mutate = () => writer.markConsolidated(factId, run.id, project.id);
+    } else if (kind === "budget") mutate = () => { writer.setKnowledgeBudget("session", 321); };
+    else if (kind === "cursor-back") mutate = () => writer.setCurrentPath(sessionId, "main", turnId, "lineage-a");
+    else if (kind === "branch-switch") mutate = () => writer.setCurrentPath(sessionId, "side", turnId, "lineage-a");
+    else if (kind === "path-rewrite") mutate = () => writer.selectSourcePath(sessionId, "main", [tail.id]);
+    else if (kind === "project-merge") {
+      const other = writer.createProject({ name: "destination", declaredBy: "mark" });
+      mutate = () => writer.mergeProject(project.id, other.id);
+    } else {
+      const claim = writer.acquireClaim(path, "dreaming", "memo-input-test")!;
+      const range = writer.retainKnowledgePoolRange(path, `session:${sessionId}`, claim);
+      if (kind === "pool-state") writer.setKnowledgeBudget("session", 1);
+      const executionId = writer.beginExecution({ sessionId, phase: "dreaming", head: range.anchor, origin: range.origin });
+      const run = writer.bindDreamingRun({ kind: "dreaming", sessionId, branch: "main", dreamingRangeId: range.id,
+        executionId, claim, createdAt: time });
+      mutate = () => { writer.completeKnowledgePoolRange(run, "success", range.eventIds); writer.releaseClaim(claim); };
+    }
+    const reader = new Store(file); stores.push(reader);
+    const original = reader.db.prepare.bind(reader.db); let builds = 0;
+    reader.db.prepare = ((sql: string) => { if (revisionsQuery(sql)) builds++; return original(sql); }) as typeof reader.db.prepare;
+    reader.currentKnowledge(path); reader.currentKnowledge(path);
+    expect(builds).toBe(1);
+    mutate();
+    const actual = reader.currentKnowledge(path);
+    expect(builds).toBe(2);
+    expect(actual).toEqual(writer.currentKnowledge(path));
+  });
+
 test("a repeated read with nothing changed hits the memo: the base revisions query runs once", () => {
   const store = open();
   const { sessionId } = seeded(store);
@@ -52,6 +98,30 @@ test("a repeated read with nothing changed hits the memo: the base revisions que
   expect(spy.length).toBe(1);
   store.knowledgePools(path); // nothing changed since
   expect(spy.length).toBe(1); // still one: the second call hit the memo
+});
+
+test("80: readers with the same signal share one global graph without sharing visibility", () => {
+  const store = open();
+  const { sessionId, turnId, factId, project } = seeded(store);
+  const other = store.createSession({ host: "other", enrollmentChoice: true, projectId: project.id,
+    startedAt: time, firstReplyAt: time });
+  const secondTurn = store.appendTurn({ sessionId: other.id, kind: "turn", userPrompt: "other", startedAt: time });
+  const secondEntry = store.appendSourceEntry({ sessionId: other.id, turnId: secondTurn.id, nativeLineage: "other", nativeId: "u",
+    role: "user", text: "other", raw: "other", calls: [] });
+  store.publishSourcePath(other.id, "main", [secondEntry.id], secondTurn.id, "other");
+  const path = { sessionId, branch: "main", headTurnId: turnId };
+  const created = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId, branch: "main", createdAt: time },
+    operations: [{ op: "create", handle: "$k", author: "test", text: "private session rule", category: "constraint",
+      scope: "session", supports: [factId], topics: [], reason: "fixture", createdAt: time }] });
+  if (!created.ok) throw new Error(created.problems.join("; "));
+  expect(store.progressSignal(sessionId)).toBe(store.progressSignal(other.id));
+  let builds = 0;
+  const original = store.db.prepare.bind(store.db);
+  store.db.prepare = ((sql: string) => { if (revisionsQuery(sql)) builds++; return original(sql); }) as typeof store.db.prepare;
+  expect(store.currentKnowledge(path)).toHaveLength(1);
+  expect(store.currentKnowledge({ sessionId: other.id, branch: "main", headTurnId: secondTurn.id })).toEqual([]);
+  expect(store.currentKnowledge(path)).toHaveLength(1);
+  expect(builds).toBe(1);
 });
 
 test("writers always rebuild: base validation of an archive sees its own transaction's state, never the memo", () => {

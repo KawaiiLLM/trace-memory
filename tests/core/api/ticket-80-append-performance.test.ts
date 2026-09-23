@@ -26,30 +26,32 @@ function measure(historyLength: number) {
         raw: "{}", calls: [] });
     };
     for (let i = 0; i < historyLength; i++) ids.push(add(`history-${i}`).id);
-    store.publishSourcePath(session.id, "main", ids, head!, "native");
-    // Seed processed history in one fixture transaction. Runtime behavior is measured through
-    // production Store/API calls below; the unprocessed tail is fixed at three entries.
+    const pathHead = head!;
+    // Future Turn entries are already processed on another path before this measured path selects
+    // them. This keeps exactly three pending entries throughout every sample without a Noting
+    // commit (which would invalidate the warm cache) between measured appends.
+    const future = Array.from({ length: 55 }, (_, i) => add(`sample-${i}`));
+    store.publishSourcePath(session.id, "main", ids, pathHead, "native");
     const run = store.recordRun({ kind: "noting", sessionId: session.id, branch: "main",
       outcome: "success", createdAt: at });
     store.transaction(() => {
       const noted = store.db.prepare("INSERT INTO noted_entries(entry_id,run_id) VALUES (?,?)");
-      for (const id of ids.slice(0, -3)) noted.run(id, run.id);
+      for (const id of [...ids.slice(0, -3), ...future.map(entry => entry.id)]) noted.run(id, run.id);
     });
-    const target = { sessionId: session.id, branch: "main", headTurnId: head! };
+    const target = { sessionId: session.id, branch: "main", headTurnId: pathHead };
     memory.config.noting.triggerTokens = 1;
-    // Cold rebuild is intentionally separate from the warm samples. Pending grows 3..57
-    // identically in both series; all other dimensions, including body size, are fixed.
+    // Cold rebuild is intentionally separate from the warm samples; pending stays exactly three.
     const coldStart = performance.now();
     expect(memory.taskEligibility("noting", target).due).toBe(true);
     const cold = performance.now() - coldStart;
     const measurements = { append: [] as number[], due: [] as number[], pending: [] as number[] };
     const statementCounts: number[] = [];
     for (let i = 0; i < 55; i++) {
-      const entry = add(`sample-${i}`);
+      const entry = future[i]!;
       const old = store.sourcePathState(session.id, "main")!;
       const spy = vi.spyOn(store.db, "prepare");
       const start = performance.now();
-      store.transaction(() => store.appendSourcePath(session.id, "main", old, [entry.id], head!, "native"));
+      store.transaction(() => store.appendSourcePath(session.id, "main", old, [entry.id], entry.turnId, "native"));
       measurements.append.push(performance.now() - start);
       const queries = spy.mock.calls.map(([sql]) => sql);
       spy.mockRestore();
@@ -57,12 +59,12 @@ function measure(historyLength: number) {
       expect(queries.some(sql => /SELECT p\.position, p\.entry_id, e\.id AS owned_id/.test(sql))).toBe(false);
       expect(queries.find(sql => sql.includes("SELECT id, turn_id FROM source_entries")))
         .toContain("NOT INDEXED");
-      target.headTurnId = head!;
+      target.headTurnId = entry.turnId;
       const dueStart = performance.now();
       expect(memory.taskEligibility("noting", target).due).toBe(true);
       measurements.due.push(performance.now() - dueStart);
       const pendingStart = performance.now();
-      expect(store.pendingEntryIds(session.id, "main", head!)).toHaveLength(4 + i);
+      expect(store.pendingEntryIds(session.id, "main", entry.turnId)).toHaveLength(3);
       measurements.pending.push(performance.now() - pendingStart);
     }
     return { cold, medians: Object.fromEntries(Object.entries(measurements)

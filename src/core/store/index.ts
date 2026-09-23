@@ -2306,20 +2306,11 @@ export class Store {
     return this.projectCommitGraph(revisions, parents, grounded, effective, visible);
   }
 
-  /** Ticket 80 item 2: memoizes the full (unseeded) build below, per session, keyed on
-   * `Store.progressSignal` — the same composite 72's footer cache already keys on, completed by this
-   * ticket with every session's project assignment (ruled "B"). Only a caller that names a session
-   * (`cacheSessionId`) opts in; every other call — seeded (a specific revision's own resolution,
-   * always freshly scoped to it) or unseeded with no session named — rebuilds every time, exactly as
-   * before. In particular every writer's own validation (`applyKnowledgeOperation`,
-   * `commitConsolidationRun` and the rest) never names a session here, so it always reads its own
-   * transaction's latest state; this is the one and only thing that makes the graph cache safe to add
-   * without touching what a writer sees (tests/core/store/ticket-80-graph-input-cache.test.ts pins
-   * this as a regression). The DAG itself (revisions, links, facts, current-path membership) does not
-   * depend on which session asked for it, so a hit skips the whole rebuild below regardless of what
-   * session originally populated it, as long as the signal — which does not vary by session for any
-   * of the components this graph reads — is unchanged. */
-  private graphInputCache = new Map<number, { signal: string; input: GraphInput }>();
+  /** One global graph input per Store, not a duplicate for each reader session. The graph's
+   * dependencies are global; reader-specific pool-state fields in progressSignal can cause extra
+   * misses but cannot change its contents. A named session opts into this read memo; seeded reads,
+   * unnamed reads and every read inside a transaction rebuild from their own snapshot. */
+  private graphInputCache: { signal: string; input: GraphInput } | undefined;
   commitGraphInput(seed?: readonly KnowledgeRevision[], cacheSessionId?: number): GraphInput {
     if (seed || cacheSessionId === undefined) return this.buildGraphInput(seed);
     // A writer must see its own transaction, not a process memo. Never publish a graph that
@@ -2330,14 +2321,14 @@ export class Store {
     this.db.exec("BEGIN");
     try {
       const signal = this.progressSignal(cacheSessionId);
-      const cached = this.graphInputCache.get(cacheSessionId);
+      const cached = this.graphInputCache;
       if (cached && cached.signal === signal) {
         this.db.exec("COMMIT");
         return cached.input;
       }
       const input = this.buildGraphInput();
       this.db.exec("COMMIT");
-      this.graphInputCache.set(cacheSessionId, { signal, input });
+      this.graphInputCache = { signal, input };
       return input;
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
@@ -3776,7 +3767,7 @@ export class Store {
        JOIN source_entries e ON e.id = j.entry_id
        WHERE j.session_id = ? AND j.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.position`)
       .all(sessionId, branch, sessionId, turnId ?? null, turnId ?? null);
-    const hasPath = branch !== undefined && !!this.db.prepare("SELECT 1 FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
+    const hasPath = branch !== undefined && this.selectedSourceEntryIds(sessionId, branch) !== null;
     // 74/79: INDEXED BY pins the turn-ordinal index (67) outright — without it, the planner's stat-free
     // cost estimate can prefer a session_id-prefixed plan instead, adding an unwanted sort.
     const rows = hasPath ? selected
