@@ -54,7 +54,9 @@ test("a real Pi tool can request its current-node snapshot before its first resu
 function databaseSnapshot(h: ReturnType<typeof host>) {
   const tables = h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
     .map(row => String(row.name));
-  return Object.fromEntries(tables.map(table => [table, h.memory.store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  // Ticket 81: raw_fts's WITHOUT ROWID shadow tables (raw_fts_config, raw_fts_idx) have no rowid to
+  // order by; ordering by the first selected column works for every table, rowid or not.
+  return Object.fromEntries(tables.map(table => [table, h.memory.store.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()]));
 }
 
 function seedMaterial(h: ReturnType<typeof host>) {

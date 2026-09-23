@@ -118,6 +118,36 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   UNIQUE (turn_id, ordinal)
 );
 
+-- Ticket 81: Raw search's candidate index. Contentless (content='') so the trigram index is the
+-- only copy of the indexed text -- turns.user_prompt/assistant_text and tool_calls.name/input/result
+-- (up to ~200 MB) are never duplicated into an FTS5 content shadow table the way a plain (non-
+-- contentless) FTS5 table would. contentless_delete=1 is required: a plain contentless table refuses
+-- DELETE and UPDATE outright (verified on this SQLite), and the index must track a Turn's growing
+-- reply and a tool call's later result. Rows carry no metadata of their own (contentless columns other
+-- than rowid cannot be read back, verified on this SQLite) -- raw_search_entries below is the sole
+-- record of which session/turn/tool-call/field a given rowid belongs to.
+CREATE VIRTUAL TABLE IF NOT EXISTS raw_fts USING fts5(
+  text,
+  content = '',
+  contentless_delete = 1,
+  tokenize = 'trigram'
+);
+-- One row per indexed field, one field per (Turn prompt, Turn reply, tool-call name, input, result) --
+-- never combined, so reindexing a growing reply or a completed result touches only its own row, and a
+-- query that only matches across two fields (e.g. the end of a prompt and the start of a reply) is
+-- never even a candidate. id is shared 1:1 with raw_fts's rowid, assigned by inserting the metadata
+-- row first and using its id as raw_fts's explicit rowid. tool_call_id is NULL for the two Turn-level
+-- fields and set for the three tool-call-level fields.
+CREATE TABLE IF NOT EXISTS raw_search_entries (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  turn_id INTEGER NOT NULL REFERENCES turns(id),
+  tool_call_id INTEGER REFERENCES tool_calls(id),
+  field TEXT NOT NULL CHECK (field IN ('user_prompt','assistant_text','tool_name','tool_input','tool_result'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_search_turn_field ON raw_search_entries(turn_id, field) WHERE tool_call_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_search_tool_call_field ON raw_search_entries(tool_call_id, field) WHERE tool_call_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS facts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id INTEGER NOT NULL REFERENCES runs(id),
@@ -275,6 +305,9 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_project ON knowledge(project_id);
 CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
 `;
 
+// Ticket 81: the five raw_search_entries.field values, one per indexed Turn/tool-call column.
+type RawFtsField = "user_prompt" | "assistant_text" | "tool_name" | "tool_input" | "tool_result";
+
 // ---- Input shapes ----
 
 export interface CreateProjectInput {
@@ -345,6 +378,18 @@ export interface SourceEntryMeta {
  * collision. Covers exactly `SourceInput.raw` — the same string each host already compares today
  * (Pi: `JSON.stringify(message)`; CC: the transcript's original line) — never a re-serialization. */
 export const sourceDigest = (raw: string): string => createHash("sha256").update(raw).digest("hex");
+
+/** Ticket 81: length in Unicode characters (code points), as FTS5's trigram tokenizer counts them --
+ * never UTF-16 units (`.length`) or bytes. `Array.from` splits on code points, so an astral character
+ * (outside the BMP, encoded as a UTF-16 surrogate pair) counts once, not twice. Below three, no
+ * trigram exists to index or query, so `searchAddresses` keeps today's LIKE scan for these. */
+export const unicodeLength = (value: string): number => Array.from(value).length;
+
+/** Ticket 81: the query as one quoted FTS5 phrase, so `MATCH` requires its trigrams contiguously
+ * (substring semantics) rather than interpreting `"`, `*`, `:`, `(`, `NEAR`, `AND`, etc. as FTS5
+ * query syntax. The only character that needs escaping inside a quoted phrase is `"` itself,
+ * doubled per FTS5's own quoting rule. */
+const ftsPhraseQuery = (query: string): string => `"${query.replaceAll('"', '""')}"`;
 
 /** 77: 71's one-parse extraction, unchanged — a single multi-path `json_extract` reads the four usage
  * counters, the cost total and `$.usage` itself (to tell "recorded" from "missing or explicit null")
@@ -823,6 +868,9 @@ export class Store {
       // 74: captured before SCHEMA_SQL creates the table below, so its absence here means a fresh
       // deploy of this table that still needs every pre-existing entry's calls mirrored into it.
       const hadSourceEntryCalls = !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_entry_calls'").get();
+      // Ticket 81: captured before SCHEMA_SQL creates raw_fts below, so its absence here means a fresh
+      // deploy of the index that still needs every pre-existing Turn and tool call's text indexed.
+      const hadRawFts = !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_fts'").get();
       if (policyTable) {
         const row = this.db.prepare("SELECT global_tokens,project_tokens,session_tokens FROM knowledge_budget_policy WHERE id=1").get();
         if (row) priorBudgetPolicy = { global: Number(row.global_tokens), project: Number(row.project_tokens), session: Number(row.session_tokens) };
@@ -993,6 +1041,31 @@ export class Store {
         if (runColumns.some(r => r.name === "request")) {
           this.db.exec("CREATE INDEX IF NOT EXISTS idx_runs_daily_usage ON runs(created_at, id, usage_cost)");
           this.db.exec("CREATE INDEX IF NOT EXISTS idx_runs_session_usage ON runs(session_id, id, kind, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost)");
+        }
+      });
+      // Ticket 81: `raw_fts`/`raw_search_entries` are brand new (SCHEMA_SQL above); a database that
+      // already had Turns and tool calls needs every one of their non-null indexed fields written in,
+      // once. Hoisted prepared statements (as the digest and usage backfills above), one INSERT pair
+      // per field, in id order for both tables so a very large database streams rather than buffers.
+      if (!hadRawFts) this.transaction(() => {
+        const insertEntry = this.db.prepare("INSERT INTO raw_search_entries (session_id, turn_id, tool_call_id, field) VALUES (?, ?, ?, ?)");
+        const insertFts = this.db.prepare("INSERT INTO raw_fts (rowid, text) VALUES (?, ?)");
+        const addField = (sessionId: number, turnId: number, toolCallId: number | null, field: RawFtsField, text: string | null) => {
+          if (text === null) return;
+          const info = insertEntry.run(sessionId, turnId, toolCallId, field);
+          insertFts.run(Number(info.lastInsertRowid), text);
+        };
+        for (const row of this.db.prepare("SELECT id, session_id, user_prompt, assistant_text FROM turns ORDER BY id").iterate() as
+          IterableIterator<{ id: number; session_id: number; user_prompt: string | null; assistant_text: string | null }>) {
+          addField(row.session_id, row.id, null, "user_prompt", row.user_prompt);
+          addField(row.session_id, row.id, null, "assistant_text", row.assistant_text);
+        }
+        for (const row of this.db.prepare(`SELECT tc.id AS id, tc.turn_id AS turn_id, t.session_id AS session_id, tc.name AS name, tc.input AS input, tc.result AS result
+            FROM tool_calls tc JOIN turns t ON t.id = tc.turn_id ORDER BY tc.id`).iterate() as
+          IterableIterator<{ id: number; turn_id: number; session_id: number; name: string; input: string | null; result: string | null }>) {
+          addField(row.session_id, row.turn_id, row.id, "tool_name", row.name);
+          addField(row.session_id, row.turn_id, row.id, "tool_input", row.input);
+          addField(row.session_id, row.turn_id, row.id, "tool_result", row.result);
         }
       });
       migrateDreamingRanges64d(this.db);
@@ -1656,6 +1729,35 @@ export class Store {
 
   // -- turns & tool calls --
 
+  /** Ticket 81: write a raw_fts/raw_search_entries pair for a field that is known not to be indexed
+   * yet (a freshly appended Turn or tool call). A null value is simply not indexed -- there is nothing
+   * for a later search to find, exactly as a NULL column never satisfies today's LIKE. */
+  private indexRawField(field: RawFtsField, sessionId: number, turnId: number, toolCallId: number | null, text: string | null): void {
+    if (text === null) return;
+    const info = this.db.prepare("INSERT INTO raw_search_entries (session_id, turn_id, tool_call_id, field) VALUES (?, ?, ?, ?)")
+      .run(sessionId, turnId, toolCallId, field);
+    this.db.prepare("INSERT INTO raw_fts (rowid, text) VALUES (?, ?)").run(Number(info.lastInsertRowid), text);
+  }
+
+  /** Ticket 81: bring one field's row up to date after its source column changed (a growing reply, a
+   * completed tool result). An in-place `UPDATE raw_fts` (contentless_delete=1 permits it) is cheaper
+   * than delete+insert and leaves raw_search_entries, and the rowid pairing, untouched. A transition to
+   * NULL removes the row instead -- a NULL column matches nothing under LIKE either. */
+  private reindexRawField(field: RawFtsField, sessionId: number, turnId: number, toolCallId: number | null, text: string | null): void {
+    // Two statements, one per partial unique index: `tool_call_id IS ?` matches neither index's
+    // WHERE clause, so the planner scanned the whole table on every reply or result update.
+    const existing = (toolCallId === null
+      ? this.db.prepare("SELECT id FROM raw_search_entries WHERE turn_id = ? AND field = ? AND tool_call_id IS NULL").get(turnId, field)
+      : this.db.prepare("SELECT id FROM raw_search_entries WHERE tool_call_id = ? AND field = ?").get(toolCallId, field)) as { id: number } | undefined;
+    if (!existing) { this.indexRawField(field, sessionId, turnId, toolCallId, text); return; }
+    if (text === null) {
+      this.db.prepare("DELETE FROM raw_fts WHERE rowid = ?").run(existing.id);
+      this.db.prepare("DELETE FROM raw_search_entries WHERE id = ?").run(existing.id);
+    } else {
+      this.db.prepare("UPDATE raw_fts SET text = ? WHERE rowid = ?").run(text, existing.id);
+    }
+  }
+
   appendTurn(input: AppendTurnInput): Turn {
     return this.transaction(() => {
       this.requireEnabled(input.sessionId);
@@ -1673,7 +1775,10 @@ export class Store {
           input.startedAt,
           input.endedAt ?? null,
         );
-      return this.getTurn(Number(info.lastInsertRowid))!;
+      const turnId = Number(info.lastInsertRowid);
+      this.indexRawField("user_prompt", input.sessionId, turnId, null, input.userPrompt ?? null);
+      this.indexRawField("assistant_text", input.sessionId, turnId, null, input.assistantText ?? null);
+      return this.getTurn(turnId)!;
     });
   }
 
@@ -1688,6 +1793,7 @@ export class Store {
         patch.endedAt === undefined ? turn.endedAt : patch.endedAt,
         id,
       );
+      if (patch.assistantText !== undefined) this.reindexRawField("assistant_text", turn.sessionId, id, null, patch.assistantText);
       return this.getTurn(id)!;
     });
   }
@@ -1699,20 +1805,28 @@ export class Store {
 
   appendToolCall(input: AppendToolCallInput): ToolCall {
     return this.transaction(() => {
-      this.requireEnabled(this.getTurn(input.turnId)!.sessionId);
+      const turn = this.getTurn(input.turnId)!;
+      this.requireEnabled(turn.sessionId);
       const ordinalRow = this.db
         .prepare("SELECT COALESCE(MAX(ordinal), 0) + 1 AS next FROM tool_calls WHERE turn_id = ?")
         .get(input.turnId) as { next: number };
       const info = this.db.prepare("INSERT INTO tool_calls (turn_id, ordinal, name, input, result, status) VALUES (?, ?, ?, ?, ?, ?)").run(input.turnId, ordinalRow.next, input.name, input.input ?? null, input.result ?? null, input.status);
-      const row = this.db.prepare("SELECT * FROM tool_calls WHERE id = ?").get(Number(info.lastInsertRowid));
+      const toolCallId = Number(info.lastInsertRowid);
+      this.indexRawField("tool_name", turn.sessionId, input.turnId, toolCallId, input.name);
+      this.indexRawField("tool_input", turn.sessionId, input.turnId, toolCallId, input.input ?? null);
+      this.indexRawField("tool_result", turn.sessionId, input.turnId, toolCallId, input.result ?? null);
+      const row = this.db.prepare("SELECT * FROM tool_calls WHERE id = ?").get(toolCallId);
       return toToolCall(row);
     });
   }
 
   completeToolCall(turnId: number, ordinal: number, result: string, status: string): void {
     return this.transaction(() => {
-      this.requireEnabled(this.getTurn(turnId)!.sessionId);
+      const turn = this.getTurn(turnId)!;
+      this.requireEnabled(turn.sessionId);
+      const toolCall = this.db.prepare("SELECT id FROM tool_calls WHERE turn_id = ? AND ordinal = ?").get(turnId, ordinal) as { id: number } | undefined;
       this.db.prepare("UPDATE tool_calls SET result = ?, status = ? WHERE turn_id = ? AND ordinal = ?").run(result, status, turnId, ordinal);
+      if (toolCall) this.reindexRawField("tool_result", turn.sessionId, turnId, toolCall.id, result);
     });
   }
 
@@ -3208,15 +3322,57 @@ export class Store {
     });
   }
 
-  searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw", sessionIds?: readonly number[]): string[] {
-    const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
-    const owners = JSON.stringify(sessionIds ?? []), restricted = sessionIds !== undefined;
-    const raw = () => (this.db.prepare(`SELECT t.id FROM turns t WHERE
+  /** Ticket 81: today's full scan of every Turn and tool call, kept verbatim for queries too short for
+   * a trigram (below three Unicode characters, where two-character CJK words are common). */
+  private rawLikeScan(pattern: string, restricted: boolean, owners: string): string[] {
+    return (this.db.prepare(`SELECT t.id FROM turns t WHERE
         (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND
         (t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
         (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
         (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\'))) ORDER BY t.id`)
         .all(Number(restricted), owners, pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
+  }
+
+  /** Ticket 81: the index finds candidates, today's rule decides the hits (review of d9d8d84).
+   * Step 1 -- `raw_fts MATCH` with the query as one quoted phrase against the default (case-folding)
+   * trigram index: a superset of today's LIKE hits (Unicode case-folding is broader than LIKE's
+   * ASCII-only fold), restricted to this scope's sessions and split into Turn-level candidate turn
+   * ids and tool-call-level candidate (turn id, tool_call id) pairs by field.
+   * Step 2 -- each candidate is re-checked against the real column value with today's exact
+   * `LIKE … ESCAPE '\'` clause (never against raw_fts itself: FTS5 does not use the trigram index for
+   * a LIKE with ESCAPE, confirmed by EXPLAIN QUERY PLAN on this SQLite -- a full scan). This is the
+   * same WHERE clause `rawLikeScan` runs, merely restricted to `id IN (candidates)`, so a field that
+   * only looked like a match under Unicode case-folding (`éco` candidate, `École`) is excluded exactly
+   * as today, and a query spanning two fields (the end of a prompt, the start of a reply) never
+   * candidates in the first place because each field is its own indexed row.
+   * Step 3 -- candidates reduce to Turns (several matching tool calls of one Turn collapse to it once)
+   * and are ordered by id, as today. */
+  private rawTrigram(query: string, restricted: boolean, owners: string): string[] {
+    const phrase = ftsPhraseQuery(query);
+    const candidates = this.db.prepare(`SELECT e.turn_id AS turnId, e.tool_call_id AS toolCallId
+        FROM raw_search_entries e JOIN raw_fts ON raw_fts.rowid = e.id
+        WHERE raw_fts MATCH ? AND (? = 0 OR e.session_id IN (SELECT value FROM json_each(?)))`)
+      .all(phrase, Number(restricted), owners) as { turnId: number; toolCallId: number | null }[];
+    const turnIds = JSON.stringify([...new Set(candidates.filter(c => c.toolCallId === null).map(c => c.turnId))]);
+    const toolCallIds = JSON.stringify([...new Set(candidates.filter(c => c.toolCallId !== null).map(c => c.toolCallId))]);
+    const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+    const hits = new Set<number>();
+    for (const row of this.db.prepare(`SELECT id FROM turns WHERE id IN (SELECT value FROM json_each(?))
+        AND (user_prompt LIKE ? ESCAPE '\\' OR assistant_text LIKE ? ESCAPE '\\')`)
+      .all(turnIds, pattern, pattern) as { id: number }[]) hits.add(row.id);
+    for (const row of this.db.prepare(`SELECT DISTINCT turn_id AS id FROM tool_calls WHERE id IN (SELECT value FROM json_each(?))
+        AND (name LIKE ? ESCAPE '\\' OR input LIKE ? ESCAPE '\\' OR result LIKE ? ESCAPE '\\')`)
+      .all(toolCallIds, pattern, pattern, pattern) as { id: number }[]) hits.add(row.id);
+    return [...hits].sort((a, b) => a - b).map(id => `T${id}`);
+  }
+
+  searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw", sessionIds?: readonly number[]): string[] {
+    const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+    const owners = JSON.stringify(sessionIds ?? []), restricted = sessionIds !== undefined;
+    // A NUL cannot appear in an FTS5 query string (it ends the phrase: "unterminated string"), so a
+    // query holding one keeps the LIKE scan too, unchanged rather than stripped.
+    const raw = () => unicodeLength(query) < 3 || query.includes("\u0000")
+      ? this.rawLikeScan(pattern, restricted, owners) : this.rawTrigram(query, restricted, owners);
     if (scope === "raw") return raw();
     const facts = scope === "knowledge" ? [] : (this.db.prepare(`SELECT f.id FROM facts f JOIN turns t ON t.id = f.turn_id
       WHERE (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND f.text LIKE ? ESCAPE '\\' ORDER BY f.id`)

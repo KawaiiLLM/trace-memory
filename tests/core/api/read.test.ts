@@ -501,8 +501,13 @@ test("literal search finds facts, historical knowledge and raw across projects",
   expect(memory.search("nohits", "all")).toContain("No hit does not mean absent.");
 });
 
-test("schema has no unused full-text tables or triggers", () => {
-  expect(memory.store.db.prepare("SELECT name FROM sqlite_schema WHERE name GLOB '*_fts*'").all()).toEqual([]);
+// Ticket 81: raw_fts is now a real, used index (Raw search's candidate step), not dead scaffolding --
+// this pins its shadow-table shape and that nothing else under this glob, and no trigger, ever appears
+// (the writers maintain the index themselves; see Store.indexRawField/reindexRawField).
+test("schema has exactly raw_fts and its shadow tables under *_fts*, and no triggers", () => {
+  const names = (memory.store.db.prepare("SELECT name FROM sqlite_schema WHERE name GLOB '*_fts*'").all() as { name: string }[]).map(r => r.name).sort();
+  expect(names).toEqual(["raw_fts", "raw_fts_config", "raw_fts_data", "raw_fts_docsize", "raw_fts_idx"]);
+  expect(memory.store.db.prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger'").all()).toEqual([]);
 });
 
 test.each([
