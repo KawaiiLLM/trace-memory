@@ -125,6 +125,7 @@ test("control socket routes catchup to the live executor and never creates an op
   const server = await startControlServer(f.config, binding, memory, undefined, undefined, {
     catchup: async () => { calls++; return { state: "waiting", phase: "noting", entriesDone: 0, entriesTotal: 2, factsDone: 0, factsTotal: 0 }; },
     beforeCancel: () => {},
+    holdImport: () => () => {},
   });
   try {
     const result = await controlSession(f.config, f.nativeSessionId, "catchup");
@@ -148,6 +149,7 @@ test("off fences again after a contended disable before acknowledging", async ()
   const server = await startControlServer(f.config, binding, memory, undefined, undefined, {
     catchup: async () => ({ state: "completed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0 }),
     beforeCancel: () => { cancellations++; },
+    holdImport: () => () => {},
   });
   const mutex = new DatabaseSync(bindingMutexPath(f.config, f.nativeSessionId), { timeout: 0 }); mutex.exec("BEGIN IMMEDIATE");
   try {

@@ -119,8 +119,11 @@ export const NOTING_INCOMPLETE = "incomplete Noting: the run ended without calli
  * processed by another executor under its own claim, which drops the task at the freeze below instead
  * of re-processing the rest of the batch as though it were a fresh one. Selection only: the freeze
  * owns every diagnostic, so a caller that merely asks what would be selected raises none of them. */
-export const notingPending = (store: Store, input: { sessionId: number; branch: string; headTurnId: number; boundary?: TaskBoundary }) => {
-  const pendingAll = store.pendingEntries(input.sessionId, input.branch, input.headTurnId);
+/** `pendingAll`, when passed, replaces the internal `store.pendingEntries` query: a caller that
+ * already read the same session/branch/head's full pending set inside the same admission
+ * transaction (70: discovery and the freeze would otherwise each read it once) reuses that read. */
+export const notingPending = (store: Store, input: { sessionId: number; branch: string; headTurnId: number; boundary?: TaskBoundary },
+  pendingAll: SourceEntry[] = store.pendingEntries(input.sessionId, input.branch, input.headTurnId)) => {
   const exact = input.boundary?.exactEntryIds;
   return { exact, pending: exact ? pendingAll.filter(e => exact.includes(e.id))
     : input.boundary?.maxEntryId === undefined ? pendingAll : pendingAll.filter(e => e.id <= input.boundary!.maxEntryId!) };
@@ -142,7 +145,8 @@ export const notingBatch = (pending: readonly SourceEntry[], config: TraceMemory
   return { entries, views, rendered };
 };
 
-export function freezeNoting(store: Store, input: NotingInput, config: TraceMemoryConfig, resultText: ResultExtractor = rawResultText) {
+export function freezeNoting(store: Store, input: NotingInput, config: TraceMemoryConfig, resultText: ResultExtractor = rawResultText,
+  pendingAll?: SourceEntry[]) {
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
   if (typeof input.branch !== "string" || !input.branch) throw new Error("noting requires a non-empty branch");
@@ -159,7 +163,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   }
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
     !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
-  const { exact, pending } = notingPending(store, { ...input, sessionId: session.id });
+  const { exact, pending } = notingPending(store, { ...input, sessionId: session.id },
+    pendingAll ?? store.pendingEntries(session.id, input.branch, input.headTurnId));
   if (exact && pending.length !== exact.length)
     throw new Error(`${NOTING_MEMBERSHIP}entries ${exact.filter((id: number) => !pending.some(e => e.id === id)).join(", ")} of the frozen batch ${exact.join(", ")} are no longer pending; nothing was re-processed`);
   const mode = input.mode ?? (config.noting.forkModeDefault ? "fork" : "subagent");

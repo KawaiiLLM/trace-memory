@@ -422,7 +422,9 @@ export interface TraceMemory {
    * and reloads nothing. Admitted tasks retain their frozen mode and borrowing scope. */
   configure(settings: ConfigOverride): void;
   close(): void;
-  appendEntry(input: SourceInput): SourceEntry;
+  /** `known`, when passed (even `null`), is the caller's own prior `findSourceEntry` result for this
+   * exact identity in the same synchronous flow; see `Store.appendSourceEntry`. */
+  appendEntry(input: SourceInput, known?: SourceEntry | null): SourceEntry;
   selectEntries(sessionId: number, branch: string, entryIds: number[]): void;
   pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntry[];
   /** Ticket 29c: the entries a Noting freeze of this target would really select — the pending set the
@@ -794,7 +796,11 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       projectId = store.getSession(input.sessionId)!.projectId;
       const selected = { ...input, ...target, ...(input.borrowed ? { mode: "subagent" as const } : {}) };
       const admittedOrigin = input.executionId ? store.executionOrigin(input.executionId) : store.triggerOrigin(target, target.triggerEntryId);
-      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText) : freezeConsolidation(store, selected, cfg);
+      // 70: `pendingNow` above already read this exact session/branch/head's full pending set inside
+      // this same admission transaction; nothing between there and here can mark an entry noted, so
+      // the freeze reuses it instead of reading it again.
+      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText, pendingNow as SourceEntry[])
+        : freezeConsolidation(store, selected, cfg);
       origin = admittedOrigin;
       const head = "entries" in frozen ? frozen.entries[0]?.id : frozen.rangeFacts[0]?.id;
       if (head !== undefined) executionId = store.beginExecution({ sessionId: target.sessionId, phase, head, origin }, input.executionId);
@@ -943,7 +949,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       try { cancelTasks(true); store.releaseExecutor(executorId); }
       finally { for (const task of tasks) task.force(); store.close(); }
     },
-    appendEntry: input => store.appendSourceEntry(input),
+    appendEntry: (input, known) => store.appendSourceEntry(input, known),
     selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
     notingBatch: (target, boundary) => notingBatch(notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,

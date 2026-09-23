@@ -1057,6 +1057,12 @@ var Store = class {
   closed = false;
   dreamingAuthorities = /* @__PURE__ */ new WeakMap();
   originAuthorities = /* @__PURE__ */ new WeakMap();
+  /** 70: memoizes `enabled()` for the lifetime of the current top-level transaction only. Every write
+   * inside one transaction sees the same snapshot regardless of how many times it re-checks
+   * enrollment (43a's per-record transactions each call it several times, once per write method);
+   * `setEnrollment` invalidates its own session id so a write that flips enrollment mid-transaction
+   * is still observed by a later check in the same transaction. Unset outside any transaction. */
+  enrolledCache = null;
   /** Capture once at admission. The ordered ids end at the exact native entry represented by this target. */
   triggerOrigin(path, triggerEntryId) {
     if (!path.branch || path.headTurnId == null) return null;
@@ -1279,16 +1285,20 @@ var Store = class {
   // Preserve nested transactions with savepoints: project declaration nests a merge.
   transaction(fn) {
     const nested = this.db.isTransaction;
+    const priorCache = nested ? this.enrolledCache ? new Map(this.enrolledCache) : null : null;
     this.db.exec(nested ? "SAVEPOINT trace_memory_transaction" : "BEGIN IMMEDIATE");
+    if (!nested) this.enrolledCache = /* @__PURE__ */ new Map();
     try {
       const result = fn();
       this.db.exec(nested ? "RELEASE trace_memory_transaction" : "COMMIT");
+      if (!nested) this.enrolledCache = null;
       return result;
     } catch (error3) {
       try {
         this.db.exec(nested ? "ROLLBACK TO trace_memory_transaction; RELEASE trace_memory_transaction" : "ROLLBACK");
       } catch {
       }
+      this.enrolledCache = nested ? priorCache : null;
       throw error3;
     }
   }
@@ -1440,8 +1450,12 @@ var Store = class {
     return { defaultEnabled: !!row.enrollment_default, choice: row.enrollment_choice === null ? null : !!row.enrollment_choice };
   }
   enabled(sessionId) {
+    const cached3 = this.enrolledCache?.get(sessionId);
+    if (cached3 !== void 0) return cached3;
     const value = this.enrollment(sessionId);
-    return value.choice ?? value.defaultEnabled;
+    const result = value.choice ?? value.defaultEnabled;
+    this.enrolledCache?.set(sessionId, result);
+    return result;
   }
   setEnrollment(sessionId, enabled2) {
     if (typeof enabled2 !== "boolean") throw new Error("Enrollment choice must be boolean");
@@ -1449,6 +1463,7 @@ var Store = class {
       this.enrollment(sessionId);
       this.db.prepare("UPDATE sessions SET enrollment_choice = ? WHERE id = ?").run(Number(enabled2), sessionId);
       if (enabled2) this.db.prepare("DELETE FROM task_failures WHERE session_id = ?").run(sessionId);
+      this.enrolledCache?.delete(sessionId);
     });
   }
   beginExecution(task, previous) {
@@ -2941,7 +2956,8 @@ ${rendered.get(value.revision.id)}`;
     return row ? { turnId: row.turn_id, kind: row.kind } : null;
   }
   bindNativeTurn(sessionId, nativeLineage, nativeId2, turnId, kind) {
-    if (!nativeLineage || !nativeId2 || this.getTurn(turnId)?.sessionId !== sessionId || this.getTurn(turnId)?.kind !== kind)
+    const turn = this.getTurn(turnId);
+    if (!nativeLineage || !nativeId2 || turn?.sessionId !== sessionId || turn?.kind !== kind)
       throw new Error("invalid native Turn binding");
     const known = this.findNativeTurn(sessionId, nativeLineage, nativeId2);
     if (known) {
@@ -3105,12 +3121,17 @@ ${rendered.get(value.revision.id)}`;
     return this.db.prepare(`SELECT DISTINCT f.* FROM facts f JOIN consolidated_facts i ON i.fact_id = f.id
       JOIN turns t ON t.id = f.turn_id JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.source_time DESC, f.id DESC`).all(projectId).map(toFact);
   }
-  appendSourceEntry(input) {
+  /** `known`, when passed (even `null`), replaces the internal duplicate-check query: a caller that
+   * already resolved `findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId)` for this
+   * exact identity in the same synchronous flow (nothing else can write between the two calls) skips
+   * repeating it. Omitted (the default), this queries exactly as before. */
+  appendSourceEntry(input, known = void 0) {
     return this.transaction(() => {
       this.requireEnabled(input.sessionId);
       if (typeof input.nativeLineage !== "string" || typeof input.nativeId !== "string" || typeof input.text !== "string" || typeof input.raw !== "string" || !Array.isArray(input.calls) || input.calls.some((c) => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || typeof c.name !== "string" || !c.name || typeof c.callId !== "string" || !c.callId || /[\uD800-\uDFFF]/u.test(c.callId) || typeof c.status !== "string" || !c.status || c.input !== void 0 && typeof c.input !== "string" || c.result !== void 0 && typeof c.result !== "string") || new Set(input.calls.map((c) => c.callId)).size !== input.calls.length || new Set(input.calls.map((c) => c.ordinal)).size !== input.calls.length || input.role === "user" && input.calls.length || input.role === "toolResult" && input.text) throw new Error("invalid source entry content");
-      if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult"].includes(input.role) || this.getTurn(input.turnId)?.sessionId !== input.sessionId || this.getTurn(input.turnId)?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
-      const known = this.findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId);
+      const turn = this.getTurn(input.turnId);
+      if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult"].includes(input.role) || turn?.sessionId !== input.sessionId || turn?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
+      if (known === void 0) known = this.findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId);
       if (known) {
         const { id: _, entryOrdinal: _ordinal, blocks: _blocks, ...original } = known;
         if (JSON.stringify(original) !== JSON.stringify(input)) throw new Error("native source entry changed after persistence");
@@ -5646,8 +5667,7 @@ var fixedCost = () => fixed ??= { instructions: tokens(prompt), tools: tokens(JS
 var NOTING_CAPACITY = "Noting capacity: oldest entry cannot fit the episodic budget or the model context: ";
 var NOTING_MEMBERSHIP = "Noting membership: the frozen batch is no longer pending in full: ";
 var NOTING_INCOMPLETE = "incomplete Noting: the run ended without calling note, so nothing was submitted; call note({facts: []}) to complete an empty batch. The selected entries stay pending.";
-var notingPending = (store, input) => {
-  const pendingAll = store.pendingEntries(input.sessionId, input.branch, input.headTurnId);
+var notingPending = (store, input, pendingAll = store.pendingEntries(input.sessionId, input.branch, input.headTurnId)) => {
   const exact = input.boundary?.exactEntryIds;
   return { exact, pending: exact ? pendingAll.filter((e) => exact.includes(e.id)) : input.boundary?.maxEntryId === void 0 ? pendingAll : pendingAll.filter((e) => e.id <= input.boundary.maxEntryId) };
 };
@@ -5663,7 +5683,7 @@ var notingBatch = (pending, config3, resultText) => {
   }
   return { entries, views, rendered };
 };
-function freezeNoting(store, input, config3, resultText = rawResultText) {
+function freezeNoting(store, input, config3, resultText = rawResultText, pendingAll) {
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
   if (typeof input.branch !== "string" || !input.branch) throw new Error("noting requires a non-empty branch");
@@ -5679,7 +5699,11 @@ function freezeNoting(store, input, config3, resultText = rawResultText) {
     id = turn.parentTurnId;
   }
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 || !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
-  const { exact, pending } = notingPending(store, { ...input, sessionId: session.id });
+  const { exact, pending } = notingPending(
+    store,
+    { ...input, sessionId: session.id },
+    pendingAll ?? store.pendingEntries(session.id, input.branch, input.headTurnId)
+  );
   if (exact && pending.length !== exact.length)
     throw new Error(`${NOTING_MEMBERSHIP}entries ${exact.filter((id2) => !pending.some((e) => e.id === id2)).join(", ")} of the frozen batch ${exact.join(", ")} are no longer pending; nothing was re-processed`);
   const mode = input.mode ?? (config3.noting.forkModeDefault ? "fork" : "subagent");
@@ -6797,7 +6821,7 @@ ${view}` : view;
         projectId = store.getSession(input.sessionId).projectId;
         const selected = { ...input, ...target, ...input.borrowed ? { mode: "subagent" } : {} };
         const admittedOrigin = input.executionId ? store.executionOrigin(input.executionId) : store.triggerOrigin(target, target.triggerEntryId);
-        const frozen2 = phase === "noting" ? freezeNoting(store, selected, cfg, resultText) : freezeConsolidation(store, selected, cfg);
+        const frozen2 = phase === "noting" ? freezeNoting(store, selected, cfg, resultText, pendingNow) : freezeConsolidation(store, selected, cfg);
         origin = admittedOrigin;
         const head = "entries" in frozen2 ? frozen2.entries[0]?.id : frozen2.rangeFacts[0]?.id;
         if (head !== void 0) executionId = store.beginExecution({ sessionId: target.sessionId, phase, head, origin }, input.executionId);
@@ -6971,7 +6995,7 @@ ${view}` : view;
         store.close();
       }
     },
-    appendEntry: (input) => store.appendSourceEntry(input),
+    appendEntry: (input, known) => store.appendSourceEntry(input, known),
     selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
     notingBatch: (target, boundary) => notingBatch(notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
@@ -7310,6 +7334,24 @@ async function recordSessionStart(config3, input, nativeCreatedAt2) {
 
 // src/hosts/cc/transcript.ts
 var import_node_fs3 = require("node:fs");
+var import_node_perf_hooks = require("node:perf_hooks");
+var INGEST_SLICE_MS = 40;
+var INGEST_PAUSE_MS = 15;
+var pause = (milliseconds, signal) => new Promise((resolve4, reject) => {
+  if (signal?.aborted) {
+    reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    return;
+  }
+  const timer = setTimeout(() => {
+    signal?.removeEventListener("abort", abort);
+    resolve4();
+  }, milliseconds);
+  const abort = () => {
+    clearTimeout(timer);
+    reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+});
 var sameStamp = (left, right) => !!left && left.size === right.size && left.modifiedMs === right.modifiedMs && left.changedMs === right.changedMs && left.device === right.device && left.inode === right.inode;
 var object3 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
 var blocks = (content) => Array.isArray(content) ? content.map(object3).filter((value) => value !== null) : [];
@@ -7562,19 +7604,24 @@ var CcTranscriptCursor = class {
     }
     return reverse.reverse();
   }
-  scan(path, visit, collect = false) {
+  /** Open, read and parse the appended (or, on reset, whole) region and order its records by
+   * ancestry. Holds no database transaction and touches no store: this is the "read" plus
+   * "parse/index/sort" work, unsliced and never paused, shared by the synchronous `scan` (the
+   * whole-file bootstrap path, which visits nothing that writes) and the cooperative ingest loop. */
+  prepareOrdered(path, collect, onPhase) {
+    const readStart = import_node_perf_hooks.performance.now();
     let descriptor;
     try {
       descriptor = (0, import_node_fs3.openSync)(path, "r");
     } catch (error3) {
-      if (error3.code === "ENOENT") return snapshot(path, null);
+      if (error3.code === "ENOENT") return { done: snapshot(path, null) };
       throw error3;
     }
     try {
       const before = (0, import_node_fs3.fstatSync)(descriptor);
       const stamp = { size: before.size, modifiedMs: before.mtimeMs, changedMs: before.ctimeMs, device: before.dev, inode: before.ino };
-      if (this.rejected && sameStamp(this.rejected.stamp, stamp)) return this.rejected.snapshot;
-      if (sameStamp(this.stamp, stamp)) return { ...this.lastSnapshot, records: [], changed: false, reset: false };
+      if (this.rejected && sameStamp(this.rejected.stamp, stamp)) return { done: this.rejected.snapshot };
+      if (sameStamp(this.stamp, stamp)) return { done: { ...this.lastSnapshot, records: [], changed: false, reset: false } };
       const replacement = !!this.stamp && (stamp.device !== this.stamp.device || stamp.inode !== this.stamp.inode);
       let reset = !this.stamp || replacement || stamp.size < this.completeOffset || stamp.size === this.stamp.size;
       if (!reset && this.completeOffset > 0) {
@@ -7595,6 +7642,8 @@ var CcTranscriptCursor = class {
       const finalNewline = bytes.lastIndexOf(10);
       const completeLength = finalNewline < 0 ? 0 : finalNewline + 1;
       const completeOffset = start + completeLength;
+      onPhase?.("read", import_node_perf_hooks.performance.now() - readStart);
+      const indexStart = import_node_perf_hooks.performance.now();
       const records = [], collectedById = /* @__PURE__ */ new Map();
       const parsedRecords = [];
       const scanNodes = reset ? /* @__PURE__ */ new Map() : this.nodes;
@@ -7684,37 +7733,78 @@ var CcTranscriptCursor = class {
       };
       for (const value of parsedRecords) if (value.node) add(value);
       for (const value of parsedRecords) if (!value.node) ordered.push(value);
-      for (const value of ordered) {
-        const acceptedIdentity = nativeId(value.record) === null || !!value.node && !value.node.lineageProblem && !value.node.importProblem;
-        try {
-          visit(value.record, value.source, value.raw, scan, acceptedIdentity);
-        } catch (error3) {
-          throw new CcTranscriptScanFailure(scan, error3);
-        }
-      }
-      const resultSnapshot = snapshot(path, stamp, {
-        completeBytes: completeOffset,
-        recordCount: physicalRecords,
-        records,
-        incompleteBytes: stamp.size - completeOffset,
-        changed: true,
-        reset
-      });
-      return new CcTranscriptScan({
-        nodes: scanNodes,
-        callCarriers: scanCalls,
-        snapshot: resultSnapshot,
-        stamp,
-        reset,
-        completeOffset,
-        lineCount: lines,
-        selectedLeafUuid,
-        problems,
-        newProblems
-      });
+      onPhase?.("index", import_node_perf_hooks.performance.now() - indexStart);
+      const finish2 = () => {
+        const resultSnapshot = snapshot(path, stamp, {
+          completeBytes: completeOffset,
+          recordCount: physicalRecords,
+          records,
+          incompleteBytes: stamp.size - completeOffset,
+          changed: true,
+          reset
+        });
+        return new CcTranscriptScan({
+          nodes: scanNodes,
+          callCarriers: scanCalls,
+          snapshot: resultSnapshot,
+          stamp,
+          reset,
+          completeOffset,
+          lineCount: lines,
+          selectedLeafUuid,
+          problems,
+          newProblems
+        });
+      };
+      return { scan, ordered, finish: finish2 };
     } finally {
       (0, import_node_fs3.closeSync)(descriptor);
     }
+  }
+  scan(path, visit, collect = false) {
+    const prepared = this.prepareOrdered(path, collect);
+    if ("done" in prepared) return prepared.done;
+    const { scan, ordered, finish: finish2 } = prepared;
+    for (const value of ordered) {
+      const acceptedIdentity = nativeId(value.record) === null || !!value.node && !value.node.lineageProblem && !value.node.importProblem;
+      try {
+        visit(value.record, value.source, value.raw, scan, acceptedIdentity);
+      } catch (error3) {
+        throw new CcTranscriptScanFailure(scan, error3);
+      }
+    }
+    return finish2();
+  }
+  /** The cooperative counterpart of `scan`, used only for the ingest visit loop (never the whole-file
+   * bootstrap read, which writes nothing and stays synchronous). Read, parse, index and sort are the
+   * same unsliced, unpaused work as `scan`; only the per-record visit loop yields: after a slice of
+   * about `sliceMs`, it awaits `pauseMs` with no transaction open before resuming from the next
+   * record, so a waiting writer's retry finds a free window and the executor's own event loop is
+   * never blocked for the whole scan. `signal` is checked between records, never inside one record's
+   * visit: an abort leaves the stamp and offset unadvanced (see `prepareOrdered`), so the next scan
+   * re-reads the same suffix and skips already-committed records by native identity. */
+  async scanCooperative(path, visit, options = {}) {
+    const { signal, sliceMs = INGEST_SLICE_MS, pauseMs = INGEST_PAUSE_MS, onIngestGap, onPhase } = options;
+    const prepared = this.prepareOrdered(path, false, onPhase);
+    if ("done" in prepared) return prepared.done;
+    const { scan, ordered, finish: finish2 } = prepared;
+    let sliceStart = import_node_perf_hooks.performance.now();
+    for (const value of ordered) {
+      if (import_node_perf_hooks.performance.now() - sliceStart >= sliceMs) {
+        onIngestGap?.(import_node_perf_hooks.performance.now() - sliceStart);
+        await pause(pauseMs, signal);
+        sliceStart = import_node_perf_hooks.performance.now();
+      }
+      signal?.throwIfAborted();
+      const acceptedIdentity = nativeId(value.record) === null || !!value.node && !value.node.lineageProblem && !value.node.importProblem;
+      try {
+        visit(value.record, value.source, value.raw, scan, acceptedIdentity);
+      } catch (error3) {
+        throw new CcTranscriptScanFailure(scan, error3);
+      }
+    }
+    onIngestGap?.(import_node_perf_hooks.performance.now() - sliceStart);
+    return finish2();
   }
   commit(scan, problem) {
     if (scan.reset) this.unresolvedProblems.clear();
@@ -7870,7 +7960,7 @@ var import_node_crypto10 = require("node:crypto");
 var import_node_path4 = require("node:path");
 var import_node_util = require("node:util");
 
-// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -28668,7 +28758,7 @@ function query({
   return queryInstance;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -28742,7 +28832,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// node_modules/zod/v4/core/util.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -29421,7 +29511,7 @@ var Class2 = class {
   }
 };
 
-// node_modules/zod/v4/core/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -29487,7 +29577,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -29567,7 +29657,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// node_modules/zod/v4/core/regexes.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -29724,7 +29814,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// node_modules/zod/v4/core/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -30272,7 +30362,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -30308,14 +30398,14 @@ var Doc2 = class {
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -32286,7 +32376,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -32395,7 +32485,7 @@ function en_default3() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -32443,7 +32533,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/api.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -33247,7 +33337,7 @@ function _stringFormat(Class3, format, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -33599,7 +33689,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -34075,7 +34165,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -34244,7 +34334,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// node_modules/zod/v4/classic/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -34278,7 +34368,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// node_modules/zod/v4/classic/iso.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -34319,7 +34409,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -34359,7 +34449,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -34373,7 +34463,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -35452,22 +35542,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// node_modules/zod/v4/classic/compat.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// node_modules/zod/v4/classic/from-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// node_modules/zod/v4/classic/external.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -37652,7 +37742,7 @@ var CcProjection = class {
       ...values
     };
   }
-  async synchronize() {
+  async synchronize(signal, instrumentation) {
     const observedBinding = readBinding(this.config, this.binding.nativeSessionId);
     if (this.lastResult && observedBinding && JSON.stringify(observedBinding) === JSON.stringify(this.binding) && (observedBinding.coreSessionId === null || this.memory.store.enabled(observedBinding.coreSessionId))) {
       const unchanged = this.transcript.unchangedSnapshot(observedBinding.transcriptPath);
@@ -37671,13 +37761,13 @@ var CcProjection = class {
     return withCcBindingLock(this.config, this.binding.nativeSessionId, async (locked) => {
       this.lockedBinding = locked;
       try {
-        return await this.reconcileLocked();
+        return await this.reconcileLocked(signal, instrumentation);
       } finally {
         this.lockedBinding = null;
       }
-    });
+    }, void 0, signal);
   }
-  async reconcileLocked() {
+  async reconcileLocked(signal, instrumentation = {}) {
     if (!this.lockedBinding) throw new Error("CC projection binding lock is unavailable");
     const current = this.lockedBinding.read();
     if (!current || current.dbPath !== this.config.dbPath || current.transcriptPath !== this.binding.transcriptPath)
@@ -37776,15 +37866,17 @@ var CcProjection = class {
       }
       return this.memory.store.transaction(() => {
         let turnId;
+        let ownerTurn = null;
         if (source.kind === "user") {
           const parentTurnId = nearestTurn(record3, scan2);
           turnId = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: source.text, startedAt: timestamp2 }).id;
           this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turnId, "turn");
         } else {
           const owner = nearestTurn(record3, scan2);
-          if (owner === null || this.memory.store.getTurn(owner)?.kind !== "turn")
+          ownerTurn = owner === null ? null : this.memory.store.getTurn(owner);
+          if (!ownerTurn || ownerTurn.kind !== "turn")
             throw new CcIntegrityError(`owning user Turn for native source ${source.nativeId} is unavailable`);
-          turnId = owner;
+          turnId = ownerTurn.id;
         }
         const calls = source.kind === "user" ? /* @__PURE__ */ new Map() : new Map(knownCalls(turnId));
         const fragments = [];
@@ -37811,9 +37903,9 @@ var CcProjection = class {
           text: source.text,
           raw,
           calls: fragments
-        });
+        }, null);
         if (source.kind === "assistant") {
-          const turn = this.memory.store.getTurn(turnId);
+          const turn = ownerTurn;
           this.memory.store.updateTurn(turnId, { assistantText: [turn.assistantText, source.text].filter(Boolean).join("\n"), endedAt: source.timestamp });
         }
         return { association: { turnId, entryId: stored.id }, calls, appendedEntryId: stored.id };
@@ -37839,7 +37931,17 @@ var CcProjection = class {
     let scan;
     let branch = this.binding.branch, selectedEntryIds = [], headTurnId = null, projectionReady = true;
     try {
-      scan = this.transcript.scan(this.binding.transcriptPath, visit);
+      scan = await this.transcript.scanCooperative(
+        this.binding.transcriptPath,
+        visit,
+        {
+          signal,
+          onIngestGap: instrumentation.onIngestGap,
+          onPhase: instrumentation.onPhase,
+          sliceMs: instrumentation.sliceMs,
+          pauseMs: instrumentation.pauseMs
+        }
+      );
       if (scan instanceof CcTranscriptScan) {
         for (const problem of scan.problems) addProblem(problem);
         if (!scan.reset && scan.selectedLeafUuid === this.binding.selectedLeafUuid && this.lastResult) {
@@ -37984,8 +38086,8 @@ var CcImporter = class {
   persistedCall(toolUseId, toolName) {
     return this.projection.persistedCall(toolUseId, toolName);
   }
-  async reconcile() {
-    const result = await this.projection.synchronize();
+  async reconcile(signal, instrumentation) {
+    const result = await this.projection.synchronize(signal, instrumentation);
     if (!this.reopened && result.coreSessionId !== null && result.state !== "disabled") {
       this.memory.store.reopenSession(result.coreSessionId, this.memory.executorId);
       this.reopened = true;
@@ -38088,10 +38190,15 @@ async function startControlServer(config3, initial, memory, bindingTimeoutMs, si
           handlers?.beforeCancel();
           const aborted3 = memory.cancelTasks(false);
           if (verb === "off") {
-            await disableEnrollment(config3, binding.nativeSessionId, memory.store, token);
-            handlers?.beforeCancel();
-            for (const task of memory.cancelTasks(false))
-              if (!aborted3.some((previous) => previous.executionId === task.executionId)) aborted3.push(task);
+            const releaseImportHold = handlers?.holdImport();
+            try {
+              await disableEnrollment(config3, binding.nativeSessionId, memory.store, token);
+              handlers?.beforeCancel();
+              for (const task of memory.cancelTasks(false))
+                if (!aborted3.some((previous) => previous.executionId === task.executionId)) aborted3.push(task);
+            } finally {
+              releaseImportHold?.();
+            }
           }
           const reply = { ok: true, verb, abortRequested: aborted3, termination: "pending-observation" };
           connection.end(`${JSON.stringify(reply)}
@@ -38195,14 +38302,13 @@ function request(executor, verb, timeoutMs) {
     connection.on("error", (error3) => finish2(error3));
   });
 }
-async function validatedOperatorBinding(config3, nativeSessionId) {
+function validatedOperatorBinding(config3, nativeSessionId) {
   const store = new Store(config3.dbPath);
   try {
-    return await updateBinding(config3, nativeSessionId, (current) => {
-      if (!current) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
-      assertOperatorBinding(config3, current, store);
-      return current;
-    });
+    const current = readBinding(config3, nativeSessionId);
+    if (!current) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
+    assertOperatorBinding(config3, current, store);
+    return current;
   } finally {
     store.close();
   }
@@ -38727,18 +38833,50 @@ var CcCoordinator = class {
   closed = false;
   startupComplete = false;
   startup = new AbortController();
+  /** 70: the reconcile currently running under the binding lock, if any. `off`, a selected-path
+   * retarget and executor shutdown abort it before they wait for the lock themselves (off through
+   * `disableEnrollment`, retarget and shutdown through this queue); `stop` never touches it. */
+  currentImportAbort = null;
+  /** 70: outstanding preemption holds. While positive, a non-final reconcile that starts (including
+   * one already queued behind the one `abortCurrentImport` just aborted) returns without scanning,
+   * instead of racing the preempting operation for the binding lock. `final` reconciles (shutdown's
+   * own `finalReconcile`) are exempt — a hold never blocks the operation that is holding it. */
+  importHolds = 0;
   config;
   /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
   nativeSessionId;
   diagnostic;
-  constructor(config3, nativeSessionId, diagnostic = (message) => console.error(`Trace Memory CC: ${message}`)) {
+  /** Test-only override of the cooperative-scan slice/pause constants; unset in production. */
+  importTuning;
+  constructor(config3, nativeSessionId, diagnostic = (message) => console.error(`Trace Memory CC: ${message}`), importTuning) {
     validateNativeSessionId(nativeSessionId);
     this.config = config3;
     this.nativeSessionId = nativeSessionId;
     this.diagnostic = diagnostic;
+    this.importTuning = importTuning;
   }
   observe(event, details = {}) {
     this.diagnostic(`lifecycle ${JSON.stringify({ event, at: Date.now(), ...details })}`);
+  }
+  /** The scan observes this at its next cooperative resume: it stops with stamp and offset
+   * unadvanced and releases the binding lock; the aborting operation then persists and acknowledges
+   * as today. A no-op when no reconcile is currently running. */
+  abortCurrentImport() {
+    this.currentImportAbort?.abort(new DOMException("CC import aborted for a higher-priority control operation", "AbortError"));
+  }
+  /** 70: begin a preemption hold and abort whatever is currently running. Until the returned release
+   * is called, no non-final reconcile scans — including one already queued behind the aborted run,
+   * which would otherwise start the instant it settles and win the lock before this operation does.
+   * Safe to call release more than once. */
+  holdImport() {
+    this.importHolds++;
+    this.abortCurrentImport();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.importHolds = Math.max(0, this.importHolds - 1);
+    };
   }
   async attach(final, deadline) {
     if (this.importer || this.closed || this.closing && !final) return;
@@ -38772,7 +38910,8 @@ var CcCoordinator = class {
           };
           return scheduler.startCatchup(projection, ticket);
         },
-        beforeCancel: () => this.scheduler?.stopCatchup()
+        beforeCancel: () => this.scheduler?.stopCatchup(),
+        holdImport: () => this.holdImport()
       }).then((control) => {
         this.control = control;
       });
@@ -38852,19 +38991,24 @@ var CcCoordinator = class {
    * Returns false when the target is not a clear-child of the current session. */
   retargetTo(nativeSessionId) {
     validateNativeSessionId(nativeSessionId);
+    const release = this.holdImport();
     const done = this.queue.then(async () => {
-      if (this.closed || this.closing || !this.importer || !this.control) return false;
-      const current = this.importer.currentBinding(), next = readBinding(this.config, nativeSessionId);
-      if (!next || next.clearedFrom?.nativeSessionId !== current.nativeSessionId || next.coreSessionId !== current.coreSessionId) return false;
-      this.observe("retarget-start", { from: current.nativeSessionId, to: nativeSessionId });
-      this.transcriptWatcher?.close();
-      this.transcriptWatcher = null;
-      await this.control.retarget(next);
-      this.importer.retarget(next);
-      this.nativeSessionId = nativeSessionId;
-      this.watchTranscript(next);
-      this.observe("retarget-complete", { to: nativeSessionId });
-      return true;
+      try {
+        if (this.closed || this.closing || !this.importer || !this.control) return false;
+        const current = this.importer.currentBinding(), next = readBinding(this.config, nativeSessionId);
+        if (!next || next.clearedFrom?.nativeSessionId !== current.nativeSessionId || next.coreSessionId !== current.coreSessionId) return false;
+        this.observe("retarget-start", { from: current.nativeSessionId, to: nativeSessionId });
+        this.transcriptWatcher?.close();
+        this.transcriptWatcher = null;
+        await this.control.retarget(next);
+        this.importer.retarget(next);
+        this.nativeSessionId = nativeSessionId;
+        this.watchTranscript(next);
+        this.observe("retarget-complete", { to: nativeSessionId });
+        return true;
+      } finally {
+        release();
+      }
     }).then((result2) => result2, (error3) => {
       this.diagnostic(`retarget to ${nativeSessionId} failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
       return false;
@@ -38884,14 +39028,16 @@ var CcCoordinator = class {
       if (!final) this.wakeQueued = false;
       if (this.closed || this.closing && !final) return null;
       const wasAttached = this.importer !== null;
+      const importAbort = new AbortController();
+      this.currentImportAbort = importAbort;
       try {
         const attaching = this.attach(final, deadline);
         const epoch = opportunityEpoch ?? this.scheduler?.catchupTicket();
         await attaching;
-        const result = await this.importer?.reconcile() ?? null;
+        const result = !final && this.importHolds > 0 ? null : await this.importer?.reconcile(importAbort.signal, this.importTuning) ?? null;
         if (this.importer) this.watchTranscript(this.importer.currentBinding());
         if (!final && result) this.scheduler?.reconcile(result, reason !== "manual catchup", epoch);
-        if (this.importer && !this.startupComplete && !final) {
+        if (this.importer && result && !this.startupComplete && !final) {
           this.startupComplete = true;
           this.observe("startup-complete");
         }
@@ -38909,6 +39055,8 @@ var CcCoordinator = class {
         if (error3.name === "AbortError") this.observe("startup-cancelled", { reason });
         else this.diagnostic(`${reason} reconciliation failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
         return null;
+      } finally {
+        if (this.currentImportAbort === importAbort) this.currentImportAbort = null;
       }
     });
     return this.queue;
@@ -38989,6 +39137,7 @@ var CcCoordinator = class {
     this.scheduler?.stop();
     this.stopWakeups();
     this.startup.abort(new DOMException("Lifecycle shutdown", "AbortError"));
+    this.holdImport();
     this.observe("shutdown-begin", { reason });
     let result = { confirmed: false, reason: "no bound importer", diagnostic: "binding was never established" };
     try {
