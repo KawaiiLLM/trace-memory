@@ -853,8 +853,11 @@ export class Store {
   // Preserve nested transactions with savepoints: project declaration nests a merge.
   transaction<T>(fn: () => T): T {
     const nested = this.db.isTransaction;
-    if (!nested) this.enrolledCache = new Map();
+    // Snapshot what a rolled-back savepoint must restore. Taken (and BEGIN/SAVEPOINT attempted)
+    // before the memo is touched: a failed BEGIN never installs or mutates it.
+    const priorCache = nested ? (this.enrolledCache ? new Map(this.enrolledCache) : null) : null;
     this.db.exec(nested ? "SAVEPOINT trace_memory_transaction" : "BEGIN IMMEDIATE");
+    if (!nested) this.enrolledCache = new Map();
     try {
       const result = fn();
       this.db.exec(nested ? "RELEASE trace_memory_transaction" : "COMMIT");
@@ -866,7 +869,9 @@ export class Store {
           ? "ROLLBACK TO trace_memory_transaction; RELEASE trace_memory_transaction"
           : "ROLLBACK");
       } catch { /* Preserve the original error if rollback fails. */ }
-      if (!nested) this.enrolledCache = null;
+      // A rolled-back savepoint discards whatever it memoized, in step with the database; a
+      // rolled-back top-level transaction clears the memo entirely, as before.
+      this.enrolledCache = nested ? priorCache : null;
       throw error;
     }
   }
