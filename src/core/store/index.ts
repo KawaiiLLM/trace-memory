@@ -69,10 +69,17 @@ CREATE TABLE IF NOT EXISTS session_lineage_cursors (
   lineage TEXT NOT NULL,
   branch TEXT NOT NULL,
   head_turn_id INTEGER NOT NULL REFERENCES turns(id),
-  -- Ticket 72: bumped only when this cursor's write is NOT a plain forward walk along the same branch
-  -- (a branch switch, or a head moving back to an ancestor) — never on an ordinary forward head move,
-  -- so ingesting Raw never touches it. progressSignal reads MAX(version) through the index below.
+  -- Ticket 72: bumped only when this cursor's write is NOT a plain forward walk (a branch switch, or a
+  -- head at or below hwm_head_turn_id) — never on an ordinary forward head move, so ingesting Raw
+  -- never touches it. progressSignal reads MAX(version) through the index below.
   version INTEGER NOT NULL DEFAULT 0,
+  -- Ticket 72: the largest head_turn_id this cursor has ever held, updated to MAX(itself, new head) on
+  -- every write regardless of branch. Turn ids are AUTOINCREMENT and assigned in creation order, so a
+  -- genuinely new Turn -- on any branch this lineage later switches to -- always exceeds it; only a
+  -- revisit of an already-superseded Turn (a move back, or a branch switch landing on one) can be <=
+  -- it. Exact where a "once rewritten, bump forever" flag would only approximate: a branch switch and
+  -- later return, or repeated back-and-forth, never falsely keeps bumping on later genuine progress.
+  hwm_head_turn_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, lineage)
 );
 CREATE INDEX IF NOT EXISTS idx_session_lineage_cursors_version ON session_lineage_cursors(version);
@@ -213,10 +220,17 @@ CREATE TABLE IF NOT EXISTS source_paths (
   branch TEXT NOT NULL,
   entry_ids TEXT NOT NULL,
   -- Ticket 72: bumped only when a write replaces entry_ids with something other than an extension of
-  -- the prior list (the writer alone knows this; see publishSourcePath/selectSourcePath) — an
-  -- already-stored entry leaving or rejoining the selected path under an unchanged cursor. A pure
-  -- append leaves it untouched, so ingesting Raw never bumps it.
+  -- the prior list, or appends an id at or below hwm_entry_id (the writer alone knows this; see
+  -- publishSourcePath/selectSourcePath) — an already-stored entry leaving or rejoining the selected
+  -- path under an unchanged cursor. A pure append of genuinely new entries leaves it untouched, so
+  -- ingesting Raw never bumps it.
   version INTEGER NOT NULL DEFAULT 0,
+  -- Ticket 72: the largest source_entries.id this row has ever held, updated to MAX(itself, new max)
+  -- on every write. Entry ids are AUTOINCREMENT and assigned in creation order, so a genuinely new
+  -- entry always exceeds it; only a restored, previously-removed entry can be <= it. Exact where a
+  -- "once rewritten, bump forever" flag would only approximate: pure appends after a removal-and-
+  -- restore never falsely keep bumping.
+  hwm_entry_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, branch)
 );
 CREATE INDEX IF NOT EXISTS idx_source_paths_version ON source_paths(version);
@@ -756,13 +770,25 @@ export class Store {
             UPDATE source_entries SET entry_ordinal = (SELECT ordinal FROM numbered WHERE numbered.id = source_entries.id);`);
         }
         this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_source_turn_ordinal ON source_entries(turn_id, entry_ordinal)");
-        // Ticket 72: an existing database predates the change-detection version columns.
+        // Ticket 72: an existing database predates the change-detection version/high-water-mark columns.
         if (!this.db.prepare("PRAGMA table_info(session_lineage_cursors)").all().some(r => r.name === "version"))
           this.db.exec("ALTER TABLE session_lineage_cursors ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
         this.db.exec("CREATE INDEX IF NOT EXISTS idx_session_lineage_cursors_version ON session_lineage_cursors(version)");
+        if (!this.db.prepare("PRAGMA table_info(session_lineage_cursors)").all().some(r => r.name === "hwm_head_turn_id")) {
+          this.db.exec("ALTER TABLE session_lineage_cursors ADD COLUMN hwm_head_turn_id INTEGER NOT NULL DEFAULT 0");
+          // Backfill from the only known value at migration time: the row's own current head. Earlier
+          // history is not recoverable, but this is a safe floor — the row cannot have held anything
+          // higher without that write having already set its own head_turn_id at least that high.
+          this.db.exec("UPDATE session_lineage_cursors SET hwm_head_turn_id = head_turn_id");
+        }
         if (!this.db.prepare("PRAGMA table_info(source_paths)").all().some(r => r.name === "version"))
           this.db.exec("ALTER TABLE source_paths ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
         this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_paths_version ON source_paths(version)");
+        if (!this.db.prepare("PRAGMA table_info(source_paths)").all().some(r => r.name === "hwm_entry_id")) {
+          this.db.exec("ALTER TABLE source_paths ADD COLUMN hwm_entry_id INTEGER NOT NULL DEFAULT 0");
+          // Backfill from the row's own current contents: the largest entry id it holds right now.
+          this.db.exec("UPDATE source_paths SET hwm_entry_id = (SELECT IFNULL(MAX(value), 0) FROM json_each(entry_ids))");
+        }
         // Derived membership metadata keeps path/coverage queries off large immutable Raw bodies.
         // Both migration and new ingestion use the same block interpreter as write validation.
         const columns = this.db.prepare("PRAGMA table_info(source_entries)").all();
@@ -1039,19 +1065,25 @@ export class Store {
   }
 
   private writeCurrentPath(sessionId: number, branch: string, headTurnId: number, lineage: string): void {
-    // Ticket 72: turn ids are assigned by AUTOINCREMENT, so within one branch a forward head move is
-    // exactly a larger id; a branch switch or a head moving back to an ancestor is the only case that
-    // can remove an already-visible fact or knowledge item from this path, so only those bump `version`.
-    // Once bumped, `version > 0` keeps bumping every later write to this cursor too, even an ordinary
-    // forward move: a head that later returns to a turn it had moved back past (B -> A -> B) makes
-    // exactly the same items visible again as the first B -> A move made invisible, and only this
-    // cursor's own prior history — not the two endpoints compared in isolation — can tell the two
-    // "forward" moves apart. Bounded: only a cursor that has ever moved back pays this, forever.
-    this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id, version) VALUES (?, ?, ?, ?, 0)
+    // Ticket 72: turn ids are assigned by AUTOINCREMENT in creation order, so a genuinely new Turn —
+    // on any branch this lineage later switches to — always exceeds `hwm_head_turn_id`, the largest
+    // head this cursor has ever held; only a revisit of an already-superseded Turn (a move back, or a
+    // branch switch landing on one) can be <= it. Compared against the stored `head_turn_id` too, not
+    // only `hwm_head_turn_id`: an idempotent republish of the SAME head (routine — a host publishes on
+    // every poll, often before its own next Turn exists) must not bump merely because that head is, by
+    // definition, never above its own high-water mark. A branch switch always bumps `version`, since
+    // even a forward-looking head on a different line can remove items that were already visible on
+    // the old one. The high-water mark itself only ever grows (MAX(itself, new head)), so 57 branches
+    // and routine tree switches never turn into a "bump every later write forever" cursor: only a
+    // write that is genuinely a move back (by id) or a branch change bumps.
+    this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id, version, hwm_head_turn_id)
+        VALUES (?, ?, ?, ?, 0, ?)
       ON CONFLICT (session_id, lineage) DO UPDATE SET
-        version = version + (CASE WHEN branch != excluded.branch OR excluded.head_turn_id < head_turn_id OR version > 0 THEN 1 ELSE 0 END),
-        branch = excluded.branch, head_turn_id = excluded.head_turn_id`)
-      .run(sessionId, lineage, branch, headTurnId);
+        version = version + (CASE WHEN branch != excluded.branch OR
+          (excluded.head_turn_id != head_turn_id AND excluded.head_turn_id <= hwm_head_turn_id) THEN 1 ELSE 0 END),
+        branch = excluded.branch, head_turn_id = excluded.head_turn_id,
+        hwm_head_turn_id = MAX(hwm_head_turn_id, excluded.head_turn_id)`)
+      .run(sessionId, lineage, branch, headTurnId, headTurnId);
   }
 
   enrollment(sessionId: number): Enrollment {
@@ -2924,21 +2956,25 @@ export class Store {
   /** Ticket 72: only the writer knows whether the new list extends the stored one — an unbroken
    * prefix relationship, the only shape an ordinary ingested-entry append ever produces. Any other
    * replacement (an entry removed, reordered, or a shorter list) is a membership rewrite the change
-   * signal must observe, so it bumps `source_paths.version`. Once bumped, `version > 0` keeps bumping
-   * every later write too, even one that is itself a plain extension of the immediately prior list: an
-   * entry restored after removal ([e1] -> [e1,e2] again) is structurally indistinguishable from a
-   * fresh append of the same shape, and only this row's own prior history — not the two endpoints
-   * compared in isolation — can tell them apart. Bounded: only a path that has ever been rewritten
-   * pays this, forever; a pure append leaves an unrewritten path's signal untouched. */
+   * signal must observe, so it bumps `source_paths.version` — and so does an "extension" whose
+   * appended id is at or below `hwm_entry_id`, the largest source_entries.id this row has ever held:
+   * entry ids are AUTOINCREMENT in creation order, so a genuinely new entry always exceeds it, and only
+   * a restored, previously-removed entry ([e1] -> [e1,e2] again after [e1,e2] -> [e1]) can be <= it.
+   * The high-water mark only ever grows, so a path that was rewritten once and later only receives
+   * genuinely new entries never keeps bumping — exact where a "once rewritten, bump forever" flag
+   * would only approximate. A pure append of new entries leaves an unrewritten path's signal untouched. */
   private writeSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
-    const priorRow = this.db.prepare("SELECT entry_ids, version FROM source_paths WHERE session_id = ? AND branch = ?")
-      .get(sessionId, branch) as { entry_ids: string; version: number } | undefined;
+    const priorRow = this.db.prepare("SELECT entry_ids, hwm_entry_id FROM source_paths WHERE session_id = ? AND branch = ?")
+      .get(sessionId, branch) as { entry_ids: string; hwm_entry_id: number } | undefined;
     const prior: number[] = priorRow ? JSON.parse(priorRow.entry_ids) : [];
+    const hwm = priorRow?.hwm_entry_id ?? 0;
     const append = prior.length <= entryIds.length && prior.every((id, index) => entryIds[index] === id);
-    const bump = !append || (priorRow?.version ?? 0) > 0;
-    this.db.prepare(`INSERT INTO source_paths (session_id, branch, entry_ids, version) VALUES (?, ?, ?, 0)
-      ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids, version = version + ?`)
-      .run(sessionId, branch, JSON.stringify(entryIds), bump ? 1 : 0);
+    const restored = append && entryIds.slice(prior.length).some(id => id <= hwm);
+    const bump = !append || restored;
+    const newHwm = entryIds.length ? Math.max(hwm, ...entryIds) : hwm;
+    this.db.prepare(`INSERT INTO source_paths (session_id, branch, entry_ids, version, hwm_entry_id) VALUES (?, ?, ?, 0, ?)
+      ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids, version = version + ?, hwm_entry_id = ?`)
+      .run(sessionId, branch, JSON.stringify(entryIds), newHwm, bump ? 1 : 0, newHwm);
   }
 
   selectSourcePath(sessionId: number, branch: string, entryIds: number[]): void {

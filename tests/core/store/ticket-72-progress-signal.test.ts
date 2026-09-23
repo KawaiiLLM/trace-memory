@@ -8,6 +8,7 @@ import { afterEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Store } from "../../../src/core/store/index.ts";
 
 const time = "2026-09-23T00:00:00Z";
@@ -108,6 +109,92 @@ test("72: an entry removed from, then restored to, a current path under an uncha
   const afterRemoval = store.progressSignal(sessionId);
   store.publishSourcePath(sessionId, "main", [entry.id, entry2.id], turnId, "lineage-a"); // restored
   expect(store.progressSignal(sessionId)).not.toBe(afterRemoval);
+});
+
+test("72: after a removal and a restore, subsequent pure appends to that same row do not bump", () => {
+  const store = open();
+  const { sessionId, turnId, entry } = seeded(store);
+  const entry2 = store.appendSourceEntry({ sessionId, turnId, nativeLineage: "n", nativeId: "u2", role: "toolResult", text: "", raw: "r2",
+    calls: [{ ordinal: 1, name: "tool", callId: "c1", status: "ok" }] });
+  store.publishSourcePath(sessionId, "main", [entry.id, entry2.id], turnId, "lineage-a");
+  store.publishSourcePath(sessionId, "main", [entry.id], turnId, "lineage-a"); // remove
+  store.publishSourcePath(sessionId, "main", [entry.id, entry2.id], turnId, "lineage-a"); // restore
+  const afterRestore = store.progressSignal(sessionId);
+  // A genuinely new entry, never before part of this row, appended after the restore: high-water-mark
+  // exactness (not a sticky "once rewritten, always bump" flag) means this must not bump.
+  const entry3 = store.appendSourceEntry({ sessionId, turnId, nativeLineage: "n", nativeId: "u3", role: "toolResult", text: "", raw: "r3",
+    calls: [{ ordinal: 1, name: "tool", callId: "c2", status: "ok" }] });
+  store.publishSourcePath(sessionId, "main", [entry.id, entry2.id, entry3.id], turnId, "lineage-a");
+  expect(store.progressSignal(sessionId)).toBe(afterRestore);
+});
+
+test("72: after a branch switch and a return, subsequent new Turns on that cursor do not bump", () => {
+  const store = open();
+  const { sessionId, turnId } = seeded(store);
+  const sideEntry = store.appendSourceEntry({ sessionId, turnId, nativeLineage: "n", nativeId: "side1", role: "toolResult", text: "", raw: "s1",
+    calls: [{ ordinal: 1, name: "tool", callId: "cs1", status: "ok" }] });
+  store.selectSourcePath(sessionId, "side", [sideEntry.id]);
+  store.setCurrentPath(sessionId, "side", turnId, "lineage-a"); // switch away
+  store.setCurrentPath(sessionId, "main", turnId, "lineage-a"); // and back to "main", same head as before
+  const afterReturn = store.progressSignal(sessionId);
+  // A genuinely new Turn, with an id above every head this cursor has ever held (global AUTOINCREMENT
+  // order), advanced to after the return: must not bump.
+  const child = store.appendTurn({ sessionId, parentTurnId: turnId, kind: "turn", userPrompt: "second", assistantText: "ok", startedAt: time }).id;
+  store.setCurrentPath(sessionId, "main", child, "lineage-a");
+  expect(store.progressSignal(sessionId)).toBe(afterReturn);
+});
+
+test("72: a head moved back to an ancestor bumps, and a new Turn created from that ancestor, above the mark, does not", () => {
+  const store = open();
+  const { sessionId, turnId } = seeded(store);
+  const child = store.appendTurn({ sessionId, parentTurnId: turnId, kind: "turn", userPrompt: "second", assistantText: "ok", startedAt: time }).id;
+  store.setCurrentPath(sessionId, "main", child, "lineage-a"); // ordinary forward move; high-water mark = child
+  const before = store.progressSignal(sessionId);
+  store.setCurrentPath(sessionId, "main", turnId, "lineage-a"); // back to the ancestor: bumps (turnId < mark)
+  expect(store.progressSignal(sessionId)).not.toBe(before);
+  const afterBack = store.progressSignal(sessionId);
+  // A brand-new Turn grown from the ancestor: its id is above the high-water mark (AUTOINCREMENT is
+  // global, so any Turn created now exceeds `child`), so advancing to it must not bump.
+  const grandchild = store.appendTurn({ sessionId, parentTurnId: turnId, kind: "turn", userPrompt: "third", assistantText: "ok", startedAt: time }).id;
+  store.setCurrentPath(sessionId, "main", grandchild, "lineage-a");
+  expect(store.progressSignal(sessionId)).toBe(afterBack);
+});
+
+test("72: a restore of a removed tail entry still bumps", () => {
+  const store = open();
+  const { sessionId, turnId, entry } = seeded(store);
+  const tail = store.appendSourceEntry({ sessionId, turnId, nativeLineage: "n", nativeId: "tail1", role: "toolResult", text: "", raw: "t1",
+    calls: [{ ordinal: 1, name: "tool", callId: "ct1", status: "ok" }] });
+  store.publishSourcePath(sessionId, "main", [entry.id, tail.id], turnId, "lineage-a");
+  store.publishSourcePath(sessionId, "main", [entry.id], turnId, "lineage-a"); // drop the tail entry
+  const afterDrop = store.progressSignal(sessionId);
+  store.publishSourcePath(sessionId, "main", [entry.id, tail.id], turnId, "lineage-a"); // restore the tail entry
+  expect(store.progressSignal(sessionId)).not.toBe(afterDrop);
+});
+
+test("72: backfill on an existing database sets the high-water mark from current contents", () => {
+  const dir = mkdtempSync(join(tmpdir(), "trace-memory-72-backfill-"));
+  dirs.push(dir);
+  const dbPath = join(dir, "trace.db");
+  const pre = new Store(dbPath);
+  const { sessionId, turnId, entry } = seeded(pre);
+  const entry2 = pre.appendSourceEntry({ sessionId, turnId, nativeLineage: "n", nativeId: "u2", role: "toolResult", text: "", raw: "r2",
+    calls: [{ ordinal: 1, name: "tool", callId: "c1", status: "ok" }] });
+  pre.publishSourcePath(sessionId, "main", [entry.id, entry2.id], turnId, "lineage-a");
+  pre.close();
+  // Simulate a database from before the high-water-mark columns existed: drop them (SQLite supports
+  // DROP COLUMN), so reopening through Store must ALTER TABLE them back in and backfill from the row's
+  // current contents, exactly as it would for a real predecessor database.
+  const raw = new DatabaseSync(dbPath);
+  raw.exec("ALTER TABLE source_paths DROP COLUMN hwm_entry_id");
+  raw.exec("ALTER TABLE session_lineage_cursors DROP COLUMN hwm_head_turn_id");
+  raw.close();
+  const reopened = new Store(dbPath);
+  stores.push(reopened);
+  const row = reopened.db.prepare("SELECT hwm_entry_id FROM source_paths WHERE session_id = ? AND branch = 'main'").get(sessionId) as { hwm_entry_id: number };
+  expect(row.hwm_entry_id).toBe(Math.max(entry.id, entry2.id));
+  const cursorRow = reopened.db.prepare("SELECT hwm_head_turn_id FROM session_lineage_cursors WHERE session_id = ?").get(sessionId) as { hwm_head_turn_id: number };
+  expect(cursorRow.hwm_head_turn_id).toBe(turnId);
 });
 
 test("72: a pure Raw append changes nothing in the signal", () => {
