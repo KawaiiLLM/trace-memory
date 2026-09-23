@@ -1285,8 +1285,9 @@ var Store = class {
   // Preserve nested transactions with savepoints: project declaration nests a merge.
   transaction(fn) {
     const nested = this.db.isTransaction;
-    if (!nested) this.enrolledCache = /* @__PURE__ */ new Map();
+    const priorCache = nested ? this.enrolledCache ? new Map(this.enrolledCache) : null : null;
     this.db.exec(nested ? "SAVEPOINT trace_memory_transaction" : "BEGIN IMMEDIATE");
+    if (!nested) this.enrolledCache = /* @__PURE__ */ new Map();
     try {
       const result = fn();
       this.db.exec(nested ? "RELEASE trace_memory_transaction" : "COMMIT");
@@ -1297,7 +1298,7 @@ var Store = class {
         this.db.exec(nested ? "ROLLBACK TO trace_memory_transaction; RELEASE trace_memory_transaction" : "ROLLBACK");
       } catch {
       }
-      if (!nested) this.enrolledCache = null;
+      this.enrolledCache = nested ? priorCache : null;
       throw error3;
     }
   }
@@ -38301,14 +38302,13 @@ function request(executor, verb, timeoutMs) {
     connection.on("error", (error3) => finish2(error3));
   });
 }
-async function validatedOperatorBinding(config3, nativeSessionId) {
+function validatedOperatorBinding(config3, nativeSessionId) {
   const store = new Store(config3.dbPath);
   try {
-    return await updateBinding(config3, nativeSessionId, (current) => {
-      if (!current) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
-      assertOperatorBinding(config3, current, store);
-      return current;
-    });
+    const current = readBinding(config3, nativeSessionId);
+    if (!current) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
+    assertOperatorBinding(config3, current, store);
+    return current;
   } finally {
     store.close();
   }
