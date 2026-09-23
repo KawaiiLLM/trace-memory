@@ -95,6 +95,33 @@ test("72: a Consolidation completion that makes a pool due admits D likewise", a
   expect(f.starts).toEqual(["noting", "consolidation", "dreaming"]);
 });
 
+test("80: failed C does not relay another connection's empty-Noting signal into a retry", async () => {
+  const f = fixture();
+  f.setCDue(true);
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] });
+  await settleAll(f, "noting");
+  expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
+  // An external empty note changes processing membership but creates no new C/D work.
+  f.setSignal("empty-noting-committed");
+  f.releases.get("consolidation")!("failure");
+  await tick(); await tick();
+  expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
+  expect(f.memory.dream).not.toHaveBeenCalled();
+});
+
+test("80: failed D still checkpoints partial committed work", async () => {
+  const f = fixture();
+  f.setDDue(true);
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] });
+  await settleAll(f, "noting");
+  f.setSignal("dreaming-partial-commit");
+  f.setCDue(true); f.setDDue(false);
+  f.releases.get("dreaming")!("failure");
+  await tick(); await tick();
+  expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
+  expect(f.memory.dream).toHaveBeenCalledTimes(1);
+});
+
 test("72: attach, retarget and enabling memory re-check C and D at the next opportunity", async () => {
   const f = fixture();
   f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] }); // attach: armed; not due disarms

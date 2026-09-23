@@ -201,7 +201,14 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
       getSessionFile: () => native()?.getSessionFile(),
       getLeafId: () => native() ? native()!.getLeafId() : entries.at(-1)?.id ?? null,
       getBranch: () => native()?.getBranch() ?? entries, getEntries: () => native()?.getEntries() ?? allEntries,
-      getEntry: (id: string) => native() ? native()!.getEntry(id) : allEntries.find(e => e.id === id),
+      // Like SessionManager's byId map, resolve the current native occurrence. Fork fixtures
+      // retain old lineages in allEntries and may reuse a short id in the new native session.
+      getEntry: (id: string) => {
+        if (native()) return native()!.getEntry(id);
+        for (let index = allEntries.length - 1; index >= 0; index--)
+          if (allEntries[index].id === id) return allEntries[index];
+        return undefined;
+      },
       // 26c0: the carriers are read off Pi's own compaction-aware view, so the fake host answers it
       // with Pi's own exported function (`session-manager.ts:418-453`: the selected ancestry, or
       // `[latestCompaction, ...entries from firstKeptEntryId, ...entries after]`) over the entries

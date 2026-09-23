@@ -236,7 +236,10 @@ export class CcTaskScheduler {
         // incrementally), so it re-checks own C and D immediately rather than waiting for the next
         // appended entry. Gated on the signal actually having moved since this task's own admission, so
         // a run that settles without committing anything falls back to the ordinary pace, as before.
+        // N/C retain success after their atomic commit, even when a later provider reply fails.
+        // Only D may fail with partial writes; failed N/C must not replay an unrelated signal change.
         if (settled && settled.outcome !== "empty" && settled.outcome !== "dropped" && settled.outcome !== "cancelled" &&
+          (settled.outcome === "success" || phase === "dreaming") &&
           this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointCD(sessionId, epoch);
         if (shouldDrive(settled)) this.driveCatchup();
       });

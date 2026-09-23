@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, linkSync, unlinkSyn
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
 import { contextComposition } from "./context-composition.ts";
 import { compositionMap, pendingBar, statusBody } from "./session-status.ts";
@@ -678,24 +678,20 @@ export default function (pi: ExtensionAPI) {
   const missing = (problem: string) => {
     if (!historyProblems.has(problem)) { historyProblems.add(problem); ctx.ui.notify(`Trace Memory: missing native history: ${problem}`, "warning"); }
   };
-  // Pi persists AFTER message_end extension hooks. Only the ancestry supplies native identities.
-  // The walk is linear in the ancestry with one lookup per entry, and hooks fire on every streaming
-  // update, so it runs only when the persisted leaf has moved (10 ms per update at 400 entries otherwise).
+  // Pi persists after message_end hooks. Unchanged leaves need no work; a changed leaf follows
+  // native parent links only as far as the already reconciled leaf. Restoration/navigation still
+  // rebuilds and verifies the full ancestry, and snapshots retain their full integrity check.
   let reconciledLeaf: string | null | undefined;
-  // 22b: what the previous walk established, kept in process memory only. `ids` is the ancestry
-  // prefix it covered; the rest is the state that prefix produced, including the tool calls each
-  // Turn has offered, so a tool result finds its call without rereading the entries before it. The
-  // next walk trusts this only when the ancestry still begins with exactly `ids` — tree navigation, a
-  // fork, a lineage change or a shortened ancestry is not a prefix, and rebuilds. Restoration and the
-  // enrollment switch drop it outright. Every entry the walk does check keeps its content-identity
-  // check: this state decides what is new, never that a changed message is unchanged.
   let reconciled: { ids: string[]; lineage: string; turnId?: number; selected: number[]; seen: Set<string>;
+    path: ReturnType<TraceMemory["store"]["sourcePathState"]>;
     toolCalls: Map<string, { ordinal: number; name: string; callId: string }> } | undefined;
   const reconcile = (check = true) => {
     if (!enabled()) return;
     const leaf = ctx.sessionManager.getLeafId();
     if (state.sessionId && leaf === reconciledLeaf) return;
-    const opportunities = walk();
+    let opportunities: TaskTarget[];
+    try { opportunities = walk(); }
+    catch (error) { reconciled = undefined; reconciledLeaf = undefined; throw error; }
     // A walk before the memory session exists creates no Turn; the first walk after allocation must run.
     reconciledLeaf = state.sessionId ? leaf : undefined;
     // Scheduling is downstream of the committed ancestry transaction. Each newly ingested native
@@ -705,16 +701,34 @@ export default function (pi: ExtensionAPI) {
   };
   const walk = (): TaskTarget[] => memory.store.transaction(() => {
     const opportunities: TaskTarget[] = [];
-    const ancestry = ctx.sessionManager.getBranch();
+    let resume: typeof reconciled;
+    let ancestry: SessionEntry[] = [];
+    if (reconciled && state.sessionId) {
+      const previousLeaf = reconciled.ids.at(-1);
+      let cursor = ctx.sessionManager.getLeafId();
+      const visited = new Set<string>();
+      while (cursor && cursor !== previousLeaf) {
+        if (visited.has(cursor)) throw new Error("Trace Memory: cyclic native ancestry");
+        visited.add(cursor);
+        const entry = ctx.sessionManager.getEntry(cursor);
+        if (!entry) break;
+        ancestry.push(entry); cursor = entry.parentId;
+      }
+      if (cursor === previousLeaf) {
+        const stored = memory.store.sourcePathState(state.sessionId, state.branch), expected = reconciled.path;
+        if (stored && expected && stored.count === expected.count && stored.tailId === expected.tailId && stored.version === expected.version)
+          resume = reconciled;
+      }
+    }
+    ancestry = resume ? ancestry.reverse() : ctx.sessionManager.getBranch();
     if (!state.sessionId && ancestry.some(e => e.type === "message" && e.message.role === "assistant" &&
       (text(e.message) || e.message.content.some(c => c.type === "toolCall" || c.type === "thinking")))) allocate(ancestry[0]?.timestamp ?? now());
     if (!state.sessionId) return opportunities;
-    const resume = reconciled && reconciled.ids.length <= ancestry.length
-      && reconciled.ids.every((id, i) => (ancestry[i] as { id: string }).id === id) ? reconciled : undefined;
     reconciled = undefined; // a walk that throws leaves nothing to resume from
     let lineage = resume ? resume.lineage : state.originPiId ?? state.piId;
     let turnId = resume?.turnId;
     const ids = resume ? resume.ids : [], selected = resume ? resume.selected : [];
+    const priorCount = selected.length;
     const seen = resume ? resume.seen : new Set<string>();
     const toolCalls = resume ? resume.toolCalls : new Map<string, { ordinal: number; name: string; callId: string }>();
     // One Turn's offer of a call id. A later entry supersedes an earlier one and the first occurrence
@@ -727,8 +741,7 @@ export default function (pi: ExtensionAPI) {
         own.add(key); toolCalls.set(key, call);
       }
     };
-    for (let index = ids.length; index < ancestry.length; index++) {
-      const entry = ancestry[index]!;
+    for (const entry of ancestry) {
       ids.push(entry.id);
       if (entry.parentId && !seen.has(entry.parentId)) missing(`parent ${entry.parentId} before ${entry.id}`);
       seen.add(entry.id);
@@ -784,14 +797,21 @@ export default function (pi: ExtensionAPI) {
       }
     }
     if (state.head && !turnId && memory.store.listSourceEntries(state.sessionId).length) missing("selected ancestry contains no available source entries");
-    if (turnId) memory.store.publishSourcePath(state.sessionId, state.branch, selected, turnId, state.piId);
-    else memory.selectEntries(state.sessionId, state.branch, selected);
+    let path: ReturnType<TraceMemory["store"]["sourcePathState"]>;
+    if (turnId && resume?.path) {
+      path = selected.length === priorCount && turnId === resume.turnId ? resume.path
+        : memory.store.appendSourcePath(state.sessionId, state.branch, resume.path, selected.slice(priorCount), turnId, state.piId);
+    } else {
+      if (turnId) memory.store.publishSourcePath(state.sessionId, state.branch, selected, turnId, state.piId);
+      else memory.selectEntries(state.sessionId, state.branch, selected);
+      path = memory.store.sourcePathState(state.sessionId, state.branch);
+    }
     state.sourceHead = selected.at(-1);
     if (turnId) {
       state.head = turnId;
       if (current) current.id = turnId;
     }
-    reconciled = { ids, lineage, turnId, selected, seen, toolCalls };
+    reconciled = { ids, lineage, turnId, selected, seen, toolCalls, path };
     return opportunities;
   });
 
@@ -1027,11 +1047,9 @@ export default function (pi: ExtensionAPI) {
         context.ui.notify(String(error), "error");
       }), context, () => {
         showSpend(context);
-        // Ticket 69's completion checkpoint: ANY phase's non-empty, non-dropped completion (success or
-        // failure — a failed run may still have committed incrementally) arms C and D and checks them
-        // immediately, at the current head, rather than waiting for the next ingested entry. `work()`
-        // above only ever resolves `settled` to a truthy value when the outcome was neither, so a
-        // truthy `settled` is exactly that case. Gated against `signal` — this call's own progress
+        // Ticket 69's completion checkpoint: a successful N/C or a non-cancelled D completion can
+        // have committed work and re-checks C/D immediately at the current head. A failed D may
+        // retain partial writes. Gated against `signal` — this call's own progress
         // snapshot, taken before this task was admitted, not the shared `lastArmSignal` another
         // concurrent phase or entry may have moved meanwhile: a run that settles without moving
         // `consolidationBatch`/`duePools` at all (success or failure, nothing committed — a Consolidator
@@ -1045,7 +1063,10 @@ export default function (pi: ExtensionAPI) {
         // `epoch` fences both. `checkQueues` re-checks `closed`/`enabled()` at its own top, which is
         // sufficient for "off": `toggle` runs fully synchronously, so by the time this later microtask
         // runs, `enabled()` already reflects it.
-        if (settled && settled.outcome !== "cancelled" && epoch === cancellationEpoch &&
+        // N/C report success once their atomic commit succeeds, even if the provider later fails.
+        // Only D can fail after partial writes. A failed N/C must not relay an unrelated empty N's
+        // processing-signal change into an immediate retry of work that committed nothing.
+        if (settled && settled.outcome !== "cancelled" && (settled.outcome === "success" || kind === "dreaming") && epoch === cancellationEpoch &&
           memory.store.progressSignal(own.sessionId) !== signal) { armCD(); checkQueues(undefined, ["consolidation", "dreaming"], false); }
         // R4: a successful ordinary completion while a drain is active is a full checkpoint; any other
         // outcome (failure, cancelled, empty, dropped, bounced) stays N-only, matching the per-poll drive.

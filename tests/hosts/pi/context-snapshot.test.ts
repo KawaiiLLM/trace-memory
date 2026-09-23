@@ -240,7 +240,8 @@ test("data errors remain explicit and duplicate providers are rejected", async (
   try {
     f.script(() => say("answer"));
     await f.turn("source");
-    f.h.memory.store.db.prepare("UPDATE source_paths SET entry_ids = 'not-json' WHERE session_id = 1").run();
+    // Corrupt the normalized path header rather than the removed JSON representation.
+    f.h.memory.store.db.prepare("UPDATE source_paths SET length = length + 1 WHERE session_id = 1").run();
     expect(request(f.h)).toMatchObject({ available: false, reason: "data-error" });
   } finally { await f.dispose(); }
 });
