@@ -23,7 +23,7 @@ const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", 
 function fixture() {
   let sig = "s0", cDue = false, dDue = false, enabled = true;
   const checks: string[] = [], starts: string[] = [], closedQueried: string[] = [];
-  const releases = new Map<string, () => void>();
+  const releases = new Map<string, (outcome?: string) => void>();
   const memory = {
     executorId: "ours", config: { closedSessionScope: "project" }, cancelTasks: vi.fn(),
     store: {
@@ -37,9 +37,9 @@ function fixture() {
       checks.push(phase);
       return { due: phase === "noting" ? true : phase === "consolidation" ? cDue : dDue };
     }),
-    noting: vi.fn(async () => new Promise(resolve => releases.set("noting", () => { starts.push("noting"); resolve({ outcome: "success", facts: [] }); }))),
-    consolidate: vi.fn(async () => new Promise(resolve => releases.set("consolidation", () => { starts.push("consolidation"); resolve({ outcome: "success" }); }))),
-    dream: vi.fn(async () => new Promise(resolve => releases.set("dreaming", () => { starts.push("dreaming"); resolve({ outcome: "success" }); }))),
+    noting: vi.fn(async () => new Promise(resolve => releases.set("noting", (outcome = "success") => { starts.push("noting"); resolve({ outcome, facts: [] }); }))),
+    consolidate: vi.fn(async () => new Promise(resolve => releases.set("consolidation", (outcome = "success") => { starts.push("consolidation"); resolve({ outcome }); }))),
+    dream: vi.fn(async () => new Promise(resolve => releases.set("dreaming", (outcome = "success") => { starts.push("dreaming"); resolve({ outcome }); }))),
   };
   const scheduler = new CcTaskScheduler(memory as any, worker, () => {});
   return { scheduler, memory, checks, starts, closedQueried, releases,
@@ -142,24 +142,42 @@ test("72: a due-but-busy Consolidation is retried at the next entry", async () =
   expect(f.checks).toContain("consolidation");
 });
 
-test("72: late completions respect cancellation — stop, off and a retarget each suppress the checkpoint", async () => {
-  for (const cancel of [
-    (f: ReturnType<typeof fixture>) => f.scheduler.stopCatchup(),
-    (f: ReturnType<typeof fixture>) => f.setEnabled(false),
-    (f: ReturnType<typeof fixture>) => f.scheduler.reconcile({ ...projection, branch: "elsewhere" }),
+test("72: late completions respect cancellation — stop, off, a retarget and a cancelled outcome each suppress the checkpoint", async () => {
+  // Review 2026-09-23: the Consolidation stays in flight across the cancellation and completes only
+  // after it, having committed partially (the signal moved). Control's stop and off both fence through
+  // `stopCatchup` (its `beforeCancel`); off also leaves memory disabled.
+  for (const [cancel, outcome] of [
+    [(f: ReturnType<typeof fixture>) => f.scheduler.stopCatchup(), "success"],
+    [(f: ReturnType<typeof fixture>) => { f.scheduler.stopCatchup(); f.setEnabled(false); }, "success"],
+    [(f: ReturnType<typeof fixture>) => f.scheduler.reconcile({ ...projection, branch: "elsewhere" }), "success"],
+    [() => {}, "cancelled"],
   ] as const) {
     const f = fixture();
     f.setCDue(true);
     f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] });
-    await settleAll(f, "noting", "consolidation");
-    expect(f.starts).toContain("consolidation");
+    await settleAll(f, "noting");
+    expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
+    expect(f.starts).not.toContain("consolidation"); // still in flight
     cancel(f);
-    f.setEnabled(true); // restore for the off case; the epoch/branch cases don't need this
-    f.setSignal("s1"); f.setDDue(true);
-    await tick();
-    f.releases.get("consolidation")!(); await tick();
-    expect(f.starts).not.toContain("dreaming"); // the late completion must not launch D
+    f.setSignal("s1"); f.setDDue(true); // it committed partially before finishing
+    f.releases.get("consolidation")!(outcome); await tick(); await tick();
+    expect(f.starts).toContain("consolidation");
+    expect(f.memory.dream).not.toHaveBeenCalled(); // the late completion must not launch D
+    expect(f.memory.consolidate).toHaveBeenCalledTimes(1); // nor C again
   }
+});
+
+test("72: a branch switch that arrives with new entries keeps their ordinary opportunity", async () => {
+  // Review 2026-09-23: the switch fences the old path's in-flight work, but its own newly ingested
+  // entries on the new path still evaluate N, and C and D because the switch arms them.
+  const f = fixture();
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] });
+  await settleAll(f, "noting");
+  f.checks.length = 0;
+  f.scheduler.reconcile({ ...projection, branch: "side", selectedEntryIds: [1, 2, 3, 4], appendedEntryIds: [4] });
+  expect(f.checks).toEqual(["noting", "consolidation", "dreaming"]);
+  await tick(); // `reserve` calls the phase function a microtask later
+  expect(f.memory.noting).toHaveBeenCalledTimes(2);
 });
 
 test("72: after a retarget, a later legitimate checkpoint evaluates the new path, and the checkpoint scans no borrowed candidates", async () => {

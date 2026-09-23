@@ -804,7 +804,6 @@ CREATE TABLE IF NOT EXISTS session_lineage_cursors (
   hwm_head_turn_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, lineage)
 );
-CREATE INDEX IF NOT EXISTS idx_session_lineage_cursors_version ON session_lineage_cursors(version);
 
 CREATE TABLE IF NOT EXISTS task_claims (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
@@ -955,7 +954,6 @@ CREATE TABLE IF NOT EXISTS source_paths (
   hwm_entry_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, branch)
 );
-CREATE INDEX IF NOT EXISTS idx_source_paths_version ON source_paths(version);
 -- 74: a compact mirror of each source entry's calls (native call id, ordinal, name only -- never
 -- input/result, which stay in content/tool_calls and would move the wide data here). Lets a
 -- rebuild answer call identity, per entry or per Turn, without loading Raw.
@@ -1510,8 +1508,9 @@ var Store = class {
     this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id, version, hwm_head_turn_id)
         VALUES (?, ?, ?, ?, 0, ?)
       ON CONFLICT (session_id, lineage) DO UPDATE SET
-        version = version + (CASE WHEN branch != excluded.branch OR
-          (excluded.head_turn_id != head_turn_id AND excluded.head_turn_id <= hwm_head_turn_id) THEN 1 ELSE 0 END),
+        version = CASE WHEN branch != excluded.branch OR
+          (excluded.head_turn_id != head_turn_id AND excluded.head_turn_id <= hwm_head_turn_id)
+          THEN (SELECT MAX(version) + 1 FROM session_lineage_cursors) ELSE version END,
         branch = excluded.branch, head_turn_id = excluded.head_turn_id,
         hwm_head_turn_id = MAX(hwm_head_turn_id, excluded.head_turn_id)`).run(sessionId, lineage, branch, headTurnId, headTurnId);
   }
@@ -3169,7 +3168,9 @@ ${rendered.get(value.revision.id)}`;
    *    by a branch switch or a head moving back to an ancestor, never an ordinary forward move) and
    *    non-append rewrites of `source_paths.entry_ids` under an unchanged cursor
    *    (`source_paths.version`, ticket 72: bumped only where the path is written, by the writer's own
-   *    prefix check) — both read as one indexed `MAX(version)` each, global rather than scoped to this
+   *    prefix check) — both read as one indexed `MAX(version)` each. A bump takes its table's next
+   *    version rather than adding one to its own row, so every bump in any row moves the maximum; a
+   *    per-row counter would hide behind another row's higher one. Global rather than scoped to this
    *    session's own dependency set, so a change elsewhere may over-arm this session but Raw ingestion,
    *    which moves neither, never does.
    * Ingesting Raw touches none of these: `source_entries`/`turns` are deliberately absent, and an
@@ -3377,7 +3378,8 @@ ${rendered.get(value.revision.id)}`;
     const bump = !append || restored;
     const newHwm = entryIds.length ? Math.max(hwm, ...entryIds) : hwm;
     this.db.prepare(`INSERT INTO source_paths (session_id, branch, entry_ids, version, hwm_entry_id) VALUES (?, ?, ?, 0, ?)
-      ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids, version = version + ?, hwm_entry_id = ?`).run(sessionId, branch, JSON.stringify(entryIds), newHwm, bump ? 1 : 0, newHwm);
+      ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids,
+        version = CASE WHEN ? THEN (SELECT MAX(version) + 1 FROM source_paths) ELSE version END, hwm_entry_id = ?`).run(sessionId, branch, JSON.stringify(entryIds), newHwm, bump ? 1 : 0, newHwm);
   }
   selectSourcePath(sessionId, branch, entryIds) {
     return this.transaction(() => {
@@ -38566,6 +38568,7 @@ var CcTaskScheduler = class {
   }
   /** Observe every authoritative projection. Polls can resume a waiting drain after claim expiry. */
   reconcile(reconcile, admitAutomatic = true, opportunityEpoch = this.cancellationEpoch) {
+    const entryEpoch = this.cancellationEpoch;
     const drain = this.catchup;
     if (drain && (drain.state === "running" || drain.state === "waiting")) {
       const pathChanged = reconcile.coreSessionId !== null && (reconcile.coreSessionId !== drain.target.sessionId || reconcile.branch !== drain.target.branch);
@@ -38588,7 +38591,7 @@ var CcTaskScheduler = class {
     }
     this.lastReady = ready;
     if (!ready) return;
-    if (admitAutomatic && opportunityEpoch === this.cancellationEpoch && reconcile.appendedEntryIds.length) {
+    if (admitAutomatic && opportunityEpoch === entryEpoch && reconcile.appendedEntryIds.length) {
       const selected = new Set(reconcile.selectedEntryIds);
       const appended = reconcile.appendedEntryIds.filter((id) => selected.has(id));
       const opportunities = reconcile.bootstrap && appended.length ? [reconcile.selectedEntryIds.at(-1)] : appended;
@@ -38726,7 +38729,7 @@ var CcTaskScheduler = class {
     void work.catch((error3) => this.diagnostic(`${phase} worker failed: ${error3 instanceof Error ? error3.message : String(error3)}`)).finally(() => {
       this.slots.delete(phase);
       this.safeNotify(`${phase} settled`);
-      if (settled && settled.outcome !== "empty" && settled.outcome !== "dropped" && this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointCD(sessionId, epoch);
+      if (settled && settled.outcome !== "empty" && settled.outcome !== "dropped" && settled.outcome !== "cancelled" && this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointCD(sessionId, epoch);
       if (shouldDrive(settled)) this.driveCatchup();
     });
   }

@@ -79,6 +79,9 @@ export class CcTaskScheduler {
 
   /** Observe every authoritative projection. Polls can resume a waiting drain after claim expiry. */
   reconcile(reconcile: CcReconcileResult, admitAutomatic = true, opportunityEpoch = this.cancellationEpoch): void {
+    // The fences below cancel the OLD path's in-flight work. They must not cancel this reconcile's own
+    // opportunities on the new path, so admission compares against the epoch as it stood on entry.
+    const entryEpoch = this.cancellationEpoch;
     const drain = this.catchup;
     if (drain && (drain.state === "running" || drain.state === "waiting")) {
       const pathChanged = reconcile.coreSessionId !== null &&
@@ -101,7 +104,7 @@ export class CcTaskScheduler {
     }
     this.lastReady = ready;
     if (!ready) return;
-    if (admitAutomatic && opportunityEpoch === this.cancellationEpoch && reconcile.appendedEntryIds.length) {
+    if (admitAutomatic && opportunityEpoch === entryEpoch && reconcile.appendedEntryIds.length) {
       const selected = new Set(reconcile.selectedEntryIds);
       // Bootstrap collapses actual new selected history, never an instance-start opportunity.
       // Hook-first/known resumes and newly imported siblings grant no final-path check.
@@ -224,12 +227,12 @@ export class CcTaskScheduler {
       .finally(() => {
         this.slots.delete(phase);
         this.safeNotify(`${phase} settled`);
-        // Ticket 72's completion checkpoint: any non-empty, non-dropped completion may have moved
+        // Ticket 72's completion checkpoint: any non-empty, non-dropped, non-cancelled completion may have moved
         // consolidationBatch/duePools (success or failure — a failed run may still have committed
         // incrementally), so it re-checks own C and D immediately rather than waiting for the next
         // appended entry. Gated on the signal actually having moved since this task's own admission, so
         // a run that settles without committing anything falls back to the ordinary pace, as before.
-        if (settled && settled.outcome !== "empty" && settled.outcome !== "dropped" &&
+        if (settled && settled.outcome !== "empty" && settled.outcome !== "dropped" && settled.outcome !== "cancelled" &&
           this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointCD(sessionId, epoch);
         if (shouldDrive(settled)) this.driveCatchup();
       });
