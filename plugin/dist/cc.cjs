@@ -8115,7 +8115,7 @@ var import_node_path7 = require("node:path");
 // src/hosts/cc/worker.ts
 var import_node_fs4 = require("node:fs");
 var import_node_child_process2 = require("node:child_process");
-var import_node_crypto10 = require("node:crypto");
+var import_node_os3 = require("node:os");
 var import_node_path4 = require("node:path");
 var import_node_util = require("node:util");
 
@@ -37295,6 +37295,36 @@ var CcForegroundTools = class {
 // src/hosts/cc/worker.ts
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process2.execFile);
 var AUDIT_UNAVAILABLE = `Claude Agent SDK ${CC_AGENT_SDK_VERSION} does not expose the exact provider request body`;
+function ccProjectDirName(cwd2) {
+  return cwd2.replace(/[^A-Za-z0-9]/g, "-");
+}
+function ccNativeTranscriptPath(environment, cwd2, nativeSessionId) {
+  const configDir = environment.CLAUDE_CONFIG_DIR || (0, import_node_path4.join)(environment.HOME || (0, import_node_os3.homedir)(), ".claude");
+  return (0, import_node_path4.join)(configDir, "projects", ccProjectDirName(cwd2), `${nativeSessionId}.jsonl`);
+}
+function verifyNativeLog(path, nativeSessionId) {
+  let content;
+  try {
+    content = (0, import_node_fs4.readFileSync)(path, "utf8");
+  } catch {
+    return `native session file is missing at ${path}`;
+  }
+  const firstLine = content.split("\n").find((line) => line.trim().length > 0);
+  if (firstLine === void 0) return `native session file at ${path} is empty`;
+  let parsed2;
+  try {
+    parsed2 = JSON.parse(firstLine);
+  } catch {
+    return `native session file at ${path} has unparsable content`;
+  }
+  const found = parsed2?.sessionId;
+  return found === nativeSessionId ? void 0 : `native session file at ${path} holds session ${JSON.stringify(found)}, expected ${nativeSessionId}`;
+}
+function verifiedNativeLog(nativeLog, nativeSessionId, rounds) {
+  if (nativeLog === void 0 || nativeSessionId === null) return { verification: { rounds } };
+  const problem = verifyNativeLog(nativeLog, nativeSessionId);
+  return problem ? { verification: { rounds, nativeLogProblem: problem } } : { nativeLog, verification: { rounds } };
+}
 var CcResponseOrigins = class {
   task;
   timeoutMs;
@@ -37431,7 +37461,7 @@ function productionEnvironment(source) {
   };
 }
 var RESULT_SIZE_META2 = { "anthropic/maxResultSizeChars": CC_MAX_RESULT_CHARS };
-function workerServer(task, origins, record3, toolsAllowed) {
+function workerServer(task, origins, toolsAllowed) {
   const config3 = createSdkMcpServer({ name: "trace_memory", version: "0.1.0-beta.7" });
   const definitions = new Map(task.tools.map((definition) => [definition.name, definition]));
   config3.instance.server.registerCapabilities({ tools: {} });
@@ -37450,7 +37480,6 @@ function workerServer(task, origins, record3, toolsAllowed) {
     if (!toolsAllowed()) throw new Error("CC worker pass authorization ended before its tool call completed");
     const input = request2.params.arguments ?? {};
     const text = definition.execute(input);
-    record3({ type: "tool", name: definition.name, input, result: text });
     return { content: [{ type: "text", text }], ...toolRejected(definition.name, text) ? { isError: true } : {} };
   });
   return config3;
@@ -37561,6 +37590,7 @@ var CcAgentWorker = class {
   worker;
   environment;
   query;
+  journal;
   versionCheck = null;
   constructor(config3, dependencies = {}) {
     if (!config3.worker) throw new Error("CC worker configuration is required for memory-task admission");
@@ -37569,6 +37599,8 @@ var CcAgentWorker = class {
     const environment = productionEnvironment(dependencies.environment ?? process.env);
     this.environment = config3.retry === void 0 ? environment : { ...environment, CLAUDE_CODE_MAX_RETRIES: String(config3.retry.maxRetries) };
     this.query = dependencies.query ?? query;
+    this.journal = dependencies.journal ?? (() => {
+    });
   }
   verifyExecutable() {
     return this.versionCheck ??= execFileAsync(this.worker.claudeExecutable, ["--version"], { timeout: 1e4, env: this.environment }).then(({ stdout }) => {
@@ -37583,13 +37615,7 @@ var CcAgentWorker = class {
       throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
     if (task.subagentThinkingLevel !== void 0 && task.subagentThinkingLevel !== settings.thinking)
       throw new Error(`CC ${task.kind} task thinking ${task.subagentThinkingLevel} does not match configured thinking ${settings.thinking}`);
-    const logs = (0, import_node_path4.join)(this.config.stateDir, "workers");
-    (0, import_node_fs4.mkdirSync)(logs, { recursive: true });
-    const nativeLog = (0, import_node_path4.join)(logs, `${Date.now()}-${task.kind}-${(0, import_node_crypto10.randomUUID)()}.jsonl`);
-    (0, import_node_fs4.closeSync)((0, import_node_fs4.openSync)(nativeLog, "wx", 384));
-    (0, import_node_fs4.chmodSync)(nativeLog, 384);
-    const record3 = (value) => (0, import_node_fs4.appendFileSync)(nativeLog, `${JSON.stringify(value)}
-`, { mode: 384 });
+    let nativeLog;
     const controller = new AbortController();
     const cancel = () => controller.abort(task.signal?.reason ?? new DOMException("CC worker cancelled", "AbortError"));
     task.signal?.addEventListener("abort", cancel, { once: true });
@@ -37625,137 +37651,134 @@ var CcAgentWorker = class {
     };
     let dreamState = "first";
     const toolsAllowed = () => task.kind !== "dreaming" || dreamState !== "complete";
-    return runWithCcNativeAbortOwner(controller.signal, (error3) => record3({ type: "contained-sdk-control-abort", error: error3.message }), async () => {
-      try {
-        task.signal?.throwIfAborted();
-        await this.verifyExecutable();
-        const allowedTools = task.tools.map((definition) => `mcp__trace_memory__${definition.name}`);
-        const execution = this.query({ prompt: input ?? task.text, options: {
-          model: settings.model,
-          cwd: this.worker.cwd,
-          pathToClaudeCodeExecutable: this.worker.claudeExecutable,
-          env: this.environment,
-          tools: [],
-          allowedTools,
-          mcpServers: { trace_memory: workerServer(task, origins, record3, toolsAllowed) },
-          abortController: controller,
-          systemPrompt: task.prompt,
-          settingSources: [],
-          plugins: [],
-          persistSession: false,
-          permissionMode: "dontAsk",
-          strictMcpConfig: true,
-          extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking }
-        } });
-        for await (const message of execution) {
-          record3(message);
-          if (task.kind === "dreaming" && dreamState === "complete")
-            throw new Error("CC Dreamer emitted protocol activity after its authorized final pass");
-          if (message.type === "system" && message.subtype === "init") {
-            assertInit(message, this.worker, allowedTools);
-            const identity = JSON.stringify({
-              sessionId: message.session_id,
-              messagingSocketPath: message.messaging_socket_path
-            });
-            if (initIdentity === null) {
-              initIdentity = identity;
-              nativeSessionId = message.session_id;
-              assertModelMetadata(await execution.supportedModels(), settings);
-            } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");
-          } else if (message.type === "assistant") {
-            assistantMessages.push(message);
-            assistantMessagesAfterResult.push(message);
-            nativeFailureOutput = assistantApiError(message) ?? nativeFailureOutput;
-            origins.observe(message);
-            progress();
-            if (task.kind === "dreaming") task.reportRounds(origins.rounds());
-          } else if (message.type === "system" && message.subtype === "api_retry") {
-            const retry2 = message;
-            if (!Number.isSafeInteger(retry2.attempt) || typeof retry2.error !== "string")
-              throw new Error("CC worker received malformed native api_retry metadata");
-            retries.push({ attempt: retry2.attempt, error: retry2.error });
-            progress();
-            record3({
-              type: "native-retry",
-              attempt: retry2.attempt,
-              maxRetries: retry2.max_retries,
-              delayMs: retry2.retry_delay_ms,
-              error: retry2.error
-            });
-          } else if (message.type === "result") {
-            if (nativeSessionId !== null && message.session_id !== nativeSessionId)
-              throw new Error("CC worker result came from a different native session");
-            results.push(message);
-            assistantMessagesAfterResult = [];
-            progress();
-            if (message.is_error || message.subtype !== "success")
-              nativeFailureOutput ??= message.subtype === "success" ? message.result : message.errors.join("; ");
-            if (task.kind !== "dreaming") {
-              outcome = message.subtype === "success" && !message.is_error ? "success" : "failure";
-              output = outcome === "failure" && nativeFailureOutput !== null ? nativeFailureOutput : message.subtype === "success" ? message.result : message.errors.join("; ");
-            } else {
-              const pass = results.length;
-              if (pass === 1 && dreamState !== "first" || pass === 2 && dreamState !== "repair-authorized" || pass > 2)
-                throw new Error("CC Dreamer emitted a completed pass without core repair authorization");
-              const succeeded = message.subtype === "success" && !message.is_error;
-              output = !succeeded && nativeFailureOutput !== null ? nativeFailureOutput : message.subtype === "success" ? message.result : message.errors.join("; ");
-              outcome = succeeded ? "success" : "failure";
-              if (!succeeded) {
-                dreamState = "complete";
-                input.close();
+    return runWithCcNativeAbortOwner(
+      controller.signal,
+      (error3) => this.journal("contained-sdk-control-abort", { taskKind: task.kind, nativeSessionId, error: error3.message }),
+      async () => {
+        try {
+          task.signal?.throwIfAborted();
+          await this.verifyExecutable();
+          const allowedTools = task.tools.map((definition) => `mcp__trace_memory__${definition.name}`);
+          const execution = this.query({ prompt: input ?? task.text, options: {
+            model: settings.model,
+            cwd: this.worker.cwd,
+            pathToClaudeCodeExecutable: this.worker.claudeExecutable,
+            env: this.environment,
+            tools: [],
+            allowedTools,
+            mcpServers: { trace_memory: workerServer(task, origins, toolsAllowed) },
+            abortController: controller,
+            systemPrompt: task.prompt,
+            settingSources: [],
+            plugins: [],
+            // 78: the worker's session is now the native transcript (nativeLog). Every other isolation
+            // option is unchanged — settingSources/plugins empty, strictMcpConfig — so no hook, plugin or
+            // skill ever loads for it, and it is never bound, imported or enrolled as a foreground session.
+            permissionMode: "dontAsk",
+            strictMcpConfig: true,
+            extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking }
+          } });
+          for await (const message of execution) {
+            if (task.kind === "dreaming" && dreamState === "complete")
+              throw new Error("CC Dreamer emitted protocol activity after its authorized final pass");
+            if (message.type === "system" && message.subtype === "init") {
+              assertInit(message, this.worker, allowedTools);
+              const identity = JSON.stringify({
+                sessionId: message.session_id,
+                messagingSocketPath: message.messaging_socket_path
+              });
+              if (initIdentity === null) {
+                initIdentity = identity;
+                nativeSessionId = message.session_id;
+                nativeLog = ccNativeTranscriptPath(this.environment, this.worker.cwd, nativeSessionId);
+                assertModelMetadata(await execution.supportedModels(), settings);
+              } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");
+            } else if (message.type === "assistant") {
+              assistantMessages.push(message);
+              assistantMessagesAfterResult.push(message);
+              nativeFailureOutput = assistantApiError(message) ?? nativeFailureOutput;
+              origins.observe(message);
+              progress();
+              if (task.kind === "dreaming") task.reportRounds(origins.rounds());
+            } else if (message.type === "system" && message.subtype === "api_retry") {
+              const retry2 = message;
+              if (!Number.isSafeInteger(retry2.attempt) || typeof retry2.error !== "string")
+                throw new Error("CC worker received malformed native api_retry metadata");
+              retries.push({ attempt: retry2.attempt, error: retry2.error });
+              progress();
+            } else if (message.type === "result") {
+              if (nativeSessionId !== null && message.session_id !== nativeSessionId)
+                throw new Error("CC worker result came from a different native session");
+              results.push(message);
+              assistantMessagesAfterResult = [];
+              progress();
+              if (message.is_error || message.subtype !== "success")
+                nativeFailureOutput ??= message.subtype === "success" ? message.result : message.errors.join("; ");
+              if (task.kind !== "dreaming") {
+                outcome = message.subtype === "success" && !message.is_error ? "success" : "failure";
+                output = outcome === "failure" && nativeFailureOutput !== null ? nativeFailureOutput : message.subtype === "success" ? message.result : message.errors.join("; ");
               } else {
-                const repair = task.passEnd(origins.rounds());
-                if (pass === 1 && typeof repair === "string" && repair.length > 0) {
-                  dreamState = "repair-authorized";
-                  input.push(userMessage(repair, message.session_id, true));
-                } else {
+                const pass = results.length;
+                if (pass === 1 && dreamState !== "first" || pass === 2 && dreamState !== "repair-authorized" || pass > 2)
+                  throw new Error("CC Dreamer emitted a completed pass without core repair authorization");
+                const succeeded = message.subtype === "success" && !message.is_error;
+                output = !succeeded && nativeFailureOutput !== null ? nativeFailureOutput : message.subtype === "success" ? message.result : message.errors.join("; ");
+                outcome = succeeded ? "success" : "failure";
+                if (!succeeded) {
                   dreamState = "complete";
                   input.close();
+                } else {
+                  const repair = task.passEnd(origins.rounds());
+                  if (pass === 1 && typeof repair === "string" && repair.length > 0) {
+                    dreamState = "repair-authorized";
+                    input.push(userMessage(repair, message.session_id, true));
+                  } else {
+                    dreamState = "complete";
+                    input.close();
+                  }
                 }
               }
             }
           }
+          if (task.kind === "dreaming" && dreamState === "repair-authorized")
+            throw new Error("CC Dreamer ended before completing the core-requested repair pass");
+          if (initIdentity === null) throw new Error("CC worker ended without native init metadata");
+          if (protocolError) throw protocolError;
+          if (!results.length) throw new Error("CC worker ended without an SDK result message");
+          const usage = observedUsage();
+          return {
+            outcome,
+            output,
+            ...usage ? { usage } : {},
+            ...retries.length ? { retries } : {},
+            mode: "subagent",
+            ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
+            audit: { available: false, reason: AUDIT_UNAVAILABLE },
+            thinking: { requested: settings.thinking, effective: settings.thinking }
+          };
+        } catch (error3) {
+          controller.abort(error3);
+          const cancelled = task.signal?.aborted === true;
+          const cause = protocolError && !cancelled ? protocolError : error3;
+          const usage = observedUsage();
+          const specific = nativeFailureOutput ?? (cause instanceof Error ? cause.message : String(cause));
+          return {
+            outcome: cancelled ? "cancelled" : "failure",
+            output: specific,
+            ...usage ? { usage } : {},
+            ...retries.length ? { retries } : {},
+            mode: "subagent",
+            ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
+            audit: { available: false, reason: AUDIT_UNAVAILABLE },
+            thinking: { requested: settings.thinking, effective: settings.thinking }
+          };
+        } finally {
+          input?.close();
+          origins.close();
+          task.signal?.removeEventListener("abort", cancel);
         }
-        if (task.kind === "dreaming" && dreamState === "repair-authorized")
-          throw new Error("CC Dreamer ended before completing the core-requested repair pass");
-        if (initIdentity === null) throw new Error("CC worker ended without native init metadata");
-        if (protocolError) throw protocolError;
-        if (!results.length) throw new Error("CC worker ended without an SDK result message");
-        const usage = observedUsage();
-        return {
-          outcome,
-          output,
-          ...usage ? { usage } : {},
-          ...retries.length ? { retries } : {},
-          mode: "subagent",
-          nativeLog,
-          audit: { available: false, reason: AUDIT_UNAVAILABLE },
-          verification: { rounds: origins.rounds() },
-          thinking: { requested: settings.thinking, effective: settings.thinking }
-        };
-      } catch (error3) {
-        controller.abort(error3);
-        const cancelled = task.signal?.aborted === true;
-        const cause = protocolError && !cancelled ? protocolError : error3;
-        const usage = observedUsage();
-        const specific = nativeFailureOutput ?? (cause instanceof Error ? cause.message : String(cause));
-        return {
-          outcome: cancelled ? "cancelled" : "failure",
-          output: specific,
-          ...usage ? { usage } : {},
-          ...retries.length ? { retries } : {},
-          mode: "subagent",
-          nativeLog,
-          audit: { available: false, reason: AUDIT_UNAVAILABLE },
-          verification: { rounds: origins.rounds() },
-          thinking: { requested: settings.thinking, effective: settings.thinking }
-        };
-      } finally {
-        input?.close();
-        origins.close();
-        task.signal?.removeEventListener("abort", cancel);
       }
-    });
+    );
   }
 };
 function createCcRunAgent(config3, dependencies = {}, maxToolRounds = () => 0) {
@@ -38262,7 +38285,7 @@ var CcImporter = class {
 var import_node_fs5 = require("node:fs");
 var import_node_net = require("node:net");
 var import_node_path5 = require("node:path");
-var import_node_crypto11 = require("node:crypto");
+var import_node_crypto10 = require("node:crypto");
 var socketPath = (config3, token) => {
   const value = (0, import_node_path5.join)(config3.stateDir, "control", `${token.replaceAll("-", "").slice(0, 12)}.sock`);
   if (Buffer.byteLength(value) > 100) throw new Error("CC control socket path exceeds the supported Unix-domain path length; configure a shorter stateDir");
@@ -38310,7 +38333,7 @@ var closeServer = (server) => new Promise((resolve4) => {
 });
 async function startControlServer(config3, initial, memory, bindingTimeoutMs, signal, handlers) {
   let binding = initial;
-  const token = (0, import_node_crypto11.randomUUID)(), path = socketPath(config3, token);
+  const token = (0, import_node_crypto10.randomUUID)(), path = socketPath(config3, token);
   const executor = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: (/* @__PURE__ */ new Date()).toISOString() };
   (0, import_node_fs5.mkdirSync)((0, import_node_path5.dirname)(path), { recursive: true });
   const server = (0, import_node_net.createServer)((connection) => {
@@ -38941,12 +38964,12 @@ var CcTaskScheduler = class {
 // src/hosts/cc/status.ts
 var import_node_fs6 = require("node:fs");
 var import_node_path6 = require("node:path");
-var import_node_crypto12 = require("node:crypto");
+var import_node_crypto11 = require("node:crypto");
 function statusPath(stateDir, nativeSessionId) {
   return (0, import_node_path6.join)(stateDir, "status", `${nativeSessionId}.json`);
 }
 function writeCcStatus(stateDir, status) {
-  const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto12.randomUUID)()}.tmp`;
+  const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto11.randomUUID)()}.tmp`;
   (0, import_node_fs6.mkdirSync)((0, import_node_path6.dirname)(target), { recursive: true });
   let descriptor;
   try {
@@ -39125,18 +39148,23 @@ var CcCoordinator = class {
   diagnostic;
   /** Test-only override of the cooperative-scan slice/pause constants; unset in production. */
   importTuning;
+  /** 78: the executor's runtime journal, handed to every worker this coordinator creates, for the
+   * one worker event with no home in the run record (a contained SDK control abort). */
+  journal;
   /** Ticket 75: the most recent reconciled projection, read by `publish` for the counts' target path.
    * `null` before any successful reconcile — counts render as `?`, never as `0`. */
   lastReconcile = null;
   /** Ticket 75: the last published (path, state) key, so a no-op stat-wake-up reconcile writes
    * nothing — publishing is a lifecycle event, never a timer. */
   lastStatusKey = null;
-  constructor(config3, nativeSessionId, diagnostic = (message) => console.error(`Trace Memory CC: ${message}`), importTuning) {
+  constructor(config3, nativeSessionId, diagnostic = (message) => console.error(`Trace Memory CC: ${message}`), importTuning, journal = () => {
+  }) {
     validateNativeSessionId(nativeSessionId);
     this.config = config3;
     this.nativeSessionId = nativeSessionId;
     this.diagnostic = diagnostic;
     this.importTuning = importTuning;
+    this.journal = journal;
   }
   observe(event, details = {}) {
     this.diagnostic(`lifecycle ${JSON.stringify({ event, at: Date.now(), ...details })}`);
@@ -39213,7 +39241,7 @@ var CcCoordinator = class {
     if (!binding) return;
     this.observe("attach-start", { final });
     try {
-      this.importer = new CcImporter(this.config, binding);
+      this.importer = new CcImporter(this.config, binding, { journal: this.journal });
       this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic, (reason) => this.publish(reason));
       const timeout = deadline === void 0 ? void 0 : Math.max(1, deadline - Date.now());
       await startControlServer(this.config, binding, this.importer.memory, timeout, final ? void 0 : this.startup.signal, {
@@ -39524,12 +39552,12 @@ var CcCoordinator = class {
 };
 
 // src/hosts/cc/injection.ts
-var import_node_crypto13 = require("node:crypto");
+var import_node_crypto12 = require("node:crypto");
 var import_node_fs8 = require("node:fs");
 var BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
 var HEADER = "TRACE-MEMORY-CC/1 ";
 var END = "TRACE MEMORY KNOWLEDGE END";
-var digest = (text) => (0, import_node_crypto13.createHash)("sha256").update(text, "utf8").digest("hex");
+var digest = (text) => (0, import_node_crypto12.createHash)("sha256").update(text, "utf8").digest("hex");
 var databaseIdentity = (path) => {
   const stat = (0, import_node_fs8.statSync)(path);
   return `${stat.dev}:${stat.ino}`;
@@ -39861,7 +39889,7 @@ async function declareCcProject(config3, nativeSessionId, name) {
 // src/hosts/cc/native-session.ts
 var import_node_fs9 = require("node:fs");
 var import_node_child_process3 = require("node:child_process");
-var import_node_crypto14 = require("node:crypto");
+var import_node_crypto13 = require("node:crypto");
 var import_node_path8 = require("node:path");
 function nativeSessionDirectory(config3) {
   return (0, import_node_path8.join)(config3.stateDir, "native-sessions");
@@ -39891,7 +39919,7 @@ function processAncestors(depth = 5, parentOf = (pid) => {
   return ancestors;
 }
 function writeAtomically(target, content) {
-  const temporary = `${target}.${process.pid}.${(0, import_node_crypto14.randomUUID)()}`;
+  const temporary = `${target}.${process.pid}.${(0, import_node_crypto13.randomUUID)()}`;
   let descriptor;
   try {
     descriptor = (0, import_node_fs9.openSync)(temporary, "wx", 384);
@@ -40142,7 +40170,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
     }
-  });
+  }, void 0, runtimeEvent);
   const foreground = new CcForegroundTools(coordinator);
   let follower = null, journaledChange = null;
   try {
