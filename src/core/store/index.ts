@@ -1501,7 +1501,7 @@ export class Store {
     // and routine tree switches never turn into a "bump every later write forever" cursor: only a
     // write that is genuinely a move back (by id) or a branch change bumps.
     this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id, version, hwm_head_turn_id)
-        VALUES (?, ?, ?, ?, 0, ?)
+        VALUES (?, ?, ?, ?, (SELECT IFNULL(MAX(version), 0) + 1 FROM session_lineage_cursors), ?)
       ON CONFLICT (session_id, lineage) DO UPDATE SET
         version = CASE WHEN branch != excluded.branch OR
           (excluded.head_turn_id != head_turn_id AND excluded.head_turn_id <= hwm_head_turn_id)
@@ -2235,7 +2235,9 @@ export class Store {
    * An operation that has already built the path snapshot (22a) passes it: the footer's progress
    * values are one operation and share one membership, exactly as `consolidationBatch` does. */
   commitGraph(path: KnowledgePath | null, projectId?: number, prepared?: PathSnapshot, input = this.commitGraphInput()): CommitGraph {
-    const { revisions, parents, metadata } = input;
+    const { revisions, parents } = input;
+    // A caller's prepared snapshot belongs to this read, never to the memoized graph.
+    const metadata = prepared ? { ...input.metadata, currentSnapshots: new Map(input.metadata.currentSnapshots) } : input.metadata;
     const foreground = path && metadata.currentPaths?.get(path.sessionId);
     if (prepared && path && Array.isArray(foreground)) {
       const match = foreground.find(value => value.branch === path.branch && value.headTurnId === path.headTurnId);
@@ -2270,12 +2272,27 @@ export class Store {
   private graphInputCache = new Map<number, { signal: string; input: GraphInput }>();
   commitGraphInput(seed?: readonly KnowledgeRevision[], cacheSessionId?: number): GraphInput {
     if (seed || cacheSessionId === undefined) return this.buildGraphInput(seed);
-    const signal = this.progressSignal(cacheSessionId);
-    const cached = this.graphInputCache.get(cacheSessionId);
-    if (cached && cached.signal === signal) return cached.input;
-    const input = this.buildGraphInput();
-    this.graphInputCache.set(cacheSessionId, { signal, input });
-    return input;
+    // A writer must see its own transaction, not a process memo. Never publish a graph that
+    // could have been built from work later rolled back, including nested savepoints.
+    if (this.db.isTransaction) return this.buildGraphInput();
+    // One read snapshot binds the signal and its graph: another connection cannot commit
+    // between the two reads and leave an old graph installed under a newer signal.
+    this.db.exec("BEGIN");
+    try {
+      const signal = this.progressSignal(cacheSessionId);
+      const cached = this.graphInputCache.get(cacheSessionId);
+      if (cached && cached.signal === signal) {
+        this.db.exec("COMMIT");
+        return cached.input;
+      }
+      const input = this.buildGraphInput();
+      this.db.exec("COMMIT");
+      this.graphInputCache.set(cacheSessionId, { signal, input });
+      return input;
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
   private buildGraphInput(seed?: readonly KnowledgeRevision[]): GraphInput {
     const revisions = seed ? [...seed] : this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
@@ -2713,11 +2730,12 @@ export class Store {
     input: ApplicabilityInput = this.commitGraphInput([commit]).metadata, facts = new Map<number, boolean>(),
     commits = new Map<number, boolean>()): boolean {
     const foreground = input.currentPaths?.get(path.sessionId);
+    const selected = snapshot ? { ...input, currentSnapshots: new Map(input.currentSnapshots) } : input;
     if (snapshot && Array.isArray(foreground)) {
       const match = foreground.find(value => value.branch === path.branch && value.headTurnId === path.headTurnId);
-      if (match) input.currentSnapshots?.set(`${path.sessionId}:${match.lineage}`, snapshot);
+      if (match) selected.currentSnapshots?.set(`${path.sessionId}:${match.lineage}`, snapshot);
     }
-    return this.revisionApplies(commit, input, facts, commits);
+    return this.revisionApplies(commit, selected, facts, commits);
   }
 
   /** Grounds are exactly this revision's direct supports; lineage is immutable provenance only. */
@@ -2741,18 +2759,12 @@ export class Store {
     return this.commitGraph(path).current.filter(revision => revision.knowledgeId === knowledgeId);
   }
 
-  /** The graph supplies at most one global current revision per identity. Visibility and active-body
-   * filtering happen only after that selection; consumers never choose a representative fork.
-   * Ticket 80: not opted into the per-session graph memo — its callers (the footer's `progress`,
-   * `listVisibleKnowledge`, `compact`) already sit behind their own coarser caches or read paths whose
-   * existing tests assert same-connection freshness the signal was never asked to cover (a fact's
-   * `fact_sources` binding never mutates in production, and a session's very first foreground
-   * declaration does not bump `session_lineage_cursors.version` — 72's own documented baseline).
-   * Memoizing here would be correct for production but would silently change those tests' answers, so
-   * this stays exactly as it was; the graph memo remains where the ticket's own evidence named it
-   * (`injection`, `knowledgePools`/`duePools`). */
+  /** Resolve the global current version before filtering visibility and active bodies. A
+   * session-scoped read shares the graph memo with injection and pool reads; write transactions
+   * always build their own graph. */
   currentKnowledge(path: KnowledgePath | null = null, filter: KnowledgeFilter = {}, snapshot?: PathSnapshot): KnowledgeWithRevision[] {
-    return this.commitGraph(path, filter.projectId, snapshot).current
+    return this.commitGraph(path, filter.projectId, snapshot,
+      path ? this.commitGraphInput(undefined, path.sessionId) : this.commitGraphInput()).current
       .filter(revision => revision.op !== "archive" && (!filter.scope || revision.scope === filter.scope))
       .map(revision => ({ knowledge: this.getKnowledge(revision.knowledgeId)!, revision }))
       .sort((a, b) => a.knowledge.id - b.knowledge.id);
@@ -3508,6 +3520,7 @@ export class Store {
     const row = this.db.prepare(`SELECT
         (SELECT IFNULL(MAX(id), 0) FROM facts) AS f,
         (SELECT IFNULL(MAX(rowid), 0) FROM consolidated_facts) AS cf,
+        (SELECT IFNULL(MAX(rowid), 0) FROM noted_entries) AS ne,
         (SELECT IFNULL(MAX(id), 0) FROM knowledge_revisions) AS kr,
         (SELECT IFNULL(MAX(rowid), 0) FROM knowledge_processed) AS kp,
         (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) AS pa,
@@ -3519,15 +3532,45 @@ export class Store {
         IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'session:' || ?), '') AS pss,
         (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cv,
         (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv`)
-      .get(sessionId, sessionId) as { f: number; cf: number; kr: number; kp: number; pa: string | null; pm: number;
+      .get(sessionId, sessionId) as { f: number; cf: number; ne: number; kr: number; kp: number; pa: string | null; pm: number;
         bp: string; psg: string; psp: string; pss: string; cv: number; sv: number };
-    return `${row.f}:${row.cf}:${row.kr}:${row.kp}:${row.pa}:${row.pm}:${row.bp}:${row.psg}:${row.psp}:${row.pss}:${row.cv}:${row.sv}`;
+    return `${row.f}:${row.cf}:${row.ne}:${row.kr}:${row.kp}:${row.pa}:${row.pm}:${row.bp}:${row.psg}:${row.psp}:${row.pss}:${row.cv}:${row.sv}`;
   }
   /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one
    * fact at a time, never "every fact minus the cited ones" (22b, restated by 24a for the footer).
    * The one definition both the batch and the footer's second count are built from. */
   unconsolidated(facts: Fact[], path: KnowledgePath, snapshot = this.pathSnapshot(path)): Fact[] {
-    return facts.filter(f => !this.consolidatedOnPath(f.id, path, snapshot));
+    if (!facts.length) return [];
+    const rows = this.db.prepare(`SELECT fact_id, run_id FROM consolidated_facts
+      WHERE fact_id IN (SELECT value FROM json_each(?))`)
+      .all(JSON.stringify(facts.map(f => f.id))) as { fact_id: number; run_id: number }[];
+    const missing = [...new Set(rows.map(row => row.run_id))].filter(id => !snapshot.consolidatedRuns.has(id));
+    if (missing.length) {
+      // A run's complete fact set, including facts from other sessions, must be on the path.
+      // Batch across runs too: hundreds of one-fact runs must not mean hundreds of reads.
+      const runFacts = this.db.prepare(`SELECT i.run_id, f.* FROM consolidated_facts i JOIN facts f ON f.id = i.fact_id
+        WHERE i.run_id IN (SELECT value FROM json_each(?)) ORDER BY i.run_id, f.id`)
+        .all(JSON.stringify(missing)) as (Record<string, unknown> & { run_id: number })[];
+      const all = runFacts.map(toFact);
+      const owners = new Map(this.db.prepare(`SELECT id, session_id FROM turns
+        WHERE id IN (SELECT value FROM json_each(?))`)
+        .all(JSON.stringify([...new Set(all.map(f => f.turnId))])).map(row => [Number(row.id), Number(row.session_id)]));
+      const bound = this.factSourceEntries(all.map(f => f.id));
+      const grouped = new Map<number, Fact[]>();
+      for (let i = 0; i < runFacts.length; i++) {
+        const runId = runFacts[i]!.run_id;
+        if (!grouped.has(runId)) grouped.set(runId, []);
+        grouped.get(runId)!.push(all[i]!);
+      }
+      for (const id of missing) snapshot.consolidatedRuns.set(id,
+        (grouped.get(id) ?? []).every(f => this.factOnPath(f, path, snapshot, undefined, owners, bound)));
+    }
+    const runs = new Map<number, number[]>();
+    for (const row of rows) {
+      if (!runs.has(row.fact_id)) runs.set(row.fact_id, []);
+      runs.get(row.fact_id)!.push(row.run_id);
+    }
+    return facts.filter(f => !(runs.get(f.id) ?? []).some(id => snapshot.consolidatedRuns.get(id)));
   }
 
   /** Committed facts are immediately eligible; progress is path-aware exact membership. */

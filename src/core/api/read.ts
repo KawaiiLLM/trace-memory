@@ -826,7 +826,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (used + charge(receipt()) > config.render.episodicBlockTokens)
         throw new Error(`Branch carry capacity: Raw framing and omission receipt exceed render.episodicBlockTokens (${config.render.episodicBlockTokens})`);
       const path = { sessionId, headTurnId, branch }, snapshot = store.pathSnapshot(path); // one membership for facts and commits alike
-      const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, snapshot)).sort((a, b) => a.id - b.id);
+      const sessionFacts = store.listSessionFacts(sessionId);
+      const boundEntries = store.factSourceEntries(sessionFacts.map(f => f.id));
+      const facts = sessionFacts.filter(f => store.factOnPath(f, path, snapshot, undefined, undefined, boundEntries)).sort((a, b) => a.id - b.id);
       const factIds = new Set(facts.map(f => f.id));
       const revisions = store.listKnowledgeRevisions();
       const input = store.commitGraphInput(revisions).metadata;
