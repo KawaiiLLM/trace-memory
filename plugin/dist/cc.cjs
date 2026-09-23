@@ -2961,44 +2961,38 @@ ${rendered.get(value.revision.id)}`;
     return this.db.prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
   }
   /** 22d: one row per run of a session, carrying its kind and the usage it recorded — projected out
-   * of `runs.response`, so the request audit body and the rest of the response never leave this
-   * function. `usage` is null exactly when the run recorded no usage observation — a response
+   * of `runs.response` in SQL, so the request audit body and the rest of the response never leave
+   * this function. `usage` is null exactly when the run recorded no usage observation — a response
    * without one, a cancelled run whose usage is unknown, or a response that is not JSON at all. A
    * run whose usage object exists but is empty is an observation of zeros, and is reported as one;
    * nothing here manufactures a zero for a missing one (parent 22, "Capacity and accounting").
    *
-   * 71: SQLite's `json_valid`/`json_extract` each re-tokenize the whole `response` text from
-   * scratch, and the query below needed six of them per row (one `json_valid` guard repeated per
-   * extraction, and `json_type` again for the presence check) — the dominant cost of a footer
-   * refresh's spend figure was reparsing already-read bytes, not reading them. One `JSON.parse` per
-   * row here replaces all of them: still exactly the semantics above (an invalid body or a missing
-   * value produces "no observation", never a fabricated zero), still read fresh on every call — no
-   * cache, so an amendment already committed to this row (by this connection or another one) is
-   * always the value returned. */
+   * 71: one `json_extract` call with every path it needs (the four counters, the cost total and
+   * `$.usage` itself, to tell "recorded" from "missing or explicit null") replaces what used to be
+   * six separate `json_valid`/`json_extract`/`json_type` calls, each re-tokenizing the whole
+   * response from scratch. A multi-path `json_extract` parses the response once and returns a small
+   * JSON array of just those six values — confirmed on a 200 KB response body: the returned column
+   * text was 90 bytes, not 200 KB. The array's last element is `$.usage` itself, preserved with its
+   * real JSON type (object, scalar, or absent) rather than flattened to raw SQL text, so a stray
+   * string usage value can never be mistaken for an object whose contents happen to look like JSON.
+   * The tiny array is the only JSON.parse this function ever does. */
   /** Run usage of one session, or of every session when `sessionId` is null (51: the footer's
    * database-wide daily figure); `since` keeps runs created at or after that UTC instant. */
   listRunUsage(sessionId, since) {
-    const rows = this.db.prepare(`SELECT kind, response FROM runs
-      WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR created_at >= ?) ORDER BY id`).all(sessionId, sessionId, since ?? null, since ?? null);
+    const rows = this.db.prepare(`SELECT kind,
+        CASE WHEN json_valid(response) THEN json_extract(response,
+          '$.usage.input', '$.usage.output', '$.usage.cacheRead', '$.usage.cacheWrite', '$.usage.cost.total', '$.usage') END fields
+      FROM runs WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR created_at >= ?) ORDER BY id`).all(sessionId, sessionId, since ?? null, since ?? null);
     const count = (value) => typeof value === "number" ? value : 0;
     return rows.map((row) => {
-      let parsed2;
-      try {
-        parsed2 = row.response === null ? void 0 : JSON.parse(row.response);
-      } catch {
-        parsed2 = void 0;
-      }
-      const body = parsed2 && typeof parsed2 === "object" && !Array.isArray(parsed2) ? parsed2 : void 0;
-      const usage = body?.usage;
-      if (usage === void 0 || usage === null) return { kind: row.kind, usage: null };
-      const fields2 = usage && typeof usage === "object" && !Array.isArray(usage) ? usage : {};
-      const cost = fields2.cost;
-      const costTotal = cost && typeof cost === "object" && !Array.isArray(cost) ? cost.total : void 0;
+      if (row.fields === null) return { kind: row.kind, usage: null };
+      const [input, output, cacheRead, cacheWrite, costTotal, usage] = JSON.parse(row.fields);
+      if (usage === null) return { kind: row.kind, usage: null };
       return { kind: row.kind, usage: {
-        input: count(fields2.input),
-        output: count(fields2.output),
-        cacheRead: count(fields2.cacheRead),
-        cacheWrite: count(fields2.cacheWrite),
+        input: count(input),
+        output: count(output),
+        cacheRead: count(cacheRead),
+        cacheWrite: count(cacheWrite),
         cost: count(costTotal)
       } };
     });
@@ -3117,7 +3111,11 @@ ${rendered.get(value.revision.id)}`;
   consolidatedOnPath(factId2, path, snapshot2 = this.pathSnapshot(path)) {
     const runs = snapshot2.consolidatedRuns;
     return this.db.prepare("SELECT run_id FROM consolidated_facts WHERE fact_id = ?").all(factId2).some(({ run_id }) => {
-      if (!runs.has(run_id)) runs.set(run_id, this.listConsolidatedFacts(run_id).every((f) => this.factOnPath(f, path, snapshot2)));
+      if (!runs.has(run_id)) {
+        const facts = this.listConsolidatedFacts(run_id);
+        const owners2 = new Map(this.db.prepare("SELECT id, session_id FROM turns WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...new Set(facts.map((f) => f.turnId))])).map((r) => [Number(r.id), Number(r.session_id)]));
+        runs.set(run_id, facts.every((f) => this.factOnPath(f, path, snapshot2, void 0, owners2)));
+      }
       return runs.get(run_id);
     });
   }
