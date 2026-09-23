@@ -16,6 +16,10 @@ import { startLoopbackAnthropic } from "./cc-native-loopback.ts";
 
 const CLAUDE_EXECUTABLE = "/opt/homebrew/bin/claude";
 const CLAUDE_VERSION = "2.1.280";
+// These probes need the pinned executable, and the daily-cost check needs the maintainer's local
+// claude-powerline checkout. Elsewhere they are skipped, never failed: the suite stays portable.
+const probe = test.skipIf(!existsSync(CLAUDE_EXECUTABLE));
+const POWERLINE = join(homedir(), "Projects/claude-powerline/src/utils/claude.ts");
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -40,7 +44,7 @@ function workerConfig(cwd: string, executable = CLAUDE_EXECUTABLE) {
     worker: { claudeExecutable: executable, claudeVersion: CLAUDE_VERSION, contextWindows: { "sonnet": 200_000 }, cwd } });
 }
 
-test("native file: a real CC worker run writes its transcript under <config dir>/projects/<dir for cwd>/<session id>.jsonl, holding the worker's assistant messages, tool calls and results; claude-powerline counts it once", async () => {
+probe("native file: a real CC worker run writes its transcript under <config dir>/projects/<dir for cwd>/<session id>.jsonl, holding the worker's assistant messages, tool calls and results; claude-powerline counts it once", async () => {
   const cwd = tempDir("tm78-native-cwd-");
   const configDir = tempDir("tm78-native-config-");
   const loopback = await startLoopbackAnthropic((assistantTurns) => assistantTurns === 0
@@ -79,7 +83,8 @@ test("native file: a real CC worker run writes its transcript under <config dir>
     // an absolute path built at runtime (not a static specifier, so it is never typechecked as part
     // of this project) — it is not a dependency of this repository.
     interface PowerlineEntry { message?: { id?: string; usage?: unknown }; raw?: { sessionId?: unknown } }
-    const powerlineModule = pathToFileURL(join(homedir(), "Projects/claude-powerline/src/utils/claude.ts")).href;
+    if (!existsSync(POWERLINE)) return; // no local claude-powerline checkout: the daily-cost check cannot run here
+    const powerlineModule = pathToFileURL(POWERLINE).href;
     const powerline = await import(powerlineModule) as { loadEntriesFromProjects(): Promise<PowerlineEntry[]> };
     const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
     process.env.CLAUDE_CONFIG_DIR = configDir;
@@ -95,7 +100,7 @@ test("native file: a real CC worker run writes its transcript under <config dir>
   } finally { await loopback.close(); }
 }, 30_000);
 
-test("isolation: a SessionStart Hook configured for the config directory never fires for a persisted worker session", async () => {
+probe("isolation: a SessionStart Hook configured for the config directory never fires for a persisted worker session", async () => {
   const cwd = tempDir("tm78-isolation-cwd-");
   const configDir = tempDir("tm78-isolation-config-");
   const marker = join(configDir, "session-start-fired");
@@ -116,7 +121,7 @@ test("isolation: a SessionStart Hook configured for the config directory never f
   } finally { await loopback.close(); }
 }, 30_000);
 
-test("path rule: a custom CLAUDE_CONFIG_DIR and worker cwds with dots, spaces and non-ASCII characters each give the path this code records", async () => {
+probe("path rule: a custom CLAUDE_CONFIG_DIR and worker cwds with dots, spaces and non-ASCII characters each give the path this code records", async () => {
   const configDir = tempDir("tm78-path-config-");
   for (const leaf of ["plain", "dot.dir", "spaced dir", "unicode-café-日本語", "under_score", "paren(1)"]) {
     const base = tempDir("tm78-path-cwd-");
