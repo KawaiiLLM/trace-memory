@@ -1,5 +1,5 @@
 import { TraceMemory, directoryAllocation, sourceDigest, type TraceMemory as TraceMemoryFacade } from "../../core/api/index.ts";
-import type { SourceEntry, Store } from "../../core/store/index.ts";
+import { StaleSourcePathError, type SourceEntry, type SourcePathState, type Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
 import { coreHostOf, implicitCcProject, readBinding, withCcBindingLock, type CcBindingLock, type CcSessionBinding } from "./binding.ts";
@@ -25,7 +25,12 @@ export interface CcReconcileResult {
   coreSessionId: number | null;
   branch: string;
   headTurnId: number | null;
+  /** Full snapshot, materialized only by callers that explicitly need the entire path. */
   selectedEntryIds: number[];
+  selectedCount?: number;
+  selectedTailId?: number | null;
+  /** Newly ingested entries that belong to the final selected path. */
+  selectedAppendedEntryIds?: number[];
   appendedEntryIds: number[];
   /** First successful scan of this native projection, not a replay of live entry events. */
   bootstrap?: boolean;
@@ -69,6 +74,8 @@ export class CcProjection {
   private callsByTurn = new Map<number, Map<string, CallIdentity>>();
   private loadedCallTurns = new Set<number>();
   private lastResult: CcReconcileResult | null = null;
+  private selectedIds: number[] = [];
+  private selectedState: SourcePathState | null = null;
   private synchronized = false;
 
   constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, memory: TraceMemoryFacade) {
@@ -151,9 +158,16 @@ export class CcProjection {
 
   private result(state: CcReconcileResult["state"], snapshot: CcTranscriptSnapshot, problems: string[] = [],
     values: Partial<CcReconcileResult> = {}): CcReconcileResult {
-    return { state, snapshot, coreSessionId: this.binding.coreSessionId, branch: this.binding.branch,
-      headTurnId: this.lastResult?.headTurnId ?? null, selectedEntryIds: this.lastResult?.selectedEntryIds ?? [],
-      appendedEntryIds: [], problems, ...values };
+    const { selectedEntryIds, ...rest } = values;
+    const backing = selectedEntryIds ?? this.selectedIds;
+    const count = backing.length;
+    const result = { state, snapshot, coreSessionId: this.binding.coreSessionId, branch: this.binding.branch,
+      headTurnId: this.lastResult?.headTurnId ?? null, appendedEntryIds: [], problems,
+      selectedCount: count, selectedTailId: backing[count - 1] ?? null, ...rest } as CcReconcileResult;
+    // The append-only backing is shared; captured length makes older results immutable snapshots.
+    // A navigation replaces the backing, so it cannot change an earlier result either.
+    Object.defineProperty(result, "selectedEntryIds", { enumerable: true, get: () => backing.slice(0, count) });
+    return result;
   }
 
   async synchronize(signal?: AbortSignal, instrumentation?: CcImportInstrumentation): Promise<CcReconcileResult> {
@@ -163,9 +177,10 @@ export class CcProjection {
       const unchanged = this.transcript.unchangedSnapshot(observedBinding.transcriptPath);
       if (unchanged) {
         const problems = this.transcript.currentProblems();
-        return { ...this.lastResult, state: problems.length ? "not-ready" : this.lastResult.state,
-          snapshot: problems.length ? { ...unchanged, problem: problems[0] } : unchanged,
-          appendedEntryIds: [], bootstrap: false, problems };
+        return this.result(problems.length ? "not-ready" : this.lastResult.state,
+          problems.length ? { ...unchanged, problem: problems[0] } : unchanged, problems,
+          { coreSessionId: this.lastResult.coreSessionId, branch: this.lastResult.branch,
+            headTurnId: this.lastResult.headTurnId, appendedEntryIds: [], bootstrap: false });
       }
     }
     return withCcBindingLock(this.config, this.binding.nativeSessionId, async locked => {
@@ -189,6 +204,8 @@ export class CcProjection {
       this.callsByTurn.clear();
       this.loadedCallTurns.clear();
       this.lastResult = null;
+      this.selectedIds = [];
+      this.selectedState = null;
     }
 
     let summary: BootstrapSummary | null = null, bootstrapSnapshot: CcTranscriptSnapshot | null = null;
@@ -345,7 +362,8 @@ export class CcProjection {
     };
 
     let scan: CcTranscriptScan | CcTranscriptSnapshot;
-    let branch = this.binding.branch, selectedEntryIds: number[] = [], headTurnId: number | null = null, projectionReady = true;
+    let branch = this.binding.branch, selectedEntryIds: number[] | null = null, selectedDelta: number[] = [],
+      headTurnId: number | null = null, projectionReady = true;
     try {
       scan = await this.transcript.scanCooperative(this.binding.transcriptPath, visit,
         { signal, onIngestGap: instrumentation.onIngestGap, onPhase: instrumentation.onPhase,
@@ -353,7 +371,6 @@ export class CcProjection {
       if (scan instanceof CcTranscriptScan) {
         for (const problem of scan.problems) addProblem(problem);
         if (!scan.reset && scan.selectedLeafUuid === this.binding.selectedLeafUuid && this.lastResult) {
-          selectedEntryIds = this.lastResult.selectedEntryIds;
           headTurnId = this.lastResult.headTurnId;
         } else {
           const priorLeaf = this.binding.selectedLeafUuid, extension = [] as NonNullable<ReturnType<CcTranscriptScan["node"]>>[];
@@ -369,13 +386,12 @@ export class CcProjection {
           let selectedNodes: typeof extension;
           if (continuous) {
             selectedNodes = extension.reverse();
-            selectedEntryIds = [...this.lastResult!.selectedEntryIds];
             for (const node of selectedNodes) if (node.sourceKind && node.sourceKind !== "compaction") {
               if (node.entryId === undefined) {
                 if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                 projectionReady = false; break;
               }
-              selectedEntryIds.push(node.entryId);
+              selectedDelta.push(node.entryId);
             }
           } else {
             const selected = scan.selectedPath();
@@ -388,21 +404,46 @@ export class CcProjection {
                   if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                   projectionReady = false; break;
                 }
-                selectedEntryIds.push(node.entryId);
+                (selectedEntryIds ??= []).push(node.entryId);
               }
               if (projectionReady && priorLeaf && selected.leafUuid && !selected.nodes.some(node => node.uuid === priorLeaf))
                 branch = `cc:${selected.leafUuid}`;
             }
           }
           if (projectionReady) {
-            // 63: the child's path continues the parent's persisted path; before the first child entry the head is the compaction Turn.
-            const inherited = this.binding.clearedFrom?.inheritedEntryIds ?? [];
-            if (inherited.length && !inherited.every((id, index) => selectedEntryIds[index] === id)) selectedEntryIds = [...inherited, ...selectedEntryIds];
             headTurnId = [...selectedNodes].reverse().find(node => node.turnId !== undefined)?.turnId ?? this.lastResult?.headTurnId
               ?? this.binding.clearedFrom?.compactionTurnId ?? null;
-            if (headTurnId !== null)
-              this.memory.store.publishSourcePath(sessionId, branch, selectedEntryIds, headTurnId, this.binding.nativeSessionId);
-            else this.memory.selectEntries(sessionId, branch, selectedEntryIds);
+            if (continuous && selectedDelta.length && headTurnId !== null && this.selectedState) {
+              try {
+                this.selectedState = this.memory.store.appendSourcePath(sessionId, branch, this.selectedState,
+                  selectedDelta, headTurnId, lineage);
+                this.selectedIds.push(...selectedDelta);
+              } catch (error) {
+                if (!(error instanceof StaleSourcePathError)) throw error;
+                // A concurrent rewrite may preserve count and tail but change the middle. Rebuild
+                // from native ancestry and publish authoritatively rather than trusting that prefix.
+                const rebuilt = scan.selectedPath();
+                if (rebuilt.problem) { addProblem(rebuilt.problem); projectionReady = false; }
+                else {
+                  selectedEntryIds = [];
+                  for (const node of rebuilt.nodes) if (node.sourceKind && node.sourceKind !== "compaction") {
+                    if (node.entryId === undefined) { addProblem(`native source ${node.uuid} is not persisted`); projectionReady = false; break; }
+                    selectedEntryIds.push(node.entryId);
+                  }
+                }
+              }
+            } else if (continuous) selectedEntryIds = [...this.selectedIds, ...selectedDelta];
+            if (projectionReady && selectedEntryIds) {
+              // 63: a cleared child's path begins with its parent's persisted ancestry.
+              const inherited = this.binding.clearedFrom?.inheritedEntryIds ?? [];
+              if (inherited.length && !inherited.every((id, index) => selectedEntryIds![index] === id))
+                selectedEntryIds = [...inherited, ...selectedEntryIds];
+              if (headTurnId !== null)
+                this.memory.store.publishSourcePath(sessionId, branch, selectedEntryIds, headTurnId, lineage);
+              else this.memory.selectEntries(sessionId, branch, selectedEntryIds);
+              this.selectedIds = selectedEntryIds;
+              this.selectedState = this.memory.store.sourcePathState(sessionId, branch);
+            }
           }
         }
       }
@@ -427,15 +468,27 @@ export class CcProjection {
       return ready;
     }
     const completed = scan as CcTranscriptScan;
-    if (projectionReady) await this.persist(binding => binding.branch === branch && binding.selectedLeafUuid === completed.selectedLeafUuid
-      ? binding : { ...binding, branch, selectedLeafUuid: completed.selectedLeafUuid });
+    if (projectionReady) try {
+      await this.persist(binding => binding.branch === branch && binding.selectedLeafUuid === completed.selectedLeafUuid
+        ? binding : { ...binding, branch, selectedLeafUuid: completed.selectedLeafUuid });
+    } catch (error) {
+      // Publication may have committed before the binding receipt failed. Do not append its
+      // suffix twice on retry; reconstruct the authoritative selected path instead.
+      this.lastResult = null;
+      this.selectedIds = [];
+      this.selectedState = null;
+      throw error;
+    }
     this.transcript.commit(completed, problems[0]);
     const state = problems.length ? "not-ready" : "ready";
+    const selectedMembership = selectedEntryIds === null ? null : new Set(this.selectedIds);
     const ready = this.result(state, problems.length ? { ...completed.snapshot, problem: problems[0] } : completed.snapshot, problems,
       { coreSessionId: sessionId, branch: projectionReady ? branch : this.binding.branch,
         headTurnId: projectionReady ? headTurnId : this.lastResult?.headTurnId ?? null,
-        selectedEntryIds: projectionReady ? selectedEntryIds : this.lastResult?.selectedEntryIds ?? [], appendedEntryIds,
-        bootstrap: !this.synchronized });
+        selectedAppendedEntryIds: projectionReady ? selectedEntryIds === null
+          ? selectedDelta.filter(id => appendedEntryIds.includes(id))
+          : appendedEntryIds.filter(id => selectedMembership!.has(id)) : [],
+        appendedEntryIds, bootstrap: !this.synchronized });
     if (projectionReady) this.lastResult = ready;
     if (state === "ready") this.synchronized = true;
     return ready;

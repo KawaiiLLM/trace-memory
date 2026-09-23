@@ -91,7 +91,9 @@ export class CcTaskScheduler {
         this.memory.cancelTasks();
       }
     }
-    const ready = reconcile.state === "ready" && reconcile.coreSessionId !== null && reconcile.headTurnId !== null && !!reconcile.selectedEntryIds.length;
+    const selectedCount = reconcile.selectedCount ?? reconcile.selectedEntryIds.length;
+    const selectedTailId = reconcile.selectedTailId === undefined ? reconcile.selectedEntryIds.at(-1) : reconcile.selectedTailId;
+    const ready = reconcile.state === "ready" && reconcile.coreSessionId !== null && reconcile.headTurnId !== null && !!selectedCount;
     // Ticket 72: a selected-path change or a transition out of ready fences in-flight completions the
     // same way stop/off already do through `stopCatchup` above — bump the epoch even with no catchup
     // drain active, so the ordinary completion checkpoint observes it too.
@@ -100,16 +102,18 @@ export class CcTaskScheduler {
       if (!this.lastReady || reconcile.branch !== this.lastBranch) this.armCD();
       this.lastBranch = reconcile.branch;
       this.currentTarget = { sessionId: reconcile.coreSessionId!, branch: reconcile.branch,
-        headTurnId: reconcile.headTurnId!, triggerEntryId: reconcile.selectedEntryIds.at(-1)! };
+        headTurnId: reconcile.headTurnId!, triggerEntryId: selectedTailId! };
     }
     this.lastReady = ready;
     if (!ready) return;
     if (admitAutomatic && opportunityEpoch === entryEpoch && reconcile.appendedEntryIds.length) {
-      const selected = new Set(reconcile.selectedEntryIds);
+      // The projection supplies final-path membership for newly ingested entries without
+      // materializing the entire selected history on each ordinary event.
+      const appended = reconcile.selectedAppendedEntryIds ?? reconcile.appendedEntryIds.filter(
+        id => reconcile.selectedEntryIds.includes(id));
       // Bootstrap collapses actual new selected history, never an instance-start opportunity.
       // Hook-first/known resumes and newly imported siblings grant no final-path check.
-      const appended = reconcile.appendedEntryIds.filter(id => selected.has(id));
-      const opportunities = reconcile.bootstrap && appended.length ? [reconcile.selectedEntryIds.at(-1)!] : appended;
+      const opportunities = reconcile.bootstrap && appended.length ? [selectedTailId!] : appended;
       for (const entryId of opportunities) {
         const entry = this.memory.store.getSourceEntry(entryId);
         if (!entry) throw new Error(`CC appended entry ${entryId} disappeared before scheduling`);
@@ -140,11 +144,11 @@ export class CcTaskScheduler {
     if (!this.worker)
       return this.failedStatus("CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured");
     if (reconcile.state === "disabled") return this.failedStatus("Trace Memory is disabled for this session");
-    if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length)
+    if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !(reconcile.selectedCount ?? reconcile.selectedEntryIds.length))
       return this.failedStatus(reconcile.problems.join("; ") || "persisted selected source path is not ready");
     if (!this.memory.store.enabled(reconcile.coreSessionId)) return this.failedStatus("Trace Memory is disabled for this session");
     const target: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
-      headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedEntryIds.at(-1)! };
+      headTurnId: reconcile.headTurnId, triggerEntryId: (reconcile.selectedTailId === undefined ? reconcile.selectedEntryIds.at(-1) : reconcile.selectedTailId)! };
     const entries = this.pendingEntryIds(target);
     const facts = this.memory.store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).map(fact => fact.id);
     this.catchup = { target, maxEntryId: entries.length ? Math.max(...entries) : undefined,

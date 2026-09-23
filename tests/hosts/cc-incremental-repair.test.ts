@@ -154,6 +154,46 @@ test("a fatal later record preserves earlier commits and does not leak rolled-ba
   } finally { f.importer.close(); }
 });
 
+test("ordinary extension appends only its delta and preserves prior result snapshots", async () => {
+  const f = await setup(base(), "append-delta");
+  try {
+    const first = await f.importer.reconcile();
+    const original = first.selectedEntryIds;
+    const store = f.importer.memory.store;
+    const append = store.appendSourcePath.bind(store);
+    const publish = store.publishSourcePath.bind(store);
+    const read = store.selectedSourceEntryIds.bind(store);
+    let appendCalls = 0;
+    store.appendSourcePath = (...args: Parameters<typeof append>) => { appendCalls++; expect(args[3]).toHaveLength(2); return append(...args); };
+    store.publishSourcePath = () => { throw new Error("ordinary append must not publish full path"); };
+    store.selectedSourceEntryIds = () => { throw new Error("ordinary append must not read full path"); };
+    appendFileSync(f.transcriptPath, line(prompt("delta-u", "a", 3)) +
+      line(assistant("delta-a", "delta-u", 4, [{ type: "text", text: "delta" }])));
+    const next = await f.importer.reconcile();
+    expect(appendCalls).toBe(1);
+    expect(first.selectedEntryIds).toEqual(original);
+    expect(next.selectedEntryIds).toHaveLength(4);
+    expect(next.selectedAppendedEntryIds).toEqual(next.appendedEntryIds);
+    store.appendSourcePath = append; store.publishSourcePath = publish; store.selectedSourceEntryIds = read;
+  } finally { f.importer.close(); }
+});
+
+test("a same-length, same-tail rewrite invalidates the append header and rebuilds native selection", async () => {
+  const f = await setup(base(), "stale-prefix");
+  try {
+    const first = await f.importer.reconcile(), store = f.importer.memory.store;
+    // The header's version catches a concurrent rewrite even when its count and tail are unchanged.
+    store.db.prepare("UPDATE source_paths SET version = version + 1 WHERE session_id = ? AND branch = ?")
+      .run(first.coreSessionId!, first.branch);
+    appendFileSync(f.transcriptPath, line(prompt("stale-u", "a", 3)) +
+      line(assistant("stale-a", "stale-u", 4, [{ type: "text", text: "stale" }])));
+    const next = await f.importer.reconcile();
+    expect(next.state).toBe("ready");
+    expect(next.selectedEntryIds).toEqual(store.selectedSourceEntryIds(next.coreSessionId!, next.branch));
+    expect(next.selectedEntryIds.slice(0, 2)).toEqual(first.selectedEntryIds);
+  } finally { f.importer.close(); }
+});
+
 test("a projection failure keeps the suffix retryable after record commits", async () => {
   const f = await setup(base(), "projection-retry");
   try {
@@ -162,15 +202,15 @@ test("a projection failure keeps the suffix retryable after record commits", asy
     const reply = assistant("projection-a", "projection-u", 4,
       [{ type: "tool_use", id: "projection-call", name: "Read", input: { path: "/tmp/projection" } }]);
     appendFileSync(f.transcriptPath, line(next) + line(reply));
-    const publish = f.importer.memory.store.publishSourcePath.bind(f.importer.memory.store); let failed = false;
-    f.importer.memory.store.publishSourcePath = (...args: Parameters<typeof publish>) => {
+    const publish = f.importer.memory.store.appendSourcePath.bind(f.importer.memory.store); let failed = false;
+    f.importer.memory.store.appendSourcePath = (...args: Parameters<typeof publish>) => {
       if (!failed) { failed = true; throw new Error("injected projection failure"); }
       return publish(...args);
     };
     await expect(f.importer.reconcile()).rejects.toThrow("injected projection failure");
     expect(f.importer.memory.store.findSourceEntry(first.coreSessionId!, f.nativeSessionId, "projection-u")).not.toBeNull();
     expect(f.importer.memory.store.findSourceEntry(first.coreSessionId!, f.nativeSessionId, "projection-a")).not.toBeNull();
-    f.importer.memory.store.publishSourcePath = publish;
+    f.importer.memory.store.appendSourcePath = publish;
     const retried = await f.importer.reconcile();
     expect(retried).toMatchObject({ state: "ready", problems: [] });
     expect(retried.selectedEntryIds.slice(-2).map(id => f.importer.memory.store.getSourceEntry(id)!.nativeId))
@@ -350,7 +390,7 @@ test("a failed binding receipt reuses the database-published rewind branch in-pr
     writeFileSync(f.transcriptPath, rewind.map(line).join(""));
     await injectReceiptFailure();
     const published = importer.memory.store.db.prepare(
-      "SELECT branch, entry_ids FROM source_paths WHERE session_id = ? ORDER BY branch").all(initial.coreSessionId!) as { branch: string; entry_ids: string }[];
+      "SELECT branch FROM source_paths WHERE session_id = ? ORDER BY branch").all(initial.coreSessionId!) as { branch: string }[];
     expect(published).toHaveLength(2);
     const retried = await importer.reconcile();
     expect(retried.branch).toBe(published.find(row => row.branch !== initial.branch)!.branch);
@@ -363,9 +403,10 @@ test("a failed binding receipt reuses the database-published rewind branch in-pr
     await injectReceiptFailure();
     importer.close(); importer = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
     const afterRestart = await importer.reconcile();
-    const matching = importer.memory.store.db.prepare(
-      "SELECT branch FROM source_paths WHERE session_id = ? AND entry_ids = ?").all(initial.coreSessionId!, JSON.stringify(afterRestart.selectedEntryIds));
-    expect(matching).toHaveLength(1);
+    const branches = importer.memory.store.db.prepare(
+      "SELECT branch FROM source_paths WHERE session_id = ?").all(initial.coreSessionId!) as { branch: string }[];
+    expect(branches.filter(row => JSON.stringify(importer.memory.store.selectedSourceEntryIds(initial.coreSessionId!, row.branch)) ===
+      JSON.stringify(afterRestart.selectedEntryIds))).toHaveLength(1);
   } finally { importer.close(); }
 });
 

@@ -228,8 +228,7 @@ test("CC import is idempotent, preserves all source evidence, and projects only 
     expect(entries.filter(entry => entry.turnId === 1).map(entry => entry.entryOrdinal)).toEqual([1, 2, 3]);
     expect(entries.find(entry => entry.nativeId === "r1")!.calls[0]).toMatchObject({ ordinal: 1, name: "Read", status: "success" });
     expect(f.importer.memory.store.listToolCalls(1)[0]).toMatchObject({ status: "success" });
-    expect(f.importer.memory.store.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, first.branch))
-      .toEqual({ entry_ids: JSON.stringify(first.selectedEntryIds) });
+    expect(f.importer.memory.store.selectedSourceEntryIds(sessionId, first.branch)).toEqual(first.selectedEntryIds);
     expect(first.selectedEntryIds.map(id => f.importer.memory.store.getSourceEntry(id)!.nativeId)).toEqual(["u1", "a1", "r1", "u3", "a3"]);
     expect(readBinding(f.config, f.nativeSessionId)).toMatchObject({ selectedLeafUuid: "a3", branch: first.branch });
     expect(f.importer.memory.store.db.prepare("SELECT branch, head_turn_id FROM session_lineage_cursors WHERE session_id = ? AND lineage = ?")
@@ -279,8 +278,7 @@ test("a persisted rewind creates a new core branch without deleting its sibling 
     expect(importer.memory.store.db.prepare("SELECT branch, head_turn_id FROM session_lineage_cursors WHERE session_id = ? AND lineage = ?")
       .get(second.coreSessionId!, f.nativeSessionId)).toEqual({ branch: second.branch, head_turn_id: second.headTurnId });
     expect(importer.memory.store.listSourceEntries(second.coreSessionId!)).toHaveLength(7);
-    expect(importer.memory.store.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(second.coreSessionId!, first.branch))
-      .toEqual({ entry_ids: JSON.stringify(first.selectedEntryIds) });
+    expect(importer.memory.store.selectedSourceEntryIds(second.coreSessionId!, first.branch)).toEqual(first.selectedEntryIds);
   } finally { importer.close(); }
 });
 
@@ -298,8 +296,7 @@ test("an incomplete tail stays pending while the complete prefix projects, and c
     expect(partial.appendedEntryIds.map(id => f.importer.memory.store.getSourceEntry(id)!.nativeId)).toEqual(["u4", "a4"]);
     expect(f.importer.memory.store.listSourceEntries(first.coreSessionId!)).toHaveLength(count + 2);
     expect(readBinding(f.config, f.nativeSessionId)!.selectedLeafUuid).toBe("a4");
-    expect(f.importer.memory.store.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?")
-      .get(first.coreSessionId!, first.branch)).toEqual({ entry_ids: JSON.stringify(partial.selectedEntryIds) });
+    expect(f.importer.memory.store.selectedSourceEntryIds(first.coreSessionId!, first.branch)).toEqual(partial.selectedEntryIds);
     const changed = f.records.map(record => (record as { uuid?: string }).uuid === "a1"
       ? { ...record, message: { role: "assistant", content: [{ type: "text", text: "rewritten" }] } } : record);
     writeFileSync(f.transcriptPath, changed.map(line).join(""));
