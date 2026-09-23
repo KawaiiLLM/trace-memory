@@ -2589,10 +2589,10 @@ var Store = class {
     const related = /* @__PURE__ */ new Set();
     for (const ancestor of graph.ancestors(target.baseCommit))
       for (const descendant of graph.descendants(ancestor)) related.add(descendant);
-    const consumingCurrent = graph.resolved.filter((revision) => related.has(revision.id));
-    const effectiveTip = graph.revisions.filter((revision) => revision.knowledgeId === target.knowledgeId && graph.effective.has(revision.id)).at(-1);
-    const actual = consumingCurrent.length ? consumingCurrent.map((revision) => `K${revision.knowledgeId}@${revision.id}`).join(", ") : current.length ? current.map((revision) => `K${revision.knowledgeId}@${revision.id}`).join(", ") : effectiveTip ? `K${effectiveTip.knowledgeId}@${effectiveTip.id} (outside the writer's current scope/path)` : "none";
-    return `K${target.knowledgeId}@${target.baseCommit}: base is not the latest effective applicable revision; current: ${actual}`;
+    const consumingCurrent = graph.current.filter((revision) => related.has(revision.id));
+    const sameIdentity = graph.current.filter((revision) => revision.knowledgeId === target.knowledgeId);
+    const actual = consumingCurrent.length ? consumingCurrent.map((revision) => `K${revision.knowledgeId}@${revision.id}`).join(", ") : sameIdentity.length ? sameIdentity.map((revision) => `K${revision.knowledgeId}@${revision.id}`).join(", ") : void 0;
+    return `K${target.knowledgeId}@${target.baseCommit}: base is not the latest effective applicable revision; ` + (actual ? `current: ${actual}` : "no current version is visible on this branch");
   }
   collectionAdmits(revision, projectId, input) {
     const writer = revision.runId === null ? void 0 : input.runs.get(revision.runId);
@@ -3103,8 +3103,10 @@ ${change.text}`;
         const baseline = baselineId === void 0 ? void 0 : input.metadata.revisions.get(baselineId);
         const diffLine = baseline && baseline.id !== parent.id ? `
 ${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent).text}` : "";
+        const evidenceLine = `
+  archive evidence: ${factAddresses(value.revision.supports)}`;
         const material = `Archived K${value.revision.knowledgeId}@${value.revision.id} (reason: ${value.revision.reason}):
-${archivedBody}${diffLine}`;
+${archivedBody}${evidenceLine}${diffLine}`;
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(archivedBody), material };
       });
       const pending = [...pendingUpdates, ...pendingArchives].sort((left, right) => left.revisionId - right.revisionId);
@@ -4296,7 +4298,13 @@ function renderKnowledgeChange(knowledgeId2, baseline, current) {
     `  ${supportLabel} added: ${factAddresses(supportsAdded)} removed: ${factAddresses(supportsRemoved)}`,
     ...categoryChanged ? [`  category: ${baseline.category} -> ${current.category}`] : [],
     ...scopeChanged ? [`  scope: ${baseline.scope} -> ${current.scope}`] : [],
-    ...topicsAdded.length || topicsRemoved.length ? [`  topics added: ${topicsAdded.join(", ") || "none"} removed: ${topicsRemoved.join(", ") || "none"}`] : []
+    ...topicsAdded.length || topicsRemoved.length ? [`  topics added: ${topicsAdded.join(", ") || "none"} removed: ${topicsRemoved.join(", ") || "none"}`] : [],
+    // 76 review: the diff above shows only what changed, so an unchanged full list (e.g. topics that
+    // were never touched) never appears in it. Show the current revision's complete topics and
+    // supports beside the diff, so a fresh D always sees what it would carry forward on a skip and
+    // what it must repeat on an update — never counted in the weight below, which stays the diff alone.
+    `  current supports: ${factAddresses(current.supports)}`,
+    `  current topics: ${JSON.stringify(current.topics)}`
   ];
   const added = [
     body.added,

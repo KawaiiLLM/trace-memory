@@ -313,6 +313,58 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
     expect(memory.store.currentCommit(base.knowledgeId, path)[0]?.text).toBe("corrected rule");
   });
 
+  test("a refusal never names a version invisible to the writer; a visible current version is still named", () => {
+    const f = fixture(() => {});
+
+    // Visible case: an ordinary same-project stale base still names the address the writer can see.
+    const visBase = writeC(f.session.id, [{ op: "create", handle: "$v", author: "consolidation", text: "visible v1",
+      category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
+    if (!visBase.ok) throw new Error(visBase.problems.join("; "));
+    const visFirst = visBase.committed[0]!;
+    const visMoved = writeC(f.session.id, [{ op: "update", knowledgeId: visFirst.knowledgeId, baseCommit: visFirst.commit,
+      text: "visible v2", category: "reference", scope: "project", topics: [], supports: [f.fact2], reason: "Moved.", createdAt: time }]);
+    if (!visMoved.ok) throw new Error(visMoved.problems.join("; "));
+    const visSecond = visMoved.committed[0]!;
+    const visStale = writeC(f.session.id, [{ op: "update", knowledgeId: visFirst.knowledgeId, baseCommit: visFirst.commit,
+      text: "stale edit", category: "reference", scope: "project", topics: [], supports: [f.fact3], reason: "Stale.", createdAt: time }]);
+    expect(visStale.ok).toBe(false);
+    if (!visStale.ok) expect(visStale.problems.join(" ")).toBe(
+      `K${visFirst.knowledgeId}@${visFirst.commit}: base is not the latest effective applicable revision; current: K${visFirst.knowledgeId}@${visSecond.commit}`);
+
+    // Invisible case (76 review repro): a global item is later scoped down to a different project by
+    // that project's own Consolidator; the version resolved there is invisible to the original writer.
+    const global0 = writeC(f.session.id, [{ op: "create", handle: "$g", author: "consolidation", text: "public claim",
+      category: "reference", scope: "global", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
+    if (!global0.ok) throw new Error(global0.problems.join("; "));
+    const g1 = global0.committed[0]!;
+    const otherProject = memory.store.createProject({ name: "elsewhere", declaredBy: "mark" });
+    const otherSession = memory.store.createSession({ host: "test", projectId: otherProject.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
+    const otherTurn = memory.store.appendTurn({ sessionId: otherSession.id, kind: "turn", userPrompt: "elsewhere", startedAt: time });
+    const otherFacts = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: otherSession.id, branch: "main", createdAt: time },
+      entryIds: memory.store.sourcePath(otherSession.id, "main", otherTurn.id).map(entry => entry.id),
+      facts: [{ turnId: otherTurn.id, category: "observation", actor: "user", text: "elsewhere evidence", source: [`T${otherTurn.id}#user`], createdAt: time }] });
+    if (!otherFacts.ok) throw new Error(otherFacts.problems.join("; "));
+    const otherFact = otherFacts.facts[0]!.id;
+    const scoped = writeC(otherSession.id, [{ op: "update", knowledgeId: g1.knowledgeId, baseCommit: g1.commit, text: "private replacement",
+      category: "reference", scope: "project", topics: [], supports: [otherFact], reason: "Scoped elsewhere.", createdAt: time }]);
+    if (!scoped.ok) throw new Error(scoped.problems.join("; "));
+    const g2 = scoped.committed[0]!;
+    const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
+    // The original writer can no longer see anything about this identity: K@2 is scoped elsewhere,
+    // and K@1 is no longer the current effective revision.
+    expect(memory.store.currentCommit(g1.knowledgeId, path)).toEqual([]);
+
+    const staleGlobal = writeC(f.session.id, [{ op: "update", knowledgeId: g1.knowledgeId, baseCommit: g1.commit, text: "stale global update",
+      category: "reference", scope: "global", topics: [], supports: [f.fact2], reason: "Stale.", createdAt: time }]);
+    expect(staleGlobal.ok).toBe(false);
+    if (!staleGlobal.ok) {
+      const message = staleGlobal.problems.join(" ");
+      expect(message).toBe(`K${g1.knowledgeId}@${g1.commit}: base is not the latest effective applicable revision; no current version is visible on this branch`);
+      expect(message).not.toContain(`@${g2.commit}`);
+      expect(message).not.toContain("private replacement");
+    }
+  });
+
   describe("archives", () => {
     test("a C archive is pending with the weight of the removed body, and pool size excludes it", () => {
       const f = fixture(() => {});
@@ -377,6 +429,9 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       expect(pending.material).toContain("state B");
       expect(pending.material).toContain("[-A-]");
       expect(pending.material).toContain("{+B+}");
+      // 76 review: the archive's own supports (its evidence for archiving, distinct from state B's own
+      // supports already inside the archived body) are shown explicitly, labelled as such.
+      expect(pending.material).toContain(`archive evidence: F${f.fact3}`);
       // Weight is the archived body's own size, not the diff.
       expect(pending.tokens).toBeGreaterThan(0);
     });
@@ -519,6 +574,26 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
         ["use red tiles now", "use blue tiles now", "use [-red-]{+blue+} tiles now"],
       ];
       for (const [before, after, expected] of cases) expect(wordLevelDiff(before, after).text).toBe(expected);
+    });
+
+    test("a Changed item shows the current revision's full topics and supports beside the diff, not only what changed", () => {
+      const f = fixture(() => {});
+      const created0 = writeC(f.session.id, [{ op: "create", handle: "$t", author: "consolidation", text: "use red tiles",
+        category: "reference", scope: "project", topics: ["ui", "theme"], supports: [f.fact], reason: "Initial.", createdAt: time }]);
+      if (!created0.ok) throw new Error(created0.problems.join("; "));
+      const v1 = created0.committed[0]!;
+      const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
+      const pool = `project:${f.session.projectId}`;
+      markProcessed(memory, pool, v1.commit);
+      // The topics and supports are untouched by this edit, so the diff's own added/removed lines say
+      // nothing about them (76 review repro: a fresh D that only saw the diff wiped the real topics).
+      const updated = writeC(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "use blue tiles",
+        category: "reference", scope: "project", topics: ["ui", "theme"], supports: [f.fact], reason: "Color only.", createdAt: time }]);
+      if (!updated.ok) throw new Error(updated.problems.join("; "));
+      const material = memory.store.pendingVersions(pool, path)[0]!.material;
+      expect(material).not.toContain("topics added"); // no change, so the delta line is absent entirely
+      expect(material).toContain(`current topics: ${JSON.stringify(["ui", "theme"])}`);
+      expect(material).toContain(`current supports: F${f.fact}`);
     });
 
     test("metadata-only change (a scope change with unchanged body) weighs its change: more than zero, far less than the item", () => {

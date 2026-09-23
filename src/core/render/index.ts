@@ -645,7 +645,7 @@ export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevisio
   return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
-const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
+export const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
 // 21a: commit history carries the authored message; the compact automatic knowledge line does not.
 const commitLine = (r: KnowledgeRevision): string =>
   `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)} reason: ${r.reason}`;
@@ -770,6 +770,12 @@ export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRe
     ...(categoryChanged ? [`  category: ${baseline.category} -> ${current.category}`] : []),
     ...(scopeChanged ? [`  scope: ${baseline.scope} -> ${current.scope}`] : []),
     ...(topicsAdded.length || topicsRemoved.length ? [`  topics added: ${topicsAdded.join(", ") || "none"} removed: ${topicsRemoved.join(", ") || "none"}`] : []),
+    // 76 review: the diff above shows only what changed, so an unchanged full list (e.g. topics that
+    // were never touched) never appears in it. Show the current revision's complete topics and
+    // supports beside the diff, so a fresh D always sees what it would carry forward on a skip and
+    // what it must repeat on an update — never counted in the weight below, which stays the diff alone.
+    `  current supports: ${factAddresses(current.supports)}`,
+    `  current topics: ${JSON.stringify(current.topics)}`,
   ];
   const added = [body.added, categoryChanged ? current.category : "", scopeChanged ? current.scope : "",
     supportsAdded.length ? factAddresses(supportsAdded) : "", topicsAdded.join(" ")].filter(Boolean).join(" ");

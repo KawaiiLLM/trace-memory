@@ -10,7 +10,7 @@ import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock,
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
-import { renderKnowledge, renderKnowledgeChange, tokens } from "../render/index.ts";
+import { factAddresses, renderKnowledge, renderKnowledgeChange, tokens } from "../render/index.ts";
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
 import type {
   Actor,
@@ -2029,12 +2029,17 @@ export class Store {
     const related = new Set<number>();
     for (const ancestor of graph.ancestors(target.baseCommit))
       for (const descendant of graph.descendants(ancestor)) related.add(descendant);
-    const consumingCurrent = graph.resolved.filter(revision => related.has(revision.id));
-    const effectiveTip = graph.revisions.filter(revision => revision.knowledgeId === target.knowledgeId && graph.effective.has(revision.id)).at(-1);
+    // 76 review: name only a version this writer can see. `graph.resolved`/`graph.revisions` are
+    // reader-independent and can hold another project's or session's winning revision; `graph.current`
+    // is the same reader-visible resolution `baseProblem`'s hint below already uses via `currentCommit`
+    // (this is the identical writer-path graph, so reusing it is the same rule, not a second one) —
+    // still following merge/split links across identities, but only into what this writer can read.
+    const consumingCurrent = graph.current.filter(revision => related.has(revision.id));
+    const sameIdentity = graph.current.filter(revision => revision.knowledgeId === target.knowledgeId);
     const actual = consumingCurrent.length ? consumingCurrent.map(revision => `K${revision.knowledgeId}@${revision.id}`).join(", ")
-      : current.length ? current.map(revision => `K${revision.knowledgeId}@${revision.id}`).join(", ")
-      : effectiveTip ? `K${effectiveTip.knowledgeId}@${effectiveTip.id} (outside the writer's current scope/path)` : "none";
-    return `K${target.knowledgeId}@${target.baseCommit}: base is not the latest effective applicable revision; current: ${actual}`;
+      : sameIdentity.length ? sameIdentity.map(revision => `K${revision.knowledgeId}@${revision.id}`).join(", ") : undefined;
+    return `K${target.knowledgeId}@${target.baseCommit}: base is not the latest effective applicable revision; `
+      + (actual ? `current: ${actual}` : "no current version is visible on this branch");
   }
 
   private collectionAdmits(revision: KnowledgeRevision, projectId: number | undefined, input: ApplicabilityInput): boolean {
@@ -2594,7 +2599,11 @@ export class Store {
         const baselineId = this.nearestProcessedAncestor(value.revision.id, pool, input.parents, processed);
         const baseline = baselineId === undefined ? undefined : input.metadata.revisions!.get(baselineId);
         const diffLine = baseline && baseline.id !== parent.id ? `\n${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent).text}` : "";
-        const material = `Archived K${value.revision.knowledgeId}@${value.revision.id} (reason: ${value.revision.reason}):\n${archivedBody}${diffLine}`;
+        // 76 review: the archive revision's own supports are the evidence that caused the archive
+        // (e.g. F3), distinct from the archived body's own supports already inside `archivedBody`.
+        // Show them explicitly, labelled as the archive's evidence, beside the body they retire.
+        const evidenceLine = `\n  archive evidence: ${factAddresses(value.revision.supports)}`;
+        const material = `Archived K${value.revision.knowledgeId}@${value.revision.id} (reason: ${value.revision.reason}):\n${archivedBody}${evidenceLine}${diffLine}`;
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(archivedBody), material };
       });
       const pending = [...pendingUpdates, ...pendingArchives].sort((left, right) => left.revisionId - right.revisionId);
