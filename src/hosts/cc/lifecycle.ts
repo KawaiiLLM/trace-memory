@@ -341,6 +341,10 @@ export class CcCoordinator {
       const wasAttached = this.importer !== null;
       const importAbort = new AbortController();
       this.currentImportAbort = importAbort;
+      // A deadline-bounded (final) sync keeps its duty but stops importing when its deadline passes:
+      // the aborted scan leaves stamp and offset unadvanced, so the next executor imports the rest.
+      const expiry = deadline === undefined ? undefined : setTimeout(() =>
+        importAbort.abort(new DOMException("CC final sync reached its deadline", "AbortError")), Math.max(0, deadline - Date.now()));
       try {
         const attaching = this.attach(final, deadline);
         // attach() constructs the scheduler synchronously before its first await. Capture that first
@@ -370,7 +374,10 @@ export class CcCoordinator {
         if ((error as { name?: string }).name === "AbortError") this.observe("startup-cancelled", { reason });
         else this.diagnostic(`${reason} reconciliation failed: ${error instanceof Error ? error.message : String(error)}`);
         return null;
-      } finally { if (this.currentImportAbort === importAbort) this.currentImportAbort = null; }
+      } finally {
+        if (expiry !== undefined) clearTimeout(expiry);
+        if (this.currentImportAbort === importAbort) this.currentImportAbort = null;
+      }
     });
     return this.queue;
   }

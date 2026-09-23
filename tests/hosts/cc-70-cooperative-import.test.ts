@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { afterEach, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -171,6 +172,26 @@ test("executor shutdown aborts a scan running across a real pause instead of wai
   expect(startupStillRunning).toBe(true);
   expect(diagnostics.some(message => message.includes('"startup-cancelled"'))).toBe(true);
   expect(result.confirmed).toBe(false); // the transcript never finished importing before shutdown
+});
+
+test("shutdown's final sync stops at its deadline instead of importing the whole remaining backlog", async () => {
+  const f = fixture("shutdown-final-deadline");
+  const config = { ...f.config, finalSyncTimeoutMs: 50 };
+  await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, at(0));
+  const coordinator = new CcCoordinator(config, f.nativeSessionId, () => {}, TUNING);
+  const starting = coordinator.start();
+  await sleep(30);
+  expect(entryCount(config.dbPath)).toBeLessThan(PAIRS * 2); // shutdown lands mid-ingest
+  const started = performance.now();
+  const result = await coordinator.shutdown("test shutdown");
+  const elapsed = performance.now() - started;
+  await starting;
+  // The final sync keeps its duty but is bounded by what is left of its deadline: it neither
+  // runs past the deadline nor finishes the backlog the executor was told to stop importing.
+  expect(elapsed).toBeLessThan(400);
+  expect(entryCount(config.dbPath)).toBeLessThan(PAIRS * 2);
+  expect(result.confirmed).toBe(false);
 });
 
 test("a selected-path retarget aborts a scan running across a real pause instead of waiting behind it", async () => {
