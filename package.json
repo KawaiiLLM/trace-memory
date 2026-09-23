@@ -53,5 +53,8 @@
     "CONTEXT.md",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "dependencies": {
+    "diff": "^8.0.4"
+  }
 }
