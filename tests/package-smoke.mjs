@@ -37,7 +37,12 @@ try {
   const consumer = join(temporary, "consumer"), agentDir = join(temporary, "agent");
   mkdirSync(consumer); mkdirSync(agentDir);
   writeFileSync(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
-  execFileSync("npm", ["install", join(temporary, pack.filename), "--offline", "--ignore-scripts", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund", "--cache", join(temporary, "cache")],
+  const isolatedCache = join(temporary, "cache");
+  // 76: this package now carries a real runtime dependency (`diff`). Prime the isolated cache with it
+  // (one explicit network-permitted step) so the actual package install right after stays fully offline.
+  for (const [name, range] of Object.entries(manifest.dependencies ?? {}))
+    execFileSync("npm", ["cache", "add", `${name}@${range}`, "--cache", isolatedCache], { cwd: root, encoding: "utf8", timeout: 60000 });
+  execFileSync("npm", ["install", join(temporary, pack.filename), "--offline", "--ignore-scripts", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund", "--cache", isolatedCache],
     { cwd: consumer, encoding: "utf8", timeout: 60000 });
   const installed = join(consumer, "node_modules", manifest.name);
   assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).version, manifest.version);
