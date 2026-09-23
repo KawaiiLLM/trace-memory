@@ -171,6 +171,11 @@ export class CcCoordinator {
    * retarget and executor shutdown abort it before they wait for the lock themselves (off through
    * `disableEnrollment`, retarget and shutdown through this queue); `stop` never touches it. */
   private currentImportAbort: AbortController | null = null;
+  /** 70: outstanding preemption holds. While positive, a non-final reconcile that starts (including
+   * one already queued behind the one `abortCurrentImport` just aborted) returns without scanning,
+   * instead of racing the preempting operation for the binding lock. `final` reconciles (shutdown's
+   * own `finalReconcile`) are exempt — a hold never blocks the operation that is holding it. */
+  private importHolds = 0;
   private readonly config: ResolvedCcHostConfig;
   /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
   nativeSessionId: string;
@@ -195,6 +200,17 @@ export class CcCoordinator {
     this.currentImportAbort?.abort(new DOMException("CC import aborted for a higher-priority control operation", "AbortError"));
   }
 
+  /** 70: begin a preemption hold and abort whatever is currently running. Until the returned release
+   * is called, no non-final reconcile scans — including one already queued behind the aborted run,
+   * which would otherwise start the instant it settles and win the lock before this operation does.
+   * Safe to call release more than once. */
+  private holdImport(): () => void {
+    this.importHolds++;
+    this.abortCurrentImport();
+    let released = false;
+    return () => { if (released) return; released = true; this.importHolds = Math.max(0, this.importHolds - 1); };
+  }
+
   private async attach(final: boolean, deadline?: number): Promise<void> {
     if (this.importer || this.closed || this.closing && !final) return;
     const binding = readBinding(this.config, this.nativeSessionId);
@@ -216,7 +232,7 @@ export class CcCoordinator {
           return scheduler.startCatchup(projection, ticket);
         },
         beforeCancel: () => this.scheduler?.stopCatchup(),
-        abortImport: () => this.abortCurrentImport(),
+        holdImport: () => this.holdImport(),
       }).then(control => { this.control = control; });
       this.watchTranscript(binding);
       if (final) this.importer.memory.cancelTasks(true);
@@ -284,21 +300,24 @@ export class CcCoordinator {
    * Returns false when the target is not a clear-child of the current session. */
   retargetTo(nativeSessionId: string): Promise<boolean> {
     validateNativeSessionId(nativeSessionId);
-    // 70: abort a running scan before waiting on the reconcile queue behind it — otherwise this
-    // promise chain would itself wait out the whole (possibly cooperative, multi-second) import.
-    this.abortCurrentImport();
+    // 70: hold imports before waiting on the reconcile queue behind the running scan — otherwise a
+    // reconcile already queued there would start the instant it settles and run a full, unaborted
+    // import before this retarget ever runs. Released once this retarget's own work is done.
+    const release = this.holdImport();
     const done = this.queue.then(async () => {
-      if (this.closed || this.closing || !this.importer || !this.control) return false;
-      const current = this.importer.currentBinding(), next = readBinding(this.config, nativeSessionId);
-      if (!next || next.clearedFrom?.nativeSessionId !== current.nativeSessionId || next.coreSessionId !== current.coreSessionId) return false;
-      this.observe("retarget-start", { from: current.nativeSessionId, to: nativeSessionId });
-      this.transcriptWatcher?.close(); this.transcriptWatcher = null;
-      await this.control.retarget(next);
-      this.importer.retarget(next);
-      this.nativeSessionId = nativeSessionId;
-      this.watchTranscript(next);
-      this.observe("retarget-complete", { to: nativeSessionId });
-      return true;
+      try {
+        if (this.closed || this.closing || !this.importer || !this.control) return false;
+        const current = this.importer.currentBinding(), next = readBinding(this.config, nativeSessionId);
+        if (!next || next.clearedFrom?.nativeSessionId !== current.nativeSessionId || next.coreSessionId !== current.coreSessionId) return false;
+        this.observe("retarget-start", { from: current.nativeSessionId, to: nativeSessionId });
+        this.transcriptWatcher?.close(); this.transcriptWatcher = null;
+        await this.control.retarget(next);
+        this.importer.retarget(next);
+        this.nativeSessionId = nativeSessionId;
+        this.watchTranscript(next);
+        this.observe("retarget-complete", { to: nativeSessionId });
+        return true;
+      } finally { release(); }
     }).then(result => result, error => {
       this.diagnostic(`retarget to ${nativeSessionId} failed: ${error instanceof Error ? error.message : String(error)}`);
       return false;
@@ -328,12 +347,17 @@ export class CcCoordinator {
         // scheduler's epoch now, not after control can acknowledge a stop while initial import waits.
         const epoch = opportunityEpoch ?? this.scheduler?.catchupTicket();
         await attaching;
-        const result = await this.importer?.reconcile(importAbort.signal, this.importTuning) ?? null;
+        // 70: a hold outstanding means a preempting operation (off, retarget or shutdown) is racing
+        // this reconcile for the binding lock. Skip the scan rather than contest it: stamp and offset
+        // stay unadvanced, so nothing is lost — the next wake after the hold releases imports
+        // normally. `final` reconciles (shutdown's own finalReconcile) are exempt: a hold never
+        // blocks the very operation that is holding it.
+        const result = !final && this.importHolds > 0 ? null : await this.importer?.reconcile(importAbort.signal, this.importTuning) ?? null;
         if (this.importer) this.watchTranscript(this.importer.currentBinding());
         // The explicit drain still observes path/enrollment changes, but its reconciliation must
         // not first become an ordinary threshold-trigger opportunity before the boundary freezes.
         if (!final && result) this.scheduler?.reconcile(result, reason !== "manual catchup", epoch);
-        if (this.importer && !this.startupComplete && !final) {
+        if (this.importer && result && !this.startupComplete && !final) {
           this.startupComplete = true;
           this.observe("startup-complete");
         }
@@ -416,8 +440,9 @@ export class CcCoordinator {
     if (this.closed) return { confirmed: false, reason: "coordinator already closed", diagnostic: "duplicate shutdown" };
     if (this.closing) return { confirmed: false, reason: "coordinator shutdown already in progress" };
     this.closing = true; this.scheduler?.stop(); this.stopWakeups(); this.startup.abort(new DOMException("Lifecycle shutdown", "AbortError"));
-    // 70: abort a running scan before waiting on the queue behind it, for the same reason retargetTo does.
-    this.abortCurrentImport();
+    // 70: hold imports before waiting on the queue behind the running scan, for the same reason
+    // retargetTo does. Never released: `closing` already blocks every future non-final reconcile.
+    this.holdImport();
     this.observe("shutdown-begin", { reason });
     let result: CcCloseResult = { confirmed: false, reason: "no bound importer", diagnostic: "binding was never established" };
     try {

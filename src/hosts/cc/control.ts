@@ -28,9 +28,10 @@ export interface CcControlHandlers {
   catchup(): Promise<CcCatchupStatus>;
   /** Must mark the finite drain stopped before core cancellation can settle a worker. */
   beforeCancel(): void;
-  /** 70: abort a scan currently running under the binding lock, before `off` waits for that same
-   * lock through `disableEnrollment` below. Never called for `stop`. */
-  abortImport(): void;
+  /** 70: begin a preemption hold — abort a scan currently running under the binding lock, and block
+   * any reconcile that starts before the returned release is called, so none of them can grab that
+   * same lock before `off` waits for it through `disableEnrollment` below. Never called for `stop`. */
+  holdImport(): () => void;
 }
 
 export interface CcControlServer {
@@ -132,16 +133,20 @@ export async function startControlServer(config: ResolvedCcHostConfig, initial: 
           handlers?.beforeCancel();
           const aborted = memory.cancelTasks(false);
           if (verb === "off") {
-            // Intent reaches the scan before the lock does: abort a running import now, so it
-            // releases the binding lock at its next cooperative resume instead of making this
-            // request wait behind the whole (possibly multi-second) scan.
-            handlers?.abortImport();
-            await disableEnrollment(config, binding.nativeSessionId, memory.store, token);
-            // Binding-lock contention can leave a window between the first fence and durable disable.
-            // Fence once more before acknowledgement so work admitted in that window cannot survive off.
-            handlers?.beforeCancel();
-            for (const task of memory.cancelTasks(false))
-              if (!aborted.some(previous => previous.executionId === task.executionId)) aborted.push(task);
+            // Intent reaches the scan before the lock does: hold imports now, so a running import
+            // releases the binding lock at its next cooperative resume instead of making this request
+            // wait behind the whole (possibly multi-second) scan, and a reconcile already queued
+            // behind it cannot start a fresh one in the meantime. Released once disableEnrollment has
+            // persisted (or failed), in a `finally` so a failed off still releases.
+            const releaseImportHold = handlers?.holdImport();
+            try {
+              await disableEnrollment(config, binding.nativeSessionId, memory.store, token);
+              // Binding-lock contention can leave a window between the first fence and durable disable.
+              // Fence once more before acknowledgement so work admitted in that window cannot survive off.
+              handlers?.beforeCancel();
+              for (const task of memory.cancelTasks(false))
+                if (!aborted.some(previous => previous.executionId === task.executionId)) aborted.push(task);
+            } finally { releaseImportHold?.(); }
           }
           const reply: CancellationControlReply = { ok: true, verb, abortRequested: aborted, termination: "pending-observation" };
           connection.end(`${JSON.stringify(reply)}\n`);
