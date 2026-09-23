@@ -4526,10 +4526,17 @@ var leading = (material) => {
 var statusBlock = (notes) => notes.length ? [`${KNOWLEDGE_STATUS_TITLE}
 ${notes.join("\n")}`] : [];
 var injectionText = (material, knowledgeNotes = []) => finish({ content: block([...leading(material), ...statusBlock(knowledgeNotes)]), receipts: material.receipts });
-var compactText = (material, rawTitle = RAW_TITLE, knowledgeNotes = []) => finish({ content: block([...leading(material), ...statusBlock(knowledgeNotes), xmlBlock(
-  "episodic",
-  block([FACTS_TITLE, (material.facts ?? []).join("\n"), rawTitle, rawText(material)])
-)]), receipts: material.receipts });
+var compactText = (material, rawTitle = RAW_TITLE, knowledgeNotes = []) => {
+  const facts = material.facts ?? [], episodic = [
+    ...facts.length ? [FACTS_TITLE, facts.join("\n")] : [],
+    ...material.entries?.length ? [rawTitle, rawText(material)] : []
+  ];
+  return finish({ content: block([
+    ...leading(material),
+    ...statusBlock(knowledgeNotes),
+    ...episodic.length ? [xmlBlock("episodic", block(episodic))] : []
+  ]), receipts: material.receipts });
+};
 var notingText = (material, range) => finish({ content: block([
   FACTS_TITLE,
   material.facts.join("\n"),
@@ -5053,19 +5060,19 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       if (!Number.isSafeInteger(envelope)) throw new Error("compact envelope must be a safe integer");
       const factRelations = store.listFactRelationsOnPathOf(applicable2.map((fact) => fact.id), path, snapshot2);
       const lines = (facts) => renderFactGroups(facts, (f) => factLine(f.id, factRelations.get(f.id) ?? []), factTurns);
-      const factsCharge = (facts, receipts) => charge([xmlBlock("episodic", ""), FACTS_TITLE]) + charge(lines(facts)) + (receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0);
-      const rawCharge = (contents) => charge([RAW_TITLE]) + charge(contents);
+      const opener = (title) => charge([xmlBlock("episodic", ""), title]);
+      const receiptCharge = (receipts) => receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0;
       const view = (entry) => renderEntry(entry, config3.render, resultText);
       const knowledgeEnvelope = caps.knowledge + sharedAllowance;
       const allNotes = knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path).sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit).map((note) => note.text.replace(/(superseded by K\d+@\d+)$/, "$1 above"));
       const noteReceipt = (omitted) => omitted ? [`omitted ${omitted} older inherited knowledge status lines; knowledge base plus shared allowance is full`] : [];
       const noteTextCost = (kept) => kept ? charge([KNOWLEDGE_STATUS_TITLE, ...allNotes.slice(0, kept)]) : 0;
-      const noteCost = (kept) => noteTextCost(kept) + charge(noteReceipt(allNotes.length - kept)) + (noteReceipt(allNotes.length - kept).length ? charge(["Receipts:"]) : 0);
+      const noteCost = (kept) => noteTextCost(kept) + receiptCharge(noteReceipt(allNotes.length - kept));
       let noteKept = allNotes.length;
       while (noteKept > 0 && noteCost(noteKept) > knowledgeEnvelope) noteKept--;
       const notes = allNotes.slice(0, noteKept);
-      const noteOmittedReceipt = noteReceipt(allNotes.length - noteKept);
-      const knowledgeNoticeCost = noteCost(noteKept);
+      const noteOmittedReceipt = noteCost(noteKept) <= knowledgeEnvelope ? noteReceipt(allNotes.length - noteKept) : [];
+      const knowledgeNoticeCost = noteTextCost(noteKept) + receiptCharge(noteOmittedReceipt);
       const active = budgetKnowledge(
         knowledge,
         Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
@@ -5074,7 +5081,7 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
         /* @__PURE__ */ new Set()
       );
       const knowledgeUsed = knowledgeNoticeCost + active.cost;
-      let sharedAfterKnowledge = sharedAllowance - Math.max(0, knowledgeUsed - caps.knowledge);
+      const sharedAfterKnowledge = sharedAllowance - Math.max(0, knowledgeUsed - caps.knowledge);
       const candidates = sourced.filter((e) => pendingIds.has(e.id) || !retained.has(e.nativeId));
       const rawSteps = [];
       {
@@ -5105,26 +5112,29 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
         }
       }
       const rawReceipt = (kept) => candidates.length - kept ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window; read them with trace]`] : [];
-      const rawTotalCost = (kept) => {
-        const r = rawReceipt(kept);
-        return rawCharge(rawSteps.slice(0, kept).map((s) => s.content)) + charge(r) + (r.length ? charge(["Receipts:"]) : 0);
+      const rawWindowCost = (kept, receipt) => {
+        const steps = rawSteps.slice(0, kept);
+        return (kept ? opener(RAW_TITLE) + charge(steps.map((s) => s.content)) : 0) + receiptCharge([...steps.flatMap((s) => s.receipts), ...receipt]);
       };
-      const rawEnvelope = caps.raw + sharedAfterKnowledge;
+      const rawLimit = (kept) => caps.raw + Math.min(
+        sharedAfterKnowledge,
+        rawSteps.slice(0, kept).reduce((sum, s) => sum + (pendingIds.has(s.entry.id) ? tokens(s.content) + 1 : 0), 0)
+      );
       let rawKept = rawSteps.length;
-      while (rawKept > 0 && rawTotalCost(rawKept) > rawEnvelope) rawKept--;
-      const rawFits = rawTotalCost(rawKept) <= rawEnvelope;
-      const rawFinalSteps = rawFits ? rawSteps.slice(0, rawKept) : [];
-      const rawFinalReceipt = rawFits ? rawReceipt(rawKept) : [];
-      sharedAfterKnowledge -= rawFinalSteps.reduce((sum, s) => sum + s.fromAllowance, 0);
-      const sharedAfterRaw = sharedAfterKnowledge;
+      while (rawKept > 0 && rawWindowCost(rawKept, rawReceipt(rawKept)) > rawLimit(rawKept)) rawKept--;
+      const rawFinalReceipt = rawWindowCost(rawKept, rawReceipt(rawKept)) <= rawLimit(rawKept) ? rawReceipt(rawKept) : [];
+      const rawFinalSteps = rawSteps.slice(0, rawKept);
+      const rawCharged = rawWindowCost(rawKept, rawFinalReceipt);
+      const sharedAfterRaw = sharedAfterKnowledge - Math.max(0, rawCharged - caps.raw);
       const suppliedRaw = [...rawFinalSteps].reverse();
       const rawOmitted = candidates.slice(0, candidates.length - suppliedRaw.length);
       const rawOmittedPending = rawOmitted.filter((e) => pendingIds.has(e.id));
       const rawOmittedPendingTokens = rawOmittedPending.reduce((sum, e) => {
         try {
           return sum + tokens(view(e).content) + 1;
-        } catch {
-          return sum;
+        } catch (error3) {
+          if (/capacity/.test(String(error3))) return sum;
+          throw error3;
         }
       }, 0);
       const coverage = /* @__PURE__ */ new Set([...sourced.filter((e) => retained.has(e.nativeId)).map((e) => e.id), ...suppliedRaw.map((s) => s.entry.id)]);
@@ -5132,10 +5142,12 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       const coveredFactIds = store.factsCoveredByRaw(factCandidates, coverage);
       const eligibleFacts = factCandidates.filter((f) => !coveredFactIds.has(f.id));
       const omission = (rest) => rest.length ? [`omitted ${rest.length} older facts; expand: ${expandList(rest.map((f) => `F${f.id}`))}`] : [];
-      const factsTotalCost = (kept) => factsCharge(eligibleFacts.slice(0, kept), omission(eligibleFacts.slice(kept)));
-      let factsKept = 0, factsBaseUsed = charge([xmlBlock("episodic", ""), FACTS_TITLE]), factsAllowanceUsed = 0, prevFactsCost = factsBaseUsed;
+      const factsWindowCost = (kept, receipt) => (kept ? (rawKept ? charge([FACTS_TITLE]) : opener(FACTS_TITLE)) + charge(lines(eligibleFacts.slice(0, kept))) : 0) + receiptCharge(receipt);
+      const factsTotalCost = (kept) => factsWindowCost(kept, omission(eligibleFacts.slice(kept)));
+      let factsKept = 0, factsBaseUsed = 0, factsAllowanceUsed = 0, prevFactsCost = 0;
+      const pendingFactCost = [];
       for (const fact of eligibleFacts) {
-        const nextCost = factsCharge([...eligibleFacts.slice(0, factsKept), fact], []);
+        const nextCost = factsWindowCost(factsKept + 1, []);
         const marginal = nextCost - prevFactsCost;
         const availableBase = Math.max(0, caps.facts - factsBaseUsed);
         if (pendingFactIds.has(fact.id)) {
@@ -5148,14 +5160,17 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
           if (marginal > availableBase) break;
           factsBaseUsed += marginal;
         }
+        pendingFactCost.push(pendingFactIds.has(fact.id) ? marginal : 0);
         factsKept++;
         prevFactsCost = nextCost;
       }
-      const factsEnvelope = caps.facts + sharedAfterRaw;
-      while (factsKept > 0 && factsTotalCost(factsKept) > factsEnvelope) factsKept--;
-      const factsFit = factsTotalCost(factsKept) <= factsEnvelope;
-      const finalFacts = factsFit ? eligibleFacts.slice(0, factsKept) : [];
-      const finalFactReceipts = factsFit ? omission(eligibleFacts.slice(factsKept)) : [];
+      const factsLimit = (kept) => caps.facts + Math.min(
+        sharedAfterRaw,
+        pendingFactCost.slice(0, kept).reduce((sum, cost) => sum + cost, 0)
+      );
+      while (factsKept > 0 && factsTotalCost(factsKept) > factsLimit(factsKept)) factsKept--;
+      const finalFacts = eligibleFacts.slice(0, factsKept);
+      const finalFactReceipts = factsTotalCost(factsKept) <= factsLimit(factsKept) ? omission(eligibleFacts.slice(factsKept)) : [];
       const factsOmittedPending = eligibleFacts.slice(finalFacts.length).filter((f) => pendingFactIds.has(f.id));
       const factsOmittedPendingTokens = factsOmittedPending.length ? charge(lines(factsOmittedPending)) : 0;
       const truncated2 = {};
@@ -5177,7 +5192,7 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
           knowledgeCommitIds: active.commits
         },
         // The per-window accounting beside the text, for the acceptance probe; diagnostics only.
-        charged: { knowledge: knowledgeUsed, facts: factsTotalCost(finalFacts.length), raw: rawTotalCost(suppliedRaw.length), envelope },
+        charged: { knowledge: knowledgeUsed, facts: factsWindowCost(finalFacts.length, finalFactReceipts), raw: rawCharged, envelope },
         ...Object.keys(truncated2).length ? { truncated: truncated2 } : {}
       };
     },
