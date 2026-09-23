@@ -2642,7 +2642,9 @@ export class Store {
           '$.usage.input', '$.usage.output', '$.usage.cacheRead', '$.usage.cacheWrite', '$.usage.cost.total', '$.usage') END fields
       FROM runs WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR created_at >= ?) ORDER BY id`)
       .all(sessionId, sessionId, since ?? null, since ?? null) as { kind: RunKind; fields: string | null }[];
-    const count = (value: unknown) => (typeof value === "number" ? value : 0);
+    // A per-field SQL extraction returns JSON true/false as the integers 1/0; the multi-path array keeps
+    // them boolean, so convert them the same way to keep historical totals identical.
+    const count = (value: unknown) => (typeof value === "number" ? value : typeof value === "boolean" ? Number(value) : 0);
     return rows.map(row => {
       if (row.fields === null) return { kind: row.kind, usage: null }; // response was not valid JSON at all
       const [input, output, cacheRead, cacheWrite, costTotal, usage] = JSON.parse(row.fields) as unknown[];

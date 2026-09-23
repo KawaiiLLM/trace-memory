@@ -212,6 +212,32 @@ test("71: listRunUsage hands JavaScript only the extracted usage, never the resp
   expect(usage[4]!.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }); // the string usage: all zero, not reparsed
 });
 
+test("71: listRunUsage matches the per-field SQL extraction for every scalar shape, booleans included", async () => {
+  expect((await noting()).outcome).toBe("success");
+  // Historical responses can carry odd scalar types. The pre-71 query extracted each field as an SQL
+  // scalar (JSON true -> 1, false -> 0), so the multi-path version must reproduce that, not drop it.
+  const shapes: unknown[] = [
+    { usage: { input: true, output: false, cacheRead: "7", cacheWrite: null, cost: { total: true } } },
+    { usage: { input: 3, output: 2.5, cacheRead: -1, cacheWrite: [1], cost: { total: { nested: 1 } } } },
+    { usage: false }, { usage: 0 }, { usage: "text" }, { usage: [] }, { usage: null }, {},
+  ];
+  for (const response of shapes) memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success",
+    createdAt: time, response: JSON.stringify(response) });
+  const legacy = memory.store.db.prepare(`SELECT kind,
+      CASE WHEN json_valid(response) THEN json_type(response, '$.usage') END recorded,
+      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.input') END input,
+      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.output') END output,
+      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheRead') END cacheRead,
+      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheWrite') END cacheWrite,
+      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cost.total') END cost
+    FROM runs WHERE session_id = ? ORDER BY id`).all(sessionId) as Record<string, unknown>[];
+  const count = (value: unknown) => (typeof value === "number" ? value : 0);
+  const expected = legacy.map(row => ({ kind: row.kind, usage: !row.recorded || row.recorded === "null" ? null
+    : { input: count(row.input), output: count(row.output), cacheRead: count(row.cacheRead), cacheWrite: count(row.cacheWrite), cost: count(row.cost) } }));
+  expect(expected.some(value => value.usage?.input === 1 && value.usage.cost === 1)).toBe(true); // the boolean case is really exercised
+  expect(memory.store.listRunUsage(sessionId)).toEqual(expected);
+});
+
 test("71: an amendment from a second connection to the same file is reflected with no stale cache", async () => {
   expect((await noting()).outcome).toBe("success");
   const runId = memory.store.listRuns(sessionId)[0]!.id;
