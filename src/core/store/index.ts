@@ -3977,58 +3977,74 @@ export class Store {
   /** The array is owned by Store and must not be mutated by callers. Its identity changes on any
    * rebuild; an ordinary append extends it in place so the API can retain its counted prefix. */
   pendingEntryState(sessionId: number, branch: string, headTurnId: number): readonly number[] {
-    const signal = this.progressSignal(sessionId);
-    const path = this.sourcePathState(sessionId, branch);
-    const cached = this.db.isTransaction ? undefined : this.pendingPath;
-    if (cached && cached.sessionId === sessionId && cached.branch === branch && cached.signal === signal &&
-        cached.path?.version === path?.version) {
-      if (cached.headTurnId === headTurnId && cached.path?.count === path?.count &&
-          cached.path?.tailId === path?.tailId) {
-        return cached.ids;
-      }
-      // A constant membership version and a larger header prove that the committed prefix is
-      // unchanged: every nonappend rewrite or restored entry bumps the version. Read only the
-      // indexed suffix. Neither a nested writer nor a rollback can publish in-memory entries.
-      if (cached.coversTail && cached.path && path && path.count > cached.path.count) {
-        const rows = this.db.prepare(`SELECT p.position, p.entry_id, e.turn_id FROM source_path_entries p
-          JOIN source_entries e ON e.id = p.entry_id AND e.session_id = p.session_id
-          WHERE p.session_id = ? AND p.branch = ? AND p.position >= ? ORDER BY p.position`)
-          .all(sessionId, branch, cached.path.count) as { position: number; entry_id: number; turn_id: number }[];
-        if (rows.length === path.count - cached.path.count && rows.at(-1)?.entry_id === path.tailId &&
-            rows.every((row, i) => row.position === cached.path!.count + i)) {
-          const direct = this.db.prepare("SELECT parent_turn_id FROM turns WHERE id = ?")
-            .get(headTurnId) as { parent_turn_id: number | null } | undefined;
-          const extendsHead = cached.headTurnId === headTurnId || direct?.parent_turn_id === cached.headTurnId ||
-            !!this.db.prepare(`WITH RECURSIVE lineage(id,parent_turn_id) AS (
-            SELECT id,parent_turn_id FROM turns WHERE id = ? UNION ALL
-            SELECT t.id,t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id WHERE l.id != ?)
-            SELECT 1 FROM lineage WHERE id = ? LIMIT 1`)
-            .get(headTurnId, cached.headTurnId, cached.headTurnId);
-          const coversNewTail = rows.at(-1)!.turn_id === headTurnId || !!this.db.prepare(`WITH RECURSIVE lineage(id,parent_turn_id) AS (
-            SELECT id,parent_turn_id FROM turns WHERE id = ? UNION ALL
-            SELECT t.id,t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id WHERE l.id != ?)
-            SELECT 1 FROM lineage WHERE id = ? LIMIT 1`)
-            .get(headTurnId, rows.at(-1)!.turn_id, rows.at(-1)!.turn_id);
-          if (extendsHead && coversNewTail) {
-            const newIds = rows.map(row => row.entry_id);
-            const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
-              .all(JSON.stringify(newIds)) as { entry_id: number }[]).map(row => row.entry_id));
-            cached.ids.push(...newIds.filter(id => !noted.has(id)));
-            cached.path = path;
-            cached.headTurnId = headTurnId;
-            return cached.ids;
+    const ownSnapshot = !this.db.isTransaction;
+    const cached = ownSnapshot ? this.pendingPath : undefined;
+    if (ownSnapshot) this.db.exec("BEGIN");
+    try {
+      // Read the signal, header, suffix and processing marks from one SQLite snapshot. Otherwise
+      // an external note followed by an append can produce a pending set that never existed.
+      const read = (): (() => readonly number[]) => {
+        const signal = this.progressSignal(sessionId);
+        const path = this.sourcePathState(sessionId, branch);
+        if (cached && cached.sessionId === sessionId && cached.branch === branch && cached.signal === signal &&
+            cached.path?.version === path?.version) {
+          if (cached.headTurnId === headTurnId && cached.path?.count === path?.count &&
+              cached.path?.tailId === path?.tailId) return () => cached.ids;
+          // Every rewrite/restored entry bumps the version. The same version and a larger count
+          // allow an indexed suffix read; historical-head answers must first cover the old tail.
+          if (cached.coversTail && cached.path && path && path.count > cached.path.count) {
+            const rows = this.db.prepare(`SELECT p.position, p.entry_id, e.turn_id FROM source_path_entries p
+              JOIN source_entries e ON e.id = p.entry_id AND e.session_id = p.session_id
+              WHERE p.session_id = ? AND p.branch = ? AND p.position >= ? ORDER BY p.position`)
+              .all(sessionId, branch, cached.path.count) as { position: number; entry_id: number; turn_id: number }[];
+            if (rows.length === path.count - cached.path.count && rows.at(-1)?.entry_id === path.tailId &&
+                rows.every((row, i) => row.position === cached.path!.count + i)) {
+              const direct = this.db.prepare("SELECT parent_turn_id, session_id FROM turns WHERE id = ?")
+                .get(headTurnId) as { parent_turn_id: number | null; session_id: number } | undefined;
+              const turns = direct?.session_id !== sessionId ? new Set<number>()
+                : cached.headTurnId === headTurnId ? new Set([headTurnId])
+                : direct.parent_turn_id === cached.headTurnId ? new Set([headTurnId, cached.headTurnId])
+                : new Set(this.db.prepare(`WITH RECURSIVE lineage(id,parent_turn_id) AS (
+                    SELECT id,parent_turn_id FROM turns WHERE id = ? AND session_id = ? UNION
+                    SELECT t.id,t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id
+                    WHERE l.id != ? AND t.session_id = ?)
+                    SELECT id FROM lineage`).all(headTurnId, sessionId, cached.headTurnId, sessionId).map(row => Number(row.id)));
+              // Full publication also permits general selections that filter out sibling Turns.
+              // Only extend this answer when every new entry actually belongs to the reader head.
+              if (turns.has(cached.headTurnId) && rows.every(row => turns.has(row.turn_id))) {
+                const newIds = rows.map(row => row.entry_id);
+                const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
+                  .all(JSON.stringify(newIds)) as { entry_id: number }[]).map(row => row.entry_id));
+                const added = newIds.filter(id => !noted.has(id));
+                return () => {
+                  for (const id of added) cached.ids.push(id);
+                  cached.path = path;
+                  cached.headTurnId = headTurnId;
+                  return cached.ids;
+                };
+              }
+            }
           }
         }
-      }
+        const source = this.pathSourceMeta(sessionId, branch, headTurnId);
+        const ids = source.map(entry => entry.id);
+        const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
+          .all(JSON.stringify(ids)) as { entry_id: number }[]).map(row => row.entry_id));
+        const pending = ids.filter(id => !noted.has(id));
+        return () => {
+          if (ownSnapshot) this.pendingPath = { sessionId, branch, headTurnId, signal, path,
+            ids: pending, coversTail: !path || (source.at(-1)?.id ?? null) === path.tailId };
+          return pending;
+        };
+      };
+      const publish = read();
+      if (ownSnapshot) this.db.exec("COMMIT");
+      // Nothing derived from a failed transaction, including an extended array, escapes rollback.
+      return publish();
+    } catch (error) {
+      if (ownSnapshot && this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
     }
-    const source = this.pathSourceMeta(sessionId, branch, headTurnId);
-    const ids = source.map(entry => entry.id);
-    const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
-      .all(JSON.stringify(ids)) as { entry_id: number }[]).map(r => r.entry_id));
-    const pending = ids.filter(id => !noted.has(id));
-    if (!this.db.isTransaction) this.pendingPath = { sessionId, branch, headTurnId, signal, path,
-      ids: pending, coversTail: !path || (source.at(-1)?.id ?? null) === path.tailId };
-    return pending;
   }
   /** Return a defensive copy; consumers of the hot due path use pendingEntryState directly. */
   pendingEntryIds(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number[] {
