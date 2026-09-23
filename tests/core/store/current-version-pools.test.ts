@@ -281,7 +281,10 @@ test("67: pool reads batch graph, processing history and rendering independently
       expect(graphInput).toHaveBeenCalledTimes(1);
       expect(graph).toHaveBeenCalledTimes(1);
       expect(render).toHaveBeenCalledTimes(count);
-      expect(prepare.mock.calls.filter(([sql]) => sql.includes("FROM knowledge_processed"))).toHaveLength(1);
+      // Ticket 80: the graph memo's own cache check runs `progressSignal`, whose one combined query
+      // also mentions "FROM knowledge_processed" in passing (its `kp` column) — match the exact
+      // processing-history query `knowledgePools` itself issues, not that substring.
+      expect(prepare.mock.calls.filter(([sql]) => sql.includes("SELECT p.pool, p.revision_id FROM knowledge_processed"))).toHaveLength(1);
       expect(prepare.mock.calls.length).toBeLessThanOrEqual(25);
       console.info(JSON.stringify({ fixture: "67 pool projection", count, elapsedMs, prepares: prepare.mock.calls.length }));
     }

@@ -238,3 +238,31 @@ test("72: a pure Raw append changes nothing in the signal", () => {
   store.publishSourcePath(sessionId, "main", [entry.id, entry2.id, entry3.id], child, "lineage-a"); // forward head move, still ordinary
   expect(store.progressSignal(sessionId)).toBe(before);
 });
+
+// Ticket 80, ruled "B": before this, `progressSignal(sessionId)` read only THIS session's own
+// `project_id` (a single point lookup), so another session's declaration or reassignment left the
+// signal unchanged even though it changes which project knowledge THIS session's graph shows (a
+// "project"-scoped revision's applicability follows its owning session's *current* project, not the
+// project it was created under). Pi reproduced this through a second connection: A and B share a
+// project; B is moved to another project; A's signal must change so its memoized graph, footer
+// `knowledge` count and C/D arming all follow.
+test("80: another session's project reassignment changes the signal, even though this session's own project_id is untouched", () => {
+  const store = open();
+  const a = seeded(store);
+  const b = seeded(store); // a distinct session, initially in its own project
+  const before = store.progressSignal(a.sessionId);
+  const untouched = store.getSession(a.sessionId)!.projectId;
+  store.declareProject(b.sessionId, "elsewhere", "mark");
+  expect(store.progressSignal(a.sessionId)).not.toBe(before);
+  expect(store.getSession(a.sessionId)!.projectId).toBe(untouched); // A's own assignment never moved
+});
+
+test("80: a session joining the reader's own project also changes the signal", () => {
+  const store = open();
+  const a = seeded(store);
+  const b = seeded(store);
+  const project = store.getSession(a.sessionId)!.projectId;
+  const before = store.progressSignal(a.sessionId);
+  store.db.prepare("UPDATE sessions SET project_id = ? WHERE id = ?").run(project, b.sessionId);
+  expect(store.progressSignal(a.sessionId)).not.toBe(before);
+});

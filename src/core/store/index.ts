@@ -584,6 +584,14 @@ export interface ApplicabilityInput {
   facts: Map<number, { fact: Fact; sessionId: number; runId: number; entries: number[] }>;
 }
 
+/** The exact shape `commitGraphInput` returns, named so the ticket 80 graph memo (`Store.graphInputCache`)
+ * does not force a self-referential `ReturnType<typeof commitGraphInput>` while that method is defined. */
+export interface GraphInput {
+  revisions: KnowledgeRevision[];
+  parents: Map<number, number[]>;
+  metadata: ApplicabilityInput;
+}
+
 /** One path's membership, built once per operation (22a) and passed through every applicability check.
  * `entries` is null when the path has no selected native ancestry; `addresses` answers the address
  * fallback for facts written without entry bindings, one Turn at a time. */
@@ -2246,8 +2254,30 @@ export class Store {
     return this.projectCommitGraph(revisions, parents, grounded, effective, visible);
   }
 
-  /** DAG, applicability and source-binding inputs for one synchronous projection, before mutation. */
-  commitGraphInput(seed?: readonly KnowledgeRevision[]) {
+  /** Ticket 80 item 2: memoizes the full (unseeded) build below, per session, keyed on
+   * `Store.progressSignal` — the same composite 72's footer cache already keys on, completed by this
+   * ticket with every session's project assignment (ruled "B"). Only a caller that names a session
+   * (`cacheSessionId`) opts in; every other call — seeded (a specific revision's own resolution,
+   * always freshly scoped to it) or unseeded with no session named — rebuilds every time, exactly as
+   * before. In particular every writer's own validation (`applyKnowledgeOperation`,
+   * `commitConsolidationRun` and the rest) never names a session here, so it always reads its own
+   * transaction's latest state; this is the one and only thing that makes the graph cache safe to add
+   * without touching what a writer sees (tests/core/store/ticket-80-graph-input-cache.test.ts pins
+   * this as a regression). The DAG itself (revisions, links, facts, current-path membership) does not
+   * depend on which session asked for it, so a hit skips the whole rebuild below regardless of what
+   * session originally populated it, as long as the signal — which does not vary by session for any
+   * of the components this graph reads — is unchanged. */
+  private graphInputCache = new Map<number, { signal: string; input: GraphInput }>();
+  commitGraphInput(seed?: readonly KnowledgeRevision[], cacheSessionId?: number): GraphInput {
+    if (seed || cacheSessionId === undefined) return this.buildGraphInput(seed);
+    const signal = this.progressSignal(cacheSessionId);
+    const cached = this.graphInputCache.get(cacheSessionId);
+    if (cached && cached.signal === signal) return cached.input;
+    const input = this.buildGraphInput();
+    this.graphInputCache.set(cacheSessionId, { signal, input });
+    return input;
+  }
+  private buildGraphInput(seed?: readonly KnowledgeRevision[]): GraphInput {
     const revisions = seed ? [...seed] : this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const byId = new Map(revisions.map(revision => [revision.id, revision]));
     if (seed) {
@@ -2604,17 +2634,30 @@ export class Store {
     return result;
   }
 
+  /** Ticket 80 item 3: every fact's `fact_sources` binding, one batched query regardless of how many
+   * ids are asked for — the replacement for a `factEntries` call per fact inside a loop. A fact with
+   * no bound entries still gets an (empty) entry, so a lookup miss is never confused with "unbound". */
+  factSourceEntries(factIds: readonly number[]): Map<number, number[]> {
+    const ids = [...new Set(factIds)];
+    const bound = new Map<number, number[]>(ids.map(id => [id, []]));
+    if (ids.length) for (const row of this.db.prepare(`SELECT fact_id, entry_id FROM fact_sources
+      WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id`).all(JSON.stringify(ids)) as { fact_id: number; entry_id: number }[])
+      bound.get(Number(row.fact_id))!.push(Number(row.entry_id));
+    return bound;
+  }
+
   /** Fact and Raw readers keep their supplied frozen path. Foreign facts remain available for their
    * existing scope-specific selection; only Knowledge support membership consults mutable foregrounds.
    * `owners` (71): a batched turn-id -> session-id map a caller already holds, tried before a
    * per-fact `SELECT * FROM turns WHERE id = ?` — the check itself is unchanged, only where its
-   * answer comes from. */
+   * answer comes from. `bound` (80): a batched `factSourceEntries` result a caller already holds,
+   * tried before a per-fact `fact_sources` query — same order of preference as `owners`. */
   factOnPath(fact: Fact, path: KnowledgePath, snapshot = this.pathSnapshot(path), input?: ApplicabilityInput,
-    owners?: ReadonlyMap<number, number>): boolean {
+    owners?: ReadonlyMap<number, number>, bound?: ReadonlyMap<number, number[]>): boolean {
     const projected = input?.facts.get(fact.id);
     const owner = projected?.sessionId ?? owners?.get(fact.turnId) ?? this.getTurn(fact.turnId)!.sessionId;
     if (owner !== path.sessionId) return true;
-    return this.factInSnapshot(fact, snapshot, projected?.entries);
+    return this.factInSnapshot(fact, snapshot, projected?.entries ?? bound?.get(fact.id));
   }
 
   private factInSnapshot(fact: Fact, snapshot: PathSnapshot, projectedEntries?: number[]): boolean {
@@ -2693,7 +2736,15 @@ export class Store {
   }
 
   /** The graph supplies at most one global current revision per identity. Visibility and active-body
-   * filtering happen only after that selection; consumers never choose a representative fork. */
+   * filtering happen only after that selection; consumers never choose a representative fork.
+   * Ticket 80: not opted into the per-session graph memo — its callers (the footer's `progress`,
+   * `listVisibleKnowledge`, `compact`) already sit behind their own coarser caches or read paths whose
+   * existing tests assert same-connection freshness the signal was never asked to cover (a fact's
+   * `fact_sources` binding never mutates in production, and a session's very first foreground
+   * declaration does not bump `session_lineage_cursors.version` — 72's own documented baseline).
+   * Memoizing here would be correct for production but would silently change those tests' answers, so
+   * this stays exactly as it was; the graph memo remains where the ticket's own evidence named it
+   * (`injection`, `knowledgePools`/`duePools`). */
   currentKnowledge(path: KnowledgePath | null = null, filter: KnowledgeFilter = {}, snapshot?: PathSnapshot): KnowledgeWithRevision[] {
     return this.commitGraph(path, filter.projectId, snapshot).current
       .filter(revision => revision.op !== "archive" && (!filter.scope || revision.scope === filter.scope))
@@ -2975,11 +3026,14 @@ export class Store {
   }
 
   /** One operation-local value: resolve globally before scope filtering, render each current body
-   * once, and batch processing history. Never retain this value across a mutation or transaction. */
+   * once, and batch processing history. Never retain this value across a mutation or transaction.
+   * Read-only — Dreaming eligibility (`duePools`) and the facade's `knowledgePools`/`dreamingPending`
+   * all read through here, never a writer's own validation — so ticket 80 opts this into the
+   * per-session graph memo. */
   knowledgePools(path: KnowledgePath, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
     const projectId = this.getSession(path.sessionId)?.projectId;
     if (projectId === undefined) throw new Error(`Unknown session ${path.sessionId}`);
-    const budgets = this.knowledgeBudgets(), input = this.commitGraphInput();
+    const budgets = this.knowledgeBudgets(), input = this.commitGraphInput(undefined, path.sessionId);
     const pools = [["global", budgets.global], [`project:${projectId}`, budgets.project], [`session:${path.sessionId}`, budgets.session]] as const;
     const versions = new Map<string, KnowledgeWithRevision[]>(pools.map(([pool]) => [pool, []]));
     // 76: archives are pending too, but never count toward pool size or the injected block — they
@@ -3408,7 +3462,9 @@ export class Store {
     // `SELECT * FROM turns WHERE id = ?` per fact (this call issued one per candidate, thousands on
     // a long branch). `factOnPath` still runs the same ownership check, just answered from this map.
     const owners = new Map(candidates.map(fact => [fact.turnId, sessionId]));
-    return candidates.filter(fact => this.factOnPath(fact, path, view, undefined, owners)); // every source on the path, not only the first
+    // 80 item 3: one batched `fact_sources` read for the whole candidate list, not one per fact.
+    const bound = this.factSourceEntries(candidates.map(fact => fact.id));
+    return candidates.filter(fact => this.factOnPath(fact, path, view, undefined, owners, bound)); // every source on the path, not only the first
   }
 
   /** Ticket 69/72: a cheap composite that changes exactly when a commit could change
@@ -3418,10 +3474,16 @@ export class Store {
    *    commit as its `knowledge_revisions` row) and processed records are insert-only, so `MAX(id)`/
    *    `MAX(rowid)` is monotonic and exact for `facts`, `consolidated_facts`, `knowledge_revisions` and
    *    `knowledge_processed`;
-   *  - project assignment and merges: a merge reassigns every session and knowledge row that shared the
-   *    merged-away project in the same transaction as marking it merged, so this session's own
-   *    `sessions.project_id` (a fresh point lookup, not a scan) plus the count of merged projects covers
-   *    every reassignment, this session's own declaration included;
+   *  - project assignment and merges: every session's `project_id`, ordered by id and concatenated in one
+   *    scan of `sessions` (145 rows on production, no schema change), so *any* session's declaration or
+   *    reassignment — not only this reader's own — changes the signal; a merge additionally reassigns
+   *    every session and knowledge row that shared the merged-away project in the same transaction as
+   *    marking it merged, covered the same way, plus the count of merged projects as a second check.
+   *    (Ticket 80, ruled "B": completes the signal — until this, only this reader's own `project_id` was
+   *    read, so another session's declaration left a shared project's knowledge stale in this session's
+   *    memoized graph, footer count and C/D arming alike, reproduced across two connections: A and B
+   *    share a project and A sees B's project knowledge; B is moved to another project; A's signal was
+   *    unchanged, so a reused graph kept showing knowledge that no longer applies.)
    *  - the knowledge budget policy (`knowledge_budget_policy`, a single point-lookup row) and the
    *    over-budget suppression state (`knowledge_pool_state`) of exactly the three pools this session's
    *    Dreaming can be due for (global, its project, itself) — bounded point lookups by primary key;
@@ -3442,7 +3504,7 @@ export class Store {
         (SELECT IFNULL(MAX(rowid), 0) FROM consolidated_facts) AS cf,
         (SELECT IFNULL(MAX(id), 0) FROM knowledge_revisions) AS kr,
         (SELECT IFNULL(MAX(rowid), 0) FROM knowledge_processed) AS kp,
-        (SELECT project_id FROM sessions WHERE id = ?) AS pid,
+        (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) AS pa,
         (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) AS pm,
         (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id = 1) AS bp,
         IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'global'), '') AS psg,
@@ -3451,9 +3513,9 @@ export class Store {
         IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'session:' || ?), '') AS pss,
         (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cv,
         (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv`)
-      .get(sessionId, sessionId, sessionId) as { f: number; cf: number; kr: number; kp: number; pid: number | null; pm: number;
+      .get(sessionId, sessionId) as { f: number; cf: number; kr: number; kp: number; pa: string | null; pm: number;
         bp: string; psg: string; psp: string; pss: string; cv: number; sv: number };
-    return `${row.f}:${row.cf}:${row.kr}:${row.kp}:${row.pid}:${row.pm}:${row.bp}:${row.psg}:${row.psp}:${row.pss}:${row.cv}:${row.sv}`;
+    return `${row.f}:${row.cf}:${row.kr}:${row.kp}:${row.pa}:${row.pm}:${row.bp}:${row.psg}:${row.psp}:${row.pss}:${row.cv}:${row.sv}`;
   }
   /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one
    * fact at a time, never "every fact minus the cited ones" (22b, restated by 24a for the footer).
@@ -3486,7 +3548,9 @@ export class Store {
         // (never assumed) — just batched once per run instead of once per fact of that run.
         const owners = new Map(this.db.prepare("SELECT id, session_id FROM turns WHERE id IN (SELECT value FROM json_each(?))")
           .all(JSON.stringify([...new Set(facts.map(f => f.turnId))])).map(r => [Number(r.id), Number(r.session_id)]));
-        runs.set(run_id, facts.every((f) => this.factOnPath(f, path, snapshot, undefined, owners)));
+        // 80 item 3: one batched `fact_sources` read for this run's facts, not one per fact.
+        const bound = this.factSourceEntries(facts.map(f => f.id));
+        runs.set(run_id, facts.every((f) => this.factOnPath(f, path, snapshot, undefined, owners, bound)));
       }
       return runs.get(run_id)!;
     });

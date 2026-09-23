@@ -52,12 +52,16 @@ for (const count of [1, 40]) test(`coverage SQL count is bounded per batch: ${co
     f.compact();
     const queries = spy.mock.calls.filter(([sql]) => /fact_sources|json_extract\(content/.test(sql));
     const operations = queries.map(([sql]) => String(sql).replace(/\s+/g, " ").trim());
-    process.stdout.write(`coverage SQL: ${count} facts, batch=2, compact related=${queries.length}\n`);
-    expect(operations).toHaveLength(2);
-    expect(operations).toEqual([
-      expect.stringContaining("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?))"),
-      expect.stringContaining("FROM fact_sources b JOIN facts f ON f.id = b.fact_id WHERE f.id IN (SELECT value FROM json_each(?))"),
-    ]);
+    process.stdout.write(`coverage SQL: ${count} facts, batch=4, compact related=${queries.length}\n`);
+    // Ticket 80 item 3: `compact`'s applicable-fact filter and `unconsolidated`'s per-run
+    // `consolidatedOnPath` check now each batch their own `fact_sources` read too (one call each,
+    // never one per fact), on top of `currentKnowledge`'s existing graph-build read and
+    // `factsCoveredByRaw`'s own batched read — four bounded calls total, still independent of fact count.
+    expect(operations).toHaveLength(4);
+    expect(operations.filter(sql => sql.startsWith("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?))")))
+      .toHaveLength(3);
+    expect(operations.filter(sql => sql.includes("FROM fact_sources b JOIN facts f ON f.id = b.fact_id WHERE f.id IN (SELECT value FROM json_each(?))")))
+      .toHaveLength(1);
     expect(operations.some(sql => /WHERE (?:f\.)?id = \?$/.test(sql))).toBe(false);
     spy.mockRestore();
   } finally { f.m.close(); }

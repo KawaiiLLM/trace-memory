@@ -348,7 +348,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const path = id === undefined ? null : typeof target === "object" && "sessionId" in target
       ? target : store.knowledgePath(id);
     const snapshot = path ? store.pathSnapshot(path) : null;
-    const input = store.commitGraphInput();
+    // Ticket 80 item 2: injection runs on every ordinary prompt, sharing this session's per-process
+    // graph memo with the footer, eligibility and knowledgePools/duePools reads of the same request.
+    const input = store.commitGraphInput(undefined, id);
     const graph = store.commitGraph(path, path ? undefined : projectId, snapshot ?? undefined, input);
     const records = store.knowledgeRecords(graph.revisions.map(revision => revision.knowledgeId));
     const values = (revisions: readonly KnowledgeRevision[]): KnowledgeWithRevision[] => revisions.map(revision => ({
@@ -636,7 +638,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const knowledge = store.currentKnowledge(path, {}, snapshot);
       const visible = Array.isArray(retainedView) ? noVisibility() : retainedView as VisibleView;
       const retained = new Set(Array.isArray(retainedView) ? retainedView : visible.raw.keys());
-      const applicable = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, snapshot));
+      // Ticket 80 item 3: one batched `fact_sources` read for the whole session's facts, not one per fact.
+      const sessionFacts = store.listSessionFacts(sessionId);
+      const boundEntries = store.factSourceEntries(sessionFacts.map(f => f.id));
+      const applicable = sessionFacts.filter(f => store.factOnPath(f, path, snapshot, undefined, undefined, boundEntries));
       const pendingFacts = store.unconsolidated(applicable, path, snapshot);
       const pendingFactIds = new Set(pendingFacts.map(f => f.id));
       const factTurns = store.factTurnTimes(applicable);

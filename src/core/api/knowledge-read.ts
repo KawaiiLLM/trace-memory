@@ -13,7 +13,10 @@ export function knowledgeReadSelection(store: Store, options: ListingOptions, na
   if (options.scope === "session" && sessionId === undefined) throw new Error("scope:session requires a session context");
   if (options.scope === "project" && projectId === undefined) throw new Error("scope:project requires a project context");
   const path = sessionId === undefined ? null : store.knowledgePath(sessionId, options.branch, options.headTurnId);
-  const input = store.commitGraphInput();
+  // Ticket 80 item 2: a read (never a writer, which builds and threads its own input) — shares this
+  // session's per-process graph memo when one is named; a named-project collection read has none and
+  // rebuilds fresh, as before.
+  const input = store.commitGraphInput(undefined, sessionId);
   const graph = store.commitGraph(path, namedProject, undefined, input);
   const current = new Set(graph.current.map(r => r.id));
   const byCommit = input.metadata.revisions!;
