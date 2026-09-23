@@ -84,6 +84,8 @@ for (const damage of ["none", "missing", "uncovered", "required"] as const) test
     const r = f.m.compact(f.s.id, "main", t.id);
     if ("native" in r) throw new Error(r.reason);
     expect(r.supplied.entries.map(e => e.id)).toEqual(ids);
-    expect(r.supplied.factIds).toEqual(damage === "missing" || damage === "required" ? [fact.id] : []);
+    // 73: coverage now drops a pending (unconsolidated) fact too, not only a consolidated one — only
+    // an incomplete binding ("missing") stays eligible regardless of coverage.
+    expect(r.supplied.factIds).toEqual(damage === "missing" ? [fact.id] : []);
   } finally { f.m.close(); }
 });

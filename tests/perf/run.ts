@@ -13,7 +13,7 @@ import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generate, nativeAncestry, countSourceReads, countGraphResolutions, countRunBodies, runAudit, searchCorpus, type Fixture } from "./fixture.ts";
-import { TraceMemory, deriveSharedMaterialAllowance, noVisibility, renderEntry, toolDefinitions, tokens, type EntryProfile } from "../../src/core/api/index.ts";
+import { TraceMemory, noVisibility, renderEntry, toolDefinitions, tokens, type EntryProfile } from "../../src/core/api/index.ts";
 import { freezeNoting } from "../../src/core/noting/index.ts";
 import { captureNotingNear, notingNearFeedback } from "../../src/core/noting/review.ts";
 import { freezeConsolidation } from "../../src/core/consolidation/index.ts";
@@ -472,7 +472,7 @@ function deliveryScenarios(fixture: Fixture, size: string): Sample[] {
     const unchanged = noVisibility();
     for (const value of store.currentKnowledge(path)) unchanged.knowledgeCommitIds.add(value.revision.id);
     return [
-      measure("foreground Knowledge delivery (body candidates)", () => memory.injection(path, noVisibility()), `${count} new exact revisions; ${store.knowledgeBudgets().injection + deriveSharedMaterialAllowance({ noting: memory.config.noting.triggerTokens, consolidation: memory.config.consolidation.triggerTokens, dreaming: memory.config.dreaming.triggerTokens })} rendered cap`),
+      measure("foreground Knowledge delivery (body candidates)", () => memory.injection(path, noVisibility()), `${count} new exact revisions; ${store.knowledgeBudgets().injection + memory.config.compaction.sharedAllowanceTokens} rendered cap`),
       measure("foreground Knowledge delivery (exact no-delta)", () => memory.injection(path, unchanged), `${unchanged.knowledgeCommitIds.size} current exact bodies visible`),
       measure("foreground Knowledge delivery (Fact-suppressed)", () => memory.injection(path, hidden), `${count} new exact revisions sharing one visible support`),
     ];

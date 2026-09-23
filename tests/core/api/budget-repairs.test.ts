@@ -103,18 +103,22 @@ test("review 2026-09-08, on Noting since 25a: a smaller model window trims the o
   } finally { f.m.close(); }
 });
 
-test("review 2026-09-08, as 30 left it: a view that cannot hold its labels delegates compact to native compaction instead of failing", () => {
+test("review 2026-09-08, rescaled by 73: a view that cannot hold its labels ends the Raw span and is omitted with a receipt, never delegated", () => {
   const f = seeded();
   try {
     f.m.config.render.toolInputTokens = 4;
     f.m.store.appendToolCall({ turnId: f.t.id, name: "bash", input: "pwd", result: "done", status: "success" });
     const pending = f.m.pendingEntries(f.s.id, "main", f.t.id);
     expect(() => pending.map(e => renderEntry(e, f.m.config.render))).toThrow(/capacity/);
-    // 30 removed the second, tighter rendering this used to escalate to: the capacity failure of the
-    // one profile is a reason to delegate, reported by name, and compact still returns rather than throws.
+    // 30/73: there is no second, tighter rendering to escalate to and no fallback either — the entry
+    // whose bounded view cannot fit its own profile ends the Raw span (73 What to build 1.2), and
+    // compact still succeeds rather than delegating or throwing.
     const result = f.m.compact(f.s.id, "main", f.t.id);
-    expect("native" in result).toBe(true);
-    expect("native" in result && result.reason).toContain("their labels and omission markers do not fit");
+    expect("native" in result).toBe(false);
+    if ("native" in result) throw new Error("unreachable");
+    // The tool call whose input cannot fit its own label ends the Raw span there — the newer tool
+    // result survives (it renders fine on its own), everything at or before the call is omitted.
+    expect(result.supplied.entries.map(e => e.id)).not.toContain(pending.find(e => e.role === "assistant" && e.calls.length)!.id);
   } finally { f.m.close(); }
 });
 
