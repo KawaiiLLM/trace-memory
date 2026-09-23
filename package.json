@@ -47,6 +47,7 @@
     "src/core",
     "src/hosts/pi",
     "src/hosts/phase-settings.ts",
+    "src/hosts/status-line.ts",
     "docs",
     "CONTEXT.md",
     "README.md",

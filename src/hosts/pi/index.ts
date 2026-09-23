@@ -16,6 +16,7 @@ export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
 import { CURRENT_CONTEXT_SNAPSHOT_EVENT, type CurrentContextSnapshotResult } from "./context-snapshot.ts";
 import { PHASE_SETTING_KEYS } from "../phase-settings.ts";
+import { memoryStatusLine } from "../status-line.ts";
 
 /** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
  * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
@@ -425,20 +426,21 @@ export default function (pi: ExtensionAPI) {
     if (closed || !context.ui?.setStatus) return;
     const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
-    if (!enabled()) { context.ui.setStatus(tag, `🧠 ${paint("dim", "○ off")}`); return; }
-    const indicator = runningKind("noting") ? paint("accent", "●") : runningKind("consolidation") ? paint("success", "●")
-      : runningKind("dreaming") ? paint("customMessageLabel", "●") : paint("dim", "○");
+    const isEnabled = enabled();
     let counts: ReturnType<typeof memory.progress> | undefined, cost: number | undefined;
-    if (state?.sessionId) {
-      try { counts = memory.progress(state.sessionId, state.branch, state.head ?? null); } catch { /* unavailable: shown as ?, never as 0 */ }
+    // Off counts nothing at all (24a): the off line reads no path, no Raw and no run audit body.
+    if (isEnabled) {
+      if (state?.sessionId) {
+        try { counts = memory.progress(state.sessionId, state.branch, state.head ?? null); } catch { /* unavailable: shown as ?, never as 0 */ }
+      }
+      try { cost = memory.spendSince(localMidnight()); } catch { /* the same rule for the amount */ }
     }
-    try { cost = memory.spendSince(localMidnight()); } catch { /* the same rule for the amount */ }
-    const value = (count?: number) => count === undefined ? "?" : String(count);
-    const text = `notes: ${value(counts?.entries)}->${value(counts?.facts)}` +
-      ` memory: ${value(counts?.unconsolidated)}->${value(counts?.changedKnowledge)}/${value(counts?.knowledge)}` +
-      ` cost: ${cost === undefined ? "$?" : `$${cost.toFixed(2)}`}`;
-    // Routine counts stay quiet; only the indicator uses an activity or warning colour.
-    context.ui.setStatus(tag, `🧠 ${indicator} ${paint("dim", text)}`);
+    // Ticket 75: text/indicator logic moved to the host-neutral formatter Claude Code's status
+    // command shares; only the painting (this host's theme roles) stays here.
+    const segments = memoryStatusLine({ enabled: isEnabled,
+      running: { noting: runningKind("noting"), consolidation: runningKind("consolidation"), dreaming: runningKind("dreaming") },
+      counts, cost });
+    context.ui.setStatus(tag, `🧠 ${segments.map(segment => paint(segment.role, segment.text)).join(" ")}`);
   };
   const reportProblems = (result: unknown, context: ExtensionContext) => {
     const r = result as { outcome?: string; problems?: string[] } | undefined;
