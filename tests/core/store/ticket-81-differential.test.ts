@@ -49,11 +49,15 @@ test("81: differential -- ASCII, mixed case, non-ASCII case pairs, CJK, metachar
   s.appendTurn({ sessionId: f.sessionB.id, kind: "turn", startedAt: "time", assistantText: "御坂美琴的电击" }); // CJK: 2/3/4-char words
   s.appendTurn({ sessionId: f.sessionB.id, kind: "turn", startedAt: "time", assistantText: `he said "hi" * : ( NEAR AND together` }); // FTS5 syntax chars
   s.appendTurn({ sessionId: f.sessionB.id, kind: "turn", startedAt: "time", assistantText: `${"a".repeat(4000)}findableneedle${"b".repeat(4000)}` }); // very long
+  s.appendTurn({ sessionId: f.sessionB.id, kind: "turn", startedAt: "time", assistantText: "abc\u0000def and a\tb c\u007fd" }); // control characters
 
   const queries = [
     "ABC", "abc", "ABCDEF", "éco", "École", "100%", "snake_case", "core\\api",
     "美琴", "美琴的", "御坂美琴", `"hi"`, "*", ":", "(", "NEAR", "AND", "findableneedle",
     "a".repeat(4000) + "findableneedle", "x", "御", // 1-char cases too
+    "abc\u0000def", "c\u0000d", "\u0000de", // NUL: the FTS5 query string cannot carry it (Pi review of f1f36ad)
+    // every ASCII code point inside a trigram-length query, so no character FTS5 treats specially slips by
+    ...Array.from({ length: 128 }, (_, code) => `a${String.fromCharCode(code)}b`),
   ];
   for (const query of queries) {
     expect(s.searchAddresses(query, "raw"), `unrestricted: ${JSON.stringify(query)}`).toEqual(originalRawLikeScan(s, query));

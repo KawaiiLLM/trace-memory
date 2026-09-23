@@ -1520,8 +1520,11 @@ export class Store {
    * than delete+insert and leaves raw_search_entries, and the rowid pairing, untouched. A transition to
    * NULL removes the row instead -- a NULL column matches nothing under LIKE either. */
   private reindexRawField(field: RawFtsField, sessionId: number, turnId: number, toolCallId: number | null, text: string | null): void {
-    const existing = this.db.prepare("SELECT id FROM raw_search_entries WHERE turn_id = ? AND tool_call_id IS ? AND field = ?")
-      .get(turnId, toolCallId, field) as { id: number } | undefined;
+    // Two statements, one per partial unique index: `tool_call_id IS ?` matches neither index's
+    // WHERE clause, so the planner scanned the whole table on every reply or result update.
+    const existing = (toolCallId === null
+      ? this.db.prepare("SELECT id FROM raw_search_entries WHERE turn_id = ? AND field = ? AND tool_call_id IS NULL").get(turnId, field)
+      : this.db.prepare("SELECT id FROM raw_search_entries WHERE tool_call_id = ? AND field = ?").get(toolCallId, field)) as { id: number } | undefined;
     if (!existing) { this.indexRawField(field, sessionId, turnId, toolCallId, text); return; }
     if (text === null) {
       this.db.prepare("DELETE FROM raw_fts WHERE rowid = ?").run(existing.id);
@@ -3120,7 +3123,10 @@ export class Store {
   searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw", sessionIds?: readonly number[]): string[] {
     const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
     const owners = JSON.stringify(sessionIds ?? []), restricted = sessionIds !== undefined;
-    const raw = () => unicodeLength(query) < 3 ? this.rawLikeScan(pattern, restricted, owners) : this.rawTrigram(query, restricted, owners);
+    // A NUL cannot appear in an FTS5 query string (it ends the phrase: "unterminated string"), so a
+    // query holding one keeps the LIKE scan too, unchanged rather than stripped.
+    const raw = () => unicodeLength(query) < 3 || query.includes("\u0000")
+      ? this.rawLikeScan(pattern, restricted, owners) : this.rawTrigram(query, restricted, owners);
     if (scope === "raw") return raw();
     const facts = scope === "knowledge" ? [] : (this.db.prepare(`SELECT f.id FROM facts f JOIN turns t ON t.id = f.turn_id
       WHERE (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND f.text LIKE ? ESCAPE '\\' ORDER BY f.id`)

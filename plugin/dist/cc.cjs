@@ -2032,7 +2032,7 @@ var Store = class {
    * than delete+insert and leaves raw_search_entries, and the rowid pairing, untouched. A transition to
    * NULL removes the row instead -- a NULL column matches nothing under LIKE either. */
   reindexRawField(field, sessionId, turnId, toolCallId, text) {
-    const existing = this.db.prepare("SELECT id FROM raw_search_entries WHERE turn_id = ? AND tool_call_id IS ? AND field = ?").get(turnId, toolCallId, field);
+    const existing = toolCallId === null ? this.db.prepare("SELECT id FROM raw_search_entries WHERE turn_id = ? AND field = ? AND tool_call_id IS NULL").get(turnId, field) : this.db.prepare("SELECT id FROM raw_search_entries WHERE tool_call_id = ? AND field = ?").get(toolCallId, field);
     if (!existing) {
       this.indexRawField(field, sessionId, turnId, toolCallId, text);
       return;
@@ -3545,7 +3545,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   searchAddresses(query2, scope, sessionIds) {
     const pattern = `%${query2.replace(/[\\%_]/g, "\\$&")}%`;
     const owners2 = JSON.stringify(sessionIds ?? []), restricted = sessionIds !== void 0;
-    const raw = () => unicodeLength(query2) < 3 ? this.rawLikeScan(pattern, restricted, owners2) : this.rawTrigram(query2, restricted, owners2);
+    const raw = () => unicodeLength(query2) < 3 || query2.includes("\0") ? this.rawLikeScan(pattern, restricted, owners2) : this.rawTrigram(query2, restricted, owners2);
     if (scope === "raw") return raw();
     const facts = scope === "knowledge" ? [] : this.db.prepare(`SELECT f.id FROM facts f JOIN turns t ON t.id = f.turn_id
       WHERE (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND f.text LIKE ? ESCAPE '\\' ORDER BY f.id`).all(Number(restricted), owners2, pattern).map((r) => `F${r.id}`);
