@@ -3241,7 +3241,7 @@ ${rendered.get(value.revision.id)}`;
   pathEntryIds(sessionId, branch, headTurnId, prepared) {
     const turns = prepared?.turns ?? this.pathTurns({ sessionId, headTurnId });
     const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
-    const rows = row ? this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e ON e.id = j.value ORDER BY j.key").all(row.entry_ids) : this.db.prepare("SELECT id, turn_id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId);
+    const rows = row ? this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e INDEXED BY idx_source_membership ON e.id = j.value ORDER BY j.key").all(row.entry_ids) : this.db.prepare("SELECT id, turn_id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId);
     return rows.filter((r) => turns.has(r.turn_id)).map((r) => r.id);
   }
   sourceHeadEntryId(sessionId, branch, headTurnId, prepared) {
