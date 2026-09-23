@@ -9,7 +9,25 @@ import { resolveCcHostConfig, CC_CONTEXT_HEADROOM } from "../../src/hosts/cc/con
 import { CcAgentWorker, CcResponseOrigins, ccNativeTranscriptPath, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
 import { installCcNativeRejectionGuard } from "../../src/hosts/cc/native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "../../src/hosts/cc/tools.ts";
-import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
+import { CcTaskScheduler as CoreCcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
+import type { CcReconcileResult } from "../../src/hosts/cc/importer.ts";
+
+type FixtureProjection = Omit<CcReconcileResult, "selectedCount" | "selectedTailId" | "selectedAppendedEntryIds">;
+// Scheduler-only fixtures vary source selection independently. Supply the importer-owned header
+// from that selection at the test boundary; production admission accepts only the full contract.
+class CcTaskScheduler extends CoreCcTaskScheduler {
+  private projection(value: FixtureProjection): CcReconcileResult {
+    const selected = new Set(value.selectedEntryIds);
+    return { ...value, selectedCount: value.selectedEntryIds.length, selectedTailId: value.selectedEntryIds.at(-1) ?? null,
+      selectedAppendedEntryIds: value.appendedEntryIds.filter(id => selected.has(id)) };
+  }
+  override reconcile(value: FixtureProjection, admitAutomatic?: boolean, opportunityEpoch?: number): void {
+    super.reconcile(this.projection(value), admitAutomatic, opportunityEpoch);
+  }
+  override startCatchup(value: FixtureProjection, ticket?: number) {
+    return super.startCatchup(this.projection(value), ticket);
+  }
+}
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });

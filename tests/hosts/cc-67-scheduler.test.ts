@@ -8,7 +8,8 @@ const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-67.db", stateDir: "/tm
   "dreaming.model": "synthetic", "dreaming.thinking": "medium",
   worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } }).worker;
 const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
-  selectedEntryIds: [1, 2], appendedEntryIds: [], problems: [], snapshot: {} as any };
+  selectedEntryIds: [1, 2], selectedCount: 2, selectedTailId: 2,
+  selectedAppendedEntryIds: [], appendedEntryIds: [], problems: [], snapshot: {} as any };
 function fixture() {
   let pending = [1, 2], enabled = true;
   const checks: string[] = [], starts: string[] = [];
@@ -31,7 +32,7 @@ test("bootstrap collapses new selected history only; known resumes and Hook-firs
   f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [] });
   f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [99] });
   expect(f.memory.taskEligibility).not.toHaveBeenCalled();
-  f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [1] });
+  f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [1], selectedAppendedEntryIds: [1] });
   // Ticket 72: attach starts C and D armed, so this first opportunity still checks all three; each
   // comes back not due, which disarms C and D (noting has no arming state) for the opportunities below.
   expect(f.memory.taskEligibility).toHaveBeenCalledTimes(3);
@@ -40,7 +41,7 @@ test("bootstrap collapses new selected history only; known resumes and Hook-firs
   f.memory.taskEligibility.mockClear();
   f.scheduler.reconcile({ ...projection, bootstrap: false });
   expect(f.memory.taskEligibility).not.toHaveBeenCalled();
-  f.scheduler.reconcile({ ...projection, bootstrap: false, appendedEntryIds: [1, 2] });
+  f.scheduler.reconcile({ ...projection, bootstrap: false, appendedEntryIds: [1, 2], selectedAppendedEntryIds: [1, 2] });
   // Ticket 72: with nothing armed and the completed signal unchanged, each of these two appended-entry
   // opportunities evaluates Noting only — the acceptance case "per appended entry with nothing armed".
   expect(f.memory.taskEligibility).toHaveBeenCalledTimes(2);
@@ -126,7 +127,7 @@ test.each([1, 2])("preexisting ordinary N consuming %s entries is not adopted by
   }).mockImplementation(normalNoting);
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "noting" ||
     phase === "consolidation" && finishedOrdinary && f.memory.consolidate.mock.calls.length === 0 }));
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [2] });
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [2], selectedAppendedEntryIds: [2] });
   await tick();
   expect(f.memory.noting).toHaveBeenCalledTimes(1);
   expect(f.scheduler.startCatchup(projection).state).toBe("waiting");
@@ -147,7 +148,7 @@ test("preexisting ordinary C is not adopted, but its success is a checkpoint tha
   });
   f.memory.taskEligibility.mockImplementation(phase =>
     ({ due: phase === "consolidation" && f.memory.consolidate.mock.calls.length < 2 }));
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [2] });
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [2], selectedAppendedEntryIds: [2] });
   await tick();
   f.scheduler.startCatchup(projection);
   for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick();
@@ -183,7 +184,7 @@ test.each(["consolidation", "dreaming"] as const)("catchup-owned %s terminal fai
     if (phase === "consolidation") f.memory.consolidate = execute as any;
     else f.memory.dream = execute as any;
     f.memory.taskEligibility.mockImplementation(candidate => ({ due: candidate === phase && execute.mock.calls.length === 0 }));
-    f.scheduler.startCatchup({ ...projection, selectedEntryIds: [1, 2, 3] });
+    f.scheduler.startCatchup({ ...projection, selectedEntryIds: [1, 2, 3], selectedCount: 3, selectedTailId: 3 });
     for (let i = 0; i < 10 && (!releaseN || !failDownstream); i++) await tick();
     expect(releaseN).toBeTypeOf("function"); expect(failDownstream).toBeTypeOf("function");
     failDownstream(); await tick();

@@ -54,7 +54,8 @@ const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-75.db", stateDir: "/tm
   "dreaming.model": "synthetic", "dreaming.thinking": "medium",
   worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } }).worker;
 const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
-  selectedEntryIds: [1, 2], appendedEntryIds: [1, 2], problems: [], snapshot: {} as any, bootstrap: true };
+  selectedEntryIds: [1, 2], selectedCount: 2, selectedTailId: 2,
+  selectedAppendedEntryIds: [1, 2], appendedEntryIds: [1, 2], problems: [], snapshot: {} as any, bootstrap: true };
 
 test("scheduler notifies admission and settlement, and a failing notify never blocks a task", async () => {
   const tick = () => new Promise<void>(resolve => setImmediate(resolve));

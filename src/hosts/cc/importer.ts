@@ -27,10 +27,10 @@ export interface CcReconcileResult {
   headTurnId: number | null;
   /** Full snapshot, materialized only by callers that explicitly need the entire path. */
   selectedEntryIds: number[];
-  selectedCount?: number;
-  selectedTailId?: number | null;
+  selectedCount: number;
+  selectedTailId: number | null;
   /** Newly ingested entries that belong to the final selected path. */
-  selectedAppendedEntryIds?: number[];
+  selectedAppendedEntryIds: number[];
   appendedEntryIds: number[];
   /** First successful scan of this native projection, not a replay of live entry events. */
   bootstrap?: boolean;
@@ -162,7 +162,7 @@ export class CcProjection {
     const backing = selectedEntryIds ?? this.selectedIds;
     const count = backing.length;
     const result = { state, snapshot, coreSessionId: this.binding.coreSessionId, branch: this.binding.branch,
-      headTurnId: this.lastResult?.headTurnId ?? null, appendedEntryIds: [], problems,
+      headTurnId: this.lastResult?.headTurnId ?? null, appendedEntryIds: [], selectedAppendedEntryIds: [], problems,
       selectedCount: count, selectedTailId: backing[count - 1] ?? null, ...rest } as CcReconcileResult;
     // The append-only backing is shared; captured length makes older results immutable snapshots.
     // A navigation replaces the backing, so it cannot change an earlier result either.
@@ -399,12 +399,13 @@ export class CcProjection {
               addProblem(selected.problem); projectionReady = false; selectedNodes = [];
             } else {
               selectedNodes = selected.nodes;
+              selectedEntryIds = [];
               for (const node of selectedNodes) if (node.sourceKind && node.sourceKind !== "compaction") {
                 if (node.entryId === undefined) {
                   if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                   projectionReady = false; break;
                 }
-                (selectedEntryIds ??= []).push(node.entryId);
+                selectedEntryIds.push(node.entryId);
               }
               if (projectionReady && priorLeaf && selected.leafUuid && !selected.nodes.some(node => node.uuid === priorLeaf))
                 branch = `cc:${selected.leafUuid}`;
@@ -413,11 +414,11 @@ export class CcProjection {
           if (projectionReady) {
             headTurnId = [...selectedNodes].reverse().find(node => node.turnId !== undefined)?.turnId ?? this.lastResult?.headTurnId
               ?? this.binding.clearedFrom?.compactionTurnId ?? null;
-            if (continuous && selectedDelta.length && headTurnId !== null && this.selectedState) {
+            if (continuous && headTurnId !== null && this.selectedState) {
               try {
                 this.selectedState = this.memory.store.appendSourcePath(sessionId, branch, this.selectedState,
                   selectedDelta, headTurnId, lineage);
-                this.selectedIds.push(...selectedDelta);
+                for (const id of selectedDelta) this.selectedIds.push(id);
               } catch (error) {
                 if (!(error instanceof StaleSourcePathError)) throw error;
                 // A concurrent rewrite may preserve count and tail but change the middle. Rebuild
@@ -482,11 +483,12 @@ export class CcProjection {
     this.transcript.commit(completed, problems[0]);
     const state = problems.length ? "not-ready" : "ready";
     const selectedMembership = selectedEntryIds === null ? null : new Set(this.selectedIds);
+    const newlyImported = selectedEntryIds === null && appendedEntryIds.length ? new Set(appendedEntryIds) : null;
     const ready = this.result(state, problems.length ? { ...completed.snapshot, problem: problems[0] } : completed.snapshot, problems,
       { coreSessionId: sessionId, branch: projectionReady ? branch : this.binding.branch,
         headTurnId: projectionReady ? headTurnId : this.lastResult?.headTurnId ?? null,
         selectedAppendedEntryIds: projectionReady ? selectedEntryIds === null
-          ? selectedDelta.filter(id => appendedEntryIds.includes(id))
+          ? selectedDelta.filter(id => newlyImported?.has(id))
           : appendedEntryIds.filter(id => selectedMembership!.has(id)) : [],
         appendedEntryIds, bootstrap: !this.synchronized });
     if (projectionReady) this.lastResult = ready;

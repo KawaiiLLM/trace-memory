@@ -178,6 +178,28 @@ test("ordinary extension appends only its delta and preserves prior result snaps
   } finally { f.importer.close(); }
 });
 
+test("a compaction-only extension advances its head without rebuilding the selected Raw path", async () => {
+  const f = await setup(base(), "head-only-delta");
+  try {
+    const first = await f.importer.reconcile(), store = f.importer.memory.store;
+    const append = store.appendSourcePath.bind(store);
+    let calls = 0;
+    store.appendSourcePath = (...args: Parameters<typeof append>) => {
+      calls++;
+      expect(args[3]).toEqual([]);
+      return append(...args);
+    };
+    store.publishSourcePath = () => { throw new Error("head-only extension must not rebuild the full path"); };
+    appendFileSync(f.transcriptPath, line({ uuid: "head-only-compact", parentUuid: "a", type: "system",
+      subtype: "compact_boundary", timestamp: at(3) }));
+    const next = await f.importer.reconcile();
+    expect(calls).toBe(1);
+    expect(next.selectedEntryIds).toEqual(first.selectedEntryIds);
+    expect(next.headTurnId).toBe(store.findNativeTurn(first.coreSessionId!, f.nativeSessionId, "head-only-compact")!.turnId);
+    expect(next.selectedAppendedEntryIds).toEqual([]);
+  } finally { f.importer.close(); }
+});
+
 test("a same-length, same-tail rewrite invalidates the append header and rebuilds native selection", async () => {
   const f = await setup(base(), "stale-prefix");
   try {

@@ -16,7 +16,8 @@ const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-72.db", stateDir: "/tm
   worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", claudeVersion: "2.1.280",
     contextWindows: { synthetic: 200_000 } } }).worker;
 const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
-  selectedEntryIds: [1, 2, 3], appendedEntryIds: [], problems: [], snapshot: {} as any };
+  selectedEntryIds: [1, 2, 3], selectedCount: 3, selectedTailId: 3,
+  selectedAppendedEntryIds: [], appendedEntryIds: [], problems: [], snapshot: {} as any };
 
 /** A mock memory whose Consolidation/Dreaming due-ness and progress signal are test-controlled, so
  * arming, disarming and the completion checkpoint can be driven deterministically without a real DB. */
@@ -42,6 +43,14 @@ function fixture() {
     dream: vi.fn(async () => new Promise(resolve => releases.set("dreaming", (outcome = "success") => { starts.push("dreaming"); resolve({ outcome }); }))),
   };
   const scheduler = new CcTaskScheduler(memory as any, worker, () => {});
+  // These scheduler fixtures vary the selected IDs and appended IDs independently. Recompute
+  // their projection header exactly as the importer would, rather than carry a stale base header.
+  const reconcile = scheduler.reconcile.bind(scheduler);
+  scheduler.reconcile = (value, admit, epoch) => {
+    const selected = new Set(value.selectedEntryIds);
+    reconcile({ ...value, selectedCount: value.selectedEntryIds.length, selectedTailId: value.selectedEntryIds.at(-1) ?? null,
+      selectedAppendedEntryIds: value.appendedEntryIds.filter(id => selected.has(id)) }, admit, epoch);
+  };
   return { scheduler, memory, checks, starts, closedQueried, releases,
     setSignal: (value: string) => { sig = value; }, setCDue: (value: boolean) => { cDue = value; },
     setDDue: (value: boolean) => { dDue = value; }, setEnabled: (value: boolean) => { enabled = value; } };
@@ -265,7 +274,8 @@ test("72: a commit through a second Store connection re-arms C and D at the next
     const eligibility = vi.spyOn(memory, "taskEligibility");
     const scheduler = new CcTaskScheduler(memory, config, () => {});
     scheduler.reconcile({ state: "ready", coreSessionId: sessionId, branch: "main", headTurnId: turnId,
-      selectedEntryIds: [entry.id], appendedEntryIds: [entry.id], problems: [], snapshot: {} as any });
+      selectedEntryIds: [entry.id], selectedCount: 1, selectedTailId: entry.id,
+      selectedAppendedEntryIds: [entry.id], appendedEntryIds: [entry.id], problems: [], snapshot: {} as any });
     await tick();
     eligibility.mockClear();
     // A commit through a second connection to the same database file — this session's own next
@@ -277,7 +287,8 @@ test("72: a commit through a second Store connection re-arms C and D at the next
       calls: [{ ordinal: 1, name: "tool", callId: "c1", status: "ok" }] });
     memory.selectEntries(sessionId, "main", [entry.id, entry2.id]);
     scheduler.reconcile({ state: "ready", coreSessionId: sessionId, branch: "main", headTurnId: turnId,
-      selectedEntryIds: [entry.id, entry2.id], appendedEntryIds: [entry2.id], problems: [], snapshot: {} as any });
+      selectedEntryIds: [entry.id, entry2.id], selectedCount: 2, selectedTailId: entry2.id,
+      selectedAppendedEntryIds: [entry2.id], appendedEntryIds: [entry2.id], problems: [], snapshot: {} as any });
     for (const [phase] of eligibility.mock.calls) checks.push(phase as string);
     expect(checks).toContain("consolidation"); // the second connection's commit re-armed it
     scheduler.stop(); await scheduler.settle();

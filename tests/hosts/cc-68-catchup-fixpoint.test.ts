@@ -9,7 +9,8 @@ const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-68.db", stateDir: "/tm
   worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", claudeVersion: "2.1.280",
     contextWindows: { synthetic: 200_000 } } }).worker;
 const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
-  selectedEntryIds: [1], appendedEntryIds: [], problems: [], snapshot: {} as any };
+  selectedEntryIds: [1], selectedCount: 1, selectedTailId: 1,
+  selectedAppendedEntryIds: [], appendedEntryIds: [], problems: [], snapshot: {} as any };
 
 function fixture() {
   let entries: number[] = [];
@@ -67,7 +68,7 @@ test.each(["consolidation", "dreaming"] as const)("R4 a successful ordinary %s c
   if (phase === "consolidation") f.memory.consolidate = execute as any;
   else f.memory.dream = execute as any;
   f.memory.taskEligibility.mockImplementation(candidate => ({ due: candidate === phase && due }));
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] });
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1], selectedAppendedEntryIds: [1] });
   await tick();
   expect(execute).toHaveBeenCalledTimes(1); // ordinary slot busy
   expect(f.scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase });
@@ -88,7 +89,7 @@ test.each(["consolidation", "dreaming"] as const)("R4 a non-success ordinary %s 
   if (phase === "consolidation") f.memory.consolidate = execute as any;
   else f.memory.dream = execute as any;
   f.memory.taskEligibility.mockImplementation(candidate => ({ due: candidate === phase }));
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] });
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1], selectedAppendedEntryIds: [1] });
   await tick();
   expect(execute).toHaveBeenCalledTimes(1);
   expect(f.scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase });
@@ -139,7 +140,7 @@ test("R4 ordinary completion may settle a zero-Raw wait when it clears all due w
   const execute = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); return { outcome: "success" }; });
   f.memory.consolidate = execute as any;
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "consolidation" && due }));
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] });
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1], selectedAppendedEntryIds: [1] });
   await tick();
   expect(execute).toHaveBeenCalledTimes(1);
   expect(f.scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase: "consolidation" });

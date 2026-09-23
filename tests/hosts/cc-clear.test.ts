@@ -89,6 +89,28 @@ test("SessionStart clear with a bound parent links the same core session and inj
   } finally { store.close(); }
 });
 
+test("a cleared child's compaction-only selected path publishes its inherited Raw and head", async () => {
+  const f = fixture("compaction-only-child");
+  await startParent(f);
+  await clearInto(f);
+  const child = readBinding(f.config, f.childId)!;
+  f.writeChild([{ uuid: "child-compact", parentUuid: null, type: "system", subtype: "compact_boundary",
+    timestamp: "2026-01-01T00:10:00.000Z" }]);
+  const importer = new CcImporter(f.config, child);
+  try {
+    const projected = await importer.reconcile();
+    const store = importer.memory.store;
+    const compact = store.findNativeTurn(child.coreSessionId!, f.childId, "child-compact")!;
+    expect(projected).toMatchObject({ state: "ready", headTurnId: compact.turnId,
+      selectedCount: child.clearedFrom!.inheritedEntryIds.length,
+      selectedTailId: child.clearedFrom!.inheritedEntryIds.at(-1), selectedAppendedEntryIds: [] });
+    expect(projected.selectedEntryIds).toEqual(child.clearedFrom!.inheritedEntryIds);
+    expect(store.selectedSourceEntryIds(child.coreSessionId!, child.branch)).toEqual(projected.selectedEntryIds);
+    expect(store.db.prepare("SELECT branch, head_turn_id FROM session_lineage_cursors WHERE session_id = ? AND lineage = ?")
+      .get(child.coreSessionId!, f.childId)).toEqual({ branch: child.branch, head_turn_id: compact.turnId });
+  } finally { importer.close(); }
+});
+
 test("73: clear truncates the Raw window rather than falling back, and warns in the foreground", async () => {
   const f = fixture("native-fallback");
   // A reply whose bounded view fills the entry profile, over a Raw window shrunk below it with the
