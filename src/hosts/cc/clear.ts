@@ -1,4 +1,4 @@
-import { TraceMemory, noVisibility, type Injection } from "../../core/api/index.ts";
+import { TraceMemory, type Injection } from "../../core/api/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { coreHostOf, readBinding, recordSessionStart, updateBinding, validateNativeSessionId, withCcBindingLock,
   type CcHookInput, type CcSessionBinding } from "./binding.ts";
@@ -35,7 +35,7 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
   }
 
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC clear Hook cannot run model work"); },
-    {}, undefined, entry => entry.nativeLineage === parentBinding.nativeSessionId ? ccSourceBlocks(entry) : undefined);
+    config.coreConfig, undefined, entry => entry.nativeLineage === parentBinding.nativeSessionId ? ccSourceBlocks(entry) : undefined);
   try {
     const projection = new CcProjection(config, parentBinding, memory);
     const projected = await projection.synchronize();
@@ -80,19 +80,30 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
     const headTurnId = entry?.turnId ?? nativeTurn?.turnId;
     if (!headTurnId) throw new Error("parent Claude Code selected native source has no persisted core Turn");
 
+    // 73 "No fallback, in either host": compact truncates unprocessed material to fit rather than
+    // asking for a delegation, so `/clear` never substitutes a knowledge-only injection for it.
     const compacted = memory.compact(core, synced.branch, headTurnId);
-    const injection: Injection = "native" in compacted
-      ? memory.injection({ sessionId: core, branch: synced.branch, headTurnId }, noVisibility())
-      : { text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, composition: compacted.composition };
+    if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation unexpectedly: ${compacted.reason}`);
+    const injection: Injection = { text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, composition: compacted.composition };
 
     const turn = memory.store.appendTurn({ sessionId: core, parentTurnId: headTurnId, kind: "compaction",
       assistantText: injection.text, startedAt: at, endedAt: at });
     const inheritedEntryIds = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
     await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: turn.id, inheritedEntryIds });
 
-    if (!injection.text) return { handled: true, output: null };
+    // 73 "Truncation is announced in the foreground": a top-level `systemMessage` beside
+    // `hookSpecificOutput.additionalContext` — Claude Code 2.1.280 shows it to the user (capped at
+    // 4,000 characters; this stays well under it).
+    const omitted = compacted.truncated;
+    const systemMessage = omitted ? `Trace Memory: compaction omitted ${[
+      ...(omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"} (${omitted.raw.tokens} tokens)`] : []),
+      ...(omitted.facts ? [`${omitted.facts.count} unconsolidated ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []),
+    ].join(" and ")}; they remain pending for Noting and Consolidation.` : undefined;
+    if (!injection.text) return { handled: true, output: systemMessage
+      ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }, systemMessage } : null };
     const visibleBinding: CcVisibleBinding = { db: databaseIdentity(config.dbPath), nativeSession: childId, coreSession: core };
-    return { handled: true, output: { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) } } };
+    return { handled: true, output: { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },
+      ...(systemMessage ? { systemMessage } : {}) } };
   } finally {
     // Mirrors ccSessionStartInjection: this Hook owns no executor or claim, so its Store closes directly.
     memory.store.close();

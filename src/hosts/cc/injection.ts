@@ -26,7 +26,11 @@ interface EnvelopeHeader {
   sha256: string;
 }
 interface WireHeader { d: string; n: string; s: number | null; k: number[]; r: string[]; h: string }
-export interface CcHookOutput { hookSpecificOutput: { hookEventName: "SessionStart"; additionalContext: string } }
+export interface CcHookOutput { hookSpecificOutput: { hookEventName: "SessionStart"; additionalContext: string };
+  /** 73 "Truncation is announced in the foreground": Claude Code 2.1.280's hook runner turns this
+   * top-level field into a user-visible `hook_system_message`, capped at 4,000 characters. Present
+   * only when `/clear`'s compaction omitted unprocessed material. */
+  systemMessage?: string }
 
 const identityCount = (injection: Injection): number => injection.knowledgeCommitIds.length +
   (injection.knowledgeStates ?? []).reduce((count, state) => count + 1 + state.toCommits.length, 0);
@@ -272,7 +276,7 @@ export async function ccSessionStartInjection(config: ResolvedCcHostConfig, inpu
   const initial = readBinding(config, input.session_id);
   if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); },
-    {}, undefined, entry => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : undefined);
+    config.coreConfig, undefined, entry => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : undefined);
   try {
     let binding = await lockedInjectionBinding(config, initial.nativeSessionId, initial.transcriptPath, memory);
     if (!enabled(binding, memory)) return null;
