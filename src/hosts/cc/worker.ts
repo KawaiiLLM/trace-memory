@@ -1,6 +1,6 @@
-import { appendFileSync, chmodSync, mkdirSync, openSync, closeSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { createSdkMcpServer, query, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -12,14 +12,62 @@ import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
 export type CcAgentTask = NotingAgentInput | ConsolidationAgentInput | DreamingAgentInput;
+/** Called for every runtime-journal-worthy event this worker produces, before or after it returns
+ * (78: the contained SDK control abort can arrive on either side of settlement). Matches the shape
+ * of the executor's own runtime journal writer (`runtimeEvent` in hosts/cc/index.ts). */
+export type CcWorkerJournal = (event: string, details?: Record<string, unknown>) => void;
 const execFileAsync = promisify(execFile);
 const AUDIT_UNAVAILABLE = `Claude Agent SDK ${CC_AGENT_SDK_VERSION} does not expose the exact provider request body`;
+
+/** Claude Code's own project-directory encoding: every character outside [A-Za-z0-9] becomes one
+ * `-`, byte for byte, with no collapsing of runs (verified against the pinned executable, 78). */
+function ccProjectDirName(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9]/g, "-");
+}
+
+/** Where Claude Code itself writes this worker's native session transcript: `CLAUDE_CONFIG_DIR`
+ * when the worker environment sets it (it always passes it through when configured), else `~/.claude`
+ * — resolved against the spawned process's own HOME, not this process's. */
+export function ccNativeTranscriptPath(environment: NodeJS.ProcessEnv, cwd: string, nativeSessionId: string): string {
+  const configDir = environment.CLAUDE_CONFIG_DIR || join(environment.HOME || homedir(), ".claude");
+  return join(configDir, "projects", ccProjectDirName(cwd), `${nativeSessionId}.jsonl`);
+}
+
+/** Log verification is an audit diagnostic, never an outcome (78): it never throws, and a problem it
+ * finds never changes the run's outcome, reason, usage or commits — only whether `nativeLog` is
+ * reported and what `verification` notes. */
+function verifyNativeLog(path: string, nativeSessionId: string): string | undefined {
+  let content: string;
+  try { content = readFileSync(path, "utf8"); }
+  catch { return `native session file is missing at ${path}`; }
+  const firstLine = content.split("\n").find(line => line.trim().length > 0);
+  if (firstLine === undefined) return `native session file at ${path} is empty`;
+  let parsed: unknown;
+  try { parsed = JSON.parse(firstLine); } catch { return `native session file at ${path} has unparsable content`; }
+  const found = (parsed as { sessionId?: unknown } | null)?.sessionId;
+  return found === nativeSessionId ? undefined
+    : `native session file at ${path} holds session ${JSON.stringify(found)}, expected ${nativeSessionId}`;
+}
+
+/** The one place both return paths report `nativeLog`/`verification` (78). No init received: neither
+ * field says anything about a native log. Init received: verify, and report `nativeLog` only when it
+ * checks out — a path that does not exist, or holds another session, is never reported, and the
+ * problem is noted instead. Either way this never throws and never touches outcome, usage or output. */
+function verifiedNativeLog(nativeLog: string | undefined, nativeSessionId: string | null, rounds: number):
+  { nativeLog?: string; verification: { rounds: number; nativeLogProblem?: string } } {
+  if (nativeLog === undefined || nativeSessionId === null) return { verification: { rounds } };
+  const problem = verifyNativeLog(nativeLog, nativeSessionId);
+  return problem ? { verification: { rounds, nativeLogProblem: problem } } : { nativeLog, verification: { rounds } };
+}
 
 export interface CcWorkerDependencies {
   /** Native probes supply an isolated loopback environment. Production uses the filtered host environment below. */
   environment?: NodeJS.ProcessEnv;
   /** Production-interface tests replace only transport execution; tool serving stays production code. */
   query?: typeof query;
+  /** 78: the executor's runtime journal, for the one worker event with no home in the run record
+   * (a contained SDK control abort). Absent (tests that do not care) is a no-op. */
+  journal?: CcWorkerJournal;
 }
 
 interface WaitingOrigin { resolve(value: string): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }
@@ -128,8 +176,7 @@ const RESULT_SIZE_META = { "anthropic/maxResultSizeChars": CC_MAX_RESULT_CHARS }
 
 /** SDK tool helpers convert through Zod and parse arguments. Core owns the schemas and validation,
  * so the public low-level MCP handlers advertise the originals and pass arguments through unchanged. */
-function workerServer(task: CcAgentTask, origins: CcResponseOrigins, record: (value: unknown) => void,
-  toolsAllowed: () => boolean) {
+function workerServer(task: CcAgentTask, origins: CcResponseOrigins, toolsAllowed: () => boolean) {
   const config = createSdkMcpServer({ name: "trace_memory", version: "0.1.0-beta.7" });
   const definitions = new Map<string, ToolDefinition>(task.tools.map(definition => [definition.name, definition]));
   config.instance.server.registerCapabilities({ tools: {} });
@@ -146,7 +193,6 @@ function workerServer(task: CcAgentTask, origins: CcResponseOrigins, record: (va
     if (!toolsAllowed()) throw new Error("CC worker pass authorization ended before its tool call completed");
     const input = request.params.arguments ?? {};
     const text = definition.execute(input);
-    record({ type: "tool", name: definition.name, input, result: text });
     return { content: [{ type: "text" as const, text }], ...(toolRejected(definition.name as ToolDefinition["name"], text) ? { isError: true } : {}) };
   });
   return config;
@@ -268,6 +314,7 @@ export class CcAgentWorker {
   private readonly worker: ResolvedCcWorkerConfig;
   private readonly environment: NodeJS.ProcessEnv;
   private readonly query: typeof query;
+  private readonly journal: CcWorkerJournal;
   private versionCheck: Promise<void> | null = null;
 
   constructor(config: ResolvedCcHostConfig, dependencies: CcWorkerDependencies = {}) {
@@ -277,6 +324,7 @@ export class CcAgentWorker {
     this.environment = config.retry === undefined ? environment
       : { ...environment, CLAUDE_CODE_MAX_RETRIES: String(config.retry.maxRetries) };
     this.query = dependencies.query ?? query;
+    this.journal = dependencies.journal ?? (() => {});
   }
 
   private verifyExecutable(): Promise<void> {
@@ -294,10 +342,9 @@ export class CcAgentWorker {
       throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
     if (task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)
       throw new Error(`CC ${task.kind} task thinking ${task.subagentThinkingLevel} does not match configured thinking ${settings.thinking}`);
-    const logs = join(this.config.stateDir, "workers"); mkdirSync(logs, { recursive: true });
-    const nativeLog = join(logs, `${Date.now()}-${task.kind}-${randomUUID()}.jsonl`);
-    closeSync(openSync(nativeLog, "wx", 0o600)); chmodSync(nativeLog, 0o600);
-    const record = (value: unknown) => appendFileSync(nativeLog, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+    // 78: the path Claude Code itself will persist this run's native session under, known only once
+    // init reports the native session id. Verified, never created, by this adapter.
+    let nativeLog: string | undefined;
     const controller = new AbortController();
     const cancel = () => controller.abort(task.signal?.reason ?? new DOMException("CC worker cancelled", "AbortError"));
     task.signal?.addEventListener("abort", cancel, { once: true });
@@ -325,7 +372,8 @@ export class CcAgentWorker {
     let dreamState: "first" | "repair-authorized" | "complete" = "first";
     const toolsAllowed = () => task.kind !== "dreaming" || dreamState !== "complete";
     return runWithCcNativeAbortOwner(controller.signal, error =>
-      record({ type: "contained-sdk-control-abort", error: error.message }), async () => { try {
+      this.journal("contained-sdk-control-abort", { taskKind: task.kind, nativeSessionId, error: error.message }),
+      async () => { try {
       task.signal?.throwIfAborted();
       await this.verifyExecutable();
       const allowedTools = task.tools.map(definition => `mcp__trace_memory__${definition.name}`);
@@ -336,18 +384,19 @@ export class CcAgentWorker {
         env: this.environment,
         tools: [],
         allowedTools,
-        mcpServers: { trace_memory: workerServer(task, origins, record, toolsAllowed) },
+        mcpServers: { trace_memory: workerServer(task, origins, toolsAllowed) },
         abortController: controller,
         systemPrompt: task.prompt,
         settingSources: [],
         plugins: [],
-        persistSession: false,
+        // 78: the worker's session is now the native transcript (nativeLog). Every other isolation
+        // option is unchanged — settingSources/plugins empty, strictMcpConfig — so no hook, plugin or
+        // skill ever loads for it, and it is never bound, imported or enrolled as a foreground session.
         permissionMode: "dontAsk",
         strictMcpConfig: true,
         extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking },
       } });
       for await (const message of execution) {
-        record(message);
         if (task.kind === "dreaming" && dreamState === "complete")
           throw new Error("CC Dreamer emitted protocol activity after its authorized final pass");
         if (message.type === "system" && message.subtype === "init") {
@@ -357,6 +406,7 @@ export class CcAgentWorker {
           if (initIdentity === null) {
             initIdentity = identity;
             nativeSessionId = message.session_id;
+            nativeLog = ccNativeTranscriptPath(this.environment, this.worker.cwd, nativeSessionId);
             assertModelMetadata(await execution.supportedModels(), settings);
           } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");
         } else if (message.type === "assistant") {
@@ -371,8 +421,6 @@ export class CcAgentWorker {
             throw new Error("CC worker received malformed native api_retry metadata");
           retries.push({ attempt: retry.attempt as number, error: retry.error });
           progress();
-          record({ type: "native-retry", attempt: retry.attempt, maxRetries: retry.max_retries,
-            delayMs: retry.retry_delay_ms, error: retry.error });
         } else if (message.type === "result") {
           if (nativeSessionId !== null && message.session_id !== nativeSessionId)
             throw new Error("CC worker result came from a different native session");
@@ -415,8 +463,9 @@ export class CcAgentWorker {
       if (protocolError) throw protocolError;
       if (!results.length) throw new Error("CC worker ended without an SDK result message");
       const usage = observedUsage();
-      return { outcome, output, ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent", nativeLog,
-        audit: { available: false, reason: AUDIT_UNAVAILABLE }, verification: { rounds: origins.rounds() },
+      return { outcome, output, ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent",
+        ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
+        audit: { available: false, reason: AUDIT_UNAVAILABLE },
         thinking: { requested: settings.thinking, effective: settings.thinking } };
     } catch (error) {
       controller.abort(error);
@@ -425,8 +474,9 @@ export class CcAgentWorker {
       const usage = observedUsage();
       const specific = nativeFailureOutput ?? (cause instanceof Error ? cause.message : String(cause));
       return { outcome: cancelled ? "cancelled" : "failure", output: specific,
-        ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent", nativeLog,
-        audit: { available: false, reason: AUDIT_UNAVAILABLE }, verification: { rounds: origins.rounds() },
+        ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent",
+        ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
+        audit: { available: false, reason: AUDIT_UNAVAILABLE },
         thinking: { requested: settings.thinking, effective: settings.thinking } };
     } finally {
       input?.close(); origins.close(); task.signal?.removeEventListener("abort", cancel);
