@@ -10,7 +10,7 @@ import { showSessionPanel, type SessionBody } from "./session-panel.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, deriveSharedMaterialAllowance, directoryAllocation, enrollmentDefault, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
+import { TraceMemory, deriveSharedMaterialAllowance, directoryAllocation, enrollmentDefault, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
 import { visibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -747,11 +747,15 @@ export default function (pi: ExtensionAPI) {
       const source = piPersistedSource(entry);
       if (!source) continue;
       const { message, text: natural, calls } = source;
-      const known = memory.store.findSourceEntry(state.sessionId, lineage, entry.id);
+      // 74: identity without Raw — `digest` compares against the same string (`JSON.stringify(message)`)
+      // `known.raw` used to, without loading `content`/`blocks`. `message.role` decides `offer` in place
+      // of the persisted role: they agree whenever the digest matches, which is every case but the one
+      // `missing(...)` below already flags as changed.
+      const known = memory.store.findKnownSourceEntry(state.sessionId, lineage, entry.id);
       if (known) {
-        if (known.raw !== JSON.stringify(message)) missing(`entry ${entry.id} changed after persistence`);
+        if (known.digest !== sourceDigest(JSON.stringify(message))) missing(`entry ${entry.id} changed after persistence`);
         selected.push(known.id); turnId = known.turnId;
-        if (known.role === "assistant") offer(known.turnId, known.calls);
+        if (message.role === "assistant") offer(known.turnId, known.calls);
         continue;
       }
       if (message.role === "user") {
