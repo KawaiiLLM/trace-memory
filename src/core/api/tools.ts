@@ -50,20 +50,20 @@ export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
   { name: "memory", description: "Write one atomic ordinary knowledge batch. Consolidation runs create knowledge; main agents may create or archive but have no memory duty. Updating, merging, splitting and automatic archiving belong to the Dreamer. Operations carry non-empty change supports and a reason (the commit message, never evidence). Create submits complete text/category/scope and topics (subject labels; the complete replacement set, empty when unclassified); manual archive records archival state while inheriting its parent's category, scope and topics. A valid batch commits immediately. Rejections write nothing; correct and resubmit the whole batch. Archive requires an explicit complete-body K1@57 read. Bare K1 and search previews grant no write handle.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
 ];
 
-/** Narrow only the model-facing Consolidator interface; manual writers keep the ordinary schema. */
+/** Narrow only the model-facing Consolidator interface; manual writers keep the ordinary schema.
+ * 76: C creates, updates and archives; merge and split stay the Dreamer's. */
 export function consolidationToolDefinitions(): Omit<ToolDefinition, "execute">[] {
   const tools = structuredClone(toolDefinitions);
   const memory = tools.find(t => t.name === "memory")!;
   const operation = (memory.parameters.properties as any).operations.items;
-  operation.properties.op.enum = ["create"];
-  delete operation.properties.id;
+  operation.properties.op.enum = ["create", "update", "archive"];
   delete operation.properties.absorb;
   operation.allOf = [
-    { not: { required: ["id"] } },
+    { if: { properties: { op: { const: "create" } } }, then: { not: { required: ["id"] } }, else: { required: ["id"] } },
     { not: { required: ["absorb"] } },
     operation.allOf[2],
   ];
-  memory.description = "Submit one atomic Consolidation batch using create only. Updating, merging, splitting and archiving belong to the Dreamer. Every operation carries non-empty change supports and a reason, and carries the complete text/category/scope/topics. The first valid submission commits; a call after commit is rejected.";
+  memory.description = "Submit one atomic Consolidation batch using create, update or archive. Merging and splitting belong to the Dreamer and are rejected here. Update names the exact K@commit whose complete body you received; a base that is not the writer's current version is rejected naming the current one — read it with trace and resubmit. Every operation carries non-empty change supports (the facts that caused it) and a reason; create and update carry the complete text/category/scope/topics, archive inherits them from the parent it removes. The first valid submission commits; a call after commit is rejected.";
   return tools;
 }
 

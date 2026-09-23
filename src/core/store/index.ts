@@ -10,7 +10,7 @@ import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock,
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
-import { renderKnowledge, tokens } from "../render/index.ts";
+import { renderKnowledge, renderKnowledgeChange, tokens } from "../render/index.ts";
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
 import type {
   Actor,
@@ -2305,7 +2305,7 @@ export class Store {
   baseProblem(knowledgeId: number, base: number, path: KnowledgePath | null, allowArchived = false,
     prepared?: ApplicabilityInput): string | null {
     const revision = this.getKnowledgeRevision(knowledgeId, base);
-    let visible = !path;
+    let visible = !path, applicable = !path;
     if (path && revision) {
       const input = prepared ?? this.commitGraphInput([revision]).metadata;
       const foreground = input.currentPaths?.get(path.sessionId);
@@ -2313,10 +2313,21 @@ export class Store {
         ? foreground.find(value => value.branch === path.branch && value.headTurnId === path.headTurnId) : undefined;
       const snapshot = revision.scope === "session"
         ? (cursor ? input.currentSnapshots?.get(`${path.sessionId}:${cursor.lineage}`) : undefined) ?? this.pathSnapshot(path) : undefined;
-      visible = this.commitApplies(revision, path, snapshot, input) && this.visibleOnPath(revision, path, input, snapshot);
+      applicable = this.commitApplies(revision, path, snapshot, input);
+      visible = applicable && this.visibleOnPath(revision, path, input, snapshot);
     }
     if (revision && (revision.op !== "archive" || allowArchived) && visible) return null;
-    return `K${knowledgeId}@${base}: base is missing, archived, inapplicable or outside the writer's scope`;
+    const generic = `K${knowledgeId}@${base}: base is missing, archived, inapplicable or outside the writer's scope`;
+    // 76: name the writer's current version instead of the generic refusal, so a rejected C or D
+    // operation can resubmit against the right address without a blind read. `currentCommit` reuses
+    // the same reader-visible resolution every other consumer of this path sees; it is only ever
+    // called on the (rare) refusal path, never for a commit that already validated.
+    if (!revision || !path) return generic;
+    const current = this.currentCommit(knowledgeId, path)[0];
+    if (current) return current.id === base
+      ? `K${knowledgeId}@${base}: current version is archived`
+      : `K${knowledgeId}@${base} is not current on this branch; current is K${knowledgeId}@${current.id}`;
+    return `K${knowledgeId}@${base}: ${revision.op === "archive" ? "archived" : !applicable ? "inapplicable" : "outside the writer's scope"} on this branch`;
   }
 
   /** Direct consuming edges across update, merge, split and archive identities. */
@@ -2367,7 +2378,8 @@ export class Store {
         } else {
           if (input.run.kind !== "consolidation" && input.run.kind !== "manual")
             throw new Error(`${input.run.kind} has no knowledge commit authority`);
-          const allowed = input.run.kind === "consolidation" ? new Set(["create"]) : new Set(["create", "archive"]);
+          // 76: C creates, updates and archives; merge/split stay the Dreamer's.
+          const allowed = input.run.kind === "consolidation" ? new Set(["create", "update", "archive"]) : new Set(["create", "archive"]);
           const forbidden = input.operations.find(op => !allowed.has(op.op));
           if (forbidden) throw new Error(`${forbidden.op} belongs to the Dreamer and is not available to ${input.run.kind === "consolidation" ? "the Consolidator" : "manual memory"}`);
           if (input.run.kind === "manual" && input.operations.some(op => op.op === "archive") && this.dreamerSeatHeld(Date.now()))
@@ -2413,8 +2425,12 @@ export class Store {
     const targets = op.op === "create" ? [] : op.op === "merge"
       ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb]
       : [{ knowledgeId: op.knowledgeId, baseCommit: op.baseCommit }];
-    const revivalSurvivor = dreaming && op.op === "merge"
-      && this.getKnowledgeRevision(op.intoKnowledgeId, op.intoBaseCommit)?.op === "archive";
+    // 76: baseProblem accepts an archived base for a Dreamer revival, both for a merge survivor and
+    // for a plain update of the archived version (the "D reviews an archive" revoke/adjust path).
+    const revivalTarget = op.op === "merge" ? { knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }
+      : op.op === "update" ? { knowledgeId: op.knowledgeId, baseCommit: op.baseCommit } : undefined;
+    const revivalSurvivor = dreaming && revivalTarget !== undefined
+      && this.getKnowledgeRevision(revivalTarget.knowledgeId, revivalTarget.baseCommit)?.op === "archive";
     const writerInput = targets.length ? this.commitGraphInput() : undefined;
     const writerGraph = writerInput ? this.commitGraph(path, undefined, undefined, writerInput) : undefined;
     const seen = new Set<number>();
@@ -2426,7 +2442,7 @@ export class Store {
           return { ok: false, reason: `K${target.knowledgeId}@${target.baseCommit}: base belongs to ${owner}, outside Dreamer pool ${dreamingPool}` };
       }
       const bad = this.baseProblem(target.knowledgeId, target.baseCommit, path,
-        revivalSurvivor && target.knowledgeId === op.intoKnowledgeId && target.baseCommit === op.intoBaseCommit, writerInput!.metadata);
+        revivalSurvivor && target.knowledgeId === revivalTarget!.knowledgeId && target.baseCommit === revivalTarget!.baseCommit, writerInput!.metadata);
       if (bad) return { ok: false, reason: bad };
       const validityProblem = this.resolvedBaseProblem(writerGraph!, target);
       if (validityProblem) return { ok: false, reason: validityProblem };
@@ -2504,6 +2520,28 @@ export class Store {
     return this.knowledgePools(path).find(value => value.pool === pool)?.pending ?? [];
   }
 
+  /** 76: the nearest ancestor of `revisionId`, walking the commit DAG's parent edges (ordinary
+   * `parent_id` plus merge/split links, exactly the edges `commitGraphInput` already collected into
+   * `parents`), that this pool has a processing record for — the version D last confirmed here.
+   * Undefined when no ancestor has one (shown whole as `New`, as today). BFS gives the nearest one
+   * on ties; only called for pending versions, and it walks no further than the first hit. */
+  private nearestProcessedAncestor(revisionId: number, pool: string, parents: Map<number, number[]>,
+    processed: ReadonlySet<string>): number | undefined {
+    const seen = new Set<number>([revisionId]);
+    let frontier = parents.get(revisionId) ?? [];
+    while (frontier.length) {
+      const next: number[] = [];
+      for (const id of frontier) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        if (processed.has(`${pool}:${id}`)) return id;
+        next.push(...(parents.get(id) ?? []));
+      }
+      frontier = next;
+    }
+    return undefined;
+  }
+
   /** One operation-local value: resolve globally before scope filtering, render each current body
    * once, and batch processing history. Never retain this value across a mutation or transaction. */
   knowledgePools(path: KnowledgePath, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
@@ -2512,25 +2550,54 @@ export class Store {
     const budgets = this.knowledgeBudgets(), input = this.commitGraphInput();
     const pools = [["global", budgets.global], [`project:${projectId}`, budgets.project], [`session:${path.sessionId}`, budgets.session]] as const;
     const versions = new Map<string, KnowledgeWithRevision[]>(pools.map(([pool]) => [pool, []]));
-    const current = this.commitGraph(path, undefined, undefined, input).current.filter(revision => revision.op !== "archive");
+    // 76: archives are pending too, but never count toward pool size or the injected block — they
+    // keep their own list, and D's own archives are excluded up front (own output, never pending).
+    const archivedVersions = new Map<string, KnowledgeWithRevision[]>(pools.map(([pool]) => [pool, []]));
+    const allCurrent = this.commitGraph(path, undefined, undefined, input).current;
+    const current = allCurrent.filter(revision => revision.op !== "archive");
+    const archives = allCurrent.filter(revision => revision.op === "archive" && revision.actorRole !== "dreaming");
     const knowledge = new Map(this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))")
-      .all(JSON.stringify(current.map(revision => revision.knowledgeId))).map(row => [Number(row.id), toKnowledge(row)]));
+      .all(JSON.stringify([...new Set([...current, ...archives].map(revision => revision.knowledgeId))]))
+      .map(row => [Number(row.id), toKnowledge(row)]));
     for (const revision of current) versions.get(placementOwner(this, { revision }, input.metadata))?.push({ knowledge: knowledge.get(revision.knowledgeId)!, revision });
-    const history = this.db.prepare(`SELECT p.pool, p.revision_id, r.knowledge_id FROM knowledge_processed p
-      JOIN knowledge_revisions r ON r.id = p.revision_id WHERE p.pool IN (SELECT value FROM json_each(?))`)
-      .all(JSON.stringify(pools.map(([pool]) => pool)));
+    for (const revision of archives) archivedVersions.get(placementOwner(this, { revision }, input.metadata))?.push({ knowledge: knowledge.get(revision.knowledgeId)!, revision });
+    const history = this.db.prepare(`SELECT p.pool, p.revision_id FROM knowledge_processed p
+      WHERE p.pool IN (SELECT value FROM json_each(?))`).all(JSON.stringify(pools.map(([pool]) => pool)));
     const processed = new Set(history.map(row => `${row.pool}:${row.revision_id}`));
-    const changed = new Set(history.map(row => `${row.pool}:${row.knowledge_id}`));
     const states = new Map(this.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool IN (SELECT value FROM json_each(?))")
       .all(JSON.stringify(pools.map(([pool]) => pool))).map(row => [String(row.pool), row]));
     return pools.map(([pool, budget]) => {
       const values = versions.get(pool)!;
       const rendered = new Map(values.map(value => [value.revision.id, renderKnowledge(value)]));
       const size = tokens(processedBlock(values, value => rendered.get(value.revision.id)!));
-      const pending = values.filter(value => !processed.has(`${pool}:${value.revision.id}`)).map(value => {
-        const material = `${changed.has(`${pool}:${value.revision.knowledgeId}`) ? "Changed" : "New"} K${value.revision.knowledgeId}@${value.revision.id}:\n${rendered.get(value.revision.id)!}`;
-        return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material };
-      }).sort((left, right) => left.revisionId - right.revisionId);
+      // 76: baseline lookup, segmentation and diff run only for a pending version that has a
+      // processed ancestor in this pool; a version with none is shown and weighed whole ("New").
+      const pendingUpdates = values.filter(value => !processed.has(`${pool}:${value.revision.id}`)).map(value => {
+        const baselineId = this.nearestProcessedAncestor(value.revision.id, pool, input.parents, processed);
+        const baseline = baselineId === undefined ? undefined : input.metadata.revisions!.get(baselineId);
+        if (!baseline) {
+          const material = `New K${value.revision.knowledgeId}@${value.revision.id}:\n${rendered.get(value.revision.id)!}`;
+          return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material };
+        }
+        const change = renderKnowledgeChange(value.revision.knowledgeId, baseline, value.revision);
+        const material = `Changed K${value.revision.knowledgeId}@${value.revision.id} (from @${baseline.id}):\n${change.text}`;
+        return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: change.addedTokens + change.removedTokens, material };
+      });
+      // 76: an archive shows the body it removed (its parent, since the archive itself stores empty
+      // text) whole, plus the diff from the baseline to that body when a baseline exists and differs
+      // from it (case B: D confirmed A, C changed A to B, then archived B). Weight is always the
+      // whole archived body, in case A and case B alike — never the diff.
+      const pendingArchives = (archivedVersions.get(pool) ?? []).filter(value => !processed.has(`${pool}:${value.revision.id}`)).map(value => {
+        const parent = value.revision.parentId === null ? undefined : input.metadata.revisions!.get(value.revision.parentId);
+        if (!parent) throw new Error(`K${value.revision.knowledgeId}@${value.revision.id}: archive has no archived body`);
+        const archivedBody = renderKnowledge({ knowledge: value.knowledge, revision: parent });
+        const baselineId = this.nearestProcessedAncestor(value.revision.id, pool, input.parents, processed);
+        const baseline = baselineId === undefined ? undefined : input.metadata.revisions!.get(baselineId);
+        const diffLine = baseline && baseline.id !== parent.id ? `\n${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent).text}` : "";
+        const material = `Archived K${value.revision.knowledgeId}@${value.revision.id} (reason: ${value.revision.reason}):\n${archivedBody}${diffLine}`;
+        return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(archivedBody), material };
+      });
+      const pending = [...pendingUpdates, ...pendingArchives].sort((left, right) => left.revisionId - right.revisionId);
       let reason: DueKnowledgePool["reason"] | null = null;
       const pendingTokens = pending.reduce((sum, value) => sum + value.tokens, 0);
       const effectiveTrigger = Math.min(dreamingTriggerTokens, budget);
@@ -2542,7 +2609,7 @@ export class Store {
         if (pending.length || !state || Number(state.last_over_size) !== size || Number(state.last_over_budget) !== budget)
           reason = "over-budget";
       }
-      return { pool, budget, tokens: size, versions: values, rendered, pending, reason };
+      return { pool, budget, tokens: size, versions: values, rendered, archived: archivedVersions.get(pool) ?? [], pending, reason };
     });
   }
 
