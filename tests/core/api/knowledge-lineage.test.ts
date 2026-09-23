@@ -308,6 +308,11 @@ test("34a: bound origin freezes the ordered native path through the exact same-T
   expect(compareTriggerOrigins(frozen, { sessionId: session.id + 1, entryIds: [first.id, trigger.id] })).toBe("independent");
   expect(compareTriggerOrigins(frozen, null)).toBe("unknown");
 
-  store.db.prepare("UPDATE source_paths SET entry_ids = '[999]' WHERE session_id = ? AND branch = 'main'").run(session.id);
-  expect(() => memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id })).toThrow(/trigger origin/i);
+  // Simulate a damaged native prefix in the normalized storage. Its header still agrees on
+  // count/tail, so the read must reject the missing source rather than silently shorten origin.
+  store.db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    store.db.prepare("UPDATE source_path_entries SET entry_id = 999 WHERE session_id = ? AND branch = 'main' AND position = 0").run(session.id);
+  } finally { store.db.exec("PRAGMA foreign_keys = ON"); }
+  expect(() => memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id })).toThrow(/source path|trigger origin/i);
 });
