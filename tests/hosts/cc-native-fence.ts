@@ -60,17 +60,19 @@ export function createFencedClaudeExecutable(dir: string, realExecutable: string
 // which would make the profile look like it denies nothing when it actually does — a raw socket
 // never consults a proxy, so it reports the sandbox's own decision. The spawned env carries only
 // PATH/HOME, so no proxy variable can reach it regardless.
-function sandboxedConnect(profilePath: string, host: string, port: number): Promise<"connected" | "denied" | "timeout"> {
+// Only the sandbox's own refusal (EPERM) counts as denied: an unreachable route or a refused port
+// would otherwise pass the preflight on a machine that is merely offline.
+function sandboxedConnect(profilePath: string, host: string, port: number): Promise<string> {
   const script = `const net=require("node:net");const s=net.createConnection({host:${JSON.stringify(host)},port:${port}});` +
     `const t=setTimeout(()=>{console.log("timeout");process.exit(2)},2000);` +
     `s.once("connect",()=>{clearTimeout(t);s.destroy();console.log("connected");process.exit(0)});` +
-    `s.once("error",()=>{clearTimeout(t);console.log("denied");process.exit(1)});`;
+    `s.once("error",e=>{clearTimeout(t);console.log(e.code==="EPERM"?"denied":"error:"+e.code);process.exit(1)});`;
   const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
   return execFileAsync(SANDBOX_EXEC_PATH, ["-f", profilePath, process.execPath, "-e", script], { timeout: 5_000, env })
-    .then(({ stdout }) => stdout.trim() as "connected" | "denied" | "timeout")
+    .then(({ stdout }) => stdout.trim())
     .catch((error: { stdout?: string }) => {
       const stdout = error.stdout?.trim();
-      if (stdout === "connected" || stdout === "denied" || stdout === "timeout") return stdout;
+      if (stdout) return stdout;
       throw error;
     });
 }
