@@ -37,7 +37,7 @@ test("67: 20k-entry atomic publication loads identities once and never reloads t
     expect(statements.filter(sql => /SELECT .*FROM source_entries/.test(sql))).toHaveLength(1);
     expect(statements.some(sql => /SELECT entry_ids FROM source_paths/.test(sql))).toBe(false);
     expect(turns).toHaveBeenCalledTimes(1);
-    expect(statements.length).toBeLessThanOrEqual(7);
+    expect(statements.length).toBeLessThanOrEqual(11);
     prepares.mockRestore(); turns.mockRestore();
     expect(store.selectedSourceEntryIds(owner.id, "main")).toEqual(ids);
     expect(store.db.prepare("SELECT lineage, branch, head_turn_id FROM session_lineage_cursors").all())

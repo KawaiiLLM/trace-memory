@@ -162,11 +162,16 @@ test("no-cursor owners remain globally applicable and recorded corruption fails 
     expect(store.currentKnowledge(readPath).map(value => value.revision.id)).toEqual([item.commit]);
 
     store.setCurrentPath(owner.id, "main", node.turn.id, "test-lineage");
-    for (const raw of ["{", JSON.stringify([999_999])]) {
-      store.db.prepare("UPDATE source_paths SET entry_ids = ? WHERE session_id = ? AND branch = 'main'").run(raw, owner.id);
-      expect(() => store.currentKnowledge(readPath)).toThrow(`session S${owner.id} has a corrupted recorded foreground`);
-    }
-    store.db.prepare("UPDATE source_paths SET entry_ids = ? WHERE session_id = ? AND branch = 'main'").run(JSON.stringify([node.entry.id]), owner.id);
+    store.db.prepare("UPDATE source_paths SET length = 2 WHERE session_id = ? AND branch = 'main'").run(owner.id);
+    expect(() => store.currentKnowledge(readPath)).toThrow(`session S${owner.id} has a corrupted recorded foreground`);
+    store.db.prepare("UPDATE source_paths SET length = 1 WHERE session_id = ? AND branch = 'main'").run(owner.id);
+    store.db.exec("PRAGMA foreign_keys = OFF");
+    store.db.prepare("UPDATE source_path_entries SET entry_id = 999999 WHERE session_id = ? AND branch = 'main'").run(owner.id);
+    store.db.prepare("UPDATE source_paths SET tail_entry_id = 999999 WHERE session_id = ? AND branch = 'main'").run(owner.id);
+    store.db.exec("PRAGMA foreign_keys = ON");
+    expect(() => store.currentKnowledge(readPath)).toThrow(`session S${owner.id} has a corrupted recorded foreground`);
+    store.db.prepare("UPDATE source_path_entries SET entry_id = ? WHERE session_id = ? AND branch = 'main'").run(node.entry.id, owner.id);
+    store.db.prepare("UPDATE source_paths SET tail_entry_id = ? WHERE session_id = ? AND branch = 'main'").run(node.entry.id, owner.id);
     store.db.prepare("UPDATE turns SET parent_turn_id = id WHERE id = ?").run(node.turn.id);
     expect(() => store.currentKnowledge(readPath)).toThrow(`session S${owner.id} has a corrupted recorded foreground`);
   } finally { store.close(); }
