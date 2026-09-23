@@ -2,7 +2,9 @@ import { expect, test, vi } from "vitest";
 import * as api from "../../../src/core/api/index.ts";
 import { host, reply } from "./test-host.ts";
 
-test.each(["automatic", "catchup", "recovery"] as const)("%s releases a rejected slot once and admits later work without completion chaining", async mode => {
+// 73: bounded recovery is deleted, so `session_before_compact` no longer admits a Noting task of its
+// own — only the "automatic" and "catchup" triggers remain eligible for this slot-lifecycle case.
+test.each(["automatic", "catchup"] as const)("%s releases a rejected slot once and admits later work without completion chaining", async mode => {
   const create = api.TraceMemory, facades: ReturnType<typeof create>[] = [];
   const factory = vi.spyOn(api, "TraceMemory").mockImplementation((...args) => {
     const memory = create(...args); facades.push(memory); return memory;

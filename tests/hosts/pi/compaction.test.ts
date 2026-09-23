@@ -50,21 +50,18 @@ test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary unde
   } finally { await h.dispose(); }
 });
 
-test("20c 2026-09-08 scenario 11: the host returns no custom replacement when compact delegates, and an attempt that never persists establishes no boundary", async () => {
-  // Many tiny entries: their bounded views together exceed the compaction envelope, and 30 left no
-  // second, tighter rendering to try — the delegation is what represents them.
-  // 28a: that envelope is the sum of the three windows, and lending between them means all three have
-  // to be small for the required Raw to miss it; the Noter's batch ceiling is not a budget compact
-  // reads at all. Each entry alone still fits a batch, so a Noter can run afterwards (review
-  // 2026-09-08: a budget the mandatory material cannot fit reduces or holds the task rather than
-  // running over it).
+test("73: many tiny entries over the Raw window truncate to the newest span rather than delegate, and compact starts no worker", async () => {
+  // Many tiny entries: their bounded views together exceed the Raw window plus its (zeroed) shared
+  // allowance. 73: there is no fallback any more — compact keeps the newest contiguous span and
+  // receipts the rest, and the failing Noter below is irrelevant to that (compact never runs a worker
+  // of its own, with or without recovery).
   const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "dreaming.triggerTokens": 1,
-    "compaction.factsTokens": 50, "compaction.rawTokens": 50 });
+    "compaction.factsTokens": 50, "compaction.rawTokens": 50, "compaction.sharedAllowanceTokens": 1 });
   try {
     h.memory.setKnowledgeBudget("global", 0);
     h.memory.setKnowledgeBudget("project", 0);
     h.memory.setKnowledgeBudget("session", 0);
-    failing(h); // repeated Noter failures are what make a session hard to compact
+    failing(h); // repeated Noter failures leave entries pending; unrelated to compact's own truncation
     for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i} ` + "word ".repeat(250)); await h.answer(); await h.emit("agent_settled"); await h.drain(); }
     // 32c: repeated failures now disable enrollment. Explicitly resume before testing the
     // compaction boundary itself; this imports the disabled interval and resets its streak.
@@ -73,21 +70,20 @@ test("20c 2026-09-08 scenario 11: the host returns no custom replacement when co
     const runsBefore = h.memory.store.listRuns(1).length;
     const pendingBefore = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
-    expect(result).toBeUndefined(); // no summary at all: Pi's own compaction path runs and reports
-    expect(h.notices.at(-1)).toContain("compaction preparing native delegation");
-    expect(h.notices.at(-1)).toContain("exceed");
-    // 28b: a required window over budget is now one bounded recovery attempt before the delegation —
-    // this Noter fails, as it has all along, so the delegation and everything below are unchanged.
-    // What the delegation itself does is still nothing: no further run, no progress, no erased source.
-    expect(h.memory.store.listRuns(1)).toHaveLength(runsBefore + 1);
-    expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("failure");
-    expect(h.notices.at(-1)).toContain("(after recovery: Noting)");
+    expect(result.compaction.summary).toContain("earlier entries omitted from the Raw window");
+    expect(h.notices.some(n => n.includes("compaction preparing bounded entry views"))).toBe(true);
+    // The foreground truncation warning, at the end: what was omitted, and that it stays pending.
+    expect(h.notices.at(-1)).toContain("compaction omitted");
+    expect(h.notices.at(-1)).toContain("pending Raw");
+    expect(h.notices.at(-1)).toContain("pending for Noting and Consolidation");
+    // Compact itself never runs a worker (with or without recovery) and never touches progress.
+    expect(h.memory.store.listRuns(1)).toHaveLength(runsBefore);
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pendingBefore);
-    // Pi persists a compaction entry only when compaction succeeded, so this failed/cancelled route
-    // wrote none — and the next fork-mode Noter is not downgraded: every entry is still retained.
+    // Pi persists the (truncated) compaction entry; the next fork-mode Noter is downgraded because
+    // the compaction dropped entries from the inherited context, same as any other truncated summary.
+    await h.emit("session_compact", { compactionEntry: h.compaction(result.compaction.summary), fromExtension: true });
     await work(h, long("more"));
     expect(response(h).requestedMode).toBe("fork");
-    expect(String(response(h).fallbackReason)).not.toContain("Raw availability");
   } finally { await h.dispose(); }
 });
 

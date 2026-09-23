@@ -387,10 +387,12 @@ test("review 2026-09-08 P2: the branch carry reads every pending entry, keeps th
     const carry = h.memory.branchSummary(1, "main", 1);
     expect(carry).toContain("LAST_PENDING_SENTINEL");
     expect(carry).toMatch(/\[\.\.\. \d+ earlier pending entries omitted from the carry budget/);
-    // 30: the same backlog is over compaction's envelope and there is no tighter rendering left to
-    // fall back on, so compact delegates to the host instead of dropping an entry to fit; the carry's
-    // own receipt above is what states an omission here.
-    expect("native" in h.memory.compact(1, "main", 1)).toBe(true);
+    // 30/73: the same backlog is over compaction's Raw window and there is no tighter rendering or
+    // fallback left to try — compact truncates to the newest contiguous span instead, with its own
+    // receipt; the carry's receipt above is a separate, independent omission.
+    const compacted = h.memory.compact(1, "main", 1);
+    expect("native" in compacted).toBe(false);
+    if (!("native" in compacted)) expect(compacted.truncated?.raw).toBeTruthy();
   } finally { await h.dispose(); }
 });
 
@@ -574,5 +576,5 @@ test("23/30: the removed budget keys and a part budget above the ceiling are rej
   expect(() => host({ "compaction.factsTokens": -1 })).toThrow("Invalid compaction.factsTokens");
   expect(() => host({ "compaction.rawTokens": 0 })).toThrow("Invalid compaction.rawTokens: expected a positive safe integer");
   expect(() => host({ "compaction.episodicBlockTokens": 10 })).toThrow("Unknown setting compaction.episodicBlockTokens");
-  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000 });
+  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000, sharedAllowanceTokens: 10_000 });
 });

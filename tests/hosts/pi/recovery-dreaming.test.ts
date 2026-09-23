@@ -41,7 +41,7 @@ test("64c: due changed knowledge fits the knowledge window without compaction Dr
   } finally { await h.dispose(); }
 });
 
-test("64c: genuinely oversized required Raw delegates natively; pending knowledge does not fake retention or a Dreamer run", async () => {
+test("73: genuinely oversized pending Raw truncates to the newest span; pending knowledge does not fake retention or a Dreamer run", async () => {
   const { h, store } = await seeded({ rawTokens: 100 });
   try {
     h.memory.setKnowledgeBudget("global", 0);
@@ -52,8 +52,10 @@ test("64c: genuinely oversized required Raw delegates natively; pending knowledg
       nativeId: `extra-${i}`, role: "assistant", text: "word ".repeat(3_000), raw: "", calls: [] });
     h.memory.selectEntries(1, "main", store.listSourceEntries(1).map(entry => entry.id));
     const result = await compact(h);
-    expect(result).toBeUndefined();
-    expect(h.notices.at(-1)).toContain("native delegation");
+    // 73: no fallback. Compact truncates to the newest contiguous Raw span instead of delegating, and
+    // the foreground warns about what it omitted.
+    expect(result.compaction).toBeTruthy();
+    expect(h.notices.some(n => n.includes("compaction omitted"))).toBe(true);
     expect(h.requests.every(request => !JSON.stringify(request).includes("# Dreamer"))).toBe(true);
     expect(store.listRuns(1).filter(run => run.kind === "dreaming")).toEqual([]);
   } finally { await h.dispose(); }
