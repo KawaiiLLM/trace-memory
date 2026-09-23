@@ -1,7 +1,7 @@
 import { loadPrompt } from "../prompts/load.ts";
 import { createHash } from "node:crypto";
 import type { Store, RunInput, TaskClaim } from "../store/index.ts";
-import { deriveSharedMaterialAllowance, processedBlock } from "../store/processing.ts";
+import { processedBlock } from "../store/processing.ts";
 import { budgetKnowledge, renderFact, renderFactGroups, renderKnowledgeBlock, tokens } from "../render/index.ts";
 import { dreamingToolDefinitions, type bindTools } from "../api/tools.ts";
 import type { AgentControl, RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
@@ -67,8 +67,7 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
 
   const references = due.versions.filter(value => !frozenIds.has(value.revision.id));
   const budgets = store.knowledgeBudgets();
-  const knowledgeCapacity = budgets.injection + deriveSharedMaterialAllowance({ noting: config.noting.triggerTokens,
-    consolidation: config.consolidation.triggerTokens, dreaming: config.dreaming.triggerTokens });
+  const knowledgeCapacity = budgets.injection + config.compaction.sharedAllowanceTokens;
   if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Dreamer Knowledge capacity must be a safe integer");
   // Changed and current references share one Knowledge window, not two independent allowances.
   const processedInputCap = knowledgeCapacity - tokens(changed) - 1;

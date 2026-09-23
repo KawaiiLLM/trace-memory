@@ -7,7 +7,6 @@ import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type Fact, type FactRelation, t
 import { budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { injectionText, compactText, measuredMemory, type MemoryComposition, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
-import { deriveSharedMaterialAllowance } from "../store/processing.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
  * run's tool binding, never by the model: they decide which knowledge a label is judged against and,
@@ -68,35 +67,33 @@ export interface TopicGroups {
   unclassified: { knowledgeId: number; commit: number }[];
 }
 
-/** Ticket 20 "Compaction escalation", as tickets 30 and 28a left it: what compact can produce for one
- * frozen read snapshot. The first form is the complete custom replacement the host may hand to Pi —
- * every pending fact and every pending entry is represented in it, the entries in the one bounded
- * view, with the spare allowance refilled by recent consolidated facts and recent already-extracted
- * Raw. `native` is the explicit ask that the host decline the custom summary and let Pi's own
- * compaction run, with the reason it could not be avoided: each required-window excess and the
- * shared overflow shortfall. There is no third outcome: compact never trims a pending window to make
- * the block fit, and core never summarizes with a model.
+/** Ticket 73 "Shared allowance": what compact can produce for one frozen read snapshot. The one
+ * outcome is the complete custom replacement the host hands to Pi — knowledge fills its base and
+ * borrows the shared allowance first, then the newest contiguous Raw span (pending entries borrowing
+ * what knowledge left, already-noted entries filling only the Raw base), then the newest facts before
+ * that span (unconsolidated facts borrowing, consolidated only within the facts base). Compact never
+ * falls back: material Noting or Consolidation has not yet processed is truncated — newest kept,
+ * oldest omitted with a receipt — rather than escalated to a native delegation, and it stays pending
+ * in the store either way. `native` remains only for a host-caught error unrelated to capacity (a
+ * store error, an invalid path); core itself never constructs it.
  *
  * 29a "Renderers return what they kept": beside the replacement text, the identities it actually
  * carries — every supplied entry, pending and refilled alike, plus the facts and knowledge commits
  * that survived budgeting. What a budget dropped is absent here. A native delegation supplies
  * nothing, so it has no `supplied` at all. */
-export type CompactResult = { text: string; supplied: SuppliedMaterial; composition?: MemoryComposition; charged?: ChargedWindows }
-  /** 28b: `over` says which required window overflowed, so the host's bounded recovery can decide
-   * which phase to run without reading the prose of `reason`. It is present exactly when a required
-   * window excess cannot fit the shared allowance — the one condition recovery can act on. A delegation for any other
-   * reason (an entry whose minima exceed the view profile, a store error the host caught) carries
-   * none, and recovery starts nothing for it. */
-  | { native: true; reason: string; over?: { knowledge: boolean; facts: boolean; raw: boolean } };
+export type CompactResult = { text: string; supplied: SuppliedMaterial; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt }
+  | { native: true; reason: string };
+
+/** 73 "Truncation is announced in the foreground": whenever compact omits unprocessed material —
+ * pending Raw entries or unconsolidated facts — the counts and tokens omitted per kind, so a host can
+ * warn its user. Absent when nothing unprocessed was omitted. */
+export interface TruncationReceipt { raw?: { entries: number; tokens: number }; facts?: { count: number; tokens: number } }
 
 /** 28a item 6: what one custom replacement charged, window by window, beside the text it produced.
- * Diagnostics — the outcome is still the custom replacement or the native delegation, and nothing
- * reads this to decide between them. `envelope` is the sum of the three bases and the runtime-derived shared
- * allowance, the ceiling the three charges together may never exceed. */
-export interface ChargedWindows { knowledge: number; facts: number; raw: number; envelope: number;
-  /** Required pending facts and Raw with framing, before optional fill. Knowledge has no required
-   * pending set; subtract these charges from the totals to measure optional supplements. */
-  required: { knowledge: number; facts: number; raw: number } }
+ * Diagnostics — nothing reads this to decide the outcome. `envelope` is the sum of the three bases
+ * and the shared allowance (73: a fixed configuration value), the ceiling the three charges together
+ * may never exceed. Nothing is required any more (73): every window is optional and truncates. */
+export interface ChargedWindows { knowledge: number; facts: number; raw: number; envelope: number }
 /** Foreground Knowledge delivery and the exact body/state identities its carrier may persist. */
 export interface Injection { text: string; knowledgeCommitIds: number[]; knowledgeStates?: KnowledgeStateReceipt[]; composition?: MemoryComposition }
 
@@ -339,9 +336,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility()): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
     const budgets = store.knowledgeBudgets();
-    const sharedAllowance = deriveSharedMaterialAllowance({ noting: config.noting.triggerTokens,
-      consolidation: config.consolidation.triggerTokens, dreaming: config.dreaming.triggerTokens });
-    const knowledgeCap = budgets.injection + sharedAllowance;
+    const knowledgeCap = budgets.injection + config.compaction.sharedAllowanceTokens;
     if (!Number.isSafeInteger(knowledgeCap)) throw new Error("derived foreground Knowledge capacity must be a safe integer");
     const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
     if (id !== undefined && !store.enabled(id)) return empty();
@@ -624,44 +619,32 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // One allocator: required state notices/facts/Raw first, then optional current knowledge and
     // Raw-first historical refill in each own base remainder. Scheduling pairs never affect it.
     // No worker, processing mark or coverage persistence is performed by this synchronous render.
+    // 73 "Shared allowance": one allocator, three windows, one pass — Knowledge first (borrowing the
+    // whole allowance), then the newest contiguous Raw span (pending entries borrowing what Knowledge
+    // left, already-noted entries only within the Raw base), then the newest facts before that span
+    // (unconsolidated facts borrowing what Raw left, consolidated only within the facts base). Nothing
+    // is required any more: every window truncates — newest kept, oldest omitted with a receipt —
+    // rather than escalating to a native delegation. Omitted material stays pending in the store.
     compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = []): CompactResult => {
       if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
       const snapshot = store.pathSnapshot(path); // one membership for this operation, knowledge and facts alike
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
-      // Freeze a read snapshot: the path's source entries and its facts, split into what must be
-      // represented and what may refill the spare. The rendering below reads these same sets.
       const sourced = head === undefined ? [] : store.sourcePath(sessionId, branch, head);
       const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head);
+      const pendingIds = new Set(pending.map(e => e.id));
       const knowledge = store.currentKnowledge(path, {}, snapshot);
       const visible = Array.isArray(retainedView) ? noVisibility() : retainedView as VisibleView;
       const retained = new Set(Array.isArray(retainedView) ? retainedView : visible.raw.keys());
-      // Knowledge processing is scheduling-only. Current versions are optional window material;
-      // processing pairs do not change selection, capacity failure, or fallback.
-      const notes = knowledgeStatusNotes(store, knowledge, visible.knowledgeCommitIds, path);
-      const noteCost = notes.length ? charge([KNOWLEDGE_STATUS_TITLE, ...notes]) : 0;
-      // 26 amendment 2: the facts are the ones applicable on the selected path, never the whole
-      // session's — a sibling branch's fact is not history here. `listSessionFacts`'s freshness order
-      // is what the refill selects by, so it is filtered, not replaced by `listBranchFacts`.
       const applicable = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, snapshot));
       const pendingFacts = store.unconsolidated(applicable, path, snapshot);
       const pendingFactIds = new Set(pendingFacts.map(f => f.id));
-      // Optional facts candidates: the already-consolidated facts of the path, deduplicated against the
-      // pending ones by construction, still in the freshness order the selection wants.
-      let consolidated = applicable.filter(f => !pendingFactIds.has(f.id) && !visible.factIds.has(f.id));
       const factTurns = store.factTurnTimes(applicable);
-      // Optional Raw candidates: the already-extracted entries of the path — the path minus what is
-      // still pending — minus what the post-compaction context retains, so nothing is supplied twice.
-      // An entry whose only earlier visibility was the summary this compaction discards is NOT
-      // excluded on that account (30 case 10): the exclusions are these two and no other.
-      const pendingIds = new Set(pending.map(e => e.id));
-      const extracted = sourced.filter(e => !pendingIds.has(e.id) && !retained.has(e.nativeId));
       const budgets = store.knowledgeBudgets();
-      const sharedAllowance = deriveSharedMaterialAllowance({ noting: config.noting.triggerTokens,
-        consolidation: config.consolidation.triggerTokens, dreaming: config.dreaming.triggerTokens });
+      const sharedAllowance = config.compaction.sharedAllowanceTokens;
       const caps = { knowledge: budgets.injection, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
       const envelope = caps.knowledge + caps.facts + caps.raw + sharedAllowance;
-      if (!Number.isSafeInteger(envelope)) throw new Error("derived compact envelope must be a safe integer");
+      if (!Number.isSafeInteger(envelope)) throw new Error("compact envelope must be a safe integer");
       // Every emitted component is charged inside the window that owns it: the `<episodic>` tag and
       // the facts title with the facts, the Raw title with the Raw, each block's omission receipts
       // with their own block. The `Receipts:` heading `finish` emits is charged to each window that
@@ -671,78 +654,125 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const factsCharge = (facts: Fact[], receipts: string[]) => charge([xmlBlock("episodic", ""), FACTS_TITLE])
         + charge(lines(facts)) + (receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0);
       const rawCharge = (contents: string[]) => charge([RAW_TITLE]) + charge(contents);
-      // The one bounded view of every pending entry (30). A view that cannot hold its own labels is a
-      // capacity failure of the profile, and the delegation below says so rather than hiding the
-      // entry. Any other rendering error is a data error and is reported (review 2026-09-08).
       const view = (entry: SourceEntry) => renderEntry(entry, config.render, resultText);
-      let views: EntryView[] | undefined;
-      try { views = pending.map(view); }
-      catch (error) { if (!/capacity/.test(String(error))) throw error; }
-      if (!views) return { native: true, reason: `bounded views of ${pending.length} pending entries exceed the entry view profile `
-        + `(E ${config.render.entryTokens}, C ${config.render.toolInputTokens}, R ${config.render.toolResultTokens} tokens): their labels and omission markers do not fit it` };
-      const requiredFacts = factsCharge(pendingFacts, []), requiredRaw = rawCharge(views.map(v => v.content));
-      const requiredKnowledge = noteCost;
-      const excess = { knowledge: Math.max(0, requiredKnowledge - caps.knowledge),
-        facts: Math.max(0, requiredFacts - caps.facts), raw: Math.max(0, requiredRaw - caps.raw) };
-      const totalExcess = excess.knowledge + excess.facts + excess.raw;
-      if (totalExcess > sharedAllowance) return { native: true,
-        over: { knowledge: excess.knowledge > 0, facts: excess.facts > 0, raw: excess.raw > 0 },
-        reason: `required material exceeds shared allowance: knowledge ${requiredKnowledge} tokens (excess ${excess.knowledge}, database Knowledge injection capacity ${caps.knowledge}); `
-          + `${pendingFacts.length} pending facts need ${requiredFacts} tokens (excess ${excess.facts}, compaction.factsTokens ${caps.facts}); `
-          + `bounded views of ${pending.length} pending entries need ${requiredRaw} tokens (excess ${excess.raw}, compaction.rawTokens ${caps.raw}); `
-          + `shared allowance ${sharedAllowance}, charged excess ${totalExcess}, shortfall ${totalExcess - sharedAllowance}` };
-      // Reserve required excess once. Optional material keeps the established order: Knowledge,
-      // historical Raw, then historical facts. Each may use only the shared remainder left by earlier
-      // selections; unused base windows do not lend, and processing pairs never affect selection.
-      let shared = sharedAllowance - totalExcess;
-      const active = budgetKnowledge(knowledge, Math.max(0, caps.knowledge - noteCost) + shared,
-        knowledgeLine, "Knowledge base plus remaining shared allowance", new Set());
-      shared -= Math.max(0, active.cost + noteCost - caps.knowledge) - excess.knowledge;
-      // The discarded summary is not retained coverage.
-      let rawSpare = Math.max(0, caps.raw - requiredRaw) + shared;
-      const refilledRaw: { entry: SourceEntry; content: string }[] = [];
-      for (const entry of [...extracted].reverse()) {
-        let content: string;
-        try { content = view(entry).content; } catch (error) { if (/capacity/.test(String(error))) continue; throw error; }
-        if (tokens(content) + 1 > rawSpare) break;
-        refilledRaw.push({ entry, content }); rawSpare -= tokens(content) + 1;
+
+      // ---- 1. Knowledge first: required status notices, newest kept, then bodies newest-first. ----
+      const knowledgeEnvelope = caps.knowledge + sharedAllowance;
+      const allNotes = knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path)
+        .sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit)
+        .map(note => note.text.replace(/(superseded by K\d+@\d+)$/, "$1 above"));
+      const noteReceipt = (omitted: number) => omitted
+        ? [`omitted ${omitted} older inherited knowledge status lines; knowledge base plus shared allowance is full`] : [];
+      const noteTextCost = (kept: number) => kept ? charge([KNOWLEDGE_STATUS_TITLE, ...allNotes.slice(0, kept)]) : 0;
+      const noteCost = (kept: number) => noteTextCost(kept) + charge(noteReceipt(allNotes.length - kept))
+        + (noteReceipt(allNotes.length - kept).length ? charge(["Receipts:"]) : 0);
+      let noteKept = allNotes.length;
+      while (noteKept > 0 && noteCost(noteKept) > knowledgeEnvelope) noteKept--;
+      const notes = allNotes.slice(0, noteKept);
+      const noteOmittedReceipt = noteReceipt(allNotes.length - noteKept);
+      const knowledgeNoticeCost = noteCost(noteKept);
+      const active = budgetKnowledge(knowledge, Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
+        knowledgeLine, "Knowledge base plus shared allowance", new Set());
+      const knowledgeUsed = knowledgeNoticeCost + active.cost;
+      let sharedAfterKnowledge = sharedAllowance - Math.max(0, knowledgeUsed - caps.knowledge);
+
+      // ---- 2. Raw second: the newest contiguous span. Pending entries borrow; noted entries only
+      // fill the Raw base remainder. The walk never skips an entry to reach an older one. ----
+      // Retained (visible elsewhere in the post-compaction context) excludes an already-noted entry
+      // from optional refill; it never excludes a still-pending one (30 case 10) — pending membership
+      // is the only thing that decides whether an entry must still be represented here.
+      const candidates = sourced.filter(e => pendingIds.has(e.id) || !retained.has(e.nativeId));
+      interface RawStep { entry: SourceEntry; content: string; receipts: string[]; fromAllowance: number }
+      const rawSteps: RawStep[] = [];
+      {
+        let rawBaseUsed = charge([RAW_TITLE]), allowanceUsed = 0;
+        for (let i = candidates.length - 1; i >= 0; i--) {
+          const entry = candidates[i]!;
+          let rendered: EntryView;
+          try { rendered = view(entry); } catch (error) { if (/capacity/.test(String(error))) break; throw error; }
+          const cost = tokens(rendered.content) + 1;
+          const availableBase = Math.max(0, caps.raw - rawBaseUsed);
+          if (pendingIds.has(entry.id)) {
+            const availableAllowance = Math.max(0, sharedAfterKnowledge - allowanceUsed);
+            if (cost > availableBase + availableAllowance) break;
+            const fromBase = Math.min(cost, availableBase);
+            rawBaseUsed += fromBase; allowanceUsed += cost - fromBase;
+            rawSteps.push({ entry, content: rendered.content, receipts: rendered.receipts, fromAllowance: cost - fromBase });
+          } else {
+            if (cost > availableBase) break;
+            rawBaseUsed += cost;
+            rawSteps.push({ entry, content: rendered.content, receipts: rendered.receipts, fromAllowance: 0 });
+          }
+        }
       }
-      const selectedRawCost = requiredRaw + charge(refilledRaw.map(value => value.content));
-      shared -= Math.max(0, selectedRawCost - caps.raw) - excess.raw;
-      const coverage = new Set([...sourced.filter(e => retained.has(e.nativeId)).map(e => e.id),
-        ...pendingIds, ...refilledRaw.map(s => s.entry.id)]);
-      const coveredFacts = store.factsCoveredByRaw(consolidated, coverage);
-      consolidated = consolidated.filter(f => !coveredFacts.has(f.id));
-      const spare = Math.max(0, caps.facts - requiredFacts) + shared;
-      // Refill (a): whole facts, freshness order, into the spare, charged to the facts window and the
-      // envelope. The receipt for what is left out is charged with them; when even that receipt does
-      // not fit, the refill is empty and silent — optional material may be omitted, never overspent.
+      const rawReceipt = (kept: number) => candidates.length - kept
+        ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window; read them with trace]`] : [];
+      const rawTotalCost = (kept: number) => {
+        const r = rawReceipt(kept);
+        return rawCharge(rawSteps.slice(0, kept).map(s => s.content)) + charge(r) + (r.length ? charge(["Receipts:"]) : 0);
+      };
+      const rawEnvelope = caps.raw + sharedAfterKnowledge;
+      let rawKept = rawSteps.length;
+      while (rawKept > 0 && rawTotalCost(rawKept) > rawEnvelope) rawKept--;
+      const rawFits = rawTotalCost(rawKept) <= rawEnvelope;
+      const rawFinalSteps = rawFits ? rawSteps.slice(0, rawKept) : [];
+      const rawFinalReceipt = rawFits ? rawReceipt(rawKept) : [];
+      sharedAfterKnowledge -= rawFinalSteps.reduce((sum, s) => sum + s.fromAllowance, 0);
+      const sharedAfterRaw = sharedAfterKnowledge;
+      // Displayed in source order (30: "display the selected Raw entries in source order").
+      const suppliedRaw = [...rawFinalSteps].reverse();
+      const rawOmitted = candidates.slice(0, candidates.length - suppliedRaw.length);
+      const rawOmittedPending = rawOmitted.filter(e => pendingIds.has(e.id));
+      const rawOmittedPendingTokens = rawOmittedPending.reduce((sum, e) => {
+        try { return sum + tokens(view(e).content) + 1; } catch { return sum; }
+      }, 0);
+
+      // ---- 3. Facts third: newest facts not wholly covered by the Raw span just chosen. ----
+      const coverage = new Set([...sourced.filter(e => retained.has(e.nativeId)).map(e => e.id), ...suppliedRaw.map(s => s.entry.id)]);
+      const factCandidates = applicable.filter(f => !visible.factIds.has(f.id));
+      const coveredFactIds = store.factsCoveredByRaw(factCandidates, coverage);
+      const eligibleFacts = factCandidates.filter(f => !coveredFactIds.has(f.id)); // already newest-first
       const omission = (rest: Fact[]) => rest.length ? [`omitted ${rest.length} older facts; expand: ${expandList(rest.map(f => `F${f.id}`))}`] : [];
-      let refilledFacts: Fact[] = [], factReceipts = omission(consolidated);
-      if (factsCharge(pendingFacts, factReceipts) - requiredFacts > spare) factReceipts = [];
-      else for (const fact of consolidated) {
-        const next = [...refilledFacts, fact], receipts = omission(consolidated.slice(next.length));
-        if (factsCharge([...pendingFacts, ...next], receipts) - requiredFacts > spare) break;
-        refilledFacts = next; factReceipts = receipts;
+      const factsTotalCost = (kept: number) => factsCharge(eligibleFacts.slice(0, kept), omission(eligibleFacts.slice(kept)));
+      let factsKept = 0, factsBaseUsed = charge([xmlBlock("episodic", ""), FACTS_TITLE]), factsAllowanceUsed = 0, prevFactsCost = factsBaseUsed;
+      for (const fact of eligibleFacts) {
+        const nextCost = factsCharge([...eligibleFacts.slice(0, factsKept), fact], []);
+        const marginal = nextCost - prevFactsCost;
+        const availableBase = Math.max(0, caps.facts - factsBaseUsed);
+        if (pendingFactIds.has(fact.id)) {
+          const availableAllowance = Math.max(0, sharedAfterRaw - factsAllowanceUsed);
+          if (marginal > availableBase + availableAllowance) break;
+          const fromBase = Math.min(marginal, availableBase);
+          factsBaseUsed += fromBase; factsAllowanceUsed += marginal - fromBase;
+        } else {
+          if (marginal > availableBase) break;
+          factsBaseUsed += marginal;
+        }
+        factsKept++; prevFactsCost = nextCost;
       }
-      const facts = [...pendingFacts, ...refilledFacts];
-      // Displayed in source order, pending and refilled alike (30: "display the selected Raw entries
-      // in source order"; no new relevance ranking).
-      const order = new Map(sourced.map((entry, index) => [entry.id, index]));
-      const supplied = [...pending.map((entry, index) => ({ entry, content: views![index]!.content })), ...refilledRaw]
-        .sort((a, b) => order.get(a.entry.id)! - order.get(b.entry.id)!);
-      const material = { knowledge: active.groups, facts: lines(facts),
-        entries: supplied.map(s => ({ id: s.entry.id, view: s.content })),
-        receipts: [...views.flatMap(v => v.receipts), ...factReceipts, ...active.receipts] };
+      const factsEnvelope = caps.facts + sharedAfterRaw;
+      while (factsKept > 0 && factsTotalCost(factsKept) > factsEnvelope) factsKept--;
+      const factsFit = factsTotalCost(factsKept) <= factsEnvelope;
+      const finalFacts = factsFit ? eligibleFacts.slice(0, factsKept) : [];
+      const finalFactReceipts = factsFit ? omission(eligibleFacts.slice(factsKept)) : [];
+      const factsOmittedPending = eligibleFacts.slice(finalFacts.length).filter(f => pendingFactIds.has(f.id));
+      const factsOmittedPendingTokens = factsOmittedPending.length ? charge(lines(factsOmittedPending)) : 0;
+
+      const truncated: TruncationReceipt = {};
+      if (rawOmittedPending.length) truncated.raw = { entries: rawOmittedPending.length, tokens: rawOmittedPendingTokens };
+      if (factsOmittedPending.length) truncated.facts = { count: factsOmittedPending.length, tokens: factsOmittedPendingTokens };
+
+      const material = { knowledge: active.groups, facts: lines(finalFacts),
+        entries: suppliedRaw.map(s => ({ id: s.entry.id, view: s.content })),
+        receipts: [...suppliedRaw.flatMap(s => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...active.receipts, ...noteOmittedReceipt] };
       return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
-        // 29a "Renderers return what they kept": exactly the identities this replacement carries,
-        // pending and refilled alike. What a budget left out is absent here (28a item 7).
-        supplied: { entries: supplied.map(s => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" as const })),
-          factIds: facts.map(f => f.id), knowledgeCommitIds: active.commits },
-        // 28a item 6: the per-window accounting beside the text, for the acceptance probe and for
-        // 28b's recovery decision. It is diagnostics, not a second outcome.
-        charged: { knowledge: active.cost + noteCost, facts: factsCharge(facts, factReceipts), raw: rawCharge(supplied.map(s => s.content)),
-          envelope, required: { knowledge: requiredKnowledge, facts: requiredFacts, raw: requiredRaw } } };
+        // 29a "Renderers return what they kept": exactly the identities this replacement carries.
+        // What a budget left out is absent here (28a item 7) and stays pending in the store.
+        supplied: { entries: suppliedRaw.map(s => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" as const })),
+          factIds: finalFacts.map(f => f.id), knowledgeCommitIds: active.commits },
+        // The per-window accounting beside the text, for the acceptance probe; diagnostics only.
+        charged: { knowledge: knowledgeUsed, facts: factsTotalCost(finalFacts.length), raw: rawTotalCost(suppliedRaw.length), envelope },
+        ...(Object.keys(truncated).length ? { truncated } : {}) };
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
       if (!store.enabled(sessionId)) return "";
