@@ -9,6 +9,10 @@ const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const plugin = resolve(root, "plugin");
 const output = resolve(plugin, "dist", "cc.cjs");
 const temporary = `${output}.${process.pid}.${randomUUID()}.tmp`;
+// Ticket 75: the status command is its own tiny bundle, built separately so it never carries `cc.cjs`'s
+// SDK, Store or prompt weight — the whole point of a bundle entry that "never opens the database".
+const statusOutput = resolve(plugin, "dist", "status.cjs");
+const statusTemporary = `${statusOutput}.${process.pid}.${randomUUID()}.tmp`;
 mkdirSync(dirname(output), { recursive: true });
 const promptLoader = {
   name: "trace-memory-prompts",
@@ -52,4 +56,29 @@ try {
 }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) console.log(await buildCc());
+/** Ticket 75: a separate, deliberately plain bundle — no prompt loader, no Node-version banner, no
+ * `import.meta.url` shim, none of which the status command needs — so it stays cheap to load. */
+export async function buildCcStatus(buildImplementation = build) {
+try {
+  await buildImplementation({
+    entryPoints: [resolve(root, "src/hosts/cc/status-bundle-entry.ts")],
+    outfile: statusTemporary,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node24",
+    sourcemap: false,
+    legalComments: "none",
+  });
+  renameSync(statusTemporary, statusOutput);
+  return statusOutput;
+} catch (error) {
+  rmSync(statusTemporary, { force: true });
+  throw error;
+}
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  console.log(await buildCc());
+  console.log(await buildCcStatus());
+}
