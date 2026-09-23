@@ -61,7 +61,7 @@ test("scheduler notifies admission and settlement, and a failing notify never bl
   let release!: (value: unknown) => void;
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
     store: { enabled: () => true, pendingEntryIds: () => [1, 2], consolidationBatch: () => [], getClaim: () => null, closedTasks: () => [],
-      getSourceEntry: (id: number) => ({ id, turnId: 1 }) },
+      getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "s0" },
     taskEligibility: vi.fn((phase: string) => ({ due: phase === "noting" })),
     noting: vi.fn(async () => { await new Promise(resolve => { release = resolve; }); return { outcome: "success", facts: [] }; }),
     consolidate: vi.fn(async () => ({ outcome: "success" })), dream: vi.fn(async () => ({ outcome: "success" })) };
@@ -79,7 +79,7 @@ test("a throwing notify never prevents admission or settlement (fault isolation)
   const tick = () => new Promise<void>(resolve => setImmediate(resolve));
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
     store: { enabled: () => true, pendingEntryIds: () => [1, 2], consolidationBatch: () => [], getClaim: () => null, closedTasks: () => [],
-      getSourceEntry: (id: number) => ({ id, turnId: 1 }) },
+      getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "s0" },
     taskEligibility: vi.fn((phase: string) => ({ due: phase === "noting" })),
     noting: vi.fn(async () => ({ outcome: "success", facts: [] })), consolidate: vi.fn(), dream: vi.fn() };
   const scheduler = new CcTaskScheduler(memory as any, worker, () => {}, () => { throw new Error("publish exploded"); });
