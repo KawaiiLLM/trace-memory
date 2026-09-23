@@ -168,29 +168,48 @@ test("22d: an unknown or non-JSON usage counts its run and contributes no observ
   expect(memory.spend(sessionId)).toMatchObject({ input: one.input, cost: one.cost });
 });
 
-// 71: listRunUsage stopped reparsing every response through six SQL json1 calls; these cases pin
-// that the replacement (a) never parses one response more than once, (b) always reads the row fresh
-// — an amendment from a second connection is seen with no cache to invalidate — and (c) still keeps
-// `since` an inclusive UTC boundary across midnight, the shape spendSince's daily figure depends on.
-test("71: listRunUsage parses each response at most once, whatever its shape", async () => {
+// 71: listRunUsage keeps 22d's invariant — the request and response audit bodies never enter
+// JavaScript — while stopping the six-SQL-json1-call reparse per row. These cases pin that (a) SQL
+// hands JavaScript only the small usage extraction, never the response text itself, whatever the
+// response's shape (a large body, a stray scalar `usage`, a string that itself looks like JSON, a
+// non-JSON response, or no response at all), (b) an amendment from a second connection is seen with
+// no cache to invalidate, and (c) `since` stays an inclusive UTC boundary across midnight.
+test("71: listRunUsage hands JavaScript only the extracted usage, never the response body", async () => {
   expect((await noting()).outcome).toBe("success");
   const runId = memory.store.listRuns(sessionId)[0]!.id;
   const write = (response: unknown) => memory.store.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify(response), runId);
-  write({ usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } } });
+  const bigOutput = "x".repeat(200_000);
+  write({ output: bigOutput, usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } } });
   memory.store.recordRun({ kind: "consolidation", sessionId, branch: "main", outcome: "cancelled", createdAt: time,
     response: JSON.stringify({ usage: null }) });
   memory.store.recordRun({ kind: "manual", sessionId, branch: "main", outcome: "failure", createdAt: time, response: "not json at all" });
   memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: time, response: null as unknown as string });
+  // A stray non-object usage, including one whose string contents look like a JSON object — it must
+  // stay "observed, all fields zero", never be reparsed into an object by its own textual shape.
+  memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: time,
+    response: JSON.stringify({ usage: '{"input":999}' }) });
 
-  const rows = memory.store.listRuns(sessionId);
-  const original = JSON.parse;
-  let parses = 0;
-  (JSON as unknown as { parse: typeof JSON.parse }).parse = ((...args: Parameters<typeof JSON.parse>) => { parses++; return original(...args); }) as typeof JSON.parse;
+  const original = memory.store.db.prepare.bind(memory.store.db);
+  const resultChars: number[] = [];
+  (memory.store.db as unknown as { prepare: typeof memory.store.db.prepare }).prepare = ((sql: string) => {
+    const statement = original(sql);
+    if (!sql.includes("json_extract")) return statement;
+    const all = statement.all.bind(statement);
+    statement.all = ((...args: Parameters<typeof statement.all>) => {
+      const rows = all(...args) as unknown as { fields: string | null }[];
+      for (const row of rows) resultChars.push(row.fields?.length ?? 0);
+      return rows;
+    }) as unknown as typeof statement.all;
+    return statement;
+  }) as typeof memory.store.db.prepare;
   let usage: ReturnType<typeof memory.store.listRunUsage>;
-  try { usage = memory.store.listRunUsage(sessionId); } finally { (JSON as unknown as { parse: typeof JSON.parse }).parse = original; }
-  const responded = rows.filter(r => r.response !== null).length; // JSON.parse(null-column) is never attempted
-  expect(parses).toBe(responded); // exactly one parse attempt per row that has a response body, never more
-  expect(usage.map(u => u.usage === null)).toEqual([false, true, true, true]);
+  try { usage = memory.store.listRunUsage(sessionId); }
+  finally { (memory.store.db as unknown as { prepare: typeof memory.store.db.prepare }).prepare = original; }
+
+  expect(resultChars).toHaveLength(5);
+  for (const chars of resultChars) expect(chars).toBeLessThan(200); // never anywhere near the 200,000-char response
+  expect(usage.map(u => u.usage === null)).toEqual([false, true, true, true, false]);
+  expect(usage[4]!.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }); // the string usage: all zero, not reparsed
 });
 
 test("71: an amendment from a second connection to the same file is reflected with no stale cache", async () => {

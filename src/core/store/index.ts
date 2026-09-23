@@ -2619,42 +2619,40 @@ export class Store {
     return this.db.prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
   }
   /** 22d: one row per run of a session, carrying its kind and the usage it recorded — projected out
-   * of `runs.response`, so the request audit body and the rest of the response never leave this
-   * function. `usage` is null exactly when the run recorded no usage observation — a response
+   * of `runs.response` in SQL, so the request audit body and the rest of the response never leave
+   * this function. `usage` is null exactly when the run recorded no usage observation — a response
    * without one, a cancelled run whose usage is unknown, or a response that is not JSON at all. A
    * run whose usage object exists but is empty is an observation of zeros, and is reported as one;
    * nothing here manufactures a zero for a missing one (parent 22, "Capacity and accounting").
    *
-   * 71: SQLite's `json_valid`/`json_extract` each re-tokenize the whole `response` text from
-   * scratch, and the query below needed six of them per row (one `json_valid` guard repeated per
-   * extraction, and `json_type` again for the presence check) — the dominant cost of a footer
-   * refresh's spend figure was reparsing already-read bytes, not reading them. One `JSON.parse` per
-   * row here replaces all of them: still exactly the semantics above (an invalid body or a missing
-   * value produces "no observation", never a fabricated zero), still read fresh on every call — no
-   * cache, so an amendment already committed to this row (by this connection or another one) is
-   * always the value returned. */
+   * 71: one `json_extract` call with every path it needs (the four counters, the cost total and
+   * `$.usage` itself, to tell "recorded" from "missing or explicit null") replaces what used to be
+   * six separate `json_valid`/`json_extract`/`json_type` calls, each re-tokenizing the whole
+   * response from scratch. A multi-path `json_extract` parses the response once and returns a small
+   * JSON array of just those six values — confirmed on a 200 KB response body: the returned column
+   * text was 90 bytes, not 200 KB. The array's last element is `$.usage` itself, preserved with its
+   * real JSON type (object, scalar, or absent) rather than flattened to raw SQL text, so a stray
+   * string usage value can never be mistaken for an object whose contents happen to look like JSON.
+   * The tiny array is the only JSON.parse this function ever does. */
   /** Run usage of one session, or of every session when `sessionId` is null (51: the footer's
    * database-wide daily figure); `since` keeps runs created at or after that UTC instant. */
   listRunUsage(sessionId: number | null, since?: string): { kind: RunKind; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | null }[] {
-    const rows = this.db.prepare(`SELECT kind, response FROM runs
-      WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR created_at >= ?) ORDER BY id`)
-      .all(sessionId, sessionId, since ?? null, since ?? null) as { kind: RunKind; response: string | null }[];
+    const rows = this.db.prepare(`SELECT kind,
+        CASE WHEN json_valid(response) THEN json_extract(response,
+          '$.usage.input', '$.usage.output', '$.usage.cacheRead', '$.usage.cacheWrite', '$.usage.cost.total', '$.usage') END fields
+      FROM runs WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR created_at >= ?) ORDER BY id`)
+      .all(sessionId, sessionId, since ?? null, since ?? null) as { kind: RunKind; fields: string | null }[];
     const count = (value: unknown) => (typeof value === "number" ? value : 0);
     return rows.map(row => {
-      let parsed: unknown;
-      // A response that is not JSON at all (a plain failure reason) parses to nothing, exactly the
-      // "no observation" case a missing or null `usage` key already produces.
-      try { parsed = row.response === null ? undefined : JSON.parse(row.response); } catch { parsed = undefined; }
-      const body = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
-      const usage = body?.usage;
-      if (usage === undefined || usage === null) return { kind: row.kind, usage: null };
+      if (row.fields === null) return { kind: row.kind, usage: null }; // response was not valid JSON at all
+      const [input, output, cacheRead, cacheWrite, costTotal, usage] = JSON.parse(row.fields) as unknown[];
+      // `json_type`'s distinction between a missing key and an explicit JSON null does not matter
+      // here: both are "no observation" in the result below, so one null check covers both.
+      if (usage === null) return { kind: row.kind, usage: null };
       // A recorded but non-object `usage` (a stray scalar) still counts the run as observed, with
-      // every field defaulting to 0 — the same answer `json_extract` over a non-object path gave.
-      const fields = usage && typeof usage === "object" && !Array.isArray(usage) ? usage as Record<string, unknown> : {};
-      const cost = fields.cost;
-      const costTotal = cost && typeof cost === "object" && !Array.isArray(cost) ? (cost as Record<string, unknown>).total : undefined;
-      return { kind: row.kind, usage: { input: count(fields.input), output: count(fields.output),
-        cacheRead: count(fields.cacheRead), cacheWrite: count(fields.cacheWrite), cost: count(costTotal) } };
+      // every field defaulting to 0 — `$.usage.input` etc. already resolved to null for it above.
+      return { kind: row.kind, usage: { input: count(input), output: count(output),
+        cacheRead: count(cacheRead), cacheWrite: count(cacheWrite), cost: count(costTotal) } };
     });
   }
   listFactsByRun(runId: number): Fact[] {
