@@ -786,7 +786,7 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
       ] };
       if (round === 2) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `write-${sequence}`, name: "memory", arguments: {
         operations: [{ op: "update", id: `K1@${current.id}`, text, category: "constraint", scope: "project", topics: [], supports: [`F${factId}`], reason: `Update from ${path.branch}.` },
-          { op: "archive", id: triggerAddress, supports: [], reason: "Retire explicit host trigger." }], skipped: [],
+          { op: "archive", id: triggerAddress, supports: [], reason: "Retire explicit host trigger." }] as const, skipped: [],
       } }] };
       return reply("Done.");
     });

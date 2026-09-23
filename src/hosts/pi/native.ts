@@ -366,7 +366,15 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     // against the same allowance. `null` is Pi's unknown (a compaction inside the child with no valid
     // reply after it): unknown is not zero and not an overflow either, so it refuses nothing.
     const measured = session.getContextUsage()?.tokens;
-    task.onRequest(snapshot(body), measured ?? undefined);
+    try { task.onRequest(snapshot(body), measured ?? undefined); } catch (error) {
+      // A refusal is this host's verdict, not a provider error, so it ends the child as the tool-round
+      // cap does. Thrown alone it reaches Pi's retry classifier, which matches digits such as "500"
+      // inside the token counts; Pi 0.87 then omits the refused attempt and re-measures without the
+      // usage that refused it, and the retried round goes out.
+      exceeded = true; failure = error instanceof Error ? error.message : String(error);
+      void session.abort();
+      throw error;
+    }
     task.onProgress({ usage, retries });
     return inherited ? inherited(payload as never, model as never) : payload;
   };
@@ -448,7 +456,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
 
   // `prompt()` resolving is not success: the outcome comes from the child's terminal response,
   // and core keeps a committed batch when that response failed.
-  const aborted = !exceeded && (task.signal?.aborted || terminal?.stopReason === "aborted"); // the cap aborts the child itself: a failure, not a cancellation
+  const aborted = !exceeded && (task.signal?.aborted || terminal?.stopReason === "aborted"); // a cap or refusal aborts the child itself: a failure, not a cancellation
   const failed = failure !== undefined || terminal === undefined || terminal.stopReason === "error" || terminal.stopReason === "length" || terminal.errorMessage !== undefined;
   const outcome = aborted ? "cancelled" as const : failed ? "failure" as const : "success" as const;
   const output = outcome === "success" ? text(terminal!)

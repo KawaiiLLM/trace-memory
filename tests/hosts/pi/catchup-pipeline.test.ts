@@ -1,4 +1,5 @@
 import { expect, test, vi } from "vitest";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { host, reply, notingFact, consolidationReply, type Reply } from "./test-host.ts";
 import { Store } from "../../../src/core/store/index.ts";
 
@@ -7,7 +8,7 @@ const phase = (c: { systemPrompt?: string }) => c.systemPrompt?.startsWith("# Dr
   : c.systemPrompt?.includes("You are the Consolidator:") ? "C" : "N";
 const settle = async (h: ReturnType<typeof host>) => { for (let i = 0; i < 30; i++) await h.drain(); };
 const call = (name: string, args: object): Reply => ({ ...reply(""), stopReason: "toolUse", content: [
-  { type: "toolCall", id: `${name}-1`, name, arguments: args as Record<string, unknown> },
+  { type: "toolCall", id: `${name}-1`, name, arguments: args as JsonObject },
 ] });
 function backlog(h: ReturnType<typeof host>) {
   for (let i = 0; i < 12; i++) {

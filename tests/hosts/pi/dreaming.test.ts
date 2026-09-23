@@ -1,4 +1,5 @@
 import { expect, test, vi } from "vitest";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { host, reply, type Reply } from "./test-host.ts";
 import { readFileSync } from "node:fs";
@@ -6,7 +7,7 @@ import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 
 const workflowHeadings = (JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as { promptOrder: string[] }).promptOrder;
-const call = (id: string, name: string, args: unknown): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id, name, arguments: args as Record<string, unknown> }] });
+const call = (id: string, name: string, args: unknown): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id, name, arguments: args as JsonObject }] });
 // 59: a scripted Dreamer accounts for the supplied handles it leaves untouched with one explicit skip batch.
 const skip = (...handles: string[]): Reply => call("skip", "memory", { operations: [], skipped: handles.map(knowledge => ({ knowledge, because: "reviewed; no operation needed" })) });
 async function seeded(config: Record<string, unknown> = {}, text = "Keep the user constraint") {
