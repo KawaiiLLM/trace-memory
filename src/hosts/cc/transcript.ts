@@ -1,6 +1,25 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 import { SourceNormalizationError, type SourceBlock, type SourceNormalizer } from "../../core/model/source.ts";
 import type { SourceInput } from "../../core/store/index.ts";
+
+// 70: measured on the 30k-record fixture (tests/hosts/cc-70-performance.test.ts) racing a second
+// process that writes every 10 ms with a 5 s busy_timeout. A 40 ms slice keeps the importing
+// executor's own event-loop gap near the slice length. 5 ms of pause was enough for the writer's
+// retry to land on an idle machine but let its worst wait spike past 1 s under real background load
+// (another process's own vitest run on this machine); 15 ms gave the writer's retry a reliable
+// window in five consecutive runs under that same load (worst wait 139-467 ms) for about 1.5 s more
+// total ingest wall time on 30k records. ponytail: fixed constants, not configuration; revisit by
+// measurement if a real workload's record shape changes the ratio.
+const INGEST_SLICE_MS = 40;
+const INGEST_PAUSE_MS = 15;
+
+const pause = (milliseconds: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+  if (signal?.aborted) { reject(signal.reason ?? new DOMException("Aborted", "AbortError")); return; }
+  const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, milliseconds);
+  const abort = () => { clearTimeout(timer); reject(signal!.reason ?? new DOMException("Aborted", "AbortError")); };
+  signal?.addEventListener("abort", abort, { once: true });
+});
 
 export type CcNativeRecord = Record<string, unknown> & {
   uuid?: string;
@@ -55,6 +74,9 @@ export interface CcNativeNode {
 }
 
 interface FileStamp { size: number; modifiedMs: number; changedMs: number; device: number; inode: number }
+type OrderedRecord = { record: CcNativeRecord; source: CcSourceRecord | null; raw: string; node: CcNativeNode | null };
+export type CcTranscriptVisitor = (record: CcNativeRecord, source: CcSourceRecord | null, raw: string,
+  scan: CcTranscriptScan, acceptedIdentity: boolean) => void;
 const sameStamp = (left: FileStamp | null, right: FileStamp): boolean => !!left && left.size === right.size &&
   left.modifiedMs === right.modifiedMs && left.changedMs === right.changedMs && left.device === right.device && left.inode === right.inode;
 const object = (value: unknown): Record<string, unknown> | null => value !== null && typeof value === "object" && !Array.isArray(value)
@@ -281,20 +303,25 @@ export class CcTranscriptCursor {
     return reverse.reverse();
   }
 
-  scan(path: string, visit: (record: CcNativeRecord, source: CcSourceRecord | null, raw: string,
-    scan: CcTranscriptScan, acceptedIdentity: boolean) => void, collect = false): CcTranscriptScan | CcTranscriptSnapshot {
+  /** Open, read and parse the appended (or, on reset, whole) region and order its records by
+   * ancestry. Holds no database transaction and touches no store: this is the "read" plus
+   * "parse/index/sort" work, unsliced and never paused, shared by the synchronous `scan` (the
+   * whole-file bootstrap path, which visits nothing that writes) and the cooperative ingest loop. */
+  private prepareOrdered(path: string, collect: boolean, onPhase?: (phase: "read" | "index", ms: number) => void):
+    { done: CcTranscriptSnapshot } | { scan: CcTranscriptScan; ordered: OrderedRecord[]; finish: () => CcTranscriptScan } {
+    const readStart = performance.now();
     let descriptor: number | undefined;
     try {
       descriptor = openSync(path, "r");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return snapshot(path, null);
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { done: snapshot(path, null) };
       throw error;
     }
     try {
       const before = fstatSync(descriptor);
       const stamp: FileStamp = { size: before.size, modifiedMs: before.mtimeMs, changedMs: before.ctimeMs, device: before.dev, inode: before.ino };
-      if (this.rejected && sameStamp(this.rejected.stamp, stamp)) return this.rejected.snapshot;
-      if (sameStamp(this.stamp, stamp)) return { ...this.lastSnapshot!, records: [], changed: false, reset: false };
+      if (this.rejected && sameStamp(this.rejected.stamp, stamp)) return { done: this.rejected.snapshot };
+      if (sameStamp(this.stamp, stamp)) return { done: { ...this.lastSnapshot!, records: [], changed: false, reset: false } };
       const replacement = !!this.stamp && (stamp.device !== this.stamp.device || stamp.inode !== this.stamp.inode);
       // A same-size metadata change, replacement, shrink, or broken committed newline is a rebuild.
       // Growth follows the native append contract; metadata cannot prove an arbitrary same-inode
@@ -318,11 +345,14 @@ export class CcTranscriptCursor {
       const finalNewline = bytes.lastIndexOf(0x0a);
       const completeLength = finalNewline < 0 ? 0 : finalNewline + 1;
       const completeOffset = start + completeLength;
+      onPhase?.("read", performance.now() - readStart);
+      const indexStart = performance.now();
       const records: CcNativeRecord[] = [], collectedById = new Map<string, { record: CcNativeRecord; identity: string }>();
-      const parsedRecords: { record: CcNativeRecord; source: CcSourceRecord | null; raw: string; node: CcNativeNode | null }[] = [];
+      const parsedRecords: OrderedRecord[] = [];
       // Appends extend the committed structural index in place. Its cursor offset is not advanced
-      // until projection and binding succeed, so a fatal retry rereads the suffix and fills only
-      // committed source associations. A reset builds a replacement index off to the side.
+      // until projection and projection publish succeed, so a fatal retry (including an aborted
+      // cooperative ingest) rereads the suffix and fills only committed source associations. A reset
+      // builds a replacement index off to the side.
       const scanNodes = reset ? new Map<string, CcNativeNode>() : this.nodes;
       const scanCalls = reset ? new Map<string, Set<string>>() : this.callCarriers;
       const problems = reset ? [] : [...this.unresolvedProblems], newProblems = new Set<string>();
@@ -372,8 +402,8 @@ export class CcTranscriptCursor {
       // a result/call pair that is physically reversed without replaying historical records.
       const unique = new Map(parsedRecords.filter(value => value.node).map(value => [value.node!.uuid, value] as const));
       const visiting = new Set<string>(), visited = new Set<string>();
-      const ordered: typeof parsedRecords = [];
-      const add = (value: (typeof parsedRecords)[number]): void => {
+      const ordered: OrderedRecord[] = [];
+      const add = (value: OrderedRecord): void => {
         const id = value.node?.uuid;
         if (!id || visited.has(id)) return;
         if (visiting.has(id)) { ordered.push(value); visited.add(id); return; }
@@ -385,17 +415,60 @@ export class CcTranscriptCursor {
       };
       for (const value of parsedRecords) if (value.node) add(value);
       for (const value of parsedRecords) if (!value.node) ordered.push(value);
-      for (const value of ordered) {
-        const acceptedIdentity = nativeId(value.record) === null || !!value.node &&
-          !value.node.lineageProblem && !value.node.importProblem;
-        try { visit(value.record, value.source, value.raw, scan, acceptedIdentity); }
-        catch (error) { throw new CcTranscriptScanFailure(scan, error); }
-      }
-      const resultSnapshot = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords, records,
-        incompleteBytes: stamp.size - completeOffset, changed: true, reset });
-      return new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, snapshot: resultSnapshot, stamp, reset,
-        completeOffset, lineCount: lines, selectedLeafUuid, problems, newProblems });
+      onPhase?.("index", performance.now() - indexStart);
+      const finish = (): CcTranscriptScan => {
+        const resultSnapshot = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords, records,
+          incompleteBytes: stamp.size - completeOffset, changed: true, reset });
+        return new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, snapshot: resultSnapshot, stamp, reset,
+          completeOffset, lineCount: lines, selectedLeafUuid, problems, newProblems });
+      };
+      return { scan, ordered, finish };
     } finally { closeSync(descriptor); }
+  }
+
+  scan(path: string, visit: CcTranscriptVisitor, collect = false): CcTranscriptScan | CcTranscriptSnapshot {
+    const prepared = this.prepareOrdered(path, collect);
+    if ("done" in prepared) return prepared.done;
+    const { scan, ordered, finish } = prepared;
+    for (const value of ordered) {
+      const acceptedIdentity = nativeId(value.record) === null || !!value.node &&
+        !value.node.lineageProblem && !value.node.importProblem;
+      try { visit(value.record, value.source, value.raw, scan, acceptedIdentity); }
+      catch (error) { throw new CcTranscriptScanFailure(scan, error); }
+    }
+    return finish();
+  }
+
+  /** The cooperative counterpart of `scan`, used only for the ingest visit loop (never the whole-file
+   * bootstrap read, which writes nothing and stays synchronous). Read, parse, index and sort are the
+   * same unsliced, unpaused work as `scan`; only the per-record visit loop yields: after a slice of
+   * about `sliceMs`, it awaits `pauseMs` with no transaction open before resuming from the next
+   * record, so a waiting writer's retry finds a free window and the executor's own event loop is
+   * never blocked for the whole scan. `signal` is checked between records, never inside one record's
+   * visit: an abort leaves the stamp and offset unadvanced (see `prepareOrdered`), so the next scan
+   * re-reads the same suffix and skips already-committed records by native identity. */
+  async scanCooperative(path: string, visit: CcTranscriptVisitor, options: { signal?: AbortSignal; sliceMs?: number;
+    pauseMs?: number; onIngestGap?: (ms: number) => void; onPhase?: (phase: "read" | "index", ms: number) => void } = {}):
+    Promise<CcTranscriptScan | CcTranscriptSnapshot> {
+    const { signal, sliceMs = INGEST_SLICE_MS, pauseMs = INGEST_PAUSE_MS, onIngestGap, onPhase } = options;
+    const prepared = this.prepareOrdered(path, false, onPhase);
+    if ("done" in prepared) return prepared.done;
+    const { scan, ordered, finish } = prepared;
+    let sliceStart = performance.now();
+    for (const value of ordered) {
+      if (performance.now() - sliceStart >= sliceMs) {
+        onIngestGap?.(performance.now() - sliceStart);
+        await pause(pauseMs, signal);
+        sliceStart = performance.now();
+      }
+      signal?.throwIfAborted();
+      const acceptedIdentity = nativeId(value.record) === null || !!value.node &&
+        !value.node.lineageProblem && !value.node.importProblem;
+      try { visit(value.record, value.source, value.raw, scan, acceptedIdentity); }
+      catch (error) { throw new CcTranscriptScanFailure(scan, error); }
+    }
+    onIngestGap?.(performance.now() - sliceStart);
+    return finish();
   }
 
   commit(scan: CcTranscriptScan, problem?: string): void {
