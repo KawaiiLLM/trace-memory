@@ -760,6 +760,16 @@ export class Store {
         // Reopens inspect only undecoded legacy entries, not every immutable Raw body. This
         // index is maintained by SQLite when the owning host fills blocks; it stores no progress.
         this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_unnormalized ON source_entries(id) WHERE blocks IS NULL");
+        // 71: current membership (`prepareCurrentMembership`) and a path snapshot (`pathEntries`)
+        // answer with `id`, `session_id`, `turn_id` and `addresses` alone — genuinely used metadata
+        // (ownership, ancestry-filtered selection, legacy address fallback), never Raw's `content`
+        // or `blocks`. Those two columns average 8.1 KB/4.2 KB and `addresses` is the last column,
+        // so an `id IN (...)` lookup against the table walks every row's overflow pages to reach it.
+        // A redundant covering index keyed by `id` (already the rowid) lets SQLite answer these
+        // reads as an index-only scan instead: verified with EXPLAIN QUERY PLAN, "USING COVERING
+        // INDEX". The planner does not choose it on its own without fresh statistics, so every query that
+        // relies on it names it with INDEXED BY. About 9 MB at today's size; idempotent, like the two indexes just above.
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_membership ON source_entries(id, session_id, turn_id, addresses)");
         if (newAddresses || normalizeSource) {
           const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
           for (const row of this.db.prepare(`SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id`).iterate()) {
@@ -1788,7 +1798,10 @@ export class Store {
     }
     if (!paths.size) return;
     const selectedIds = [...new Set([...paths.values()].flatMap(value => value.ids))];
-    const entryRows = selectedIds.length ? this.db.prepare(`SELECT id, turn_id, session_id FROM source_entries
+    // 71: INDEXED BY forces the covering-index plan outright, rather than trusting the planner's
+    // stat-driven cost estimate — without a fresh ANALYZE the default rowid-lookup plan wins even
+    // though it touches every row's overflow pages (verified with EXPLAIN QUERY PLAN both ways).
+    const entryRows = selectedIds.length ? this.db.prepare(`SELECT id, turn_id, session_id FROM source_entries INDEXED BY idx_source_membership
       WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(selectedIds)) : [];
     const entries = new Map(entryRows.map(row => [Number(row.id), { turnId: Number(row.turn_id), sessionId: Number(row.session_id) }]));
     const seeds: { key: string; owner: number; root: number }[] = [];
@@ -1833,7 +1846,7 @@ export class Store {
       const wanted = citedTurns.get(value.owner); if (wanted) for (const id of selected) if (wanted.has(entries.get(id)!.turnId)) addressCandidates.add(id);
       snapshots.set(key, { owner: value.owner, turns, selected, addresses: new Map() });
     }
-    if (addressCandidates.size) for (const row of this.db.prepare(`SELECT id, session_id, turn_id, addresses FROM source_entries
+    if (addressCandidates.size) for (const row of this.db.prepare(`SELECT id, session_id, turn_id, addresses FROM source_entries INDEXED BY idx_source_membership
       WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify([...addressCandidates]))) {
       let parsed: unknown; try { parsed = JSON.parse(String(row.addresses)); } catch { malformed(Number(row.session_id)); }
       if (!Array.isArray(parsed) || parsed.some(address => typeof address !== "string")) malformed(Number(row.session_id));
@@ -1975,7 +1988,7 @@ export class Store {
     const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(path.sessionId, path.branch) as { entry_ids: string } | undefined;
     if (!row) return null;
     const ids = new Set<number>(), addresses = new Map<number, Set<string>>();
-    for (const { id, turn_id, addresses: raw } of this.db.prepare("SELECT e.id, e.turn_id, e.addresses FROM json_each(?) j JOIN source_entries e ON e.id = j.value")
+    for (const { id, turn_id, addresses: raw } of this.db.prepare("SELECT e.id, e.turn_id, e.addresses FROM json_each(?) j JOIN source_entries e INDEXED BY idx_source_membership ON e.id = j.value")
       .all(row.entry_ids) as { id: number; turn_id: number; addresses: string }[]) {
       if (!turns.has(turn_id)) continue;
       ids.add(id);
@@ -2057,10 +2070,14 @@ export class Store {
   }
 
   /** Fact and Raw readers keep their supplied frozen path. Foreign facts remain available for their
-   * existing scope-specific selection; only Knowledge support membership consults mutable foregrounds. */
-  factOnPath(fact: Fact, path: KnowledgePath, snapshot = this.pathSnapshot(path), input?: ApplicabilityInput): boolean {
+   * existing scope-specific selection; only Knowledge support membership consults mutable foregrounds.
+   * `owners` (71): a batched turn-id -> session-id map a caller already holds, tried before a
+   * per-fact `SELECT * FROM turns WHERE id = ?` — the check itself is unchanged, only where its
+   * answer comes from. */
+  factOnPath(fact: Fact, path: KnowledgePath, snapshot = this.pathSnapshot(path), input?: ApplicabilityInput,
+    owners?: ReadonlyMap<number, number>): boolean {
     const projected = input?.facts.get(fact.id);
-    const owner = projected?.sessionId ?? this.getTurn(fact.turnId)!.sessionId;
+    const owner = projected?.sessionId ?? owners?.get(fact.turnId) ?? this.getTurn(fact.turnId)!.sessionId;
     if (owner !== path.sessionId) return true;
     return this.factInSnapshot(fact, snapshot, projected?.entries);
   }
@@ -2622,29 +2639,43 @@ export class Store {
     return this.db.prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
   }
   /** 22d: one row per run of a session, carrying its kind and the usage it recorded — projected out
-   * of `runs.response` in SQL, so the request and response audit bodies stay in the database. No
-   * schema change: `json_extract` over the existing column, the shape 22a's amendment allows.
-   * `usage` is null exactly when the run recorded no usage observation — a response without one, a
-   * cancelled run whose usage is unknown, or a response that is not JSON at all. A run whose usage
-   * object exists but is empty is an observation of zeros, and is reported as one; nothing here
-   * manufactures a zero for a missing one (parent 22, "Capacity and accounting"). */
+   * of `runs.response` in SQL, so the request audit body and the rest of the response never leave
+   * this function. `usage` is null exactly when the run recorded no usage observation — a response
+   * without one, a cancelled run whose usage is unknown, or a response that is not JSON at all. A
+   * run whose usage object exists but is empty is an observation of zeros, and is reported as one;
+   * nothing here manufactures a zero for a missing one (parent 22, "Capacity and accounting").
+   *
+   * 71: one `json_extract` call with every path it needs (the four counters, the cost total and
+   * `$.usage` itself, to tell "recorded" from "missing or explicit null") replaces what used to be
+   * six separate `json_valid`/`json_extract`/`json_type` calls, each re-tokenizing the whole
+   * response from scratch. A multi-path `json_extract` parses the response once and returns a small
+   * JSON array of just those six values — confirmed on a 200 KB response body: the returned column
+   * text was 90 bytes, not 200 KB. The array's last element is `$.usage` itself, preserved with its
+   * real JSON type (object, scalar, or absent) rather than flattened to raw SQL text, so a stray
+   * string usage value can never be mistaken for an object whose contents happen to look like JSON.
+   * The tiny array is the only JSON.parse this function ever does. */
   /** Run usage of one session, or of every session when `sessionId` is null (51: the footer's
    * database-wide daily figure); `since` keeps runs created at or after that UTC instant. */
   listRunUsage(sessionId: number | null, since?: string): { kind: RunKind; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | null }[] {
     const rows = this.db.prepare(`SELECT kind,
-        CASE WHEN json_valid(response) THEN json_type(response, '$.usage') END recorded,
-        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.input') END input,
-        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.output') END output,
-        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheRead') END cacheRead,
-        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheWrite') END cacheWrite,
-        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cost.total') END cost
+        CASE WHEN json_valid(response) THEN json_extract(response,
+          '$.usage.input', '$.usage.output', '$.usage.cacheRead', '$.usage.cacheWrite', '$.usage.cost.total', '$.usage') END fields
       FROM runs WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR created_at >= ?) ORDER BY id`)
-      .all(sessionId, sessionId, since ?? null, since ?? null) as Record<string, unknown>[];
-    const count = (value: unknown) => (typeof value === "number" ? value : 0);
-    return rows.map(row => ({ kind: row.kind as RunKind,
-      // `json_type` is null for a missing key and 'null' for a recorded null: both are "no observation".
-      usage: !row.recorded || row.recorded === "null" ? null
-        : { input: count(row.input), output: count(row.output), cacheRead: count(row.cacheRead), cacheWrite: count(row.cacheWrite), cost: count(row.cost) } }));
+      .all(sessionId, sessionId, since ?? null, since ?? null) as { kind: RunKind; fields: string | null }[];
+    // A per-field SQL extraction returns JSON true/false as the integers 1/0; the multi-path array keeps
+    // them boolean, so convert them the same way to keep historical totals identical.
+    const count = (value: unknown) => (typeof value === "number" ? value : typeof value === "boolean" ? Number(value) : 0);
+    return rows.map(row => {
+      if (row.fields === null) return { kind: row.kind, usage: null }; // response was not valid JSON at all
+      const [input, output, cacheRead, cacheWrite, costTotal, usage] = JSON.parse(row.fields) as unknown[];
+      // `json_type`'s distinction between a missing key and an explicit JSON null does not matter
+      // here: both are "no observation" in the result below, so one null check covers both.
+      if (usage === null) return { kind: row.kind, usage: null };
+      // A recorded but non-object `usage` (a stray scalar) still counts the run as observed, with
+      // every field defaulting to 0 — `$.usage.input` etc. already resolved to null for it above.
+      return { kind: row.kind, usage: { input: count(input), output: count(output),
+        cacheRead: count(cacheRead), cacheWrite: count(cacheWrite), cost: count(costTotal) } };
+    });
   }
   listFactsByRun(runId: number): Fact[] {
     return this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(runId).map(toFact);
@@ -2725,7 +2756,12 @@ export class Store {
     if (!candidates.length) return [];
     const path = { sessionId, headTurnId: root, branch };
     const view = snapshot ?? this.pathSnapshot(path); // one path membership for the whole list, not one per fact
-    return candidates.filter(fact => this.factOnPath(fact, path, view)); // every source on the path, not only the first
+    // 71: the recursive lineage above already restricts every candidate's turn to this session (its
+    // own WHERE clauses), so the owner is known without a further lookup — one map instead of a
+    // `SELECT * FROM turns WHERE id = ?` per fact (this call issued one per candidate, thousands on
+    // a long branch). `factOnPath` still runs the same ownership check, just answered from this map.
+    const owners = new Map(candidates.map(fact => [fact.turnId, sessionId]));
+    return candidates.filter(fact => this.factOnPath(fact, path, view, undefined, owners)); // every source on the path, not only the first
   }
 
   /** Ticket 69: a cheap composite that changes exactly when a commit could change the footer's four
@@ -2777,7 +2813,14 @@ export class Store {
   consolidatedOnPath(factId: number, path: KnowledgePath, snapshot = this.pathSnapshot(path)): boolean {
     const runs = snapshot.consolidatedRuns;
     return (this.db.prepare("SELECT run_id FROM consolidated_facts WHERE fact_id = ?").all(factId) as { run_id: number }[]).some(({ run_id }) => {
-      if (!runs.has(run_id)) runs.set(run_id, this.listConsolidatedFacts(run_id).every((f) => this.factOnPath(f, path, snapshot)));
+      if (!runs.has(run_id)) {
+        const facts = this.listConsolidatedFacts(run_id);
+        // 71: one run's consolidated facts may span sessions, so ownership is genuinely queried
+        // (never assumed) — just batched once per run instead of once per fact of that run.
+        const owners = new Map(this.db.prepare("SELECT id, session_id FROM turns WHERE id IN (SELECT value FROM json_each(?))")
+          .all(JSON.stringify([...new Set(facts.map(f => f.turnId))])).map(r => [Number(r.id), Number(r.session_id)]));
+        runs.set(run_id, facts.every((f) => this.factOnPath(f, path, snapshot, undefined, owners)));
+      }
       return runs.get(run_id)!;
     });
   }
@@ -2919,7 +2962,7 @@ export class Store {
   private pathEntryIds(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number[] {
     const turns = prepared?.turns ?? this.pathTurns({ sessionId, headTurnId });
     const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch) as { entry_ids: string } | undefined;
-    const rows = (row ? this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e ON e.id = j.value ORDER BY j.key").all(row.entry_ids)
+    const rows = (row ? this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e INDEXED BY idx_source_membership ON e.id = j.value ORDER BY j.key").all(row.entry_ids)
       : this.db.prepare("SELECT id, turn_id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId)) as { id: number; turn_id: number }[];
     return rows.filter(r => turns.has(r.turn_id)).map(r => r.id);
   }

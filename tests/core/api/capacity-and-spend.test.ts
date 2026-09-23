@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, tokens, toolDefinitions, type NotingAgentInput } from "../../source-fixture.ts";
 import { countRunBodies } from "../../perf/fixture.ts";
+import { Store } from "../../../src/core/store/index.ts";
 
 const time = "2026-09-09T00:00:00Z";
 let directory: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>;
@@ -165,4 +166,98 @@ test("22d: an unknown or non-JSON usage counts its run and contributes no observ
   memory.store.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ output: "empty", usage: {} }), cancelled);
   expect(memory.store.listRunUsage(sessionId).map(r => r.usage === null)).toEqual([false, false, true]);
   expect(memory.spend(sessionId)).toMatchObject({ input: one.input, cost: one.cost });
+});
+
+// 71: listRunUsage keeps 22d's invariant — the request and response audit bodies never enter
+// JavaScript — while stopping the six-SQL-json1-call reparse per row. These cases pin that (a) SQL
+// hands JavaScript only the small usage extraction, never the response text itself, whatever the
+// response's shape (a large body, a stray scalar `usage`, a string that itself looks like JSON, a
+// non-JSON response, or no response at all), (b) an amendment from a second connection is seen with
+// no cache to invalidate, and (c) `since` stays an inclusive UTC boundary across midnight.
+test("71: listRunUsage hands JavaScript only the extracted usage, never the response body", async () => {
+  expect((await noting()).outcome).toBe("success");
+  const runId = memory.store.listRuns(sessionId)[0]!.id;
+  const write = (response: unknown) => memory.store.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify(response), runId);
+  const bigOutput = "x".repeat(200_000);
+  write({ output: bigOutput, usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } } });
+  memory.store.recordRun({ kind: "consolidation", sessionId, branch: "main", outcome: "cancelled", createdAt: time,
+    response: JSON.stringify({ usage: null }) });
+  memory.store.recordRun({ kind: "manual", sessionId, branch: "main", outcome: "failure", createdAt: time, response: "not json at all" });
+  memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: time, response: null as unknown as string });
+  // A stray non-object usage, including one whose string contents look like a JSON object — it must
+  // stay "observed, all fields zero", never be reparsed into an object by its own textual shape.
+  memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: time,
+    response: JSON.stringify({ usage: '{"input":999}' }) });
+
+  const original = memory.store.db.prepare.bind(memory.store.db);
+  const resultChars: number[] = [];
+  (memory.store.db as unknown as { prepare: typeof memory.store.db.prepare }).prepare = ((sql: string) => {
+    const statement = original(sql);
+    if (!sql.includes("json_extract")) return statement;
+    const all = statement.all.bind(statement);
+    statement.all = ((...args: Parameters<typeof statement.all>) => {
+      const rows = all(...args) as unknown as { fields: string | null }[];
+      for (const row of rows) resultChars.push(row.fields?.length ?? 0);
+      return rows;
+    }) as unknown as typeof statement.all;
+    return statement;
+  }) as typeof memory.store.db.prepare;
+  let usage: ReturnType<typeof memory.store.listRunUsage>;
+  try { usage = memory.store.listRunUsage(sessionId); }
+  finally { (memory.store.db as unknown as { prepare: typeof memory.store.db.prepare }).prepare = original; }
+
+  expect(resultChars).toHaveLength(5);
+  for (const chars of resultChars) expect(chars).toBeLessThan(200); // never anywhere near the 200,000-char response
+  expect(usage.map(u => u.usage === null)).toEqual([false, true, true, true, false]);
+  expect(usage[4]!.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }); // the string usage: all zero, not reparsed
+});
+
+test("71: listRunUsage matches the per-field SQL extraction for every scalar shape, booleans included", async () => {
+  expect((await noting()).outcome).toBe("success");
+  // Historical responses can carry odd scalar types. The pre-71 query extracted each field as an SQL
+  // scalar (JSON true -> 1, false -> 0), so the multi-path version must reproduce that, not drop it.
+  const shapes: unknown[] = [
+    { usage: { input: true, output: false, cacheRead: "7", cacheWrite: null, cost: { total: true } } },
+    { usage: { input: 3, output: 2.5, cacheRead: -1, cacheWrite: [1], cost: { total: { nested: 1 } } } },
+    { usage: false }, { usage: 0 }, { usage: "text" }, { usage: [] }, { usage: null }, {},
+  ];
+  for (const response of shapes) memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success",
+    createdAt: time, response: JSON.stringify(response) });
+  const legacy = memory.store.db.prepare(`SELECT kind,
+      CASE WHEN json_valid(response) THEN json_type(response, '$.usage') END recorded,
+      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.input') END input,
+      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.output') END output,
+      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheRead') END cacheRead,
+      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheWrite') END cacheWrite,
+      CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cost.total') END cost
+    FROM runs WHERE session_id = ? ORDER BY id`).all(sessionId) as Record<string, unknown>[];
+  const count = (value: unknown) => (typeof value === "number" ? value : 0);
+  const expected = legacy.map(row => ({ kind: row.kind, usage: !row.recorded || row.recorded === "null" ? null
+    : { input: count(row.input), output: count(row.output), cacheRead: count(row.cacheRead), cacheWrite: count(row.cacheWrite), cost: count(row.cost) } }));
+  expect(expected.some(value => value.usage?.input === 1 && value.usage.cost === 1)).toBe(true); // the boolean case is really exercised
+  expect(memory.store.listRunUsage(sessionId)).toEqual(expected);
+});
+
+test("71: an amendment from a second connection to the same file is reflected with no stale cache", async () => {
+  expect((await noting()).outcome).toBe("success");
+  const runId = memory.store.listRuns(sessionId)[0]!.id;
+  const second = new Store(dbPath);
+  try {
+    second.db.prepare("UPDATE runs SET response = ? WHERE id = ?")
+      .run(JSON.stringify({ usage: { input: 500, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.2 } } }), runId);
+    expect(memory.spend(sessionId)).toMatchObject({ input: 500, output: 50, cost: 0.2 });
+    second.db.prepare("UPDATE runs SET response = ? WHERE id = ?")
+      .run(JSON.stringify({ usage: { input: 900, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.4 } } }), runId);
+    expect(memory.spend(sessionId)).toMatchObject({ input: 900, cost: 0.4 }); // no cache stuck on the first read
+  } finally { second.close(); }
+});
+
+test("71: spendSince keeps an inclusive UTC midnight boundary", async () => {
+  memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: "2026-09-08T23:59:59.000Z",
+    response: JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 1 } } }) });
+  memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: "2026-09-09T00:00:00.000Z",
+    response: JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 2 } } }) });
+  memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: "2026-09-09T00:00:01.000Z",
+    response: JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 4 } } }) });
+  expect(memory.spendSince("2026-09-09T00:00:00.000Z")).toBe(6); // midnight itself counts; the run just before it does not
 });

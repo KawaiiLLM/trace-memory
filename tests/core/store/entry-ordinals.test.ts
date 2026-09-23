@@ -59,7 +59,7 @@ test("entry/cleanup integration: ordinal and block upgrade preserves the retired
     const rows = store.db.prepare("SELECT * FROM pending_deliveries").all();
     const raw = store.db.prepare("SELECT id, content FROM source_entries ORDER BY id").all();
     const fact = store.getFact(noted.facts[0]!.id);
-    store.db.exec(`DROP INDEX idx_source_turn_ordinal; DROP INDEX idx_source_unnormalized;
+    store.db.exec(`DROP INDEX idx_source_turn_ordinal; DROP INDEX idx_source_unnormalized; DROP INDEX idx_source_membership;
       ALTER TABLE source_entries DROP COLUMN entry_ordinal;
       ALTER TABLE source_entries DROP COLUMN blocks; ALTER TABLE source_entries DROP COLUMN addresses`);
     let normalized = 0;
