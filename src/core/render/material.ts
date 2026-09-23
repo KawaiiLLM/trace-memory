@@ -268,9 +268,13 @@ export const injectionText = (material: SharedMaterial, knowledgeNotes: readonly
 /** Main-agent compact: knowledge, then historical facts, then the pending Raw, then receipts. Ticket
  * 30: there is one bounded view and therefore one Raw title — the second tier that renamed this block
  * is gone, and the order, the separators and the receipts are what they always were. */
-export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TITLE, knowledgeNotes: readonly string[] = []): string =>
-  finish({ content: block([...leading(material), ...statusBlock(knowledgeNotes), xmlBlock("episodic",
-    block([FACTS_TITLE, (material.facts ?? []).join("\n"), rawTitle, rawText(material)]))]), receipts: material.receipts });
+export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TITLE, knowledgeNotes: readonly string[] = []): string => {
+  // 73: a window that kept nothing emits nothing — no title, and no `<episodic>` tag when both are empty.
+  const facts = material.facts ?? [], episodic = [...(facts.length ? [FACTS_TITLE, facts.join("\n")] : []),
+    ...(material.entries?.length ? [rawTitle, rawText(material)] : [])];
+  return finish({ content: block([...leading(material), ...statusBlock(knowledgeNotes),
+    ...(episodic.length ? [xmlBlock("episodic", block(episodic))] : [])]), receipts: material.receipts });
+};
 
 /** The Noter's one layout (29b): the missing historical facts, the range, the head reply when this
  * run restates it, the Raw of the target entries this run supplies, the source index when some body

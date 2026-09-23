@@ -645,15 +645,15 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const caps = { knowledge: budgets.injection, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
       const envelope = caps.knowledge + caps.facts + caps.raw + sharedAllowance;
       if (!Number.isSafeInteger(envelope)) throw new Error("compact envelope must be a safe integer");
-      // Every emitted component is charged inside the window that owns it: the `<episodic>` tag and
-      // the facts title with the facts, the Raw title with the Raw, each block's omission receipts
-      // with their own block. The `Receipts:` heading `finish` emits is charged to each window that
-      // has a receipt, which over-counts safely (the same rule `budgetMaterial` applies).
+      // Every emitted component is charged inside the window that owns it, and a window that emits
+      // nothing is charged nothing: the `<episodic>` tag once, with the first of Raw and facts that
+      // has items; a title only with its items; each window's receipts with that window. The
+      // `Receipts:` heading `finish` emits is charged to each window that has a receipt, which
+      // over-counts safely (the same rule `budgetMaterial` applies).
       const factRelations = store.listFactRelationsOnPathOf(applicable.map(fact => fact.id), path, snapshot);
       const lines = (facts: Fact[]) => renderFactGroups(facts, f => factLine(f.id, factRelations.get(f.id) ?? []), factTurns);
-      const factsCharge = (facts: Fact[], receipts: string[]) => charge([xmlBlock("episodic", ""), FACTS_TITLE])
-        + charge(lines(facts)) + (receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0);
-      const rawCharge = (contents: string[]) => charge([RAW_TITLE]) + charge(contents);
+      const opener = (title: string) => charge([xmlBlock("episodic", ""), title]);
+      const receiptCharge = (receipts: string[]) => receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0;
       const view = (entry: SourceEntry) => renderEntry(entry, config.render, resultText);
 
       // ---- 1. Knowledge first: required status notices, newest kept, then bodies newest-first. ----
@@ -664,17 +664,17 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const noteReceipt = (omitted: number) => omitted
         ? [`omitted ${omitted} older inherited knowledge status lines; knowledge base plus shared allowance is full`] : [];
       const noteTextCost = (kept: number) => kept ? charge([KNOWLEDGE_STATUS_TITLE, ...allNotes.slice(0, kept)]) : 0;
-      const noteCost = (kept: number) => noteTextCost(kept) + charge(noteReceipt(allNotes.length - kept))
-        + (noteReceipt(allNotes.length - kept).length ? charge(["Receipts:"]) : 0);
+      const noteCost = (kept: number) => noteTextCost(kept) + receiptCharge(noteReceipt(allNotes.length - kept));
       let noteKept = allNotes.length;
       while (noteKept > 0 && noteCost(noteKept) > knowledgeEnvelope) noteKept--;
       const notes = allNotes.slice(0, noteKept);
-      const noteOmittedReceipt = noteReceipt(allNotes.length - noteKept);
-      const knowledgeNoticeCost = noteCost(noteKept);
+      // With nothing kept, a receipt that does not fit either leaves the notices window empty.
+      const noteOmittedReceipt = noteCost(noteKept) <= knowledgeEnvelope ? noteReceipt(allNotes.length - noteKept) : [];
+      const knowledgeNoticeCost = noteTextCost(noteKept) + receiptCharge(noteOmittedReceipt);
       const active = budgetKnowledge(knowledge, Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
         knowledgeLine, "Knowledge base plus shared allowance", new Set());
       const knowledgeUsed = knowledgeNoticeCost + active.cost;
-      let sharedAfterKnowledge = sharedAllowance - Math.max(0, knowledgeUsed - caps.knowledge);
+      const sharedAfterKnowledge = sharedAllowance - Math.max(0, knowledgeUsed - caps.knowledge);
 
       // ---- 2. Raw second: the newest contiguous span. Pending entries borrow; noted entries only
       // fill the Raw base remainder. The walk never skips an entry to reach an older one. ----
@@ -707,24 +707,29 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       }
       const rawReceipt = (kept: number) => candidates.length - kept
         ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window; read them with trace]`] : [];
-      const rawTotalCost = (kept: number) => {
-        const r = rawReceipt(kept);
-        return rawCharge(rawSteps.slice(0, kept).map(s => s.content)) + charge(r) + (r.length ? charge(["Receipts:"]) : 0);
+      // Exactly what the Raw window adds to the output: the `<episodic>` tag and title only when it
+      // has entries, each kept entry's own view receipts, and its omission receipt.
+      const rawWindowCost = (kept: number, receipt: string[]) => {
+        const steps = rawSteps.slice(0, kept);
+        return (kept ? opener(RAW_TITLE) + charge(steps.map(s => s.content)) : 0) + receiptCharge([...steps.flatMap(s => s.receipts), ...receipt]);
       };
       const rawEnvelope = caps.raw + sharedAfterKnowledge;
       let rawKept = rawSteps.length;
-      while (rawKept > 0 && rawTotalCost(rawKept) > rawEnvelope) rawKept--;
-      const rawFits = rawTotalCost(rawKept) <= rawEnvelope;
-      const rawFinalSteps = rawFits ? rawSteps.slice(0, rawKept) : [];
-      const rawFinalReceipt = rawFits ? rawReceipt(rawKept) : [];
-      sharedAfterKnowledge -= rawFinalSteps.reduce((sum, s) => sum + s.fromAllowance, 0);
-      const sharedAfterRaw = sharedAfterKnowledge;
+      while (rawKept > 0 && rawWindowCost(rawKept, rawReceipt(rawKept)) > rawEnvelope) rawKept--;
+      // With nothing kept, a receipt that does not fit either leaves the Raw window empty.
+      const rawFinalReceipt = rawWindowCost(rawKept, rawReceipt(rawKept)) <= rawEnvelope ? rawReceipt(rawKept) : [];
+      const rawFinalSteps = rawSteps.slice(0, rawKept);
+      const rawCharged = rawWindowCost(rawKept, rawFinalReceipt);
+      // What the whole window took beyond its base — receipts and framing included — leaves the allowance.
+      const sharedAfterRaw = sharedAfterKnowledge - Math.max(0, rawCharged - caps.raw);
       // Displayed in source order (30: "display the selected Raw entries in source order").
       const suppliedRaw = [...rawFinalSteps].reverse();
       const rawOmitted = candidates.slice(0, candidates.length - suppliedRaw.length);
       const rawOmittedPending = rawOmitted.filter(e => pendingIds.has(e.id));
+      // An entry whose view cannot fit its own profile has no view to count; any other rendering
+      // error is a data error and is raised, as for every entry this window renders.
       const rawOmittedPendingTokens = rawOmittedPending.reduce((sum, e) => {
-        try { return sum + tokens(view(e).content) + 1; } catch { return sum; }
+        try { return sum + tokens(view(e).content) + 1; } catch (error) { if (/capacity/.test(String(error))) return sum; throw error; }
       }, 0);
 
       // ---- 3. Facts third: newest facts not wholly covered by the Raw span just chosen. ----
@@ -733,10 +738,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const coveredFactIds = store.factsCoveredByRaw(factCandidates, coverage);
       const eligibleFacts = factCandidates.filter(f => !coveredFactIds.has(f.id)); // already newest-first
       const omission = (rest: Fact[]) => rest.length ? [`omitted ${rest.length} older facts; expand: ${expandList(rest.map(f => `F${f.id}`))}`] : [];
-      const factsTotalCost = (kept: number) => factsCharge(eligibleFacts.slice(0, kept), omission(eligibleFacts.slice(kept)));
-      let factsKept = 0, factsBaseUsed = charge([xmlBlock("episodic", ""), FACTS_TITLE]), factsAllowanceUsed = 0, prevFactsCost = factsBaseUsed;
+      // Exactly what the facts window adds: its title only when it has facts, the `<episodic>` tag
+      // only when the Raw window did not already open it, and its omission receipt.
+      const factsWindowCost = (kept: number, receipt: string[]) => (kept
+        ? (rawKept ? charge([FACTS_TITLE]) : opener(FACTS_TITLE)) + charge(lines(eligibleFacts.slice(0, kept))) : 0) + receiptCharge(receipt);
+      const factsTotalCost = (kept: number) => factsWindowCost(kept, omission(eligibleFacts.slice(kept)));
+      let factsKept = 0, factsBaseUsed = 0, factsAllowanceUsed = 0, prevFactsCost = 0;
       for (const fact of eligibleFacts) {
-        const nextCost = factsCharge([...eligibleFacts.slice(0, factsKept), fact], []);
+        const nextCost = factsWindowCost(factsKept + 1, []);
         const marginal = nextCost - prevFactsCost;
         const availableBase = Math.max(0, caps.facts - factsBaseUsed);
         if (pendingFactIds.has(fact.id)) {
@@ -752,9 +761,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       }
       const factsEnvelope = caps.facts + sharedAfterRaw;
       while (factsKept > 0 && factsTotalCost(factsKept) > factsEnvelope) factsKept--;
-      const factsFit = factsTotalCost(factsKept) <= factsEnvelope;
-      const finalFacts = factsFit ? eligibleFacts.slice(0, factsKept) : [];
-      const finalFactReceipts = factsFit ? omission(eligibleFacts.slice(factsKept)) : [];
+      const finalFacts = eligibleFacts.slice(0, factsKept);
+      // With nothing kept, a receipt that does not fit either leaves the facts window empty.
+      const finalFactReceipts = factsTotalCost(factsKept) <= factsEnvelope ? omission(eligibleFacts.slice(factsKept)) : [];
       const factsOmittedPending = eligibleFacts.slice(finalFacts.length).filter(f => pendingFactIds.has(f.id));
       const factsOmittedPendingTokens = factsOmittedPending.length ? charge(lines(factsOmittedPending)) : 0;
 
@@ -771,7 +780,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         supplied: { entries: suppliedRaw.map(s => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" as const })),
           factIds: finalFacts.map(f => f.id), knowledgeCommitIds: active.commits },
         // The per-window accounting beside the text, for the acceptance probe; diagnostics only.
-        charged: { knowledge: knowledgeUsed, facts: factsTotalCost(finalFacts.length), raw: rawTotalCost(suppliedRaw.length), envelope },
+        charged: { knowledge: knowledgeUsed, facts: factsWindowCost(finalFacts.length, finalFactReceipts), raw: rawCharged, envelope },
         ...(Object.keys(truncated).length ? { truncated } : {}) };
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {

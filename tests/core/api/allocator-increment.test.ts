@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, compacted } from "../../source-fixture.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
 import { setKnowledgeInjection, setSharedAllowance } from "../../knowledge-budget-fixture.ts";
+import { charge, xmlBlock } from "../../../src/core/render/index.ts";
 
 const time = "2026-09-06T00:00:00Z";
 const open = () => sourceSeededMemory(":memory:", async () => { throw new Error("allocator calls no worker"); });
@@ -91,7 +92,9 @@ test("73: Knowledge borrows the shared allowance before Raw, so Raw can lose out
   // only one, so it is all or nothing) is omitted whole rather than Knowledge giving any of it back.
   const result = memory.compact(s.id, "main", t.id), windows = charged(result);
   expect(windows.knowledge).toBe(35_000);
-  expect(windows.facts).toBe(10_000);
+  // The fixture sized facts at 10,000 beside a non-empty Raw window, which opens the `<episodic>`
+  // block. With Raw emitting nothing, the facts window opens it and is charged the tag it now emits.
+  expect(windows.facts).toBe(10_000 + charge([xmlBlock("episodic", "")]));
   expect(windows.raw).toBeLessThan(16_000);
   expect("native" in result ? [] : result.supplied.factIds).toContain(f.id);
   expect("native" in result ? [] : result.supplied.entries).toEqual([]);
