@@ -791,8 +791,13 @@ CREATE TABLE IF NOT EXISTS session_lineage_cursors (
   lineage TEXT NOT NULL,
   branch TEXT NOT NULL,
   head_turn_id INTEGER NOT NULL REFERENCES turns(id),
+  -- Ticket 72: bumped only when this cursor's write is NOT a plain forward walk along the same branch
+  -- (a branch switch, or a head moving back to an ancestor) \u2014 never on an ordinary forward head move,
+  -- so ingesting Raw never touches it. progressSignal reads MAX(version) through the index below.
+  version INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, lineage)
 );
+CREATE INDEX IF NOT EXISTS idx_session_lineage_cursors_version ON session_lineage_cursors(version);
 
 CREATE TABLE IF NOT EXISTS task_claims (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
@@ -929,8 +934,14 @@ CREATE TABLE IF NOT EXISTS source_paths (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   branch TEXT NOT NULL,
   entry_ids TEXT NOT NULL,
+  -- Ticket 72: bumped only when a write replaces entry_ids with something other than an extension of
+  -- the prior list (the writer alone knows this; see publishSourcePath/selectSourcePath) \u2014 an
+  -- already-stored entry leaving or rejoining the selected path under an unchanged cursor. A pure
+  -- append leaves it untouched, so ingesting Raw never bumps it.
+  version INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, branch)
 );
+CREATE INDEX IF NOT EXISTS idx_source_paths_version ON source_paths(version);
 -- Native checkpoints that own a Turn but are not Raw source entries (notably compaction boundaries),
 -- plus the user source that created each ordinary Turn. Host-native identity keeps import idempotent;
 -- no host envelope or selected-path policy enters this table.
@@ -1181,6 +1192,12 @@ var Store = class {
             UPDATE source_entries SET entry_ordinal = (SELECT ordinal FROM numbered WHERE numbered.id = source_entries.id);`);
         }
         this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_source_turn_ordinal ON source_entries(turn_id, entry_ordinal)");
+        if (!this.db.prepare("PRAGMA table_info(session_lineage_cursors)").all().some((r) => r.name === "version"))
+          this.db.exec("ALTER TABLE session_lineage_cursors ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_session_lineage_cursors_version ON session_lineage_cursors(version)");
+        if (!this.db.prepare("PRAGMA table_info(source_paths)").all().some((r) => r.name === "version"))
+          this.db.exec("ALTER TABLE source_paths ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_paths_version ON source_paths(version)");
         const columns = this.db.prepare("PRAGMA table_info(source_entries)").all();
         if (!columns.some((r) => r.name === "blocks")) this.db.exec("ALTER TABLE source_entries ADD COLUMN blocks TEXT");
         const newAddresses = !columns.some((r) => r.name === "addresses");
@@ -1431,8 +1448,10 @@ var Store = class {
     this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
   }
   writeCurrentPath(sessionId, branch, headTurnId, lineage) {
-    this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id) VALUES (?, ?, ?, ?)
-      ON CONFLICT (session_id, lineage) DO UPDATE SET branch = excluded.branch, head_turn_id = excluded.head_turn_id`).run(sessionId, lineage, branch, headTurnId);
+    this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id, version) VALUES (?, ?, ?, ?, 0)
+      ON CONFLICT (session_id, lineage) DO UPDATE SET
+        version = version + (CASE WHEN branch != excluded.branch OR excluded.head_turn_id < head_turn_id OR version > 0 THEN 1 ELSE 0 END),
+        branch = excluded.branch, head_turn_id = excluded.head_turn_id`).run(sessionId, lineage, branch, headTurnId);
   }
   enrollment(sessionId) {
     const row = this.db.prepare("SELECT enrollment_default, enrollment_choice FROM sessions WHERE id = ?").get(sessionId);
@@ -3048,20 +3067,29 @@ ${rendered.get(value.revision.id)}`;
     const view = snapshot2 ?? this.pathSnapshot(path);
     return candidates.filter((fact) => this.factOnPath(fact, path, view));
   }
-  /** Ticket 69: a cheap composite that changes exactly when a commit could change the footer's four
-   * cached counts (branch facts, unconsolidated, current knowledge, changed current knowledge) — for
-   * ANY connection to this database file, not only this process. Verified against every INSERT/UPDATE/
-   * DELETE in this file: `facts`, `knowledge_revisions` (every knowledge write — create, update, merge,
-   * split, archive — inserts one; a merge/split's `knowledge_links` row is written in the same commit)
-   * and `knowledge_processed` are insert-only, so `MAX(id)`/`MAX(rowid)` is monotonic and exact for
-   * them; so is `consolidated_facts`. The one column that is ever UPDATEd and read by these counts is
-   * this session's own `sessions.project_id` (a project merge reassigns every session and every
-   * knowledge row that shared the merged-away project, this session's own row included, in the same
-   * transaction; an explicit `/trace project` reassignment updates it directly) — a fresh point lookup
-   * by primary key, not a scan, so it costs nothing extra to include. The surviving side of that merge
-   * keeps its `project_id` while gaining the absorbed project's knowledge rows (`UPDATE knowledge`), so
-   * the count of merged projects is part of the signal too. Ingesting Raw touches none of
-   * these: `source_entries`/`source_paths`/`turns` are deliberately absent from this signal. */
+  /** Ticket 69/72: a cheap composite that changes exactly when a commit could change
+   * `consolidationBatch`, `duePools` or the footer's four cached counts — for ANY connection to this
+   * database file, not only this process. Every database input those read is covered:
+   *  - facts, knowledge revisions/links (a merge/split's `knowledge_links` row is written in the same
+   *    commit as its `knowledge_revisions` row) and processed records are insert-only, so `MAX(id)`/
+   *    `MAX(rowid)` is monotonic and exact for `facts`, `consolidated_facts`, `knowledge_revisions` and
+   *    `knowledge_processed`;
+   *  - project assignment and merges: a merge reassigns every session and knowledge row that shared the
+   *    merged-away project in the same transaction as marking it merged, so this session's own
+   *    `sessions.project_id` (a fresh point lookup, not a scan) plus the count of merged projects covers
+   *    every reassignment, this session's own declaration included;
+   *  - the knowledge budget policy (`knowledge_budget_policy`, a single point-lookup row) and the
+   *    over-budget suppression state (`knowledge_pool_state`) of exactly the three pools this session's
+   *    Dreaming can be due for (global, its project, itself) — bounded point lookups by primary key;
+   *  - other sessions' current-path cursors (`session_lineage_cursors.version`, ticket 72: bumped only
+   *    by a branch switch or a head moving back to an ancestor, never an ordinary forward move) and
+   *    non-append rewrites of `source_paths.entry_ids` under an unchanged cursor
+   *    (`source_paths.version`, ticket 72: bumped only where the path is written, by the writer's own
+   *    prefix check) — both read as one indexed `MAX(version)` each, global rather than scoped to this
+   *    session's own dependency set, so a change elsewhere may over-arm this session but Raw ingestion,
+   *    which moves neither, never does.
+   * Ingesting Raw touches none of these: `source_entries`/`turns` are deliberately absent, and an
+   * ordinary forward head move or a pure append leaves every included column exactly as it was. */
   progressSignal(sessionId) {
     const row = this.db.prepare(`SELECT
         (SELECT IFNULL(MAX(id), 0) FROM facts) AS f,
@@ -3069,8 +3097,15 @@ ${rendered.get(value.revision.id)}`;
         (SELECT IFNULL(MAX(id), 0) FROM knowledge_revisions) AS kr,
         (SELECT IFNULL(MAX(rowid), 0) FROM knowledge_processed) AS kp,
         (SELECT project_id FROM sessions WHERE id = ?) AS pid,
-        (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) AS pm`).get(sessionId);
-    return `${row.f}:${row.cf}:${row.kr}:${row.kp}:${row.pid}:${row.pm}`;
+        (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) AS pm,
+        (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id = 1) AS bp,
+        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'global'), '') AS psg,
+        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state
+          WHERE pool = 'project:' || (SELECT project_id FROM sessions WHERE id = ?)), '') AS psp,
+        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'session:' || ?), '') AS pss,
+        (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cv,
+        (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv`).get(sessionId, sessionId, sessionId);
+    return `${row.f}:${row.cf}:${row.kr}:${row.kp}:${row.pid}:${row.pm}:${row.bp}:${row.psg}:${row.psp}:${row.pss}:${row.cv}:${row.sv}`;
   }
   /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one
    * fact at a time, never "every fact minus the cited ones" (22b, restated by 24a for the footer).
@@ -3202,16 +3237,33 @@ ${rendered.get(value.revision.id)}`;
       const tailAncestry = tail !== null && !headAncestry.has(tail) ? this.pathTurns({ sessionId, headTurnId: tail }) : void 0;
       const problem = this.pathCoherenceProblem(sessionId, branch, headTurnId, entryIds, entries, headAncestry, tailAncestry);
       if (problem) throw new Error(problem);
-      this.db.prepare("INSERT INTO source_paths (session_id, branch, entry_ids) VALUES (?, ?, ?) ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids").run(sessionId, branch, JSON.stringify(entryIds));
+      this.writeSourcePath(sessionId, branch, entryIds);
       this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
     });
+  }
+  /** Ticket 72: only the writer knows whether the new list extends the stored one — an unbroken
+   * prefix relationship, the only shape an ordinary ingested-entry append ever produces. Any other
+   * replacement (an entry removed, reordered, or a shorter list) is a membership rewrite the change
+   * signal must observe, so it bumps `source_paths.version`. Once bumped, `version > 0` keeps bumping
+   * every later write too, even one that is itself a plain extension of the immediately prior list: an
+   * entry restored after removal ([e1] -> [e1,e2] again) is structurally indistinguishable from a
+   * fresh append of the same shape, and only this row's own prior history — not the two endpoints
+   * compared in isolation — can tell them apart. Bounded: only a path that has ever been rewritten
+   * pays this, forever; a pure append leaves an unrewritten path's signal untouched. */
+  writeSourcePath(sessionId, branch, entryIds) {
+    const priorRow = this.db.prepare("SELECT entry_ids, version FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
+    const prior = priorRow ? JSON.parse(priorRow.entry_ids) : [];
+    const append = prior.length <= entryIds.length && prior.every((id, index) => entryIds[index] === id);
+    const bump = !append || (priorRow?.version ?? 0) > 0;
+    this.db.prepare(`INSERT INTO source_paths (session_id, branch, entry_ids, version) VALUES (?, ?, ?, 0)
+      ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids, version = version + ?`).run(sessionId, branch, JSON.stringify(entryIds), bump ? 1 : 0);
   }
   selectSourcePath(sessionId, branch, entryIds) {
     return this.transaction(() => {
       this.requireEnabled(sessionId);
       const owned = this.db.prepare("SELECT COUNT(*) n FROM source_entries WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))").get(sessionId, JSON.stringify(entryIds)).n;
       if (!branch || new Set(entryIds).size !== entryIds.length || owned !== entryIds.length) throw new Error("invalid source path");
-      this.db.prepare("INSERT INTO source_paths (session_id, branch, entry_ids) VALUES (?, ?, ?) ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids").run(sessionId, branch, JSON.stringify(entryIds));
+      this.writeSourcePath(sessionId, branch, entryIds);
     });
   }
   /** The selected path's entry ids, in the branch's own order, decided by `turn_id` alone: no Raw
@@ -7870,7 +7922,7 @@ var import_node_crypto10 = require("node:crypto");
 var import_node_path4 = require("node:path");
 var import_node_util = require("node:util");
 
-// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -28668,7 +28720,7 @@ function query({
   return queryInstance;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -28742,7 +28794,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// node_modules/zod/v4/core/util.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -29421,7 +29473,7 @@ var Class2 = class {
   }
 };
 
-// node_modules/zod/v4/core/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -29487,7 +29539,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -29567,7 +29619,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// node_modules/zod/v4/core/regexes.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -29724,7 +29776,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// node_modules/zod/v4/core/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -30272,7 +30324,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -30308,14 +30360,14 @@ var Doc2 = class {
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -32286,7 +32338,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -32395,7 +32447,7 @@ function en_default3() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -32443,7 +32495,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/api.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -33247,7 +33299,7 @@ function _stringFormat(Class3, format, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -33599,7 +33651,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -34075,7 +34127,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -34244,7 +34296,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// node_modules/zod/v4/classic/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -34278,7 +34330,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// node_modules/zod/v4/classic/iso.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -34319,7 +34371,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -34359,7 +34411,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -34373,7 +34425,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -35452,22 +35504,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// node_modules/zod/v4/classic/compat.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// node_modules/zod/v4/classic/from-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// node_modules/zod/v4/classic/external.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -38256,6 +38308,32 @@ var CcTaskScheduler = class {
   stopped = false;
   catchup;
   cancellationEpoch = 0;
+  /** Ticket 72: ports 69's per-entry rule to CC. Noting has no entry here — every appended entry
+   * evaluates it, own and borrowed, exactly as before. Consolidation and Dreaming are evaluated only
+   * while armed; a phase disarms itself the moment its own evaluation comes back not-due, and a due
+   * phase that did not launch (busy slot, foreign claim, dropped) stays armed for the next opportunity.
+   * `noting: true` is never read; it exists only so `phase: CcWorkerPhase` can index this object
+   * without narrowing. Constructing this scheduler (attach) is itself an arming event. */
+  armed = { noting: true, consolidation: true, dreaming: true };
+  armCD() {
+    this.armed.consolidation = true;
+    this.armed.dreaming = true;
+  }
+  /** The last-seen `Store.progressSignal` for this session: a change re-arms C and D, closing what the
+   * flags above miss on their own — a commit made through a different connection to the same database
+   * file (another executor, a Pi session, an operator CLI). Compared at every per-entry opportunity. */
+  lastArmSignal;
+  /** Was the last reconcile "ready" (a bound, enabled session with a persisted selected path and
+   * head), and on which branch. A transition into ready (attach, or memory re-enabled) and a branch
+   * switch (a selected-path change or a retarget) both arm C and D, mirroring 69's "restore" event on
+   * Pi. A transition OUT of ready, or a branch change, also fences in-flight completions the same way
+   * `stopCatchup` already does for stop/off: a task admitted against the old path must not use a late
+   * completion to launch C or D there (`checkpointCD` always re-evaluates the current path instead). */
+  lastReady = false;
+  lastBranch;
+  /** The freshest known effective path: what the completion checkpoint evaluates, never the settled
+   * task's own (possibly stale) target. Set at every ready reconcile, whether or not it appended entries. */
+  currentTarget;
   constructor(memory, worker, diagnostic) {
     this.memory = memory;
     this.worker = worker;
@@ -38274,7 +38352,20 @@ var CcTaskScheduler = class {
         this.memory.cancelTasks();
       }
     }
-    if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length) return;
+    const ready = reconcile.state === "ready" && reconcile.coreSessionId !== null && reconcile.headTurnId !== null && !!reconcile.selectedEntryIds.length;
+    if (this.lastReady && (!ready || reconcile.branch !== this.lastBranch)) this.cancellationEpoch++;
+    if (ready) {
+      if (!this.lastReady || reconcile.branch !== this.lastBranch) this.armCD();
+      this.lastBranch = reconcile.branch;
+      this.currentTarget = {
+        sessionId: reconcile.coreSessionId,
+        branch: reconcile.branch,
+        headTurnId: reconcile.headTurnId,
+        triggerEntryId: reconcile.selectedEntryIds.at(-1)
+      };
+    }
+    this.lastReady = ready;
+    if (!ready) return;
     if (admitAutomatic && opportunityEpoch === this.cancellationEpoch && reconcile.appendedEntryIds.length) {
       const selected = new Set(reconcile.selectedEntryIds);
       const appended = reconcile.appendedEntryIds.filter((id) => selected.has(id));
@@ -38288,6 +38379,11 @@ var CcTaskScheduler = class {
           headTurnId: reconcile.bootstrap ? reconcile.headTurnId : entry.turnId,
           triggerEntryId: entry.id
         };
+        const signal = this.memory.store.progressSignal(own.sessionId);
+        if (signal !== this.lastArmSignal) {
+          this.lastArmSignal = signal;
+          this.armCD();
+        }
         for (const phase of ["noting", "consolidation", "dreaming"]) this.startAutomatic(phase, own);
       }
     }
@@ -38355,18 +38451,27 @@ var CcTaskScheduler = class {
   failedStatus(diagnostic) {
     return { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0, diagnostic };
   }
-  startAutomatic(phase, own) {
+  /** Ticket 72: Noting always evaluates (own and borrowed, exactly as before). Consolidation and
+   * Dreaming evaluate their own candidate only while armed — an appended entry alone cannot change
+   * either answer (67/69: no fact and no knowledge revision comes from Raw) — but the borrowed
+   * closed-session scan keeps its per-opportunity timing unchanged, running regardless of `armed`, so
+   * `includeBorrowed=false` is only ever passed by the completion checkpoint below. */
+  startAutomatic(phase, own, includeBorrowed = true) {
     if (this.slots.has(phase) || this.stopped) return;
+    const evaluate = phase === "noting" || this.armed[phase];
     let due = false;
-    try {
-      due = this.memory.taskEligibility(phase, own).due;
-    } catch (error3) {
-      this.diagnostic(`${phase} eligibility failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
-      return;
+    if (evaluate) {
+      try {
+        due = this.memory.taskEligibility(phase, own).due;
+      } catch (error3) {
+        this.diagnostic(`${phase} eligibility failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+        return;
+      }
+      if (phase !== "noting") this.armed[phase] = due;
     }
     const candidates = [
       ...due ? [{ ...own, borrowed: false }] : [],
-      ...phase === "dreaming" ? [] : this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope).map((target) => ({ ...target, borrowed: true }))
+      ...phase === "dreaming" || !includeBorrowed ? [] : this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope).map((target) => ({ ...target, borrowed: true }))
     ];
     if (!candidates.length) return;
     if (!this.worker) {
@@ -38374,19 +38479,21 @@ var CcTaskScheduler = class {
       return;
     }
     const cancellationEpoch = this.cancellationEpoch;
-    this.reserve(phase, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch));
+    this.reserve(phase, own.sessionId, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch));
   }
   /**
    * R4: a successful ordinary completion while a drain is active is a full checkpoint (all of N/C/D
    * checked); any other ordinary outcome (failure, cancelled, empty, dropped, bounced) stays N-only,
    * matching the per-poll drive.
    */
-  reserve(phase, run, shouldDrive = (result) => {
+  reserve(phase, sessionId, run, shouldDrive = (result) => {
     const drain = this.catchup;
     const drainActive = !!drain && (drain.state === "running" || drain.state === "waiting");
     this.driveCatchup(drainActive && result?.outcome === "success");
     return false;
   }) {
+    const epoch = this.cancellationEpoch;
+    const admissionSignal = this.memory.store.progressSignal(sessionId);
     let settled;
     const work = Promise.resolve().then(run).then((result) => {
       settled = result;
@@ -38395,8 +38502,24 @@ var CcTaskScheduler = class {
     this.slots.set(phase, work);
     void work.catch((error3) => this.diagnostic(`${phase} worker failed: ${error3 instanceof Error ? error3.message : String(error3)}`)).finally(() => {
       this.slots.delete(phase);
+      if (settled && settled.outcome !== "empty" && settled.outcome !== "dropped" && this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointCD(sessionId, epoch);
       if (shouldDrive(settled)) this.driveCatchup();
     });
+  }
+  /** Ticket 72 item 3: fenced by the same admission an ordinary opportunity passes — the task's own
+   * cancellation epoch (a stop, an off, or a selected-path change/retarget since admission bumps it,
+   * per `reconcile` above), the executor not stopped, and memory still enabled — and it evaluates the
+   * CURRENT effective path (`currentTarget`), never the finished task's own (possibly stale) target.
+   * It checks only own C and D, scanning no borrowed candidates, so it composes with 68's catchup
+   * checkpoint through the same slot reservation: whichever `reserve`s a phase first wins that slot;
+   * the other's `startAutomatic` call becomes a no-op. */
+  checkpointCD(sessionId, epoch) {
+    if (this.stopped || this.cancellationEpoch !== epoch) return;
+    const target = this.currentTarget;
+    if (!target || target.sessionId !== sessionId || !this.memory.store.enabled(sessionId)) return;
+    this.armCD();
+    this.startAutomatic("consolidation", target, false);
+    this.startAutomatic("dreaming", target, false);
   }
   common(phase, target, borrowed, automatic, boundary) {
     const execution = this.worker.phases[phase];
@@ -38497,7 +38620,7 @@ var CcTaskScheduler = class {
       drain.state = "running";
       if (phase !== "dreaming") drain.phase = phase;
       let checkpoint = false;
-      this.reserve(phase, async () => {
+      this.reserve(phase, drain.target.sessionId, async () => {
         if (!owned()) return;
         try {
           const result = phase === "noting" ? await this.memory.noting(this.common(
