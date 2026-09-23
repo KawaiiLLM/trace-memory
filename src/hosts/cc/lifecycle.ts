@@ -4,7 +4,7 @@ import { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { bindingPath, coreHostOf, readBinding, updateBinding, validateNativeSessionId, type CcExecutorBinding, type CcHookInput,
   type CcSessionBinding } from "./binding.ts";
-import { CcImporter, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
+import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
 import { startControlServer, type CcControlServer } from "./control.ts";
 import { classifySourceRecord, readCompleteTranscript, selectedNativePath } from "./transcript.ts";
 import { CcTaskScheduler } from "./scheduler.ts";
@@ -167,19 +167,32 @@ export class CcCoordinator {
   private closed = false;
   private startupComplete = false;
   private readonly startup = new AbortController();
+  /** 70: the reconcile currently running under the binding lock, if any. `off`, a selected-path
+   * retarget and executor shutdown abort it before they wait for the lock themselves (off through
+   * `disableEnrollment`, retarget and shutdown through this queue); `stop` never touches it. */
+  private currentImportAbort: AbortController | null = null;
   private readonly config: ResolvedCcHostConfig;
   /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
   nativeSessionId: string;
   private readonly diagnostic: CcDiagnostic;
+  /** Test-only override of the cooperative-scan slice/pause constants; unset in production. */
+  private readonly importTuning?: CcImportInstrumentation;
 
   constructor(config: ResolvedCcHostConfig, nativeSessionId: string,
-    diagnostic: CcDiagnostic = message => console.error(`Trace Memory CC: ${message}`)) {
+    diagnostic: CcDiagnostic = message => console.error(`Trace Memory CC: ${message}`), importTuning?: CcImportInstrumentation) {
     validateNativeSessionId(nativeSessionId);
-    this.config = config; this.nativeSessionId = nativeSessionId; this.diagnostic = diagnostic;
+    this.config = config; this.nativeSessionId = nativeSessionId; this.diagnostic = diagnostic; this.importTuning = importTuning;
   }
 
   private observe(event: string, details: Record<string, unknown> = {}): void {
     this.diagnostic(`lifecycle ${JSON.stringify({ event, at: Date.now(), ...details })}`);
+  }
+
+  /** The scan observes this at its next cooperative resume: it stops with stamp and offset
+   * unadvanced and releases the binding lock; the aborting operation then persists and acknowledges
+   * as today. A no-op when no reconcile is currently running. */
+  private abortCurrentImport(): void {
+    this.currentImportAbort?.abort(new DOMException("CC import aborted for a higher-priority control operation", "AbortError"));
   }
 
   private async attach(final: boolean, deadline?: number): Promise<void> {
@@ -203,6 +216,7 @@ export class CcCoordinator {
           return scheduler.startCatchup(projection, ticket);
         },
         beforeCancel: () => this.scheduler?.stopCatchup(),
+        abortImport: () => this.abortCurrentImport(),
       }).then(control => { this.control = control; });
       this.watchTranscript(binding);
       if (final) this.importer.memory.cancelTasks(true);
@@ -270,6 +284,9 @@ export class CcCoordinator {
    * Returns false when the target is not a clear-child of the current session. */
   retargetTo(nativeSessionId: string): Promise<boolean> {
     validateNativeSessionId(nativeSessionId);
+    // 70: abort a running scan before waiting on the reconcile queue behind it — otherwise this
+    // promise chain would itself wait out the whole (possibly cooperative, multi-second) import.
+    this.abortCurrentImport();
     const done = this.queue.then(async () => {
       if (this.closed || this.closing || !this.importer || !this.control) return false;
       const current = this.importer.currentBinding(), next = readBinding(this.config, nativeSessionId);
@@ -303,13 +320,15 @@ export class CcCoordinator {
       if (!final) this.wakeQueued = false;
       if (this.closed || this.closing && !final) return null;
       const wasAttached = this.importer !== null;
+      const importAbort = new AbortController();
+      this.currentImportAbort = importAbort;
       try {
         const attaching = this.attach(final, deadline);
         // attach() constructs the scheduler synchronously before its first await. Capture that first
         // scheduler's epoch now, not after control can acknowledge a stop while initial import waits.
         const epoch = opportunityEpoch ?? this.scheduler?.catchupTicket();
         await attaching;
-        const result = await this.importer?.reconcile() ?? null;
+        const result = await this.importer?.reconcile(importAbort.signal, this.importTuning) ?? null;
         if (this.importer) this.watchTranscript(this.importer.currentBinding());
         // The explicit drain still observes path/enrollment changes, but its reconciliation must
         // not first become an ordinary threshold-trigger opportunity before the boundary freezes.
@@ -327,7 +346,7 @@ export class CcCoordinator {
         if ((error as { name?: string }).name === "AbortError") this.observe("startup-cancelled", { reason });
         else this.diagnostic(`${reason} reconciliation failed: ${error instanceof Error ? error.message : String(error)}`);
         return null;
-      }
+      } finally { if (this.currentImportAbort === importAbort) this.currentImportAbort = null; }
     });
     return this.queue;
   }
@@ -397,6 +416,8 @@ export class CcCoordinator {
     if (this.closed) return { confirmed: false, reason: "coordinator already closed", diagnostic: "duplicate shutdown" };
     if (this.closing) return { confirmed: false, reason: "coordinator shutdown already in progress" };
     this.closing = true; this.scheduler?.stop(); this.stopWakeups(); this.startup.abort(new DOMException("Lifecycle shutdown", "AbortError"));
+    // 70: abort a running scan before waiting on the queue behind it, for the same reason retargetTo does.
+    this.abortCurrentImport();
     this.observe("shutdown-begin", { reason });
     let result: CcCloseResult = { confirmed: false, reason: "no bound importer", diagnostic: "binding was never established" };
     try {

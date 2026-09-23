@@ -28,6 +28,9 @@ export interface CcControlHandlers {
   catchup(): Promise<CcCatchupStatus>;
   /** Must mark the finite drain stopped before core cancellation can settle a worker. */
   beforeCancel(): void;
+  /** 70: abort a scan currently running under the binding lock, before `off` waits for that same
+   * lock through `disableEnrollment` below. Never called for `stop`. */
+  abortImport(): void;
 }
 
 export interface CcControlServer {
@@ -129,6 +132,10 @@ export async function startControlServer(config: ResolvedCcHostConfig, initial: 
           handlers?.beforeCancel();
           const aborted = memory.cancelTasks(false);
           if (verb === "off") {
+            // Intent reaches the scan before the lock does: abort a running import now, so it
+            // releases the binding lock at its next cooperative resume instead of making this
+            // request wait behind the whole (possibly multi-second) scan.
+            handlers?.abortImport();
             await disableEnrollment(config, binding.nativeSessionId, memory.store, token);
             // Binding-lock contention can leave a window between the first fence and durable disable.
             // Fence once more before acknowledgement so work admitted in that window cannot survive off.
