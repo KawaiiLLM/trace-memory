@@ -4865,11 +4865,12 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
   const progress = (sessionId, branch = "main", headTurnId) => {
     session(sessionId);
     const path = store.knowledgePath(sessionId, branch, headTurnId);
-    const key = `${sessionId}:${branch}:${path.headTurnId ?? ""}`;
+    const key = `${sessionId}:${branch}`;
     const signal = store.progressSignal(sessionId);
     const cached3 = progressCache.get(key);
-    if (cached3 && cached3.signal === signal) return {
-      entries: path.headTurnId == null ? 0 : store.pendingEntryIds(sessionId, branch, path.headTurnId).length,
+    const reusable = cached3 && cached3.signal === signal && path.headTurnId != null && store.pathTurns({ sessionId, branch, headTurnId: path.headTurnId }).has(cached3.headTurnId);
+    if (reusable) return {
+      entries: store.pendingEntryIds(sessionId, branch, path.headTurnId).length,
       facts: cached3.facts,
       unconsolidated: cached3.unconsolidated,
       knowledge: cached3.knowledge,
@@ -4881,7 +4882,8 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
     const knowledge = store.currentKnowledge(path, {}, snapshot2);
     const changedKnowledge = knowledge.length - store.processedCurrentVersions(knowledge).size;
     const unconsolidated = store.unconsolidated(facts, path, snapshot2).length;
-    progressCache.set(key, { signal, facts: facts.length, unconsolidated, knowledge: knowledge.length, changedKnowledge });
+    if (path.headTurnId != null) progressCache.set(key, { signal, headTurnId: path.headTurnId, facts: facts.length, unconsolidated, knowledge: knowledge.length, changedKnowledge });
+    else progressCache.delete(key);
     return { entries, facts: facts.length, unconsolidated, knowledge: knowledge.length, changedKnowledge };
   };
   return {
