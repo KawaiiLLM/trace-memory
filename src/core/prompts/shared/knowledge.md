@@ -2,7 +2,7 @@
 
 A knowledge item is the versioned arc of one object: one object, one independently changeable claim or state, one identity.
 - A version has a `text` (the body), a `category`, a `scope`, `topics`, `supports` and a `reason` (the commit message). `supports` are the facts of this version: an evidence-driven change cites only its evidence; a maintenance change carries its parents' supports, copied by the system at commit.
-- Identity is the claim or state itself, not a label, a category or a current value: one role's default of Sol high, then Astra high, then Sol medium is one item in three versions. A change to that claim or state — its content, its category or its wording — belongs to that identity. The Dreamer updates or merges into it; the Consolidator, which only creates, names the superseded item in `reason`.
+- Identity is the claim or state itself, not a label, a category or a current value: one role's default of Sol high, then Astra high, then Sol medium is one item in three versions. A change to that claim or state — its content, its category or its wording — belongs to that identity: update the exact continuing version. Merging two identities together, splitting one apart, and reviewing every change as a diff against the version it last confirmed are the Dreamer's alone.
 
 **Two kinds.** Established knowledge: `goal`, `constraint`, `mechanism`, `term`, `reference`. Pending knowledge: `open`, `dispute`.
 
