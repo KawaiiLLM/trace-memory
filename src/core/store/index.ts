@@ -2793,7 +2793,14 @@ export class Store {
   consolidatedOnPath(factId: number, path: KnowledgePath, snapshot = this.pathSnapshot(path)): boolean {
     const runs = snapshot.consolidatedRuns;
     return (this.db.prepare("SELECT run_id FROM consolidated_facts WHERE fact_id = ?").all(factId) as { run_id: number }[]).some(({ run_id }) => {
-      if (!runs.has(run_id)) runs.set(run_id, this.listConsolidatedFacts(run_id).every((f) => this.factOnPath(f, path, snapshot)));
+      if (!runs.has(run_id)) {
+        const facts = this.listConsolidatedFacts(run_id);
+        // 71: one run's consolidated facts may span sessions, so ownership is genuinely queried
+        // (never assumed) — just batched once per run instead of once per fact of that run.
+        const owners = new Map(this.db.prepare("SELECT id, session_id FROM turns WHERE id IN (SELECT value FROM json_each(?))")
+          .all(JSON.stringify([...new Set(facts.map(f => f.turnId))])).map(r => [Number(r.id), Number(r.session_id)]));
+        runs.set(run_id, facts.every((f) => this.factOnPath(f, path, snapshot, undefined, owners)));
+      }
       return runs.get(run_id)!;
     });
   }
