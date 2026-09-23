@@ -145,6 +145,35 @@ test("80: append, noting, branch/head navigation and rewrite agree with a fresh 
   } finally { memory.close(); }
 });
 
+test("80: reopen discards in-memory prefix and cold due reads only through its threshold", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm-80-reopen-")), file = join(dir, "trace.db");
+  try {
+    const { memory, store, session, add } = fixture(file);
+    let head: number | null = null;
+    const ids: number[] = [];
+    for (let i = 0; i < 120; i++) {
+      const item = add(head, `entry-${i}`);
+      head = item.turn.id; ids.push(item.entry.id);
+    }
+    store.publishSourcePath(session.id, "main", ids, head!, "native");
+    const target = { sessionId: session.id, branch: "main", headTurnId: head! };
+    memory.config.noting.triggerTokens = 1;
+    expect(memory.taskEligibility("noting", target).due).toBe(true);
+    memory.close();
+    const reopened = TraceMemory(file, vi.fn());
+    try {
+      reopened.config.noting.triggerTokens = 1;
+      const get = vi.spyOn(reopened.store, "getSourceEntry");
+      expect(reopened.taskEligibility("noting", target).due).toBe(true);
+      expect(get.mock.calls.length).toBe(1);
+      expect(reopened.store.pendingEntryIds(session.id, "main", head!)).toEqual(ids);
+      expect(reopened.pendingTokens("noting", target).tokens).toBe(
+        tokens(ids.map(id => renderEntry(reopened.store.getSourceEntry(id)!, reopened.config.render).content).join("\n\n")));
+      get.mockRestore();
+    } finally { reopened.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("80: committed append on a second connection refreshes only its indexed suffix", () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-80-external-append-")), file = join(dir, "trace.db");
   try {
