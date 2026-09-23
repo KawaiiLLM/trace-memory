@@ -1,10 +1,14 @@
 // 78: native probes against the pinned, real Claude Code executable (2.1.280) — the only file in
 // this suite that spawns it for real. No real model call ever leaves the machine: every provider
-// request goes to the loopback Anthropic-shaped server in cc-native-loopback.ts. These are slower
-// than the mocked-transport suite (cc-worker.test.ts) and are kept to the minimum needed to prove
-// the path rule and the native-file/isolation/daily-cost acceptance items against reality, not a
-// stand-in for it.
-import { afterEach, expect, test } from "vitest";
+// request goes to the loopback Anthropic-shaped server in cc-native-loopback.ts. Every spawn of the
+// real CLI (the worker run, the path-rule probe's direct `query(...)`, and the `--version` check the
+// worker performs) runs behind an OS-level network fence (cc-native-fence.ts, macOS Seatbelt) that
+// denies all networking except loopback, so a leak past ANTHROPIC_BASE_URL fails the run instead of
+// quietly reaching the internet. A preflight proves the fence bites before any probe runs. These are
+// slower than the mocked-transport suite (cc-worker.test.ts) and are kept to the minimum needed to
+// prove the path rule and the native-file/isolation/daily-cost acceptance items against reality, not
+// a stand-in for it.
+import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -13,13 +17,31 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, ccNativeTranscriptPath, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
 import { startLoopbackAnthropic } from "./cc-native-loopback.ts";
+import { createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
 
 const CLAUDE_EXECUTABLE = "/opt/homebrew/bin/claude";
 const CLAUDE_VERSION = "2.1.280";
-// These probes need the pinned executable, and the daily-cost check needs the maintainer's local
-// claude-powerline checkout. Elsewhere they are skipped, never failed: the suite stays portable.
-const probe = test.skipIf(!existsSync(CLAUDE_EXECUTABLE));
+// These probes need the pinned executable and the sandboxing tool that fences it. Elsewhere they are
+// skipped, never failed: the suite stays portable. The daily-cost check additionally needs the
+// maintainer's local claude-powerline checkout, guarded separately below (still skipped, not failed).
+const FENCE_TOOLS_AVAILABLE = fenceToolsAvailable(CLAUDE_EXECUTABLE);
+const probe = test.skipIf(!FENCE_TOOLS_AVAILABLE);
 const POWERLINE = join(homedir(), "Projects/claude-powerline/src/utils/claude.ts");
+
+// The fenced executable and its preflight are shared across every probe in this file: one wrapper,
+// verified once before any probe spawns it. `fencedClaude` is assigned before any test body runs
+// (vitest always finishes `beforeAll` first) — see FENCE_TOOLS_AVAILABLE above for why this can be
+// undefined when every probe is skipped anyway.
+let fencedClaude: string;
+let fenceDir: string;
+beforeAll(async () => {
+  if (!FENCE_TOOLS_AVAILABLE) return;
+  fenceDir = mkdtempSync(join(tmpdir(), "tm78-fence-"));
+  const { wrapperPath, profilePath } = createFencedClaudeExecutable(fenceDir, CLAUDE_EXECUTABLE);
+  await preflightNetworkFence(profilePath);
+  fencedClaude = wrapperPath;
+});
+afterAll(() => { if (fenceDir) rmSync(fenceDir, { recursive: true, force: true }); });
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -31,12 +53,19 @@ function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix)); dirs.push(dir); return realpathSync(dir);
 }
 
+// Defence in depth alongside the sandbox fence, not a substitute for it (the worker's own
+// `productionEnvironment` already sets these for the worker-run probes; the path-rule probe below
+// calls `query(...)` directly, bypassing that, so it sets them here itself).
+const CLI_OPT_OUTS = { DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1",
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" } as const;
+
 function loopbackEnvironment(configDir: string, baseUrl: string): NodeJS.ProcessEnv {
   return { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: configDir,
-    ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: "sk-ant-fake-probe-key", CLAUDE_CODE_MAX_RETRIES: "0" };
+    ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: "sk-ant-fake-probe-key", CLAUDE_CODE_MAX_RETRIES: "0", ...CLI_OPT_OUTS };
 }
 
-function workerConfig(cwd: string, executable = CLAUDE_EXECUTABLE) {
+function workerConfig(cwd: string, executable = fencedClaude) {
   return resolveCcHostConfig({ dbPath: join(cwd, "memory.sqlite"), stateDir: join(cwd, "state"),
     notingModel: "sonnet", notingThinking: "medium",
     consolidationModel: "sonnet", consolidationThinking: "medium",
@@ -128,10 +157,10 @@ probe("path rule: a custom CLAUDE_CONFIG_DIR and worker cwds with dots, spaces a
     const cwd = join(base, leaf);
     mkdirSync(cwd, { recursive: true });
     const environment = { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: configDir,
-      ANTHROPIC_BASE_URL: "http://127.0.0.1:9", ANTHROPIC_API_KEY: "sk-ant-fake-probe-key" };
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:9", ANTHROPIC_API_KEY: "sk-ant-fake-probe-key", ...CLI_OPT_OUTS };
     const controller = new AbortController();
     const execution = query({ prompt: "hello", options: {
-      model: "sonnet", cwd, pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE, env: environment,
+      model: "sonnet", cwd, pathToClaudeCodeExecutable: fencedClaude, env: environment,
       tools: [], allowedTools: [], settingSources: [], plugins: [], permissionMode: "dontAsk", strictMcpConfig: true,
       abortController: controller, extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null },
     } });
