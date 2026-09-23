@@ -82,7 +82,6 @@ CREATE TABLE IF NOT EXISTS session_lineage_cursors (
   hwm_head_turn_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, lineage)
 );
-CREATE INDEX IF NOT EXISTS idx_session_lineage_cursors_version ON session_lineage_cursors(version);
 
 CREATE TABLE IF NOT EXISTS task_claims (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
@@ -233,7 +232,6 @@ CREATE TABLE IF NOT EXISTS source_paths (
   hwm_entry_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, branch)
 );
-CREATE INDEX IF NOT EXISTS idx_source_paths_version ON source_paths(version);
 -- Native checkpoints that own a Turn but are not Raw source entries (notably compaction boundaries),
 -- plus the user source that created each ordinary Turn. Host-native identity keeps import idempotent;
 -- no host envelope or selected-path policy enters this table.
@@ -1079,8 +1077,9 @@ export class Store {
     this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id, version, hwm_head_turn_id)
         VALUES (?, ?, ?, ?, 0, ?)
       ON CONFLICT (session_id, lineage) DO UPDATE SET
-        version = version + (CASE WHEN branch != excluded.branch OR
-          (excluded.head_turn_id != head_turn_id AND excluded.head_turn_id <= hwm_head_turn_id) THEN 1 ELSE 0 END),
+        version = CASE WHEN branch != excluded.branch OR
+          (excluded.head_turn_id != head_turn_id AND excluded.head_turn_id <= hwm_head_turn_id)
+          THEN (SELECT MAX(version) + 1 FROM session_lineage_cursors) ELSE version END,
         branch = excluded.branch, head_turn_id = excluded.head_turn_id,
         hwm_head_turn_id = MAX(hwm_head_turn_id, excluded.head_turn_id)`)
       .run(sessionId, lineage, branch, headTurnId, headTurnId);
@@ -2786,7 +2785,9 @@ export class Store {
    *    by a branch switch or a head moving back to an ancestor, never an ordinary forward move) and
    *    non-append rewrites of `source_paths.entry_ids` under an unchanged cursor
    *    (`source_paths.version`, ticket 72: bumped only where the path is written, by the writer's own
-   *    prefix check) — both read as one indexed `MAX(version)` each, global rather than scoped to this
+   *    prefix check) — both read as one indexed `MAX(version)` each. A bump takes its table's next
+   *    version rather than adding one to its own row, so every bump in any row moves the maximum; a
+   *    per-row counter would hide behind another row's higher one. Global rather than scoped to this
    *    session's own dependency set, so a change elsewhere may over-arm this session but Raw ingestion,
    *    which moves neither, never does.
    * Ingesting Raw touches none of these: `source_entries`/`turns` are deliberately absent, and an
@@ -2973,7 +2974,8 @@ export class Store {
     const bump = !append || restored;
     const newHwm = entryIds.length ? Math.max(hwm, ...entryIds) : hwm;
     this.db.prepare(`INSERT INTO source_paths (session_id, branch, entry_ids, version, hwm_entry_id) VALUES (?, ?, ?, 0, ?)
-      ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids, version = version + ?, hwm_entry_id = ?`)
+      ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids,
+        version = CASE WHEN ? THEN (SELECT MAX(version) + 1 FROM source_paths) ELSE version END, hwm_entry_id = ?`)
       .run(sessionId, branch, JSON.stringify(entryIds), newHwm, bump ? 1 : 0, newHwm);
   }
 

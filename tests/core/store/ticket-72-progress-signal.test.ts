@@ -182,12 +182,14 @@ test("72: backfill on an existing database sets the high-water mark from current
     calls: [{ ordinal: 1, name: "tool", callId: "c1", status: "ok" }] });
   pre.publishSourcePath(sessionId, "main", [entry.id, entry2.id], turnId, "lineage-a");
   pre.close();
-  // Simulate a database from before the high-water-mark columns existed: drop them (SQLite supports
-  // DROP COLUMN), so reopening through Store must ALTER TABLE them back in and backfill from the row's
-  // current contents, exactly as it would for a real predecessor database.
+  // Simulate a database from before ticket 72: both tables without their version and high-water-mark
+  // columns or the version indexes, the exact pre-72 shape. Reopening through Store must add them back
+  // before anything indexes them (review 2026-09-23: the schema script indexed `version` first and a
+  // real pre-72 database failed to open) and backfill from the row's current contents.
   const raw = new DatabaseSync(dbPath);
-  raw.exec("ALTER TABLE source_paths DROP COLUMN hwm_entry_id");
-  raw.exec("ALTER TABLE session_lineage_cursors DROP COLUMN hwm_head_turn_id");
+  raw.exec("DROP INDEX idx_source_paths_version; DROP INDEX idx_session_lineage_cursors_version");
+  for (const [table, columns] of [["source_paths", ["version", "hwm_entry_id"]], ["session_lineage_cursors", ["version", "hwm_head_turn_id"]]] as const)
+    for (const column of columns) raw.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
   raw.close();
   const reopened = new Store(dbPath);
   stores.push(reopened);
@@ -195,6 +197,32 @@ test("72: backfill on an existing database sets the high-water mark from current
   expect(row.hwm_entry_id).toBe(Math.max(entry.id, entry2.id));
   const cursorRow = reopened.db.prepare("SELECT hwm_head_turn_id FROM session_lineage_cursors WHERE session_id = ?").get(sessionId) as { hwm_head_turn_id: number };
   expect(cursorRow.hwm_head_turn_id).toBe(turnId);
+  expect(reopened.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%\\_version' ESCAPE '\\' ORDER BY name").all().map(r => r.name))
+    .toEqual(["idx_session_lineage_cursors_version", "idx_source_paths_version"]);
+});
+
+test("72: one session's rewrite or cursor move changes the signal while another session holds a higher version", () => {
+  // Review 2026-09-23: per-row counters read through a table-wide MAX hid session B's first bump
+  // behind session A's third, so B's knowledge count dropped while the signal stood still.
+  const store = open();
+  const a = seeded(store);
+  const bSession = store.createSession({ host: "test", enrollmentChoice: true, projectId: a.project.id, startedAt: time, firstReplyAt: time }).id;
+  const bTurn = store.appendTurn({ sessionId: bSession, kind: "turn", userPrompt: "b", assistantText: "b", startedAt: time }).id;
+  const b = [1, 2].map(n => store.appendSourceEntry({ sessionId: bSession, turnId: bTurn, nativeLineage: "b", nativeId: `b${n}`, role: "user", text: `b${n}`, raw: `b${n}`, calls: [] }).id);
+  store.publishSourcePath(bSession, "main", b, bTurn, "lineage-b");
+  const a2 = store.appendSourceEntry({ sessionId: a.sessionId, turnId: a.turnId, nativeLineage: "n", nativeId: "u2", role: "user", text: "u2", raw: "u2", calls: [] }).id;
+  for (const ids of [[a.entry.id, a2], [a.entry.id], [a.entry.id, a2], [a.entry.id]]) // three bumps on A's path
+    store.publishSourcePath(a.sessionId, "main", ids, a.turnId, "lineage-a");
+  let before = store.progressSignal(bSession);
+  store.publishSourcePath(bSession, "main", [b[0]!], bTurn, "lineage-b"); // B's first rewrite
+  expect(store.progressSignal(bSession)).not.toBe(before);
+
+  store.selectSourcePath(a.sessionId, "side", [a.entry.id]);
+  for (const branch of ["side", "main", "side"]) store.setCurrentPath(a.sessionId, branch, a.turnId, "lineage-a"); // A's cursor bumps
+  store.selectSourcePath(bSession, "side", b);
+  before = store.progressSignal(bSession);
+  store.setCurrentPath(bSession, "side", bTurn, "lineage-b"); // B's first branch switch
+  expect(store.progressSignal(bSession)).not.toBe(before);
 });
 
 test("72: a pure Raw append changes nothing in the signal", () => {
