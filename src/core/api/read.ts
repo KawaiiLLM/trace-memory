@@ -87,7 +87,10 @@ export type CompactResult = { text: string; supplied: SuppliedMaterial; composit
 /** 73 "Truncation is announced in the foreground": whenever compact omits unprocessed material —
  * pending Raw entries or unconsolidated facts — the counts and tokens omitted per kind, so a host can
  * warn its user. Absent when nothing unprocessed was omitted. */
-export interface TruncationReceipt { raw?: { entries: number; tokens: number }; facts?: { count: number; tokens: number } }
+/** 79 item 4 (ruled): Raw carries no token figure -- an exact count only, since rendering every
+ * omitted entry to size it reads the whole omitted backlog on every compaction. Fact rows are
+ * small, so facts keep both a count and a token figure. */
+export interface TruncationReceipt { raw?: { entries: number }; facts?: { count: number; tokens: number } }
 
 /** 28a item 6: what one custom replacement charged, window by window, beside the text it produced.
  * Diagnostics — nothing reads this to decide the outcome. `envelope` is the sum of the three bases
@@ -684,7 +687,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       {
         let rawBaseUsed = charge([RAW_TITLE]), allowanceUsed = 0;
         for (let i = candidates.length - 1; i >= 0; i--) {
-          const entry = candidates[i]!;
+          // 79 item 2: newest first, hydrated one candidate at a time — the first that does not fit
+          // must still be rendered to know it does not fit (acceptance criteria), but nothing earlier
+          // (older) is ever hydrated once that happens.
+          const entry = store.getSourceEntry(candidates[i]!.id)!;
           let rendered: EntryView;
           try { rendered = view(entry); } catch (error) { if (/capacity/.test(String(error))) break; throw error; }
           const cost = tokens(rendered.content) + 1;
@@ -726,12 +732,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // Displayed in source order (30: "display the selected Raw entries in source order").
       const suppliedRaw = [...rawFinalSteps].reverse();
       const rawOmitted = candidates.slice(0, candidates.length - suppliedRaw.length);
+      // 79 item 4 (ruled): omitted pending Raw is reported as an exact count only. A token figure
+      // would render every omitted entry on every compaction (7,374 for S134's measured backlog) —
+      // the whole cost this ticket removes. Facts keep their count and tokens: fact rows are small.
       const rawOmittedPending = rawOmitted.filter(e => pendingIds.has(e.id));
-      // An entry whose view cannot fit its own profile has no view to count; any other rendering
-      // error is a data error and is raised, as for every entry this window renders.
-      const rawOmittedPendingTokens = rawOmittedPending.reduce((sum, e) => {
-        try { return sum + tokens(view(e).content) + 1; } catch (error) { if (/capacity/.test(String(error))) return sum; throw error; }
-      }, 0);
 
       // ---- 3. Facts third: newest facts not wholly covered by the Raw span just chosen. ----
       const coverage = new Set([...sourced.filter(e => retained.has(e.nativeId)).map(e => e.id), ...suppliedRaw.map(s => s.entry.id)]);
@@ -773,7 +777,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const factsOmittedPendingTokens = factsOmittedPending.length ? charge(lines(factsOmittedPending)) : 0;
 
       const truncated: TruncationReceipt = {};
-      if (rawOmittedPending.length) truncated.raw = { entries: rawOmittedPending.length, tokens: rawOmittedPendingTokens };
+      if (rawOmittedPending.length) truncated.raw = { entries: rawOmittedPending.length };
       if (factsOmittedPending.length) truncated.facts = { count: factsOmittedPending.length, tokens: factsOmittedPendingTokens };
 
       const material = { knowledge: active.groups, facts: lines(finalFacts),
@@ -801,7 +805,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // A whole suffix is monotone: after the first entry that cannot fit, no earlier
       // entry can join it. Do not render the history that will only be receipted.
       for (let i = pending.length - 1; i >= 0; i--) {
-        const view = renderEntry(pending[i]!, config.render, resultText);
+        // 79 item 2: newest first, hydrated one candidate at a time, same bound as compact's Raw span.
+        const view = renderEntry(store.getSourceEntry(pending[i]!.id)!, config.render, resultText);
         const cost = charge([view.content, ...view.receipts]);
         if (used + cost > config.render.episodicBlockTokens) break;
         omitted--; raw.push(view); used += cost;

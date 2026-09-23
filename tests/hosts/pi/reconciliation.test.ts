@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { host, reply } from "./test-host.ts";
 import { countSourceReads } from "../../perf/fixture.ts";
+import { hydrate } from "../../source-fixture.ts";
 
 // Ticket 22b, hotspot families 1 and 2: reconciliation costs what the evidence is, not what the
 // session already holds. A tool result finds its call without rereading the entries before it, and an
@@ -92,7 +93,7 @@ test("22b: an ordinary boundary costs what is new, not what the session already 
 test("22b: a persisted message changed under a known identity is still reported when it is checked", async () => {
   const h = setup(quiet);
   await h.prompt("Question"); await h.answer("Answer"); await h.emit("agent_settled");
-  const stored = h.memory.store.listSourceEntries(1).find(e => e.role === "assistant")!;
+  const stored = hydrate(h.memory.store.listSourceEntries(1), h.memory.store).find(e => e.role === "assistant")!;
   const native = h.entries.find(e => e.type === "message" && e.message.role === "assistant") as { message: { content: unknown } };
   native.message.content = [{ type: "text", text: "silently changed" }];
   await h.emit("session_start"); // restoration rebuilds, so the entry is checked again
@@ -114,7 +115,7 @@ test("74: a persisted assistant whose native role changed still offers its calls
   await h.emit("agent_end");
   expect(h.notices.some(n => n.includes(`entry ${native.id} changed after persistence`))).toBe(true);
   expect(h.notices.some(n => n.includes("tool call call-original"))).toBe(false);
-  expect(h.memory.store.listSourceEntries(1).map(e => e.role)).toContain("toolResult");
+  expect(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).map(e => e.role)).toContain("toolResult");
 });
 
 test("22b: tree navigation and a foreign lineage rebuild the reconciled ancestry", async () => {

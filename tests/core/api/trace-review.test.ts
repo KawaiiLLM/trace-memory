@@ -3,7 +3,7 @@
 // same escape-safe units as a nested one; a search continuation renders its deferred Raw hits under
 // the profile the query was made with, not the configuration in force when the page is asked for.
 import { expect, test } from "vitest";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory , hydrate } from "../../source-fixture.ts";
 import { renderEntry } from "../../../src/core/render/index.ts";
 
 const setup = () => {
@@ -18,18 +18,18 @@ test("review 80e: a stored compaction summary is readable through trace, full an
   const { m, s } = setup();
   try {
     const t = m.store.appendTurn({ sessionId: s.id, kind: "compaction", assistantText: "PERSISTED COMPACTION SUMMARY", startedAt: "t" });
-    expect(m.store.listSourceEntries(s.id, t.id)).toEqual([]); // summaries are deliberately not Raw source entries
+    expect(hydrate(m.store.listSourceEntries(s.id, t.id), m.store)).toEqual([]); // summaries are deliberately not Raw source entries
     expect(m.trace(`T${t.id}`, { full: true })).toBe(`[T${t.id}] compaction summary (not Raw evidence): PERSISTED COMPACTION SUMMARY`);
     expect(m.trace(`T${t.id}`)).toContain("PERSISTED COMPACTION SUMMARY");
     expect(m.trace(`T${t.id}#assistant`, { full: true })).toBe(`[T${t.id}] compaction summary (not Raw evidence): PERSISTED COMPACTION SUMMARY`);
     expect(() => m.trace(`T${t.id}#E1`)).toThrow(/does not exist/);
     expect(m.trace(`T${t.id}`)).not.toContain(`#assistant]`);
     // Display only: neither an E source nor a citable-looking legacy label is fabricated.
-    expect(m.store.listSourceEntries(s.id, t.id)).toEqual([]);
+    expect(hydrate(m.store.listSourceEntries(s.id, t.id), m.store)).toEqual([]);
     // An ordinary Turn whose assistant entry exists shows that entry once, never a second stored copy.
     const u = m.store.appendTurn({ sessionId: s.id, parentTurnId: t.id, kind: "turn", userPrompt: "q", startedAt: "t" });
     m.store.updateTurn(u.id, { assistantText: "ANSWER" }); // the store records the assistant entry itself
-    expect(m.store.listSourceEntries(s.id, u.id).filter(e => e.role === "assistant")).toHaveLength(1);
+    expect(hydrate(m.store.listSourceEntries(s.id, u.id), m.store).filter(e => e.role === "assistant")).toHaveLength(1);
     expect(m.trace(`T${u.id}`, { full: true }).split("ANSWER")).toHaveLength(2);
   } finally { m.close(); }
 });

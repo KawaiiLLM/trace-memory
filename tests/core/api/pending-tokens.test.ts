@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory , hydrate } from "../../source-fixture.ts";
 import { renderEntry, renderFact, renderFactGroups, tokens } from "../../../src/core/render/index.ts";
 
 test("pending token projection shares joined entries and grouped facts with exact trigger eligibility", () => {
@@ -18,7 +18,7 @@ test("pending token projection shares joined entries and grouped facts with exac
       ] });
       if (!noted.ok) throw Error(noted.problems.join());
     }
-    const expectedRaw = tokens(store.pendingEntries(session.id, "main", b.id).map(e => renderEntry(e, memory.config.render, memory.resultText).content).join("\n\n"));
+    const expectedRaw = tokens(hydrate(store.pendingEntries(session.id, "main", b.id), store).map(e => renderEntry(e, memory.config.render, memory.resultText).content).join("\n\n"));
     const facts = store.consolidationBatch(session.id, "main", b.id);
     const expectedFacts = tokens(renderFactGroups(facts, f => renderFact(f, store.listFactRelations(f.id)), store.factTurnTimes(facts)).join("\n"));
     expect(expectedFacts).toBeGreaterThan(tokens(facts.map(f => renderFact(f, store.listFactRelations(f.id))).join("\n"))); // group framing counts

@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { wholeTrace } from "../../trace-pages.ts";
 import { DEFAULT_CONFIG, renderEntry, renderEntryWhole, tokens, type EntryProfile, type ResultExtractor, type SourceEntry } from "../../../src/core/api/index.ts";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory , hydrate } from "../../source-fixture.ts";
 
 // Ticket 23 "One entry view", ticket 30's one profile, in 23c's line format: Pi's own compaction shape
 // (`core/compaction/utils.js`) with our addresses as the labels, byte for byte on synthetic entries.
@@ -315,7 +315,7 @@ test("23 fidelity: an omitted middle states an honest count and its address fetc
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "run it", assistantText: "done", startedAt: "t" });
     const result = ["head line", ...Array.from({ length: 400 }, (_, i) => `key${i}: value${i}`), "tail line"].join("\n");
     memory.store.appendToolCall({ turnId: turn.id, name: "bash", input: JSON.stringify({ command: "dump" }), result, status: "success" });
-    const source = memory.store.listSourceEntries(session.id).find((e) => e.role === "toolResult")!;
+    const source = hydrate(memory.store.listSourceEntries(session.id), memory.store).find((e) => e.role === "toolResult")!;
     const rendered = renderEntry(source, memory.config.render, memory.resultText).content;
     const marker = /\[\.\.\. (\d+) characters truncated\]/.exec(rendered)!;
     expect(rendered).not.toContain("key200: value200");

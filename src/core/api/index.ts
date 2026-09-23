@@ -32,7 +32,7 @@ export type { TriggerOrigin, TriggerOriginRelation } from "../model/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
 export type { NotingDiagnostic, NotingNearAudit, NotingUnansweredNearPair } from "../noting/review.ts";
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
-import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
+import { Store, type SourceInput, type SourceEntry, type SourceEntryMeta, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
 import { admitDreaming, freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
@@ -432,7 +432,7 @@ export interface TraceMemory {
    * exact identity in the same synchronous flow; see `Store.appendSourceEntry`. */
   appendEntry(input: SourceInput, known?: SourceEntry | null): SourceEntry;
   selectEntries(sessionId: number, branch: string, entryIds: number[]): void;
-  pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntry[];
+  pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntryMeta[];
   /** Ticket 29c: the entries a Noting freeze of this target would really select — the pending set the
    * boundary admits, cut to the oldest prefix that fits `noting.batchTokens` — without freezing,
    * claiming or diagnosing anything. The Pi host decides a fork's Raw availability against exactly
@@ -663,9 +663,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     // Full is now only a content-ceiling alias: it never widens a bound selection. Unbound reads
     // still include every occurrence. A paged read's exact entryIds override branch discovery,
     // so no continuation can pick up a newly added sibling.
-    let occurrences = display.entryIds
-      ? display.entryIds.map(id => store.getSourceEntry(id)).filter(entry => entry !== null)
-      : store.listSourceEntries(turn.sessionId, turn.id, display.branch);
+    // 79 item 1: the Turn's occurrences are chosen by id first (metadata for the unbound case),
+    // then hydrated in one batched read — never a loop of single reads over the whole list.
+    let occurrences = store.hydrateSourceEntries(display.entryIds
+      ?? store.listSourceEntries(turn.sessionId, turn.id, display.branch).map(entry => entry.id));
     if (parsed.entries) {
       const byOrdinal = new Map(occurrences.map(entry => [entry.entryOrdinal, entry]));
       occurrences = parsed.entries.flatMap(selection => {
@@ -805,7 +806,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // 70: `pendingNow` above already read this exact session/branch/head's full pending set inside
       // this same admission transaction; nothing between there and here can mark an entry noted, so
       // the freeze reuses it instead of reading it again.
-      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText, pendingNow as SourceEntry[])
+      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText, pendingNow as SourceEntryMeta[])
         : freezeConsolidation(store, selected, cfg);
       origin = admittedOrigin;
       const head = "entries" in frozen ? frozen.entries[0]?.id : frozen.rangeFacts[0]?.id;
@@ -958,7 +959,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     appendEntry: (input, known) => store.appendSourceEntry(input, known),
     selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
-    notingBatch: (target, boundary) => notingBatch(notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
+    notingBatch: (target, boundary) => notingBatch(store, notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
     tools: (context) => {
       const key = `${context.sessionId}/${context.branch}`;
       if (!manualReads.has(key)) manualReads.set(key, new Map());

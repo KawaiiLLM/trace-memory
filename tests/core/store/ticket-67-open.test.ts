@@ -73,8 +73,10 @@ test("67 actual schema migration checks foreign keys once and rolls back on viol
 
 test("67 undecoded-entry selection uses its partial index instead of scanning Raw", () => {
   const { store } = fixture();
-  const plan = store.db.prepare(`EXPLAIN QUERY PLAN SELECT id, content, entry_ordinal, blocks
-    FROM source_entries WHERE blocks IS NULL ORDER BY id`).all();
+  // 79: content/blocks live in source_entry_raw now; driven from that table (not source_entries) so
+  // the planner uses the partial index instead of scanning the (possibly much larger) hot table.
+  const plan = store.db.prepare(`EXPLAIN QUERY PLAN SELECT r.entry_id AS id, r.content, e.entry_ordinal, r.blocks
+    FROM source_entry_raw r JOIN source_entries e ON e.id = r.entry_id WHERE r.blocks IS NULL ORDER BY r.entry_id`).all();
   expect(plan.some(row => String(row.detail).includes("idx_source_unnormalized"))).toBe(true);
 });
 

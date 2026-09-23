@@ -242,3 +242,43 @@ test("data errors remain explicit and duplicate providers are rejected", async (
     expect(request(f.h)).toMatchObject({ available: false, reason: "data-error" });
   } finally { await f.dispose(); }
 });
+
+// 79 item 3, ruled (a) (Pi review of 3ed5952; "79按你推荐"): the snapshot keeps its integrity
+// contract by comparing 74's stored digest against `sourceDigest` of the live native message --
+// metadata alone, no Raw -- which still catches a persisted message whose content changed under the
+// same id after the reconciliation walk completed (the case the old per-entry `raw !== JSON.stringify`
+// comparison caught, and the walk's own skip-reconciled-prefix shortcut does not).
+test("79 item 3 (ruled a): a persisted native message changed under the same id after the walk still reports node-not-ready", async () => {
+  const h = host(quiet);
+  try {
+    h.ctx.sessionManager.getSessionFile = () => `${h.dir}/persisted.jsonl`;
+    await h.prompt("Question"); await h.answer("Answer"); await h.emit("agent_settled");
+    const ready = request(h);
+    expect(ready.available).toBe(true);
+    // The walk has completed and reconciled; now mutate the persisted native message's content
+    // under the same id, without any further ingestion event -- the exact case the per-entry
+    // comparison caught and a completed walk's own skip-reconciled-prefix shortcut does not.
+    const native = h.entries.find(e => e.type === "message" && e.message.role === "assistant") as { message: { content: unknown } };
+    native.message.content = [{ type: "text", text: "silently changed after the walk" }];
+    expect(request(h)).toMatchObject({ available: false, reason: "node-not-ready" });
+  } finally { await h.dispose(); }
+});
+
+// 79 item 3: the integrity check itself reads no Raw (metadata and digests only); with nothing that
+// fits `compact`'s tiny budget, every capture below belongs to the integrity comparison alone.
+test("79 item 3: the snapshot's integrity check reads no Raw, asserted with statement capture", async () => {
+  const h = host({ ...quiet, "compaction.rawTokens": 1, "compaction.factsTokens": 1, "compaction.sharedAllowanceTokens": 1 });
+  try {
+    h.ctx.sessionManager.getSessionFile = () => `${h.dir}/persisted.jsonl`;
+    await h.prompt("Question"); await h.answer("Answer"); await h.emit("agent_settled");
+    const original = h.memory.store.db.prepare.bind(h.memory.store.db);
+    const statements: string[] = [];
+    (h.memory.store.db as unknown as { prepare: typeof h.memory.store.db.prepare }).prepare =
+      ((sql: string) => { statements.push(sql); return original(sql); }) as typeof h.memory.store.db.prepare;
+    let result: ReturnType<typeof request>;
+    try { result = request(h); }
+    finally { (h.memory.store.db as unknown as { prepare: typeof h.memory.store.db.prepare }).prepare = original; }
+    expect(result.available).toBe(true);
+    expect(statements.some(sql => sql.includes("source_entry_raw"))).toBe(false);
+  } finally { await h.dispose(); }
+});

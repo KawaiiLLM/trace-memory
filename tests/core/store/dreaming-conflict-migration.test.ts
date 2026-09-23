@@ -16,6 +16,8 @@ function legacy() {
   const run = store.recordRun({ kind: "dreaming", sessionId: session.id, executionId, outcome: "failure", createdAt: "old" });
   store.settleExecution(executionId, "failure", run.id, "legacy failure");
   const removed = store.recordRun({ kind: "manual", sessionId: session.id, outcome: "success", createdAt: "removed" });
+  // 79: run_bodies.run_id references runs(id); delete the body row first.
+  store.db.prepare("DELETE FROM run_bodies WHERE run_id = ?").run(removed.id);
   store.db.prepare("DELETE FROM runs WHERE id = ?").run(removed.id);
   store.db.exec(`CREATE TABLE migration_child(run_id INTEGER REFERENCES runs(id), execution_id TEXT REFERENCES task_executions(id));
     CREATE TABLE pending_deliveries(run_id INTEGER NOT NULL REFERENCES runs(id), session_id INTEGER NOT NULL REFERENCES sessions(id), branch TEXT, delivered_at TEXT);
@@ -30,7 +32,11 @@ function legacy() {
       const sql = String(store.db.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(name)!.sql);
       const objects = store.db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index','trigger') AND sql IS NOT NULL").all(name);
       const sequence = store.db.prepare("SELECT seq FROM sqlite_sequence WHERE name = ?").get(name);
-      store.db.exec(sql.replace(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${name}`, "i"), `CREATE TABLE ${name}_old`).replace(",'conflict'", ""));
+      // 79: a table already rebuilt once via ALTER TABLE ... RENAME TO (as `runs` now is, by the
+      // hot/cold split) has its name quoted in sqlite_master's stored SQL -- inherent SQLite
+      // behavior for any renamed table, not specific to this ticket -- so the replacement must
+      // tolerate an optional quote around the name it is replacing.
+      store.db.exec(sql.replace(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?"?${name}"?`, "i"), `CREATE TABLE ${name}_old`).replace(",'conflict'", ""));
       store.db.exec(`INSERT INTO ${name}_old SELECT * FROM ${name}; DROP TABLE ${name}; ALTER TABLE ${name}_old RENAME TO ${name}`);
       if (sequence) store.db.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = ?").run(sequence.seq!, name);
       for (const object of objects) store.db.exec(String(object.sql));

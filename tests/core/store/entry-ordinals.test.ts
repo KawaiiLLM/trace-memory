@@ -37,11 +37,12 @@ test("33: legacy schema upgrade is deterministic and never rewrites raw or sourc
   const f = fixture(); let store = f.store;
   try {
     const a = store.appendSourceEntry(f.input("a")), b = store.appendSourceEntry(f.input("b"));
-    const before = store.db.prepare("SELECT id, content FROM source_entries ORDER BY id").all();
+    // 79: `content` lives in `source_entry_raw`, keyed by `entry_id`, not on `source_entries`.
+    const before = store.db.prepare("SELECT entry_id, content FROM source_entry_raw ORDER BY entry_id").all();
     store.db.exec("DROP INDEX idx_source_turn_ordinal; ALTER TABLE source_entries DROP COLUMN entry_ordinal");
     store.close(); store = new Store(f.path);
     expect(store.getSourceEntry(a.id)!.entryOrdinal).toBe(1); expect(store.getSourceEntry(b.id)!.entryOrdinal).toBe(2);
-    expect(store.db.prepare("SELECT id, content FROM source_entries ORDER BY id").all()).toEqual(before);
+    expect(store.db.prepare("SELECT entry_id, content FROM source_entry_raw ORDER BY entry_id").all()).toEqual(before);
     expect(store.appendSourceEntry(f.input("c")).entryOrdinal).toBe(3);
   } finally { store.close(); }
 });
@@ -57,11 +58,15 @@ test("entry/cleanup integration: ordinal and block upgrade preserves the retired
     store.db.prepare("INSERT INTO pending_deliveries VALUES (?, ?, 'main', NULL)").run(noted.runId, f.session.id);
     const schema = store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get();
     const rows = store.db.prepare("SELECT * FROM pending_deliveries").all();
-    const raw = store.db.prepare("SELECT id, content FROM source_entries ORDER BY id").all();
+    // 79: `content`/`blocks` live in `source_entry_raw`; `entry_ordinal`/`addresses` stay on
+    // `source_entries`. Simulating the pre-71 shape (no entry_ordinal/blocks/addresses at all) means
+    // dropping each from the table it lives on now, and 79's own now-retired covering indexes
+    // (idx_source_membership/idx_source_identity) no longer exist to drop at all.
+    const raw = store.db.prepare("SELECT entry_id, content FROM source_entry_raw ORDER BY entry_id").all();
     const fact = store.getFact(noted.facts[0]!.id);
-    store.db.exec(`DROP INDEX idx_source_turn_ordinal; DROP INDEX idx_source_unnormalized; DROP INDEX idx_source_membership;
-      ALTER TABLE source_entries DROP COLUMN entry_ordinal;
-      ALTER TABLE source_entries DROP COLUMN blocks; ALTER TABLE source_entries DROP COLUMN addresses`);
+    store.db.exec(`DROP INDEX idx_source_turn_ordinal; DROP INDEX idx_source_unnormalized;
+      ALTER TABLE source_entries DROP COLUMN entry_ordinal; ALTER TABLE source_entries DROP COLUMN addresses;
+      ALTER TABLE source_entry_raw DROP COLUMN blocks`);
     let normalized = 0;
     const normalize = (input: SourceInput) => { normalized++; return [{ kind: "text" as const, text: input.text }]; };
     for (let reopen = 0; reopen < 2; reopen++) {
@@ -69,7 +74,7 @@ test("entry/cleanup integration: ordinal and block upgrade preserves the retired
       expect(normalized).toBe(2);
       expect(store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get()).toEqual(schema);
       expect(store.db.prepare("SELECT * FROM pending_deliveries").all()).toEqual(rows);
-      expect(store.db.prepare("SELECT id, content FROM source_entries ORDER BY id").all()).toEqual(raw);
+      expect(store.db.prepare("SELECT entry_id, content FROM source_entry_raw ORDER BY entry_id").all()).toEqual(raw);
       expect(store.getFact(noted.facts[0]!.id)).toEqual(fact);
       expect(store.listSourceEntries(f.session.id, f.turn.id, "main").map(e => e.entryOrdinal)).toEqual([2]);
       expect(store.getSourceEntry(a.id)!.blocks).toEqual([{ kind: "text", text: "a" }]);

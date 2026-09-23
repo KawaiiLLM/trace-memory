@@ -27,9 +27,9 @@ test("77: listRunUsage is a direct session_id search on its covering index, neve
     const [query] = queries;
     expect(query).not.toContain("IS NULL OR"); // a direct condition, not the optional-parameter form
     expect(query).not.toMatch(/\bresponse\b|\brequest\b/); // the audit bodies are never named
-    expect(query).toContain("INDEXED BY idx_runs_session_usage");
+    expect(query).toContain("INDEXED BY idx_runs_session"); // 79: the covering idx_runs_session_usage is retired (item 0); the plain idx_runs_session (SCHEMA_SQL) answers this on a now-tiny row
     const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${query}`).all(session.id) as { detail: string }[];
-    expect(plan.map(row => row.detail).join("\n")).toMatch(/SEARCH runs USING COVERING INDEX idx_runs_session_usage \(session_id=\?\)/);
+    expect(plan.map(row => row.detail).join("\n")).toMatch(/SEARCH runs USING INDEX idx_runs_session \(session_id=\?\)/);
   } finally { store.close(); }
 });
 
@@ -47,10 +47,10 @@ test("77: spendSince is a direct created_at range search on its covering index, 
     const [query] = queries;
     expect(query).not.toContain("IS NULL OR");
     expect(query).not.toMatch(/\bresponse\b|\brequest\b/);
-    expect(query).toContain("INDEXED BY idx_runs_daily_usage");
+    expect(query).toContain("INDEXED BY idx_runs_created_at"); // 79: the covering idx_runs_daily_usage is retired (item 0); a plain (created_at, id) index keeps the range search and id order without dodging any wide column
     const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${query}`).all("2026-09-09T00:00:00Z") as { detail: string }[];
     const detail = plan.map(row => row.detail).join("\n");
-    expect(detail).toMatch(/SEARCH runs USING COVERING INDEX idx_runs_daily_usage \(created_at>\?\)/);
+    expect(detail).toMatch(/SEARCH runs USING INDEX idx_runs_created_at \(created_at>\?\)/);
     expect(detail).not.toMatch(/SCAN runs/); // never the whole table
   } finally { store.close(); }
 });
@@ -66,7 +66,7 @@ test("77: spendSince's rows read grow with the day's runs, not with history", ()
         store.recordRun({ kind: "noting", sessionId: session.id, branch: "main", outcome: "success", createdAt: "2026-09-09T00:00:00Z",
           response: JSON.stringify({ usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 2 } } }) });
     });
-    const all = vi.spyOn(store.db.prepare(`SELECT id, usage_cost FROM runs INDEXED BY idx_runs_daily_usage
+    const all = vi.spyOn(store.db.prepare(`SELECT id, usage_cost FROM runs INDEXED BY idx_runs_created_at
       WHERE created_at >= ? ORDER BY id`).constructor.prototype, "all");
     const cost = store.spendSince("2026-09-09T00:00:00Z");
     const rowsRead = all.mock.results.flatMap(r => (Array.isArray(r.value) ? r.value.length : 0));

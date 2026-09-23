@@ -2,7 +2,7 @@
 // and for receipts too. Reduce the task and re-freeze, or leave it pending with a capacity error; never
 // receipt an overage and run anyway.
 import { expect, test } from "vitest";
-import { sourceSeededMemory, tokens, renderEntry, type ConsolidationAgentInput, type NotingAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, tokens, renderEntry, type ConsolidationAgentInput, type NotingAgentInput , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { renderFact } from "../../../src/core/render/index.ts";
 import { budgetMaterial, notingText, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
@@ -50,7 +50,7 @@ test("review 2026-09-08: a Noting batch that cannot fit the episodic budget stay
     await expect(f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" })).rejects.toThrow(/Noting capacity/);
     expect(f.calls).toEqual([]);
     expect(f.m.store.listRuns(f.s.id)).toEqual([]);
-    expect(f.m.pendingEntries(f.s.id, "main", f.t.id).length).toBeGreaterThan(0);
+    expect(hydrate(f.m.pendingEntries(f.s.id, "main", f.t.id), f.m.store).length).toBeGreaterThan(0);
   } finally { f.m.close(); }
 });
 
@@ -92,7 +92,7 @@ test("review 2026-09-08, on Noting since 25a: a smaller model window trims the o
     const size = (input: NotingAgentInput) => tokens(input.prompt) + tokens(JSON.stringify(input.tools)) + tokens(input.text);
     for (let i = 0; i < 4; i++) expect(f.note("Optional historical evidence " + "word ".repeat(1500))).toContain(`ok: F${i + 1}`);
     const next = f.m.store.appendTurn({ sessionId: f.s.id, parentTurnId: f.t.id, kind: "turn", userPrompt: "Second request", assistantText: "Second reply", startedAt: "2026-09-08" });
-    const entries = f.m.pendingEntries(f.s.id, "main", next.id).length;
+    const entries = hydrate(f.m.pendingEntries(f.s.id, "main", next.id), f.m.store).length;
     const capacity = size(bare) + 500;
     const result = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: next.id, mode: "subagent", capacity: { inputTokens: capacity, prefixTokens: 0 } });
     expect(result.outcome).toBe("success");
@@ -108,7 +108,7 @@ test("review 2026-09-08, rescaled by 73: a view that cannot hold its labels ends
   try {
     f.m.config.render.toolInputTokens = 4;
     f.m.store.appendToolCall({ turnId: f.t.id, name: "bash", input: "pwd", result: "done", status: "success" });
-    const pending = f.m.pendingEntries(f.s.id, "main", f.t.id);
+    const pending = hydrate(f.m.pendingEntries(f.s.id, "main", f.t.id), f.m.store);
     expect(() => pending.map(e => renderEntry(e, f.m.config.render))).toThrow(/capacity/);
     // 30/73: there is no second, tighter rendering to escalate to and no fallback either — the entry
     // whose bounded view cannot fit its own profile ends the Raw span (73 What to build 1.2), and
@@ -170,7 +170,7 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
     const memory = f.m.tools({ kind: "manual", sessionId: f.s.id, branch: "main", currentTurnId: f.t.id }).find(tool => tool.name === "memory")!;
     const content = { text: "Use SQLite", category: "constraint", scope: "project", supports: ["F1"], reason: "Classify this conclusion." };
     expect(memory.execute({ operations: [{ op: "create", ...content, topics: ["a, b"] }], skipped: [] })).toContain("committed");
-    const entries = f.m.store.sourcePath(f.s.id, "main", f.t.id);
+    const entries = hydrate(f.m.store.sourcePath(f.s.id, "main", f.t.id), f.m.store);
     f.m.selectEntries(f.s.id, "main", entries.map(entry => entry.id));
     const path = { sessionId: f.s.id, branch: "main", headTurnId: f.t.id, triggerEntryId: entries.at(-1)!.id };
     createDreamerTrigger(f.m, path, 1, 1, "project");

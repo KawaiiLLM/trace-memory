@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { wholeTrace } from "../../trace-pages.ts";
 import { readFileSync } from "node:fs";
-import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION } from "../../source-fixture.ts";
+import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION , hydrate } from "../../source-fixture.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection, setSharedAllowance } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -30,7 +30,7 @@ function turn(sessionId: number, text = fixture.base, parentTurnId?: number) {
 function noting(sessionId: number, turnId: number, text = fixture.base, branch = "main") {
   const result = memory.store.commitNotingRun({ run: { sessionId, branch, kind: "noting", createdAt: time },
     facts: [{ turnId, text, category: "decision", actor: "user", source: [`T${turnId}#user`], createdAt: time }],
-    entryIds: memory.store.sourcePath(sessionId, branch, turnId).map(e => e.id) });
+    entryIds: hydrate(memory.store.sourcePath(sessionId, branch, turnId), memory.store).map(e => e.id) });
   if (!result.ok) throw new Error(result.problems.join("\n"));
   return result;
 }
@@ -180,7 +180,7 @@ test("20c 2026-09-08 scenario 9: all pending bounded views fit, historical facts
   const { s, t } = populated();
   const selected = turn(s.id, "selected raw", t.id);
   const second = noting(s.id, t.id, fixture.interpretation).facts[0]!; // a newer fact on an already-processed turn
-  const pending = memory.pendingEntries(s.id, "main", selected.id);
+  const pending = hydrate(memory.pendingEntries(s.id, "main", selected.id), memory.store);
   const runsBefore = memory.store.listRuns(s.id).length;
   const result = memory.compact(s.id, "main", selected.id);
   expect("native" in result).toBe(false);
@@ -192,7 +192,7 @@ test("20c 2026-09-08 scenario 9: all pending bounded views fit, historical facts
   // Reading a snapshot is not extraction: no model call, no run, no progress, no claim.
   expect(calls).toBe(0);
   expect(memory.store.listRuns(s.id)).toHaveLength(runsBefore);
-  expect(memory.pendingEntries(s.id, "main", selected.id).map(e => e.id)).toEqual(pending.map(e => e.id));
+  expect(hydrate(memory.pendingEntries(s.id, "main", selected.id), memory.store).map(e => e.id)).toEqual(pending.map(e => e.id));
   // 73: F1 is consolidated (fills only the facts base remainder); the newer fact is unconsolidated
   // and borrows first. A tight facts window keeps the newest, truncates F1 and receipts it — the
   // receipt sits outside the block, as every other does.
@@ -215,7 +215,7 @@ test("20c/23 scenario 10, rescaled by 73: one bounded view of every entry under 
   const next = turn(s.id, `USER_HEAD ${body} USER_TAIL`, parent);
   memory.store.appendToolCall({ turnId: next.id, name: "Bash", input: JSON.stringify({ command: "SECRET_ARGUMENT" }),
     result: JSON.stringify({ stdout: "SECRET_RESULT " + "x".repeat(4_000) }), status: "success" });
-  const pending = memory.pendingEntries(s.id, "main", next.id);
+  const pending = hydrate(memory.pendingEntries(s.id, "main", next.id), memory.store);
   const result = memory.compact(s.id, "main", next.id);
   expect("native" in result).toBe(false);
   const text = compacted(result);
@@ -253,7 +253,7 @@ test("20c/23 scenario 10, rescaled by 73: one bounded view of every entry under 
   if ("native" in delegated) throw new Error("unreachable");
   expect(delegated.truncated?.raw).toBeTruthy();
   expect(compacted(delegated)).toContain("earlier entries omitted from the Raw window");
-  expect(memory.pendingEntries(s.id, "main", next.id).map(e => e.id)).toEqual(pending.map(e => e.id));
+  expect(hydrate(memory.pendingEntries(s.id, "main", next.id), memory.store).map(e => e.id)).toEqual(pending.map(e => e.id));
   defaultWindows();
   // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled
   // read without `full` (23b) is the same bounded view of the same entry, cut where the budgets bite.
@@ -289,7 +289,7 @@ test("23 conversation-dense acceptance, rescaled by 73: a dozen long replies fit
   // Long replies with few tool calls: the shape the retired compact-only view handled.
   const dozen = dense(12, 1_000);
   memory.store.appendToolCall({ turnId: dozen.parent, name: "bash", input: JSON.stringify({ command: "npm test" }), result: "ok", status: "success" });
-  const pending = memory.pendingEntries(dozen.s.id, "main", dozen.parent);
+  const pending = hydrate(memory.pendingEntries(dozen.s.id, "main", dozen.parent), memory.store);
   const fits = total(pending.map(view));
   // Above the Noter's batch ceiling and below the shared envelope: before 25c the inner cap escalated
   // this; the one view keeps every entry, and the ordinary Raw title is the only one there is.
@@ -304,7 +304,7 @@ test("23 conversation-dense acceptance, rescaled by 73: a dozen long replies fit
   // receipt, and starts no recovery worker (the recovery machinery itself is gone).
   const many = dense(48, 1_000);
   memory.store.appendToolCall({ turnId: many.parent, name: "bash", input: JSON.stringify({ command: "npm test" }), result: "ok", status: "success" });
-  const overflowing = memory.pendingEntries(many.s.id, "main", many.parent);
+  const overflowing = hydrate(memory.pendingEntries(many.s.id, "main", many.parent), memory.store);
   expect(total(overflowing.map(view))).toBeGreaterThan(capacity);
   const result = memory.compact(many.s.id, "main", many.parent);
   expect("native" in result).toBe(false);
@@ -312,12 +312,12 @@ test("23 conversation-dense acceptance, rescaled by 73: a dozen long replies fit
   expect(result.truncated?.raw).toBeTruthy();
   expect(compacted(result)).toContain("earlier entries omitted from the Raw window");
   expect(compacted(result)).toContain(view(overflowing.at(-1)!)); // the newest entry survives the cut
-  expect(memory.pendingEntries(many.s.id, "main", many.parent).map(e => e.id)).toEqual(overflowing.map(e => e.id));
+  expect(hydrate(memory.pendingEntries(many.s.id, "main", many.parent), memory.store).map(e => e.id)).toEqual(overflowing.map(e => e.id));
   expect(calls).toBe(0);
   // Eight replies three times as long: each is over `E` on its own, so each is cut to it, and the
   // backlog that needed the tier-2 profile before 30 now fits the one view.
   const longer = dense(8, 3_000);
-  const longEntries = memory.pendingEntries(longer.s.id, "main", longer.parent);
+  const longEntries = hydrate(memory.pendingEntries(longer.s.id, "main", longer.parent), memory.store);
   expect(longEntries.some(e => tokens(view(e)) === memory.config.render.entryTokens)).toBe(true);
   expect(total(longEntries.map(view))).toBeLessThan(capacity);
   const fewer = memory.compact(longer.s.id, "main", longer.parent);
@@ -329,7 +329,7 @@ test("73: when the bounded views miss the Raw window compact truncates to the ne
   const { s, t } = populated();
   let parent = t.id;
   for (let i = 0; i < 40; i++) parent = turn(s.id, `entry ${i}`, parent).id;
-  const pending = memory.pendingEntries(s.id, "main", parent).map(e => e.id);
+  const pending = hydrate(memory.pendingEntries(s.id, "main", parent), memory.store).map(e => e.id);
   expect(pending.length).toBeGreaterThanOrEqual(40);
   // Many tiny entries: their identities and labels alone exceed the whole Raw window.
   setWindows(100, 50, 50);
@@ -347,14 +347,14 @@ test("73: when the bounded views miss the Raw window compact truncates to the ne
   if ("native" in inner) throw new Error("unreachable");
   expect(compacted(inner)).not.toContain("raw ceiling");
   expect(inner.truncated).toBeUndefined();
-  for (const id of pending) expect(compacted(inner)).toContain(`T${memory.store.listSourceEntries(s.id).find(e => e.id === id)!.turnId}#`);
+  for (const id of pending) expect(compacted(inner)).toContain(`T${hydrate(memory.store.listSourceEntries(s.id), memory.store).find(e => e.id === id)!.turnId}#`);
   setWindows(100, 50, 50);
   const named = memory.compact(s.id, "main", parent);
   expect("native" in named).toBe(false);
   if ("native" in named) throw new Error("unreachable");
   expect(compacted(named)).not.toContain("raw ceiling");
   // Truncation is a receipt, not a summary: nothing was read differently, processed or erased.
-  expect(memory.pendingEntries(s.id, "main", parent).map(e => e.id)).toEqual(pending);
+  expect(hydrate(memory.pendingEntries(s.id, "main", parent), memory.store).map(e => e.id)).toEqual(pending);
   expect(memory.trace(`T${parent}#user`)).toContain("entry 39");
   expect(calls).toBe(0);
 });
@@ -373,7 +373,7 @@ test("64c: a tight derived allowance bounds consolidated history", () => {
   memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "consolidation", createdAt: time },
     operations: [], consolidated: facts.map(f => f.id) });
   expect(memory.store.consolidationBatch(s.id, "main", t.id)).toHaveLength(0);
-  expect(memory.pendingEntries(s.id, "main", t.id)).toHaveLength(0);
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store)).toHaveLength(0);
   // No pending Raw: the refill may use the whole spare, and all of it fits inside the envelope.
   const roomy = memory.compact(s.id, "main", t.id);
   const spare = compacted(roomy);
@@ -387,7 +387,7 @@ test("64c: a tight derived allowance bounds consolidated history", () => {
   // (2,000 since 30), so ten of them are about 19,400 tokens.
   for (let i = 0; i < 10; i++) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: `big${i}`, turnId: t.id,
     role: "assistant", text: "word ".repeat(1_940), raw: "", calls: [] });
-  const pending = memory.pendingEntries(s.id, "main", t.id);
+  const pending = hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store);
   expect(pending).toHaveLength(10);
   setSharedAllowance(memory, 20_000); // measure the actual pending Raw cost before isolating its window
   const measured = charged(memory.compact(s.id, "main", t.id));
@@ -421,7 +421,7 @@ test("25c 2026-09-09, rescaled by 73: pending membership is processing progress 
     facts: [{ turnId: t.id, text: "PARTIAL_FACT", category: "observation", actor: "user", source: [`T${t.id}#user`], createdAt: time }],
     entryIds: [noted.id] });
   expect(run.ok).toBe(true);
-  expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
   const bounded = compacted(memory.compact(s.id, "main", t.id));
   expect(bounded).toContain("PARTIAL_PENDING");
   expect(bounded).toContain("PARTIAL_FACT");
@@ -429,11 +429,11 @@ test("25c 2026-09-09, rescaled by 73: pending membership is processing progress 
   // account either — the spare allowance supplies recent applicable already-extracted Raw beside the
   // pending views. Membership is what `pendingEntries` says, never presence in the block.
   expect(bounded).toContain("PARTIAL_NOTED");
-  expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
   // The identities the block carries, in the one bounded view (30), in source order.
-  const membership = (text: string) => memory.store.listSourceEntries(s.id)
+  const membership = (text: string) => hydrate(memory.store.listSourceEntries(s.id), memory.store)
     .filter(e => text.includes(renderEntry(e, memory.config.render, memory.resultText).content)).map(e => e.id);
-  expect(membership(bounded)).toEqual(memory.store.sourcePath(s.id, "main", t.id).map(e => e.id));
+  expect(membership(bounded)).toEqual(hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).map(e => e.id));
   expect(membership(bounded)).toContain(noted.id); expect(membership(bounded)).toContain(open.id);
   // 73: truncation, not delegation. The pending set does not shrink to fit in the store, and the
   // injection (Knowledge only) does not move — Raw and facts are compact's own concern.
@@ -442,7 +442,7 @@ test("25c 2026-09-09, rescaled by 73: pending membership is processing progress 
   const delegated = memory.compact(s.id, "main", t.id);
   expect("native" in delegated).toBe(false);
   if ("native" in delegated) throw new Error("unreachable");
-  expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
   defaultWindows();
   expect(memory.inject(s.id)).toBe(injection);
   expect(calls).toBe(0);
@@ -468,7 +468,7 @@ test("branch facts use run ownership independently of audit JSON", () => {
   memory.tools({ kind: "manual", sessionId: s.id, branch: "other", currentTurnId: t.id })[2]!.execute({
     facts: [{ category: "decision", actor: "user", text: "manual", source: [`T${t.id}#user`] }] });
   const manual = memory.store.listRuns(s.id).at(-1)!;
-  memory.store.db.exec("UPDATE runs SET response = 'not JSON'");
+  memory.store.db.exec("UPDATE run_bodies SET response = 'not JSON'"); // 79: response lives in run_bodies
   expect(memory.store.listBranchFacts(s.id, "main").map(f => f.text)).toEqual(["noted", "manual"]); // facts belong to their turn, whichever branch wrote them
   expect(memory.store.listBranchFacts(s.id, "other").map(f => f.text)).toEqual(["noted", "manual"]); // same turn, same path
   for (const run of [memory.store.getRun(first.runId)!, manual]) {
@@ -634,7 +634,7 @@ test("search marks historical, merged and archived knowledge hits so they do not
   const a = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "Use pnpm for installs");
   const b = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm is the package manager");
   const c = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm lockfile is committed");
-  const selectedEntries = memory.store.listSourceEntries(s.id, t.id);
+  const selectedEntries = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store);
   memory.selectEntries(s.id, "main", selectedEntries.map(entry => entry.id));
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: selectedEntries.at(-1)!.id };
   const trigger1 = createDreamerTrigger(memory, path, n.facts[0]!.id, 1);
@@ -673,7 +673,7 @@ test("search marks historical, merged and archived knowledge hits so they do not
 test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", async () => {
   const s = session(), t = turn(s.id, "scope raw"), n = noting(s.id, t.id, "scoped fact");
   const k = knowledge(s.id, n.facts[0]!.id, "goal", "project", "shared-then-private goal");
-  const selectedEntries = memory.store.listSourceEntries(s.id, t.id);
+  const selectedEntries = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store);
   memory.selectEntries(s.id, "main", selectedEntries.map(entry => entry.id));
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: selectedEntries.at(-1)!.id };
   const trigger = createDreamerTrigger(memory, path, n.facts[0]!.id, 1);
@@ -814,7 +814,7 @@ test("73: knowledge borrows the shared allowance first, even when it leaves pend
   expect(text).toContain("earlier entries omitted from the Raw window");
   expect(result.truncated?.raw).toBeTruthy();
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
-  expect(memory.pendingEntries(s.id, "main", t.id)).toHaveLength(7); // nothing was processed or erased
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store)).toHaveLength(7); // nothing was processed or erased
   expect(calls).toBe(0);
 });
 
@@ -834,10 +834,10 @@ test("28a acceptance 3 and 30 cases 10-12: the two refills are whole, recent, pa
   entry(s.id, t.id, "old", `EXTRACTED_OLD ${pad}`);
   const newer = entry(s.id, t.id, "new", `EXTRACTED_NEW ${pad}`);
   const run = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
-    facts: [], entryIds: memory.store.sourcePath(s.id, "main", selected.id).map(e => e.id) });
+    facts: [], entryIds: hydrate(memory.store.sourcePath(s.id, "main", selected.id), memory.store).map(e => e.id) });
   expect(run.ok).toBe(true);
   const open = entry(s.id, selected.id, "open", "STILL_PENDING");
-  expect(memory.pendingEntries(s.id, "main", selected.id).map(e => e.id)).toEqual([open.id]);
+  expect(hydrate(memory.pendingEntries(s.id, "main", selected.id), memory.store).map(e => e.id)).toEqual([open.id]);
 
   const result = memory.compact(s.id, "main", selected.id);
   const text = compacted(result), windows = charged(result);
@@ -855,7 +855,7 @@ test("28a acceptance 3 and 30 cases 10-12: the two refills are whole, recent, pa
   // The carrier lists exactly what was included, pending and refilled alike, each in the one view.
   const supplied = "native" in result ? { entries: [], factIds: [] } : result.supplied;
   expect([...supplied.factIds].sort((a, b) => a - b)).toEqual([...history.map(f => f.id), pending.id].sort((a, b) => a - b));
-  expect(supplied.entries.map(e => e.id)).toEqual(memory.store.sourcePath(s.id, "main", selected.id).map(e => e.id));
+  expect(supplied.entries.map(e => e.id)).toEqual(hydrate(memory.store.sourcePath(s.id, "main", selected.id), memory.store).map(e => e.id));
   expect(new Set(supplied.entries.map(e => e.view))).toEqual(new Set(["bounded"]));
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
 
@@ -883,7 +883,7 @@ test("28a acceptance 3 and 30 cases 10-12: the two refills are whole, recent, pa
   const tightWindows = charged(tight);
   expect(tightWindows.knowledge + tightWindows.facts + tightWindows.raw).toBeLessThanOrEqual(tightWindows.envelope);
   expect(memory.store.listRuns(s.id)).toHaveLength(runsBefore);
-  expect(memory.pendingEntries(s.id, "main", selected.id).map(e => e.id)).toEqual([open.id]);
+  expect(hydrate(memory.pendingEntries(s.id, "main", selected.id), memory.store).map(e => e.id)).toEqual([open.id]);
   expect(calls).toBe(0);
   defaultWindows();
 });

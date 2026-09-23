@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, seedSourceEntry, sourceSeededMemory, type TraceMemory as TraceMemoryHandle } from "../../source-fixture.ts";
+import { DEFAULT_CONFIG, seedSourceEntry, sourceSeededMemory, type TraceMemory as TraceMemoryHandle , hydrate } from "../../source-fixture.ts";
 import { TraceMemory as coreTraceMemory, validateConfig, type ConfigOverride } from "../../../src/core/api/index.ts";
 
 let dir: string;
@@ -73,15 +73,15 @@ test("the source fixture seeds completed entries; the production facade appendin
   };
   const wrapped = seed(memory);
   // The fixture's wrapper writes the completed user and assistant messages a host would have imported.
-  expect(memory.store.listSourceEntries(wrapped.sessionId).map(e => e.role)).toEqual(["user", "assistant"]);
+  expect(hydrate(memory.store.listSourceEntries(wrapped.sessionId), memory.store).map(e => e.role)).toEqual(["user", "assistant"]);
 
   const plain = coreTraceMemory(":memory:", neverCalledRunAgent);
   try {
     const bare = seed(plain);
     // Production does not: appending a Turn is not enough to make pending-entry discovery see one.
-    expect(plain.store.listSourceEntries(bare.sessionId)).toEqual([]);
+    expect(hydrate(plain.store.listSourceEntries(bare.sessionId), plain.store)).toEqual([]);
     // The seeding is an operation with a name, callable on its own.
     seedSourceEntry(plain, bare.turnId, "user", "prompt");
-    expect(plain.store.listSourceEntries(bare.sessionId).map(e => e.role)).toEqual(["user"]);
+    expect(hydrate(plain.store.listSourceEntries(bare.sessionId), plain.store).map(e => e.role)).toEqual(["user"]);
   } finally { plain.close(); }
 });

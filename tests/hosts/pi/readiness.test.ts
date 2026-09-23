@@ -3,6 +3,7 @@ import { host, reply } from "./test-host.ts";
 import { checkpointReadiness } from "../../../src/hosts/pi/native.ts";
 // The native cases exercise fork checkpoint readiness; the ordinary host case runs fresh.
 import { call, forkFixture as fixture, noteBatch, say, submitted, toolResults, worker, type Body } from "./native-fixture.ts";
+import { hydrate } from "../../source-fixture.ts";
 
 // 19c "Entry readiness and fallback": the scheduling thresholds keep their own authority (17b), and a
 // due task launches only when its chosen native checkpoint is persisted, reopenable and free of an
@@ -20,7 +21,7 @@ test("19c 2026-09-08: a message completion before persistence launches nothing; 
     const completed = reply("done. " + long);
     // The completion callback alone, exactly as Pi fires it: the entry is not in the file yet.
     await h.hooks.get("message_end")!({ message: completed }, h.ctx);
-    expect(h.memory.pendingEntries(1, "main", 1).map(e => e.role)).toEqual(["user"]);
+    expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.role)).toEqual(["user"]);
     expect(notingRuns(h)).toEqual([]);
     expect(h.conversations).toEqual([]); // and nothing was sent to any model
     // Persistence, then the next safe boundary. No provider request was ever captured for this
@@ -48,20 +49,20 @@ test("64c: persisted assistant and tool-result entries each grant one mid-turn s
       id: `long-${index}`, name: "bash", arguments: { command: `step ${index}` } }));
     const assistant = { ...reply("Working."), content: [{ type: "text" as const, text: "Working." }, ...calls] };
     await h.emit("message_end", { message: assistant });
-    expect(h.memory.store.listSourceEntries(1).map(entry => entry.role)).toEqual(["user"]);
+    expect(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).map(entry => entry.role)).toEqual(["user"]);
 
     // Pi has persisted the assistant by tool preflight. The first hook ingests it; a duplicate hook
     // sees the same leaf and grants no duplicate opportunity.
     await h.emit("tool_execution_start", { toolCallId: calls[0]!.id, toolName: "bash", args: calls[0]!.arguments });
     await h.emit("tool_execution_start", { toolCallId: calls[0]!.id, toolName: "bash", args: calls[0]!.arguments });
-    expect(h.memory.store.listSourceEntries(1).map(entry => entry.role)).toEqual(["user", "assistant"]);
+    expect(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).map(entry => entry.role)).toEqual(["user", "assistant"]);
 
     // Each result is persisted by Pi's final message lifecycle and reconciled before the next model
     // turn. Twelve bounded result views cross the real 10k Noter threshold before agent_end.
     for (const call of calls) await h.emit("tool_result", { toolCallId: call.id, toolName: "bash", input: call.arguments,
       content: [{ type: "text", text: `${call.id} ${"word ".repeat(6_000)}` }], details: {}, isError: false });
     const run = await vi.waitFor(() => { const values = notingRuns(h); expect(values).toHaveLength(1); return values[0]!; }, { timeout: 5000 });
-    expect(run.origin?.entryIds.at(-1)).toBeLessThanOrEqual(h.memory.store.listSourceEntries(1).at(-1)!.id);
+    expect(run.origin?.entryIds.at(-1)).toBeLessThanOrEqual(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).at(-1)!.id);
     expect(h.memory.store.listRuns(1).filter(value => value.kind === "noting")).toHaveLength(1);
     await h.emit("message_start", { message: reply("") });
     await h.emit("agent_end");
@@ -188,7 +189,7 @@ test("19c 2026-09-08: a tree switch before the launch does not substitute the ne
     expect(response.fallbackReason).toContain("No current-branch provider payload captured");
     // The waiting task's own entries are neither covered nor advanced by this run.
     expect((response.entryAudit.entries as { nativeId: string }[]).map(e => e.nativeId)).not.toContain(waiting);
-    expect(f.h.memory.pendingEntries(1, beforeSwitch!, 2).length).toBeGreaterThan(0);
+    expect(hydrate(f.h.memory.pendingEntries(1, beforeSwitch!, 2), f.h.memory.store).length).toBeGreaterThan(0);
   } finally { await f.dispose(); }
 }, 20000);
 

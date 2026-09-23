@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory, recorded, toolRejected, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import { sourceSeededMemory, recorded, toolRejected, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
 import { similarity } from "../../../src/core/consolidation/similarity.ts";
 import { Store } from "../../../src/core/store/index.ts";
 
@@ -108,7 +108,7 @@ test("payload-free acknowledgement completes an empty Noting batch and preserves
   const accepted = await memory.noting({ sessionId, branch: "main", headTurnId: turn.id, mode: "subagent" });
   if (accepted.outcome !== "success") throw new Error("expected success");
   expect(memory.store.getRun(accepted.runId)!.request).toBeNull();
-  expect(memory.pendingEntries(sessionId, "main", turn.id)).toEqual([]);
+  expect(hydrate(memory.pendingEntries(sessionId, "main", turn.id), memory.store)).toEqual([]);
 
   const missingTurn = appendTarget("Another entry has no durable fact.");
   unavailable = false;
@@ -259,7 +259,7 @@ test("a later same-Turn legacy-address occurrence cannot invalidate the binding'
     const note = input.tools.find(tool => tool.name === "note")!;
     const first = note.execute({ facts: [newFact(target.id, oldFact().text)] });
     expect(input.reviewFeedback(first)).toContain("NEAR:");
-    const before = memory.store.sourcePath(sessionId, "main", target.id);
+    const before = hydrate(memory.store.sourcePath(sessionId, "main", target.id), memory.store);
     frozenSourceId = before.find(entry => entry.turnId === target.id && entry.role === "assistant")!.id;
     const late = memory.appendEntry({ sessionId, nativeLineage: "fixture", nativeId: "late-same-turn", turnId: target.id,
       role: "assistant", text: oldFact().text, raw: JSON.stringify({ role: "assistant", text: oldFact().text }), calls: [] });

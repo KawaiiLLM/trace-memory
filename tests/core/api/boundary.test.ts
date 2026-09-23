@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FACTS_TITLE, RANGE_FACTS_TITLE, SOURCES_TITLE } from "../../../src/core/render/material.ts";
 import { sourceSeededMemory, renderEntry, toolDefinitions, tokens, ENTRY_VIEW_VERSION,
-  compacted, NOTING_INCOMPLETE, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+  compacted, NOTING_INCOMPLETE, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>;
 let calls: (NotingAgentInput | ConsolidationAgentInput)[];
@@ -197,7 +197,7 @@ test("19b 2026-09-08: a host stub that receives structured material and declares
     const input = raw as NotingAgentInput;
     assertNoProviderMessage(input);
     // Everything this stub needs is a part it can place itself.
-    expect(input.material.entries.map(e => e.view)).toEqual(memory.pendingEntries(sessionId, "main", t.id).map(e => renderEntry(e, memory.config.render).content));
+    expect(input.material.entries.map(e => e.view)).toEqual(hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store).map(e => renderEntry(e, memory.config.render).content));
     expect(input.entryAudit.viewVersion).toBe(ENTRY_VIEW_VERSION);
     expect(input.entryAudit.viewBudgets).toEqual({ entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 }); // the one profile (30)
     expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] })).toContain("ok: F1");
@@ -214,7 +214,7 @@ test("19b 2026-09-08: a host stub that receives structured material and declares
   const response = JSON.parse(run.response!);
   expect(response.audit).toEqual({ available: false, reason: "this host cannot expose provider requests" });
   expect(response.problems).toEqual([]);
-  expect(memory.store.sourcePath(sessionId, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
+  expect(hydrate(memory.store.sourcePath(sessionId, "main", t.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
 });
 
 test("19b 2026-09-08: the same stub still fails core validation, and a host expected to capture a request still reports the audit problem", async () => {
@@ -236,7 +236,7 @@ test("19b 2026-09-08: the same stub still fails core validation, and a host expe
   expect(failed.outcome).toBe("failure");
   if (failed.outcome !== "failure") throw new Error("expected a failure");
   expect(failed.problems).toEqual(["runAgent must return the exact provider request"]);
-  expect(memory.pendingEntries(sessionId, "main", t.id)).toHaveLength(2); // neither attempt advanced progress
+  expect(hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store)).toHaveLength(2); // neither attempt advanced progress
 });
 
 test("19b 2026-09-08: a Consolidation stub with unavailable audit runs the two submissions and commits", async () => {
@@ -274,8 +274,8 @@ test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the on
   const sessionId = session();
   const first = turn(sessionId, null, "first " + "word ".repeat(600), "reply one");
   const second = turn(sessionId, first.id, "second " + "word ".repeat(600), "reply two");
-  const views = memory.pendingEntries(sessionId, "main", second.id).map(e => renderEntry(e, memory.config.render).content);
-  const owned = memory.pendingEntries(sessionId, "main", second.id).filter(e => e.turnId === first.id);
+  const views = hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store).map(e => renderEntry(e, memory.config.render).content);
+  const owned = hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store).filter(e => e.turnId === first.id);
   expect(views.length).toBe(4);
   // Below the 10,000-token material ceiling, but the reported budget holds only the first Turn. The
   // slack covers what 20b charges beyond the entry views themselves: the block titles, the range line
@@ -301,19 +301,19 @@ test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the on
   expect(JSON.parse(run.response!).entryAudit.entries.map((e: { id: number }) => e.id)).toEqual(owned.map(e => e.id));
   expect(memory.store.listSessionFacts(sessionId).map(f => f.text)).toEqual([`Observed at T${first.id}#user`]);
   // The unselected tail is untouched: still pending, for a later permitted trigger.
-  expect(memory.pendingEntries(sessionId, "main", second.id).map(e => e.turnId)).toEqual([second.id, second.id]);
+  expect(hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store).map(e => e.turnId)).toEqual([second.id, second.id]);
 });
 
 test("19b 2026-09-08 gate 4: an oldest entry that does not fit the supplied budget leaves the queue pending with a capacity problem and no progress", async () => {
   const sessionId = session();
   const t = turn(sessionId, null, "first " + "word ".repeat(600), "reply one");
-  const before = memory.pendingEntries(sessionId, "main", t.id);
+  const before = hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store);
   runAgent = async () => { throw new Error("no model call may happen"); };
   await expect(memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "fork",
     capacity: { inputTokens: forkOverhead(50), prefixTokens: 50 } })).rejects.toThrow("oldest entry cannot fit");
   expect(calls).toEqual([]);
   expect(memory.store.listRuns(sessionId)).toEqual([]);
-  expect(memory.pendingEntries(sessionId, "main", t.id)).toEqual(before);
+  expect(hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store)).toEqual(before);
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
 });
 
@@ -411,7 +411,7 @@ test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes t
   const sessionId = session();
   const first = turn(sessionId, null, "first " + "word ".repeat(600), "reply one");
   const second = turn(sessionId, first.id, "second " + "word ".repeat(600), "reply two");
-  const pending = memory.pendingEntries(sessionId, "main", second.id);
+  const pending = hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store);
   const views = pending.map(e => renderEntry(e, memory.config.render).content);
   const owned = pending.filter(e => e.turnId === first.id).map(e => e.id);
   const inputTokens = overhead() + tokens(views.slice(0, 2).join("\n\n")) + 80;
@@ -437,9 +437,9 @@ test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes t
   const run = memory.store.getRun(result.runId)!;
   expect(JSON.parse(run.response!).entryAudit.entries.map((e: { id: number }) => e.id)).toEqual(owned);
   expect([run.rangeFrom, run.rangeTo]).toEqual([`S${sessionId}/T${first.id}`, `S${sessionId}/T${first.id}`]);
-  expect(memory.store.sourcePath(sessionId, "main", second.id).filter(e => memory.store.entryNoted(e.id)).map(e => e.id)).toEqual(owned);
+  expect(hydrate(memory.store.sourcePath(sessionId, "main", second.id), memory.store).filter(e => memory.store.entryNoted(e.id)).map(e => e.id)).toEqual(owned);
   // The excluded tail is untouched, for a later permitted trigger.
-  expect(memory.pendingEntries(sessionId, "main", second.id).map(e => e.turnId)).toEqual([second.id, second.id]);
+  expect(hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store).map(e => e.turnId)).toEqual([second.id, second.id]);
 });
 
 // ----------------------------------------------------------------- 26a: explicit Noting completion
@@ -451,7 +451,7 @@ test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes t
 test("26a scenario 1: a run that never calls note is incomplete, records its usage and advances nothing", async () => {
   const sessionId = session();
   const t = turn(sessionId, null, "用 pnpm", "好的。");
-  const before = memory.pendingEntries(sessionId, "main", t.id).map(e => e.id);
+  const before = hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store).map(e => e.id);
   runAgent = async () => ({ outcome: "success", output: "I answered a question instead.", request: { fake: true }, usage: { tokens: 12 } });
   const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
   if (result.outcome !== "failure") throw new Error(`expected failure, got ${result.outcome}`);
@@ -465,7 +465,7 @@ test("26a scenario 1: a run that never calls note is incomplete, records its usa
   expect(response.output).toBe("I answered a question instead."); // final prose is audit content, never facts
   // No business progress: no facts and no processed entry — and the next freeze selects the same entries.
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
-  expect(memory.pendingEntries(sessionId, "main", t.id).map(e => e.id)).toEqual(before);
+  expect(hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store).map(e => e.id)).toEqual(before);
   let frozen: number[] = [];
   runAgent = async raw => {
     const input = raw as NotingAgentInput;
@@ -485,7 +485,7 @@ test("26a scenario 1: a run that never calls note is incomplete, records its usa
 test("26a scenario 1: note({facts: []}) commits a zero-fact run, and a later provider failure keeps it", async () => {
   const sessionId = session();
   const t = turn(sessionId, null, "用 pnpm", "好的。");
-  const before = memory.pendingEntries(sessionId, "main", t.id).map(e => e.id);
+  const before = hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store).map(e => e.id);
   let receipt = "", second = "";
   runAgent = async raw => {
     const note = (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!;
@@ -501,8 +501,8 @@ test("26a scenario 1: note({facts: []}) commits a zero-fact run, and a later pro
   expect(result.problems?.join(" ")).toContain("provider failed after commit"); // trailing problem, commit intact
   expect(memory.store.getRun(result.runId)!.outcome).toBe("success");
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
-  expect(memory.store.sourcePath(sessionId, "main", t.id).filter(e => memory.store.entryNoted(e.id)).map(e => e.id)).toEqual(before);
-  expect(memory.pendingEntries(sessionId, "main", t.id)).toEqual([]);
+  expect(hydrate(memory.store.sourcePath(sessionId, "main", t.id), memory.store).filter(e => memory.store.entryNoted(e.id)).map(e => e.id)).toEqual(before);
+  expect(hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store)).toEqual([]);
 });
 
 
@@ -535,6 +535,6 @@ test.each((["noting", "consolidation"] as const).flatMap(phase =>
     expect(memory.store.listRuns(id).filter(run => run.mode === "fork")).toHaveLength(1);
     if (loss === "replaced") expect(memory.store.getClaim(id, phase)?.executorId).toBe(peer.executorId);
     else expect(memory.store.getClaim(id, phase)).toBeNull();
-    expect(phase === "noting" ? memory.pendingEntries(id, "main", t.id).length : memory.store.consolidationBatch(id, "main", t.id).length).toBeGreaterThan(0);
+    expect(phase === "noting" ? hydrate(memory.pendingEntries(id, "main", t.id), memory.store).length : memory.store.consolidationBatch(id, "main", t.id).length).toBeGreaterThan(0);
   } finally { clock.mockRestore(); peer.close(); }
 });

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, visibleTarget, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import * as api from "../../source-fixture.ts";
-import { tokens } from "../../source-fixture.ts";
+import { tokens, hydrate } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
 import { consolidationToolDefinitions, dreamingToolDefinitions } from "../../../src/core/api/tools.ts";
@@ -264,8 +264,8 @@ test("2026-09-07: one batch per run", async () => {
     expect(note.execute(batch)).toContain("F1");
     expect(memory.store.getRun(1)?.outcome).toBe("success");
     expect(JSON.parse(memory.store.getRun(1)!.request!)).toEqual({ round: 1 });
-    expect(memory.store.sourcePath(s.id, "main", t.id).length).toBeGreaterThan(0);
-    expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
+    expect(hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0);
+    expect(hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
     expect(note.execute(batch)).toContain("already committed");
     return { outcome: "success", output: "Done", request: { round: 2 } };
   });
@@ -288,16 +288,16 @@ test("2026-09-07: bounced is not empty", async () => {
   expect((await memory.noting(input)).outcome).toBe("bounced");
   expect(memory.store.getRun(1)?.outcome).toBe("bounced");
   expect(JSON.parse(memory.store.getRun(1)!.response!).toolCalls[0].input).toEqual({ facts: [{ category: "invalid" }] });
-  expect(memory.store.listSourceEntries(s.id).some(e => memory.store.entryNoted(e.id))).toBe(false);
+  expect(hydrate(memory.store.listSourceEntries(s.id), memory.store).some(e => memory.store.entryNoted(e.id))).toBe(false);
   reject = false;
   expect(await memory.noting(input)).toMatchObject({ outcome: "success", facts: [] });
-  expect(memory.store.sourcePath(s.id, "main", t.id).length).toBeGreaterThan(0);
-  expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
+  expect(hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0);
+  expect(hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
 });
 
 function memoryWriter() {
   const { s, t } = session();
-  const entries = memory.store.sourcePath(s.id, "main", t.id);
+  const entries = hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store);
   memory.selectEntries(s.id, "main", entries.map(entry => entry.id));
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: entries.at(-1)!.id };
   const tools = memory.tools({ kind: "manual", ...path, currentTurnId: t.id });
@@ -499,7 +499,7 @@ function commitPaths() {
   const { s, t } = session();
   const selectNativeAncestry = (sessionId: number, headTurnId: number, branch: string) => {
     const turns = memory.store.pathTurns({ sessionId, headTurnId });
-    const entries = memory.store.listSourceEntries(sessionId).filter(entry => turns.has(entry.turnId));
+    const entries = hydrate(memory.store.listSourceEntries(sessionId), memory.store).filter(entry => turns.has(entry.turnId));
     memory.selectEntries(sessionId, branch, entries.map(entry => entry.id));
     return entries.at(-1)!.id;
   };
@@ -602,7 +602,7 @@ test.skip("footer progress retains total current-tip semantics while exposing it
   expect(counted.knowledge).toBe(memory.store.currentKnowledge({ sessionId: third.sessionId, headTurnId: third.headTurnId, branch: third.branch }).length);
   // This peer wrote one fact and consolidated nothing, so every applicable fact is still pending.
   expect(counted).toMatchObject({ facts: 1, unconsolidated: 1 });
-  expect(counted.entries).toBe(memory.pendingEntries(third.sessionId, third.branch, third.headTurnId).length);
+  expect(counted.entries).toBe(hydrate(memory.pendingEntries(third.sessionId, third.branch, third.headTurnId), memory.store).length);
   const consolidated = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: third.sessionId, branch: third.branch, createdAt: time },
     operations: [], consolidated: [Number(third.fact.slice(1))] });
   expect(consolidated.ok).toBe(true);
@@ -1292,7 +1292,7 @@ test("64b/16b: every raw source of a multi-source fact constrains carry, current
   const { root, c, d, content, publish } = commitPaths();
   memory.store.updateTurn(c.headTurnId, { assistantText: "Use violet tiles" });
   const turns = memory.store.pathTurns(c);
-  const entries = memory.store.listSourceEntries(c.sessionId).filter(entry => turns.has(entry.turnId));
+  const entries = hydrate(memory.store.listSourceEntries(c.sessionId), memory.store).filter(entry => turns.has(entry.turnId));
   memory.selectEntries(c.sessionId, c.branch, entries.map(entry => entry.id));
   const tools = memory.tools({ kind: "manual", sessionId: c.sessionId, branch: c.branch,
     currentTurnId: c.headTurnId, triggerEntryId: entries.at(-1)!.id });
@@ -1359,7 +1359,7 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
   // `noting.batchTokens`, inside the compaction envelope. Before 25c this escalated on the inner
   // cap; the bounded views keep every entry, and the Noter's ceiling is not a knob compact reads at
   // all — moving it changes nothing here.
-  expect(tokens(memory.pendingEntries(s.id, "main", t.id).map(e => renderEntry(e, memory.config.render).content).join("\n\n")))
+  expect(tokens(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n")))
     .toBeGreaterThan(DEFAULT_CONFIG.noting.batchTokens);
   expect("native" in memory.compact(s.id, "main", t.id)).toBe(false);
   memory.config.noting.batchTokens = 50;
@@ -1376,7 +1376,7 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const views = calls[0]!.material.entries.map(e => e.view);
   expect(tokens(views.join("\n\n"))).toBeLessThanOrEqual(DEFAULT_CONFIG.noting.batchTokens);
-  expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0); // the rest waits; 50,000 would have taken it
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0); // the rest waits; 50,000 would have taken it
 });
 
 // 25c, 2026-09-09: "compaction's two budgets are the knowledge cap and one shared 20,000-token
@@ -1407,7 +1407,7 @@ test("73: three windows plus the shared allowance — pending material first, tr
   const pending = write("PENDING FACT");
   const extracted = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "done", turnId: t.id, role: "assistant", text: `EXTRACTED RAW ${pad}`, raw: "", calls: [] });
   expect(memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
-    facts: [], entryIds: memory.store.sourcePath(s.id, "main", t.id).map(e => e.id) }).ok).toBe(true);
+    facts: [], entryIds: hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).map(e => e.id) }).ok).toBe(true);
   const open = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "open", turnId: t.id, role: "assistant", text: "PENDING RAW", raw: "", calls: [] });
 
   // Everything fits: pending material and both refills, inside the 50,000-token envelope.
@@ -1428,7 +1428,7 @@ test("73: three windows plus the shared allowance — pending material first, tr
   const required = compacted(memory.compact(s.id, "main", t.id));
   expect(required).toContain("PENDING FACT"); expect(required).toContain("PENDING RAW");
   expect(required).not.toContain("CONSOLIDATED HISTORY"); expect(required).not.toContain("EXTRACTED RAW");
-  expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
   expect(memory.store.entryNoted(extracted.id)).toBe(true); // no processing was reset by any of it
 
   // 73: no fallback. Pending material that does not fit even at its own base is omitted and
@@ -1441,7 +1441,7 @@ test("73: three windows plus the shared allowance — pending material first, tr
   expect(compacted(squeezed)).not.toContain("PENDING RAW");
   expect(squeezed.truncated?.facts?.count).toBe(1);
   expect(squeezed.truncated?.raw?.entries).toBe(1);
-  expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
   expect(calls).toHaveLength(0);
   defaultWindows();
 });
@@ -1488,8 +1488,8 @@ test("45: Consolidator capacity is the frozen database policy and the retired co
 // the bounded views nor any summary becomes a source, a fact or a receipt.
 test("73: 'compaction never calls a model' — over budget it truncates locally, and core calls none", async () => {
   const { s, t } = session();
-  const sources = memory.store.listSourceEntries(s.id).length;
-  const pending = memory.pendingEntries(s.id, "main", t.id).map(e => e.id);
+  const sources = hydrate(memory.store.listSourceEntries(s.id), memory.store).length;
+  const pending = hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id);
   expect("native" in memory.compact(s.id, "main", t.id)).toBe(false);
   // Still local, deterministic work with more Raw: every entry is bounded by `render.entryTokens`.
   for (const id of ["a", "b", "c"]) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
@@ -1504,10 +1504,10 @@ test("73: 'compaction never calls a model' — over budget it truncates locally,
   expect(truncated.truncated?.raw).toBeTruthy();
   expect(calls).toHaveLength(0); // nothing reached this façade's runAgent at all
   // Nothing changed the sources, the facts or the processing progress it read.
-  expect(memory.store.listSourceEntries(s.id).length).toBe(sources + 3);
+  expect(hydrate(memory.store.listSourceEntries(s.id), memory.store).length).toBe(sources + 3);
   expect(memory.store.listSessionFacts(s.id)).toHaveLength(0);
   expect(pending.length).toBeGreaterThan(0);
-  expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual(expect.arrayContaining(pending));
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual(expect.arrayContaining(pending));
   // Normal Noter input keeps using the same bounded views; the compact-only view exists nowhere else.
   defaultWindows();
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
@@ -1528,7 +1528,7 @@ test("30: one Raw entry view — C and R are independent, E binds the whole entr
   const { s, t } = session();
   const long = JSON.stringify({ command: "echo " + "a".repeat(20_000) });
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: long, result: "b".repeat(20_000), status: "success" });
-  const entries = memory.store.listSourceEntries(s.id);
+  const entries = hydrate(memory.store.listSourceEntries(s.id), memory.store);
   const of = (role: string) => entries.filter(e => e.role === role && e.calls.length).at(-1)!;
   const size = (role: string, profile: api.EntryProfile) => tokens(renderEntry(of(role), profile, memory.resultText).content);
   const profile = (entryTokens: number, toolInputTokens: number, toolResultTokens: number): api.EntryProfile =>
@@ -1619,7 +1619,7 @@ test("30/73: 23's tier-2 profile is superseded; compaction has one bounded view 
   const result = memory.compact(s.id, "main", t.id);
   expect("native" in result).toBe(false);
   const text = compacted(result);
-  for (const entry of memory.pendingEntries(s.id, "main", t.id)) expect(text).toContain(renderEntry(entry, memory.config.render, memory.resultText).content);
+  for (const entry of hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store)) expect(text).toContain(renderEntry(entry, memory.config.render, memory.resultText).content);
   expect(text).toContain("\nRaw:\n");
   expect(text).not.toContain("tier-2 entry views"); // one view, one title
   expect(text).not.toContain("compact-only");
@@ -1748,7 +1748,7 @@ test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added 
   const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t2.id, mode: "subagent", boundary });
   expect(result.outcome).toBe("success");
   expect(calls[0]!.entryIds).toEqual([entry1.id]); // the later on-path entry stays outside the frozen target
-  expect(memory.pendingEntries(s.id, "main", t2.id).map(e => e.id)).toEqual([entry2.id]); // it remains pending
+  expect(hydrate(memory.pendingEntries(s.id, "main", t2.id), memory.store).map(e => e.id)).toEqual([entry2.id]); // it remains pending
 
   // Same guarantee for Consolidation's frozen fact-id set.
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [
@@ -2109,7 +2109,7 @@ test("26 amendment 5 (26a) 2026-09-09: a Noter completes a batch only by calling
   // R20's failure mode: a run that submits nothing must not advance its 96 selected entries.
   expect(await memory.noting(target)).toMatchObject({ outcome: "failure", problems: [api.NOTING_INCOMPLETE] });
   expect(memory.store.getRun(1)!.outcome).toBe("failure"); // the existing outcome value; no new one, no schema change
-  expect(memory.store.listSourceEntries(s.id).some(e => memory.store.entryNoted(e.id))).toBe(false);
+  expect(hydrate(memory.store.listSourceEntries(s.id), memory.store).some(e => memory.store.entryNoted(e.id))).toBe(false);
   // The prompt says what the runner enforces.
   const prompt = loadPrompt("noting.md");
   expect(prompt).toContain("note({facts: []})");
@@ -2117,7 +2117,7 @@ test("26 amendment 5 (26a) 2026-09-09: a Noter completes a batch only by calling
   // An explicit empty submission is the completion, and (29d) it writes no delivery intent — as no commit does.
   submit = true;
   expect(await memory.noting(target)).toMatchObject({ outcome: "success", facts: [] });
-  expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
+  expect(hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
 });
 
@@ -2238,7 +2238,7 @@ test("27 review: each attempt is its own run record", async () => {
   expect(attemptBody.nativeLog).toBe("/tmp/fork-attempt.jsonl");
   expect(attemptBody.problems).toEqual(["context overflow: prompt is too long"]);
   expect(attemptBody.fallbackReason).toBeUndefined(); // the reason belongs to the run that fell back
-  expect(memory.store.listSourceEntries(s.id).some(e => memory.store.entryNoted(e.id))).toBe(false);
+  expect(hydrate(memory.store.listSourceEntries(s.id), memory.store).some(e => memory.store.entryNoted(e.id))).toBe(false);
 
   // The re-admission, as the host makes it: the reason names the first record, and the run records
   // only its own spend — never the attempt's 1234 tokens a second time.
@@ -2274,7 +2274,7 @@ test("27 amendment 6: frozen membership survives fallback or the task stays pend
   await expect(memory.noting({ ...target, boundary: { exactEntryIds: [e1.id, e2.id] }, capacity }))
     .rejects.toThrow(api.NOTING_CAPACITY);
   expect(calls).toEqual([]); // nothing ran on a smaller batch
-  expect(memory.pendingEntries(s.id, "main", t2.id).map(e => e.id)).toEqual([e1.id, e2.id]);
+  expect(hydrate(memory.pendingEntries(s.id, "main", t2.id), memory.store).map(e => e.id)).toEqual([e1.id, e2.id]);
 
   // With room, the same boundary runs on exactly those entries, and the audit says so.
   const ran = await memory.noting({ ...target, boundary: { exactEntryIds: [e1.id, e2.id] } });
@@ -2293,7 +2293,7 @@ test("27 amendment 6: frozen membership survives fallback or the task stays pend
   expect(dropped.reason).toContain(api.NOTING_MEMBERSHIP);
   expect(dropped.reason).toContain(`entries ${e2.id} of the frozen batch`);
   expect(calls).toHaveLength(before); // no model call, and no run
-  expect(memory.pendingEntries(s.id, "main", t3.id).map(e => e.id)).toEqual([e3.id]);
+  expect(hydrate(memory.pendingEntries(s.id, "main", t3.id), memory.store).map(e => e.id)).toEqual([e3.id]);
 });
 
 /** Ticket 29 "One material-selection mechanism" (2026-09-10), as 29b implements it. A task has two
@@ -2305,7 +2305,7 @@ test("29: one material builder — filter visible, then budget", async () => {
   const { s, t } = session();
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
     .execute({ facts: [{ category: "observation", actor: "user", text: "Recorded earlier", source: [`T${t.id}#user`] }] });
-  const entries = memory.pendingEntries(s.id, "main", t.id);
+  const entries = hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store);
   // A failing probe leaves the same evidence pending, so every view below freezes the same task.
   const probe = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
@@ -2368,7 +2368,7 @@ test("27: cancellation between refusal and re-admission launches no fallback", a
   expect(dropped).toEqual({ outcome: "dropped", reason: api.CANCELLED_BEFORE_FALLBACK });
   expect(generations).toHaveLength(1); // no fresh request
   expect(memory.store.listRuns(s.id)).toEqual([]);
-  expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0);
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0);
 
   // The cancellation stopped this executor's pending fallback, not the executor: a task admitted
   // after it carries the current generation and runs.
@@ -2424,7 +2424,7 @@ test("28 amendment 3: a signal already aborted at admission cancels that task be
   const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent", signal: controller.signal });
   expect(result.outcome).not.toBe("success");
   expect(requests).toEqual([]);
-  expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0); // nothing advanced
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0); // nothing advanced
 });
 
 // ---- 29e: Consolidation's exact fact target and its cancellation fence (parent 29 cases 19 and 20)
@@ -2724,4 +2724,38 @@ test("61: every backticked category, kind or field word used in a stage file is 
       expect(defined.has(word), `${file}: \`${word}\` is not a defined term`).toBe(true);
     }
   }
+});
+
+// 79 item 1: sourcePath, pendingEntries and listSourceEntries return source-entry metadata read from
+// the hot table alone; no list read touches the payload table (source_entry_raw). Pinned with
+// statement capture against a path long enough that a regression back to per-row hydration would be
+// unmistakable in the captured SQL, not just in timing.
+test("79 item 1: sourcePath, pendingEntries and listSourceEntries never touch source_entry_raw", () => {
+  const memory = sourceSeededMemory(":memory:", async () => { throw new Error("no model"); });
+  try {
+    const project = memory.store.createProject({ name: "list-shape", declaredBy: "marker" });
+    const session = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: project.id, startedAt: "t", firstReplyAt: "t" });
+    // `sourceSeededMemory`'s appendTurn wrapper auto-seeds one completed user entry per Turn from
+    // `userPrompt` (the fixture shape "20a: the core cases written before source entries were their
+    // own record" documents above), so each iteration below owns exactly one source entry.
+    let parent: number | null = null;
+    const ids: number[] = [];
+    for (let i = 0; i < 60; i++) {
+      const turn = memory.store.appendTurn({ sessionId: session.id, parentTurnId: parent, kind: "turn", startedAt: "t", userPrompt: `q${i} ${"word ".repeat(200)}` });
+      ids.push(memory.store.listSourceEntries(session.id, turn.id)[0]!.id);
+      parent = turn.id;
+    }
+    memory.store.selectSourcePath(session.id, "main", ids);
+    const original = memory.store.db.prepare.bind(memory.store.db);
+    const statements: string[] = [];
+    (memory.store.db as unknown as { prepare: typeof memory.store.db.prepare }).prepare =
+      ((sql: string) => { statements.push(sql); return original(sql); }) as typeof memory.store.db.prepare;
+    try {
+      expect(memory.store.sourcePath(session.id, "main", parent!)).toHaveLength(60);
+      expect(memory.store.pendingEntries(session.id, "main", parent!)).toHaveLength(60);
+      expect(memory.store.listSourceEntries(session.id)).toHaveLength(60);
+    } finally { (memory.store.db as unknown as { prepare: typeof memory.store.db.prepare }).prepare = original; }
+    expect(statements.some(sql => sql.includes("source_entry_raw"))).toBe(false);
+    expect(statements.some(sql => /\bcontent\b/.test(sql) || /\bblocks\b/.test(sql))).toBe(false);
+  } finally { memory.close(); }
 });

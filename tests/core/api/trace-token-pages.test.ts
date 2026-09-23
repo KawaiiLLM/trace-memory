@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory , hydrate } from "../../source-fixture.ts";
 import { drainTrace, tracePage, wholeTrace } from "../../trace-pages.ts";
 import { finish, listingLine, renderTrace, tokens } from "../../../src/core/render/index.ts";
 import * as rendering from "../../../src/core/render/index.ts";
@@ -25,7 +25,7 @@ function corpus() {
 }
 function rendered(turnId: number, full = true, part?: "user" | "assistant" | `t${number}`, branch?: string) {
   const turn = memory.store.getTurn(turnId)!;
-  return finish(renderTrace(turn, memory.store.listSourceEntries(turn.sessionId, turnId, full ? undefined : branch), memory.config.render, { full, part }));
+  return finish(renderTrace(turn, hydrate(memory.store.listSourceEntries(turn.sessionId, turnId, full ? undefined : branch), memory.store), memory.config.render, { full, part }));
 }
 
 test("omission receipts expand only the exact source call, including its result", () => {
@@ -62,7 +62,7 @@ test("mixed and repeated addresses have one cursor stream, without nested cursor
 
 test.each([false, true])("pending text, later named material and occurrences freeze before branch/profile changes, full=%s", full => {
   const { sessionId, turn } = corpus();
-  const originalIds = memory.store.listSourceEntries(sessionId, turn.id).map(e => e.id);
+  const originalIds = hydrate(memory.store.listSourceEntries(sessionId, turn.id), memory.store).map(e => e.id);
   memory.selectEntries(sessionId, "main", originalIds);
   const expected = rendered(turn.id, full, undefined, "main");
   const options = { sessionId, branch: "main", full, cap: 1 };
@@ -215,7 +215,7 @@ test.each(["K1@1", "F1-F1,K1@1,T1#t1"])("admitted Dreamer drains token-paged his
   const created = memory.store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "h1", author: "fake", text: "知识😀".repeat(1_800),
     category: "mechanism", scope: "project", supports: [1], reason: "test", topics: [], createdAt: time }] });
   expect(created.ok).toBe(true);
-  const selectedEntries = memory.store.listSourceEntries(sessionId, turn.id);
+  const selectedEntries = hydrate(memory.store.listSourceEntries(sessionId, turn.id), memory.store);
   memory.selectEntries(sessionId, "main", selectedEntries.map(entry => entry.id));
   const path = { sessionId, headTurnId: turn.id, branch: "main", triggerEntryId: selectedEntries.at(-1)!.id };
   const firstTrigger = createDreamerTrigger(memory, path, 1, 1, "project");
