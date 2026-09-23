@@ -72,10 +72,16 @@ test("73: many tiny entries over the Raw window truncate to the newest span rath
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
     expect(result.compaction.summary).toContain("earlier entries omitted from the Raw window");
     expect(h.notices.some(n => n.includes("compaction preparing bounded entry views"))).toBe(true);
-    // The foreground truncation warning, at the end: what was omitted, and that it stays pending.
-    expect(h.notices.at(-1)).toContain("compaction omitted");
-    expect(h.notices.at(-1)).toContain("pending Raw");
-    expect(h.notices.at(-1)).toContain("pending for Noting and Consolidation");
+    // The foreground truncation warning comes once Pi appends the carrier: what was omitted, and
+    // that it stays pending.
+    expect(h.notices.some(n => n.includes("compaction omitted"))).toBe(false);
+    const entry = { id: "compact", parentId: h.entries.at(-1)!.id, timestamp: "now", type: "compaction",
+      summary: result.compaction.summary, firstKeptEntryId: "", tokensBefore: 100_000, details: result.compaction.details };
+    h.entries.push(entry as never); h.allEntries.push(entry as never);
+    await h.emit("session_compact", { compactionEntry: entry });
+    const warning = h.notices.find(n => n.includes("compaction omitted"));
+    expect(warning).toContain("pending Raw");
+    expect(warning).toContain("pending for Noting and Consolidation");
     // Compact itself never runs a worker (with or without recovery) and never touches progress.
     expect(h.memory.store.listRuns(1)).toHaveLength(runsBefore);
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pendingBefore);

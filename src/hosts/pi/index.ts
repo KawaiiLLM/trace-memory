@@ -10,7 +10,7 @@ import { showSessionPanel, type SessionBody } from "./session-panel.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, directoryAllocation, enrollmentDefault, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
+import { TraceMemory, directoryAllocation, enrollmentDefault, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -229,6 +229,8 @@ export default function (pi: ExtensionAPI) {
    * reason — for `/trace status` (ticket 20 "Failure visibility"). A diagnostic string, not a state
    * machine: nothing reads it back. */
   let lastCompaction: string | undefined;
+  /** 73: the truncation receipt of the carrier this handler last returned, warned once Pi appends it. */
+  let publishedTruncation: TruncationReceipt | undefined;
   let baseline: string;
   // 29a's visible-view memo for the selected context, created by `restore` (29d: the initial
   // knowledge block's only lifecycle input).
@@ -1217,6 +1219,7 @@ export default function (pi: ExtensionAPI) {
   // a cancelled compaction returns `{cancel: true}`, which is how Pi ends a compaction as aborted
   // instead of running its own.
   pi.on("session_before_compact", async (event, context) => {
+    publishedTruncation = undefined;
     ensure(context); if (!enabled()) return; flush();
     const signal = (event as { signal?: AbortSignal }).signal;
     const initial = { sessionId: state.sessionId, branch: state.branch, head: state.head, projectId: state.projectId };
@@ -1246,18 +1249,6 @@ export default function (pi: ExtensionAPI) {
     let result = allocate();
     if (signal?.aborted || closed) return { cancel: true };
     context.ui.notify(`Trace Memory: compaction preparing ${"native" in result ? `native delegation — ${result.reason}` : "bounded entry views"}.`, "info");
-    // 73 "Truncation is announced in the foreground": material Noting or Consolidation has not yet
-    // processed may have been truncated to fit the shared allowance; it stays pending in the store.
-    // The warning is a callback too, so it is given here, from this allocation, before the final
-    // reprice and its cancellation and validity checks — never between them and the carrier.
-    if (!("native" in result) && result.truncated) {
-      const { raw, facts } = result.truncated;
-      const parts = [
-        ...(raw ? [`${raw.entries} pending Raw ${raw.entries === 1 ? "entry" : "entries"} (${raw.tokens} tokens)`] : []),
-        ...(facts ? [`${facts.count} unconsolidated ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens)`] : []),
-      ];
-      context.ui.notify(`Trace Memory: compaction omitted ${parts.join(" and ")}; they remain pending for Noting and Consolidation.`, "warning");
-    }
     // Notification callbacks may themselves cancel or change the binding. No await or callback
     // separates this final coherent reprice from constructing the exact publication carrier.
     if (signal?.aborted || closed) return { cancel: true };
@@ -1267,6 +1258,10 @@ export default function (pi: ExtensionAPI) {
     // 29a "Receipt and content are one carrier": the identities this replacement supplies ride on the
     // compaction entry Pi appends for it, so a cancelled or failed attempt — which appends no entry —
     // leaves the earlier baseline untouched, and a native delegation carries no `traceMemory` at all.
+    // 73 "Truncation is announced in the foreground": the warning describes exactly this carrier, and is
+    // given once Pi has appended it (\`session_compact\` below). No callback runs between the final
+    // reprice above and this return, and a compaction Pi does not append warns about nothing.
+    publishedTruncation = result.truncated;
     return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied).traceMemory, composition: result.composition } } } };
   });
   pi.on("session_compact", (_event, context) => {
@@ -1277,6 +1272,16 @@ export default function (pi: ExtensionAPI) {
     const own = (entry.details as { traceMemory?: VisibleBinding } | undefined)?.traceMemory;
     const custom = own?.db === dbPath && own.pi === state.piId && own.session === (state.sessionId ?? null);
     lastCompaction = custom ? "bounded entry views" : "native delegation — saved without Trace Memory material coverage";
+    const omitted = custom ? publishedTruncation : undefined;
+    publishedTruncation = undefined;
+    if (omitted) {
+      const { raw, facts } = omitted;
+      const parts = [
+        ...(raw ? [`${raw.entries} pending Raw ${raw.entries === 1 ? "entry" : "entries"} (${raw.tokens} tokens)`] : []),
+        ...(facts ? [`${facts.count} unconsolidated ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens)`] : []),
+      ];
+      context.ui.notify(`Trace Memory: compaction omitted ${parts.join(" and ")}; they remain pending for Noting and Consolidation.`, "warning");
+    }
     if (enabled() && state.sessionId) {
       const turn = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: state.head, kind: "compaction", assistantText: entry.summary, startedAt: now(), endedAt: now() });
       state.head = turn.id; save();

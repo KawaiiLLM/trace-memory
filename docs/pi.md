@@ -780,10 +780,11 @@ keeps the newest ones that fit and omits the rest with a receipt, rather than ru
 Consolidation or Dreaming to shrink the backlog first or escalating to native compaction. Omitted
 material stays pending in the store; Noting and Consolidation process it as usual.
 
-Whenever a compaction omits unprocessed material, the handler notifies the user in the foreground at
-`warning` level, giving the counts and tokens omitted per kind and noting that the material stays
-pending. The warning is itself a callback, so it is given from the same allocation, before the final
-reprice and its cancellation and validity checks — never between them and the published carrier.
+Whenever a compaction omits unprocessed material, the user is warned in the foreground at `warning`
+level, with the counts and tokens omitted per kind and a note that the material stays pending. The
+warning describes exactly the carrier Pi appended and is given in `session_compact`, once Pi has
+appended it: no callback runs between the final reprice and the returned carrier, and a compaction
+that is cancelled or never appended warns about nothing.
 
 `event.signal` is Pi's compaction abort controller (behind Esc and `session.abortCompaction()`). A
 cancelled compaction returns `{cancel: true}`, publishes nothing and starts no native fallback; compact
