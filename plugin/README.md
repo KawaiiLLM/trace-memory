@@ -38,6 +38,19 @@ A narrowly scoped process guard contains the pinned SDK's late control-response 
 belongs to an already-aborted worker. It records that diagnostic; unrelated unhandled rejections
 remain fatal. This contains the known SDK cancellation defect without modifying the installed SDK.
 
+Each CC worker run's conversation is a native Claude Code session, written by Claude Code itself —
+not a custom log. It lands where Claude Code always puts a session for a given working directory:
+`<CLAUDE_CONFIG_DIR, or ~/.claude>/projects/<worker.cwd, with every non-alphanumeric character turned
+into a dash>/<session id>.jsonl`. Every isolation option stays on (`settingSources: []`, no plugins,
+the private trace_memory MCP server as the only connected server), so this file is never bound,
+imported or enrolled as a foreground session by the CC adapter — Claude Code just happens to persist
+it, the same way it persists any session. The run record's `nativeLog` names this exact path; a run
+whose file cannot be verified after the fact records an audit note there instead, without changing
+the run's outcome. claude-powerline's daily cost counts these transcripts the same way it counts any
+other Claude Code session, because they sit one level under its own `projects` root. Existing worker
+logs under the retired `<stateDir>/workers/` are untouched by this — nothing moves, imports, or
+rewrites them.
+
 **Upgrade from the single-model configuration:** remove `worker.model`, `worker.effort` and `worker.contextWindow`; set the six phase keys above and register each selected model's capacity in `worker.contextWindows`. The retired fields are rejected rather than used as a shared fallback. The file is the only mutable plugin configuration surface and must not contain credentials.
 
 Omit `dbPath` to use `~/.trace-memory/trace.db`, the same default as Pi. An existing database is opened in place, never replaced or copied by installation; an absent database is created on first use. Set an explicit absolute `dbPath` only to use another database (or to match a customized Pi path). Database reuse includes the existing Store's normal schema migration checks; it does not reset facts, knowledge, or enrollment. A new session on either host joins the project its repository directory (the git repository root, or the real cwd outside a repository) already has when that is exactly one project; the home directory and temporary directories are excluded, and `project <name>` overrides.

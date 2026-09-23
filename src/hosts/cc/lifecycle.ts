@@ -5,6 +5,7 @@ import type { ResolvedCcHostConfig } from "./config.ts";
 import { bindingPath, coreHostOf, readBinding, updateBinding, validateNativeSessionId, type CcExecutorBinding, type CcHookInput,
   type CcSessionBinding } from "./binding.ts";
 import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
+import type { CcWorkerJournal } from "./worker.ts";
 import { startControlServer, type CcControlServer } from "./control.ts";
 import { classifySourceRecord, readCompleteTranscript, selectedNativePath } from "./transcript.ts";
 import { CcTaskScheduler } from "./scheduler.ts";
@@ -185,6 +186,9 @@ export class CcCoordinator {
   private readonly diagnostic: CcDiagnostic;
   /** Test-only override of the cooperative-scan slice/pause constants; unset in production. */
   private readonly importTuning?: CcImportInstrumentation;
+  /** 78: the executor's runtime journal, handed to every worker this coordinator creates, for the
+   * one worker event with no home in the run record (a contained SDK control abort). */
+  private readonly journal: CcWorkerJournal;
   /** Ticket 75: the most recent reconciled projection, read by `publish` for the counts' target path.
    * `null` before any successful reconcile — counts render as `?`, never as `0`. */
   private lastReconcile: CcReconcileResult | null = null;
@@ -193,9 +197,11 @@ export class CcCoordinator {
   private lastStatusKey: string | null = null;
 
   constructor(config: ResolvedCcHostConfig, nativeSessionId: string,
-    diagnostic: CcDiagnostic = message => console.error(`Trace Memory CC: ${message}`), importTuning?: CcImportInstrumentation) {
+    diagnostic: CcDiagnostic = message => console.error(`Trace Memory CC: ${message}`), importTuning?: CcImportInstrumentation,
+    journal: CcWorkerJournal = () => {}) {
     validateNativeSessionId(nativeSessionId);
-    this.config = config; this.nativeSessionId = nativeSessionId; this.diagnostic = diagnostic; this.importTuning = importTuning;
+    this.config = config; this.nativeSessionId = nativeSessionId; this.diagnostic = diagnostic;
+    this.importTuning = importTuning; this.journal = journal;
   }
 
   private observe(event: string, details: Record<string, unknown> = {}): void {
@@ -257,7 +263,7 @@ export class CcCoordinator {
     if (!binding) return;
     this.observe("attach-start", { final });
     try {
-      this.importer = new CcImporter(this.config, binding);
+      this.importer = new CcImporter(this.config, binding, { journal: this.journal });
       // Ticket 75: task admission and settlement are their own publish points, independent of reconcile.
       this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic, reason => this.publish(reason));
       const timeout = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());

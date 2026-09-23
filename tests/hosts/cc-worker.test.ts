@@ -1,12 +1,13 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { TraceMemory, toolDefinitions, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult, type TaskTarget, type ToolDefinition } from "../../src/core/api/index.ts";
 import { resolveCcHostConfig, CC_CONTEXT_HEADROOM } from "../../src/hosts/cc/config.ts";
-import { CcAgentWorker, CcResponseOrigins, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
+import { CcAgentWorker, CcResponseOrigins, ccNativeTranscriptPath, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
+import { installCcNativeRejectionGuard } from "../../src/hosts/cc/native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "../../src/hosts/cc/tools.ts";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 
@@ -20,6 +21,12 @@ function workerConfig(directory: string, claudeExecutable = "/opt/homebrew/bin/c
     "dreaming.model": "claude-sonnet-4-5", "dreaming.thinking": "medium",
     worker: { claudeExecutable, claudeVersion: "2.1.280", contextWindows: { "claude-sonnet-4-5": 200_000 },
       cwd: directory, responseOriginTimeoutMs: 20 } });
+}
+
+/** 78: a filtered environment naming a temporary `CLAUDE_CONFIG_DIR`, so a test that simulates the
+ * native session file Claude Code would have written never touches the real `~/.claude`. */
+function loopbackEnvironment(configDir: string) {
+  return { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: configDir };
 }
 
 function phaseWorkerConfig(directory: string) {
@@ -742,6 +749,178 @@ test("production worker propagates mid-run cancellation and finalizes its transp
   await expect(running).resolves.toMatchObject({ outcome: "cancelled" });
   expect(nativeSignal?.aborted).toBe(true);
   expect(finalized).toBe(true);
+});
+
+// --- Ticket 78: CC worker logs are native Claude Code sessions ---------------------------------
+
+test("no custom worker log directory is ever created", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-no-log-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const fakeQuery = (() => {
+    const stream = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "no-log-child", claude_code_version: "2.1.280", cwd: directory,
+        tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "result", subtype: "success", session_id: "no-log-child", is_error: false, result: "done", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const config = workerConfig(directory, executable);
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
+  const result = await new CcAgentWorker(config, { query: fakeQuery }).run(task, 0);
+  expect(result.outcome).toBe("success");
+  expect(existsSync(join(config.stateDir, "workers"))).toBe(false);
+});
+
+test("nativeLog is the native session file Claude Code itself writes, verified against its own session id", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-native-log-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const configDir = mkdtempSync(join(tmpdir(), "tm-cc-worker-config-dir-")); dirs.push(configDir);
+  const environment = loopbackEnvironment(configDir);
+  const sessionId = "native-log-child";
+  const fakeQuery = (() => {
+    const stream = (async function* () {
+      yield { type: "system", subtype: "init", session_id: sessionId, claude_code_version: "2.1.280", cwd: directory,
+        tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "result", subtype: "success", session_id: sessionId, is_error: false, result: "done", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  // Simulates what Claude Code itself writes at this same path once persistSession is on (real
+  // coverage of the CLI's own write is the native probe suite; this proves the adapter's own
+  // derivation and verification against exactly that layout).
+  const expectedPath = ccNativeTranscriptPath(environment, directory, sessionId);
+  mkdirSync(join(expectedPath, ".."), { recursive: true });
+  writeFileSync(expectedPath, `${JSON.stringify({ type: "user", sessionId, message: { role: "user", content: [] } })}\n`);
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
+  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery, environment }).run(task, 0);
+  expect(result.outcome).toBe("success");
+  expect(result.nativeLog).toBe(expectedPath);
+  expect((result.verification as { nativeLogProblem?: string } | undefined)?.nativeLogProblem).toBeUndefined();
+});
+
+test("no native init received leaves nativeLog and its verification note absent", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-no-init-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const controller = new AbortController(); controller.abort(new DOMException("test stop", "AbortError"));
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
+    signal: controller.signal } as unknown as CcAgentTask;
+  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: vi.fn() as any }).run(task, 0);
+  expect(result.outcome).toBe("cancelled");
+  expect(result.nativeLog).toBeUndefined();
+  expect(result.verification).toEqual({ rounds: 0 });
+});
+
+test("a missing native session file leaves nativeLog absent with an audit note, but a committed success stays a success", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-missing-log-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const configDir = mkdtempSync(join(tmpdir(), "tm-cc-worker-missing-config-")); dirs.push(configDir);
+  const environment = loopbackEnvironment(configDir); // no file is ever written under it
+  const sessionId = "missing-log-child";
+  const fakeQuery = (() => {
+    const stream = (async function* () {
+      yield { type: "system", subtype: "init", session_id: sessionId, claude_code_version: "2.1.280", cwd: directory,
+        tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "result", subtype: "success", session_id: sessionId, is_error: false, result: "done", errors: [],
+        usage: { input_tokens: 3, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
+  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery, environment }).run(task, 0);
+  expect(result).toMatchObject({ outcome: "success", output: "done", usage: { input: 3, output: 2 } });
+  expect(result.nativeLog).toBeUndefined();
+  expect((result.verification as { nativeLogProblem?: string } | undefined)?.nativeLogProblem).toContain("missing");
+});
+
+test("a Dreamer repair pass records one native path, and that file holds both passes", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-log-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const configDir = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-config-")); dirs.push(configDir);
+  const environment = loopbackEnvironment(configDir);
+  const sessionId = "dreamer-repair-child";
+  const passEnd = vi.fn().mockReturnValueOnce("repair receipt").mockReturnValueOnce(undefined);
+  const fakeQuery = ((request: { prompt: AsyncIterable<any> }) => {
+    const stream = (async function* () {
+      const input = request.prompt[Symbol.asyncIterator]();
+      await input.next();
+      const init = { type: "system", subtype: "init", session_id: sessionId, messaging_socket_path: "/tmp/dreamer-repair.sock",
+        claude_code_version: "2.1.280", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield init;
+      yield { type: "result", subtype: "success", session_id: sessionId, is_error: false, result: "first", errors: [],
+        usage: { input_tokens: 5, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0.1 };
+      await input.next();
+      yield { ...init };
+      yield { type: "result", subtype: "success", session_id: sessionId, is_error: false, result: "final", errors: [],
+        usage: { input_tokens: 6, output_tokens: 6, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0.2 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  // Simulates the one persisted session file both passes share, as `persistSession: true` continuing
+  // the same session id would produce; "a second init or a result from another session is still
+  // rejected" is exercised by the existing repeated-init and unsolicited-pass tests above.
+  const expectedPath = ccNativeTranscriptPath(environment, directory, sessionId);
+  mkdirSync(join(expectedPath, ".."), { recursive: true });
+  writeFileSync(expectedPath, [
+    JSON.stringify({ type: "user", sessionId, message: { role: "user", content: [{ type: "text", text: "frozen material" }] } }),
+    JSON.stringify({ type: "user", sessionId, message: { role: "user", content: [{ type: "text", text: "repair receipt" }] } }),
+  ].join("\n") + "\n");
+  const task = { kind: "dreaming", text: "frozen material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
+    reportRounds: vi.fn(), passEnd } as unknown as CcAgentTask;
+  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery, environment }).run(task, 50);
+  expect(result).toMatchObject({ outcome: "success", output: "final" });
+  expect(result.nativeLog).toBe(expectedPath);
+  const held = readFileSync(result.nativeLog!, "utf8");
+  expect(held).toContain("frozen material");
+  expect(held).toContain("repair receipt");
+});
+
+test("a contained SDK control abort is journaled with the task kind and native session id, whether it arrives before or after the worker returns", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-contained-abort-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const bundleAbort = () => Object.assign(new Error("Operation aborted"), { stack:
+    "Error: Operation aborted\n    at ProcessTransport.write (/x/plugin/dist/cc.cjs:15309:13)\n    at Query.handleControlRequest (/x/plugin/dist/cc.cjs:15290:7)" });
+  const turn = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  for (const timing of ["before", "after"] as const) {
+    const dispose = installCcNativeRejectionGuard();
+    const journal: { event: string; details: Record<string, unknown> }[] = [];
+    const sessionId = `contained-${timing}`;
+    const fakeQuery = ((request: { options: Record<string, any> }) => {
+      const stream = (async function* () {
+        yield { type: "system", subtype: "init", session_id: sessionId, claude_code_version: "2.1.280", cwd: directory,
+          tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+        request.options.abortController.abort(new Error("native transport aborted"));
+        if (timing === "before") { setTimeout(() => void Promise.reject(bundleAbort()), 0); await turn(20); }
+        else setTimeout(() => void Promise.reject(bundleAbort()), 40);
+        throw new DOMException("Claude Code process aborted by user", "AbortError");
+      })() as any;
+      stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+      return stream;
+    }) as any;
+    const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
+    const result = await new CcAgentWorker(workerConfig(directory, executable),
+      { query: fakeQuery, journal: (event, details = {}) => journal.push({ event, details }) }).run(task, 0);
+    // The contained abort never joins the stored result — outcome, usage and output are exactly
+    // what the same native failure produces without it (Pi review).
+    expect(result.outcome).toBe("failure");
+    await turn(60);
+    expect(journal).toEqual([{ event: "contained-sdk-control-abort",
+      details: { taskKind: "noting", nativeSessionId: sessionId, error: "Operation aborted" } }]);
+    dispose();
+  }
 });
 
 test("CC worker config requires explicit finite capacity and resolves no guessed default", () => {

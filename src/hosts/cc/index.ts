@@ -66,7 +66,7 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
     console.error(`Trace Memory CC: ${message}`);
     try { appendFileSync(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}\n`, { mode: 0o600 }); }
     catch (error) { console.error(`Trace Memory CC: lifecycle journal failed: ${String(error)}`); }
-  });
+  }, undefined, runtimeEvent);
   const foreground = new CcForegroundTools(coordinator);
   // 65: the Hook's id is authoritative. Until the coordinator attaches, an assignment for this
   // process's ancestors re-targets it; afterwards a differing assignment is only journaled.
