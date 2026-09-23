@@ -24,9 +24,10 @@ Core phase bounds use optional top-level keys in the same file:
 | `consolidation.triggerTokens` | 5,000 | Consolidator trigger |
 | `dreaming.triggerTokens` | 5,000 | Pending-trigger cap; each pool uses `min(cap, pool budget)` |
 | `dreaming.timeoutMs` | 600,000 | Dreamer wall-clock bound; no tool-round ceiling |
+| `compaction.sharedAllowanceTokens` | 10,000 | Shared allowance Knowledge borrows first, then unprocessed Raw, then unprocessed facts (73) |
 
-The shared material allowance sums the configured N and C triggers and D cap once each (20,000 by
-default), not another setting or a sum of effective per-pool triggers. Database pool budgets still size pools and cap Dreamer batches.
+The shared material allowance is this one configured value, not derived from the N, C or D triggers
+and unaffected by their changes (73). Database pool budgets still size pools and cap Dreamer batches.
 
 Optional `retry: { "maxRetries": 2 }` configures the native request retry count. Omission preserves
 Claude Code's native default; zero disables those retries. Timing, backoff and eligible errors remain
