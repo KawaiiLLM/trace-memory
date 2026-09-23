@@ -3,7 +3,7 @@
 // Global ids: turns, facts, and knowledge use SQLite's per-table AUTOINCREMENT, which never
 // reuses an id and is not reset per session or project — that is the "global id" the spec asks for.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
@@ -209,6 +209,19 @@ CREATE TABLE IF NOT EXISTS source_paths (
   entry_ids TEXT NOT NULL,
   PRIMARY KEY (session_id, branch)
 );
+-- 74: a compact mirror of each source entry's calls (native call id, ordinal, name only -- never
+-- input/result, which stay in content/tool_calls and would move the wide data here). Lets a
+-- rebuild answer call identity, per entry or per Turn, without loading Raw.
+CREATE TABLE IF NOT EXISTS source_entry_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES source_entries(id),
+  turn_id INTEGER NOT NULL REFERENCES turns(id),
+  call_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  name TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_entry_calls_entry ON source_entry_calls(entry_id);
+CREATE INDEX IF NOT EXISTS idx_source_entry_calls_turn ON source_entry_calls(turn_id, id);
 -- Native checkpoints that own a Turn but are not Raw source entries (notably compaction boundaries),
 -- plus the user source that created each ordinary Turn. Host-native identity keeps import idempotent;
 -- no host envelope or selected-path policy enters this table.
@@ -295,6 +308,11 @@ export interface SourceInput {
   calls: { ordinal: number; name: string; callId: string; input?: string; result?: string; status: string }[];
 }
 export interface SourceEntry extends SourceInput { id: number; entryOrdinal: number; blocks?: SourceBlock[] }
+/** 74: the one digest algorithm, used by the write path, the backfill and every host's rebuild
+ * comparison, so digest equality means exactly what `raw === raw` string equality meant, up to
+ * collision. Covers exactly `SourceInput.raw` — the same string each host already compares today
+ * (Pi: `JSON.stringify(message)`; CC: the transcript's original line) — never a re-serialization. */
+export const sourceDigest = (raw: string): string => createHash("sha256").update(raw).digest("hex");
 
 export type Phase = "noting" | "consolidation" | "dreaming";
 /** Host-selected path plus the facade's exact trigger computations. Store invokes the callback
@@ -724,6 +742,9 @@ export class Store {
       began = true;
       const schemaBefore = Number(this.db.prepare("PRAGMA schema_version").get()!.schema_version);
       const policyTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_budget_policy'").get();
+      // 74: captured before SCHEMA_SQL creates the table below, so its absence here means a fresh
+      // deploy of this table that still needs every pre-existing entry's calls mirrored into it.
+      const hadSourceEntryCalls = !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_entry_calls'").get();
       if (policyTable) {
         const row = this.db.prepare("SELECT global_tokens,project_tokens,session_tokens FROM knowledge_budget_policy WHERE id=1").get();
         if (row) priorBudgetPolicy = { global: Number(row.global_tokens), project: Number(row.project_tokens), session: Number(row.session_tokens) };
@@ -754,6 +775,28 @@ export class Store {
         // Reopens inspect only undecoded legacy entries, not every immutable Raw body. This
         // index is maintained by SQLite when the owning host fills blocks; it stores no progress.
         this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_unnormalized ON source_entries(id) WHERE blocks IS NULL");
+        // 74: a digest of exactly the `raw` string a rebuild compares today (`sourceDigest`, one fixed
+        // algorithm for every host and this backfill), so a known entry's identity is answered from
+        // `idx_source_identity` alone, never by loading `content`/`blocks`. `json_extract` reads the
+        // one field the backfill needs straight out of SQLite, without a JS-side JSON.parse per row.
+        const newDigest = !columns.some(r => r.name === "digest");
+        if (newDigest) {
+          this.db.exec("ALTER TABLE source_entries ADD COLUMN digest TEXT");
+          const updateDigest = this.db.prepare("UPDATE source_entries SET digest = ? WHERE id = ?");
+          for (const row of this.db.prepare("SELECT id, json_extract(content, '$.raw') AS raw FROM source_entries ORDER BY id").iterate())
+            updateDigest.run(sourceDigest(String(row.raw)), Number(row.id));
+        }
+        // A redundant covering index (as 71's idx_source_membership): the leading three columns
+        // answer `findKnownSourceEntry`'s lookup, the trailing two let SQLite return `turn_id` and
+        // `digest` from the index alone. Verified with EXPLAIN QUERY PLAN (source-entry-query-plan
+        // test); idempotent like the indexes just above.
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_identity ON source_entries(session_id, native_lineage, native_id, turn_id, digest)");
+        // 74: `source_entry_calls` is brand new (SCHEMA_SQL above); a database that already had
+        // entries needs every one of their `calls` mirrored in, once, from the same field a fresh
+        // write derives it from. A pure-SQL INSERT...SELECT never round-trips content through JS.
+        if (!hadSourceEntryCalls) this.db.exec(`INSERT INTO source_entry_calls (entry_id, turn_id, call_id, ordinal, name)
+          SELECT source_entries.id, turn_id, json_extract(value, '$.callId'), json_extract(value, '$.ordinal'), json_extract(value, '$.name')
+          FROM source_entries, json_each(source_entries.content, '$.calls')`);
         if (newAddresses || normalizeSource) {
           const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
           for (const row of this.db.prepare(`SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id`).iterate()) {
@@ -2788,9 +2831,16 @@ export class Store {
       if (!input.text && !input.calls.length && input.role !== "user" && !blocks?.length) throw new Error("empty source entry"); // an image-only user message still bounds a Turn
       const ordinal = Number(this.db.prepare("SELECT COALESCE(MAX(entry_ordinal), 0) + 1 AS n FROM source_entries WHERE turn_id = ?").get(input.turnId)!.n);
       if (!Number.isSafeInteger(ordinal)) throw new Error("Turn entry ordinal exhausted");
-      const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content, entry_ordinal, addresses, blocks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content, entry_ordinal, addresses, blocks, digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(input.sessionId, input.nativeLineage, input.nativeId, input.turnId, JSON.stringify(input), ordinal,
-          JSON.stringify(sourceAddresses({ ...input, id: 0, entryOrdinal: ordinal, blocks })), blocks ? JSON.stringify(blocks) : this.normalizeSource ? "null" : null);
+          JSON.stringify(sourceAddresses({ ...input, id: 0, entryOrdinal: ordinal, blocks })), blocks ? JSON.stringify(blocks) : this.normalizeSource ? "null" : null,
+          sourceDigest(input.raw));
+      // 74: mirror call identities into the compact side table in the same write, so a later known-
+      // entry rebuild never needs this row's `content` to answer them.
+      if (input.calls.length) {
+        const insertCall = this.db.prepare("INSERT INTO source_entry_calls (entry_id, turn_id, call_id, ordinal, name) VALUES (?, ?, ?, ?, ?)");
+        for (const call of input.calls) insertCall.run(result.lastInsertRowid, input.turnId, call.callId, call.ordinal, call.name);
+      }
       return this.getSourceEntry(Number(result.lastInsertRowid))!;
     });
   }
@@ -2803,6 +2853,29 @@ export class Store {
   findSourceEntry(sessionId: number, nativeLineage: string, nativeId: string): SourceEntry | null {
     const row = this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND native_lineage = ? AND native_id = ?").get(sessionId, nativeLineage, nativeId) as { id: number } | undefined;
     return row ? this.getSourceEntry(row.id) : null;
+  }
+  /** 74: what a rebuild's known-entry check needs — never `content`/`blocks` (8.1 KB/4.2 KB on
+   * average). `idx_source_identity` answers `id`, `turnId` and `digest` as a covering index; this
+   * entry's own call identities (never its `input`/`result`) come from `source_entry_calls`. The
+   * caller compares `digest` against `sourceDigest` of the same string it compares today — a
+   * mismatch is reported exactly as a content mismatch was before this existed. */
+  findKnownSourceEntry(sessionId: number, nativeLineage: string, nativeId: string):
+    { id: number; turnId: number; digest: string; calls: { ordinal: number; name: string; callId: string }[] } | null {
+    const row = this.db.prepare(`SELECT id, turn_id, digest FROM source_entries INDEXED BY idx_source_identity
+      WHERE session_id = ? AND native_lineage = ? AND native_id = ?`).get(sessionId, nativeLineage, nativeId) as
+      { id: number; turn_id: number; digest: string } | undefined;
+    if (!row) return null;
+    return { id: Number(row.id), turnId: Number(row.turn_id), digest: row.digest, calls: this.entryCallIdentities(row.id) };
+  }
+  private entryCallIdentities(entryId: number): { ordinal: number; name: string; callId: string }[] {
+    return (this.db.prepare("SELECT call_id, ordinal, name FROM source_entry_calls WHERE entry_id = ? ORDER BY id").all(entryId) as
+      { call_id: string; ordinal: number; name: string }[]).map(c => ({ ordinal: Number(c.ordinal), name: c.name, callId: c.call_id }));
+  }
+  /** 74: a Turn's call identities alone — call id, ordinal, name — for CC's `knownCalls()`, which used
+   * to load every source entry of the Turn (`listSourceEntries`) only to read this. */
+  turnCallIdentities(turnId: number): { ordinal: number; name: string; callId: string }[] {
+    return (this.db.prepare("SELECT call_id, ordinal, name FROM source_entry_calls WHERE turn_id = ? ORDER BY id").all(turnId) as
+      { call_id: string; ordinal: number; name: string }[]).map(c => ({ ordinal: Number(c.ordinal), name: c.name, callId: c.call_id }));
   }
   /** 22c: `turnId` narrows the read to one Turn's native occurrences, so a full trace of one tool
    * call loads that Turn instead of the whole session. The order — by entry id — is the same.
@@ -2817,10 +2890,12 @@ export class Store {
        WHERE p.session_id = ? AND p.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.key`)
       .all(sessionId, branch, sessionId, turnId ?? null, turnId ?? null) as { id: number }[];
     const hasPath = branch !== undefined && !!this.db.prepare("SELECT 1 FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
+    // 74: INDEXED BY pins the turn-ordinal index (67) outright — without it, the planner's stat-free
+    // cost estimate can prefer idx_source_identity's session_id prefix instead, adding an unwanted sort.
     const rows = hasPath ? selected
       : (turnId === undefined
         ? this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId)
-        : this.db.prepare("SELECT id FROM source_entries WHERE turn_id = ? AND session_id = ? ORDER BY id").all(turnId, sessionId)) as { id: number }[];
+        : this.db.prepare("SELECT id FROM source_entries INDEXED BY idx_source_turn_ordinal WHERE turn_id = ? AND session_id = ? ORDER BY id").all(turnId, sessionId)) as { id: number }[];
     return rows.map(r => this.getSourceEntry(r.id)!);
   }
   /** 22c "complete snapshot": the source-entry identities of many Turns in one read, in the order an
