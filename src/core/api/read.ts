@@ -552,38 +552,51 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     for (const { usage } of store.listRunUsage(null, since)) if (usage) cost += usage.cost;
     return cost;
   };
-  /** Ticket 69: `facts`, `unconsolidated`, `knowledge` and `changedKnowledge` are cached per
-   * (sessionId, branch, headTurnId), invalidated by `Store.progressSignal` — a cheap composite that
-   * changes exactly when a commit (by this process or another connection to the same file) could
-   * change one of them. `entries` is never cached: it is what an ordinary ingested entry changes, and
-   * it is the one count that must always be live. One entry per distinct (sessionId, branch, head)
-   * this process has read progress for; a session's own head strictly grows and a branch is a UUID
-   * created rarely, so this stays small for the footer's one repeatedly re-read path.
+  /** Ticket 69/72: `facts`, `unconsolidated`, `knowledge` and `changedKnowledge` are cached per
+   * (sessionId, branch), invalidated by `Store.progressSignal` — a cheap composite that changes
+   * exactly when a commit (by this process or another connection to the same file) could change one
+   * of them. `entries` is never cached: it is what an ordinary ingested entry changes, and it is the
+   * one count that must always be live. One entry per distinct (sessionId, branch) this process has
+   * read progress for; a branch is a UUID created rarely, so this stays small for the footer's one
+   * repeatedly re-read path.
    * ponytail: unbounded map, add an eviction policy if a caller ever reads progress for many distinct
-   * paths of one long-lived process. */
-  const progressCache = new Map<string, { signal: string; facts: number; unconsolidated: number; knowledge: number; changedKnowledge: number }>();
+   * paths of one long-lived process.
+   *
+   * Ticket 72: keyed on the head no longer — every sent message creates a new Turn, so a head-keyed
+   * cache missed on every message (measured 430 ms warm, 918 ms cold on an S3-sized path). A forward
+   * head move brings Raw only and the path only grows (69's own premise: nothing it selects for
+   * facts/knowledge shrinks), so a cached entry is still exact as long as the requested head descends
+   * from the head it was computed at — checked with `pathTurns`, one indexed recursive query, far
+   * cheaper than the full recompute it replaces. A branch switch already keys to a different cache
+   * entry; a head moved back or a non-append path rewrite is caught by the signal (`source_paths`'s and
+   * `session_lineage_cursors`'s own `version` bumps) or, for a same-head backward-then-same case, by
+   * the ancestry check itself, since a newer cached head is never an ancestor of an older requested one. */
+  const progressCache = new Map<string, { signal: string; headTurnId: number; facts: number; unconsolidated: number; knowledge: number; changedKnowledge: number }>();
   /** Footer progress for one selected path. `knowledge` is the current visible set;
    * `changedKnowledge` is the subset whose current owner pool has not processed that revision.
    * Processing is scheduling state only: it is not exposed as a processed/unprocessed partition. */
   const progress = (sessionId: number, branch = "main", headTurnId?: number | null) => {
     session(sessionId);
     const path = store.knowledgePath(sessionId, branch, headTurnId);
-    const key = `${sessionId}:${branch}:${path.headTurnId ?? ""}`;
+    const key = `${sessionId}:${branch}`;
     const signal = store.progressSignal(sessionId);
     const cached = progressCache.get(key);
+    const reusable = cached && cached.signal === signal && path.headTurnId != null &&
+      store.pathTurns({ sessionId, branch, headTurnId: path.headTurnId }).has(cached.headTurnId);
     // No head means no Turn on this path, so nothing of it has been imported: the enumeration's own
     // answer, not a placeholder for one it could not compute. A cache hit still asks `pendingEntryIds`
     // fresh (uncached, and without the shared snapshot below, so it costs only its own light path
     // membership — never the full snapshot's rendered addresses a cached path has no other use for).
-    if (cached && cached.signal === signal) return { entries: path.headTurnId == null ? 0 : store.pendingEntryIds(sessionId, branch, path.headTurnId).length,
-      facts: cached.facts, unconsolidated: cached.unconsolidated, knowledge: cached.knowledge, changedKnowledge: cached.changedKnowledge };
+    if (reusable) return { entries: store.pendingEntryIds(sessionId, branch, path.headTurnId!).length,
+      facts: cached!.facts, unconsolidated: cached!.unconsolidated, knowledge: cached!.knowledge, changedKnowledge: cached!.changedKnowledge };
     const snapshot = store.pathSnapshot(path);
     const entries = path.headTurnId == null ? 0 : store.pendingEntryIds(sessionId, branch, path.headTurnId, snapshot).length;
     const facts = store.listBranchFacts(sessionId, branch, path.headTurnId, snapshot);
     const knowledge = store.currentKnowledge(path, {}, snapshot);
     const changedKnowledge = knowledge.length - store.processedCurrentVersions(knowledge).size;
     const unconsolidated = store.unconsolidated(facts, path, snapshot).length;
-    progressCache.set(key, { signal, facts: facts.length, unconsolidated, knowledge: knowledge.length, changedKnowledge });
+    if (path.headTurnId != null) progressCache.set(key, { signal, headTurnId: path.headTurnId, facts: facts.length, unconsolidated, knowledge: knowledge.length, changedKnowledge });
+    else progressCache.delete(key);
     return { entries, facts: facts.length, unconsolidated, knowledge: knowledge.length, changedKnowledge };
   };
   return {

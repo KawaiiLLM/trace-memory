@@ -118,3 +118,58 @@ test("ticket 69: ingesting entries is shown, not assumed, to leave consolidation
   const after = { batch: h.memory.store.consolidationBatch(1, "main").map(f => f.id), pools: h.memory.store.duePools(path).map(p => p.pool) };
   expect(after).toEqual(before);
 });
+
+// Ticket 72: Pi's completion checkpoint (line ~1046) is gated only on `settled` and the progress
+// signal, with no epoch of the finished task and no exclusion of a `cancelled` outcome — so a task
+// admitted before a stop, an off, or a branch switch can still use a late completion (partial commit
+// included) to launch Consolidation/Dreaming from a path this executor should treat as abandoned.
+async function armedAndBusy(h: ReturnType<typeof host>) {
+  await h.turn(); // nothing due yet: disarms Consolidation
+  const committed = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "t" },
+    facts: [{ turnId: 1, category: "observation", actor: "user", text: "seed", source: ["T1#user"], createdAt: "t" }] });
+  if (!committed.ok) throw new Error(committed.problems.join("; "));
+  await h.emit("session_tree"); // arm Consolidation for this fact, seeded through the observer connection
+  let releaseFirst: ((reply: Reply) => void) | undefined;
+  h.provider(async () => new Promise<Reply>(resolve => { releaseFirst = resolve; }));
+  h.persist(reply("first entry")); await h.emit("agent_end"); await vi.waitFor(() => expect(releaseFirst).toBeDefined());
+  expect(h.memory.store.getClaim(1, "consolidation")?.borrowed).toBe(false); // admitted, now busy
+  return releaseFirst!;
+}
+
+test("ticket 72: a stop during a busy Consolidation fences its late completion from launching Dreaming", async () => {
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1 });
+  const release = await armedAndBusy(h);
+  await h.commands.get("trace").handler("stop", h.ctx); // stop while Consolidation is in flight
+  release(consolidationReply()); // resolves with a commit despite the stop
+  await h.drain();
+  expect(h.memory.store.listRuns(1).some(r => r.kind === "dreaming")).toBe(false); // the late completion must not launch D
+});
+
+test("ticket 72: off during a busy Consolidation fences its late completion from launching Dreaming", async () => {
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1 });
+  const release = await armedAndBusy(h);
+  await h.commands.get("trace").handler("off", h.ctx); // disable while Consolidation is in flight
+  await h.commands.get("trace").handler("on", h.ctx); // re-enable immediately: the completion still lands after `off`
+  release(consolidationReply());
+  await h.drain();
+  expect(h.memory.store.listRuns(1).some(r => r.kind === "dreaming")).toBe(false);
+});
+
+test("ticket 72: a branch switch during a busy Consolidation fences its late completion, and a later legitimate opportunity evaluates the new path", async () => {
+  const eligibility = spyEligibility();
+  try {
+    const h = host({ "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1 });
+    const release = await armedAndBusy(h);
+    await h.emit("session_tree"); // a restore (branch switch) while Consolidation is in flight
+    eligibility.calls.length = 0;
+    release(consolidationReply());
+    await h.drain();
+    expect(h.memory.store.listRuns(1).some(r => r.kind === "dreaming")).toBe(false); // the stale completion must not launch D
+    expect(eligibility.calls).not.toContain("dreaming"); // the fenced checkpoint never even re-armed and re-checked it
+    // A later, genuinely new opportunity (an ordinary ingested entry) still re-checks Dreaming on the
+    // now-current path: the restore already armed it, so the entry's own opportunity evaluates it.
+    eligibility.calls.length = 0;
+    await h.turn();
+    expect(eligibility.calls).toContain("dreaming");
+  } finally { eligibility.restore(); }
+});

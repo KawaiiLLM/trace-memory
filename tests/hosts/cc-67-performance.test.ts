@@ -234,8 +234,11 @@ test("Hook-first bootstrap and fresh resume validate known records without per-r
     expect(live.bootstrap).toBe(false);
     expect(live.appendedEntryIds).toHaveLength(2);
     scheduler.reconcile(live);
-    expect(eligibility).toHaveBeenCalledTimes(6);
+    // Ticket 72: the scheduler starts armed (attach), so the first of these two appended entries still
+    // checks all three phases; on this empty fixture C and D both come back not due and disarm, so the
+    // second entry evaluates Noting only.
+    expect(eligibility).toHaveBeenCalledTimes(4);
     expect(eligibility.mock.calls.map(call => call[1].triggerEntryId)).toEqual(
-      live.appendedEntryIds.flatMap(id => [id, id, id]));
+      [live.appendedEntryIds[0], live.appendedEntryIds[0], live.appendedEntryIds[0], live.appendedEntryIds[1]]);
   } finally { scheduler.stop(); eligibility.mockRestore(); transaction.mockRestore(); importer.close(); rmSync(dir, { recursive: true, force: true }); }
 });

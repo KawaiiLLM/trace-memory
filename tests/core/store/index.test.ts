@@ -437,7 +437,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       "UPDATE knowledge SET origin_session_id = 999999",
       `INSERT INTO knowledge_links VALUES (${id}, 999, 'merged_into', ${id}, 1)`,
       `INSERT INTO knowledge_links VALUES (${id}, 1, 'merged_into', ${id}, 999)`,
-      "INSERT INTO source_paths VALUES (999999, 'main', '[]')",
+      "INSERT INTO source_paths VALUES (999999, 'main', '[]', 0, 0)",
       `INSERT INTO noted_entries VALUES (999999, 999999)`,
       "INSERT INTO consolidated_facts VALUES (999999, 1)",
       "INSERT INTO consolidated_facts VALUES (1, 999999)",

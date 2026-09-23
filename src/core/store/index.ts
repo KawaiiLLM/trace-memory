@@ -69,8 +69,20 @@ CREATE TABLE IF NOT EXISTS session_lineage_cursors (
   lineage TEXT NOT NULL,
   branch TEXT NOT NULL,
   head_turn_id INTEGER NOT NULL REFERENCES turns(id),
+  -- Ticket 72: bumped only when this cursor's write is NOT a plain forward walk (a branch switch, or a
+  -- head at or below hwm_head_turn_id) — never on an ordinary forward head move, so ingesting Raw
+  -- never touches it. progressSignal reads MAX(version) through the index below.
+  version INTEGER NOT NULL DEFAULT 0,
+  -- Ticket 72: the largest head_turn_id this cursor has ever held, updated to MAX(itself, new head) on
+  -- every write regardless of branch. Turn ids are AUTOINCREMENT and assigned in creation order, so a
+  -- genuinely new Turn -- on any branch this lineage later switches to -- always exceeds it; only a
+  -- revisit of an already-superseded Turn (a move back, or a branch switch landing on one) can be <=
+  -- it. Exact where a "once rewritten, bump forever" flag would only approximate: a branch switch and
+  -- later return, or repeated back-and-forth, never falsely keeps bumping on later genuine progress.
+  hwm_head_turn_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, lineage)
 );
+CREATE INDEX IF NOT EXISTS idx_session_lineage_cursors_version ON session_lineage_cursors(version);
 
 CREATE TABLE IF NOT EXISTS task_claims (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
@@ -207,8 +219,21 @@ CREATE TABLE IF NOT EXISTS source_paths (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   branch TEXT NOT NULL,
   entry_ids TEXT NOT NULL,
+  -- Ticket 72: bumped only when a write replaces entry_ids with something other than an extension of
+  -- the prior list, or appends an id at or below hwm_entry_id (the writer alone knows this; see
+  -- publishSourcePath/selectSourcePath) — an already-stored entry leaving or rejoining the selected
+  -- path under an unchanged cursor. A pure append of genuinely new entries leaves it untouched, so
+  -- ingesting Raw never bumps it.
+  version INTEGER NOT NULL DEFAULT 0,
+  -- Ticket 72: the largest source_entries.id this row has ever held, updated to MAX(itself, new max)
+  -- on every write. Entry ids are AUTOINCREMENT and assigned in creation order, so a genuinely new
+  -- entry always exceeds it; only a restored, previously-removed entry can be <= it. Exact where a
+  -- "once rewritten, bump forever" flag would only approximate: pure appends after a removal-and-
+  -- restore never falsely keep bumping.
+  hwm_entry_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, branch)
 );
+CREATE INDEX IF NOT EXISTS idx_source_paths_version ON source_paths(version);
 -- Native checkpoints that own a Turn but are not Raw source entries (notably compaction boundaries),
 -- plus the user source that created each ordinary Turn. Host-native identity keeps import idempotent;
 -- no host envelope or selected-path policy enters this table.
@@ -751,6 +776,25 @@ export class Store {
             UPDATE source_entries SET entry_ordinal = (SELECT ordinal FROM numbered WHERE numbered.id = source_entries.id);`);
         }
         this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_source_turn_ordinal ON source_entries(turn_id, entry_ordinal)");
+        // Ticket 72: an existing database predates the change-detection version/high-water-mark columns.
+        if (!this.db.prepare("PRAGMA table_info(session_lineage_cursors)").all().some(r => r.name === "version"))
+          this.db.exec("ALTER TABLE session_lineage_cursors ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_session_lineage_cursors_version ON session_lineage_cursors(version)");
+        if (!this.db.prepare("PRAGMA table_info(session_lineage_cursors)").all().some(r => r.name === "hwm_head_turn_id")) {
+          this.db.exec("ALTER TABLE session_lineage_cursors ADD COLUMN hwm_head_turn_id INTEGER NOT NULL DEFAULT 0");
+          // Backfill from the only known value at migration time: the row's own current head. Earlier
+          // history is not recoverable, but this is a safe floor — the row cannot have held anything
+          // higher without that write having already set its own head_turn_id at least that high.
+          this.db.exec("UPDATE session_lineage_cursors SET hwm_head_turn_id = head_turn_id");
+        }
+        if (!this.db.prepare("PRAGMA table_info(source_paths)").all().some(r => r.name === "version"))
+          this.db.exec("ALTER TABLE source_paths ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_paths_version ON source_paths(version)");
+        if (!this.db.prepare("PRAGMA table_info(source_paths)").all().some(r => r.name === "hwm_entry_id")) {
+          this.db.exec("ALTER TABLE source_paths ADD COLUMN hwm_entry_id INTEGER NOT NULL DEFAULT 0");
+          // Backfill from the row's own current contents: the largest entry id it holds right now.
+          this.db.exec("UPDATE source_paths SET hwm_entry_id = (SELECT IFNULL(MAX(value), 0) FROM json_each(entry_ids))");
+        }
         // Derived membership metadata keeps path/coverage queries off large immutable Raw bodies.
         // Both migration and new ingestion use the same block interpreter as write validation.
         const columns = this.db.prepare("PRAGMA table_info(source_entries)").all();
@@ -1045,9 +1089,25 @@ export class Store {
   }
 
   private writeCurrentPath(sessionId: number, branch: string, headTurnId: number, lineage: string): void {
-    this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id) VALUES (?, ?, ?, ?)
-      ON CONFLICT (session_id, lineage) DO UPDATE SET branch = excluded.branch, head_turn_id = excluded.head_turn_id`)
-      .run(sessionId, lineage, branch, headTurnId);
+    // Ticket 72: turn ids are assigned by AUTOINCREMENT in creation order, so a genuinely new Turn —
+    // on any branch this lineage later switches to — always exceeds `hwm_head_turn_id`, the largest
+    // head this cursor has ever held; only a revisit of an already-superseded Turn (a move back, or a
+    // branch switch landing on one) can be <= it. Compared against the stored `head_turn_id` too, not
+    // only `hwm_head_turn_id`: an idempotent republish of the SAME head (routine — a host publishes on
+    // every poll, often before its own next Turn exists) must not bump merely because that head is, by
+    // definition, never above its own high-water mark. A branch switch always bumps `version`, since
+    // even a forward-looking head on a different line can remove items that were already visible on
+    // the old one. The high-water mark itself only ever grows (MAX(itself, new head)), so 57 branches
+    // and routine tree switches never turn into a "bump every later write forever" cursor: only a
+    // write that is genuinely a move back (by id) or a branch change bumps.
+    this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id, version, hwm_head_turn_id)
+        VALUES (?, ?, ?, ?, 0, ?)
+      ON CONFLICT (session_id, lineage) DO UPDATE SET
+        version = version + (CASE WHEN branch != excluded.branch OR
+          (excluded.head_turn_id != head_turn_id AND excluded.head_turn_id <= hwm_head_turn_id) THEN 1 ELSE 0 END),
+        branch = excluded.branch, head_turn_id = excluded.head_turn_id,
+        hwm_head_turn_id = MAX(hwm_head_turn_id, excluded.head_turn_id)`)
+      .run(sessionId, lineage, branch, headTurnId, headTurnId);
   }
 
   enrollment(sessionId: number): Enrollment {
@@ -2764,20 +2824,29 @@ export class Store {
     return candidates.filter(fact => this.factOnPath(fact, path, view, undefined, owners)); // every source on the path, not only the first
   }
 
-  /** Ticket 69: a cheap composite that changes exactly when a commit could change the footer's four
-   * cached counts (branch facts, unconsolidated, current knowledge, changed current knowledge) — for
-   * ANY connection to this database file, not only this process. Verified against every INSERT/UPDATE/
-   * DELETE in this file: `facts`, `knowledge_revisions` (every knowledge write — create, update, merge,
-   * split, archive — inserts one; a merge/split's `knowledge_links` row is written in the same commit)
-   * and `knowledge_processed` are insert-only, so `MAX(id)`/`MAX(rowid)` is monotonic and exact for
-   * them; so is `consolidated_facts`. The one column that is ever UPDATEd and read by these counts is
-   * this session's own `sessions.project_id` (a project merge reassigns every session and every
-   * knowledge row that shared the merged-away project, this session's own row included, in the same
-   * transaction; an explicit `/trace project` reassignment updates it directly) — a fresh point lookup
-   * by primary key, not a scan, so it costs nothing extra to include. The surviving side of that merge
-   * keeps its `project_id` while gaining the absorbed project's knowledge rows (`UPDATE knowledge`), so
-   * the count of merged projects is part of the signal too. Ingesting Raw touches none of
-   * these: `source_entries`/`source_paths`/`turns` are deliberately absent from this signal. */
+  /** Ticket 69/72: a cheap composite that changes exactly when a commit could change
+   * `consolidationBatch`, `duePools` or the footer's four cached counts — for ANY connection to this
+   * database file, not only this process. Every database input those read is covered:
+   *  - facts, knowledge revisions/links (a merge/split's `knowledge_links` row is written in the same
+   *    commit as its `knowledge_revisions` row) and processed records are insert-only, so `MAX(id)`/
+   *    `MAX(rowid)` is monotonic and exact for `facts`, `consolidated_facts`, `knowledge_revisions` and
+   *    `knowledge_processed`;
+   *  - project assignment and merges: a merge reassigns every session and knowledge row that shared the
+   *    merged-away project in the same transaction as marking it merged, so this session's own
+   *    `sessions.project_id` (a fresh point lookup, not a scan) plus the count of merged projects covers
+   *    every reassignment, this session's own declaration included;
+   *  - the knowledge budget policy (`knowledge_budget_policy`, a single point-lookup row) and the
+   *    over-budget suppression state (`knowledge_pool_state`) of exactly the three pools this session's
+   *    Dreaming can be due for (global, its project, itself) — bounded point lookups by primary key;
+   *  - other sessions' current-path cursors (`session_lineage_cursors.version`, ticket 72: bumped only
+   *    by a branch switch or a head moving back to an ancestor, never an ordinary forward move) and
+   *    non-append rewrites of `source_paths.entry_ids` under an unchanged cursor
+   *    (`source_paths.version`, ticket 72: bumped only where the path is written, by the writer's own
+   *    prefix check) — both read as one indexed `MAX(version)` each, global rather than scoped to this
+   *    session's own dependency set, so a change elsewhere may over-arm this session but Raw ingestion,
+   *    which moves neither, never does.
+   * Ingesting Raw touches none of these: `source_entries`/`turns` are deliberately absent, and an
+   * ordinary forward head move or a pure append leaves every included column exactly as it was. */
   progressSignal(sessionId: number): string {
     const row = this.db.prepare(`SELECT
         (SELECT IFNULL(MAX(id), 0) FROM facts) AS f,
@@ -2785,8 +2854,17 @@ export class Store {
         (SELECT IFNULL(MAX(id), 0) FROM knowledge_revisions) AS kr,
         (SELECT IFNULL(MAX(rowid), 0) FROM knowledge_processed) AS kp,
         (SELECT project_id FROM sessions WHERE id = ?) AS pid,
-        (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) AS pm`).get(sessionId) as { f: number; cf: number; kr: number; kp: number; pid: number | null; pm: number };
-    return `${row.f}:${row.cf}:${row.kr}:${row.kp}:${row.pid}:${row.pm}`;
+        (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) AS pm,
+        (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id = 1) AS bp,
+        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'global'), '') AS psg,
+        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state
+          WHERE pool = 'project:' || (SELECT project_id FROM sessions WHERE id = ?)), '') AS psp,
+        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'session:' || ?), '') AS pss,
+        (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cv,
+        (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv`)
+      .get(sessionId, sessionId, sessionId) as { f: number; cf: number; kr: number; kp: number; pid: number | null; pm: number;
+        bp: string; psg: string; psp: string; pss: string; cv: number; sv: number };
+    return `${row.f}:${row.cf}:${row.kr}:${row.kp}:${row.pid}:${row.pm}:${row.bp}:${row.psg}:${row.psp}:${row.pss}:${row.cv}:${row.sv}`;
   }
   /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one
    * fact at a time, never "every fact minus the cited ones" (22b, restated by 24a for the footer).
@@ -2938,10 +3016,33 @@ export class Store {
       const tailAncestry = tail !== null && !headAncestry.has(tail) ? this.pathTurns({ sessionId, headTurnId: tail }) : undefined;
       const problem = this.pathCoherenceProblem(sessionId, branch, headTurnId, entryIds, entries, headAncestry, tailAncestry);
       if (problem) throw new Error(problem);
-      this.db.prepare("INSERT INTO source_paths (session_id, branch, entry_ids) VALUES (?, ?, ?) ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids")
-        .run(sessionId, branch, JSON.stringify(entryIds));
+      this.writeSourcePath(sessionId, branch, entryIds);
       this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
     });
+  }
+
+  /** Ticket 72: only the writer knows whether the new list extends the stored one — an unbroken
+   * prefix relationship, the only shape an ordinary ingested-entry append ever produces. Any other
+   * replacement (an entry removed, reordered, or a shorter list) is a membership rewrite the change
+   * signal must observe, so it bumps `source_paths.version` — and so does an "extension" whose
+   * appended id is at or below `hwm_entry_id`, the largest source_entries.id this row has ever held:
+   * entry ids are AUTOINCREMENT in creation order, so a genuinely new entry always exceeds it, and only
+   * a restored, previously-removed entry ([e1] -> [e1,e2] again after [e1,e2] -> [e1]) can be <= it.
+   * The high-water mark only ever grows, so a path that was rewritten once and later only receives
+   * genuinely new entries never keeps bumping — exact where a "once rewritten, bump forever" flag
+   * would only approximate. A pure append of new entries leaves an unrewritten path's signal untouched. */
+  private writeSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
+    const priorRow = this.db.prepare("SELECT entry_ids, hwm_entry_id FROM source_paths WHERE session_id = ? AND branch = ?")
+      .get(sessionId, branch) as { entry_ids: string; hwm_entry_id: number } | undefined;
+    const prior: number[] = priorRow ? JSON.parse(priorRow.entry_ids) : [];
+    const hwm = priorRow?.hwm_entry_id ?? 0;
+    const append = prior.length <= entryIds.length && prior.every((id, index) => entryIds[index] === id);
+    const restored = append && entryIds.slice(prior.length).some(id => id <= hwm);
+    const bump = !append || restored;
+    const newHwm = entryIds.length ? Math.max(hwm, ...entryIds) : hwm;
+    this.db.prepare(`INSERT INTO source_paths (session_id, branch, entry_ids, version, hwm_entry_id) VALUES (?, ?, ?, 0, ?)
+      ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids, version = version + ?, hwm_entry_id = ?`)
+      .run(sessionId, branch, JSON.stringify(entryIds), newHwm, bump ? 1 : 0, newHwm);
   }
 
   selectSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
@@ -2952,8 +3053,7 @@ export class Store {
       const owned = (this.db.prepare("SELECT COUNT(*) n FROM source_entries WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))")
         .get(sessionId, JSON.stringify(entryIds)) as { n: number }).n;
       if (!branch || new Set(entryIds).size !== entryIds.length || owned !== entryIds.length) throw new Error("invalid source path");
-      this.db.prepare("INSERT INTO source_paths (session_id, branch, entry_ids) VALUES (?, ?, ?) ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids")
-        .run(sessionId, branch, JSON.stringify(entryIds));
+      this.writeSourcePath(sessionId, branch, entryIds);
     });
   }
   /** The selected path's entry ids, in the branch's own order, decided by `turn_id` alone: no Raw
