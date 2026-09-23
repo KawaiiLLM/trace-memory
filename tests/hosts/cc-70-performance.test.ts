@@ -104,7 +104,9 @@ test("30k-record bootstrap: writer wait during ingest, per-phase timing, and loo
   // skipped when the importer already knows the answer). enrollment 60,000 -> 30,003 (memoized once
   // per transaction instead of once per write method's own check).
   expect(counts.getTurn).toBe(105_000);
-  expect(counts.findSourceEntry + counts.getSourceEntry).toBe(60_000);
+  // 74 answers the importer's known-entry check from the digest index (findKnownSourceEntry), so
+  // the full-row lookups halve from 70's 60,000; only the post-append row read remains.
+  expect(counts.findSourceEntry + counts.getSourceEntry).toBe(30_000);
   expect(counts.enrollment).toBe(30_003);
 
   if (writer.connected) writer.send("stop", () => {});
