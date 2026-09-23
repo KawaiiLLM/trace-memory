@@ -227,14 +227,18 @@ export type OperatorControlResult =
   | { state: "unavailable"; diagnostic: string }
   | { state: "unknown"; diagnostic: string };
 
-async function validatedOperatorBinding(config: ResolvedCcHostConfig, nativeSessionId: string): Promise<CcSessionBinding> {
+// 70: read-and-validate only, no binding lock. A cooperative import holds that lock for its whole
+// scan (70's own design), so acquiring it here — before the control request is even sent — would
+// make a real off/stop wait out the scan instead of reaching holdImport's abort. The read is not
+// atomic with the send that follows, but the executor re-validates identity and token on its side
+// before acting (control.ts ~114-126 below), so a race here is caught there, not silently trusted.
+function validatedOperatorBinding(config: ResolvedCcHostConfig, nativeSessionId: string): CcSessionBinding {
   const store = new Store(config.dbPath);
   try {
-    return await updateBinding(config, nativeSessionId, current => {
-      if (!current) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
-      assertOperatorBinding(config, current, store);
-      return current;
-    });
+    const current = readBinding(config, nativeSessionId);
+    if (!current) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
+    assertOperatorBinding(config, current, store);
+    return current;
   } finally { store.close(); }
 }
 
