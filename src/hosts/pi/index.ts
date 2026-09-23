@@ -447,9 +447,9 @@ export default function (pi: ExtensionAPI) {
   // The return type is written out because 27b/27c's re-admission re-enters this function.
   const attemptPhase = (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
       selected: { mode: "fork" | "subagent"; model: string; fallbackReason?: string },
-      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal; signal?: AbortSignal },
+      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal },
       ): Promise<NotingResult | ConsolidateResult | DreamingResult | { outcome: "dropped"; permanent?: string }> => {
-    if (closed || !enabled() || options.signal?.aborted
+    if (closed || !enabled()
         || (options.forkAttempt?.cancellation !== undefined && options.forkAttempt.cancellation < memory.cancellation))
       return Promise.resolve({ outcome: "dropped", reason: CANCELLED_BEFORE_FALLBACK } as const);
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
@@ -559,12 +559,6 @@ export default function (pi: ExtensionAPI) {
       subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
       ...(options.boundary ? { boundary: options.boundary } : {}),
-      // 28b (parent 28 amendment 3): the admitting operation's cancellation, for the one operation
-      // that has one — a compaction's recovery task. Core links it to this task's own controller, so
-      // an Esc during compaction closes this task's binding and aborts this task, and nothing else.
-      // It travels with a re-admission (`reroute` below spreads these options), because that is the
-      // same task continuing.
-      ...(options.signal ? { signal: options.signal } : {}),
       // 27c: the refused attempt's gate result, for a refusal that recorded no run of its own.
       // 27d: with it, the cancellation generation that attempt was admitted under — core drops this
       // admission when a cancellation happened in between.
@@ -1219,10 +1213,9 @@ export default function (pi: ExtensionAPI) {
   // path, allocates, and either publishes the replacement or (a host-caught error only) delegates.
   //
   // Cancellation is Pi's own. `event.signal` is the compaction abort controller behind Esc and
-  // `session.abortCompaction()` (agent-session.js:1476 manual / :1750 automatic create it, :1604
-  // aborts both). It reaches the tasks this operation launched — and only those — through
-  // `TaskOptions.signal`, and a cancelled compaction returns `{cancel: true}`, which is how Pi ends
-  // a compaction as aborted (:1509 manual, :1770 automatic) instead of running its own.
+  // `session.abortCompaction()`. The compaction launches no task, so the signal is only checked here:
+  // a cancelled compaction returns `{cancel: true}`, which is how Pi ends a compaction as aborted
+  // instead of running its own.
   pi.on("session_before_compact", async (event, context) => {
     ensure(context); if (!enabled()) return; flush();
     const signal = (event as { signal?: AbortSignal }).signal;
