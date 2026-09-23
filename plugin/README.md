@@ -43,6 +43,25 @@ Omit `dbPath` to use `~/.trace-memory/trace.db`, the same default as Pi. An exis
 
 The plugin registers one SessionStart Hook, one SessionEnd Hook, one stdio MCP server, and the user-invoked `trace` skill. Installation does not run a package manager.
 
+## Status line
+
+Ticket 75: a live executor publishes its memory status — the same line Pi's footer shows — to `<stateDir>/status/<native-session-id>.json` at its own lifecycle points (attach, a reconcile that imports new history or moves the selected path, a task's admission and settlement, enrollment on/off, and retarget after `/clear`). The file is removed on shutdown. A `dist/status.cjs` bundle entry reads Claude Code's own status-line hook JSON from stdin, the matching status file, and — for ownership/liveness only — the matching binding file; it opens no database and costs roughly a bare Node process start (about 30–50 ms on typical hardware), not the 80–90 ms `dist/cc.cjs` costs. It prints nothing for a session that is not bound to Trace Memory, and `?` for every count with the idle `○` when the publishing executor is no longer alive or has been superseded — never a stale running `●`.
+
+This does not modify `claude-powerline` or Claude Code's own status line rendering; it is a second line placed under an existing `statusLine` command that already runs powerline, by chaining that command to also run `dist/status.cjs` and print its (possibly empty) line. Example, given a `statusline-command.sh` that currently runs powerline alone:
+
+```sh
+#!/bin/sh
+# Claude Code status line: local claude-powerline build, then Trace Memory's one-line status underneath (ticket 75).
+input="$(cat)"
+printf '%s' "$input" | node /path/to/claude-powerline/dist/index.mjs --config ~/.claude/claude-powerline.json
+status=$?
+line="$(printf '%s' "$input" | node "$CLAUDE_PLUGIN_ROOT/dist/status.cjs" --config "$CLAUDE_PLUGIN_ROOT/cc.config.json" 2>/dev/null)"
+[ -n "$line" ] && printf '%s\n' "$line"
+exit "$status"
+```
+
+Stdin is read exactly once and forwarded unchanged to both commands; powerline's own output and exit status are untouched — `status.cjs` runs after it and only ever adds a line, never replaces or delays powerline's. Replace `$CLAUDE_PLUGIN_ROOT` with this plugin's actual installed `dist/status.cjs` and `cc.config.json` paths if the statusLine command's environment does not set it; re-point it after every plugin version upgrade if those paths are version-pinned. This is a personal file outside the plugin's own installation, so applying it is a manual, deliberate step — never done by installation or an update.
+
 ## Session commands
 
 Use `/trace-memory:trace catchup` to drain pending memory work. The same entry accepts these subcommands:

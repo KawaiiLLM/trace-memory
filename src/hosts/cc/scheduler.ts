@@ -33,6 +33,11 @@ export class CcTaskScheduler {
   private readonly memory: TraceMemory;
   private readonly worker: ResolvedCcWorkerConfig | undefined;
   private readonly diagnostic: (message: string) => void;
+  /** Ticket 75: a status-publish hook, fired when a phase is admitted and when it settles (slot
+   * cleared). Best-effort, synchronous and never awaited; wrapped in `safeNotify` below so a fault in
+   * the publisher — the wired implementation is already fully self-contained, but this boundary must
+   * hold regardless — can never reach admission or settlement. */
+  private readonly notify: (reason: string) => void;
   private readonly slots = new Map<CcWorkerPhase, Promise<CcTaskResult | undefined>>();
   private stopped = false;
   private catchup?: Catchup;
@@ -62,11 +67,15 @@ export class CcTaskScheduler {
   private currentTarget?: TaskTarget;
 
   constructor(memory: TraceMemory, worker: ResolvedCcWorkerConfig | undefined,
-    diagnostic: (message: string) => void) {
-    this.memory = memory; this.worker = worker; this.diagnostic = diagnostic;
+    diagnostic: (message: string) => void, notify: (reason: string) => void = () => {}) {
+    this.memory = memory; this.worker = worker; this.diagnostic = diagnostic; this.notify = notify;
   }
 
   running(): CcWorkerPhase[] { return [...this.slots.keys()]; }
+
+  private safeNotify(reason: string): void {
+    try { this.notify(reason); } catch (error) { this.diagnostic(`status notify failed (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
+  }
 
   /** Observe every authoritative projection. Polls can resume a waiting drain after claim expiry. */
   reconcile(reconcile: CcReconcileResult, admitAutomatic = true, opportunityEpoch = this.cancellationEpoch): void {
@@ -210,9 +219,11 @@ export class CcTaskScheduler {
     let settled: CcTaskResult | undefined;
     const work = Promise.resolve().then(run).then(result => { settled = result; return result; });
     this.slots.set(phase, work);
+    this.safeNotify(`${phase} admitted`);
     void work.catch(error => this.diagnostic(`${phase} worker failed: ${error instanceof Error ? error.message : String(error)}`))
       .finally(() => {
         this.slots.delete(phase);
+        this.safeNotify(`${phase} settled`);
         // Ticket 72's completion checkpoint: any non-empty, non-dropped completion may have moved
         // consolidationBatch/duePools (success or failure — a failed run may still have committed
         // incrementally), so it re-checks own C and D immediately rather than waiting for the next

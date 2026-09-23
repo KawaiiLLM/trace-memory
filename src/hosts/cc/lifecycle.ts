@@ -8,6 +8,7 @@ import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type Cc
 import { startControlServer, type CcControlServer } from "./control.ts";
 import { classifySourceRecord, readCompleteTranscript, selectedNativePath } from "./transcript.ts";
 import { CcTaskScheduler } from "./scheduler.ts";
+import { removeCcStatus, writeCcStatus, type CcStatusFile } from "./status.ts";
 
 export interface CcCloseResult {
   confirmed: boolean;
@@ -20,6 +21,8 @@ export type CcDiagnostic = (message: string) => void;
 export interface CcReadProjection { memory: CcImporter["memory"]; binding?: CcPersistedCall }
 export interface CcToolProjection extends CcPersistedCall { memory: CcImporter["memory"] }
 const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
+/** Ticket 75: local midnight of the host's clock, the same cutoff Pi's footer uses for `spendSince` (51). */
+const localMidnight = (now = new Date()) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 
 export interface CcSessionEndResult { confirmed: boolean; reason: string; diagnostic?: string }
 
@@ -182,6 +185,12 @@ export class CcCoordinator {
   private readonly diagnostic: CcDiagnostic;
   /** Test-only override of the cooperative-scan slice/pause constants; unset in production. */
   private readonly importTuning?: CcImportInstrumentation;
+  /** Ticket 75: the most recent reconciled projection, read by `publish` for the counts' target path.
+   * `null` before any successful reconcile — counts render as `?`, never as `0`. */
+  private lastReconcile: CcReconcileResult | null = null;
+  /** Ticket 75: the last published (path, state) key, so a no-op stat-wake-up reconcile writes
+   * nothing — publishing is a lifecycle event, never a timer. */
+  private lastStatusKey: string | null = null;
 
   constructor(config: ResolvedCcHostConfig, nativeSessionId: string,
     diagnostic: CcDiagnostic = message => console.error(`Trace Memory CC: ${message}`), importTuning?: CcImportInstrumentation) {
@@ -211,6 +220,37 @@ export class CcCoordinator {
     return () => { if (released) return; released = true; this.importHolds = Math.max(0, this.importHolds - 1); };
   }
 
+  /** Ticket 75: publish this executor's status file, or do nothing. Every failure mode — a stale
+   * binding, a `progress`/`spendSince` read that throws, a write that throws — is caught here and
+   * turned into a diagnostic at worst; publishing never affects memory work, never delays a control
+   * acknowledgement and never interrupts shutdown cleanup (Pi review). Ownership is re-checked against
+   * the binding on every call, not cached: a late call from a superseded executor sees a binding that
+   * no longer names it and writes nothing. */
+  private publish(reason: string): void {
+    if (this.closed) return;
+    try {
+      const binding = readBinding(this.config, this.nativeSessionId);
+      if (!binding?.executor || !this.control || binding.executor.token !== this.control.executor.token) return;
+      const enabled = binding.enrollment.choice ?? binding.enrollment.defaultEnabled;
+      const running = new Set(this.scheduler?.running() ?? []);
+      let counts: CcStatusFile["counts"], cost: number | undefined;
+      const reconcile = this.lastReconcile;
+      if (this.importer && reconcile && reconcile.coreSessionId !== null) {
+        try { counts = this.importer.memory.progress(reconcile.coreSessionId, reconcile.branch, reconcile.headTurnId ?? null); }
+        catch (error) { this.diagnostic(`status counts unavailable (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
+      }
+      if (this.importer) {
+        try { cost = this.importer.memory.spendSince(localMidnight()); }
+        catch (error) { this.diagnostic(`status cost unavailable (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
+      }
+      const status: CcStatusFile = { version: 1, nativeSessionId: this.nativeSessionId, executorId: binding.executor.executorId,
+        pid: binding.executor.pid, token: binding.executor.token, updatedAt: new Date().toISOString(), enabled,
+        running: { noting: running.has("noting"), consolidation: running.has("consolidation"), dreaming: running.has("dreaming") },
+        ...(counts ? { counts } : {}), ...(cost !== undefined ? { cost } : {}) };
+      writeCcStatus(this.config.stateDir, status);
+    } catch (error) { this.diagnostic(`status publish failed (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
   private async attach(final: boolean, deadline?: number): Promise<void> {
     if (this.importer || this.closed || this.closing && !final) return;
     const binding = readBinding(this.config, this.nativeSessionId);
@@ -218,7 +258,8 @@ export class CcCoordinator {
     this.observe("attach-start", { final });
     try {
       this.importer = new CcImporter(this.config, binding);
-      this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic);
+      // Ticket 75: task admission and settlement are their own publish points, independent of reconcile.
+      this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic, reason => this.publish(reason));
       const timeout = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
       await startControlServer(this.config, binding, this.importer.memory, timeout, final ? undefined : this.startup.signal, {
         catchup: async () => {
@@ -313,8 +354,13 @@ export class CcCoordinator {
         this.transcriptWatcher?.close(); this.transcriptWatcher = null;
         await this.control.retarget(next);
         this.importer.retarget(next);
+        const previousNativeSessionId = this.nativeSessionId;
         this.nativeSessionId = nativeSessionId;
         this.watchTranscript(next);
+        // Ticket 75: the executor's status now belongs under the new native session id; removing the old
+        // file here, on the queue and after the handoff, keeps a later callback from recreating it.
+        this.publish("retarget");
+        removeCcStatus(this.config.stateDir, previousNativeSessionId);
         this.observe("retarget-complete", { to: nativeSessionId });
         return true;
       } finally { release(); }
@@ -361,6 +407,18 @@ export class CcCoordinator {
         // The explicit drain still observes path/enrollment changes, but its reconciliation must
         // not first become an ordinary threshold-trigger opportunity before the boundary freezes.
         if (!final && result) this.scheduler?.reconcile(result, reason !== "manual catchup", epoch);
+        // Ticket 75: publish at a lifecycle event, not on a timer — only when this reconcile appended
+        // entries or moved the selected path (coreSessionId/branch/headTurnId), including the
+        // enrollment on/off transitions carried in `state`. A no-op "stat wake-up" reconcile writes
+        // nothing. `final` reconciles (shutdown's drain) publish nothing; shutdown removes the file.
+        if (!final && result) {
+          this.lastReconcile = result;
+          const pathKey = `${result.coreSessionId}|${result.branch}|${result.headTurnId}|${result.state}`;
+          if (result.appendedEntryIds.length > 0 || pathKey !== this.lastStatusKey) {
+            this.lastStatusKey = pathKey;
+            this.publish(reason);
+          }
+        }
         if (this.importer && result && !this.startupComplete && !final) {
           this.startupComplete = true;
           this.observe("startup-complete");
@@ -463,7 +521,16 @@ export class CcCoordinator {
       }
       // MCP teardown is never close authority. Preserve the named executor so the
       // trusted SessionEnd Hook can verify that exact owner after process death.
+      const owner = this.control?.executor.token;
       if (this.control) await this.control.close(true);
+      // Ticket 75: the file is removed on shutdown, but only while the binding still names this
+      // executor — never a newer one that may already have attached in a race after this coordinator
+      // gave up its socket but before this line runs. A removal failure is a diagnostic, not a fault:
+      // shutdown proceeds unconditionally either way.
+      try {
+        if (owner !== undefined && readBinding(this.config, this.nativeSessionId)?.executor?.token === owner)
+          removeCcStatus(this.config.stateDir, this.nativeSessionId);
+      } catch (error) { this.diagnostic(`status removal failed: ${error instanceof Error ? error.message : String(error)}`); }
       if (readBinding(this.config, this.nativeSessionId)) await updateBinding(this.config, this.nativeSessionId, binding => {
         if (!binding) throw new Error("CC binding disappeared during shutdown");
         return { ...binding, lastClose: { at: new Date().toISOString(), reason, confirmed: result.confirmed,

@@ -34,8 +34,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/hosts/cc/index.ts
-var import_node_fs9 = require("node:fs");
-var import_node_path8 = require("node:path");
+var import_node_fs10 = require("node:fs");
+var import_node_path9 = require("node:path");
 var import_node_url = require("node:url");
 
 // src/hosts/cc/config.ts
@@ -8104,8 +8104,8 @@ var ccSourceBlocks = (entry) => {
 };
 
 // src/hosts/cc/lifecycle.ts
-var import_node_fs6 = require("node:fs");
-var import_node_path6 = require("node:path");
+var import_node_fs7 = require("node:fs");
+var import_node_path7 = require("node:path");
 
 // src/hosts/cc/worker.ts
 var import_node_fs4 = require("node:fs");
@@ -38512,6 +38512,11 @@ var CcTaskScheduler = class {
   memory;
   worker;
   diagnostic;
+  /** Ticket 75: a status-publish hook, fired when a phase is admitted and when it settles (slot
+   * cleared). Best-effort, synchronous and never awaited; wrapped in `safeNotify` below so a fault in
+   * the publisher — the wired implementation is already fully self-contained, but this boundary must
+   * hold regardless — can never reach admission or settlement. */
+  notify;
   slots = /* @__PURE__ */ new Map();
   stopped = false;
   catchup;
@@ -38542,13 +38547,22 @@ var CcTaskScheduler = class {
   /** The freshest known effective path: what the completion checkpoint evaluates, never the settled
    * task's own (possibly stale) target. Set at every ready reconcile, whether or not it appended entries. */
   currentTarget;
-  constructor(memory, worker, diagnostic) {
+  constructor(memory, worker, diagnostic, notify = () => {
+  }) {
     this.memory = memory;
     this.worker = worker;
     this.diagnostic = diagnostic;
+    this.notify = notify;
   }
   running() {
     return [...this.slots.keys()];
+  }
+  safeNotify(reason) {
+    try {
+      this.notify(reason);
+    } catch (error3) {
+      this.diagnostic(`status notify failed (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
+    }
   }
   /** Observe every authoritative projection. Polls can resume a waiting drain after claim expiry. */
   reconcile(reconcile, admitAutomatic = true, opportunityEpoch = this.cancellationEpoch) {
@@ -38708,8 +38722,10 @@ var CcTaskScheduler = class {
       return result;
     });
     this.slots.set(phase, work);
+    this.safeNotify(`${phase} admitted`);
     void work.catch((error3) => this.diagnostic(`${phase} worker failed: ${error3 instanceof Error ? error3.message : String(error3)}`)).finally(() => {
       this.slots.delete(phase);
+      this.safeNotify(`${phase} settled`);
       if (settled && settled.outcome !== "empty" && settled.outcome !== "dropped" && this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointCD(sessionId, epoch);
       if (shouldDrive(settled)) this.driveCatchup();
     });
@@ -38916,8 +38932,38 @@ var CcTaskScheduler = class {
   }
 };
 
+// src/hosts/cc/status.ts
+var import_node_fs6 = require("node:fs");
+var import_node_path6 = require("node:path");
+var import_node_crypto12 = require("node:crypto");
+function statusPath(stateDir, nativeSessionId) {
+  return (0, import_node_path6.join)(stateDir, "status", `${nativeSessionId}.json`);
+}
+function writeCcStatus(stateDir, status) {
+  const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto12.randomUUID)()}.tmp`;
+  (0, import_node_fs6.mkdirSync)((0, import_node_path6.dirname)(target), { recursive: true });
+  let descriptor;
+  try {
+    descriptor = (0, import_node_fs6.openSync)(temporary, "w", 384);
+    (0, import_node_fs6.writeFileSync)(descriptor, `${JSON.stringify(status)}
+`);
+    (0, import_node_fs6.fsyncSync)(descriptor);
+    (0, import_node_fs6.closeSync)(descriptor);
+    descriptor = void 0;
+    (0, import_node_fs6.renameSync)(temporary, target);
+  } catch (error3) {
+    if (descriptor !== void 0) (0, import_node_fs6.closeSync)(descriptor);
+    (0, import_node_fs6.rmSync)(temporary, { force: true });
+    throw error3;
+  }
+}
+function removeCcStatus(stateDir, nativeSessionId) {
+  (0, import_node_fs6.rmSync)(statusPath(stateDir, nativeSessionId), { force: true });
+}
+
 // src/hosts/cc/lifecycle.ts
 var wait2 = (milliseconds) => new Promise((resolve4) => setTimeout(resolve4, milliseconds));
+var localMidnight = (now = /* @__PURE__ */ new Date()) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 var sameExecutor = (left, right) => !!left && left.executorId === right.executorId && left.pid === right.pid && left.token === right.token && left.socketPath === right.socketPath;
 var executorLiveness2 = (executor) => {
   try {
@@ -38932,7 +38978,7 @@ var samePath = (left, right) => left.length === right.length && left.every((id, 
 function siblingLineages(config3, coreSessionId, excludeNativeSessionId) {
   let files;
   try {
-    files = (0, import_node_fs6.readdirSync)((0, import_node_path6.dirname)(bindingPath(config3, excludeNativeSessionId)));
+    files = (0, import_node_fs7.readdirSync)((0, import_node_path7.dirname)(bindingPath(config3, excludeNativeSessionId)));
   } catch {
     return [];
   }
@@ -39073,6 +39119,12 @@ var CcCoordinator = class {
   diagnostic;
   /** Test-only override of the cooperative-scan slice/pause constants; unset in production. */
   importTuning;
+  /** Ticket 75: the most recent reconciled projection, read by `publish` for the counts' target path.
+   * `null` before any successful reconcile — counts render as `?`, never as `0`. */
+  lastReconcile = null;
+  /** Ticket 75: the last published (path, state) key, so a no-op stat-wake-up reconcile writes
+   * nothing — publishing is a lifecycle event, never a timer. */
+  lastStatusKey = null;
   constructor(config3, nativeSessionId, diagnostic = (message) => console.error(`Trace Memory CC: ${message}`), importTuning) {
     validateNativeSessionId(nativeSessionId);
     this.config = config3;
@@ -39103,6 +39155,52 @@ var CcCoordinator = class {
       this.importHolds = Math.max(0, this.importHolds - 1);
     };
   }
+  /** Ticket 75: publish this executor's status file, or do nothing. Every failure mode — a stale
+   * binding, a `progress`/`spendSince` read that throws, a write that throws — is caught here and
+   * turned into a diagnostic at worst; publishing never affects memory work, never delays a control
+   * acknowledgement and never interrupts shutdown cleanup (Pi review). Ownership is re-checked against
+   * the binding on every call, not cached: a late call from a superseded executor sees a binding that
+   * no longer names it and writes nothing. */
+  publish(reason) {
+    if (this.closed) return;
+    try {
+      const binding = readBinding(this.config, this.nativeSessionId);
+      if (!binding?.executor || !this.control || binding.executor.token !== this.control.executor.token) return;
+      const enabled2 = binding.enrollment.choice ?? binding.enrollment.defaultEnabled;
+      const running = new Set(this.scheduler?.running() ?? []);
+      let counts, cost;
+      const reconcile = this.lastReconcile;
+      if (this.importer && reconcile && reconcile.coreSessionId !== null) {
+        try {
+          counts = this.importer.memory.progress(reconcile.coreSessionId, reconcile.branch, reconcile.headTurnId ?? null);
+        } catch (error3) {
+          this.diagnostic(`status counts unavailable (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
+        }
+      }
+      if (this.importer) {
+        try {
+          cost = this.importer.memory.spendSince(localMidnight());
+        } catch (error3) {
+          this.diagnostic(`status cost unavailable (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
+        }
+      }
+      const status = {
+        version: 1,
+        nativeSessionId: this.nativeSessionId,
+        executorId: binding.executor.executorId,
+        pid: binding.executor.pid,
+        token: binding.executor.token,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        enabled: enabled2,
+        running: { noting: running.has("noting"), consolidation: running.has("consolidation"), dreaming: running.has("dreaming") },
+        ...counts ? { counts } : {},
+        ...cost !== void 0 ? { cost } : {}
+      };
+      writeCcStatus(this.config.stateDir, status);
+    } catch (error3) {
+      this.diagnostic(`status publish failed (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
+    }
+  }
   async attach(final, deadline) {
     if (this.importer || this.closed || this.closing && !final) return;
     const binding = readBinding(this.config, this.nativeSessionId);
@@ -39110,7 +39208,7 @@ var CcCoordinator = class {
     this.observe("attach-start", { final });
     try {
       this.importer = new CcImporter(this.config, binding);
-      this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic);
+      this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic, (reason) => this.publish(reason));
       const timeout = deadline === void 0 ? void 0 : Math.max(1, deadline - Date.now());
       await startControlServer(this.config, binding, this.importer.memory, timeout, final ? void 0 : this.startup.signal, {
         catchup: async () => {
@@ -39169,9 +39267,9 @@ var CcCoordinator = class {
     }
   }
   watchTranscript(binding) {
-    if (this.transcriptWatcher || !(0, import_node_fs6.existsSync)((0, import_node_path6.dirname)(binding.transcriptPath))) return;
-    const transcriptName = (0, import_node_path6.basename)(binding.transcriptPath);
-    this.transcriptWatcher = (0, import_node_fs6.watch)((0, import_node_path6.dirname)(binding.transcriptPath), (_event, filename) => {
+    if (this.transcriptWatcher || !(0, import_node_fs7.existsSync)((0, import_node_path7.dirname)(binding.transcriptPath))) return;
+    const transcriptName = (0, import_node_path7.basename)(binding.transcriptPath);
+    this.transcriptWatcher = (0, import_node_fs7.watch)((0, import_node_path7.dirname)(binding.transcriptPath), (_event, filename) => {
       if (String(filename) === transcriptName) void this.requestReconcile("transcript watch");
     });
     this.transcriptWatcher.on("error", (error3) => {
@@ -39183,10 +39281,10 @@ var CcCoordinator = class {
   async start() {
     if (this.poll || this.closed || this.closing) return;
     this.observe("startup-begin");
-    const bindingDirectory = (0, import_node_path6.dirname)(bindingPath(this.config, this.nativeSessionId));
-    if ((0, import_node_fs6.existsSync)(bindingDirectory)) {
-      this.bindingWatcher = (0, import_node_fs6.watch)(bindingDirectory, (_event, filename) => {
-        if (String(filename) === (0, import_node_path6.basename)(bindingPath(this.config, this.nativeSessionId))) void this.requestReconcile("binding watch");
+    const bindingDirectory = (0, import_node_path7.dirname)(bindingPath(this.config, this.nativeSessionId));
+    if ((0, import_node_fs7.existsSync)(bindingDirectory)) {
+      this.bindingWatcher = (0, import_node_fs7.watch)(bindingDirectory, (_event, filename) => {
+        if (String(filename) === (0, import_node_path7.basename)(bindingPath(this.config, this.nativeSessionId))) void this.requestReconcile("binding watch");
       });
       this.bindingWatcher.on("error", (error3) => {
         this.diagnostic(`binding watch failed: ${String(error3)}; stat wake-up remains active`);
@@ -39227,8 +39325,11 @@ var CcCoordinator = class {
         this.transcriptWatcher = null;
         await this.control.retarget(next);
         this.importer.retarget(next);
+        const previousNativeSessionId = this.nativeSessionId;
         this.nativeSessionId = nativeSessionId;
         this.watchTranscript(next);
+        this.publish("retarget");
+        removeCcStatus(this.config.stateDir, previousNativeSessionId);
         this.observe("retarget-complete", { to: nativeSessionId });
         return true;
       } finally {
@@ -39263,6 +39364,14 @@ var CcCoordinator = class {
         const result = !final && this.importHolds > 0 ? null : await this.importer?.reconcile(importAbort.signal, this.importTuning) ?? null;
         if (this.importer) this.watchTranscript(this.importer.currentBinding());
         if (!final && result) this.scheduler?.reconcile(result, reason !== "manual catchup", epoch);
+        if (!final && result) {
+          this.lastReconcile = result;
+          const pathKey = `${result.coreSessionId}|${result.branch}|${result.headTurnId}|${result.state}`;
+          if (result.appendedEntryIds.length > 0 || pathKey !== this.lastStatusKey) {
+            this.lastStatusKey = pathKey;
+            this.publish(reason);
+          }
+        }
         if (this.importer && result && !this.startupComplete && !final) {
           this.startupComplete = true;
           this.observe("startup-complete");
@@ -39376,7 +39485,14 @@ var CcCoordinator = class {
         await this.scheduler?.settle();
         this.importer.memory.store.releaseExecutor(this.importer.memory.executorId);
       }
+      const owner = this.control?.executor.token;
       if (this.control) await this.control.close(true);
+      try {
+        if (owner !== void 0 && readBinding(this.config, this.nativeSessionId)?.executor?.token === owner)
+          removeCcStatus(this.config.stateDir, this.nativeSessionId);
+      } catch (error3) {
+        this.diagnostic(`status removal failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+      }
       if (readBinding(this.config, this.nativeSessionId)) await updateBinding(this.config, this.nativeSessionId, (binding) => {
         if (!binding) throw new Error("CC binding disappeared during shutdown");
         return { ...binding, lastClose: {
@@ -39402,14 +39518,14 @@ var CcCoordinator = class {
 };
 
 // src/hosts/cc/injection.ts
-var import_node_crypto12 = require("node:crypto");
-var import_node_fs7 = require("node:fs");
+var import_node_crypto13 = require("node:crypto");
+var import_node_fs8 = require("node:fs");
 var BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
 var HEADER = "TRACE-MEMORY-CC/1 ";
 var END = "TRACE MEMORY KNOWLEDGE END";
-var digest = (text) => (0, import_node_crypto12.createHash)("sha256").update(text, "utf8").digest("hex");
+var digest = (text) => (0, import_node_crypto13.createHash)("sha256").update(text, "utf8").digest("hex");
 var databaseIdentity = (path) => {
-  const stat = (0, import_node_fs7.statSync)(path);
+  const stat = (0, import_node_fs8.statSync)(path);
   return `${stat.dev}:${stat.ino}`;
 };
 var positiveId = (value) => Number.isSafeInteger(value) && Number(value) > 0;
@@ -39737,16 +39853,16 @@ async function declareCcProject(config3, nativeSessionId, name) {
 }
 
 // src/hosts/cc/native-session.ts
-var import_node_fs8 = require("node:fs");
+var import_node_fs9 = require("node:fs");
 var import_node_child_process3 = require("node:child_process");
-var import_node_crypto13 = require("node:crypto");
-var import_node_path7 = require("node:path");
+var import_node_crypto14 = require("node:crypto");
+var import_node_path8 = require("node:path");
 function nativeSessionDirectory(config3) {
-  return (0, import_node_path7.join)(config3.stateDir, "native-sessions");
+  return (0, import_node_path8.join)(config3.stateDir, "native-sessions");
 }
 function nativeSessionPath(config3, pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("native process pid must be a positive integer");
-  return (0, import_node_path7.join)(nativeSessionDirectory(config3), `${pid}.json`);
+  return (0, import_node_path8.join)(nativeSessionDirectory(config3), `${pid}.json`);
 }
 var ps = (format, pid) => {
   try {
@@ -39769,18 +39885,18 @@ function processAncestors(depth = 5, parentOf = (pid) => {
   return ancestors;
 }
 function writeAtomically(target, content) {
-  const temporary = `${target}.${process.pid}.${(0, import_node_crypto13.randomUUID)()}`;
+  const temporary = `${target}.${process.pid}.${(0, import_node_crypto14.randomUUID)()}`;
   let descriptor;
   try {
-    descriptor = (0, import_node_fs8.openSync)(temporary, "wx", 384);
-    (0, import_node_fs8.writeFileSync)(descriptor, content);
-    (0, import_node_fs8.fsyncSync)(descriptor);
-    (0, import_node_fs8.closeSync)(descriptor);
+    descriptor = (0, import_node_fs9.openSync)(temporary, "wx", 384);
+    (0, import_node_fs9.writeFileSync)(descriptor, content);
+    (0, import_node_fs9.fsyncSync)(descriptor);
+    (0, import_node_fs9.closeSync)(descriptor);
     descriptor = void 0;
-    (0, import_node_fs8.renameSync)(temporary, target);
+    (0, import_node_fs9.renameSync)(temporary, target);
   } catch (error3) {
-    if (descriptor !== void 0) (0, import_node_fs8.closeSync)(descriptor);
-    (0, import_node_fs8.rmSync)(temporary, { force: true });
+    if (descriptor !== void 0) (0, import_node_fs9.closeSync)(descriptor);
+    (0, import_node_fs9.rmSync)(temporary, { force: true });
     throw error3;
   }
 }
@@ -39795,7 +39911,7 @@ function publishNativeSession(config3, input, pid = parsePid(process.env.CLAUDE_
     source: typeof input.source === "string" ? input.source : null,
     at: (/* @__PURE__ */ new Date()).toISOString()
   };
-  (0, import_node_fs8.mkdirSync)(nativeSessionDirectory(config3), { recursive: true });
+  (0, import_node_fs9.mkdirSync)(nativeSessionDirectory(config3), { recursive: true });
   writeAtomically(nativeSessionPath(config3, pid), `${JSON.stringify(record3, null, 2)}
 `);
   return record3;
@@ -39807,7 +39923,7 @@ var parsePid = (value) => {
 function readNativeSession(config3, pid) {
   let record3;
   try {
-    record3 = JSON.parse((0, import_node_fs8.readFileSync)(nativeSessionPath(config3, pid), "utf8"));
+    record3 = JSON.parse((0, import_node_fs9.readFileSync)(nativeSessionPath(config3, pid), "utf8"));
   } catch (error3) {
     if (error3.code === "ENOENT") return null;
     throw error3;
@@ -39847,9 +39963,9 @@ ${record3.at}`;
   };
   const names = new Set(ancestors.map((ancestor) => `${ancestor.pid}.json`));
   const startWatch = () => {
-    if (watcher || !(0, import_node_fs8.existsSync)(directory)) return;
+    if (watcher || !(0, import_node_fs9.existsSync)(directory)) return;
     try {
-      watcher = (0, import_node_fs8.watch)(directory, (_event, filename) => {
+      watcher = (0, import_node_fs9.watch)(directory, (_event, filename) => {
         if (names.has(String(filename))) check3();
       });
       watcher.on("error", (error3) => {
@@ -39999,13 +40115,13 @@ async function handleCcHook(configInput, input) {
 }
 async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID) {
   const config3 = resolveCcHostConfig(configInput), sessionId = validateNativeSessionId(nativeSessionId);
-  const runtimeDirectory = (0, import_node_path8.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path8.join)(runtimeDirectory, `${sessionId}.jsonl`);
-  (0, import_node_fs9.mkdirSync)(runtimeDirectory, { recursive: true });
+  const runtimeDirectory = (0, import_node_path9.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path9.join)(runtimeDirectory, `${sessionId}.jsonl`);
+  (0, import_node_fs10.mkdirSync)(runtimeDirectory, { recursive: true });
   const runtimeEvent = (event, details = {}) => {
     const value = { event, at: Date.now(), pid: process.pid, ...details };
     console.error(`Trace Memory CC: lifecycle ${JSON.stringify(value)}`);
     try {
-      (0, import_node_fs9.appendFileSync)(runtimePath, `${JSON.stringify(value)}
+      (0, import_node_fs10.appendFileSync)(runtimePath, `${JSON.stringify(value)}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -40015,7 +40131,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
   const coordinator = new CcCoordinator(config3, sessionId, (message) => {
     console.error(`Trace Memory CC: ${message}`);
     try {
-      (0, import_node_fs9.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
+      (0, import_node_fs10.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -40133,7 +40249,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
 }
 function readConfig(path) {
   if (!path.startsWith("/")) throw new Error("CC configuration path must be absolute");
-  return resolveCcHostConfig(JSON.parse((0, import_node_fs9.readFileSync)(path, "utf8")));
+  return resolveCcHostConfig(JSON.parse((0, import_node_fs10.readFileSync)(path, "utf8")));
 }
 async function readStdin() {
   let input = "";
@@ -40165,7 +40281,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify(result)}
 `);
 }
-var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path8.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
+var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path9.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
 if (direct) void runCcCommand().catch((error3) => {
   console.error(`Trace Memory CC: ${error3 instanceof Error ? error3.message : String(error3)}`);
   process.exitCode = 1;
