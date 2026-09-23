@@ -1210,6 +1210,15 @@ CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
 `;
 var enrollmentDefault = (created, baseline) => typeof created === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(created) && Number.isFinite(Date.parse(created)) && new Date(created).toISOString() === created.replace(/(?<=:\d{2})Z$/, ".000Z") && typeof baseline === "string" && Number.isFinite(Date.parse(baseline)) && Date.parse(created) > Date.parse(baseline);
 var sourceDigest = (raw) => (0, import_node_crypto2.createHash)("sha256").update(raw).digest("hex");
+var usageFieldsSql = (expr) => `CASE WHEN json_valid(${expr}) THEN json_extract(${expr},
+      '$.usage.input', '$.usage.output', '$.usage.cacheRead', '$.usage.cacheWrite', '$.usage.cost.total', '$.usage') END`;
+function usageFromFields(fields2) {
+  if (fields2 === null) return [null, null, null, null, null];
+  const [input, output, cacheRead, cacheWrite, costTotal, usage] = JSON.parse(fields2);
+  if (usage === null) return [null, null, null, null, null];
+  const count = (value) => typeof value === "number" ? value : typeof value === "boolean" ? Number(value) : 0;
+  return [count(input), count(output), count(cacheRead), count(cacheWrite), count(costTotal)];
+}
 function toProject(row) {
   return { id: row.id, name: row.name, declaredBy: row.declared_by, mergedInto: row.merged_into };
 }
@@ -1487,6 +1496,22 @@ var Store = class {
             update.run(JSON.stringify(sourceAddresses(entry)), blocks2 ? JSON.stringify(blocks2) : sealMismatch || row.blocks === "null" ? "null" : null, entry.id);
           }
         }
+      });
+      this.transaction(() => {
+        const runColumns = this.db.prepare("PRAGMA table_info(runs)").all();
+        if (!runColumns.some((r) => r.name === "usage_cost")) {
+          this.db.exec(`ALTER TABLE runs ADD COLUMN usage_input INTEGER;
+            ALTER TABLE runs ADD COLUMN usage_output INTEGER;
+            ALTER TABLE runs ADD COLUMN usage_cache_read INTEGER;
+            ALTER TABLE runs ADD COLUMN usage_cache_write INTEGER;
+            ALTER TABLE runs ADD COLUMN usage_cost REAL;`);
+          const setUsage = this.db.prepare(`UPDATE runs SET usage_input = ?, usage_output = ?,
+            usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`);
+          for (const row of this.db.prepare(`SELECT id, ${usageFieldsSql("response")} fields FROM runs ORDER BY id`).iterate())
+            setUsage.run(...usageFromFields(row.fields), Number(row.id));
+        }
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_runs_daily_usage ON runs(created_at, id, usage_cost)");
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_runs_session_usage ON runs(session_id, id, kind, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost)");
       });
       migrateDreamingRanges64d(this.db);
       this.db.exec(PROCESSING_SQL);
@@ -2091,6 +2116,14 @@ var Store = class {
     return this.listFactRelationsOnPathOf([factId2], path, snapshot2).get(factId2) ?? [];
   }
   // -- runs (standalone: failure / cancelled, or a run with nothing else to commit) --
+  /** 77: the one helper every writer of `response` routes through. Runs 71's one-parse extraction
+   * against the exact string about to be stored (never the table), so the caller can bind the result
+   * into the same INSERT/UPDATE statement that writes `response` -- the columns are derived from, and
+   * written alongside, the same value, and can never fall out of step with it. */
+  usageColumns(response) {
+    const row = this.db.prepare(`SELECT ${usageFieldsSql("?")} fields`).get(response, response);
+    return usageFromFields(row.fields);
+  }
   recordRun(input) {
     return this.transaction(() => this.getRun(this.insertRun(input)));
   }
@@ -2100,7 +2133,9 @@ var Store = class {
       if (!previous) throw new Error(`run ${id} does not exist`);
       const factIds = this.db.prepare("SELECT id FROM facts WHERE run_id = ? ORDER BY id").all(id).map((f) => f.id);
       const response = JSON.parse(input.response ?? "{}");
-      this.db.prepare("UPDATE runs SET request = ?, response = ?, outcome = ?, mode = ? WHERE id = ?").run(input.request ?? null, JSON.stringify({ ...response, ...input.entryAudit ? { entryAudit: input.entryAudit } : {}, ...previous.kind === "noting" || factIds.length ? { factIds } : {} }), input.outcome, input.mode ?? null, id);
+      const nextResponse = JSON.stringify({ ...response, ...input.entryAudit ? { entryAudit: input.entryAudit } : {}, ...previous.kind === "noting" || factIds.length ? { factIds } : {} });
+      this.db.prepare(`UPDATE runs SET request = ?, response = ?, outcome = ?, mode = ?,
+          usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`).run(input.request ?? null, nextResponse, input.outcome, input.mode ?? null, ...this.usageColumns(nextResponse), id);
     });
   }
   /** The session a run was run for, as metadata: one column, never the request and response bodies.
@@ -2182,7 +2217,8 @@ var Store = class {
         } catch {
           response = { output: input.run.response };
         }
-        this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ ...response, ...input.run.entryAudit ? { entryAudit: input.run.entryAudit } : {}, factIds: batchIds }), runId);
+        const finalResponse = JSON.stringify({ ...response, ...input.run.entryAudit ? { entryAudit: input.run.entryAudit } : {}, factIds: batchIds });
+        this.db.prepare(`UPDATE runs SET response = ?, usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`).run(finalResponse, ...this.usageColumns(finalResponse), runId);
         for (const id of input.entryIds ?? []) {
           if (this.getSourceEntry(id)?.sessionId !== sessionId) throw new Error("entry does not belong to the run session");
           this.db.prepare("INSERT INTO noted_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
@@ -2213,8 +2249,10 @@ var Store = class {
   }
   insertRun(input) {
     const origin = this.runOrigin(input);
-    const info = this.db.prepare(`INSERT INTO runs (kind, session_id, branch, range_from, range_to, prompt_hash, model, mode, request, response, origin_session_id, origin_entry_ids, outcome, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    const response = input.entryAudit ? JSON.stringify({ ...JSON.parse(input.response ?? "{}"), entryAudit: input.entryAudit }) : input.response ?? null;
+    const info = this.db.prepare(`INSERT INTO runs (kind, session_id, branch, range_from, range_to, prompt_hash, model, mode, request, response, origin_session_id, origin_entry_ids, outcome, created_at,
+        usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       input.kind,
       input.sessionId ?? null,
       input.branch ?? null,
@@ -2224,11 +2262,12 @@ var Store = class {
       input.model ?? null,
       input.mode ?? null,
       input.request ?? null,
-      input.entryAudit ? JSON.stringify({ ...JSON.parse(input.response ?? "{}"), entryAudit: input.entryAudit }) : input.response ?? null,
+      response,
       origin?.sessionId ?? null,
       origin ? JSON.stringify(origin.entryIds) : null,
       input.outcome,
-      input.createdAt
+      input.createdAt,
+      ...this.usageColumns(response)
     );
     const id = Number(info.lastInsertRowid);
     linkExecutionRun(this, id, input);
@@ -2912,7 +2951,8 @@ var Store = class {
         }
         for (const factId2 of input.consolidated ?? []) this.markConsolidated(factId2, runId, projectId);
         if (input.finalizeResponse) {
-          this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(input.finalizeResponse({ committed }), runId);
+          const finalResponse = input.finalizeResponse({ committed });
+          this.db.prepare(`UPDATE runs SET response = ?, usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`).run(finalResponse, ...this.usageColumns(finalResponse), runId);
         }
         if (input.run.kind === "consolidation") this.completeExecution(runId);
         return { runId, committed };
@@ -3311,42 +3351,34 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   listRuns(sessionId) {
     return this.db.prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
   }
-  /** 22d: one row per run of a session, carrying its kind and the usage it recorded — projected out
-   * of `runs.response` in SQL, so the request audit body and the rest of the response never leave
-   * this function. `usage` is null exactly when the run recorded no usage observation — a response
-   * without one, a cancelled run whose usage is unknown, or a response that is not JSON at all. A
-   * run whose usage object exists but is empty is an observation of zeros, and is reported as one;
-   * nothing here manufactures a zero for a missing one (parent 22, "Capacity and accounting").
+  /** 22d: one row per run of a session, carrying its kind and the usage it recorded. `usage` is null
+   * exactly when the run recorded no usage observation — a response without one, a cancelled run
+   * whose usage is unknown, or a response that was not JSON at all. A run whose usage object exists
+   * but is empty is an observation of zeros, and is reported as one; nothing here manufactures a zero
+   * for a missing one (parent 22, "Capacity and accounting").
    *
-   * 71: one `json_extract` call with every path it needs (the four counters, the cost total and
-   * `$.usage` itself, to tell "recorded" from "missing or explicit null") replaces what used to be
-   * six separate `json_valid`/`json_extract`/`json_type` calls, each re-tokenizing the whole
-   * response from scratch. A multi-path `json_extract` parses the response once and returns a small
-   * JSON array of just those six values — confirmed on a 200 KB response body: the returned column
-   * text was 90 bytes, not 200 KB. The array's last element is `$.usage` itself, preserved with its
-   * real JSON type (object, scalar, or absent) rather than flattened to raw SQL text, so a stray
-   * string usage value can never be mistaken for an object whose contents happen to look like JSON.
-   * The tiny array is the only JSON.parse this function ever does. */
-  /** Run usage of one session, or of every session when `sessionId` is null (51: the footer's
-   * database-wide daily figure); `since` keeps runs created at or after that UTC instant. */
-  listRunUsage(sessionId, since) {
-    const rows = this.db.prepare(`SELECT kind,
-        CASE WHEN json_valid(response) THEN json_extract(response,
-          '$.usage.input', '$.usage.output', '$.usage.cacheRead', '$.usage.cacheWrite', '$.usage.cost.total', '$.usage') END fields
-      FROM runs WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR created_at >= ?) ORDER BY id`).all(sessionId, sessionId, since ?? null, since ?? null);
-    const count = (value) => typeof value === "number" ? value : typeof value === "boolean" ? Number(value) : 0;
-    return rows.map((row) => {
-      if (row.fields === null) return { kind: row.kind, usage: null };
-      const [input, output, cacheRead, cacheWrite, costTotal, usage] = JSON.parse(row.fields);
-      if (usage === null) return { kind: row.kind, usage: null };
-      return { kind: row.kind, usage: {
-        input: count(input),
-        output: count(output),
-        cacheRead: count(cacheRead),
-        cacheWrite: count(cacheWrite),
-        cost: count(costTotal)
-      } };
-    });
+   * 77: reads the five columns every writer of `response` now keeps in step with it (`usageColumns`),
+   * never `response` itself — `idx_runs_session_usage` answers `session_id = ?`, `id` (the order kept
+   * for summation) and the five columns as a covering index, so this never walks a row past
+   * `request`/`response` to reach them. A direct `session_id = ?` condition, not the optional-
+   * parameter form: that form lets the planner scan the whole table or index as history grows. */
+  listRunUsage(sessionId) {
+    const rows = this.db.prepare(`SELECT kind, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost
+      FROM runs INDEXED BY idx_runs_session_usage WHERE session_id = ? ORDER BY id`).all(sessionId);
+    return rows.map((row) => ({ kind: row.kind, usage: row.usage_cost === null ? null : { input: row.usage_input, output: row.usage_output, cacheRead: row.usage_cache_read, cacheWrite: row.usage_cache_write, cost: row.usage_cost } }));
+  }
+  /** 51/77: the footer's daily figure — every run's cost, created at or after `since` (77 replaces a
+   * per-refresh reparse of every run's `response`, 71's ruling, with the same figure read from the
+   * persisted usage columns). `idx_runs_daily_usage` answers the range condition, `id` (the order the
+   * summation below keeps, so floating-point totals do not drift) and `usage_cost` as a covering
+   * index — rows read grow with the day's runs, not with history. A direct `created_at >= ?`
+   * condition, not the optional-parameter form, for the same reason as `listRunUsage` above. */
+  spendSince(since) {
+    const rows = this.db.prepare(`SELECT id, usage_cost FROM runs INDEXED BY idx_runs_daily_usage
+      WHERE created_at >= ? ORDER BY id`).all(since);
+    let cost = 0;
+    for (const row of rows) if (row.usage_cost !== null) cost += row.usage_cost;
+    return cost;
   }
   listFactsByRun(runId) {
     return this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(runId).map(toFact);
@@ -5302,11 +5334,7 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
     }
     return totals;
   };
-  const spendSince = (since) => {
-    let cost = 0;
-    for (const { usage } of store.listRunUsage(null, since)) if (usage) cost += usage.cost;
-    return cost;
-  };
+  const spendSince = (since) => store.spendSince(since);
   const progressCache = /* @__PURE__ */ new Map();
   const progress = (sessionId, branch = "main", headTurnId) => {
     session(sessionId);

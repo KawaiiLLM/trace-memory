@@ -541,12 +541,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     return totals;
   };
   // 51: the footer's figure — every session's runs created at or after `since` (the host passes local
-  // midnight as a UTC instant), so the number resets at the day boundary on its own.
-  const spendSince = (since: string): number => {
-    let cost = 0;
-    for (const { usage } of store.listRunUsage(null, since)) if (usage) cost += usage.cost;
-    return cost;
-  };
+  // midnight as a UTC instant), so the number resets at the day boundary on its own. 77: the store's
+  // own query, answered from a covering index on `created_at`, never `listRunUsage`'s session index.
+  const spendSince = (since: string): number => store.spendSince(since);
   /** Ticket 69/72: `facts`, `unconsolidated`, `knowledge` and `changedKnowledge` are cached per
    * (sessionId, branch), invalidated by `Store.progressSignal` — a cheap composite that changes
    * exactly when a commit (by this process or another connection to the same file) could change one
