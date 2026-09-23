@@ -120,6 +120,44 @@ export const tokens = (text: string): number => {
   return total;
 };
 
+const wholeRun = (pattern: RegExp) => new RegExp(`^(?:${pattern.source})+$`);
+const PUNCTUATION_RUN = wholeRun(PUNCTUATION);
+// 0 = whitespace run, 1 = punctuation run, 2 = everything else (`SPLIT`'s three delimiter classes).
+const segmentClass = (segment: string): 0 | 1 | 2 => /^\s+$/.test(segment) ? 0 : PUNCTUATION_RUN.test(segment) ? 1 : 2;
+
+/** Ticket 80: an exact running token count of text appended piece by piece, without re-tokenizing
+ * the whole prefix on every append the way `tokens(joined)` on a growing string does (quadratic in
+ * the number of pieces). Exact because `segmentTokens` only ever consults the segment immediately
+ * before or after it (`whitespaceTokens`'s `context`/`next`), and `String.split(SPLIT)` never leaves
+ * two adjacent segments of the same delimiter class — each match is already the longest one possible
+ * for its class — so splitting each appended piece on its own and re-merging a same-class pair that
+ * meets at the seam reproduces the identical segment sequence `tokens()` would find on the full
+ * string; only the one segment still open at the seam needs to wait for its real neighbor before it
+ * is charged. */
+export class JoinedTokens {
+  #total = 0;
+  #pending = "";
+  #before = "";
+  #open = false;
+  add(text: string): void {
+    for (const segment of text.split(SPLIT).filter(Boolean)) {
+      if (this.#open && segmentClass(this.#pending) === segmentClass(segment)) { this.#pending += segment; continue; }
+      if (this.#open) { this.#total += segmentTokens(this.#pending, this.#before, segment); this.#before = this.#pending; }
+      this.#pending = segment;
+      this.#open = true;
+    }
+  }
+  get count(): number { return this.#open ? this.#total + segmentTokens(this.#pending, this.#before, "") : this.#total; }
+}
+
+/** Exact tokens of `parts.join(separator)`, tokenizing each part once instead of re-tokenizing the
+ * whole growing prefix. See `JoinedTokens` for why this is exact, not merely additive. */
+export function tokensJoined(parts: readonly string[], separator: string): number {
+  const counter = new JoinedTokens();
+  parts.forEach((part, index) => { if (index) counter.add(separator); counter.add(part); });
+  return counter.count;
+}
+
 /** Ticket 30 "One bounded Raw entry view": the three numbers of the one profile. `E` is the most one
  * entry is worth, `C` the most one tool-call part is worth and `R` the most one tool-result part is
  * worth. `C` and `R` are independent allowances, never a combined budget split in half (23c's `B`):

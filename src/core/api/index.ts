@@ -16,8 +16,8 @@ import { DEFAULT_DREAMING_TRIGGER_TOKENS } from "../store/processing.ts";
 
 import { freezeNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
-import { tokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
-export { tokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
+import { tokens, tokensJoined, JoinedTokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
+export { tokens, tokensJoined, JoinedTokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
 export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.ts";
 // 20a: core owns the domain text of every memory consumer. A host places this text; it does not lay
 // out knowledge, facts or Raw itself.
@@ -724,19 +724,40 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   };
 
   const read = readFacade(store, cfg, prepareTrace, resultText);
-  // Ticket 22b: the pending entries are rendered one at a time and joined with the batch's own
-  // separator, and the answer is given as soon as the joined estimate reaches the threshold. The
-  // estimate is still of one joined string, exactly as before — independently estimated views are
-  // never summed — but the work is bounded by `noting.triggerTokens` instead of by the backlog.
+  // Ticket 80 item 1: an entry is immutable and `cfg.render`/`resultText`/`ENTRY_VIEW_VERSION` are all
+  // fixed for this process, so a rendered view is a pure function of the entry id alone — computed
+  // once per process and reused by every later due check or pending-weight read, never re-rendered
+  // (never re-reading Raw) for an entry already seen. Pruned to exactly the still-pending set on every
+  // read: an entry drops out the moment it is noted, instead of leaking for the life of the process.
+  const notingViewCache = new Map<number, string>();
   function* notingViews(target: TaskTarget) {
-    for (const id of store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId))
-      yield renderEntry(store.getSourceEntry(id)!, cfg.render, resultText).content;
+    const pending = store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId);
+    const stillPending = new Set(pending);
+    for (const id of notingViewCache.keys()) if (!stillPending.has(id)) notingViewCache.delete(id);
+    for (const id of pending) {
+      let view = notingViewCache.get(id);
+      if (view === undefined) {
+        view = renderEntry(store.getSourceEntry(id)!, cfg.render, resultText).content;
+        notingViewCache.set(id, view);
+      }
+      yield view;
+    }
   }
+  // Ticket 22b's rule kept exactly ("the estimate is still of one joined string, exactly as before —
+  // independently estimated views are never summed"): `JoinedTokens` is not a per-entry sum, it is a
+  // running tokenization of the one joined string, proven identical to `tokens(joined)` for every real
+  // and adversarial boundary (tests/core/render/ticket-80-tokens-joined.test.ts) — just built without
+  // re-scanning the whole growing prefix on every append. The early stop is unchanged: rendering (via
+  // `notingViews`, cached) and tokenizing both stop the moment the threshold is reached, never reading
+  // ahead through the rest of the backlog to warm the cache.
   const notingDue = (target: TaskTarget): boolean => {
-    let joined = "";
+    const counter = new JoinedTokens();
+    let first = true;
     for (const view of notingViews(target)) {
-      joined = joined ? `${joined}\n\n${view}` : view;
-      if (tokens(joined) >= cfg.noting.triggerTokens) return true;
+      if (!first) counter.add("\n\n");
+      counter.add(view);
+      first = false;
+      if (counter.count >= cfg.noting.triggerTokens) return true;
     }
     return false;
   };
@@ -752,7 +773,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (!target) return { tokens: null, trigger, state: "no session" };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
-      const count = phase === "noting" ? tokens([...notingViews(target)].join("\n\n")) : consolidationTokens(target);
+      const count = phase === "noting" ? tokensJoined([...notingViews(target)], "\n\n") : consolidationTokens(target);
       return { tokens: count, trigger: cfg[phase].triggerTokens, state: "known" };
     } catch { return { tokens: null, trigger, state: "unavailable" }; }
   };
