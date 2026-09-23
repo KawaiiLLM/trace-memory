@@ -277,15 +277,18 @@ test("long-history toggles retain reconciliation but never add a full status sca
   const census = vi.spyOn(composition, "contextComposition");
   const views = vi.spyOn(rendering, "renderEntry");
   const reads = vi.spyOn(Store.prototype, "getSourceEntry");
+  const identities = vi.spyOn(Store.prototype, "findKnownSourceEntry");
   const grants = vi.spyOn(h.ctx.modelRegistry, "getApiKeyAndHeaders");
   const claims = vi.spyOn(Store.prototype, "acquireClaim");
   const command = (args: string) => h.commands.get("trace").handler(args, h.ctx);
   await command("on");
   for (const value of ["on", "off", "off", "on"]) {
-    reads.mockClear();
+    reads.mockClear(); identities.mockClear();
     await command(value);
-    // Re-enabling still reconciles every native identity; the notice must add no Raw reads.
-    expect(reads).toHaveBeenCalledTimes(value === "on" ? ancestry.length : 0);
+    // 74: re-enabling still reconciles every native identity (findKnownSourceEntry, once per
+    // ancestry entry) but the notice adds no Raw reads at all, known entry or not.
+    expect(identities).toHaveBeenCalledTimes(value === "on" ? ancestry.length : 0);
+    expect(reads).not.toHaveBeenCalled();
     expect(h.memory.store.enabled(1)).toBe(value === "on");
   }
   expect(census).not.toHaveBeenCalled(); expect(views).not.toHaveBeenCalled();

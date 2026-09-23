@@ -23,7 +23,7 @@ export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.
 // out knowledge, facts or Raw itself.
 export { notingText, consolidationText, injectionText, compactText, knowledgeBlock, memoryBodyHash } from "../render/material.ts";
 export type { SharedMaterial, KnowledgeGroup, TaskRange, MemoryComposition } from "../render/material.ts";
-export { enrollmentDefault } from "../store/index.ts";
+export { enrollmentDefault, sourceDigest } from "../store/index.ts";
 export { deriveSharedMaterialAllowance } from "../store/processing.ts";
 export { directoryAllocation } from "../project/directory.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";

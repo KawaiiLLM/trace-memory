@@ -956,6 +956,19 @@ CREATE TABLE IF NOT EXISTS source_paths (
   PRIMARY KEY (session_id, branch)
 );
 CREATE INDEX IF NOT EXISTS idx_source_paths_version ON source_paths(version);
+-- 74: a compact mirror of each source entry's calls (native call id, ordinal, name only -- never
+-- input/result, which stay in content/tool_calls and would move the wide data here). Lets a
+-- rebuild answer call identity, per entry or per Turn, without loading Raw.
+CREATE TABLE IF NOT EXISTS source_entry_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES source_entries(id),
+  turn_id INTEGER NOT NULL REFERENCES turns(id),
+  call_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  name TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_entry_calls_entry ON source_entry_calls(entry_id);
+CREATE INDEX IF NOT EXISTS idx_source_entry_calls_turn ON source_entry_calls(turn_id, id);
 -- Native checkpoints that own a Turn but are not Raw source entries (notably compaction boundaries),
 -- plus the user source that created each ordinary Turn. Host-native identity keeps import idempotent;
 -- no host envelope or selected-path policy enters this table.
@@ -986,6 +999,7 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_project ON knowledge(project_id);
 CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
 `;
 var enrollmentDefault = (created, baseline) => typeof created === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(created) && Number.isFinite(Date.parse(created)) && new Date(created).toISOString() === created.replace(/(?<=:\d{2})Z$/, ".000Z") && typeof baseline === "string" && Number.isFinite(Date.parse(baseline)) && Date.parse(created) > Date.parse(baseline);
+var sourceDigest = (raw) => (0, import_node_crypto2.createHash)("sha256").update(raw).digest("hex");
 function toProject(row) {
   return { id: row.id, name: row.name, declaredBy: row.declared_by, mergedInto: row.merged_into };
 }
@@ -1195,6 +1209,7 @@ var Store = class {
       began = true;
       const schemaBefore = Number(this.db.prepare("PRAGMA schema_version").get().schema_version);
       const policyTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_budget_policy'").get();
+      const hadSourceEntryCalls = !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_entry_calls'").get();
       if (policyTable) {
         const row = this.db.prepare("SELECT global_tokens,project_tokens,session_tokens FROM knowledge_budget_policy WHERE id=1").get();
         if (row) priorBudgetPolicy = { global: Number(row.global_tokens), project: Number(row.project_tokens), session: Number(row.session_tokens) };
@@ -1232,6 +1247,17 @@ var Store = class {
         if (newAddresses) this.db.exec("ALTER TABLE source_entries ADD COLUMN addresses TEXT NOT NULL DEFAULT '[]'");
         this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_unnormalized ON source_entries(id) WHERE blocks IS NULL");
         this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_membership ON source_entries(id, session_id, turn_id, addresses)");
+        const newDigest = !columns.some((r) => r.name === "digest");
+        if (newDigest) {
+          this.db.exec("ALTER TABLE source_entries ADD COLUMN digest TEXT");
+          const updateDigest = this.db.prepare("UPDATE source_entries SET digest = ? WHERE id = ?");
+          for (const row of this.db.prepare("SELECT id, json_extract(content, '$.raw') AS raw FROM source_entries ORDER BY id").iterate())
+            updateDigest.run(sourceDigest(String(row.raw)), Number(row.id));
+        }
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_identity ON source_entries(session_id, native_lineage, native_id, turn_id, digest)");
+        if (!hadSourceEntryCalls) this.db.exec(`INSERT INTO source_entry_calls (entry_id, turn_id, call_id, ordinal, name)
+          SELECT source_entries.id, turn_id, json_extract(value, '$.callId'), json_extract(value, '$.ordinal'), json_extract(value, '$.name')
+          FROM source_entries, json_each(source_entries.content, '$.calls')`);
         if (newAddresses || normalizeSource) {
           const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
           for (const row of this.db.prepare(`SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id`).iterate()) {
@@ -3043,7 +3069,7 @@ ${rendered.get(value.revision.id)}`;
         CASE WHEN json_valid(response) THEN json_extract(response,
           '$.usage.input', '$.usage.output', '$.usage.cacheRead', '$.usage.cacheWrite', '$.usage.cost.total', '$.usage') END fields
       FROM runs WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR created_at >= ?) ORDER BY id`).all(sessionId, sessionId, since ?? null, since ?? null);
-    const count = (value) => typeof value === "number" ? value : 0;
+    const count = (value) => typeof value === "number" ? value : typeof value === "boolean" ? Number(value) : 0;
     return rows.map((row) => {
       if (row.fields === null) return { kind: row.kind, usage: null };
       const [input, output, cacheRead, cacheWrite, costTotal, usage] = JSON.parse(row.fields);
@@ -3222,7 +3248,7 @@ ${rendered.get(value.revision.id)}`;
       if (!input.text && !input.calls.length && input.role !== "user" && !blocks2?.length) throw new Error("empty source entry");
       const ordinal = Number(this.db.prepare("SELECT COALESCE(MAX(entry_ordinal), 0) + 1 AS n FROM source_entries WHERE turn_id = ?").get(input.turnId).n);
       if (!Number.isSafeInteger(ordinal)) throw new Error("Turn entry ordinal exhausted");
-      const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content, entry_ordinal, addresses, blocks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+      const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content, entry_ordinal, addresses, blocks, digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
         input.sessionId,
         input.nativeLineage,
         input.nativeId,
@@ -3230,8 +3256,13 @@ ${rendered.get(value.revision.id)}`;
         JSON.stringify(input),
         ordinal,
         JSON.stringify(sourceAddresses({ ...input, id: 0, entryOrdinal: ordinal, blocks: blocks2 })),
-        blocks2 ? JSON.stringify(blocks2) : this.normalizeSource ? "null" : null
+        blocks2 ? JSON.stringify(blocks2) : this.normalizeSource ? "null" : null,
+        sourceDigest(input.raw)
       );
+      if (input.calls.length) {
+        const insertCall = this.db.prepare("INSERT INTO source_entry_calls (entry_id, turn_id, call_id, ordinal, name) VALUES (?, ?, ?, ?, ?)");
+        for (const call of input.calls) insertCall.run(result.lastInsertRowid, input.turnId, call.callId, call.ordinal, call.name);
+      }
       return this.getSourceEntry(Number(result.lastInsertRowid));
     });
   }
@@ -3244,6 +3275,25 @@ ${rendered.get(value.revision.id)}`;
   findSourceEntry(sessionId, nativeLineage, nativeId2) {
     const row = this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND native_lineage = ? AND native_id = ?").get(sessionId, nativeLineage, nativeId2);
     return row ? this.getSourceEntry(row.id) : null;
+  }
+  /** 74: what a rebuild's known-entry check needs — never `content`/`blocks` (8.1 KB/4.2 KB on
+   * average). `idx_source_identity` answers `id`, `turnId` and `digest` as a covering index; this
+   * entry's own call identities (never its `input`/`result`) come from `source_entry_calls`. The
+   * caller compares `digest` against `sourceDigest` of the same string it compares today — a
+   * mismatch is reported exactly as a content mismatch was before this existed. */
+  findKnownSourceEntry(sessionId, nativeLineage, nativeId2) {
+    const row = this.db.prepare(`SELECT id, turn_id, digest FROM source_entries INDEXED BY idx_source_identity
+      WHERE session_id = ? AND native_lineage = ? AND native_id = ?`).get(sessionId, nativeLineage, nativeId2);
+    if (!row) return null;
+    return { id: Number(row.id), turnId: Number(row.turn_id), digest: row.digest, calls: this.entryCallIdentities(row.id) };
+  }
+  entryCallIdentities(entryId) {
+    return this.db.prepare("SELECT call_id, ordinal, name FROM source_entry_calls WHERE entry_id = ? ORDER BY id").all(entryId).map((c) => ({ ordinal: Number(c.ordinal), name: c.name, callId: c.call_id }));
+  }
+  /** 74: a Turn's call identities alone — call id, ordinal, name — for CC's `knownCalls()`, which used
+   * to load every source entry of the Turn (`listSourceEntries`) only to read this. */
+  turnCallIdentities(turnId) {
+    return this.db.prepare("SELECT call_id, ordinal, name FROM source_entry_calls WHERE turn_id = ? ORDER BY id").all(turnId).map((c) => ({ ordinal: Number(c.ordinal), name: c.name, callId: c.call_id }));
   }
   /** 22c: `turnId` narrows the read to one Turn's native occurrences, so a full trace of one tool
    * call loads that Turn instead of the whole session. The order — by entry id — is the same.
@@ -3258,7 +3308,7 @@ ${rendered.get(value.revision.id)}`;
        WHERE p.session_id = ? AND p.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.key`
     ).all(sessionId, branch, sessionId, turnId ?? null, turnId ?? null);
     const hasPath = branch !== void 0 && !!this.db.prepare("SELECT 1 FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
-    const rows = hasPath ? selected : turnId === void 0 ? this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId) : this.db.prepare("SELECT id FROM source_entries WHERE turn_id = ? AND session_id = ? ORDER BY id").all(turnId, sessionId);
+    const rows = hasPath ? selected : turnId === void 0 ? this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId) : this.db.prepare("SELECT id FROM source_entries INDEXED BY idx_source_turn_ordinal WHERE turn_id = ? AND session_id = ? ORDER BY id").all(turnId, sessionId);
     return rows.map((r) => this.getSourceEntry(r.id));
   }
   /** 22c "complete snapshot": the source-entry identities of many Turns in one read, in the order an
@@ -8064,7 +8114,7 @@ var import_node_crypto10 = require("node:crypto");
 var import_node_path4 = require("node:path");
 var import_node_util = require("node:util");
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -28862,7 +28912,7 @@ function query({
   return queryInstance;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -28936,7 +28986,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -29615,7 +29665,7 @@ var Class2 = class {
   }
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -29681,7 +29731,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -29761,7 +29811,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -29918,7 +29968,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -30466,7 +30516,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -30502,14 +30552,14 @@ var Doc2 = class {
   }
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -32480,7 +32530,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -32589,7 +32639,7 @@ function en_default3() {
   };
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -32637,7 +32687,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -33441,7 +33491,7 @@ function _stringFormat(Class3, format, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -33793,7 +33843,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -34269,7 +34319,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -34438,7 +34488,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -34472,7 +34522,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -34513,7 +34563,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -34553,7 +34603,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -34567,7 +34617,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -35646,22 +35696,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -37928,7 +37978,7 @@ var CcProjection = class {
       const loaded = this.callsByTurn.get(turnId);
       if (this.loadedCallTurns.has(turnId)) return loaded ?? /* @__PURE__ */ new Map();
       const values = /* @__PURE__ */ new Map();
-      for (const entry of this.memory.store.listSourceEntries(sessionId, turnId)) for (const value of entry.calls) {
+      for (const value of this.memory.store.turnCallIdentities(turnId)) {
         const prior = values.get(value.callId);
         if (prior && (prior.ordinal !== value.ordinal || prior.name !== value.name))
           throw new CcIntegrityError(`native tool call ${value.callId} changed within one Turn`);
@@ -37954,9 +38004,9 @@ var CcProjection = class {
           return { association: { turnId: turn.id } };
         });
       }
-      const known = this.memory.store.findSourceEntry(sessionId, lineage, source.nativeId);
+      const known = this.memory.store.findKnownSourceEntry(sessionId, lineage, source.nativeId);
       if (known) {
-        if (known.raw !== raw) throw new CcIntegrityError(`native source ${source.nativeId} changed after persistence`);
+        if (known.digest !== sourceDigest(raw)) throw new CcIntegrityError(`native source ${source.nativeId} changed after persistence`);
         if (source.kind === "user" && !this.memory.store.findNativeTurn(sessionId, lineage, source.nativeId))
           this.memory.store.transaction(() => this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, known.turnId, "turn"));
         const calls = new Map(knownCalls(known.turnId));
@@ -39205,6 +39255,7 @@ var CcCoordinator = class {
       const wasAttached = this.importer !== null;
       const importAbort = new AbortController();
       this.currentImportAbort = importAbort;
+      const expiry = deadline === void 0 ? void 0 : setTimeout(() => importAbort.abort(new DOMException("CC final sync reached its deadline", "AbortError")), Math.max(0, deadline - Date.now()));
       try {
         const attaching = this.attach(final, deadline);
         const epoch = opportunityEpoch ?? this.scheduler?.catchupTicket();
@@ -39231,6 +39282,7 @@ var CcCoordinator = class {
         else this.diagnostic(`${reason} reconciliation failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
         return null;
       } finally {
+        if (expiry !== void 0) clearTimeout(expiry);
         if (this.currentImportAbort === importAbort) this.currentImportAbort = null;
       }
     });

@@ -1,9 +1,10 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { TraceMemory } from "../../src/core/api/index.ts";
+import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { piSourceBlocks } from "../../src/hosts/pi/source.ts";
 import { recordSessionStart, readBinding } from "../../src/hosts/cc/binding.ts";
@@ -343,6 +344,26 @@ test("unchanged reconciliation does no historical SQL and append work is bounded
     const appended = await importer.reconcile();
     expect(appended.appendedEntryIds).toHaveLength(2); expect(appended.snapshot.reset).toBe(false);
     expect(prepares).toBeLessThan(80);
+  } finally { importer.close(); }
+});
+
+test("74: a CC fresh resume answers already-known entries and their call identities without reading Raw", async () => {
+  const f = await importerFixture();
+  let importer = f.importer;
+  try {
+    const first = await importer.reconcile();
+    expect(first.problems).toEqual([]);
+    // A fresh process holds no in-memory scan or call-identity cache; only the persisted store does.
+    importer.close();
+    importer = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
+    const reads = vi.spyOn(Store.prototype, "getSourceEntry");
+    const second = await importer.reconcile();
+    expect(second.problems).toEqual([]);
+    expect(second.appendedEntryIds).toEqual([]); // every record was already known
+    expect(reads).not.toHaveBeenCalled();
+    // r1's tool result still resolved call-1's identity through knownCalls(), not a fresh Raw scan.
+    const calls = importer.memory.store.listTurns(second.coreSessionId!).flatMap(t => importer.memory.store.listToolCalls(t.id));
+    expect(calls.some(c => c.name === "Read" && c.status === "success")).toBe(true);
   } finally { importer.close(); }
 });
 
