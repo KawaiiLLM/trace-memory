@@ -31,7 +31,7 @@ const measured = measuredMemory(compactText(material), material);
 const details = { traceMemory: { composition: measured.composition, supplied: { knowledgeCommitIds: [1] } } };
 
 test("catalog requires one exact actual-system occurrence; hidden/modified/duplicate catalogs stay System", () => {
-  const f = fixture(), catalog = formatSkillsForPrompt(skills);
+  const f = fixture(), catalog = formatSkillsForPrompt(skills).trim();
   for (const system of ["prefix" + catalog + "suffix", "prefix", catalog.replace("instructions", "changed"), catalog + catalog]) {
     f.ctx.getSystemPrompt = () => system;
     const result = f.read();
@@ -50,8 +50,8 @@ test.each([undefined, ["read"], ["bash"], ["bash", "read"], [], ["edit"], ["powe
   f.ctx.getSystemPromptOptions = () => options;
   const system = buildSystemPrompt(options);
   f.ctx.getSystemPrompt = () => system;
-  const expected = selectedTools === undefined || selectedTools.includes("read") ? formatSkillsForPrompt(skills, "read")
-    : selectedTools.includes("bash") ? formatSkillsForPrompt(skills, "bash") : "";
+  const expected = (selectedTools === undefined || selectedTools.includes("read") ? formatSkillsForPrompt(skills, "read")
+    : selectedTools.includes("bash") ? formatSkillsForPrompt(skills, "bash") : "").trim();
   expect(f.read().amounts.Skills).toBe(tokens(expected));
   expect(f.read().amounts.System + f.read().amounts.Skills).toBe(tokens(system));
   // A stale or edited prompt must not be deducted using the other reader's wording.

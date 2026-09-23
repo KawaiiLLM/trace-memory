@@ -21,9 +21,10 @@ export function contextComposition(ctx: ExtensionContext & Partial<Pick<Extensio
     try {
       const options = ctx.getSystemPromptOptions?.();
       // Pi's native prompt builder prefers read, falls back to bash, and omits the
-      // catalog if neither is selected. Missing selectedTools uses Pi's read default.
+      // catalog if neither is selected. Missing selectedTools uses Pi's read default. Since Pi 0.87
+      // the catalog is its own prompt section, trimmed.
       const reader = (["read", "bash"] as const).find(tool => (options?.selectedTools ?? ["read", "bash", "edit", "write"]).includes(tool));
-      if (reader) catalog = formatSkillsForPrompt(options?.skills ?? [], reader);
+      if (reader) catalog = formatSkillsForPrompt(options?.skills ?? [], reader).trim();
     } catch { /* Uncertain catalog stays System. */ }
     const at = catalog ? system.indexOf(catalog) : -1;
     if (at >= 0 && system.indexOf(catalog, at + catalog.length) < 0) {

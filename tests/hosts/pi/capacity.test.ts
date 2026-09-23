@@ -156,12 +156,15 @@ test("27a 2026-09-10: a fork's inherited prefix is Pi's context measure, and ima
   expect(await admission(large)).toBe(diagnostic);
 });
 
-test("27a 2026-09-10: a 300,000-token parent measure with a small increment forks under a 500,000-token window that the withdrawn whole-body estimate refused", async () => {
+test("27a 2026-09-10: a 300,000-token parent measure with a small increment forks under a 500,000-token window", async () => {
   const f = await forkFixture({ contextWindow: 500_000 });
   try {
-    // The parent's reply reports a 300,000-token prompt, and its history carries two images. Pi's
+    // The parent's reply reports a 300,000-token prompt, and its prompt attaches two images. Pi's
     // measure is that reply's own usage plus the estimate of what follows it; the base64 never
-    // reaches an estimator of ours.
+    // reaches an estimator of ours. The live failure's body, where these images made the withdrawn
+    // whole-body estimate refuse, no longer arises: Pi 0.87 omits an image it cannot shrink below its
+    // inline limit before the request, and the captured-payload case above pins that image data
+    // changes neither the measure nor the verdict.
     f.script((body, index) => index === 0 ? say("好的。", wireUsage(300_000, 2))
       : worker(body) && !submitted(body) ? call("t1", "note", noteBatch) : say("Done."));
     const image = { type: "image" as const, data: base64(925_248), mimeType: "image/png" };
@@ -176,8 +179,6 @@ test("27a 2026-09-10: a 300,000-token parent measure with a small increment fork
     const measure = (f.h.ctx as unknown as { getContextUsage(): { tokens: number | null } }).getContextUsage().tokens!;
     expect(measure).toBeGreaterThanOrEqual(300_000);
     expect(measure + CONTEXT_HEADROOM).toBeLessThanOrEqual(500_000); // the rule admits it
-    // The withdrawn formula: `tokens(JSON.stringify(payload))` against `floor(window x 0.85) - maxTokens`.
-    expect(tokens(JSON.stringify(captured))).toBeGreaterThan(Math.floor(500_000 * 0.85) - 8_192);
 
     const run = await settled(f);
     expect(run.mode).toBe("fork");
