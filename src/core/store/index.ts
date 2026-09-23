@@ -3858,8 +3858,8 @@ export class Store {
         throw new StaleSourcePathError();
       if (!branch || !lineage || new Set(newEntryIds).size !== newEntryIds.length ||
           newEntryIds.some(id => !Number.isSafeInteger(id) || id < 1)) throw new Error("invalid source path tail");
-      const rows = this.db.prepare(`SELECT id, turn_id FROM source_entries WHERE session_id = ?
-        AND id IN (SELECT value FROM json_each(?))`).all(sessionId, JSON.stringify(newEntryIds)) as
+      const rows = this.db.prepare(`SELECT id, turn_id FROM source_entries NOT INDEXED WHERE id IN
+        (SELECT value FROM json_each(?)) AND session_id = ?`).all(JSON.stringify(newEntryIds), sessionId) as
         { id: number; turn_id: number }[];
       if (rows.length !== newEntryIds.length) throw new Error("invalid source path tail");
       const overlap = this.db.prepare(`SELECT 1 FROM source_path_entries WHERE session_id = ? AND branch = ?
@@ -3873,6 +3873,10 @@ export class Store {
       // On an ordinary append the new tail and head must extend the old tail's Turn. A
       // headless/navigated or sibling path is intentionally delegated to full publication.
       const extendsTurn = (root: number, ancestor: number): boolean => {
+        if (root === ancestor) return true;
+        const direct = this.db.prepare("SELECT parent_turn_id FROM turns WHERE id = ? AND session_id = ?")
+          .get(root, sessionId) as { parent_turn_id: number | null } | undefined;
+        if (direct?.parent_turn_id === ancestor) return true;
         const row = this.db.prepare(`WITH RECURSIVE lineage(id,parent_turn_id,session_id) AS (
           SELECT id,parent_turn_id,session_id FROM turns WHERE id = ?
           UNION ALL SELECT t.id,t.parent_turn_id,t.session_id FROM turns t JOIN lineage l
@@ -3881,7 +3885,15 @@ export class Store {
           .get(root, ancestor, ancestor, sessionId);
         return !!row;
       };
-      if (oldTail && tailTurn !== null && !extendsTurn(tailTurn, oldTail.turn_id)) throw new Error("source path tail is not an extension");
+      // Validate every transition in the new suffix, not just its final Turn. A middle sibling
+      // followed by a valid final descendant would otherwise silently enter the selected path.
+      let previousTurn = oldTail?.turn_id ?? null;
+      for (const id of newEntryIds) {
+        const turn = turns.get(id)!;
+        if (previousTurn !== null && turn !== previousTurn && !extendsTurn(turn, previousTurn))
+          throw new Error("source path tail is not an extension");
+        previousTurn = turn;
+      }
       if (!extendsTurn(headTurnId, tailTurn ?? oldTail?.turn_id ?? headTurnId))
         throw new Error("source path head is not an extension");
       if (!newEntryIds.length) {
@@ -3968,13 +3980,74 @@ export class Store {
   entryNoted(id: number): boolean {
     return !!this.db.prepare("SELECT 1 FROM noted_entries WHERE entry_id = ? LIMIT 1").get(id);
   }
-  /** 22b: `noted_entries` decides which of the path's ids are still pending before any content is
-   * loaded, so a caller that needs only the first views does not pay for the whole path. */
-  pendingEntryIds(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number[] {
-    const ids = this.pathEntryIds(sessionId, branch, headTurnId, prepared);
+  private pendingPath: { sessionId: number; branch: string; headTurnId: number;
+    signal: string; path: SourcePathState | null; ids: number[]; coversTail: boolean } | undefined;
+
+  /** The array is owned by Store and must not be mutated by callers. Its identity changes on any
+   * rebuild; an ordinary append extends it in place so the API can retain its counted prefix. */
+  pendingEntryState(sessionId: number, branch: string, headTurnId: number): readonly number[] {
+    const signal = this.progressSignal(sessionId);
+    const path = this.sourcePathState(sessionId, branch);
+    const cached = this.db.isTransaction ? undefined : this.pendingPath;
+    if (cached && cached.sessionId === sessionId && cached.branch === branch && cached.signal === signal &&
+        cached.path?.version === path?.version) {
+      if (cached.headTurnId === headTurnId && cached.path?.count === path?.count &&
+          cached.path?.tailId === path?.tailId) {
+        return cached.ids;
+      }
+      // A constant membership version and a larger header prove that the committed prefix is
+      // unchanged: every nonappend rewrite or restored entry bumps the version. Read only the
+      // indexed suffix. Neither a nested writer nor a rollback can publish in-memory entries.
+      if (cached.coversTail && cached.path && path && path.count > cached.path.count) {
+        const rows = this.db.prepare(`SELECT p.position, p.entry_id, e.turn_id FROM source_path_entries p
+          JOIN source_entries e ON e.id = p.entry_id AND e.session_id = p.session_id
+          WHERE p.session_id = ? AND p.branch = ? AND p.position >= ? ORDER BY p.position`)
+          .all(sessionId, branch, cached.path.count) as { position: number; entry_id: number; turn_id: number }[];
+        if (rows.length === path.count - cached.path.count && rows.at(-1)?.entry_id === path.tailId &&
+            rows.every((row, i) => row.position === cached.path!.count + i)) {
+          const direct = this.db.prepare("SELECT parent_turn_id FROM turns WHERE id = ?")
+            .get(headTurnId) as { parent_turn_id: number | null } | undefined;
+          const extendsHead = cached.headTurnId === headTurnId || direct?.parent_turn_id === cached.headTurnId ||
+            !!this.db.prepare(`WITH RECURSIVE lineage(id,parent_turn_id) AS (
+            SELECT id,parent_turn_id FROM turns WHERE id = ? UNION ALL
+            SELECT t.id,t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id WHERE l.id != ?)
+            SELECT 1 FROM lineage WHERE id = ? LIMIT 1`)
+            .get(headTurnId, cached.headTurnId, cached.headTurnId);
+          const coversNewTail = rows.at(-1)!.turn_id === headTurnId || !!this.db.prepare(`WITH RECURSIVE lineage(id,parent_turn_id) AS (
+            SELECT id,parent_turn_id FROM turns WHERE id = ? UNION ALL
+            SELECT t.id,t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id WHERE l.id != ?)
+            SELECT 1 FROM lineage WHERE id = ? LIMIT 1`)
+            .get(headTurnId, rows.at(-1)!.turn_id, rows.at(-1)!.turn_id);
+          if (extendsHead && coversNewTail) {
+            const newIds = rows.map(row => row.entry_id);
+            const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
+              .all(JSON.stringify(newIds)) as { entry_id: number }[]).map(row => row.entry_id));
+            cached.ids.push(...newIds.filter(id => !noted.has(id)));
+            cached.path = path;
+            cached.headTurnId = headTurnId;
+            return cached.ids;
+          }
+        }
+      }
+    }
+    const source = this.pathSourceMeta(sessionId, branch, headTurnId);
+    const ids = source.map(entry => entry.id);
     const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
       .all(JSON.stringify(ids)) as { entry_id: number }[]).map(r => r.entry_id));
-    return ids.filter(id => !noted.has(id));
+    const pending = ids.filter(id => !noted.has(id));
+    if (!this.db.isTransaction) this.pendingPath = { sessionId, branch, headTurnId, signal, path,
+      ids: pending, coversTail: !path || (source.at(-1)?.id ?? null) === path.tailId };
+    return pending;
+  }
+  /** Return a defensive copy; consumers of the hot due path use pendingEntryState directly. */
+  pendingEntryIds(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number[] {
+    if (prepared) {
+      const ids = this.pathEntryIds(sessionId, branch, headTurnId, prepared);
+      const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
+        .all(JSON.stringify(ids)) as { entry_id: number }[]).map(r => r.entry_id));
+      return ids.filter(id => !noted.has(id));
+    }
+    return [...this.pendingEntryState(sessionId, branch, headTurnId)];
   }
   /** 79 item 1: metadata only, same contract as `sourcePath` above. */
   pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntryMeta[] {

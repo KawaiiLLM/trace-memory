@@ -41,6 +41,11 @@ test("80: append validates persisted prefix and delta without reading its member
     for (const ids of [[c.entry.id], [outsider.entry.id], [999999], [c.entry.id, c.entry.id]])
       expect(() => store.appendSourcePath(owner.id, "main", after, ids, c.turn.id, "native")).toThrow();
     expect(store.sourcePathState(owner.id, "main")).toEqual(after);
+    const d = add(owner.id, c.turn.id, "d");
+    const middleSibling = add(owner.id, b.turn.id, "middle sibling");
+    expect(() => store.appendSourcePath(owner.id, "main", after,
+      [middleSibling.entry.id, d.entry.id], d.turn.id, "native")).toThrow(/tail is not an extension/);
+    expect(store.sourcePathState(owner.id, "main")).toEqual(after);
     store.selectSourcePath(owner.id, "main", [a.entry.id, alternate.entry.id, c.entry.id]);
     expect(() => store.appendSourcePath(owner.id, "main", after, [b.entry.id], c.turn.id, "native"))
       .toThrow(StaleSourcePathError); // same length and tail, different middle

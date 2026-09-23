@@ -730,19 +730,33 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // (never re-reading Raw) for an entry already seen. Pruned to exactly the still-pending set on every
   // read: an entry drops out the moment it is noted, instead of leaking for the life of the process.
   const notingViewCache = new Map<number, string>();
-  function* notingViews(target: TaskTarget) {
-    const pending = store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId);
-    const stillPending = new Set(pending);
-    for (const id of notingViewCache.keys()) if (!stillPending.has(id)) notingViewCache.delete(id);
-    for (const id of pending) {
+  let lastPending: readonly number[] | undefined;
+  const counted = new WeakMap<readonly number[], { count: JoinedTokens; length: number }>();
+  const pendingState = (target: TaskTarget): readonly number[] => {
+    const pending = store.pendingEntryState(target.sessionId, target.branch, target.headTurnId);
+    if (pending !== lastPending) {
+      const stillPending = new Set(pending);
+      for (const id of notingViewCache.keys()) if (!stillPending.has(id)) notingViewCache.delete(id);
+      lastPending = pending;
+    }
+    return pending;
+  };
+  const countPending = (pending: readonly number[], limit: number): number => {
+    let prefix = counted.get(pending);
+    if (!prefix) { prefix = { count: new JoinedTokens(), length: 0 }; counted.set(pending, prefix); }
+    while (prefix.length < pending.length && prefix.count.count < limit) {
+      const id = pending[prefix.length]!;
       let view = notingViewCache.get(id);
       if (view === undefined) {
         view = renderEntry(store.getSourceEntry(id)!, cfg.render, resultText).content;
         notingViewCache.set(id, view);
       }
-      yield view;
+      if (prefix.length) prefix.count.add("\n\n");
+      prefix.count.add(view);
+      prefix.length++;
     }
-  }
+    return prefix.count.count;
+  };
   // Ticket 22b's rule kept exactly ("the estimate is still of one joined string, exactly as before —
   // independently estimated views are never summed"): `JoinedTokens` is not a per-entry sum, it is a
   // running tokenization of the one joined string, proven identical to `tokens(joined)` for every real
@@ -750,17 +764,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // re-scanning the whole growing prefix on every append. The early stop is unchanged: rendering (via
   // `notingViews`, cached) and tokenizing both stop the moment the threshold is reached, never reading
   // ahead through the rest of the backlog to warm the cache.
-  const notingDue = (target: TaskTarget): boolean => {
-    const counter = new JoinedTokens();
-    let first = true;
-    for (const view of notingViews(target)) {
-      if (!first) counter.add("\n\n");
-      counter.add(view);
-      first = false;
-      if (counter.count >= cfg.noting.triggerTokens) return true;
-    }
-    return false;
-  };
+  const notingDue = (target: TaskTarget): boolean =>
+    countPending(pendingState(target), cfg.noting.triggerTokens) >= cfg.noting.triggerTokens;
   const consolidationTokens = (target: TaskTarget): number => {
     const path = store.knowledgePath(target.sessionId, target.branch, target.headTurnId);
     const snapshot = store.pathSnapshot(path);
@@ -773,7 +778,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (!target) return { tokens: null, trigger, state: "no session" };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
-      const count = phase === "noting" ? tokensJoined([...notingViews(target)], "\n\n") : consolidationTokens(target);
+      const count = phase === "noting" ? countPending(pendingState(target), Infinity) : consolidationTokens(target);
       return { tokens: count, trigger: cfg[phase].triggerTokens, state: "known" };
     } catch { return { tokens: null, trigger, state: "unavailable" }; }
   };
