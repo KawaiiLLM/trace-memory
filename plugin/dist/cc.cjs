@@ -1186,6 +1186,7 @@ var Store = class {
         const newAddresses = !columns.some((r) => r.name === "addresses");
         if (newAddresses) this.db.exec("ALTER TABLE source_entries ADD COLUMN addresses TEXT NOT NULL DEFAULT '[]'");
         this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_unnormalized ON source_entries(id) WHERE blocks IS NULL");
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_membership ON source_entries(id, session_id, turn_id, addresses)");
         if (newAddresses || normalizeSource) {
           const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
           for (const row of this.db.prepare(`SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id`).iterate()) {
@@ -2137,7 +2138,7 @@ var Store = class {
     }
     if (!paths.size) return;
     const selectedIds = [...new Set([...paths.values()].flatMap((value) => value.ids))];
-    const entryRows = selectedIds.length ? this.db.prepare(`SELECT id, turn_id, session_id FROM source_entries
+    const entryRows = selectedIds.length ? this.db.prepare(`SELECT id, turn_id, session_id FROM source_entries INDEXED BY idx_source_membership
       WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(selectedIds)) : [];
     const entries = new Map(entryRows.map((row) => [Number(row.id), { turnId: Number(row.turn_id), sessionId: Number(row.session_id) }]));
     const seeds = [];
@@ -2199,7 +2200,7 @@ var Store = class {
       }
       snapshots.set(key, { owner: value.owner, turns, selected, addresses: /* @__PURE__ */ new Map() });
     }
-    if (addressCandidates.size) for (const row of this.db.prepare(`SELECT id, session_id, turn_id, addresses FROM source_entries
+    if (addressCandidates.size) for (const row of this.db.prepare(`SELECT id, session_id, turn_id, addresses FROM source_entries INDEXED BY idx_source_membership
       WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify([...addressCandidates]))) {
       let parsed2;
       try {
@@ -2361,7 +2362,7 @@ var Store = class {
     const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(path.sessionId, path.branch);
     if (!row) return null;
     const ids = /* @__PURE__ */ new Set(), addresses = /* @__PURE__ */ new Map();
-    for (const { id, turn_id, addresses: raw } of this.db.prepare("SELECT e.id, e.turn_id, e.addresses FROM json_each(?) j JOIN source_entries e ON e.id = j.value").all(row.entry_ids)) {
+    for (const { id, turn_id, addresses: raw } of this.db.prepare("SELECT e.id, e.turn_id, e.addresses FROM json_each(?) j JOIN source_entries e INDEXED BY idx_source_membership ON e.id = j.value").all(row.entry_ids)) {
       if (!turns.has(turn_id)) continue;
       ids.add(id);
       if (!addresses.has(turn_id)) addresses.set(turn_id, /* @__PURE__ */ new Set());
@@ -2432,10 +2433,13 @@ var Store = class {
     return result;
   }
   /** Fact and Raw readers keep their supplied frozen path. Foreign facts remain available for their
-   * existing scope-specific selection; only Knowledge support membership consults mutable foregrounds. */
-  factOnPath(fact, path, snapshot2 = this.pathSnapshot(path), input) {
+   * existing scope-specific selection; only Knowledge support membership consults mutable foregrounds.
+   * `owners` (71): a batched turn-id -> session-id map a caller already holds, tried before a
+   * per-fact `SELECT * FROM turns WHERE id = ?` — the check itself is unchanged, only where its
+   * answer comes from. */
+  factOnPath(fact, path, snapshot2 = this.pathSnapshot(path), input, owners2) {
     const projected = input?.facts.get(fact.id);
-    const owner = projected?.sessionId ?? this.getTurn(fact.turnId).sessionId;
+    const owner = projected?.sessionId ?? owners2?.get(fact.turnId) ?? this.getTurn(fact.turnId).sessionId;
     if (owner !== path.sessionId) return true;
     return this.factInSnapshot(fact, snapshot2, projected?.entries);
   }
@@ -2957,29 +2961,47 @@ ${rendered.get(value.revision.id)}`;
     return this.db.prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
   }
   /** 22d: one row per run of a session, carrying its kind and the usage it recorded — projected out
-   * of `runs.response` in SQL, so the request and response audit bodies stay in the database. No
-   * schema change: `json_extract` over the existing column, the shape 22a's amendment allows.
-   * `usage` is null exactly when the run recorded no usage observation — a response without one, a
-   * cancelled run whose usage is unknown, or a response that is not JSON at all. A run whose usage
-   * object exists but is empty is an observation of zeros, and is reported as one; nothing here
-   * manufactures a zero for a missing one (parent 22, "Capacity and accounting"). */
+   * of `runs.response`, so the request audit body and the rest of the response never leave this
+   * function. `usage` is null exactly when the run recorded no usage observation — a response
+   * without one, a cancelled run whose usage is unknown, or a response that is not JSON at all. A
+   * run whose usage object exists but is empty is an observation of zeros, and is reported as one;
+   * nothing here manufactures a zero for a missing one (parent 22, "Capacity and accounting").
+   *
+   * 71: SQLite's `json_valid`/`json_extract` each re-tokenize the whole `response` text from
+   * scratch, and the query below needed six of them per row (one `json_valid` guard repeated per
+   * extraction, and `json_type` again for the presence check) — the dominant cost of a footer
+   * refresh's spend figure was reparsing already-read bytes, not reading them. One `JSON.parse` per
+   * row here replaces all of them: still exactly the semantics above (an invalid body or a missing
+   * value produces "no observation", never a fabricated zero), still read fresh on every call — no
+   * cache, so an amendment already committed to this row (by this connection or another one) is
+   * always the value returned. */
   /** Run usage of one session, or of every session when `sessionId` is null (51: the footer's
    * database-wide daily figure); `since` keeps runs created at or after that UTC instant. */
   listRunUsage(sessionId, since) {
-    const rows = this.db.prepare(`SELECT kind,
-        CASE WHEN json_valid(response) THEN json_type(response, '$.usage') END recorded,
-        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.input') END input,
-        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.output') END output,
-        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheRead') END cacheRead,
-        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheWrite') END cacheWrite,
-        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cost.total') END cost
-      FROM runs WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR created_at >= ?) ORDER BY id`).all(sessionId, sessionId, since ?? null, since ?? null);
+    const rows = this.db.prepare(`SELECT kind, response FROM runs
+      WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR created_at >= ?) ORDER BY id`).all(sessionId, sessionId, since ?? null, since ?? null);
     const count = (value) => typeof value === "number" ? value : 0;
-    return rows.map((row) => ({
-      kind: row.kind,
-      // `json_type` is null for a missing key and 'null' for a recorded null: both are "no observation".
-      usage: !row.recorded || row.recorded === "null" ? null : { input: count(row.input), output: count(row.output), cacheRead: count(row.cacheRead), cacheWrite: count(row.cacheWrite), cost: count(row.cost) }
-    }));
+    return rows.map((row) => {
+      let parsed2;
+      try {
+        parsed2 = row.response === null ? void 0 : JSON.parse(row.response);
+      } catch {
+        parsed2 = void 0;
+      }
+      const body = parsed2 && typeof parsed2 === "object" && !Array.isArray(parsed2) ? parsed2 : void 0;
+      const usage = body?.usage;
+      if (usage === void 0 || usage === null) return { kind: row.kind, usage: null };
+      const fields2 = usage && typeof usage === "object" && !Array.isArray(usage) ? usage : {};
+      const cost = fields2.cost;
+      const costTotal = cost && typeof cost === "object" && !Array.isArray(cost) ? cost.total : void 0;
+      return { kind: row.kind, usage: {
+        input: count(fields2.input),
+        output: count(fields2.output),
+        cacheRead: count(fields2.cacheRead),
+        cacheWrite: count(fields2.cacheWrite),
+        cost: count(costTotal)
+      } };
+    });
   }
   listFactsByRun(runId) {
     return this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(runId).map(toFact);
@@ -3046,7 +3068,8 @@ ${rendered.get(value.revision.id)}`;
     if (!candidates.length) return [];
     const path = { sessionId, headTurnId: root2, branch };
     const view = snapshot2 ?? this.pathSnapshot(path);
-    return candidates.filter((fact) => this.factOnPath(fact, path, view));
+    const owners2 = new Map(candidates.map((fact) => [fact.turnId, sessionId]));
+    return candidates.filter((fact) => this.factOnPath(fact, path, view, void 0, owners2));
   }
   /** Ticket 69: a cheap composite that changes exactly when a commit could change the footer's four
    * cached counts (branch facts, unconsolidated, current knowledge, changed current knowledge) — for
@@ -7870,7 +7893,7 @@ var import_node_crypto10 = require("node:crypto");
 var import_node_path4 = require("node:path");
 var import_node_util = require("node:util");
 
-// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -28668,7 +28691,7 @@ function query({
   return queryInstance;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -28742,7 +28765,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// node_modules/zod/v4/core/util.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -29421,7 +29444,7 @@ var Class2 = class {
   }
 };
 
-// node_modules/zod/v4/core/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -29487,7 +29510,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -29567,7 +29590,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// node_modules/zod/v4/core/regexes.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -29724,7 +29747,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// node_modules/zod/v4/core/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -30272,7 +30295,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -30308,14 +30331,14 @@ var Doc2 = class {
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -32286,7 +32309,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -32395,7 +32418,7 @@ function en_default3() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -32443,7 +32466,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/api.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -33247,7 +33270,7 @@ function _stringFormat(Class3, format, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -33599,7 +33622,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -34075,7 +34098,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -34244,7 +34267,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// node_modules/zod/v4/classic/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -34278,7 +34301,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// node_modules/zod/v4/classic/iso.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -34319,7 +34342,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -34359,7 +34382,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -34373,7 +34396,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -35452,22 +35475,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// node_modules/zod/v4/classic/compat.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// node_modules/zod/v4/classic/from-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// node_modules/zod/v4/classic/external.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
