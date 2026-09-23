@@ -1,4 +1,4 @@
-import { expect, test, vi } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { join } from "node:path";
@@ -67,6 +67,8 @@ test("30k-record bootstrap: writer wait during ingest, per-phase timing, and loo
 
   const writer = spawn(process.execPath, [resolve("tests/hosts/cc-67-writer.mjs"), config.dbPath, "8"],
     { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+  // A failed assertion before the normal stop must not leave the writer running after the test.
+  onTestFinished(() => { if (writer.exitCode === null) writer.kill(); });
   const finished = new Promise<any>((resolveDone, reject) => {
     writer.on("message", (message: any) => { if (message.type === "done") resolveDone(message); });
     writer.on("error", reject);
