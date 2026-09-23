@@ -691,13 +691,6 @@ function settleExecution(store, id, outcome, runId, reason = "", dreamingAuthori
 // src/core/store/processing.ts
 var DEFAULT_KNOWLEDGE_BUDGETS = { global: 4e3, project: 15e3, session: 1e3 };
 var DEFAULT_DREAMING_TRIGGER_TOKENS = 5e3;
-function deriveSharedMaterialAllowance(triggers) {
-  for (const [name, value] of Object.entries(triggers))
-    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`cannot derive shared material allowance: ${name} trigger must be a nonnegative safe integer`);
-  const allowance = triggers.noting + triggers.consolidation + triggers.dreaming;
-  if (!Number.isSafeInteger(allowance)) throw new Error("derived shared material allowance must be a safe integer");
-  return allowance;
-}
 function deriveKnowledgeBudgets(values, stored = false) {
   const label = (field) => `${field[0].toUpperCase()}${field.slice(1)} Knowledge budget`;
   for (const field of ["global", "project", "session"]) if (!Number.isSafeInteger(values[field]) || values[field] < 0)
@@ -4767,12 +4760,7 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
   const injection = (target, visible = noVisibility()) => {
     const empty = () => ({ text: "", knowledgeCommitIds: [] });
     const budgets2 = store.knowledgeBudgets();
-    const sharedAllowance = deriveSharedMaterialAllowance({
-      noting: config3.noting.triggerTokens,
-      consolidation: config3.consolidation.triggerTokens,
-      dreaming: config3.dreaming.triggerTokens
-    });
-    const knowledgeCap = budgets2.injection + sharedAllowance;
+    const knowledgeCap = budgets2.injection + config3.compaction.sharedAllowanceTokens;
     if (!Number.isSafeInteger(knowledgeCap)) throw new Error("derived foreground Knowledge capacity must be a safe integer");
     const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : void 0;
     if (id !== void 0 && !store.enabled(id)) return empty();
@@ -5034,6 +5022,12 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
     // One allocator: required state notices/facts/Raw first, then optional current knowledge and
     // Raw-first historical refill in each own base remainder. Scheduling pairs never affect it.
     // No worker, processing mark or coverage persistence is performed by this synchronous render.
+    // 73 "Shared allowance": one allocator, three windows, one pass — Knowledge first (borrowing the
+    // whole allowance), then the newest contiguous Raw span (pending entries borrowing what Knowledge
+    // left, already-noted entries only within the Raw base), then the newest facts before that span
+    // (unconsolidated facts borrowing what Raw left, consolidated only within the facts base). Nothing
+    // is required any more: every window truncates — newest kept, oldest omitted with a receipt —
+    // rather than escalating to a native delegation. Omitted material stays pending in the store.
     compact: (sessionId, branch = "main", headTurnId, retainedView = []) => {
       if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
@@ -5041,121 +5035,147 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
       const sourced = head === void 0 ? [] : store.sourcePath(sessionId, branch, head);
       const pending = head === void 0 ? [] : store.pendingEntries(sessionId, branch, head);
+      const pendingIds = new Set(pending.map((e) => e.id));
       const knowledge = store.currentKnowledge(path, {}, snapshot2);
       const visible = Array.isArray(retainedView) ? noVisibility() : retainedView;
       const retained = new Set(Array.isArray(retainedView) ? retainedView : visible.raw.keys());
-      const notes = knowledgeStatusNotes(store, knowledge, visible.knowledgeCommitIds, path);
-      const noteCost = notes.length ? charge([KNOWLEDGE_STATUS_TITLE, ...notes]) : 0;
       const applicable2 = store.listSessionFacts(sessionId).filter((f) => store.factOnPath(f, path, snapshot2));
       const pendingFacts = store.unconsolidated(applicable2, path, snapshot2);
       const pendingFactIds = new Set(pendingFacts.map((f) => f.id));
-      let consolidated = applicable2.filter((f) => !pendingFactIds.has(f.id) && !visible.factIds.has(f.id));
       const factTurns = store.factTurnTimes(applicable2);
-      const pendingIds = new Set(pending.map((e) => e.id));
-      const extracted = sourced.filter((e) => !pendingIds.has(e.id) && !retained.has(e.nativeId));
       const budgets2 = store.knowledgeBudgets();
-      const sharedAllowance = deriveSharedMaterialAllowance({
-        noting: config3.noting.triggerTokens,
-        consolidation: config3.consolidation.triggerTokens,
-        dreaming: config3.dreaming.triggerTokens
-      });
+      const sharedAllowance = config3.compaction.sharedAllowanceTokens;
       const caps = { knowledge: budgets2.injection, facts: config3.compaction.factsTokens, raw: config3.compaction.rawTokens };
       const envelope = caps.knowledge + caps.facts + caps.raw + sharedAllowance;
-      if (!Number.isSafeInteger(envelope)) throw new Error("derived compact envelope must be a safe integer");
+      if (!Number.isSafeInteger(envelope)) throw new Error("compact envelope must be a safe integer");
       const factRelations = store.listFactRelationsOnPathOf(applicable2.map((fact) => fact.id), path, snapshot2);
-      const lines = (facts2) => renderFactGroups(facts2, (f) => factLine(f.id, factRelations.get(f.id) ?? []), factTurns);
-      const factsCharge = (facts2, receipts) => charge([xmlBlock("episodic", ""), FACTS_TITLE]) + charge(lines(facts2)) + (receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0);
+      const lines = (facts) => renderFactGroups(facts, (f) => factLine(f.id, factRelations.get(f.id) ?? []), factTurns);
+      const factsCharge = (facts, receipts) => charge([xmlBlock("episodic", ""), FACTS_TITLE]) + charge(lines(facts)) + (receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0);
       const rawCharge = (contents) => charge([RAW_TITLE]) + charge(contents);
       const view = (entry) => renderEntry(entry, config3.render, resultText);
-      let views;
-      try {
-        views = pending.map(view);
-      } catch (error3) {
-        if (!/capacity/.test(String(error3))) throw error3;
-      }
-      if (!views) return { native: true, reason: `bounded views of ${pending.length} pending entries exceed the entry view profile (E ${config3.render.entryTokens}, C ${config3.render.toolInputTokens}, R ${config3.render.toolResultTokens} tokens): their labels and omission markers do not fit it` };
-      const requiredFacts = factsCharge(pendingFacts, []), requiredRaw = rawCharge(views.map((v) => v.content));
-      const requiredKnowledge = noteCost;
-      const excess = {
-        knowledge: Math.max(0, requiredKnowledge - caps.knowledge),
-        facts: Math.max(0, requiredFacts - caps.facts),
-        raw: Math.max(0, requiredRaw - caps.raw)
-      };
-      const totalExcess = excess.knowledge + excess.facts + excess.raw;
-      if (totalExcess > sharedAllowance) return {
-        native: true,
-        over: { knowledge: excess.knowledge > 0, facts: excess.facts > 0, raw: excess.raw > 0 },
-        reason: `required material exceeds shared allowance: knowledge ${requiredKnowledge} tokens (excess ${excess.knowledge}, database Knowledge injection capacity ${caps.knowledge}); ${pendingFacts.length} pending facts need ${requiredFacts} tokens (excess ${excess.facts}, compaction.factsTokens ${caps.facts}); bounded views of ${pending.length} pending entries need ${requiredRaw} tokens (excess ${excess.raw}, compaction.rawTokens ${caps.raw}); shared allowance ${sharedAllowance}, charged excess ${totalExcess}, shortfall ${totalExcess - sharedAllowance}`
-      };
-      let shared = sharedAllowance - totalExcess;
+      const knowledgeEnvelope = caps.knowledge + sharedAllowance;
+      const allNotes = knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path).sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit).map((note) => note.text.replace(/(superseded by K\d+@\d+)$/, "$1 above"));
+      const noteReceipt = (omitted) => omitted ? [`omitted ${omitted} older inherited knowledge status lines; knowledge base plus shared allowance is full`] : [];
+      const noteTextCost = (kept) => kept ? charge([KNOWLEDGE_STATUS_TITLE, ...allNotes.slice(0, kept)]) : 0;
+      const noteCost = (kept) => noteTextCost(kept) + charge(noteReceipt(allNotes.length - kept)) + (noteReceipt(allNotes.length - kept).length ? charge(["Receipts:"]) : 0);
+      let noteKept = allNotes.length;
+      while (noteKept > 0 && noteCost(noteKept) > knowledgeEnvelope) noteKept--;
+      const notes = allNotes.slice(0, noteKept);
+      const noteOmittedReceipt = noteReceipt(allNotes.length - noteKept);
+      const knowledgeNoticeCost = noteCost(noteKept);
       const active = budgetKnowledge(
         knowledge,
-        Math.max(0, caps.knowledge - noteCost) + shared,
+        Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
         knowledgeLine,
-        "Knowledge base plus remaining shared allowance",
+        "Knowledge base plus shared allowance",
         /* @__PURE__ */ new Set()
       );
-      shared -= Math.max(0, active.cost + noteCost - caps.knowledge) - excess.knowledge;
-      let rawSpare = Math.max(0, caps.raw - requiredRaw) + shared;
-      const refilledRaw = [];
-      for (const entry of [...extracted].reverse()) {
-        let content;
-        try {
-          content = view(entry).content;
-        } catch (error3) {
-          if (/capacity/.test(String(error3))) continue;
-          throw error3;
+      const knowledgeUsed = knowledgeNoticeCost + active.cost;
+      let sharedAfterKnowledge = sharedAllowance - Math.max(0, knowledgeUsed - caps.knowledge);
+      const candidates = sourced.filter((e) => pendingIds.has(e.id) || !retained.has(e.nativeId));
+      const rawSteps = [];
+      {
+        let rawBaseUsed = charge([RAW_TITLE]), allowanceUsed = 0;
+        for (let i = candidates.length - 1; i >= 0; i--) {
+          const entry = candidates[i];
+          let rendered;
+          try {
+            rendered = view(entry);
+          } catch (error3) {
+            if (/capacity/.test(String(error3))) break;
+            throw error3;
+          }
+          const cost = tokens(rendered.content) + 1;
+          const availableBase = Math.max(0, caps.raw - rawBaseUsed);
+          if (pendingIds.has(entry.id)) {
+            const availableAllowance = Math.max(0, sharedAfterKnowledge - allowanceUsed);
+            if (cost > availableBase + availableAllowance) break;
+            const fromBase = Math.min(cost, availableBase);
+            rawBaseUsed += fromBase;
+            allowanceUsed += cost - fromBase;
+            rawSteps.push({ entry, content: rendered.content, receipts: rendered.receipts, fromAllowance: cost - fromBase });
+          } else {
+            if (cost > availableBase) break;
+            rawBaseUsed += cost;
+            rawSteps.push({ entry, content: rendered.content, receipts: rendered.receipts, fromAllowance: 0 });
+          }
         }
-        if (tokens(content) + 1 > rawSpare) break;
-        refilledRaw.push({ entry, content });
-        rawSpare -= tokens(content) + 1;
       }
-      const selectedRawCost = requiredRaw + charge(refilledRaw.map((value) => value.content));
-      shared -= Math.max(0, selectedRawCost - caps.raw) - excess.raw;
-      const coverage = /* @__PURE__ */ new Set([
-        ...sourced.filter((e) => retained.has(e.nativeId)).map((e) => e.id),
-        ...pendingIds,
-        ...refilledRaw.map((s) => s.entry.id)
-      ]);
-      const coveredFacts = store.factsCoveredByRaw(consolidated, coverage);
-      consolidated = consolidated.filter((f) => !coveredFacts.has(f.id));
-      const spare = Math.max(0, caps.facts - requiredFacts) + shared;
+      const rawReceipt = (kept) => candidates.length - kept ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window; read them with trace]`] : [];
+      const rawTotalCost = (kept) => {
+        const r = rawReceipt(kept);
+        return rawCharge(rawSteps.slice(0, kept).map((s) => s.content)) + charge(r) + (r.length ? charge(["Receipts:"]) : 0);
+      };
+      const rawEnvelope = caps.raw + sharedAfterKnowledge;
+      let rawKept = rawSteps.length;
+      while (rawKept > 0 && rawTotalCost(rawKept) > rawEnvelope) rawKept--;
+      const rawFits = rawTotalCost(rawKept) <= rawEnvelope;
+      const rawFinalSteps = rawFits ? rawSteps.slice(0, rawKept) : [];
+      const rawFinalReceipt = rawFits ? rawReceipt(rawKept) : [];
+      sharedAfterKnowledge -= rawFinalSteps.reduce((sum, s) => sum + s.fromAllowance, 0);
+      const sharedAfterRaw = sharedAfterKnowledge;
+      const suppliedRaw = [...rawFinalSteps].reverse();
+      const rawOmitted = candidates.slice(0, candidates.length - suppliedRaw.length);
+      const rawOmittedPending = rawOmitted.filter((e) => pendingIds.has(e.id));
+      const rawOmittedPendingTokens = rawOmittedPending.reduce((sum, e) => {
+        try {
+          return sum + tokens(view(e).content) + 1;
+        } catch {
+          return sum;
+        }
+      }, 0);
+      const coverage = /* @__PURE__ */ new Set([...sourced.filter((e) => retained.has(e.nativeId)).map((e) => e.id), ...suppliedRaw.map((s) => s.entry.id)]);
+      const factCandidates = applicable2.filter((f) => !visible.factIds.has(f.id));
+      const coveredFactIds = store.factsCoveredByRaw(factCandidates, coverage);
+      const eligibleFacts = factCandidates.filter((f) => !coveredFactIds.has(f.id));
       const omission = (rest) => rest.length ? [`omitted ${rest.length} older facts; expand: ${expandList(rest.map((f) => `F${f.id}`))}`] : [];
-      let refilledFacts = [], factReceipts = omission(consolidated);
-      if (factsCharge(pendingFacts, factReceipts) - requiredFacts > spare) factReceipts = [];
-      else for (const fact of consolidated) {
-        const next = [...refilledFacts, fact], receipts = omission(consolidated.slice(next.length));
-        if (factsCharge([...pendingFacts, ...next], receipts) - requiredFacts > spare) break;
-        refilledFacts = next;
-        factReceipts = receipts;
+      const factsTotalCost = (kept) => factsCharge(eligibleFacts.slice(0, kept), omission(eligibleFacts.slice(kept)));
+      let factsKept = 0, factsBaseUsed = charge([xmlBlock("episodic", ""), FACTS_TITLE]), factsAllowanceUsed = 0, prevFactsCost = factsBaseUsed;
+      for (const fact of eligibleFacts) {
+        const nextCost = factsCharge([...eligibleFacts.slice(0, factsKept), fact], []);
+        const marginal = nextCost - prevFactsCost;
+        const availableBase = Math.max(0, caps.facts - factsBaseUsed);
+        if (pendingFactIds.has(fact.id)) {
+          const availableAllowance = Math.max(0, sharedAfterRaw - factsAllowanceUsed);
+          if (marginal > availableBase + availableAllowance) break;
+          const fromBase = Math.min(marginal, availableBase);
+          factsBaseUsed += fromBase;
+          factsAllowanceUsed += marginal - fromBase;
+        } else {
+          if (marginal > availableBase) break;
+          factsBaseUsed += marginal;
+        }
+        factsKept++;
+        prevFactsCost = nextCost;
       }
-      const facts = [...pendingFacts, ...refilledFacts];
-      const order = new Map(sourced.map((entry, index) => [entry.id, index]));
-      const supplied = [...pending.map((entry, index) => ({ entry, content: views[index].content })), ...refilledRaw].sort((a, b) => order.get(a.entry.id) - order.get(b.entry.id));
+      const factsEnvelope = caps.facts + sharedAfterRaw;
+      while (factsKept > 0 && factsTotalCost(factsKept) > factsEnvelope) factsKept--;
+      const factsFit = factsTotalCost(factsKept) <= factsEnvelope;
+      const finalFacts = factsFit ? eligibleFacts.slice(0, factsKept) : [];
+      const finalFactReceipts = factsFit ? omission(eligibleFacts.slice(factsKept)) : [];
+      const factsOmittedPending = eligibleFacts.slice(finalFacts.length).filter((f) => pendingFactIds.has(f.id));
+      const factsOmittedPendingTokens = factsOmittedPending.length ? charge(lines(factsOmittedPending)) : 0;
+      const truncated2 = {};
+      if (rawOmittedPending.length) truncated2.raw = { entries: rawOmittedPending.length, tokens: rawOmittedPendingTokens };
+      if (factsOmittedPending.length) truncated2.facts = { count: factsOmittedPending.length, tokens: factsOmittedPendingTokens };
       const material = {
         knowledge: active.groups,
-        facts: lines(facts),
-        entries: supplied.map((s) => ({ id: s.entry.id, view: s.content })),
-        receipts: [...views.flatMap((v) => v.receipts), ...factReceipts, ...active.receipts]
+        facts: lines(finalFacts),
+        entries: suppliedRaw.map((s) => ({ id: s.entry.id, view: s.content })),
+        receipts: [...suppliedRaw.flatMap((s) => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...active.receipts, ...noteOmittedReceipt]
       };
       return {
         ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
-        // 29a "Renderers return what they kept": exactly the identities this replacement carries,
-        // pending and refilled alike. What a budget left out is absent here (28a item 7).
+        // 29a "Renderers return what they kept": exactly the identities this replacement carries.
+        // What a budget left out is absent here (28a item 7) and stays pending in the store.
         supplied: {
-          entries: supplied.map((s) => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" })),
-          factIds: facts.map((f) => f.id),
+          entries: suppliedRaw.map((s) => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" })),
+          factIds: finalFacts.map((f) => f.id),
           knowledgeCommitIds: active.commits
         },
-        // 28a item 6: the per-window accounting beside the text, for the acceptance probe and for
-        // 28b's recovery decision. It is diagnostics, not a second outcome.
-        charged: {
-          knowledge: active.cost + noteCost,
-          facts: factsCharge(facts, factReceipts),
-          raw: rawCharge(supplied.map((s) => s.content)),
-          envelope,
-          required: { knowledge: requiredKnowledge, facts: requiredFacts, raw: requiredRaw }
-        }
+        // The per-window accounting beside the text, for the acceptance probe; diagnostics only.
+        charged: { knowledge: knowledgeUsed, facts: factsTotalCost(finalFacts.length), raw: rawTotalCost(suppliedRaw.length), envelope },
+        ...Object.keys(truncated2).length ? { truncated: truncated2 } : {}
       };
     },
     branchSummary: (sessionId, branch, headTurnId) => {
@@ -6175,11 +6195,7 @@ function prepareDreaming(store, input, config3, claim, path, { pool: due, range 
     throw new Error(`Dreaming pool ${due.pool} changed material exceeds its ${due.budget}-token budget including framing`);
   const references = due.versions.filter((value) => !frozenIds.has(value.revision.id));
   const budgets2 = store.knowledgeBudgets();
-  const knowledgeCapacity = budgets2.injection + deriveSharedMaterialAllowance({
-    noting: config3.noting.triggerTokens,
-    consolidation: config3.consolidation.triggerTokens,
-    dreaming: config3.dreaming.triggerTokens
-  });
+  const knowledgeCapacity = budgets2.injection + config3.compaction.sharedAllowanceTokens;
   if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Dreamer Knowledge capacity must be a safe integer");
   const processedInputCap = knowledgeCapacity - tokens(changed) - 1;
   const renderReference = (value) => due.rendered.get(value.revision.id);
@@ -6391,11 +6407,7 @@ function freezeConsolidation(store, input, config3) {
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   const knowledge = store.currentKnowledge(path);
   const budgets2 = store.knowledgeBudgets();
-  const knowledgeCapacity = budgets2.injection + deriveSharedMaterialAllowance({
-    noting: config3.noting.triggerTokens,
-    consolidation: config3.consolidation.triggerTokens,
-    dreaming: config3.dreaming.triggerTokens
-  });
+  const knowledgeCapacity = budgets2.injection + config3.compaction.sharedAllowanceTokens;
   if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Consolidator Knowledge capacity must be a safe integer");
   const initial = {
     visible: inheriting && input.visible ? input.visible : noVisibility(),
@@ -6591,14 +6603,15 @@ var DEFAULT_CONFIG = {
   },
   compaction: {
     factsTokens: 1e4,
-    rawTokens: 1e4
+    rawTokens: 1e4,
+    sharedAllowanceTokens: 1e4
   }
 };
 var CONFIG_ALIASES = { "noting.branchModeDefault": "noting.forkModeDefault" };
 var PART_BUDGETS = "use render.toolInputTokens (the whole rendered call part) and render.toolResultTokens (the whole rendered result part)";
 var REMOVED_SETTINGS = {
   "consolidation.triggerUnconsolidatedFacts": "use consolidation.triggerTokens (tokens, not a count)",
-  "compaction.overflowTokens": "remove it; the shared allowance is derived from the Noting, Consolidation and Dreamer triggers",
+  "compaction.overflowTokens": "use compaction.sharedAllowanceTokens (a fixed configuration value, default 10,000; no longer derived from the Noting, Consolidation and Dreamer triggers)",
   // Ticket 25b removed this key; 29e restores the choice under the canonical spelling every phase
   // shares. It stays a removed setting rather than becoming an alias, because it is the INVERSE
   // boolean: reading a saved `true` as `forkModeDefault: true` would switch the meaning of the value
@@ -7267,7 +7280,8 @@ function resolveCcHostConfig(input) {
     ...input["dreaming.triggerTokens"] === void 0 && input["dreaming.timeoutMs"] === void 0 ? {} : { dreaming: {
       ...input["dreaming.triggerTokens"] === void 0 ? {} : { triggerTokens: input["dreaming.triggerTokens"] },
       ...input["dreaming.timeoutMs"] === void 0 ? {} : { timeoutMs: input["dreaming.timeoutMs"] }
-    } }
+    } },
+    ...input["compaction.sharedAllowanceTokens"] === void 0 ? {} : { compaction: { sharedAllowanceTokens: input["compaction.sharedAllowanceTokens"] } }
   });
   return {
     dbPath: (0, import_node_path2.resolve)(dbPath),
@@ -39757,7 +39771,7 @@ async function ccSessionStartInjection(config3, input) {
     async () => {
       throw new Error("CC injection Hook cannot run model work");
     },
-    {},
+    config3.coreConfig,
     void 0,
     (entry) => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : void 0
   );
@@ -40015,7 +40029,7 @@ async function ccHandleClear(config3, input) {
     async () => {
       throw new Error("CC clear Hook cannot run model work");
     },
-    {},
+    config3.coreConfig,
     void 0,
     (entry) => entry.nativeLineage === parentBinding.nativeSessionId ? ccSourceBlocks(entry) : void 0
   );
@@ -40068,7 +40082,8 @@ async function ccHandleClear(config3, input) {
     const headTurnId = entry?.turnId ?? nativeTurn?.turnId;
     if (!headTurnId) throw new Error("parent Claude Code selected native source has no persisted core Turn");
     const compacted = memory.compact(core, synced.branch, headTurnId);
-    const injection = "native" in compacted ? memory.injection({ sessionId: core, branch: synced.branch, headTurnId }, noVisibility()) : { text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, composition: compacted.composition };
+    if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation unexpectedly: ${compacted.reason}`);
+    const injection = { text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, composition: compacted.composition };
     const turn = memory.store.appendTurn({
       sessionId: core,
       parentTurnId: headTurnId,
@@ -40079,9 +40094,17 @@ async function ccHandleClear(config3, input) {
     });
     const inheritedEntryIds = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
     await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: turn.id, inheritedEntryIds });
-    if (!injection.text) return { handled: true, output: null };
+    const omitted = compacted.truncated;
+    const systemMessage = omitted ? `Trace Memory: compaction omitted ${[
+      ...omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"} (${omitted.raw.tokens} tokens)`] : [],
+      ...omitted.facts ? [`${omitted.facts.count} unconsolidated ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []
+    ].join(" and ")}; they remain pending for Noting and Consolidation.` : void 0;
+    if (!injection.text) return { handled: true, output: systemMessage ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }, systemMessage } : null };
     const visibleBinding = { db: databaseIdentity(config3.dbPath), nativeSession: childId, coreSession: core };
-    return { handled: true, output: { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) } } };
+    return { handled: true, output: {
+      hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },
+      ...systemMessage ? { systemMessage } : {}
+    } };
   } finally {
     memory.store.close();
   }
