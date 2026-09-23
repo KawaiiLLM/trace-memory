@@ -29,7 +29,7 @@ The following records the former Beta.7 behavior. Ticket 64 supersedes its appli
 
 ## Install
 
-Back up the database and worker logs, validate on a consistent copy, then stop all older Pi and CC executors sharing the database before upgrading. Supported migrations are atomic and preserve source, fact and knowledge history. Historical empty supports inherit their parents' evidence; an unchanged old-default budget becomes 4k/15k/1k, while custom values remain. Only legacy-processed current visible versions receive processing records in their pools. This does not promise compatibility with arbitrary partial development schemas.
+Back up the database and worker logs, validate on a consistent copy, then stop all Pi and CC executors sharing the database before upgrading. For databases with legacy JSON source paths, run `npm run upgrade:paths -- <explicit-database-path>` from the repository checkout while executors remain stopped; normal Store opens refuse that old shape. The command reports migration time and commits atomically. Then restart the executors. Other supported migrations are atomic and preserve source, fact and knowledge history. Historical empty supports inherit their parents' evidence; an unchanged old-default budget becomes 4k/15k/1k, while custom values remain. Only legacy-processed current visible versions receive processing records in their pools. This does not promise compatibility with arbitrary partial development schemas.
 
 Remove retired `render.knowledgeBlockTokens` and `compaction.overflowTokens` keys from all configuration layers; invalid or retired keys fail explicitly. Use Pi Settings for database budgets and [CC configuration instructions](plugin/README.md) for its independently stored phase settings.
 

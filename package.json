@@ -23,6 +23,7 @@
   },
   "scripts": {
     "test": "vitest run --dir tests",
+    "upgrade:paths": "node scripts/upgrade-source-paths.ts",
     "typecheck": "tsc --noEmit",
     "smoke:pi": "node tests/hosts/pi/smoke.ts",
     "smoke:package": "node tests/package-smoke.mjs",
