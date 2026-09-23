@@ -11,7 +11,7 @@ import { mkdtempSync, copyFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { generate, countSourceReads, type Fixture } from "../../perf/fixture.ts";
+import { generate, countSourceReads, countHydratedRows, type Fixture } from "../../perf/fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { TraceMemory, type TaskTarget } from "../../../src/core/api/index.ts";
 import { notingPending } from "../../../src/core/noting/index.ts";
@@ -226,4 +226,44 @@ test("79 item 1 at scale: sourcePath, pendingEntries and listSourceEntries hydra
     expect(store.listSourceEntries(base.sessionId).length).toBeGreaterThan(2_000);
     expect(counter.reads()).toBe(0);
   } finally { store.close(); counter.restore(); rmSync(copy, { force: true }); }
+});
+
+// Pi review of 5ee34b5, item 1: `note` used to hydrate every candidate before resolving anything,
+// regardless of how many (or few) sources the batch actually cited. These pin the fix with
+// `countHydratedRows` (the batched twin of `countSourceReads`, since `note` hydrates through
+// `Store.hydrateSourceEntries`, not a per-id `getSourceEntry` loop).
+test("79 item 1 (Pi review of 5ee34b5): an empty note hydrates nothing on a thousands-entry path", () => {
+  const copy = backlogCopy("note-empty.db");
+  const memory = TraceMemory(copy, async () => { throw new Error("no model in this test"); });
+  const counter = countHydratedRows();
+  try {
+    expect(memory.pendingEntries(base.sessionId, base.branch, base.headTurnId).length).toBeGreaterThan(2_000);
+    counter.reset();
+    const note = memory.tools({ kind: "manual", sessionId: base.sessionId, currentTurnId: base.headTurnId, branch: base.branch })[2]!;
+    expect(JSON.parse(note.execute({ facts: [] }))).toMatchObject({ factIds: [] });
+    expect(counter.reads()).toBe(0);
+  } finally { memory.close(); counter.restore(); rmSync(copy, { force: true }); }
+});
+
+test("79 item 1 (Pi review of 5ee34b5): a note citing one entry hydrates only that Turn's narrowed candidates, not the path", () => {
+  const copy = backlogCopy("note-one.db");
+  let address: string;
+  {
+    const store = new Store(copy);
+    const path = store.sourcePath(base.sessionId, base.branch, base.headTurnId);
+    expect(path.length).toBeGreaterThan(2_000);
+    const target = path[Math.floor(path.length / 2)]!; // an entry well inside the path, not a boundary case
+    address = `T${target.turnId}#E${target.entryOrdinal}`;
+    store.close();
+  }
+  const memory = TraceMemory(copy, async () => { throw new Error("no model in this test"); });
+  const counter = countHydratedRows();
+  try {
+    counter.reset();
+    const note = memory.tools({ kind: "manual", sessionId: base.sessionId, currentTurnId: base.headTurnId, branch: base.branch })[2]!;
+    note.execute({ facts: [{ category: "observation", actor: "user", text: "one-entry citation", source: [address] }] });
+    const hydrated = counter.reads();
+    expect(hydrated).toBeGreaterThan(0); // resolution needed this Turn's body to match the address
+    expect(hydrated).toBeLessThan(20); // one Turn's entries, nowhere near the 2,000+ entry path
+  } finally { memory.close(); counter.restore(); rmSync(copy, { force: true }); }
 });

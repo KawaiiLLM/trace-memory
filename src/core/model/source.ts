@@ -1,5 +1,5 @@
 import type { SourceEntry, SourceInput } from "../store/index.ts";
-import { callSelector, parseTurnAddress } from "./address.ts";
+import { callSelector, parseTurnAddress, type TurnAddress } from "./address.ts";
 
 export type SourceBlock = { kind: "text" | "thinking" | "marker"; text: string }
   | { kind: "call" | "result"; call: SourceInput["calls"][number]; texts?: string[] };
@@ -47,14 +47,33 @@ export function sourceKey(address: string): string {
   return selector?.kind === "call" ? `${base}@${callSelector(selector.id)}` : address;
 }
 export interface SourceResolution { entry: SourceEntry; blocks: SourceBlock[] }
+/** The guard `resolveSource` applies before any block-level check: an address must name exactly one
+ * turn, unqualified by session, and — unless it is a legacy alias — exactly one entry ordinal (no
+ * range, no list). Both are metadata fields (`SourceEntryMeta.turnId`/`entryOrdinal`), so 79 item 2
+ * reuses this same guard, via `sourceAddressScope` below, to narrow candidates before any body is
+ * read; `resolveSource` keeps using it to decide whether to look further into the body at all. One
+ * parse, one guard, so the two can never drift apart. */
+function parseSourceAddress(address: string): (TurnAddress & { turn: number }) | null {
+  let parsed: TurnAddress | null;
+  try { parsed = parseTurnAddress(address); } catch { return null; }
+  if (!parsed || parsed.session !== undefined) return null;
+  const { legacy, entries: selection } = parsed;
+  if (!legacy && (selection?.length !== 1 || selection[0]!.to !== undefined)) return null;
+  return parsed as TurnAddress & { turn: number };
+}
+/** 79 item 2: which turn (and, for a precise single-ordinal address, which ordinal) a source address
+ * could possibly resolve against — decidable from metadata alone, before any body is read. `null`
+ * means the address cannot resolve to anything, matching `resolveSource`'s own early return. */
+export function sourceAddressScope(address: string): { turn: number; ordinal?: number } | null {
+  const parsed = parseSourceAddress(address);
+  return parsed ? { turn: parsed.turn, ordinal: parsed.legacy ? undefined : parsed.entries![0]!.from } : null;
+}
 /** Resolve once against a writer's path. The returned blocks serve eligibility, immutable binding
  * and completion checks alike. Legacy role aliases select text, not their entry's dispatches. */
 export function resolveSource(entries: readonly SourceEntry[], address: string): SourceResolution[] {
-  let parsed;
-  try { parsed = parseTurnAddress(address); } catch { return []; }
-  if (!parsed || parsed.session !== undefined) return [];
+  const parsed = parseSourceAddress(address);
+  if (!parsed) return [];
   const { turn, legacy, selector, entries: selection } = parsed;
-  if (!legacy && (selection?.length !== 1 || selection[0]!.to !== undefined)) return [];
   return entries.flatMap(entry => {
     if (entry.turnId !== turn) return [];
     let blocks = sourceBlocks(entry).filter(block => block.kind !== "marker");

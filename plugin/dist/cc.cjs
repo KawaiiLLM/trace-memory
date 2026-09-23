@@ -183,16 +183,26 @@ function sourceKey(address) {
   const base = `T${parsed2.turn}#E${parsed2.entries[0].from}`, selector2 = parsed2.selector;
   return selector2?.kind === "call" ? `${base}@${callSelector(selector2.id)}` : address;
 }
-function resolveSource(entries, address) {
+function parseSourceAddress(address) {
   let parsed2;
   try {
     parsed2 = parseTurnAddress(address);
   } catch {
-    return [];
+    return null;
   }
-  if (!parsed2 || parsed2.session !== void 0) return [];
+  if (!parsed2 || parsed2.session !== void 0) return null;
+  const { legacy, entries: selection } = parsed2;
+  if (!legacy && (selection?.length !== 1 || selection[0].to !== void 0)) return null;
+  return parsed2;
+}
+function sourceAddressScope(address) {
+  const parsed2 = parseSourceAddress(address);
+  return parsed2 ? { turn: parsed2.turn, ordinal: parsed2.legacy ? void 0 : parsed2.entries[0].from } : null;
+}
+function resolveSource(entries, address) {
+  const parsed2 = parseSourceAddress(address);
+  if (!parsed2) return [];
   const { turn, legacy, selector: selector2, entries: selection } = parsed2;
-  if (!legacy && (selection?.length !== 1 || selection[0].to !== void 0)) return [];
   return entries.flatMap((entry) => {
     if (entry.turnId !== turn) return [];
     let blocks2 = sourceBlocks(entry).filter((block2) => block2.kind !== "marker");
@@ -6103,11 +6113,18 @@ function bindTools(store, read, supplied, metadata, consolidation, reads = /* @_
     const sourcePath = context.kind === "noting" ? initialPath : context.kind === "manual" && context.entryIds ? manualEntries : store.sourcePath(session.id, context.branch, path.headTurnId);
     const candidates = context.kind === "noting" ? sourcePath.filter((entry) => frozenIds.has(entry.id)) : sourcePath;
     const positions = new Map(candidates.map((entry, index) => [entry.id, index]));
-    const hydratedCandidates = store.hydrateSourceEntries(candidates.map((entry) => entry.id));
+    const hydrated = /* @__PURE__ */ new Map();
+    const hydrate = (ids) => {
+      const missing = ids.filter((id) => !hydrated.has(id));
+      if (missing.length) for (const entry of store.hydrateSourceEntries(missing)) hydrated.set(entry.id, entry);
+    };
     const resolution = /* @__PURE__ */ new Map();
     const resolve4 = (source) => {
       if (!resolution.has(source)) {
-        const matches = resolveFactSource(hydratedCandidates, source);
+        const scope = sourceAddressScope(source);
+        const scoped = scope ? candidates.filter((entry) => entry.turnId === scope.turn && (scope.ordinal === void 0 || entry.entryOrdinal === scope.ordinal)) : [];
+        hydrate(scoped.map((entry) => entry.id));
+        const matches = resolveFactSource(scoped.map((entry) => hydrated.get(entry.id)), source);
         resolution.set(source, context.kind === "noting" ? matches.filter((hit) => frozenIds.has(hit.entry.id)) : matches);
       }
       return resolution.get(source);
@@ -7208,6 +7225,15 @@ function validateConfig(override) {
   return cfg;
 }
 var CANCELLED_BEFORE_FALLBACK = "cancelled before fallback";
+function selectByOrdinal(entries, selection, turnId) {
+  const byOrdinal = new Map(entries.map((entry) => [entry.entryOrdinal, entry]));
+  return selection.flatMap((sel) => {
+    if (sel.to !== void 0) return entries.filter((entry2) => entry2.entryOrdinal >= sel.from && entry2.entryOrdinal <= sel.to);
+    const entry = byOrdinal.get(sel.from);
+    if (!entry) throw new Error(`entry T${turnId}#E${sel.from} does not exist on this path`);
+    return [entry];
+  });
+}
 function TraceMemory(dbPath, runAgent, config3 = {}, resultText = rawResultText, normalizeSource) {
   const cfg = validateConfig(config3);
   const store = new Store(dbPath, normalizeSource);
@@ -7389,15 +7415,14 @@ relations retained by explicit Fact read; other endpoints not applicable on this
     }
     const calls = store.listToolCalls(turn.id);
     if (options.tool !== void 0 && !calls.some((c) => c.ordinal === options.tool)) throw new Error(`tool #t${options.tool} does not exist in ${target}`);
-    let occurrences = store.hydrateSourceEntries(display.entryIds ?? store.listSourceEntries(turn.sessionId, turn.id, display.branch).map((entry) => entry.id));
-    if (parsed2.entries) {
-      const byOrdinal = new Map(occurrences.map((entry) => [entry.entryOrdinal, entry]));
-      occurrences = parsed2.entries.flatMap((selection) => {
-        if (selection.to !== void 0) return occurrences.filter((entry2) => entry2.entryOrdinal >= selection.from && entry2.entryOrdinal <= selection.to);
-        const entry = byOrdinal.get(selection.from);
-        if (!entry) throw new Error(`entry T${turn.id}#E${selection.from} does not exist on this path`);
-        return [entry];
-      });
+    let occurrences;
+    if (display.entryIds) {
+      occurrences = store.hydrateSourceEntries(display.entryIds);
+      if (parsed2.entries) occurrences = selectByOrdinal(occurrences, parsed2.entries, turn.id);
+    } else {
+      const meta3 = store.listSourceEntries(turn.sessionId, turn.id, display.branch);
+      const selected = parsed2.entries ? selectByOrdinal(meta3, parsed2.entries, turn.id) : meta3;
+      occurrences = store.hydrateSourceEntries(selected.map((entry) => entry.id));
     }
     if (turn.kind === "compaction" && parsed2.entries) return () => "";
     const selector2 = parsed2.selector;

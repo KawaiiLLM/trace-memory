@@ -474,6 +474,20 @@ export interface TraceMemory {
   spendSince(since: string): number;
 }
 
+/** 79 item 2 (Pi review of 5ee34b5): an ordinal/range selection (`#E2`, `#E2..E7`) is decidable from
+ * `entryOrdinal` alone, a field both `SourceEntryMeta` and hydrated `SourceEntry` carry — so the same
+ * narrowing applies whether it runs before hydration (metadata) or after (an explicit id set already
+ * hydrated for another reason). */
+function selectByOrdinal<T extends { entryOrdinal: number }>(entries: readonly T[], selection: readonly { from: number; to?: number }[], turnId: number): T[] {
+  const byOrdinal = new Map(entries.map(entry => [entry.entryOrdinal, entry]));
+  return selection.flatMap(sel => {
+    if (sel.to !== undefined) return entries.filter(entry => entry.entryOrdinal >= sel.from && entry.entryOrdinal <= sel.to!);
+    const entry = byOrdinal.get(sel.from);
+    if (!entry) throw new Error(`entry T${turnId}#E${sel.from} does not exist on this path`);
+    return [entry];
+  });
+}
+
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {},
   /** Ticket 23: the host's one result-text extractor, registered here (default: the stored string). */
   resultText: ResultExtractor = rawResultText, normalizeSource?: SourceNormalizer): TraceMemory {
@@ -663,18 +677,20 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     // Full is now only a content-ceiling alias: it never widens a bound selection. Unbound reads
     // still include every occurrence. A paged read's exact entryIds override branch discovery,
     // so no continuation can pick up a newly added sibling.
-    // 79 item 1: the Turn's occurrences are chosen by id first (metadata for the unbound case),
-    // then hydrated in one batched read — never a loop of single reads over the whole list.
-    let occurrences = store.hydrateSourceEntries(display.entryIds
-      ?? store.listSourceEntries(turn.sessionId, turn.id, display.branch).map(entry => entry.id));
-    if (parsed.entries) {
-      const byOrdinal = new Map(occurrences.map(entry => [entry.entryOrdinal, entry]));
-      occurrences = parsed.entries.flatMap(selection => {
-        if (selection.to !== undefined) return occurrences.filter(entry => entry.entryOrdinal >= selection.from && entry.entryOrdinal <= selection.to!);
-        const entry = byOrdinal.get(selection.from);
-        if (!entry) throw new Error(`entry T${turn.id}#E${selection.from} does not exist on this path`);
-        return [entry];
-      });
+    // 79 item 1 and item 2 (Pi review of 5ee34b5): the Turn's occurrences are chosen by id first
+    // (metadata for the unbound case), then hydrated in one batched read — never a loop of single
+    // reads over the whole list. An ordinal/range selection (`T792#E1`, on a 2,000-entry Turn) is
+    // decided on that metadata *before* hydration, so it hydrates only the selected entries, not
+    // the whole Turn; a caller-chosen id set (paging continuation) is already the exact page and is
+    // narrowed the same way, after hydration, exactly as before.
+    let occurrences: SourceEntry[];
+    if (display.entryIds) {
+      occurrences = store.hydrateSourceEntries(display.entryIds);
+      if (parsed.entries) occurrences = selectByOrdinal(occurrences, parsed.entries, turn.id);
+    } else {
+      const meta = store.listSourceEntries(turn.sessionId, turn.id, display.branch);
+      const selected = parsed.entries ? selectByOrdinal(meta, parsed.entries, turn.id) : meta;
+      occurrences = store.hydrateSourceEntries(selected.map(entry => entry.id));
     }
     if (turn.kind === "compaction" && parsed.entries) return () => "";
     const selector = parsed.selector;
