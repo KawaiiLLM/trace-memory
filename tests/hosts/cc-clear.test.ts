@@ -9,6 +9,7 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { readBinding, updateBinding } from "../../src/hosts/cc/binding.ts";
 import { operateCcSession } from "../../src/hosts/cc/operator.ts";
 import { handleCcHook } from "../../src/hosts/cc/index.ts";
+import { ccHandleClear } from "../../src/hosts/cc/clear.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { publishNativeSession } from "../../src/hosts/cc/native-session.ts";
@@ -29,11 +30,11 @@ const line = (value: unknown) => `${JSON.stringify(value)}\n`;
 // The second line of an envelope is always `TRACE-MEMORY-CC/1 <json header>` (encodeCcInjection).
 const envelopeHeader = (additionalContext: string) => JSON.parse(additionalContext.split("\n")[1]!.slice("TRACE-MEMORY-CC/1 ".length));
 
-function fixture(label: string) {
+function fixture(label: string, overrides: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), `tm-cc-clear-${label}-`)); dirs.push(dir);
   const stateDir = mkdtempSync("/tmp/tmcc-clr-"); dirs.push(stateDir);
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
-    pollIntervalMs: 10, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2 });
+    pollIntervalMs: 10, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2, ...overrides });
   const parentId = `parent-${label}`, childId = `child-${label}`;
   const parentTranscriptPath = join(dir, "parent.jsonl"), childTranscriptPath = join(dir, "child.jsonl");
   const parentRecords: CcNativeRecord[] = [
@@ -88,23 +89,32 @@ test("SessionStart clear with a bound parent links the same core session and inj
   } finally { store.close(); }
 });
 
-test("clear falls back to the knowledge block when compact() reports capacity", async () => {
+test("73: clear truncates the Raw window rather than falling back, and warns in the foreground", async () => {
   const f = fixture("native-fallback");
-  // A single pending message far larger than the default entry view profile forces compact() to a
-  // native delegation (`views` construction throws "capacity" for it) rather than a bounded replacement.
-  const huge = "x".repeat(60_000);
+  // A reply whose bounded view fills the entry profile, over a Raw window shrunk below it with the
+  // allowance pinned to its configuration floor: 73 What to build 1.4 — compact() omits it with a
+  // receipt instead of falling back — `/clear` has no knowledge-only fallback to substitute.
   f.writeParent([
     { uuid: "pu1", parentUuid: null, type: "user", timestamp: "2026-01-01T00:00:00.000Z", ...sdkPrompt("p1"), message: { role: "user", content: "question" } },
-    { uuid: "pa1", parentUuid: "pu1", type: "assistant", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "assistant", content: [{ type: "text", text: huge }] } },
+    { uuid: "pa1", parentUuid: "pu1", type: "assistant", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "assistant", content: [{ type: "text", text: "word ".repeat(5_000) }] } },
   ]);
   await startParent(f);
-  const output = await clearInto(f);
+  // Called directly, not through `handleCcHook`: the latter re-resolves its config input from
+  // scratch, and mutations to an already-resolved config do not survive resolving it twice.
+  f.config.coreConfig.compaction.rawTokens = 1_000;
+  f.config.coreConfig.compaction.sharedAllowanceTokens = 1;
+  const cleared = await ccHandleClear(f.config, { hook_event_name: "SessionStart", source: "clear", session_id: f.childId, transcript_path: f.childTranscriptPath });
+  expect(cleared.handled).toBe(true);
+  const output = cleared.handled ? cleared.output : null;
   const child = readBinding(f.config, f.childId)!;
   expect(child.clearedFrom).toBeTruthy();
-  if (output) {
-    // A non-empty knowledge-only fallback never carries the huge pending Raw body.
-    expect(output.hookSpecificOutput.additionalContext).not.toContain(huge);
-  }
+  expect(output).not.toBeNull();
+  expect(output!.hookSpecificOutput.additionalContext).not.toContain("word word");
+  // The foreground truncation warning: a top-level `systemMessage` beside `additionalContext`.
+  expect(output!.systemMessage).toContain("compaction omitted");
+  expect(output!.systemMessage).toContain("pending Raw");
+  expect(output!.systemMessage).toContain("pending for Noting and Consolidation");
+  expect(output!.systemMessage!.length).toBeLessThan(4_000);
 });
 
 test("clear without CLAUDE_PID, without a native-session record, or with an unbound parent is an ordinary new session", async () => {

@@ -506,13 +506,13 @@ charged once to the block that emits it:
 
 | Component | Budget | Default |
 | --- | --- | ---: |
-| main knowledge block, category tags, state notices and omission receipts (ordinary-prompt delivery and compact window) | Knowledge base plus remaining derived allowance | 40,000 maximum |
-| Consolidator knowledge references, category tags, inherited status lines and omission receipts | frozen Knowledge base plus derived allowance | 40,000 maximum |
+| main knowledge block, category tags, state notices and omission receipts (ordinary-prompt delivery and compact window) | Knowledge base plus the shared allowance | 30,000 maximum |
+| Consolidator knowledge references, category tags, inherited status lines and omission receipts | frozen Knowledge base plus the shared allowance | 30,000 maximum |
 | Noter's selected Raw / Consolidator's pending fact lines — views with their own source labels, omission markers and joining separators | `noting.batchTokens` / `consolidation.batchTokens` | 10,000 |
 | Noter: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
-| compact's facts window — the pending facts, then the consolidated refill, with the `<episodic>` tag, the facts title and their receipts | `compaction.factsTokens` | 10,000 |
-| compact's Raw window — the pending entry views, then the already-extracted refill, with the Raw title | `compaction.rawTokens` | 10,000 |
-| shared allowance — borrowed after required reservations | sum of configured N, C and D triggers, once each | 20,000 |
+| compact's facts window — unconsolidated facts borrowing the allowance Raw left, then consolidated facts within the facts base, with the `<episodic>` tag, the facts title and their receipts | `compaction.factsTokens` | 10,000 |
+| compact's Raw window — pending entries borrowing the allowance Knowledge left, then already-noted entries within the Raw base, with the Raw title | `compaction.rawTokens` | 10,000 |
+| shared allowance — Knowledge borrows first, then unprocessed Raw, then unprocessed facts (73) | `compaction.sharedAllowanceTokens`, configured, not derived | 10,000 |
 | Consolidator: its titles, range line and receipts, charged with the facts they frame | `consolidation.batchTokens` | 10,000 |
 
 Required task material is reserved first; historical facts then fill whatever episodic space is left, in the existing freshness order. A Noter batch consumes at most its own
@@ -521,7 +521,7 @@ block at all — its selected pending facts and their required framing share the
 allowance. Outer framing is never charged against the Noter's inner Raw ceiling, so an otherwise valid
 10,000-token entry stays batchable.
 
-Each database stores one Knowledge policy row: Global 4,000, Project 15,000 and Session 1,000 tokens by default. Their safe-integer sum derives the 20,000-token Knowledge base window. Knowledge, Facts and Raw have 20,000/10,000/10,000 base windows. Their shared allowance is derived from configuration alone: Dreaming cap 5,000 + Consolidation trigger 5,000 + Noting trigger 10,000 = 20,000 at defaults. It uses the configured cap, not any pool's effective trigger, and never reads database pool budgets. It has no separate configuration key or database migration. Owner pools remain independent: each project has the full Project budget and each session has the full Session budget; they are never multiplied into one global total. Pool sizes count current visible non-archived revisions whether or not they have processing records. Processing state triggers maintenance; it does not change capacity, validity or visibility.
+Each database stores one Knowledge policy row: Global 4,000, Project 15,000 and Session 1,000 tokens by default. Their safe-integer sum derives the 20,000-token Knowledge base window. Knowledge, Facts and Raw have 20,000/10,000/10,000 base windows. Their shared allowance is one configuration value, `compaction.sharedAllowanceTokens`, 10,000 tokens by default (73). It is no longer derived from the Noting, Consolidation and Dreaming triggers, reads nothing from the database, and is unaffected by trigger changes; the derivation function it replaced is gone. Owner pools remain independent: each project has the full Project budget and each session has the full Session budget; they are never multiplied into one global total. Pool sizes count current visible non-archived revisions whether or not they have processing records. Processing state triggers maintenance; it does not change capacity, validity or visibility.
 
 Supported schema creation and upgrade, source/lineage migration, policy initialization and policy
 validation commit as one database transaction. A failed later migration or integrity check therefore
@@ -543,8 +543,8 @@ Raw ceiling is subtracted whether or not this batch fills it. A small Raw batch 
 fact slice, and a small fact slice never buys a larger Raw batch. No new configuration key expresses
 this; the cap is derived from the two that already exist.
 
-Fresh material is therefore at most 20,000 estimated tokens for the Noter and 50,000 for the
-Consolidator by default: the latter combines the frozen 20,000-token Knowledge base, its derived 20,000-token
+Fresh material is therefore at most 20,000 estimated tokens for the Noter and 40,000 for the
+Consolidator by default: the latter combines the frozen 20,000-token Knowledge base, its 10,000-token
 shared allowance and its independent 10,000-token fact/range allowance. System instructions, tool
 definitions, inherited native history and later tool/review messages are additional context costs,
 which is why the host's real-context capacity check stays independent of these domain limits.
@@ -657,7 +657,7 @@ The range is the oldest-first whole-fact prefix within `consolidation.batchToken
 in allocation-id order; the rest stays pending for the next batch. An oldest fact that cannot fit
 alone is a capacity problem and stays pending: it is never clipped, skipped for a smaller later fact
 or marked consolidated unpresented. The range freezes those facts and the visible current Knowledge revisions, including budget omissions, before the model call. Since tickets 25a and 45 the automatic material is exactly two blocks: visible current Knowledge
-within the frozen Knowledge base plus derived allowance (40,000 maximum by default),
+within the frozen Knowledge base plus the shared allowance (30,000 maximum by default),
 and pending facts within `consolidation.batchTokens`, which also carry their titles and range line.
 Required framing is charged to the allowance of the material it frames, never to a second budget. A fitting
 knowledge pool retains the stable category/time/id presentation with no omission receipt. An over-cap pool
@@ -749,7 +749,7 @@ are checked on the selected session path; project-only targets use project/globa
 infer path evidence.
 
 Applicable visible Knowledge bodies and persisted state notices are rendered and charged first against
-the Knowledge base plus derived allowance (40,000 maximum under the default policy). Missing state transitions then fit as complete items in
+the Knowledge base plus the shared allowance (30,000 maximum under the default policy). Missing state transitions then fit as complete items in
 their stable prefix order, followed by complete candidate bodies in normal category/time/id order. An
 unfit next transition is not skipped for a body; a fitting transition prefix remains publishable. Exact
 fit is accepted; zero or negative remainder and a single unfit item emit nothing, and omission receipts
@@ -768,44 +768,52 @@ schema and rows unchanged; nothing writes, reads, drains or migrates them, and t
 are never read as visibility.)
 
 `compact(sessionId, branch = "main", headTurnId?, retainedView = [])` renders one frozen read
-snapshot of the path and returns one of two outcomes, not a string (ticket 20c, one view since 30,
-three windows since 28a):
+snapshot of the path and returns one outcome for any valid path, not a string (ticket 20c, one view
+since 30, one allocation since 73):
 
 | Outcome | Condition | Result |
 | --- | --- | --- |
-| `{text, supplied, charged}` | the complete required set fits the fixed bases plus shared overflow | knowledge/status, `<episodic>` facts in chronological Turn groups, then bounded Raw in source order |
-| `{native: true, reason, over?}` | required excess exceeds the shared allowance, or an entry's minima exceed its profile | explicit native delegation; `over` identifies required Raw, Facts or Knowledge state-notice excess |
+| `{text, supplied, charged, truncated?}` | any valid path | knowledge/status, `<episodic>` facts in chronological Turn groups, then bounded Raw in source order; `truncated` reports omitted pending Raw entries and unconsolidated facts, with counts and tokens |
+| `{native: true, reason}` | an unexpected host-caught error (a store error, an invalid path) | explicit native delegation; never returned for capacity |
 
-**Fixed bases and shared allowance.** Knowledge uses the database-derived 20,000-token base; Facts
-and Raw use 10,000-token bases. One runtime-derived allowance, 20,000 tokens at defaults, is shared
-across the windows; unused base capacity never moves between them. The allocator first reserves every
-selected-path Raw view awaiting Noting, complete fact awaiting Consolidation and required Knowledge
-state notice. It then spends the remaining
-shared allowance on optional current Knowledge, historical Raw and historical facts, in that order.
-Current Knowledge is never required merely because its pool lacks a processing record. Framing,
-state notices and receipts are charged once to the window that emits them. If required Raw and Facts
-still do not fit, core requests bounded recovery or native compaction; it never drops required evidence
-to manufacture a fit.
+**Fixed bases and shared allowance (73).** Knowledge uses the database-derived 20,000-token base;
+Facts and Raw use 10,000-token bases. One configured allowance, `compaction.sharedAllowanceTokens`,
+10,000 tokens by default and never derived from the triggers, is shared across the windows in a fixed
+order — never divided or reserved up front: Knowledge fills its base and borrows the allowance first,
+for any effective knowledge above the base; then the newest contiguous Raw span borrows what Knowledge
+left, for its still-pending entries only; then the newest facts before that span borrow what Raw left,
+for unconsolidated facts only. Already-noted Raw and already-consolidated facts fill only their own
+base, never the allowance. Unused base capacity never moves between windows. Current Knowledge is
+optional regardless of its pool's processing record; above "Knowledge base plus allowance" the oldest
+optional items are dropped. Framing, state notices and receipts are charged once to the window that
+emits them, and a window with no room even for a bare receipt is emitted empty. Compact never falls
+back: material that does not fit even with the allowance is truncated — newest kept, oldest omitted
+with a receipt — and stays pending in the store for Noting and Consolidation.
 
-**Raw-first refill.** Select newest already-extracted Raw as whole bounded E/C/R views, excluding
-exact pending entries and originals or recognized bounded carriers actually retained after compact.
-The optional `retainedView` argument has type `readonly string[] | VisibleView`: legacy native-ID
-arrays describe retained Raw only; the existing `VisibleView` describes actually retained Raw,
-fact and knowledge identities, including recognized carrier identities. Its position and default
+**Raw-first span, then facts.** Walk the selected path newest-first and take one contiguous Raw span:
+a pending entry may use the Raw base and then the allowance Knowledge left; an already-noted entry
+continues the same span only within the Raw base remainder. The walk never skips an entry to reach an
+older one — the first entry that cannot be taken (too large for the remaining budget, or whose bounded
+view cannot fit its own profile) ends the span, and everything older is omitted and counted in the
+receipt. The optional `retainedView` argument has type `readonly string[] | VisibleView`: legacy
+native-ID arrays describe retained Raw only; the existing `VisibleView` describes actually retained
+Raw, fact and knowledge identities, including recognized carrier identities. Its position and default
 empty array are unchanged. The discarded summary establishes no retained coverage. Display selected
 Raw in source order.
 
-Then filter already-consolidated facts before budget selection: exclude only facts whose nonempty,
-complete `fact_sources` bindings are fully covered by retained Raw, required pending Raw or selected
-historical Raw. Unknown, incomplete or partly covered bindings remain eligible. Required pending
-facts are never removed. Select eligible whole facts newest first, deduplicated against pending and
-retained fact IDs, and display chronological Turn groups. Excluded facts gain no supplied fact IDs.
-Raw-first affects filtering, not the independent facts remainder. Pending membership is exact entry/fact processing membership, never a timestamp tail; old pending holes remain protected.
+Then filter facts — consolidated and unconsolidated alike — before selection: exclude only facts whose
+nonempty, complete `fact_sources` bindings are fully covered by retained Raw or the Raw span just
+chosen. Unknown, incomplete or partly covered bindings remain eligible, as does a fact whose sources
+straddle the span's start. Select eligible whole facts newest first, deduplicated against retained
+fact IDs, and display chronological Turn groups; an unconsolidated fact may use the facts base and then
+the allowance Raw left, a consolidated fact only the facts base remainder. Excluded facts gain no
+supplied fact IDs. Pending membership is exact entry/fact processing membership, never a timestamp
+tail; old pending holes remain protected.
 
-Both refills are optional in the strict sense: an item that does not fit is left out, and that
-omission starts no worker, causes no native delegation, resets no processing and enters no carrier.
-Spare space left over stays empty. `charged` reports what each window spent, the envelope, and what
-the required material alone cost — diagnostics for 28b, never a third outcome.
+An item that does not fit its window (base plus what the allowance still has) is omitted with a
+receipt; that omission starts no worker, causes no native delegation, resets no processing and enters
+no carrier. Spare space left over stays empty. `charged` reports what each window spent and the
+envelope — diagnostics only, never a second outcome.
 
 Facts and knowledge are the ones **applicable on the selected path** (26 amendment 2), in
 `listSessionFacts`' freshness order: a sibling branch's fact is not a candidate here, and its absence
@@ -813,14 +821,13 @@ is membership, not a budget omission. One path snapshot answers that membership 
 operation, the knowledge block included.
 
 Ticket 30 removed the second, tighter rendering that used to stand between a custom replacement and
-the fallback: an overflowing required Raw set requests host recovery or native delegation, never a
-smaller rendering profile. Nothing here selects a smaller pending set, advances extraction progress or touches
-injection state, and a native delegation builds no custom summary at all.
-Compaction never hides a selected entry to fit, falsifies an omission count or relaxes a cap;
-the core allocator calls no provider and contains no summarizer. Host-managed bounded recovery may
-run eligible Noting, Consolidation and Dreaming tasks before either a custom replacement or native
-fallback. Each phase is used at most once; at most three rounds accommodate newly eligible downstream
-work, while independently eligible phases may overlap.
+the fallback; ticket 73 then removed the fallback itself. Nothing here selects a smaller pending set,
+advances extraction progress or touches injection state, and a native delegation (host-caught error
+only) builds no custom summary at all. Compaction never hides a selected entry to fit, falsifies an
+omission count or relaxes a cap; the core allocator calls no provider and contains no summarizer.
+Pi's bounded recovery — which ran Noting, Consolidation or Dreaming before allocating, to shrink
+pending material — is deleted (73): a compaction allocates once and succeeds, and the host warns the
+user in the foreground instead when it truncated unprocessed material.
 
 The views it emits are `renderEntry` under the configured profile, the same bytes Noter input,
 the token counters and `trace` use, and no view or summary
@@ -978,7 +985,8 @@ The optional Raw sub-block keeps the newest whole suffix within `render.episodic
 including its title, separators and omission receipt. An oversized newest entry may leave no Raw
 body; an envelope too small even for the title and required omission receipt raises a capacity
 error. Omission neither processes entries nor supplies coverage identities. This is not compact's
-required Raw window, which must preserve every pending view or delegate to native compaction.
+Raw window, which prioritizes pending entries over already-noted ones and truncates with a receipt
+rather than delegating (73).
 The host passes the block immediately as Pi's summary, launching
 neither phase and awaiting no Noting; unprocessed entries remain Raw views. Injected messages
 are never raw sources for new facts.
@@ -1023,15 +1031,15 @@ unrelated claims survive both the abort and the old task's finalization. Already
 progress keeps its success. A signal
 already aborted when the task is admitted cancels it before its first request. The listener
 is removed when the task settles, so an operation that ends normally leaves nothing attached
-to its signal. Its one caller today is the Pi host's compaction recovery, which passes Pi's
-own compaction `AbortSignal` (28b): Esc during a compaction ends that compaction's own
-recovery work and nothing else. Nothing else about admission, freezing, claims, slots or
+to its signal. Introduced for the Pi host's compaction recovery, which passed Pi's own
+compaction `AbortSignal` (28b); that caller is gone with recovery itself (73), so today nothing
+threads a signal through admission. Nothing else about admission, freezing, claims, slots or
 `cancelTasks(stopping?)` changes.
 
-`compact`'s native arm carries `over?: { knowledge: boolean; facts: boolean; raw: boolean }` when required-window excess exceeds the derived shared allowance. Knowledge bodies are optional; its required excess can come only from state notices. Facts and Raw flags identify their required excess above their bases.
-The host separately checks phase eligibility before recovery. A delegation for another reason
-(such as an entry whose minima exceed the view profile) carries no `over` and starts no recovery
-worker. The two outcomes remain a custom replacement or native delegation; `reason` explains the required Raw and Facts demands, per-window excesses and shared-allowance shortfall.
+`compact`'s outcomes are a complete custom replacement, with an optional `truncated` receipt for
+omitted unprocessed material, or `{native: true, reason}` for an unexpected host-caught error —
+never for capacity (73). The `over` field that used to flag required-window excess against the
+derived shared allowance is gone with the fallback it served.
 
 ## Manual catchup boundary (18b)
 

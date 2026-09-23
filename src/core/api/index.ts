@@ -5,7 +5,7 @@ export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
 import { sourceBlocks, resultHasText, type SourceNormalizer } from "../model/source.ts";
 import { readFacade, readProfile, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups, type KnowledgeRead } from "./read.ts";
-export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups } from "./read.ts";
+export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
 // 29a/53: core owns only the host-neutral visibility contract; each host reads its own envelopes.
 import type { VisibleView } from "./visible.ts";
 export { knowledgeStateKey, noVisibility } from "./visible.ts";
@@ -24,7 +24,6 @@ export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.
 export { notingText, consolidationText, injectionText, compactText, knowledgeBlock, memoryBodyHash } from "../render/material.ts";
 export type { SharedMaterial, KnowledgeGroup, TaskRange, MemoryComposition } from "../render/material.ts";
 export { enrollmentDefault, sourceDigest } from "../store/index.ts";
-export { deriveSharedMaterialAllowance } from "../store/processing.ts";
 export { directoryAllocation } from "../project/directory.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
 export type { SourceInput, SourceEntry, TaskTarget } from "../store/index.ts";
@@ -86,14 +85,20 @@ export interface TraceMemoryConfig {
     batchTokens: number;
     maxToolRounds: number;
   };
-  /** The two database-independent material windows. Knowledge uses the bound database policy's
-   * base sum; the maximum envelope adds all three bases and the allowance derived from maintenance
-   * triggers. */
+  /** The two database-independent material windows, and the allowance every consumer shares. Knowledge
+   * uses the bound database policy's base sum; the maximum envelope adds all three bases and the
+   * shared allowance below. */
   compaction: {
     /** The facts window: the pending facts on the path, then the consolidated refill (28a items 1, 4). */
     factsTokens: number;
     /** The Raw window: the pending entry views, then the already-extracted refill (28a items 1, 5). */
     rawTokens: number;
+    /** 73: one fixed allowance shared by Knowledge, Facts and Raw — a configuration value, not derived
+     * from the Noting/Consolidation/Dreaming triggers. Knowledge borrows first, for any effective
+     * knowledge above its base; Facts and Raw borrow only for material Noting or Consolidation has not
+     * processed yet. It is not a compaction-only overflow: injection and the Consolidator/Dreamer
+     * knowledge capacities spend it too. */
+    sharedAllowanceTokens: number;
   };
 }
 
@@ -126,6 +131,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
   compaction: {
     factsTokens: 10_000,
     rawTokens: 10_000,
+    sharedAllowanceTokens: 10_000,
   },
 };
 
@@ -155,7 +161,7 @@ export const CONFIG_ALIASES: Readonly<Record<string, string>> = { "noting.branch
 const PART_BUDGETS = "use render.toolInputTokens (the whole rendered call part) and render.toolResultTokens (the whole rendered result part)";
 export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "consolidation.triggerUnconsolidatedFacts": "use consolidation.triggerTokens (tokens, not a count)",
-  "compaction.overflowTokens": "remove it; the shared allowance is derived from the Noting, Consolidation and Dreamer triggers",
+  "compaction.overflowTokens": "use compaction.sharedAllowanceTokens (a fixed configuration value, default 10,000; no longer derived from the Noting, Consolidation and Dreamer triggers)",
   // Ticket 25b removed this key; 29e restores the choice under the canonical spelling every phase
   // shares. It stays a removed setting rather than becoming an alias, because it is the INVERSE
   // boolean: reading a saved `true` as `forkModeDefault: true` would switch the meaning of the value

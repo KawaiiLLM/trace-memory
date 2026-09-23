@@ -514,3 +514,35 @@ test("43d startup without a transcript stays disabled unless explicitly enrolled
     transcript_path: join(dir, "clear-missing.jsonl") })).toBeNull();
   expect(readBinding(config, cleared)).toMatchObject({ nativeSessionId: cleared, coreSessionId: null, projectId: null });
 });
+
+test("73: SessionStart injection reads the resolved configuration, not the default", async () => {
+  const build = async (allowanceOverride?: number) => {
+    const dir = mkdtempSync(join(tmpdir(), "tm73-cfg-")); dirs.push(dir);
+    const transcriptPath = join(dir, "t.jsonl"), nativeSession = "native-cfg";
+    const config = resolveCcHostConfig({ dbPath: join(dir, "m.sqlite"), stateDir: join(dir, "s"), baseline: "2025-01-01T00:00:00.000Z",
+      ...(allowanceOverride === undefined ? {} : { "compaction.sharedAllowanceTokens": allowanceOverride }) });
+    const records = [user("u", null, "evidence"), assistant("a", "u", "answer")];
+    writeFileSync(transcriptPath, records.map(line).join(""));
+    const initial = await recordSessionStart(config, { hook_event_name: "SessionStart", source: "startup", session_id: nativeSession, transcript_path: transcriptPath }, time(1));
+    const importer = new CcImporter(config, initial);
+    const result = await importer.reconcile();
+    const entry = importer.memory.store.findSourceEntry(result.coreSessionId!, nativeSession, "u")!;
+    const noted = importer.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: result.coreSessionId!, branch: result.branch, createdAt: time(4) },
+      entryIds: [entry.id], facts: [{ turnId: entry.turnId, entryIds: [entry.id], category: "decision", actor: "user", text: "config fact",
+        source: [`T${entry.turnId}#E${entry.entryOrdinal}`], createdAt: time(4) }] });
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    // Sized to fit the default 20,000-token base plus the default 10,000-token allowance, but not a
+    // base plus a 1-token allowance.
+    const committed = importer.memory.store.commitConsolidationRun({ path: { sessionId: result.coreSessionId!, branch: result.branch, headTurnId: result.headTurnId! },
+      run: { kind: "manual", sessionId: result.coreSessionId!, branch: result.branch, createdAt: time(5) }, operations: [{ op: "create", handle: "$k",
+        author: "fixture", text: `config knowledge ${"word ".repeat(24_000)}`, category: "constraint", scope: "session", supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: time(5) }] });
+    if (!committed.ok) throw new Error(committed.problems.join("; "));
+    importer.close();
+    // `ccSessionStartInjection` directly, not `handleCcHook`: the latter re-resolves its config input
+    // from scratch, and a flat override does not survive resolving an already-resolved config twice.
+    const output = await ccSessionStartInjection(config, { hook_event_name: "SessionStart", source: "compact", session_id: nativeSession, transcript_path: transcriptPath });
+    return output?.hookSpecificOutput.additionalContext;
+  };
+  expect(await build()).toContain("config knowledge"); // default allowance (10,000): fits
+  expect(await build(1)).toBeUndefined(); // configured allowance (1): the same body no longer fits
+});

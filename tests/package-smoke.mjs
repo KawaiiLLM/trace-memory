@@ -34,13 +34,37 @@ try {
     assert.ok(files.includes(required), `Missing runtime file: ${required}`);
   assert.deepEqual(files.filter(path => /\.test\.ts$|__snapshots__|^tests?\/|^src\/hosts\/cc\/|test-host|native-fixture|smoke\.ts$|^\.scratch\/|\.(sqlite|db)$/.test(path)), [], "Development files or databases must not ship");
 
+  // 76 review: no registry step. Every runtime dependency must already sit in this checkout's
+  // node_modules at the version package-lock.json pins; pack that local directory (not the registry)
+  // and install its tarball beside the package's own, fully offline against an unreachable registry.
+  const dependencyTarballs = Object.keys(manifest.dependencies ?? {}).map(name => {
+    const lockEntry = lock.packages[`node_modules/${name}`];
+    assert.ok(lockEntry, `package-lock.json has no entry for node_modules/${name}`);
+    const depDir = join(root, "node_modules", name);
+    let installedManifest;
+    try { installedManifest = JSON.parse(readFileSync(join(depDir, "package.json"), "utf8")); }
+    catch { throw new Error(`Missing local dependency: node_modules/${name}/package.json (run npm install first)`); }
+    assert.equal(installedManifest.version, lockEntry.version,
+      `node_modules/${name}@${installedManifest.version} does not match package-lock.json's pinned ${name}@${lockEntry.version}`);
+    const [depPack] = JSON.parse(execFileSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", temporary],
+      { cwd: depDir, encoding: "utf8", timeout: 60000 }));
+    return { name, version: lockEntry.version, filename: depPack.filename };
+  });
+
   const consumer = join(temporary, "consumer"), agentDir = join(temporary, "agent");
   mkdirSync(consumer); mkdirSync(agentDir);
   writeFileSync(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
-  execFileSync("npm", ["install", join(temporary, pack.filename), "--offline", "--ignore-scripts", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund", "--cache", join(temporary, "cache")],
+  const isolatedCache = join(temporary, "cache");
+  execFileSync("npm", ["install", join(temporary, pack.filename), ...dependencyTarballs.map(dep => join(temporary, dep.filename)),
+      "--offline", "--ignore-scripts", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund",
+      "--registry", "http://127.0.0.1:9", "--cache", isolatedCache],
     { cwd: consumer, encoding: "utf8", timeout: 60000 });
   const installed = join(consumer, "node_modules", manifest.name);
   assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).version, manifest.version);
+  for (const dep of dependencyTarballs) {
+    const installedVersion = JSON.parse(readFileSync(join(consumer, "node_modules", dep.name, "package.json"), "utf8")).version;
+    assert.equal(installedVersion, dep.version, `installed ${dep.name}@${installedVersion} does not match package-lock.json's ${dep.version}`);
+  }
   // Pi supplies its SDK peers. Link only those installed packages, never this repository or its fixtures.
   for (const peer of Object.keys(manifest.peerDependencies)) {
     const destination = join(consumer, "node_modules", peer);

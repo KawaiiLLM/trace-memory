@@ -23,7 +23,7 @@ All automated checks use temporary or in-memory SQLite databases and fake provid
 | Narrow reference-only conflict, mixed real failures, cancellation, authority and streak persistence across process reopen | `dreaming-conflict.test.ts` |
 | Restored uncertified predecessor discovery and certified exclusion | `path-processing.test.ts`, `tests/core/store/processing.test.ts` |
 | Whole shared-result component admission, independent progress, retained capacity and exact remaining work | `path-processing.test.ts`, `dreaming-conflict.test.ts` |
-| Native scheduling: no completion chaining, next-entry processing, independent seats and bounded recovery | `tests/hosts/pi/dreaming.test.ts`, `tests/hosts/pi/recovery-dreaming.test.ts` |
+| Native scheduling: no completion chaining, next-entry processing, independent seats and bounded recovery (recovery removed by 73) | `tests/hosts/pi/dreaming.test.ts`, `tests/hosts/pi/recovery-dreaming.test.ts` |
 | Migration preservation and idempotent creation of retained version obligations | `tests/core/store/dreaming-conflict-migration.test.ts` |
 | Bounded graph/certificate reads | Existing linear prepare/graph-count regression in `dreaming-conflict.test.ts`; structural performance command below |
 

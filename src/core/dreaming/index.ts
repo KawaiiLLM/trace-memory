@@ -1,7 +1,7 @@
 import { loadPrompt } from "../prompts/load.ts";
 import { createHash } from "node:crypto";
 import type { Store, RunInput, TaskClaim } from "../store/index.ts";
-import { deriveSharedMaterialAllowance, processedBlock } from "../store/processing.ts";
+import { processedBlock } from "../store/processing.ts";
 import { budgetKnowledge, renderFact, renderFactGroups, renderKnowledgeBlock, tokens } from "../render/index.ts";
 import { dreamingToolDefinitions, type bindTools } from "../api/tools.ts";
 import type { AgentControl, RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
@@ -67,8 +67,7 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
 
   const references = due.versions.filter(value => !frozenIds.has(value.revision.id));
   const budgets = store.knowledgeBudgets();
-  const knowledgeCapacity = budgets.injection + deriveSharedMaterialAllowance({ noting: config.noting.triggerTokens,
-    consolidation: config.consolidation.triggerTokens, dreaming: config.dreaming.triggerTokens });
+  const knowledgeCapacity = budgets.injection + config.compaction.sharedAllowanceTokens;
   if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Dreamer Knowledge capacity must be a safe integer");
   // Changed and current references share one Knowledge window, not two independent allowances.
   const processedInputCap = knowledgeCapacity - tokens(changed) - 1;
@@ -85,7 +84,15 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
     throw new Error(`Dreaming current reference input exceeds ${processedInputCap} tokens including framing`);
 
   const frozenValues = due.versions.filter(value => frozenIds.has(value.revision.id));
-  const facts = [...new Set(frozenValues.flatMap(value => value.revision.supports))].sort((a, b) => a - b).map(id => {
+  // 76: a frozen archive is not among `due.versions` (pool size/versions exclude archives); its own
+  // supports and the body it removed still need to reach D, exactly as any other frozen item's do.
+  const frozenArchives = due.archived.filter(value => frozenIds.has(value.revision.id));
+  const archivedBodies = frozenArchives.map(value => {
+    const body = store.getKnowledgeRevision(value.knowledge.id, value.revision.parentId!);
+    if (!body) throw new Error(`K${value.knowledge.id}@${value.revision.id}: archive has no archived body`);
+    return { knowledge: value.knowledge, revision: body };
+  });
+  const facts = [...new Set([...frozenValues, ...frozenArchives].flatMap(value => value.revision.supports))].sort((a, b) => a - b).map(id => {
     const fact = store.getFact(id); if (!fact) throw new Error(`Missing direct support F${id}`); return fact;
   });
   const times = store.factTurnTimes(facts), snapshot = store.pathSnapshot(path);
@@ -104,9 +111,11 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
       tokens(prompt) + tokens(JSON.stringify(dreamingToolDefinitions())) + tokens(text) > input.capacity.inputTokens))
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
-  const supplied = [...references.filter(value => oldIds.includes(value.revision.id)), ...frozenValues];
+  // 76: registers the archive version, and the archived body it shows, as read — a Dreamer update
+  // that revokes or adjusts an archive needs no separate `trace` (its base is the archive commit).
+  const supplied = [...references.filter(value => oldIds.includes(value.revision.id)), ...frozenValues, ...frozenArchives, ...archivedBodies];
   return { sessionId: path.sessionId, branch: path.branch, path, range, pool: due.pool, frozenIds: [...frozenIds],
-    eventIds: [...frozenIds], changed: { versions: frozenValues }, material, text,
+    eventIds: [...frozenIds], changed: { versions: [...frozenValues, ...frozenArchives] }, material, text,
     profile: structuredClone(config.render), model: input.model ?? "session", mode: "subagent" as const, claim,
     readKnowledgeCommits: supplied.map(value => ({ knowledgeId: value.knowledge.id, commit: value.revision.id })),
     maxToolRounds: config.dreaming.maxToolRounds, admittedProcessedInputCap: processedInputCap };

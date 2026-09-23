@@ -436,21 +436,20 @@ test("20b 2026-09-08 scenario 8: an oldest fact over the batch ceiling stays pen
   expect(memory.trace(`F${huge}`)).toContain("word word"); // the evidence text is untouched
 });
 
-// ---- 21a / ticket 44: accounting remains, while Consolidator retirement is rejected atomically ----
+// ---- 21a / ticket 76: a Consolidator archive commits alongside a create and advances fact accounting ----
 
-test("44: a Consolidator archive is rejected atomically and advances no fact accounting", async () => {
+test("76: a Consolidator archive commits alongside a create, and both advance fact accounting", async () => {
   const withdrawal = fact("The user withdrew the packaging rule"), agent = fact(memories.observation, { actor: "agent" });
   const e = knowledge([agent]);
   const output = { ...empty, operations: [...createOutput(agent).operations, { op: "archive", id: `K${e}`,
     supports: [`F${withdrawal}`], reason: "The user withdrew the rule this knowledge stated." }] };
   queue(output);
   const result = await consolidation();
-  expect(result.outcome).toBe("bounced");
-  if (result.outcome !== "bounced") throw new Error("expected bounce");
-  expect(result.problems.join(" ")).toContain("Dreamer");
-  expect(memory.store.currentCommit(e)[0]?.op).toBe("create");
-  expect(memory.store.getKnowledge(e + 1)).toBeNull();
-  expect(consolidated(withdrawal)).toBe(false);
+  expect(result.outcome).toBe("success");
+  if (result.outcome !== "success") throw new Error("expected success");
+  expect(memory.store.currentCommit(e)[0]?.op).toBe("archive");
+  expect(memory.store.getKnowledge(e + 1)).not.toBeNull(); // the create committed too, as a new identity
+  expect(consolidated(withdrawal)).toBe(true);
 });
 
 

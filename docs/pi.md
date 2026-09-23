@@ -6,8 +6,8 @@ The current [entry-address and budget contract](unified-entry.md) supersedes old
 one facade for the global database and uses only `src/core/api/index.ts`, including
 its exposed store. Both Noting and Consolidation use subagents by default and may be configured
 to use verified fork mode. Dreamer is always a fresh subagent. Each reconciled eligible entry
-completion checks all three phase queues. Shutdown and tree navigation launch no phase;
-compaction uses bounded, threshold-gated Noting/Consolidation/Dreamer recovery (32f).
+completion checks all three phase queues. Shutdown, tree navigation and compaction launch no phase
+(73 deleted compaction's bounded Noting/Consolidation/Dreamer recovery from tickets 28, 28b and 32f).
 
 **One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
 (`native.ts`): fork mode in a child forked from the parent session file at its persisted
@@ -75,10 +75,13 @@ For example, either settings file can contain:
 `compaction.factsTokens` and `compaction.rawTokens` are the two file-configured 10,000-token
 material bases. The Knowledge base is database-owned: Settings edits Global, Project and Session
 pool budgets for the bound database, defaulting to 4,000, 15,000 and 1,000. Their safe-integer sum
-is the 20,000-token Knowledge base. The shared allowance across Knowledge, facts and Raw is derived
-from the configured N, C and D triggers, counted once each: 20,000 at defaults. Pool budgets do not
-enter this derivation. It has no separate setting or database migration. Required pending Raw, unconsolidated facts
-and Knowledge state notices reserve shared excess first; optional Knowledge, historical Raw and historical facts then use the remainder in that order.
+is the 20,000-token Knowledge base. The shared allowance across Knowledge, Raw and facts is one
+configured value, `compaction.sharedAllowanceTokens` (73), 10,000 tokens by default and no longer
+derived from the N, C or D triggers; pool budgets and trigger changes do not affect it. Knowledge
+fills its base and borrows the allowance first, for any effective knowledge above the base; then the
+newest contiguous Raw span borrows what Knowledge left, for its still-pending entries only; then the
+newest facts before that span borrow what Raw left, for unconsolidated facts only. Already-noted Raw
+and already-consolidated facts fill only their own base, never the allowance.
 The three bases never lend directly to one another.
 
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
@@ -159,7 +162,7 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   still a documented v1 limit: nothing prunes either directory.
 - **Consolidation runs as a subagent unless `consolidation.forkModeDefault` is set** (ticket 29e,
   superseding 25 amendment 2). The ordinary slot follows that preference; borrowed closed-session
-  work, manual catchup and compaction recovery stay fresh-context. The first valid `memory`
+  work and manual catchup stay fresh-context. The first valid `memory`
   submission commits immediately. `consolidation.subagentModeDefault`
   — the retired *inverse* key — stays **removed**. Tree navigation launches no extraction.
 
@@ -204,7 +207,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   identities for archive/supersede/merge/split notices. Notice visibility is separate and never grants
   a replacement body. The publication contains no Fact, Raw, pool-scheduling metadata,
   command-generation metadata or omission-only block. Retained applicable Knowledge bodies and notices
-  consume the Knowledge base plus derived allowance, 40,000 tokens at the default policy. Missing state
+  consume the Knowledge base plus the shared allowance, 30,000 tokens at the default policy. Missing state
   transitions fit as a deterministic whole-item prefix before complete new bodies; only selected
   transition receipts persist. Knowledge keeps category groups and chronological display inside each
   group. The common header says larger commit numbers are newer and a newer same-object item stands
@@ -270,7 +273,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   `(pool, revision)` processing record, one revision per identity at its full rendered size. A pool is
   due at `min(dreaming.triggerTokens, pool budget)` (4,000/5,000/1,000 by default), or when over budget and re-armed. One run handles one due pool; its Changed range is capped at that pool's full budget,
   4,000 / 15,000 / 1,000 by default. Changed material and current same-scope references share the
-  40,000-token Knowledge-base-plus-derived-allowance window; direct facts have a separate 10,000-token cap.
+  30,000-token Knowledge-base-plus-shared-allowance window; direct facts have a separate 10,000-token cap.
   There is no automatic Raw block or `note` tool.
 
   Dreamer may update, binary-merge, binary-split or archive, but never create. Evidence-driven
@@ -729,73 +732,64 @@ The channel `trace-memory:current-context-snapshot:v1` takes a synchronous reply
 The helper rejects zero/multiple replies. The provider reuses `compact(..., [])` with configured
 budgets and no retained coverage; it never runs workers/models, changes the parent or writes state.
 Only the current persisted, fully ingested node is supported (not unpersisted streaming content).
-Unavailable states return `available: false` with `reason` and `message`; capacity refusal never
-triggers recovery or native compaction. Successful results are detached from later changes.
+Unavailable states return `available: false` with `reason` and `message`; a host-caught error surfaces
+this way too, never as native compaction (73: `compact` no longer refuses for capacity). Successful
+results are detached from later changes.
 
 ## Compaction and the post-compaction boundary
 
 `session_before_compact` reconciles persisted history and asks core to allocate one frozen selected-path
-snapshot. Allocation is local and model-free: it takes no claim and advances no phase. Core either
-returns a complete custom replacement or requests native Pi compaction.
+snapshot. Allocation is local and model-free: it takes no claim and advances no phase. Core always
+returns a complete custom replacement; native Pi compaction is reserved for an unexpected host-caught
+error, never for capacity (73).
 
 | Outcome | Condition | Adapter result |
 |---|---|---|
-| `{text, supplied, charged}` | Required pending Raw and unconsolidated facts fit their bases plus the shared allowance | Return the text as `compaction.summary` |
-| `{native: true, reason, over?}` | Required material still exceeds the envelope, or an entry's minimum view cannot fit its profile | Run bounded recovery, then return a fitting replacement or decline so Pi compacts natively |
+| `{text, supplied, charged, truncated?}` | any valid path | Return the text as `compaction.summary`; a `truncated` receipt names the pending Raw entries and unconsolidated facts omitted |
+| `{native: true, reason}` | An unexpected host-caught error (a store error, an invalid path) | Delegate to Pi's native compaction |
 
 The default bases are Knowledge 20,000 tokens from the database policy, facts 10,000 and Raw 10,000.
-All three share one allowance derived from the N, C and D triggers, 20,000 tokens at defaults.
-Required bounded Raw, unconsolidated facts and Knowledge state notices reserve shared excess first. Current Knowledge is optional material, regardless of its pool
-processing record. The remaining capacity is allocated in this order: current Knowledge, newest
-already-extracted Raw, then newest already-consolidated facts. Each base remains independent; only the
-single shared remainder crosses windows. Framing, state notices and omission receipts are charged once.
-The default maximum envelope is therefore 60,000 tokens.
+One configured allowance, `compaction.sharedAllowanceTokens` (73), 10,000 tokens by default and not
+derived from the N, C or D triggers, is borrowed in a fixed order rather than reserved up front:
+Knowledge fills its base and borrows the allowance first, for any effective knowledge above the base;
+then the newest contiguous Raw span borrows what Knowledge left, for its still-pending entries only;
+then the newest facts before that span borrow what Raw left, for unconsolidated facts only.
+Already-noted Raw and already-consolidated facts fill only their own base, never the allowance. Each
+base remains independent; only the single shared remainder crosses windows, and each window is charged
+exactly what it emits — receipts and framing included — so a window with no room even for a bare
+receipt is emitted empty. The default maximum envelope is therefore 50,000 tokens.
 
 Historical Raw is displayed in source order. Historical facts are displayed in chronological Turn
-groups. An optional fact is omitted as redundant only when its complete nonempty source binding is
-covered by retained originals or bounded Raw selected for this replacement. Unknown, incomplete or
-partly covered bindings stay eligible. Pending facts are never filtered this way. Omitted optional
-material starts no worker and changes no processing state.
+groups. A fact — consolidated or still pending — is omitted as redundant only when its complete
+nonempty source binding is covered by retained originals or the Raw span selected for this
+replacement. Unknown, incomplete or partly covered bindings stay eligible, as does a fact whose
+sources straddle the span's start. Omitted material starts no worker and changes no processing state.
 
 The adapter passes the native ids that Pi will retain, so historical Raw is not duplicated. A custom
-replacement supplies every pending entry as the shared bounded `renderEntry` view and returns
+replacement supplies every kept entry as the shared bounded `renderEntry` view and returns
 `firstKeptEntryId: ""`; the replacement, rather than old Pi messages, carries those views. The same
 entry labels, budgets and truncation markers are used by Noting and explicit bounded trace. A carrier
 records only the entries, fact ids and Knowledge commits actually emitted. Native compaction writes
 no Trace Memory carrier.
 
-### Bounded recovery inside the hook
+### Truncation and the foreground warning
 
-Recovery is attempted only when required facts, Raw or mandatory Knowledge state notices exceed their
-bases plus the shared allowance. Current Knowledge bodies are optional and do not force recovery. A phase must still satisfy ordinary
-eligibility: Noting at 10,000 pending Raw tokens, Consolidation at 5,000 fact tokens, and Dreaming
-when one applicable pool reaches `min(dreaming.triggerTokens, pool budget)` or is re-armed over budget. Overflow alone
-never makes a phase eligible.
+Compact no longer falls back (73, deleting the recovery machinery of tickets 28, 28b and 32f): when
+pending Raw or unconsolidated facts exceed their base plus the allowance left after earlier windows, it
+keeps the newest ones that fit and omits the rest with a receipt, rather than running Noting,
+Consolidation or Dreaming to shrink the backlog first or escalating to native compaction. Omitted
+material stays pending in the store; Noting and Consolidation process it as usual.
 
-For one compaction attempt, each phase may be launched or compatibly awaited at most once. Independent
-Noting and Consolidation work may run concurrently; after their committed progress is remeasured,
-Dreaming may run once if an applicable pool is due. A completed Dreamer range is never reopened or
-retried. If required material still does not fit after every useful bounded opportunity, Pi's native
-compaction takes over. Recovery does not enlarge a normal batch to manufacture a fit.
+Whenever a compaction omits unprocessed material, the user is warned in the foreground at `warning`
+level, with the counts and tokens omitted per kind and a note that the material stays pending. The
+warning describes exactly the carrier Pi appended and is given in `session_compact`, once Pi has
+appended it: no callback runs between the final reprice and the returned carrier, and a compaction
+that is cancelled or never appended warns about nothing.
 
-The Noting boundary is the frozen entry ceiling. Consolidation is limited to the initially frozen fact
-set plus facts created by the exact Noting task this recovery launched or reused. Dreamer processes
-one frozen due pool under the database-wide seat. Reallocation counts actual committed state only;
-launching or awaiting a task grants no credit. Final publication rechecks the selected path and project
-binding immediately before returning the carrier.
-
-A local slot holding a compatible task — same target and frozen boundary — is awaited and counts as
-that phase's one use. An unrelated occupant is waited out only as capacity, then eligibility is checked
-once; there is no polling queue. A foreign claim refuses admission. Dreamer reuse requires the exact
-open pool range and live claim; foreground head movement does not rewrite that frozen identity.
-
-`event.signal` is Pi's compaction abort controller. It cancels only workers this operation launched;
-cancelling a compatible wait leaves the reused task alone. A cancelled compaction publishes nothing
-and starts no native fallback. Committed N/C progress survives. For Dreaming, a pre-commit cancellation
-records nothing, while cancellation after a commit retains the exact claim through terminal range
-processing as described above. After a non-cancellation worker failure, material is remeasured: a fit
-may still publish, otherwise Pi receives native delegation. A third terminal business failure follows
-the ordinary automatic-off rule.
+`event.signal` is Pi's compaction abort controller (behind Esc and `session.abortCompaction()`). A
+cancelled compaction returns `{cancel: true}`, publishes nothing and starts no native fallback; compact
+itself launches no worker, so there is no in-flight recovery task to cancel. An unexpected host-caught
+error still surfaces as `native delegation — …` in the preparing notice; capacity never does.
 
 Pi reaches this sequence from its automatic compaction points and `/compact`. Preparation notifications
 are not completion. Only `session_compact`, after Pi persists the result, updates `lastCompaction` and
@@ -1029,10 +1023,11 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    result.
 4. Run `/compact`. Expect immediate compaction with `<knowledge>` and `<episodic>`,
    pending compressed Raw views, recent facts, and no compaction model request. The
-   notice says the bounded entry views were used. To see the other outcome, set
-   `render.episodicBlockTokens` low enough that the pending views no longer fit: the
-   notice then reads `native delegation — …`, Pi runs its own summarization call and
-   writes its own `compaction` entry.
+   notice says the bounded entry views were used. To see truncation, set
+   `compaction.rawTokens` and `compaction.sharedAllowanceTokens` low enough that the
+   pending views no longer fit: the compaction still succeeds with bounded entry
+   views, but a second, `warning`-level notice reports the omitted pending entries
+   and that they remain pending for Noting.
 5. Ask the agent to call `search` for `pnpm`, then `trace` on a returned fact and
    its source turn. Expect the original conversation text and source addresses.
    The search/trace tools themselves are recorded as raw tool calls.
@@ -1450,8 +1445,9 @@ the first fact in Consolidation order, or the frozen Dreamer pool range's first 
 a growing tail, another executor or partial Dreamer edits do not reset it. Cancellation is not a
 business failure. Dreamer ranges end once: processing covers skips and own output, leaving untouched
 material pending. Residual over-budget state alone is not a new logical failure. Ordinary worker
-completion starts no next task; later eligible entries or bounded compaction recovery supply new
-opportunities. Manual catchup alone rechecks all phases after its own successful completions.
+completion starts no next task; later eligible entries supply new opportunities (compaction no
+longer runs recovery tasks: 73). Manual catchup alone rechecks all phases after its own successful
+completions.
 
 Provider retries and fork fallback share one durable execution identity. A refused fork followed
 by successful fresh execution adds no failure; a terminal fresh failure adds one. Incomplete

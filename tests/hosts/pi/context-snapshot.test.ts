@@ -205,20 +205,21 @@ test("branch switches select exact source membership and returned snapshots do n
   } finally { await f.dispose(); }
 }, 30_000);
 
-test("allocator refusal is capacity, never a worker or native-compaction fallback", async () => {
+test("73: an over-budget allocator truncates rather than refusing, and starts no worker or native fallback", async () => {
   const f = await fixture({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 20, "dreaming.triggerTokens": 1,
-    "compaction.factsTokens": 1, "compaction.rawTokens": 1 });
+    "compaction.factsTokens": 1, "compaction.rawTokens": 1, "compaction.sharedAllowanceTokens": 1 });
   try {
-    // The scripted worker makes no note commit, so required Raw remains after ordinary admission.
+    // The scripted worker makes no note commit, so pending Raw remains after ordinary admission.
     f.script(() => say("answer"));
     await f.turn("required raw material ".repeat(200));
     for (const scope of ["global", "project", "session"] as const) f.h.memory.setKnowledgeBudget(scope, 0);
-    // Configured phase caps derive a 41-token shared allowance; empty pools keep D ineligible.
     const sent = f.sent.length;
     const runs = f.h.memory.store.listRuns(1).length;
     const result = request(f.h);
-    expect(result).toMatchObject({ available: false, reason: "capacity" });
-    if (!result.available) expect(result.message).toContain("required material exceeds shared allowance");
+    // 73: no fallback. Compact truncates instead of refusing, so the snapshot is available and reads
+    // as any other compaction would — still no worker admitted and no compaction entry persisted (a
+    // context snapshot is a read, never an extraction trigger or a publication).
+    expect(result.available).toBe(true);
     expect(f.sent).toHaveLength(sent);
     expect(f.h.memory.store.listRuns(1)).toHaveLength(runs);
     expect(f.manager().getEntries().some(entry => entry.type === "compaction")).toBe(false);

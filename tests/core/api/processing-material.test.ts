@@ -27,20 +27,20 @@ function completeRead(tool: ConsolidationAgentInput["tools"][number], address: s
     tool.execute({ address, full: true, itemBudget: null })).joined;
 }
 
-test("64a: omitted knowledge grants no handle, and an explicit read still cannot authorize a Consolidator update", async () => {
+test("76: omitted knowledge grants no handle; an explicit complete read authorizes a Consolidator update", async () => {
   const f = fixture(input => {
     expect(input.readKnowledgeCommits).toEqual([]);
     expect(input.text).not.toContain("word ".repeat(400));
     const batch = { operations: [{ op: "update", id: "K1@1", ...f.content }], skipped: [] };
-    expect(input.tools[3]!.execute(batch)).toContain("Dreamer");
+    expect(input.tools[3]!.execute(batch)).toContain("was not read as visible and active");
     expect(completeRead(input.tools[0]!, "K1@1")).toContain("[K1@1]");
-    expect(input.tools[3]!.execute(batch)).toContain("Dreamer");
+    expect(input.tools[3]!.execute(batch)).toContain('"committed"');
   });
   try {
     expect(f.freeze().knowledge).toHaveLength(1);
     expect(f.freeze().prepared?.readKnowledgeCommits).toEqual([]);
     const result = await f.memory.consolidate(f.target);
-    expect(result).toMatchObject({ outcome: "bounced" });
+    expect(result.outcome).toBe("success");
   } finally { f.memory.close(); }
 });
 

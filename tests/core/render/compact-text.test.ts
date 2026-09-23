@@ -6,7 +6,11 @@ import { compactText } from "../../../src/core/render/material.ts";
 test("compact text with no knowledge starts at the episodic block, not at a separator", () => {
   const text = compactText({ knowledge: [], facts: [], entries: [{ id: 1, view: "[S1/T1] view" }], receipts: [] });
   expect(text.startsWith("<episodic>")).toBe(true);
-  const withKnowledge = compactText({ knowledge: [{ category: "constraint", text: "[K1@1] rule" }], facts: [], entries: [], receipts: [] });
+  const withKnowledge = compactText({ knowledge: [{ category: "constraint", text: "[K1@1] rule" }], facts: [], entries: [{ id: 1, view: "[S1/T1] view" }], receipts: [] });
   expect(withKnowledge.startsWith("<knowledge>")).toBe(true);
   expect(withKnowledge).toContain("</knowledge>\n\n<episodic>");
+  // 73: empty facts and Raw windows emit nothing — no titles and no `<episodic>` block.
+  const knowledgeOnly = compactText({ knowledge: [{ category: "constraint", text: "[K1@1] rule" }], facts: [], entries: [], receipts: [] });
+  expect(knowledgeOnly).not.toContain("<episodic>");
+  expect(text).not.toContain("Recent facts");
 });

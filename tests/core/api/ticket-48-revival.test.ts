@@ -23,11 +23,8 @@ test("48: the trusted facade revives an archived identity after complete exact r
     const operation = { op: "merge", id: `K${old.knowledgeId}@${archiveCommit}`,
       absorb: [`K${returned.knowledgeId}@${returned.commit}`], text: "Returned widget state",
       category: "constraint", scope: "project", supports: [], topics: ["widget"], reason: "Revive the returning widget identity" };
-    expect(writer.execute({ operations: [operation], skipped: [] })).toContain("knowledge was not read as visible and active");
-    const trace = task.tools.find(tool => tool.name === "trace")!;
-    trace.execute({ address: `K${old.knowledgeId}@${archiveCommit}`, itemBudget: null });
-    trace.execute({ address: `K${old.knowledgeId}@${old.commit}`, itemBudget: null });
-    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
+    // 76: the archive's own rendering in the frozen pending material already registers the archive
+    // version (and the body it removed) as read, so the revival merge needs no separate trace first.
     const result = writer.execute({ operations: [operation, { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`,
       supports: [], reason: "Retire the explicit revival trigger." }], skipped: [] });
     expect(result).toContain('"committed"');

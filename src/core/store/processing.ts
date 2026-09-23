@@ -12,18 +12,8 @@ export interface KnowledgeBudgets extends KnowledgeBudgetValues {
 export const DEFAULT_KNOWLEDGE_BUDGETS: KnowledgeBudgetValues = { global: 4_000, project: 15_000, session: 1_000 };
 export const DEFAULT_DREAMING_TRIGGER_TOKENS = 5_000;
 
-/** One runtime-derived allowance shared by Knowledge, Facts and Raw. Each phase contributes its
- * single configured trigger. Pool budgets size Dreamer batches but do not affect this allowance. */
-export function deriveSharedMaterialAllowance(triggers: { noting: number; consolidation: number; dreaming: number }): number {
-  for (const [name, value] of Object.entries(triggers))
-    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`cannot derive shared material allowance: ${name} trigger must be a nonnegative safe integer`);
-  const allowance = triggers.noting + triggers.consolidation + triggers.dreaming;
-  if (!Number.isSafeInteger(allowance)) throw new Error("derived shared material allowance must be a safe integer");
-  return allowance;
-}
-
-/** Database policy owns the base window only. The shared allowance is derived from every
- * maintenance trigger at runtime; never add a second fixed allowance to this sum. */
+/** Database policy owns the base window only. The shared allowance is a fixed configuration value
+ * (`compaction.sharedAllowanceTokens`), never derived from the maintenance triggers (73). */
 export function deriveKnowledgeBudgets(values: KnowledgeBudgetValues, stored = false): KnowledgeBudgets {
   const label = (field: KnowledgeBudgetField) => `${field[0]!.toUpperCase()}${field.slice(1)} Knowledge budget`;
   for (const field of ["global", "project", "session"] as const) if (!Number.isSafeInteger(values[field]) || values[field] < 0)

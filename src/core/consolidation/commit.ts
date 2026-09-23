@@ -49,7 +49,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
     const op = value.op;
     const allowed = dreaming ? ["update", "merge", "split", "archive"]
-      : run.kind === "consolidation" ? ["create"] : ["create", "archive"];
+      : run.kind === "consolidation" ? ["create", "update", "archive"] : ["create", "archive"];
     if (!allowed.includes(op)) errors.push(
       ["update", "merge", "split", "archive"].includes(op)
         ? `${op} belongs to the Dreamer and is not available to ${run.kind === "consolidation" ? "the Consolidator" : "manual memory"}`

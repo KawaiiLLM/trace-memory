@@ -119,8 +119,9 @@ test("47: head and rewind N/C material and eligibility ignore sibling-only and t
     expect(consolidationCapture.text).toContain("<knowledge>");
     expect(consolidationCapture.text).not.toMatch(/\b(?:NEAR|CLOSER)\b/);
     expect(consolidationCapture.hasReviewFeedback).toBe(false);
-    expect(consolidationCapture.operationEnum).toEqual(["create"]);
-    expect(consolidationCapture.hasId).toBe(false);
+    // 76: the Consolidator also updates and archives; id is present (forbidden for create by allOf).
+    expect(consolidationCapture.operationEnum).toEqual(["create", "update", "archive"]);
+    expect(consolidationCapture.hasId).toBe(true);
     expect(consolidationCapture.hasAbsorb).toBe(false);
   }
 

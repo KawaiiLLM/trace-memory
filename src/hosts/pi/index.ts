@@ -10,7 +10,7 @@ import { showSessionPanel, type SessionBody } from "./session-panel.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, deriveSharedMaterialAllowance, directoryAllocation, enrollmentDefault, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
+import { TraceMemory, directoryAllocation, enrollmentDefault, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -229,6 +229,8 @@ export default function (pi: ExtensionAPI) {
    * reason — for `/trace status` (ticket 20 "Failure visibility"). A diagnostic string, not a state
    * machine: nothing reads it back. */
   let lastCompaction: string | undefined;
+  /** 73: the truncation receipt of the carrier this handler last returned, warned once Pi appends it. */
+  let publishedTruncation: TruncationReceipt | undefined;
   let baseline: string;
   // 29a's visible-view memo for the selected context, created by `restore` (29d: the initial
   // knowledge block's only lifecycle input).
@@ -258,25 +260,12 @@ export default function (pi: ExtensionAPI) {
   };
   let current: { started: string; id?: number } | undefined;
   const pending = new Set<Promise<unknown>>();
-  /** 28 amendment 2: the executor's one slot per phase, and what occupies it. The slot itself is
-   * unchanged — one task of a kind at a time — but the entry now carries the task's target and its
-   * frozen boundary beside the promise, because 28b's recovery has to tell a task it may reuse
-   * (same target, same frozen boundary, so its completion IS this phase's progress) from unrelated
-   * work it may neither count nor cancel. `done` is assigned in the same tick the slot is taken. */
+  /** The executor's one slot per phase, and what occupies it: one task of a kind at a time. The entry
+   * carries the task's target and its frozen boundary beside the promise; `done` is assigned in the
+   * same tick the slot is taken. */
   type Slot = { target: TaskTarget; boundary?: TaskBoundary; result?: Promise<NotingResult | ConsolidateResult | { outcome: string } | undefined>; done?: Promise<unknown> };
   type WorkerPhase = "noting" | "consolidation" | "dreaming";
   const slots = new Map<WorkerPhase, Slot>();
-  /** Same target and same frozen boundary — the compatibility 28 amendment 2 defines, field by field
-   * over `TaskBoundary` rather than by a serialization whose key order would decide it. An ordinary
-   * automatic task carries no boundary and is therefore not the same frozen range as a recovery
-   * task's. */
-  const sameTask = (slot: Slot, target: TaskTarget, boundary?: TaskBoundary) => {
-    const ids = (value?: readonly number[]) => value === undefined ? "-" : [...value].sort((a, b) => a - b).join(",");
-    const a = slot.boundary, b = boundary;
-    return slot.target.sessionId === target.sessionId && slot.target.branch === target.branch && slot.target.headTurnId === target.headTurnId
-      && (a?.maxEntryId ?? null) === (b?.maxEntryId ?? null) && ids(a?.exactEntryIds) === ids(b?.exactEntryIds)
-      && ids(a?.allowedFactIds) === ids(b?.allowedFactIds) && ids(a?.exactFactIds) === ids(b?.exactFactIds);
-  };
   // 19c: the phase whose run observed the eligible cache miss, so the run id can be linked to the
   // session's suppression once core has allocated it (the miss is seen before any run row exists).
   const missDetected = new Set<WorkerPhase>();
@@ -460,9 +449,9 @@ export default function (pi: ExtensionAPI) {
   // The return type is written out because 27b/27c's re-admission re-enters this function.
   const attemptPhase = (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
       selected: { mode: "fork" | "subagent"; model: string; fallbackReason?: string },
-      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal; signal?: AbortSignal },
+      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal },
       ): Promise<NotingResult | ConsolidateResult | DreamingResult | { outcome: "dropped"; permanent?: string }> => {
-    if (closed || !enabled() || options.signal?.aborted
+    if (closed || !enabled()
         || (options.forkAttempt?.cancellation !== undefined && options.forkAttempt.cancellation < memory.cancellation))
       return Promise.resolve({ outcome: "dropped", reason: CANCELLED_BEFORE_FALLBACK } as const);
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
@@ -572,12 +561,6 @@ export default function (pi: ExtensionAPI) {
       subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
       ...(options.boundary ? { boundary: options.boundary } : {}),
-      // 28b (parent 28 amendment 3): the admitting operation's cancellation, for the one operation
-      // that has one — a compaction's recovery task. Core links it to this task's own controller, so
-      // an Esc during compaction closes this task's binding and aborts this task, and nothing else.
-      // It travels with a re-admission (`reroute` below spreads these options), because that is the
-      // same task continuing.
-      ...(options.signal ? { signal: options.signal } : {}),
       // 27c: the refused attempt's gate result, for a refusal that recorded no run of its own.
       // 27d: with it, the cancellation generation that attempt was admitted under — core drops this
       // admission when a cancellation happened in between.
@@ -1227,116 +1210,16 @@ export default function (pi: ExtensionAPI) {
     return visibleView(at < 0 ? [] : entries.slice(at), binding());
   };
   const PHASE_LABEL = { noting: "Noting", consolidation: "Consolidation", dreaming: "Dreamer" } as const;
-  /** A wait that ends when the work ends or when the user cancels the compaction, whichever comes
-   * first. Cancelling the wait never touches the work: this operation may wait for capacity it does
-   * not own, and Pi's Esc must not end another operation's task (28 "Execution and interaction").
-   * The listener is removed on both exits, so a compaction that ends normally leaves nothing on its
-   * signal. */
-  const untilSettled = (work: Promise<unknown> | undefined, signal?: AbortSignal) => {
-    if (!work || signal?.aborted) return Promise.resolve();
-    const quiet = work.then(() => {}, () => {});
-    if (!signal) return quiet;
-    return new Promise<void>(resolve => {
-      const done = () => { signal.removeEventListener("abort", done); resolve(); };
-      signal.addEventListener("abort", done, { once: true });
-      void quiet.then(done);
-    });
-  };
-  /** 28b (parent 28 "Recovery sequence" steps 3-4): this compaction's one task of one phase. It is an
-   * ordinary bounded batch admitted through the one admission path — subagent mode on the configured
-   * phase model, at the level `attemptPhase` freezes (26d), in a child whose own automatic compaction
-   * is off (27b), so a recovery worker can never compact recursively. The executor's phase slot, the
-   * target claim and every commit fence are the existing ones: this adds no scheduler, no queue and
-   * no dialog.
-   *
-   * Reuse and actual admission consume one use. A capacity-only wait consumes none. After one
-   * capacity wait, inspect the new occupant once: reuse compatible work, but do not queue behind
-   * another unrelated owner or turn recovery into a drain. */
-  const recoverPhase = async (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
-      boundary: TaskBoundary | undefined, valid: () => boolean, signal: AbortSignal | undefined, needed: () => boolean): Promise<{ used: boolean; result?: NotingResult | ConsolidateResult | { outcome: string } }> => {
-    const phase = PHASE_LABEL[kind];
-    // Recovery may await the exact task already occupying this phase slot. It never reopens or
-    // retries a Dreamer range: a different target gets at most the existing bounded capacity wait.
-    const compatible = (slot: Slot) => sameTask(slot, target, boundary);
-    let occupied = slots.get(kind);
-    if (occupied && !compatible(occupied)) {
-      context.ui.notify(`Trace Memory: compaction is waiting for the occupied ${phase} slot.`, "info");
-      await untilSettled(occupied.done, signal);
-      if (!valid() || signal?.aborted) return { used: false };
-      occupied = slots.get(kind);
-      if (occupied && !compatible(occupied)) return { used: false };
-      if (!occupied && !needed()) return { used: false }; // capacity work may already have made it fit
-    }
-    if (occupied) {
-      // 28 item 7: the awaited phase is named through the existing notify, beside the footer's own
-      // running indicator, which already paints the phase. No second dialog is opened.
-      context.ui.notify(`Trace Memory: compaction is waiting for the running ${phase} task on this target.`, "info");
-      await untilSettled(occupied.done, signal);
-      if (!valid() || signal?.aborted) return { used: false };
-      const result = await occupied.result;
-      if (result?.outcome === "failure" && "problems" in result)
-        context.ui.notify(`Trace Memory: ${phase} recovery failed. ${result.problems.join("; ")}`, "warning");
-      return { used: !!result && "runId" in result, result };
-    }
-    if (!valid() || signal?.aborted) return { used: false };
-    // Eligibility is rechecked after a capacity wait, before admission. Overflow never waives it.
-    if (!memory.taskEligibility(kind, target).due) return { used: false };
-    const remaining = kind === "dreaming" || (kind === "noting"
-      ? memory.pendingEntries(target.sessionId, target.branch, target.headTurnId).some(e => boundary?.maxEntryId === undefined || e.id <= boundary.maxEntryId)
-      : memory.store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).some(f => !boundary?.allowedFactIds || boundary.allowedFactIds.includes(f.id)));
-    if (!remaining) return { used: false };
-    const slot: Slot = { target, boundary };
-    slots.set(kind, slot); activity.running.set(kind, 1); showSpend(context);
-    context.ui.notify(`Trace Memory: compaction is running ${phase} to reduce the pending ${kind === "noting" ? "Raw" : kind === "dreaming" ? "knowledge" : "facts"}.`, "info");
-    const promise = attemptPhase(context, kind, target, { mode: "subagent", model: modelName(kind) },
-      { borrowed: false, automatic: false, boundary, signal });
-    let recovered: string | undefined;
-    const settled = trackSlot(kind, slot, promise.then(result => {
-      reportProblems(result, context);
-      recovered = (result as { outcome?: string }).outcome;
-      if (result.outcome === "failure") context.ui.notify(`Trace Memory: ${phase} recovery failed. ${result.problems.join("; ")}`, "warning");
-      return result;
-    },
-      error => { context.ui.notify(String(error), "error"); return undefined; }),
-      // Deliberately not an R4 checkpoint (unlike the ordinary checkQueues site): this function's own
-      // contract above is "do not ... turn recovery into a drain" — a bounded, one-shot recovery
-      // admission that must not compete with the catchup drain, or with `session_before_compact`'s own
-      // concurrent recovery of a sibling phase, for a slot. Ticket 69 arms C and D here (a
-      // compaction-recovery run that actually ran, not empty/dropped, may have committed), but does
-      // not also run the ordinary immediate check that site does: that would admit through a second,
-      // independent path exactly what this function's own contract exists to prevent racing.
-      context, () => {
-        showSpend(context);
-        if (recovered !== undefined && recovered !== "empty" && recovered !== "dropped") armCD();
-        if (catchup) driveCatchup(false);
-      });
-    slot.result = settled;
-    const result = await settled;
-    return { used: !!result && "runId" in result, result };
-  };
-  // Ticket 20 "Compaction escalation", as 30 and 28a/28b left it. Core renders its own frozen read
-  // snapshot and allocates over three windows; this handler binds the outcome and, when a REQUIRED
-  // window overflows, runs ticket 28's bounded recovery before deciding:
-  //
-  //   freeze (path, the pending entries, the initially applicable pending facts)
-  //     -> allocate -> shared shortfall? -> unused, eligible N/C/D phases, concurrently
-  //     -> await -> re-read committed progress and exact processed versions on the frozen path
-  //     -> still over? -> unused downstream eligibility (N enables C, C enables D), then reallocate
-  //     -> persist the replacement with its carrier, or delegate to Pi with the reason.
-  //
-  // One use per phase per attempt, whatever its outcome: `used` below is that flag, and three rounds
-  // cover the dependency chain (32f — no state machine, one flag per phase plus
-  // the promises this host already holds). No larger-than-normal batch is ever built to avoid the
-  // delegation: each task is one ordinary bounded batch, and a batch that leaves backlog behind
-  // simply delegates. Nothing else changes: ordinary triggers, drains, borrowed work and manual
-  // catchup are untouched, and outside this handler compaction still starts no worker.
+  // Ticket 73 "Shared allowance": core allocates once and never falls back — compact truncates
+  // unprocessed material instead of asking for recovery or native delegation. This handler freezes the
+  // path, allocates, and either publishes the replacement or (a host-caught error only) delegates.
   //
   // Cancellation is Pi's own. `event.signal` is the compaction abort controller behind Esc and
-  // `session.abortCompaction()` (agent-session.js:1476 manual / :1750 automatic create it, :1604
-  // aborts both). It reaches the tasks this operation launched — and only those — through
-  // `TaskOptions.signal`, and a cancelled compaction returns `{cancel: true}`, which is how Pi ends
-  // a compaction as aborted (:1509 manual, :1770 automatic) instead of running its own.
+  // `session.abortCompaction()`. The compaction launches no task, so the signal is only checked here:
+  // a cancelled compaction returns `{cancel: true}`, which is how Pi ends a compaction as aborted
+  // instead of running its own.
   pi.on("session_before_compact", async (event, context) => {
+    publishedTruncation = undefined;
     ensure(context); if (!enabled()) return; flush();
     const signal = (event as { signal?: AbortSignal }).signal;
     const initial = { sessionId: state.sessionId, branch: state.branch, head: state.head, projectId: state.projectId };
@@ -1345,73 +1228,27 @@ export default function (pi: ExtensionAPI) {
       && (!initial.sessionId || memory.store.getSession(initial.sessionId)?.projectId === initial.projectId);
     const allocate = (): ReturnType<typeof memory.compact> => {
       try {
-        if (!valid()) return { native: true, reason: "memory enrollment or the selected path changed during recovery" };
+        if (!valid()) return { native: true, reason: "memory enrollment or the selected path changed" };
         if (state.sessionId) return memory.store.transaction(() => {
-          if (!valid()) return { native: true as const, reason: "memory enrollment, project or the selected path changed during recovery" };
+          if (!valid()) return { native: true as const, reason: "memory enrollment, project or the selected path changed" };
           return memory.compact(state.sessionId!, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION));
         });
         const block = memory.injection({ projectId: state.projectId });
         return { text: block.text, composition: block.composition, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
-      } catch (error) { return { native: true, reason: String(error) }; } // a capacity error is a reason to delegate, never oversized material
+      } catch (error) { return { native: true, reason: String(error) }; } // an unexpected store error is a reason to delegate, never oversized material
     };
-    let result = allocate();
-    const recovered: string[] = [];
-    // The freeze of this attempt: the selected path, its pending source entries and the pending facts
-    // applicable to it. New foreground entries never join — Pi refuses a prompt while a compaction is
-    // in progress (agent-session.js:836), and the entry ceiling below makes that structural.
     const path = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
-    if (path && !signal?.aborted && "native" in result && result.over) {
-      const frozen = memory.pendingEntries(path.sessionId, path.branch, path.headTurnId);
-      // The boundary is that frozen ceiling, not exact membership: a recovery task is one ORDINARY
-      // bounded batch (28 "Recovery sequence"), and exact membership would refuse every batch bigger
-      // than `noting.batchTokens` — which is exactly what an overflowing Raw window is. Entry ids are
-      // allocated in order, so the ceiling is the frozen set minus whatever gets noted, and never more.
-      const maxEntryId = frozen.length ? Math.max(...frozen.map(e => e.id)) : undefined;
-      // The Consolidation allowance: the initially applicable pending facts, plus the facts this
-      // exact launched or compatible reused Noting task commits (28 "Recovery sequence" step 5).
-      // Slot results preserve task identity; unrelated completed work never contributes facts here.
-      const factIds = new Set(memory.store.consolidationBatch(path.sessionId, path.branch, path.headTurnId).map(f => f.id));
-      const used = { noting: false, consolidation: false, dreaming: false };
-      for (let round = 0; round < 3; round++) {
-        if (!("native" in result) || !result.over) break;
-        const over = result.over;
-        const wanted = (["noting", "consolidation", "dreaming"] as const).filter(kind => !used[kind]
-          && (kind === "noting" ? over.raw && maxEntryId !== undefined : kind === "dreaming" ? over.knowledge : over.facts && factIds.size > 0)
-          && memory.taskEligibility(kind, path).due);
-        if (!wanted.length) break; // the allowed tasks are exhausted: the delegation below is the outcome
-        const results = await Promise.all(wanted.map(async kind => ({ kind,
-          ...await recoverPhase(context, kind, path, kind === "noting" ? { maxEntryId } : kind === "dreaming" ? undefined : { allowedFactIds: [...factIds] }, valid, signal, () => {
-            const fresh = allocate();
-            return "native" in fresh && !!fresh.over?.[kind === "noting" ? "raw" : kind === "dreaming" ? "knowledge" : "facts"];
-          }),
-        })));
-        if (signal?.aborted || !valid()) break;
-        for (const settled of results) {
-          if (settled.used) { used[settled.kind] = true; recovered.push(PHASE_LABEL[settled.kind]); }
-          for (const fact of (settled.result as { facts?: { id: number }[] } | undefined)?.facts ?? []) factIds.add(fact.id);
-        }
-        result = allocate(); // re-read committed progress on the frozen path; nothing is subtracted merely because a task ran
-        if (!results.some(settled => settled.used) || results.some(settled => settled.result?.outcome === "failure")) break;
-        // Capacity is not a use; a terminal failure gets the final reprice, not another recovery task.
-      }
-    }
     // 28 "Failure and persistence": user cancellation cancels this operation's own work — the signal
     // did that through core — publishes nothing and starts no native fallback. Committed progress
     // stays committed; a cancelled compaction appends no entry, so no carrier and no baseline moves.
     if (signal?.aborted) {
-      context.ui.notify("Trace Memory: compaction was cancelled; its recovery work was cancelled with it and no native compaction was started.", "info");
+      context.ui.notify("Trace Memory: compaction was cancelled; no native compaction was started.", "info");
       return { cancel: true };
     }
     if (closed) return { cancel: true };
-    // Disabled during recovery is a native failure route, never core's empty disabled summary.
-    if (!valid()) result = { native: true, reason: "memory enrollment, project or the selected path changed during recovery" };
-    // A tree switch during recovery abandons the path this replacement was prepared for. The attempt
-    // is never retargeted: it delegates, and a late result of the old path publishes nothing here.
-    if (path && (state.sessionId !== path.sessionId || state.branch !== path.branch || state.head !== path.headTurnId
-        || state.projectId !== initial.projectId || memory.store.getSession(path.sessionId)?.projectId !== initial.projectId))
-      result = { native: true, reason: `the selected path changed during recovery (S${path.sessionId}/${path.branch}/T${path.headTurnId} is no longer selected); nothing prepared for it is published into the new one` };
-    const recovery = recovered.length ? ` (after recovery: ${[...new Set(recovered)].join(", ")})` : "";
-    context.ui.notify(`Trace Memory: compaction preparing ${"native" in result ? `native delegation — ${result.reason}` : "bounded entry views"}${recovery}.`, "info");
+    let result = allocate();
+    if (signal?.aborted || closed) return { cancel: true };
+    context.ui.notify(`Trace Memory: compaction preparing ${"native" in result ? `native delegation — ${result.reason}` : "bounded entry views"}.`, "info");
     // Notification callbacks may themselves cancel or change the binding. No await or callback
     // separates this final coherent reprice from constructing the exact publication carrier.
     if (signal?.aborted || closed) return { cancel: true };
@@ -1421,17 +1258,30 @@ export default function (pi: ExtensionAPI) {
     // 29a "Receipt and content are one carrier": the identities this replacement supplies ride on the
     // compaction entry Pi appends for it, so a cancelled or failed attempt — which appends no entry —
     // leaves the earlier baseline untouched, and a native delegation carries no `traceMemory` at all.
-    return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied).traceMemory, composition: result.composition, recovery } } } };
+    // 73 "Truncation is announced in the foreground": the warning describes exactly this carrier, and is
+    // given once Pi has appended it (\`session_compact\` below). No callback runs between the final
+    // reprice above and this return, and a compaction Pi does not append warns about nothing.
+    publishedTruncation = result.truncated;
+    return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied).traceMemory, composition: result.composition } } } };
   });
   pi.on("session_compact", (_event, context) => {
     // Pi 0.85.1 finds its event entry by the first equal summary. Read the actual appended
     // compaction on the selected ancestry instead: equal text is never carrier identity.
     const entry = context.sessionManager.getBranch().filter(entry => entry.type === "compaction").at(-1);
     if (!entry || entry.type !== "compaction") return;
-    const own = (entry.details as { traceMemory?: VisibleBinding & { recovery?: unknown } } | undefined)?.traceMemory;
+    const own = (entry.details as { traceMemory?: VisibleBinding } | undefined)?.traceMemory;
     const custom = own?.db === dbPath && own.pi === state.piId && own.session === (state.sessionId ?? null);
-    lastCompaction = custom ? `bounded entry views${typeof own?.recovery === "string" ? own.recovery : ""}`
-      : "native delegation — saved without Trace Memory material coverage";
+    lastCompaction = custom ? "bounded entry views" : "native delegation — saved without Trace Memory material coverage";
+    const omitted = custom ? publishedTruncation : undefined;
+    publishedTruncation = undefined;
+    if (omitted) {
+      const { raw, facts } = omitted;
+      const parts = [
+        ...(raw ? [`${raw.entries} pending Raw ${raw.entries === 1 ? "entry" : "entries"} (${raw.tokens} tokens)`] : []),
+        ...(facts ? [`${facts.count} unconsolidated ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens)`] : []),
+      ];
+      context.ui.notify(`Trace Memory: compaction omitted ${parts.join(" and ")}; they remain pending for Noting and Consolidation.`, "warning");
+    }
     if (enabled() && state.sessionId) {
       const turn = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: state.head, kind: "compaction", assistantText: entry.summary, startedAt: now(), endedAt: now() });
       state.head = turn.id; save();
@@ -1644,11 +1494,10 @@ export default function (pi: ExtensionAPI) {
       { field: "session" as const, name: "Session Knowledge budget", line: `Session Knowledge budget: ${budgets.session} tokens per session owner pool (database)` },
     ];
     const knowledgeBaseWindow = budgets.global + budgets.project + budgets.session;
-    const sharedMaterialAllowance = deriveSharedMaterialAllowance({ noting: memory.config.noting.triggerTokens,
-      consolidation: memory.config.consolidation.triggerTokens, dreaming: memory.config.dreaming.triggerTokens });
+    const sharedMaterialAllowance = memory.config.compaction.sharedAllowanceTokens;
     const diagnostics = [
       `Knowledge base window: ${knowledgeBaseWindow} tokens (derived, read-only)`,
-      `Shared material allowance: ${sharedMaterialAllowance} tokens (derived, read-only)`,
+      `Shared material allowance: ${sharedMaterialAllowance} tokens (compaction.sharedAllowanceTokens; configured)`,
       `Maximum Knowledge input: ${knowledgeBaseWindow + sharedMaterialAllowance} tokens (derived, read-only)`,
     ];
     const preferenceRows = preferences.map(p => preferenceLine(p, { flat, sources, layers }, foregroundModel()));
@@ -1664,8 +1513,7 @@ export default function (pi: ExtensionAPI) {
         const saved = memory.setKnowledgeBudget(budget.field, value);
         if (saved.changed) armCD(); // ticket 69: a knowledge-budget change may make a pool due; re-check at the next opportunity
         const base = saved.policy.global + saved.policy.project + saved.policy.session;
-        const shared = deriveSharedMaterialAllowance({ noting: memory.config.noting.triggerTokens,
-          consolidation: memory.config.consolidation.triggerTokens, dreaming: memory.config.dreaming.triggerTokens });
+        const shared = memory.config.compaction.sharedAllowanceTokens;
         ctx.ui.notify(saved.changed
           ? `Trace Memory: saved ${budget.name} = ${value} tokens in database ${dbPath}. Knowledge base window ${base}; shared material allowance ${shared}; maximum Knowledge input ${base + shared}. New admissions use these capacities; running inputs remain frozen.`
           : `Trace Memory: ${budget.name} is already ${value} tokens in database ${dbPath}; nothing was written.`, "info");

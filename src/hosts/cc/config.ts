@@ -52,6 +52,9 @@ export interface CcHostConfig {
   "consolidation.triggerTokens"?: number;
   "dreaming.triggerTokens"?: number;
   "dreaming.timeoutMs"?: number;
+  /** 73: the fixed allowance shared by Knowledge, Facts and Raw (default 10,000). Not a
+   * compaction-only overflow — injection and the Consolidator/Dreamer knowledge capacities spend it too. */
+  "compaction.sharedAllowanceTokens"?: number;
   /** Installation baseline. Unknown or malformed values keep provisional enrollment disabled. */
   baseline?: string;
   /** Omitted preserves Claude Code's native default. No adapter retry policy is added. */
@@ -169,6 +172,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       ...(input["dreaming.triggerTokens"] === undefined ? {} : { triggerTokens: input["dreaming.triggerTokens"] }),
       ...(input["dreaming.timeoutMs"] === undefined ? {} : { timeoutMs: input["dreaming.timeoutMs"] }),
     } }),
+    ...(input["compaction.sharedAllowanceTokens"] === undefined ? {} : { compaction: { sharedAllowanceTokens: input["compaction.sharedAllowanceTokens"] } }),
   } as ConfigOverride);
   return {
     dbPath: resolve(dbPath), stateDir: resolve(input.stateDir), ...phaseValues,

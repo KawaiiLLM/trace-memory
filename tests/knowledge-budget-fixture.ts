@@ -1,7 +1,7 @@
-import { deriveSharedMaterialAllowance, type TraceMemory } from "../src/core/api/index.ts";
+import type { TraceMemory } from "../src/core/api/index.ts";
 
-/** Set the database-owned Knowledge base for a fixture. The shared allowance is independent and
- * remains derived from the current maintenance triggers. */
+/** Set the database-owned Knowledge base for a fixture. The shared allowance (73: a fixed
+ * configuration value) is independent. */
 export function setKnowledgeInjection(memory: TraceMemory, capacity: number): void {
   if (!Number.isSafeInteger(capacity) || capacity < 0) throw new Error("test Knowledge injection capacity must be a nonnegative safe integer");
   memory.setKnowledgeBudget("global", 0);
@@ -9,23 +9,16 @@ export function setKnowledgeInjection(memory: TraceMemory, capacity: number): vo
   memory.setKnowledgeBudget("project", capacity);
 }
 
-/** Set an exact total Knowledge input capacity through the real authorities. This intentionally
- * puts the whole capacity in N/C triggers and zeroes the database base for focused renderer tests. */
+/** Set an exact total Knowledge input capacity: zero the database base for focused renderer tests
+ * and put the whole capacity in the shared allowance. */
 export function setKnowledgeCapacity(memory: TraceMemory, capacity: number): void {
-  if (!Number.isSafeInteger(capacity) || capacity < 3) throw new Error("test total Knowledge capacity must be a safe integer of at least three");
+  if (!Number.isSafeInteger(capacity) || capacity < 0) throw new Error("test total Knowledge capacity must be a nonnegative safe integer");
   setKnowledgeInjection(memory, 0);
-  memory.config.noting.triggerTokens = 1;
-  memory.config.consolidation.triggerTokens = 1;
-  memory.config.dreaming.triggerTokens = capacity - 2;
+  memory.config.compaction.sharedAllowanceTokens = capacity;
 }
 
-/** Select a derived allowance through its real authorities. The current pool budgets remain intact. */
+/** Select the shared allowance directly. The current pool budgets remain intact. */
 export function setSharedAllowance(memory: TraceMemory, allowance: number): void {
-  if (!Number.isSafeInteger(allowance) || allowance < 2) throw new Error("test shared allowance must be a safe integer of at least two");
-  const consolidation = 1, dreaming = allowance - 2;
-  memory.config.noting.triggerTokens = 1;
-  memory.config.consolidation.triggerTokens = consolidation;
-  memory.config.dreaming.triggerTokens = dreaming;
-  if (deriveSharedMaterialAllowance({ noting: 1, consolidation, dreaming }) !== allowance)
-    throw new Error("test shared allowance derivation mismatch");
+  if (!Number.isSafeInteger(allowance) || allowance < 0) throw new Error("test shared allowance must be a nonnegative safe integer");
+  memory.config.compaction.sharedAllowanceTokens = allowance;
 }

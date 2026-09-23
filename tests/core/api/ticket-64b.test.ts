@@ -114,7 +114,9 @@ test("64b: global current selects one direct-fact branch and rejects the histori
         scope: "project", supports: [], topics: [], reason: "Probe the historical sibling write fence." },
       { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [], reason: "Would otherwise be valid." },
     ], skipped: [] });
-    expect(refused).toContain(`K${f.base.knowledgeId}@${leftTip.id}: base is missing, archived, inapplicable or outside the writer's scope`);
+    // 76: baseProblem now names the current version when the identity has a visible one on this branch,
+    // instead of the generic "missing, archived, inapplicable or outside the writer's scope" fallback.
+    expect(refused).toContain(`K${f.base.knowledgeId}@${leftTip.id} is not current on this branch; current is K${f.base.knowledgeId}@${rightTip.id}`);
     expect(f.memory.store.listKnowledgeRevisions()).toHaveLength(before);
     expect(write.execute({ operations: [
       { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [], reason: "Retire explicit trigger." },

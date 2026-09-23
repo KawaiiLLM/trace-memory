@@ -628,7 +628,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.listKnowledgeLinks(older2.knowledgeId)).toEqual([]);
   });
 
-  test("44: Store rejects Consolidator archive atomically while manual archive remains fact-backed", () => {
+  test("76: a Consolidator batch commits create and archive together; a forbidden op still rolls back the whole batch atomically", () => {
     const { s, factId } = seed();
     const manual = { kind: "manual" as const, sessionId: s.id, createdAt: consolidationAt };
     const created = store.commitConsolidationRun({ run: manual, operations: [{ op: "create", handle: "$base", author: "test",
@@ -638,17 +638,27 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const item = created.committed[0]!;
     const archive = { op: "archive" as const, knowledgeId: item.knowledgeId, baseCommit: item.commit,
       supports: [factId], reason: "retire rule", createdAt: consolidationAt };
-    const before = store.listKnowledgeRevisions();
-    const rejected = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
-      operations: [{ op: "create", handle: "$partial", author: "test", text: "must roll back", category: "term",
+    // 76: create and archive together are the Consolidator's own authority now; both commit atomically.
+    const accepted = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+      operations: [{ op: "create", handle: "$partial", author: "test", text: "commits alongside the archive", category: "term",
         scope: "project", supports: [factId], reason: "mixed item", topics: [], createdAt: consolidationAt }, archive] });
+    expect(accepted.ok).toBe(true);
+    if (!accepted.ok) return;
+    expect(accepted.committed.map(op => op.op)).toEqual(["create", "archive"]);
+    expect(store.currentCommit(item.knowledgeId)[0]).toMatchObject({ op: "archive", actorRole: "consolidation" });
+
+    // A batch mixing a legal op with one still forbidden to the Consolidator (merge) rolls back whole.
+    const before = store.listKnowledgeRevisions();
+    const currentBase = store.currentCommit(item.knowledgeId)[0]!.id;
+    const rejected = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+      operations: [{ op: "create", handle: "$partial2", author: "test", text: "must roll back", category: "term",
+        scope: "project", supports: [factId], reason: "mixed item", topics: [], createdAt: consolidationAt },
+        { op: "merge", intoKnowledgeId: item.knowledgeId, intoBaseCommit: currentBase,
+          absorb: [{ knowledgeId: item.knowledgeId, baseCommit: currentBase }],
+          category: "reference", scope: "project", supports: [factId], reason: "forbidden", topics: [], createdAt: consolidationAt }] });
     expect(rejected.ok).toBe(false);
     if (!rejected.ok) expect(rejected.problems.join(" ")).toContain("Dreamer");
     expect(store.listKnowledgeRevisions()).toEqual(before);
-    expect(store.getKnowledge(item.knowledgeId + 1)).toBeNull();
-    const accepted = store.commitConsolidationRun({ run: manual, operations: [archive] });
-    expect(accepted.ok).toBe(true);
-    expect(store.currentCommit(item.knowledgeId)[0]).toMatchObject({ op: "archive", actorRole: "manual" });
   });
 
   test("a noting commit rejects turns and watermarks outside its own session and branch", () => {

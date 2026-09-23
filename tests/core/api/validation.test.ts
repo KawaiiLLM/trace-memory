@@ -30,11 +30,30 @@ describe("checkMemoryBatch", async () => {
     expect(value!.operations[0]!.op).toBe("create");
   });
 
-  test("44: rejects Consolidator archive with Dreamer guidance", async () => {
-    const { problems } = await checkMemoryBatch({ operations: [
+  test("76: accepts a Consolidator archive of an item supplied by the knowledge block", async () => {
+    const { problems, value } = await checkMemoryBatch({ operations: [
       { op: "archive", reason: "Retire stale knowledge.", id: "K9@9", supports: ["F5"] },
     ], skipped: [] });
-    expect((problems ?? []).join(" ")).toContain("Dreamer");
+    expect(problems).toEqual([]);
+    expect(value!.operations[0]).toMatchObject({ op: "archive" });
+  });
+
+  test("76: rejects a Consolidator archive of a nonexistent version", async () => {
+    const { problems } = await checkMemoryBatch({ operations: [
+      { op: "archive", reason: "Retire stale knowledge.", id: "K99@99", supports: ["F5"] },
+    ], skipped: [] });
+    expect((problems ?? []).join(" ")).toContain("was not read as visible and active");
+  });
+
+  test("76: rejects a Consolidator merge and split with Dreamer guidance", async () => {
+    const { problems: mergeProblems } = await checkMemoryBatch({ operations: [
+      { op: "merge", reason: "Merge duplicates.", id: "K1@1", absorb: ["K2@2"], text: "merged", category: "term", scope: "project", topics: [], supports: ["F5"] },
+    ], skipped: [] });
+    expect((mergeProblems ?? []).join(" ")).toContain("Dreamer");
+    const { problems: splitProblems } = await checkMemoryBatch({ operations: [
+      { op: "split", reason: "Split apart.", id: "K1@1", supports: ["F5"] },
+    ], skipped: [] });
+    expect((splitProblems ?? []).join(" ")).toContain("Dreamer");
   });
 
   test("accepts an empty operations and skipped batch", async () => {

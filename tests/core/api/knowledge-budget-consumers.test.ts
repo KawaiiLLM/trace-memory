@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory, deriveSharedMaterialAllowance, type DreamingAgentInput } from "../../../src/core/api/index.ts";
+import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
@@ -42,12 +42,14 @@ function zeroBase(memory: ReturnType<typeof TraceMemory>) {
   memory.setKnowledgeBudget("session", 0);
 }
 
-test("64c foreground and compact Knowledge share the 20k base plus the derived 25k allowance", () => {
+test("73: foreground and compact Knowledge share the base plus the configured shared allowance", () => {
   const f = fixture();
+  f.memory.config.compaction.sharedAllowanceTokens = 25_000;
+  const cap = f.memory.knowledgeBudgets().injection + f.memory.config.compaction.sharedAllowanceTokens;
   const large = f.create("body ".repeat(30_000), "project", ["charged-topic"]);
   const delivery = f.memory.injection(f.target);
   expect(tokens(delivery.text)).toBeGreaterThan(20_000);
-  expect(tokens(delivery.text)).toBeLessThanOrEqual(45_000);
+  expect(tokens(delivery.text)).toBeLessThanOrEqual(cap);
   expect(delivery.knowledgeCommitIds).toEqual([large.commit]);
   expect(delivery.text).toContain('topics: ["charged-topic"]');
 
@@ -56,27 +58,23 @@ test("64c foreground and compact Knowledge share the 20k base plus the derived 2
   if ("native" in compact) return;
   expect(compact.supplied.knowledgeCommitIds).toEqual([large.commit]);
   expect(compact.charged!.knowledge).toBeGreaterThan(20_000);
-  expect(compact.charged!.knowledge).toBeLessThanOrEqual(45_000);
+  expect(compact.charged!.knowledge).toBeLessThanOrEqual(cap);
   expect(compact.text).toContain('topics: ["charged-topic"]');
 });
 
-test("64c zero Knowledge base borrows only the current Noting and Consolidation triggers", () => {
+test("73: zero Knowledge base borrows only the configured shared allowance", () => {
   const f = fixture();
   const item = f.create("body ".repeat(6_000));
   zeroBase(f.memory);
   expect(f.memory.knowledgeBudgets()).toEqual({
     global: 0, project: 0, session: 0, applicable: 0, injection: 0, dreamingProcessedInput: 0,
   });
-  expect(deriveSharedMaterialAllowance({
-    noting: f.memory.config.noting.triggerTokens, consolidation: f.memory.config.consolidation.triggerTokens,
-    dreaming: f.memory.config.dreaming.triggerTokens,
-  })).toBe(20_000);
+  f.memory.config.compaction.sharedAllowanceTokens = 20_000;
   const borrowed = f.memory.injection(f.target);
   expect(borrowed.knowledgeCommitIds).toEqual([item.commit]);
-  expect(tokens(borrowed.text)).toBeLessThanOrEqual(15_000);
+  expect(tokens(borrowed.text)).toBeLessThanOrEqual(20_000);
 
-  f.memory.config.noting.triggerTokens = 1;
-  f.memory.config.consolidation.triggerTokens = 1;
+  f.memory.config.compaction.sharedAllowanceTokens = 0;
   expect(f.memory.injection(f.target).text).toBe("");
   const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId);
   expect("native" in compact).toBe(false);
@@ -98,12 +96,12 @@ test("64c zero changed-pool cap refuses a pending item explicitly without a fake
   expect(f.memory.store.getClaim(f.session.id, "dreaming")).toBeNull();
 });
 
-test("64c derived allowance refuses an unsafe trigger sum instead of wrapping", () => {
+test("73: an unsafe combined envelope refuses instead of wrapping, not a trigger sum any more", () => {
   const f = fixture();
   f.create("changed");
-  f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
-  expect(() => f.memory.injection(f.target)).toThrow(/derived shared material allowance must be a safe integer/);
-  expect(() => f.memory.compact(f.session.id, "main", f.target.headTurnId)).toThrow(/derived shared material allowance must be a safe integer/);
+  f.memory.config.compaction.sharedAllowanceTokens = Number.MAX_SAFE_INTEGER;
+  expect(() => f.memory.injection(f.target)).toThrow(/derived foreground Knowledge capacity must be a safe integer/);
+  expect(() => f.memory.compact(f.session.id, "main", f.target.headTurnId)).toThrow(/compact envelope must be a safe integer/);
 });
 
 test("64c a larger configured Knowledge window never bypasses actual provider input capacity", async () => {
@@ -118,21 +116,18 @@ test("64c a larger configured Knowledge window never bypasses actual provider in
   expect(f.memory.store.pendingVersions(pending[0]!.pool, f.target)).not.toEqual([]);
 });
 
-test("64c real facade freezes D references to base plus shared minus Changed and separator", async () => {
+test("73: real facade freezes D references to base plus the configured shared allowance minus Changed and separator", async () => {
   let f!: ReturnType<typeof fixture>;
   const admitted: number[] = [];
   f = fixture(async raw => {
     const task = raw as DreamingAgentInput;
     const budgets = f.memory.knowledgeBudgets();
-    admitted.push(budgets.dreamingProcessedInput + deriveSharedMaterialAllowance({
-      noting: f.memory.config.noting.triggerTokens, consolidation: f.memory.config.consolidation.triggerTokens,
-      dreaming: f.memory.config.dreaming.triggerTokens,
-    }) - tokens(task.material.changed) - 1);
+    admitted.push(budgets.dreamingProcessedInput + f.memory.config.compaction.sharedAllowanceTokens
+      - tokens(task.material.changed) - 1);
     if (admitted.length === 1) {
       const frozen = task.admittedProcessedInputCap;
       f.memory.setKnowledgeBudget("global", 5_000);
-      f.memory.config.noting.triggerTokens = 6_000;
-      f.memory.config.consolidation.triggerTokens = 4_000;
+      f.memory.config.compaction.sharedAllowanceTokens = 6_000;
       expect(task.admittedProcessedInputCap).toBe(frozen);
     }
     return { outcome: "failure", output: "capture only", request: {} };
@@ -147,10 +142,7 @@ test("64c real facade freezes D references to base plus shared minus Changed and
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   const second = f.captured[1]!;
   const secondBudgets = f.memory.knowledgeBudgets();
-  const secondWindow = secondBudgets.dreamingProcessedInput + deriveSharedMaterialAllowance({
-    noting: f.memory.config.noting.triggerTokens, consolidation: f.memory.config.consolidation.triggerTokens,
-    dreaming: f.memory.config.dreaming.triggerTokens,
-  });
+  const secondWindow = secondBudgets.dreamingProcessedInput + f.memory.config.compaction.sharedAllowanceTokens;
   expect(second.admittedProcessedInputCap).toBe(admitted[1]);
   expect(second.admittedProcessedInputCap).toBe(secondWindow - tokens(second.material.changed) - 1);
   expect(tokens(second.material.processed)).toBeGreaterThan(0);

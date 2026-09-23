@@ -1,3 +1,4 @@
+import { diffArrays } from "diff";
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
 import type { KnowledgeCategory, KnowledgeRevision, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import { sourceAddresses } from "../store/index.ts";
@@ -644,7 +645,7 @@ export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevisio
   return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
-const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
+export const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
 // 21a: commit history carries the authored message; the compact automatic knowledge line does not.
 const commitLine = (r: KnowledgeRevision): string =>
   `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)} reason: ${r.reason}`;
@@ -725,6 +726,62 @@ function diffText(before: string, after: string): string {
     else append("add", b[j++]!);
   }
   return spans.map(({ kind, text }) => kind === "same" ? text : kind === "remove" ? `[-${text}-]` : `{+${text}+}`).join("");
+}
+
+// Ticket 76: the Dreamer's pending-material diff is a distinct surface from `renderKnowledgeDiff`
+// above (an exact `trace K@a..K@b` history read, which keeps its Han-per-character engine so an
+// existing single-character pin stays exact). Intl.Segmenter's word granularity groups CJK text into
+// dictionary words (measured: "中国人民银行" -> "中国"/"人民"/"银行"), which is what the maintainer asked
+// for here; the two diffs intentionally disagree on granularity because they answer different
+// questions (exact-history byte tracking vs. a reviewable word-level change).
+function wordSegments(text: string): string[] {
+  return [...new Intl.Segmenter(undefined, { granularity: "word" }).segment(text)].map(part => part.segment);
+}
+
+export interface WordDiff { text: string; added: string; removed: string }
+/** jsdiff's array diff over Intl.Segmenter word tokens (Pi's own edit tool already depends on `diff`). */
+export function wordLevelDiff(before: string, after: string): WordDiff {
+  let text = "", added = "", removed = "";
+  for (const change of diffArrays(wordSegments(before), wordSegments(after))) {
+    const value = change.value.join("");
+    if (change.added) { text += `{+${value}+}`; added += value; }
+    else if (change.removed) { text += `[-${value}-]`; removed += value; }
+    else text += value;
+  }
+  return { text, added, removed };
+}
+
+/** What the Dreamer sees for a Consolidator change with a processing baseline in this pool: the body
+ * as one inline word-level diff, plus any change of category, scope, topics or supports (76 "What D
+ * sees"). Weight is the tokens of every inserted and deleted segment across all of those — never
+ * zero for a real change, far less than the whole item for a metadata-only one (76 ruling "(a)"); the
+ * `K@commit` address itself is never part of the comparison. */
+export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRevision, current: KnowledgeRevision): { text: string; addedTokens: number; removedTokens: number } {
+  const body = wordLevelDiff(baseline.text, current.text);
+  const categoryChanged = baseline.category !== current.category, scopeChanged = baseline.scope !== current.scope;
+  const supportsAdded = current.supports.filter(id => !baseline.supports.includes(id));
+  const supportsRemoved = baseline.supports.filter(id => !current.supports.includes(id));
+  const topicsAdded = current.topics.filter(t => !baseline.topics.includes(t));
+  const topicsRemoved = baseline.topics.filter(t => !current.topics.includes(t));
+  const supportLabel = current.supportSemantics === "change" ? "change supports" : "supports";
+  const lines = [
+    `[K${knowledgeId}@${current.id}] [${current.category}/${current.scope}] ${body.text}`,
+    `  ${supportLabel} added: ${factAddresses(supportsAdded)} removed: ${factAddresses(supportsRemoved)}`,
+    ...(categoryChanged ? [`  category: ${baseline.category} -> ${current.category}`] : []),
+    ...(scopeChanged ? [`  scope: ${baseline.scope} -> ${current.scope}`] : []),
+    ...(topicsAdded.length || topicsRemoved.length ? [`  topics added: ${topicsAdded.join(", ") || "none"} removed: ${topicsRemoved.join(", ") || "none"}`] : []),
+    // 76 review: the diff above shows only what changed, so an unchanged full list (e.g. topics that
+    // were never touched) never appears in it. Show the current revision's complete topics and
+    // supports beside the diff, so a fresh D always sees what it would carry forward on a skip and
+    // what it must repeat on an update — never counted in the weight below, which stays the diff alone.
+    `  current supports: ${factAddresses(current.supports)}`,
+    `  current topics: ${JSON.stringify(current.topics)}`,
+  ];
+  const added = [body.added, categoryChanged ? current.category : "", scopeChanged ? current.scope : "",
+    supportsAdded.length ? factAddresses(supportsAdded) : "", topicsAdded.join(" ")].filter(Boolean).join(" ");
+  const removed = [body.removed, categoryChanged ? baseline.category : "", scopeChanged ? baseline.scope : "",
+    supportsRemoved.length ? factAddresses(supportsRemoved) : "", topicsRemoved.join(" ")].filter(Boolean).join(" ");
+  return { text: lines.join("\n"), addedTokens: tokens(added), removedTokens: tokens(removed) };
 }
 
 export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[], cap = Infinity,
