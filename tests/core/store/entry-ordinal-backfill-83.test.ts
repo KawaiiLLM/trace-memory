@@ -159,12 +159,26 @@ test("83: a failure mid-backfill rolls back the whole batch (Raw bodies, existin
   const f = fixture(); let store = f.store;
   const turnA = store.appendTurn({ sessionId: f.session.id, kind: "turn", startedAt: "time" });
   const turnB = store.appendTurn({ sessionId: f.session.id, kind: "turn", startedAt: "time" });
+  // Turn A also holds an entry that keeps its ordinal (E1): a rollback must leave it exactly as it was.
+  const numbered = store.appendSourceEntry({ sessionId: f.session.id, turnId: turnA.id, nativeId: "numbered", nativeLineage: "o", role: "assistant", text: "numbered", raw: "numbered", calls: [] });
   // Turn A (lower id, processed first): a clean stray row -- would backfill successfully in isolation.
   const cleanStray = store.appendSourceEntry({ sessionId: f.session.id, turnId: turnA.id, nativeId: "clean", nativeLineage: "o", role: "user", text: "clean", raw: "clean", calls: [] });
   // Turn B (higher id, processed after A): a stray row whose stored address corrupts a #tN entry too,
   // so its recompute fails the safety assertion and the whole open throws.
   const brokenStray = store.appendSourceEntry({ sessionId: f.session.id, turnId: turnB.id, nativeId: "broken", nativeLineage: "o", role: "assistant", text: "checking",
     raw: "broken", calls: [{ ordinal: 1, name: "tool", callId: "c1", status: "ok", input: "{}", result: "done" }] });
+  // Facts bound to the numbered entry and to both stray rows (Pi review of 77af628): bindings are by
+  // entry id, and a rolled-back backfill must leave every one of them in place.
+  const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "time" }, facts: [
+    { turnId: turnA.id, text: "numbered fact", category: "observation", actor: "agent", source: [`T${turnA.id}#assistant`], entryIds: [numbered.id], createdAt: "time" },
+    { turnId: turnA.id, text: "clean fact", category: "observation", actor: "user", source: [`T${turnA.id}#user`], entryIds: [cleanStray.id], createdAt: "time" },
+    { turnId: turnB.id, text: "broken fact", category: "observation", actor: "agent", source: [`T${turnB.id}#assistant`], entryIds: [brokenStray.id], createdAt: "time" },
+  ] });
+  if (!noted.ok) throw new Error(JSON.stringify(noted));
+  const bindingsBefore = store.db.prepare("SELECT fact_id, entry_id FROM fact_sources ORDER BY fact_id, entry_id").all();
+  expect(new Set(bindingsBefore.map(row => Number(row.entry_id)))).toEqual(new Set([numbered.id, cleanStray.id, brokenStray.id]));
+  const numberedBefore = store.db.prepare("SELECT id, entry_ordinal, addresses, digest FROM source_entries WHERE id = ?").get(numbered.id);
+  expect(numberedBefore!.entry_ordinal).toBe(1);
   const rawBefore = store.db.prepare("SELECT content, blocks FROM source_entry_raw WHERE entry_id = ?").get(brokenStray.id);
   downgradeOrdinalConstraint(store, false);
   store.db.prepare("UPDATE source_entries SET entry_ordinal = NULL WHERE id = ?").run(cleanStray.id);
@@ -185,6 +199,8 @@ test("83: a failure mid-backfill rolls back the whole batch (Raw bodies, existin
     expect(raw.prepare("SELECT id, entry_ordinal, addresses, digest FROM source_entries WHERE id = ?").get(cleanStray.id)).toEqual(cleanBefore);
     expect(raw.prepare("SELECT entry_ordinal FROM source_entries WHERE id = ?").get(brokenStray.id)!.entry_ordinal).toBeNull();
     expect(raw.prepare("SELECT content, blocks FROM source_entry_raw WHERE entry_id = ?").get(brokenStray.id)).toEqual(rawBefore);
+    expect(raw.prepare("SELECT id, entry_ordinal, addresses, digest FROM source_entries WHERE id = ?").get(numbered.id)).toEqual(numberedBefore);
+    expect(raw.prepare("SELECT fact_id, entry_id FROM fact_sources ORDER BY fact_id, entry_id").all()).toEqual(bindingsBefore);
     expect((raw.prepare("PRAGMA table_info(source_entries)").all() as { name: string; notnull: number }[])
       .find(c => c.name === "entry_ordinal")!.notnull).toBe(0); // constraint never landed either
   } finally { raw.close(); }
