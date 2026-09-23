@@ -1210,6 +1210,7 @@ export default function (pi: ExtensionAPI) {
     return visibleView(at < 0 ? [] : entries.slice(at), binding());
   };
   const PHASE_LABEL = { noting: "Noting", consolidation: "Consolidation", dreaming: "Dreamer" } as const;
+  const DREAM_POOL_LABEL = { global: "Dream global", project: "Dream project", session: "Dream session" } as const;
   // Ticket 73 "Shared allowance": core allocates once and never falls back — compact truncates
   // unprocessed material instead of asking for recovery or native delegation. This handler freezes the
   // path, allocates, and either publishes the replacement or (a host-caught error only) delegates.
@@ -1570,10 +1571,19 @@ export default function (pi: ExtensionAPI) {
     const lines: (string | ((paint: Parameters<SessionBody>[1]) => string))[] = [...summary.lines];
     const target = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
     lines.push(`${compact ? "Pending / trigger (~tokens)" : "Pending: / trigger — estimated tokens"}${enabled() ? "" : " (Off; stored evidence only)"}`);
-    for (const phase of ["noting", "consolidation", "dreaming"] as const) {
-      const label = phase === "dreaming" ? "Dreaming" : PHASE_LABEL[phase], pending = memory.pendingTokens(phase, target);
-      lines.push(paint => pendingBar(label, pending, compact, paint));
+    for (const phase of ["noting", "consolidation"] as const) {
+      const pending = memory.pendingTokens(phase, target);
+      lines.push(paint => pendingBar(PHASE_LABEL[phase], pending, compact, paint));
     }
+    // Knowledge is split into scope pools (global/project/session) that each trigger Dreaming
+    // independently, so each gets its own bar rather than one merged into the pool with the
+    // highest progress (maintainer 2026-09-24).
+    const dreaming = memory.dreamingPending(target);
+    if (dreaming.pools) for (const pool of dreaming.pools)
+      lines.push(paint => pendingBar(DREAM_POOL_LABEL[pool.scope],
+        { tokens: pool.tokens, trigger: pool.trigger, state: "known" }, compact, paint));
+    else lines.push(paint => pendingBar("Dreaming",
+      { tokens: null, trigger: memory.config.dreaming.triggerTokens, state: dreaming.state }, compact, paint));
     if (!compact) lines.push("Pending / trigger is not task completion or worker readiness.", summary.cost, ...summary.composition);
     lines.push(...summary.shared);
     return (width, paint) => statusBody([...summary.recovery, ...compositionMap(composition, model, width, paint), ...lines.map(line => typeof line === "string" ? line : line(paint))], width, paint);

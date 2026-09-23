@@ -75,7 +75,11 @@ try {
           assert.ok(plain.some((line: string) => line.trim().replace(/^→ /, "") === action));
         seen.push(...plain); component.handleInput?.("\x1b[6~");
       }
-      assert.ok(seen.join(" ").includes("Pending / trigger (~tokens)") && seen.join(" ").includes("Dreaming      ░░░░░░░░░░"));
+      assert.ok(seen.join(" ").includes("Pending / trigger (~tokens)"));
+      // Each Knowledge pool (global/project/session) triggers Dreaming separately, so each shows its
+      // own bar rather than one merged "Dreaming" line.
+      for (const label of ["Dream global", "Dream project", "Dream session"])
+        assert.ok(new RegExp(`${label}\\s+░░░░░░░░░░`).test(seen.join(" ")), `missing empty ${label} bar`);
       assert.ok(seen.join(" ").includes("⛶") && !seen.join(" ").includes("not task completion or worker"));
       assert.ok(!seen.join(" ").includes("Memory ~0"));
       assert.ok(!seen.join(" ").includes("Pi rebuilt text estimate"));

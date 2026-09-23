@@ -206,10 +206,14 @@ export function compositionMap(value: ContextComposition, model: string, width: 
     legend.push(paint(topColors[name], `${key(segment(name))} ${label} ${approximate(amount)} (${share(amount, localTotal)} local)`));
   };
   topRow("System"); topRow("Tools"); topRow("Skills");
-  if (value.amounts.Memory > 0) {
-    legend.push(`  Memory ${approximate(value.amounts.Memory)} (${share(value.amounts.Memory, localTotal)} local)`);
-    for (const name of memoryOrder) if (value.memory[name] > 0)
-      legend.push(paint(memoryColors[name], `    ${key(segment(name))} ${name} ${approximate(value.memory[name])}`));
+  // Maintainer ruling 2026-09-24: no Memory parent row and no indentation — Knowledge, Facts and
+  // Raw are top-level rows like System/Tools, in the same spot Memory used to occupy. The remainder
+  // becomes its own top-level "Memory, unclassified" row, shown only when non-zero.
+  for (const name of memoryOrder) {
+    const amount = value.memory[name];
+    if (amount <= 0) continue;
+    const label = name === "Unclassified" ? "Memory, unclassified" : name;
+    legend.push(paint(memoryColors[name], `${key(segment(name))} ${label} ${approximate(amount)} (${share(amount, localTotal)} local)`));
   }
   topRow("Conversation"); topRow("Other");
   if (projection?.unclassifiedOccupied)

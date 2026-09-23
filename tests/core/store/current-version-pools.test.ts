@@ -400,7 +400,7 @@ test("67: facade Dreamer eligibility and explicit pending status each share thei
     expect(memory.taskEligibility("dreaming", f.target).due).toBe(false);
     expect(graph).toHaveBeenCalledTimes(1);
     graph.mockClear();
-    expect(memory.pendingTokens("dreaming", f.target).state).toBe("known");
+    expect(memory.dreamingPending(f.target).state).toBe("known");
     expect(graph).toHaveBeenCalledTimes(1);
   } finally { graph.mockRestore(); memory.close(); stores.splice(stores.indexOf(memory.store), 1); }
 });

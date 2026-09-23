@@ -121,7 +121,7 @@ test("68 own output is processed, its superseded parent needs no processing row,
   expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
 });
 
-test("68 Dreamer status selects the pool nearest its effective trigger, not its raw budget ratio", () => {
+test("68 each pool's effective trigger follows the shared configured cap, not its own raw budget ratio", () => {
   const f = setup(async () => ({ outcome: "success", output: "unused", request: exactRequest }), { triggerTokens: 1 });
   f.create("global", "global body ".repeat(20));
   f.create("project", "project body ".repeat(20));
@@ -130,8 +130,13 @@ test("68 Dreamer status selects the pool nearest its effective trigger, not its 
   f.store.setKnowledgeBudget("global", globalWeight * 3);
   f.store.setKnowledgeBudget("project", projectWeight * 4);
   f.memory.config.dreaming.triggerTokens = projectWeight;
-  expect(globalWeight / (globalWeight * 3)).toBeGreaterThan(projectWeight / (projectWeight * 4));
-  expect(f.memory.pendingTokens("dreaming", f.target)).toEqual({ tokens: projectWeight, trigger: projectWeight, state: "known" });
+  expect(globalWeight / (globalWeight * 3)).toBeGreaterThan(projectWeight / (projectWeight * 4)); // global has the tighter raw budget ratio
+  const pools = f.memory.dreamingPending(f.target).pools!;
+  const global = pools.find(pool => pool.scope === "global")!, project = pools.find(pool => pool.scope === "project")!;
+  // Both budgets exceed the configured cap, so the shared cap binds identically for both pools
+  // despite global's raw ratio being tighter — each pool's own figure, not a cross-pool selection.
+  expect(global).toMatchObject({ tokens: globalWeight, trigger: projectWeight });
+  expect(project).toMatchObject({ tokens: projectWeight, trigger: projectWeight });
 });
 
 test("68 each pool uses min(configured trigger cap, pool budget) and untouched pending stays due", async () => {
@@ -143,7 +148,7 @@ test("68 each pool uses min(configured trigger cap, pool budget) and untouched p
   const budget = pending[0]!.tokens + 10;
   f.store.setKnowledgeBudget("session", budget);
   expect(f.store.pendingPoolWeight(pool, f.target)).toBeLessThan(5_000);
-  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: budget, state: "known" });
+  expect(f.memory.dreamingPending(f.target).pools!.find(value => value.pool === pool)).toMatchObject({ trigger: budget });
   expect(f.store.duePools(f.target, 5_000).find(value => value.pool === pool)?.reason).toBe("pending");
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([first.commit, second.commit]);

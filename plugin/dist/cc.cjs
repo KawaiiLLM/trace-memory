@@ -7306,16 +7306,26 @@ ${view}` : view;
     if (!target) return { tokens: null, trigger, state: "no session" };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
-      if (phase === "dreaming") {
-        const pools = store.knowledgePools(target, cfg.dreaming.triggerTokens).map((size) => ({ ...size, pending: size.pending.reduce((sum, value) => sum + value.tokens, 0) }));
-        const progress = (pool) => pool.pending / Math.max(1, Math.min(cfg.dreaming.triggerTokens, pool.budget));
-        const selected = pools.sort((left, right) => progress(right) - progress(left))[0];
-        return { tokens: selected.pending, trigger: Math.min(cfg.dreaming.triggerTokens, selected.budget), state: "known" };
-      }
       const count = phase === "noting" ? tokens([...notingViews(target)].join("\n\n")) : consolidationTokens(target);
       return { tokens: count, trigger: cfg[phase].triggerTokens, state: "known" };
     } catch {
       return { tokens: null, trigger, state: "unavailable" };
+    }
+  };
+  const poolScope = (pool) => pool === "global" ? "global" : pool.startsWith("project:") ? "project" : "session";
+  const dreamingPending = (target) => {
+    if (!target) return { state: "no session", pools: null };
+    try {
+      if (store.closed || !store.getSession(target.sessionId)) return { state: "unavailable", pools: null };
+      const pools = store.knowledgePools(target, cfg.dreaming.triggerTokens).map((size) => ({
+        scope: poolScope(size.pool),
+        pool: size.pool,
+        tokens: size.pending.reduce((sum, value) => sum + value.tokens, 0),
+        trigger: Math.min(cfg.dreaming.triggerTokens, size.budget)
+      }));
+      return { state: "known", pools };
+    } catch {
+      return { state: "unavailable", pools: null };
     }
   };
   const taskEligibility = (phase, target) => {
@@ -7495,6 +7505,7 @@ ${view}` : view;
     cancelTasks,
     taskEligibility,
     pendingTokens,
+    dreamingPending,
     settleExecution: settleExecution2,
     knowledgeBudgets: () => store.knowledgeBudgets(),
     setKnowledgeBudget: (field, value) => store.setKnowledgeBudget(field, value),

@@ -29,20 +29,23 @@ test.each([
 ] as const)("68: %s effective trigger follows its budget and configured cap", (scope, defaultTrigger) => {
   const f = setup(async () => { throw new Error("measurement must not invoke a model"); }, 5000);
   const item = f.create("A small complete rule", scope);
-  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: defaultTrigger, state: "known" });
+  // Only this scope's pool has pending material; the others stay at zero throughout.
+  const own = () => f.memory.dreamingPending(f.target).pools!.find(value => value.scope === scope)!;
+  expect(f.memory.dreamingPending(f.target)).toMatchObject({ state: "known" });
+  expect(own()).toMatchObject({ trigger: defaultTrigger });
   const pool = f.store.knowledgePools(f.target, 5000).find(value => value.pending.some(version => version.revisionId === item.commit))!;
   const weight = pool.pending[0]!.tokens;
   f.memory.setKnowledgeBudget(scope, weight + 1);
   // Pool framing may already make this over budget; only the pending-path threshold is under test.
   expect(f.store.duePools(f.target, 5000).find(value => value.pool === pool.pool)?.reason).not.toBe("pending");
-  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: weight + 1, tokens: weight });
+  expect(own()).toMatchObject({ trigger: weight + 1, tokens: weight });
   f.memory.setKnowledgeBudget(scope, weight);
   expect(f.store.duePools(f.target, 5000)).toContainEqual(expect.objectContaining({ pool: pool.pool, reason: "pending" }));
-  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: weight, tokens: weight });
+  expect(own()).toMatchObject({ trigger: weight, tokens: weight });
   f.memory.setKnowledgeBudget(scope, weight + 1);
   f.memory.config.dreaming.triggerTokens = weight - 1;
   expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
-  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: weight - 1 });
+  expect(own()).toMatchObject({ trigger: weight - 1 });
 });
 
 test.each(["success", "failure", "cancelled", "timeout"] as const)("68: 86 frozen items retain exactly the untouched remainder after %s", async outcome => {

@@ -111,7 +111,7 @@ test("old and invalid carriers are wholly Unclassified, never parsed from headin
   }
 });
 
-test("rendering preserves Memory metadata as ordered, separately colored leaf rows", () => {
+test("rendering preserves Memory metadata as ordered, separately colored, flat top-level rows", () => {
   const f = fixture();
   f.sm.appendCustomMessageEntry("trace-memory", measured.text, false, details);
   const value = f.read(), before = structuredClone(value);
@@ -119,12 +119,15 @@ test("rendering preserves Memory metadata as ordered, separately colored leaf ro
   const rendered = compositionMap(value, "test", 160, paint as any).join("\n");
   expect(value).toEqual(before);
   const plain = stripTerminalSequences(rendered.replace(/<\/?[^>]+>/g, "")).replace(/\s+/g, " ");
+  // Knowledge/Facts/Raw keep their own label; the remainder shows as "Memory, unclassified"
+  // (maintainer 2026-09-24: no Memory parent row, no indentation).
+  const label = { Knowledge: "Knowledge", Facts: "Facts", Raw: "Raw", Unclassified: "Memory, unclassified" } as const;
   const parts = (["Knowledge", "Facts", "Raw", "Unclassified"] as const).filter(part => value.memory[part] > 0);
-  expect(parts.map(part => plain.indexOf(`${part} `))).toEqual([...parts.map(part => plain.indexOf(`${part} `))].sort((a, b) => a - b));
-  for (const part of parts) expect(plain.match(new RegExp(`${part} `, "g"))).toHaveLength(1);
+  expect(parts.map(part => plain.indexOf(`${label[part]} `))).toEqual([...parts.map(part => plain.indexOf(`${label[part]} `))].sort((a, b) => a - b));
+  for (const part of parts) expect(plain.match(new RegExp(`${label[part]} `, "g"))).toHaveLength(1);
   expect(rendered).toContain("<knowledge>"); expect(rendered).toContain("<facts>"); expect(rendered).toContain("<raw>");
   expect(rendered).toContain("<other>"); // honest Unclassified detail is neutral
-  expect(plain.match(/Memory ~/g)).toHaveLength(1); // aggregate is a label, not a second grid segment
+  expect(plain).not.toMatch(/Memory ~/); // no parent aggregate row
   expect(plain).not.toMatch(/Memory bar|No retained memory/);
 });
 
@@ -306,16 +309,17 @@ test("only active tool schemas count; image capacity is not fabricated from base
   expect(f.read().amounts.Conversation).toBe(0);
 });
 
-test("sub-percent categories stay visible while Memory parts have no second percentages", () => {
+test("sub-percent categories stay visible and Memory leaves carry their own share like any other top-level row", () => {
   const f = fixture(), value = f.read();
   value.amounts.System = 4900; value.amounts.Memory = 100000;
   value.memory = { Knowledge: 99999, Facts: 1, Raw: 0, Unclassified: 0 };
   value.total = 104900;
   const text = stripTerminalSequences(compositionMap(value, "test", 80).join("\n")).replace(/\s+/g, " ");
   expect(text).toContain("System ~4.9k (4.7% local)");
-  expect(text).toContain("Memory ~100k (95.3% local)");
-  expect(text).toContain("Knowledge ~100k"); expect(text).toContain("Facts ~1");
-  expect(text).not.toMatch(/Facts ~1 \(/);
+  expect(text).not.toMatch(/Memory ~/); // no parent aggregate row
+  expect(text).toContain("Knowledge ~100k (95.3% local)");
+  expect(text).toContain("Facts ~1 (<0.1% local)"); // top-level, its own share, not suppressed as a nested duplicate
+  expect(text).not.toContain("Raw"); // zero amount: omitted like any other empty category
 });
 
 test("coherent composition projects every colored Memory leaf and keeps actual estimates", () => {
@@ -337,7 +341,10 @@ test("coherent composition projects every colored Memory leaf and keeps actual e
   expect(text.match(/~207k \/ 512k tokens \(40\.4%\)/g)).toHaveLength(1);
   expect(text).toContain("Estimated usage by category");
   expect(compact).toContain("Skill catalog ~1.2k (0.6% local)");
-  expect(compact).toContain("Memory ~30.3k (15.7% local) ⛁ Knowledge ~10.5k ⛁ Facts ~9.9k ⛁ Raw ~9.6k ⛀ Unclassified ~279");
+  // No Memory parent row; Knowledge/Facts/Raw and the "Memory, unclassified" remainder are
+  // top-level rows, each with its own share of the local total.
+  expect(compact).not.toMatch(/Memory ~/);
+  expect(compact).toContain("⛁ Knowledge ~10.5k (5.4% local) ⛁ Facts ~9.9k (5.1% local) ⛁ Raw ~9.6k (5.0% local) ⛀ Memory, unclassified ~279 (0.1% local)");
   expect(text).not.toMatch(/Difference|Local rebuilt|Occupied estimate|Pi rebuilt|not provider wire|guaranteed free/);
 });
 
@@ -394,10 +401,11 @@ test.each([20, 40, 79, 80, 100, 160])("composition wraps complete legend and inl
   const text = stripTerminalSequences(rendered).replace(/\s+/g, " ");
   expect(text.replaceAll(" ", "")).toContain("fake/模型-with-a-very-long-name".replaceAll(" ", ""));
   for (const phrase of ["Estimated usage by category (partial)", "System ~800 (3.2% local)", "Skill catalog ~300 (1.2% local)",
-    "Memory ~24k (95.6% local)", "Knowledge ~12k", "Facts ~6k", "Raw ~6k", "Unclassified ~1", "Free ~474.9k (95.0% window)"])
+    "Knowledge ~12k", "Facts ~6k", "Raw ~6k", "Memory, unclassified ~1", "Free ~474.9k (95.0% window)"])
     expect(text).toContain(phrase);
-  expect(["Knowledge ~12k", "Facts ~6k", "Raw ~6k", "Unclassified ~1"].map(part => text.indexOf(part)))
-    .toEqual([...(["Knowledge ~12k", "Facts ~6k", "Raw ~6k", "Unclassified ~1"].map(part => text.indexOf(part)))].sort((a, b) => a - b));
+  expect(text).not.toMatch(/Memory ~/); // no parent aggregate row
+  expect(["Knowledge ~12k", "Facts ~6k", "Raw ~6k", "Memory, unclassified ~1"].map(part => text.indexOf(part)))
+    .toEqual([...(["Knowledge ~12k", "Facts ~6k", "Raw ~6k", "Memory, unclassified ~1"].map(part => text.indexOf(part)))].sort((a, b) => a - b));
   const projected = projectComposition(value)!;
   const grid = lines.slice(0, projected.rows).map(line => stripTerminalSequences(line).split("   ")[0]!.replaceAll(" ", "")).join("");
   expect(grid).toHaveLength(projected.glyphs);

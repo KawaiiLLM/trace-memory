@@ -67,8 +67,10 @@ test("Memory leaf categories and tiny Skills get separate remainder glyphs witho
   expect(rendered).toContain("<knowledge>");
   expect(rendered).toContain("<facts>");
   expect(rendered).toContain("<raw>");
-  expect(rendered).toContain("<other>    ⛁ Unclassified ~1</other>");
-  expect(rendered.match(/Memory ~60/g)).toHaveLength(1);
+  // No Memory parent row and no indentation: Knowledge/Facts/Raw and the "Memory, unclassified"
+  // remainder are top-level rows, in the same shape as System/Tools (maintainer 2026-09-24).
+  expect(rendered).toMatch(/<other>[⛁⛀] Memory, unclassified ~1 \(1\.0% local\)<\/other>/);
+  expect(rendered).not.toMatch(/Memory ~60\b/);
   expect(rendered).not.toContain("<memory>");
 });
 
@@ -155,7 +157,7 @@ test("Memory Unclassified remains a neutral leaf with its exact proportional all
   expect(projected.segments.find(segment => segment.name === "Unclassified")).toMatchObject({ estimate: 4, color: "other" });
   const text = compositionMap(value, "test/model", 40, ((color: string, rendered: string) => `<${color}>${rendered}</${color}>`) as never).join("\n");
   expect(text).toContain("<other>");
-  expect(text).toContain("Unclassified ~4");
+  expect(text).toContain("Memory, unclassified ~4");
   expect(text).toContain("Local estimates (partial) total ~15");
 });
 

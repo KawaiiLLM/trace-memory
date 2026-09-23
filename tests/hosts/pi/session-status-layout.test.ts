@@ -163,10 +163,12 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => [24, 60].map(height => ({ 
   expect(text).toContain("long-model-");
   expect(squashed).toContain("MODEL-END");
   for (const phrase of ["Skill catalog ~1.2k",
-    "Memory ~30.3k", "Knowledge ~10.5k", "Facts ~9.9k", "Raw ~9.6k", "Unclassified ~279",
+    "Knowledge ~10.5k (5.4% local)", "Facts ~9.9k (5.1% local)", "Raw ~9.6k (5.0% local)",
+    "Memory, unclassified ~279 (0.1% local)",
     "Free ~305k", "Use /trace on to resume.", "Final detail: paging complete"])
     expect(squashed).toContain(phrase.replaceAll(" ", ""));
   expect(text).not.toContain("Difference");
+  expect(text).not.toMatch(/Memory ~\d/); // no parent row; Knowledge/Facts/Raw are top-level
   s.key("\x1b"); expect(await result).toBeUndefined();
 });
 
@@ -340,7 +342,9 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     await new Promise(resolve => setImmediate(resolve));
     const viewed = [...s.frame()];
     for (let i = 0; i < 10; i++) { s.key("\x1b[6~"); viewed.push(...s.frame()); }
-    expect(viewed.join(" ")).toMatch(/Dreaming\s+.*1.*\//);
+    // Knowledge is project-scoped here; each pool triggers separately, so the project pool's own bar
+    // carries the pending figure rather than a single merged "Dreaming" line.
+    expect(viewed.join(" ")).toMatch(/Dream project\s+.*1.*\//);
     s.key("\x1b"); await command; await h.drain();
     expect(snapshot()).toBe(before); expect(h.entries).toEqual(entries);
     expect(h.requests).toHaveLength(requests); expect(h.statuses.get("trace-memory")).toBe(footer);
@@ -411,7 +415,8 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     const toolLabel = `Tools ~${(toolTokens / 1000).toFixed(1).replace(/\.0$/, "")}k (${(100 * toolTokens / total).toFixed(1)}% local)`;
     const conversationLabel = `Conversation ~12 (${(1200 / total).toFixed(1)}% local)`;
     for (const phrase of ["S1 | On(default) | $0.0000", "Project: pi:pi-test (undeclared)",
-      "Noting ███████░░░ 72.0% 36/50", "Dreaming ░░░░░░░░░░", "Consolidation ░░░░░░░░░░",
+      "Noting ███████░░░ 72.0% 36/50", "Consolidation ░░░░░░░░░░",
+      "Dream global ░░░░░░░░░░", "Dream project ░░░░░░░░░░", "Dream session ░░░░░░░░░░",
       "Estimated usage by category", toolLabel, conversationLabel, "Free ~955.5k (95.5% window)"])
       expect(squashed).toContain(phrase.replace(/\s+/g, ""));
     expect(seen).not.toContain("Difference");
@@ -448,7 +453,7 @@ test.each([20, 40, 79, 80, 100, 160])("long project and actual recovery remain r
       s.key("\x1b[6~");
     }
     const text = seen.join(" ").replace(/\s+/g, " ");
-    for (const phrase of ["Use /trace on to resume.", "Retry fork", "Off; stored evidence only", "Dreaming", "END"])
+    for (const phrase of ["Use /trace on to resume.", "Retry fork", "Off; stored evidence only", "Dream global", "Dream project", "Dream session", "END"])
       expect(text).toContain(phrase);
     expect(text).toContain("Project:");
     expect(text).toContain("long-projec");

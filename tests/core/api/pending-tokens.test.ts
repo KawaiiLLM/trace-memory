@@ -62,14 +62,65 @@ test("Dreaming projection follows the selected head and current project, not dat
     const session = s.createSession({ host: "test", projectId: a.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
     const turn = s.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "reader", startedAt: "now" });
     const reader = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-    const small = memory.pendingTokens("dreaming", targetA).tokens, large = memory.pendingTokens("dreaming", targetB).tokens;
-    expect(large).toBeGreaterThan(small!);
-    expect(memory.pendingTokens("dreaming", reader).tokens).toBe(small);
+    // All fixture knowledge is project-scoped; only the project pool carries pending material.
+    const projectTokens = (target: typeof targetA) => memory.dreamingPending(target).pools!.find(pool => pool.scope === "project")!.tokens;
+    const small = projectTokens(targetA), large = projectTokens(targetB);
+    expect(large).toBeGreaterThan(small);
+    expect(projectTokens(reader)).toBe(small);
     s.declareProject(session.id, "B", "mark");
-    expect(memory.pendingTokens("dreaming", reader).tokens).toBe(large);
+    expect(projectTokens(reader)).toBe(large);
     const sibling = s.appendTurn({ sessionId: targetB.sessionId, kind: "turn", userPrompt: "unrelated sibling", startedAt: "now" });
     s.selectSourcePath(targetB.sessionId, "sibling", []);
     s.setCurrentPath(targetB.sessionId, "sibling", sibling.id, "test-lineage");
-    expect(memory.pendingTokens("dreaming", { ...targetB, branch: "sibling", headTurnId: sibling.id }).tokens).toBe(0);
+    expect(projectTokens({ ...targetB, branch: "sibling", headTurnId: sibling.id })).toBe(0);
+  } finally { memory.close(); }
+});
+
+test("dreamingPending lists every pool in fixed order (global, project, session), each with its own pending tokens and effective trigger matching duePools", () => {
+  const memory = sourceSeededMemory(":memory:", vi.fn());
+  try {
+    const store = memory.store, project = store.createProject({ name: "P", declaredBy: "mark" });
+    const session = store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+    const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
+    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [
+      { turnId: turn.id, category: "decision", actor: "user", text: "rule", source: [`T${turn.id}#user`], createdAt: "now" },
+    ] });
+    if (!noted.ok) throw Error(noted.problems.join());
+    const create = (scope: "global" | "project" | "session", text: string) => {
+      const written = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
+        { op: "create", handle: `$${scope}`, author: "test", text, category: "constraint", scope, supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
+      ] });
+      if (!written.ok) throw Error(written.problems.join());
+    };
+    // Three pools with different pending amounts. Budgets stay above each pool's whole rendered
+    // size so only the "pending at/over trigger" rule is exercised here, not the separate
+    // over-budget rule (covered elsewhere) — keeping this test's due/not-due split unambiguous.
+    create("global", "global body ".repeat(5));
+    create("project", "project body ".repeat(30));
+    create("session", "session body ".repeat(15));
+    memory.setKnowledgeBudget("global", 150);
+    memory.setKnowledgeBudget("project", 200);
+    memory.setKnowledgeBudget("session", 120);
+    memory.config.dreaming.triggerTokens = 80;
+    const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+    const result = memory.dreamingPending(target);
+    expect(result.state).toBe("known");
+    const pools = result.pools!;
+    expect(pools.map(pool => pool.scope)).toEqual(["global", "project", "session"]);
+    const [global, projectPool, sessionPool] = pools;
+    // Different pending amounts (project's longer body outweighs the others).
+    expect(global!.tokens).toBeGreaterThan(0);
+    expect(projectPool!.tokens).toBeGreaterThan(global!.tokens);
+    expect(projectPool!.tokens).toBeGreaterThan(sessionPool!.tokens);
+    // Effective trigger is min(configured trigger cap, pool budget); every budget here exceeds the
+    // 80-token cap, so the cap itself binds for all three pools.
+    for (const pool of pools) expect(pool.trigger).toBe(80);
+    // Each pool's due decision agrees with duePools: a pool at/over its trigger with pending
+    // material is due. Only project's pending clears the shared 80-token trigger.
+    const due = new Set(store.duePools(target, memory.config.dreaming.triggerTokens).map(pool => pool.pool));
+    for (const pool of pools) expect(due.has(pool.pool)).toBe(pool.tokens >= pool.trigger);
+    expect(due.has(projectPool!.pool)).toBe(true);
+    expect(due.has(global!.pool)).toBe(false);
+    expect(due.has(sessionPool!.pool)).toBe(false);
   } finally { memory.close(); }
 });

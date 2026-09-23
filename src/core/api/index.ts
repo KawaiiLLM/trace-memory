@@ -393,6 +393,10 @@ export interface AgentControl {
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
 
+/** One Knowledge pool's Dreaming projection: `pool` is the store's key (`global`,
+ * `project:<id>`, `session:<id>`), `scope` its kind. */
+export interface DreamingPoolPending { scope: "global" | "project" | "session"; pool: string; tokens: number; trigger: number }
+
 // ---- Façade ----
 
 export interface TraceMemory {
@@ -402,10 +406,20 @@ export interface TraceMemory {
    * applies it wherever it renders an entry and never inspects envelope fields itself. */
   readonly resultText: ResultExtractor;
   taskEligibility(phase: Phase, target: TaskTarget): { due: boolean };
-  /** On-demand, read-only trigger material estimates; no admission, grants or cache writes. */
-  pendingTokens(phase: Phase, target?: TaskTarget):
+  /** On-demand, read-only trigger material estimates; no admission, grants or cache writes. Covers
+   * Noting and Consolidation only — Dreaming's Knowledge pools trigger independently, so its
+   * projection is `dreamingPending`. */
+  pendingTokens(phase: "noting" | "consolidation", target?: TaskTarget):
     | { tokens: number; trigger: number; state: "known" }
     | { tokens: null; trigger: number | null; state: "no session" | "unavailable" };
+  /** Same read-only contract as `pendingTokens`, one entry per applicable Knowledge pool (fixed
+   * order global, project, session) since each pool is due on its own budget-derived trigger and
+   * is never merged into a single figure (maintainer 2026-09-24: scopes trigger separately, so each
+   * must be shown separately). `trigger` is `min(dreaming.triggerTokens, pool.budget)`, exactly what
+   * `taskEligibility("dreaming")`/`duePools` use to decide that pool is due. */
+  dreamingPending(target?: TaskTarget):
+    | { state: "known"; pools: DreamingPoolPending[] }
+    | { state: "no session" | "unavailable"; pools: null };
   /** Terminal worker settlement, including Dreamer's future worker: persist first, then abort
    * locally owned target tasks on automatic off. Attempt refusal is not terminal settlement. */
   settleExecution(id: string, outcome: import("../store/executions.ts").ExecutionOutcome, runId: number, reason?: string): ReturnType<Store["settleExecution"]>;
@@ -721,17 +735,23 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (!target) return { tokens: null, trigger, state: "no session" };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
-      if (phase === "dreaming") {
-        const pools = store.knowledgePools(target, cfg.dreaming.triggerTokens)
-          .map(size => ({ ...size, pending: size.pending.reduce((sum, value) => sum + value.tokens, 0) }));
-        const progress = (pool: (typeof pools)[number]) => pool.pending
-          / Math.max(1, Math.min(cfg.dreaming.triggerTokens, pool.budget));
-        const selected = pools.sort((left, right) => progress(right) - progress(left))[0]!;
-        return { tokens: selected.pending, trigger: Math.min(cfg.dreaming.triggerTokens, selected.budget), state: "known" };
-      }
       const count = phase === "noting" ? tokens([...notingViews(target)].join("\n\n")) : consolidationTokens(target);
       return { tokens: count, trigger: cfg[phase].triggerTokens, state: "known" };
     } catch { return { tokens: null, trigger, state: "unavailable" }; }
+  };
+  const poolScope = (pool: string): DreamingPoolPending["scope"] =>
+    pool === "global" ? "global" : pool.startsWith("project:") ? "project" : "session";
+  const dreamingPending: TraceMemory["dreamingPending"] = target => {
+    if (!target) return { state: "no session", pools: null };
+    try {
+      if (store.closed || !store.getSession(target.sessionId)) return { state: "unavailable", pools: null };
+      const pools = store.knowledgePools(target, cfg.dreaming.triggerTokens).map(size => ({
+        scope: poolScope(size.pool), pool: size.pool,
+        tokens: size.pending.reduce((sum, value) => sum + value.tokens, 0),
+        trigger: Math.min(cfg.dreaming.triggerTokens, size.budget),
+      }));
+      return { state: "known", pools };
+    } catch { return { state: "unavailable", pools: null }; }
   };
   // 29d: eligibility is the trigger threshold and nothing else. The delivery pause that used to hold
   // a fork-mode Noting task until its predecessor's facts had been delivered to the foreground went
@@ -922,7 +942,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // this database instance and target branch, never in a process-global or cross-database cache.
   const manualReads = new Map<string, Map<number, import("../store/index.ts").KnowledgeWithRevision>>();
   return {
-    store, executorId, resultText, cancelTasks, taskEligibility, pendingTokens, settleExecution,
+    store, executorId, resultText, cancelTasks, taskEligibility, pendingTokens, dreamingPending, settleExecution,
     knowledgeBudgets: () => store.knowledgeBudgets(),
     setKnowledgeBudget: (field, value) => store.setKnowledgeBudget(field, value),
     get cancellation() { return cancellation; },

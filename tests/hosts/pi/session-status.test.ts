@@ -65,6 +65,28 @@ test("composition uses ASCII alternatives when preferred glyph width is unsafe",
   expect(lines.join("\n")).not.toMatch(/[⛁⛀⛶]/);
 });
 
+test("Memory splits into flat top-level Knowledge/Facts/Raw/Memory-unclassified rows, no parent row or indentation", () => {
+  const value: ContextComposition = {
+    amounts: { System: 100, Tools: 100, Skills: 50, Memory: 400, Conversation: 100, Other: 0 },
+    memory: { Knowledge: 150, Facts: 120, Raw: 100, Unclassified: 30 },
+    total: 750, sdkTokens: 750, sdkDifference: 0, window: 1000, complete: true,
+  };
+  const lines = compositionMap(value, "test", 60);
+  expect(lines.some(line => line.includes("Memory ~") || / Memory /.test(line))).toBe(false);
+  const skills = lines.findIndex(line => line.includes("Skill catalog"));
+  const conversation = lines.findIndex(line => line.includes("Conversation"));
+  for (const [name, amount, share] of [["Knowledge", "~150", "20.0%"], ["Facts", "~120", "16.0%"],
+    ["Raw", "~100", "13.3%"], ["Memory, unclassified", "~30", "4.0%"]] as const) {
+    const line = lines.find(candidate => candidate.includes(name))!;
+    expect(line, `missing ${name} row`).toBeDefined();
+    expect(line).toBe(line.trimStart()); // top-level: no leading indentation, unlike the old nested sub-list
+    expect(line).toContain(`${name} ${amount} (${share} local)`); // same shape as System/Tools: glyph, name, amount, share
+    const index = lines.indexOf(line);
+    expect(index).toBeGreaterThan(skills); // placed where the Memory parent row used to sit
+    expect(index).toBeLessThan(conversation);
+  }
+});
+
 test("bars align columns, only glyphs carry color, and width anomalies fall back", () => {
   const paint = (color: string, text: string) => `<${color}>${text}</${color}>`;
   const bars = ["Noting", "Consolidation", "Dreaming"].map(label => pendingBar(label, { tokens: 5800, trigger: 10000, state: "known" }));
@@ -232,9 +254,12 @@ test.each([false, true])("enrollment notices share only lightweight session word
   const measurements = vi.fn();
   const create = api.TraceMemory;
   vi.spyOn(api, "TraceMemory").mockImplementation((...args) => {
-    const memory = create(...args), pending = memory.pendingTokens;
+    const memory = create(...args), pending = memory.pendingTokens, dreaming = memory.dreamingPending;
     memory.status = coreStatus;
     memory.pendingTokens = (...params) => { measurements(...params); return pending(...params); };
+    // Dreaming's own per-pool projection is a separate call; tag it the same way so the shared
+    // "measurements" trace still shows it fires exactly once, lazily, alongside noting/consolidation.
+    memory.dreamingPending = (...params) => { measurements("dreaming", ...params); return dreaming(...params); };
     return memory;
   });
   const h = setup();

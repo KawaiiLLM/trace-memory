@@ -64,13 +64,15 @@ test("49: material below all three thresholds moves without an automatic flush",
     expect(measured).toBeGreaterThan(0);
     f.memory.config[phase].triggerTokens = measured + 1;
   }
-  const dreaming = f.memory.pendingTokens("dreaming", f.path).tokens!;
+  // The fixture's knowledge is project-scoped; only the project pool carries pending material.
+  const projectPending = () => f.memory.dreamingPending(f.path).pools!.find(pool => pool.scope === "project")!.tokens;
+  const dreaming = projectPending();
   expect(dreaming).toBeGreaterThan(0);
   f.memory.setKnowledgeBudget("project", dreaming * 2 + 2);
   expect(f.memory.declareProject(f.session.id, "below-target", "mark", f.path)).toContain("below-target");
   expect(f.store.consolidationBatch(f.session.id, f.path.branch, f.path.headTurnId).map(value => value.id)).toContain(pendingFact.id);
   expect(f.memory.pendingTokens("noting", f.path).tokens).toBeGreaterThan(0);
-  expect(f.memory.pendingTokens("dreaming", f.path).tokens).toBeGreaterThan(0);
+  expect(projectPending()).toBeGreaterThan(0);
 });
 
 test("49: declaration uses the host-selected rewind path and accepts material below every threshold", () => {
