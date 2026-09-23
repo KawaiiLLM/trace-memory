@@ -613,6 +613,12 @@ export class Store {
   closed = false;
   private readonly dreamingAuthorities = new WeakMap<object, { rangeId: number; sessionId: number; token: string; executionId: string; runId: number }>();
   private readonly originAuthorities = new WeakMap<object, TriggerOrigin | null>();
+  /** 70: memoizes `enabled()` for the lifetime of the current top-level transaction only. Every write
+   * inside one transaction sees the same snapshot regardless of how many times it re-checks
+   * enrollment (43a's per-record transactions each call it several times, once per write method);
+   * `setEnrollment` invalidates its own session id so a write that flips enrollment mid-transaction
+   * is still observed by a later check in the same transaction. Unset outside any transaction. */
+  private enrolledCache: Map<number, boolean> | null = null;
 
   /** Capture once at admission. The ordered ids end at the exact native entry represented by this target. */
   triggerOrigin(path: KnowledgePath, triggerEntryId?: number): TriggerOrigin | null {
@@ -847,10 +853,12 @@ export class Store {
   // Preserve nested transactions with savepoints: project declaration nests a merge.
   transaction<T>(fn: () => T): T {
     const nested = this.db.isTransaction;
+    if (!nested) this.enrolledCache = new Map();
     this.db.exec(nested ? "SAVEPOINT trace_memory_transaction" : "BEGIN IMMEDIATE");
     try {
       const result = fn();
       this.db.exec(nested ? "RELEASE trace_memory_transaction" : "COMMIT");
+      if (!nested) this.enrolledCache = null;
       return result;
     } catch (error) {
       try {
@@ -858,6 +866,7 @@ export class Store {
           ? "ROLLBACK TO trace_memory_transaction; RELEASE trace_memory_transaction"
           : "ROLLBACK");
       } catch { /* Preserve the original error if rollback fails. */ }
+      if (!nested) this.enrolledCache = null;
       throw error;
     }
   }
@@ -1032,8 +1041,12 @@ export class Store {
     return { defaultEnabled: !!row.enrollment_default, choice: row.enrollment_choice === null ? null : !!row.enrollment_choice };
   }
   enabled(sessionId: number): boolean {
+    const cached = this.enrolledCache?.get(sessionId);
+    if (cached !== undefined) return cached;
     const value = this.enrollment(sessionId);
-    return value.choice ?? value.defaultEnabled;
+    const result = value.choice ?? value.defaultEnabled;
+    this.enrolledCache?.set(sessionId, result);
+    return result;
   }
   setEnrollment(sessionId: number, enabled: boolean): void {
     if (typeof enabled !== "boolean") throw new Error("Enrollment choice must be boolean");
@@ -1041,6 +1054,7 @@ export class Store {
       this.enrollment(sessionId);
       this.db.prepare("UPDATE sessions SET enrollment_choice = ? WHERE id = ?").run(Number(enabled), sessionId);
       if (enabled) this.db.prepare("DELETE FROM task_failures WHERE session_id = ?").run(sessionId);
+      this.enrolledCache?.delete(sessionId);
     });
   }
   beginExecution(task: LogicalTask, previous?: string): string { return this.transaction(() => beginExecution(this, task, previous)); }
@@ -2583,7 +2597,8 @@ export class Store {
   }
 
   bindNativeTurn(sessionId: number, nativeLineage: string, nativeId: string, turnId: number, kind: "turn" | "compaction"): void {
-    if (!nativeLineage || !nativeId || this.getTurn(turnId)?.sessionId !== sessionId || this.getTurn(turnId)?.kind !== kind)
+    const turn = this.getTurn(turnId);
+    if (!nativeLineage || !nativeId || turn?.sessionId !== sessionId || turn?.kind !== kind)
       throw new Error("invalid native Turn binding");
     const known = this.findNativeTurn(sessionId, nativeLineage, nativeId);
     if (known) {
@@ -2769,16 +2784,21 @@ export class Store {
       JOIN turns t ON t.id = f.turn_id JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.source_time DESC, f.id DESC`).all(projectId).map(toFact);
   }
 
-  appendSourceEntry(input: SourceInput): SourceEntry {
+  /** `known`, when passed (even `null`), replaces the internal duplicate-check query: a caller that
+   * already resolved `findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId)` for this
+   * exact identity in the same synchronous flow (nothing else can write between the two calls) skips
+   * repeating it. Omitted (the default), this queries exactly as before. */
+  appendSourceEntry(input: SourceInput, known: SourceEntry | null | undefined = undefined): SourceEntry {
     return this.transaction(() => {
       this.requireEnabled(input.sessionId);
       if (typeof input.nativeLineage !== "string" || typeof input.nativeId !== "string" || typeof input.text !== "string" || typeof input.raw !== "string" ||
           !Array.isArray(input.calls) || input.calls.some(c => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || typeof c.name !== "string" || !c.name || typeof c.callId !== "string" || !c.callId || /[\uD800-\uDFFF]/u.test(c.callId) || typeof c.status !== "string" || !c.status ||
             (c.input !== undefined && typeof c.input !== "string") || (c.result !== undefined && typeof c.result !== "string")) ||
           new Set(input.calls.map(c => c.callId)).size !== input.calls.length || new Set(input.calls.map(c => c.ordinal)).size !== input.calls.length || (input.role === "user" && input.calls.length) || (input.role === "toolResult" && input.text)) throw new Error("invalid source entry content");
+      const turn = this.getTurn(input.turnId);
       if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult"].includes(input.role) ||
-          this.getTurn(input.turnId)?.sessionId !== input.sessionId || this.getTurn(input.turnId)?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
-      const known = this.findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId);
+          turn?.sessionId !== input.sessionId || turn?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
+      if (known === undefined) known = this.findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId);
       if (known) {
         const { id: _, entryOrdinal: _ordinal, blocks: _blocks, ...original } = known;
         if (JSON.stringify(original) !== JSON.stringify(input)) throw new Error("native source entry changed after persistence");
