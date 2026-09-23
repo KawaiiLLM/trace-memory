@@ -33,7 +33,7 @@ function fixture(label = "lifecycle") {
 function enableSyntheticWorker(f: ReturnType<typeof fixture>): void {
   const configured = resolveCcHostConfig({ ...f.config, notingModel: "synthetic", notingThinking: "medium",
     consolidationModel: "synthetic", consolidationThinking: "medium", "dreaming.model": "synthetic", "dreaming.thinking": "medium",
-    worker: { claudeExecutable: "/missing/claude", claudeVersion: "2.1.257", contextWindows: { synthetic: 200_000 }, cwd: f.dir,
+    worker: { claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 }, cwd: f.dir,
       responseOriginTimeoutMs: 20 } });
   Object.assign(f.config, configured);
 }

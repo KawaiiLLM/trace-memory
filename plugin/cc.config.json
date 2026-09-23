@@ -14,7 +14,7 @@
   "retry": { "maxRetries": 10 },
   "worker": {
     "claudeExecutable": null,
-    "claudeVersion": "2.1.257",
+    "claudeVersion": "2.1.280",
     "contextWindows": {
       "sonnet": null,
       "opus": null

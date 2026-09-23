@@ -61,7 +61,7 @@ async function fullChain(entries: number, due: boolean) {
     baseline: "2025-01-01T00:00:00Z", pollIntervalMs: 60_000, finalSyncTimeoutMs: 100, finalSyncStablePolls: 2,
     notingModel: "synthetic", notingThinking: "medium", consolidationModel: "synthetic", consolidationThinking: "medium",
     "dreaming.model": "synthetic", "dreaming.thinking": "medium", worker: { cwd: dir, claudeExecutable: "/missing/claude",
-      claudeVersion: "2.1.257", contextWindows: { synthetic: 200_000 } } });
+      claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } });
   seedKnowledge(config.dbPath, due);
   // New installations must receive WAL from Store, without an operator step in the fixture.
   const inspection = new DatabaseSync(config.dbPath);

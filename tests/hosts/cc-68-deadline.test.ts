@@ -38,18 +38,18 @@ function seed(memory: ReturnType<typeof TraceMemory>) {
 
 function init(directory: string, tools: string[], sessionId: string) {
   return { type: "system", subtype: "init", session_id: sessionId, messaging_socket_path: `/tmp/${sessionId}.sock`,
-    claude_code_version: "2.1.257", cwd: directory, tools, plugins: [], skills: [], slash_commands: [],
+    claude_code_version: "2.1.280", cwd: directory, tools, plugins: [], skills: [], slash_commands: [],
     mcp_servers: [{ name: "trace_memory", status: "connected" }] };
 }
 
 test("shared Dreamer deadline terminates an actual CC adapter run and leaves the worker reusable", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-deadline-")); dirs.push(directory);
   const executable = join(directory, "claude");
-  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const config = resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "sonnet", notingThinking: "medium", consolidationModel: "sonnet", consolidationThinking: "medium",
     "dreaming.model": "sonnet", "dreaming.thinking": "medium", "dreaming.triggerTokens": 1, "dreaming.timeoutMs": 1_000,
-    worker: { claudeExecutable: executable, claudeVersion: "2.1.257", contextWindows: { sonnet: 200_000 }, cwd: directory } });
+    worker: { claudeExecutable: executable, claudeVersion: "2.1.280", contextWindows: { sonnet: 200_000 }, cwd: directory } });
 
   let calls = 0, deadlineRun = true, releaseStarted!: () => void, releaseLate!: () => void, releaseFirst!: () => void;
   const started = new Promise<void>(resolve => { releaseStarted = resolve; });

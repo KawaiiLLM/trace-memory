@@ -4,7 +4,7 @@ import { validateConfig, type ClosedSessionScope, type ConfigOverride, type Trac
 import { MEMORY_PHASES, PHASE_SETTING_KEYS, type MemoryPhase } from "../phase-settings.ts";
 
 export const CC_AGENT_SDK_VERSION = "0.1.77";
-export const CC_NATIVE_VERSION = "2.1.257";
+export const CC_NATIVE_VERSION = "2.1.280";
 export const CC_CONTEXT_HEADROOM = 10_000;
 export const CC_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type CcEffort = typeof CC_EFFORT_LEVELS[number];

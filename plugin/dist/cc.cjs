@@ -7002,7 +7002,7 @@ var PHASE_SETTING_KEYS = {
 
 // src/hosts/cc/config.ts
 var CC_AGENT_SDK_VERSION = "0.1.77";
-var CC_NATIVE_VERSION = "2.1.257";
+var CC_NATIVE_VERSION = "2.1.280";
 var CC_CONTEXT_HEADROOM = 1e4;
 var CC_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 var positive2 = (name, value) => {

@@ -6,7 +6,7 @@ const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-68.db", stateDir: "/tmp/unused-68",
   notingModel: "synthetic", notingThinking: "medium", consolidationModel: "synthetic", consolidationThinking: "medium",
   "dreaming.model": "synthetic", "dreaming.thinking": "medium",
-  worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", claudeVersion: "2.1.257",
+  worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", claudeVersion: "2.1.280",
     contextWindows: { synthetic: 200_000 } } }).worker;
 const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
   selectedEntryIds: [1], appendedEntryIds: [], problems: [], snapshot: {} as any };

@@ -78,7 +78,7 @@ test.each([null, "", "relative.sqlite"])("an explicit invalid database path %j d
 function executableConfig(home: string): CcHostConfig {
   return { stateDir: join(home, "state"), notingModel: "sonnet", notingThinking: "high",
     consolidationModel: "opus", consolidationThinking: "medium", "dreaming.model": "opus", "dreaming.thinking": "xhigh",
-    worker: { claudeExecutable: join(home, "claude"), claudeVersion: "2.1.257", cwd: home,
+    worker: { claudeExecutable: join(home, "claude"), claudeVersion: "2.1.280", cwd: home,
       contextWindows: { sonnet: 200_000, opus: 300_000 } } };
 }
 
