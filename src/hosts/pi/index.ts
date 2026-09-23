@@ -1253,22 +1253,24 @@ export default function (pi: ExtensionAPI) {
     let result = allocate();
     if (signal?.aborted || closed) return { cancel: true };
     context.ui.notify(`Trace Memory: compaction preparing ${"native" in result ? `native delegation — ${result.reason}` : "bounded entry views"}.`, "info");
+    // 73 "Truncation is announced in the foreground": material Noting or Consolidation has not yet
+    // processed may have been truncated to fit the shared allowance; it stays pending in the store.
+    // The warning is a callback too, so it is given here, from this allocation, before the final
+    // reprice and its cancellation and validity checks — never between them and the carrier.
+    if (!("native" in result) && result.truncated) {
+      const { raw, facts } = result.truncated;
+      const parts = [
+        ...(raw ? [`${raw.entries} pending Raw ${raw.entries === 1 ? "entry" : "entries"} (${raw.tokens} tokens)`] : []),
+        ...(facts ? [`${facts.count} unconsolidated ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens)`] : []),
+      ];
+      context.ui.notify(`Trace Memory: compaction omitted ${parts.join(" and ")}; they remain pending for Noting and Consolidation.`, "warning");
+    }
     // Notification callbacks may themselves cancel or change the binding. No await or callback
     // separates this final coherent reprice from constructing the exact publication carrier.
     if (signal?.aborted || closed) return { cancel: true };
     result = allocate();
     if (signal?.aborted || closed) return { cancel: true };
     if ("native" in result) return;
-    // 73 "Truncation is announced in the foreground": material Noting or Consolidation has not yet
-    // processed may have been truncated to fit the shared allowance. It stays pending in the store;
-    // this is the one place Pi tells the user rather than silently continuing.
-    if (result.truncated) {
-      const parts = [
-        ...(result.truncated.raw ? [`${result.truncated.raw.entries} pending Raw ${result.truncated.raw.entries === 1 ? "entry" : "entries"} (${result.truncated.raw.tokens} tokens)`] : []),
-        ...(result.truncated.facts ? [`${result.truncated.facts.count} unconsolidated ${result.truncated.facts.count === 1 ? "fact" : "facts"} (${result.truncated.facts.tokens} tokens)`] : []),
-      ];
-      context.ui.notify(`Trace Memory: compaction omitted ${parts.join(" and ")}; they remain pending for Noting and Consolidation.`, "warning");
-    }
     // 29a "Receipt and content are one carrier": the identities this replacement supplies ride on the
     // compaction entry Pi appends for it, so a cancelled or failed attempt — which appends no entry —
     // leaves the earlier baseline untouched, and a native delegation carries no `traceMemory` at all.
