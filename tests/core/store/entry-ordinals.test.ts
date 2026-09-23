@@ -46,6 +46,25 @@ test("33: legacy schema upgrade is deterministic and never rewrites raw or sourc
     expect(store.appendSourceEntry(f.input("c")).entryOrdinal).toBe(3);
   } finally { store.close(); }
 });
+// 79 regression (found on the production snapshot, session 47/entry 9428): `entry_ordinal` is a
+// nullable column -- a legacy row written before ordinals existed and never backfilled. The split's
+// shared row-to-entry helpers (`toSourceEntry`/`toSourceEntryMeta`) wrapped it in `Number()`, and
+// `Number(null)` is `0`: a real ordinal, not "unordered". Pre-79 `getSourceEntry` passed the column
+// through unconverted and returned `null` for this row; every reader below must still match that
+// exactly (output identity), not silently relabel the entry as ordinal 0.
+test("79: a legacy entry with no entry_ordinal reads back null, not 0, everywhere its ordinal is read", () => {
+  const f = fixture(); let store = f.store;
+  try {
+    const a = store.appendSourceEntry(f.input("a"));
+    store.db.prepare("UPDATE source_entries SET entry_ordinal = NULL WHERE id = ?").run(a.id);
+    expect(store.getSourceEntry(a.id)!.entryOrdinal).toBeNull();
+    expect(store.hydrateSourceEntries([a.id])[0]!.entryOrdinal).toBeNull();
+    expect(store.listSourceEntries(f.session.id, f.turn.id)[0]!.entryOrdinal).toBeNull();
+    store.selectSourcePath(f.session.id, "main", [a.id]);
+    expect(store.sourcePath(f.session.id, "main", f.turn.id)[0]!.entryOrdinal).toBeNull();
+    expect(store.pendingEntries(f.session.id, "main", f.turn.id)[0]!.entryOrdinal).toBeNull();
+  } finally { store.close(); }
+});
 test("entry/cleanup integration: ordinal and block upgrade preserves the retired delivery table and legacy citations", () => {
   const f = fixture(); let store = f.store;
   try {

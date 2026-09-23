@@ -678,15 +678,21 @@ function toRun(row: any): Run {
   };
 }
 
+// `entry_ordinal` is a nullable column (legacy rows written before ordinals existed, never
+// backfilled): `Number(null)` is `0`, a real ordinal value, so a bare `Number()` would silently turn
+// an unordered legacy entry into "ordinal 0" instead of leaving it unordered. Pre-79 `getSourceEntry`
+// passed the column through unconverted (`entryOrdinal: row.entry_ordinal`), so this keeps that same
+// null exactly where it already was, for output identity.
+const toOrdinal = (value: unknown): number => (value === null ? (null as unknown as number) : Number(value));
 /** 79: the hot columns alone, shared by every metadata list read. */
 function toSourceEntryMeta(row: any): SourceEntryMeta {
   return { id: Number(row.id), sessionId: Number(row.session_id), nativeLineage: row.native_lineage, nativeId: row.native_id,
-    turnId: Number(row.turn_id), entryOrdinal: Number(row.entry_ordinal), addresses: JSON.parse(row.addresses), digest: row.digest };
+    turnId: Number(row.turn_id), entryOrdinal: toOrdinal(row.entry_ordinal), addresses: JSON.parse(row.addresses), digest: row.digest };
 }
 /** 79: the hot row joined to its Raw payload row, the one shape every full-entry reader builds. */
 function toSourceEntry(row: any): SourceEntry {
   const blocks = row.blocks === null ? undefined : JSON.parse(row.blocks) ?? undefined;
-  return { ...JSON.parse(row.content), id: Number(row.id), entryOrdinal: Number(row.entry_ordinal), ...(blocks ? { blocks } : {}) };
+  return { ...JSON.parse(row.content), id: Number(row.id), entryOrdinal: toOrdinal(row.entry_ordinal), ...(blocks ? { blocks } : {}) };
 }
 const SOURCE_ENTRY_META_COLUMNS = "id, session_id, native_lineage, native_id, turn_id, entry_ordinal, addresses, digest";
 

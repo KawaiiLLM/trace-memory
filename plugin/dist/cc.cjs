@@ -1309,6 +1309,7 @@ function toRun(row) {
     createdAt: row.created_at
   };
 }
+var toOrdinal = (value) => value === null ? null : Number(value);
 function toSourceEntryMeta(row) {
   return {
     id: Number(row.id),
@@ -1316,14 +1317,14 @@ function toSourceEntryMeta(row) {
     nativeLineage: row.native_lineage,
     nativeId: row.native_id,
     turnId: Number(row.turn_id),
-    entryOrdinal: Number(row.entry_ordinal),
+    entryOrdinal: toOrdinal(row.entry_ordinal),
     addresses: JSON.parse(row.addresses),
     digest: row.digest
   };
 }
 function toSourceEntry(row) {
   const blocks2 = row.blocks === null ? void 0 : JSON.parse(row.blocks) ?? void 0;
-  return { ...JSON.parse(row.content), id: Number(row.id), entryOrdinal: Number(row.entry_ordinal), ...blocks2 ? { blocks: blocks2 } : {} };
+  return { ...JSON.parse(row.content), id: Number(row.id), entryOrdinal: toOrdinal(row.entry_ordinal), ...blocks2 ? { blocks: blocks2 } : {} };
 }
 var SOURCE_ENTRY_META_COLUMNS = "id, session_id, native_lineage, native_id, turn_id, entry_ordinal, addresses, digest";
 var Store = class {
