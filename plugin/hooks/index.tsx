@@ -32,6 +32,18 @@ function decode(result: { stdout?: string; stderr?: string; exitCode: number }, 
   return result.stdout.trim();
 }
 
+// The pinned hooks checker follows `$` only through module-scope helper declarations.
+async function load($: any) {
+  const session = await $.session.id();
+  let messages: unknown;
+  try { messages = await $.session.messages({ as: "api" }); }
+  catch { messages = null; }
+  const result = await $.process.run(["node", `${pluginRoot}/dist/cc.cjs`, "cli", "--config", `${pluginRoot}/cc.config.json`, "--session", session, "menu", "--json", "--snapshot"],
+    { stdin: JSON.stringify({ session, messages }) });
+  if (await $.session.id() !== session) throw new Error("native session changed while loading menu");
+  return { session, data: JSON.parse(decode(result, "Trace Memory menu")) as Reply };
+}
+
 export const register = (on: any) => {
   on("session.start", async ($: any, e: any, next: any) => {
     try {
@@ -50,17 +62,6 @@ export const register = (on: any) => {
     }
     return next(e);
   });
-
-  const load = async ($: any) => {
-    const session = await $.session.id();
-    let messages: unknown;
-    try { messages = await $.session.messages({ as: "api" }); }
-    catch { messages = null; }
-    const result = await $.process.run(["node", `${pluginRoot}/dist/cc.cjs`, "cli", "--config", `${pluginRoot}/cc.config.json`, "--session", session, "menu", "--json", "--snapshot"],
-      { stdin: JSON.stringify({ session, messages }) });
-    if (await $.session.id() !== session) throw new Error("native session changed while loading menu");
-    return { session, data: JSON.parse(decode(result, "Trace Memory menu")) as Reply };
-  };
 
   on("command.run", { command: "trace" }, async ($: any, e: any, next: any) => {
     if (versionError) return { text: versionError };

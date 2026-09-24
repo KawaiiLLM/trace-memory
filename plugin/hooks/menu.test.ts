@@ -26,7 +26,7 @@ function mockHost(on: any, seen: string[], version = "2.1.280", sessionId = () =
     if (argv.includes("--version")) return { value: { exitCode: 0, stdout: `${version} (Claude Code)\n`, stderr: "" } };
     if (argv.includes("menu")) {
       expect(argv).toContain("--snapshot");
-      expect(JSON.parse(e.stdin).session).toBe(sessionId());
+      expect(JSON.parse(e.init.stdin).session).toBe(sessionId());
       return { value: { exitCode: 0, stdout: JSON.stringify(menu), stderr: "" } };
     }
     if (argv.includes("runs")) {
@@ -41,7 +41,7 @@ function mockHost(on: any, seen: string[], version = "2.1.280", sessionId = () =
   on("command.run", () => ({ text: "command unavailable" }));
   on("session.messages", () => ({ value: [{ role: "user", content: [{ type: "text", text: "hi" }] }] }));
   on("session.usage", ($: any, e: any) => {
-    expect(e.breakdown).toBe("summary");
+    seen.push(`usage:${e.breakdown}`);
     return { value: { startedAt: 0, context: { window: 10000 }, rateLimits: [] } };
   });
   on("ui.status", () => ({ value: undefined }));
@@ -55,6 +55,7 @@ test("local command renders headless text and a mountable narrow pane, then disp
   await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
   const result = await $.command.run({ command: "trace" });
   expect(result.text).toContain("Trace Memory · S1");
+  expect(seen.filter(call => call.startsWith("usage:"))).toEqual(["usage:summary"]);
   const ui = await $.ui.mount({ plugin: "trace-memory", surface: "terminal", component: "Pane", requestId: "trace-memory-menu", props: pane });
   expect(await ui.find({ type: "Text", text: "Pending / trigger" }), `main mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
   await ui.select({ key: "actions", value: "settings" });
@@ -108,9 +109,9 @@ test("a later command resolves the new native identity after clear", async ($, o
   let currentId = "before-clear";
   mockHost(on, seen, "2.1.280", () => currentId);
   await $.session.start({ cwd: "/tmp", surface: null, isInteractive: false });
-  await $.command.run({ command: "trace" });
+  expect((await $.command.run({ command: "trace" })).text).toContain("Trace Memory · S1");
   currentId = "after-clear";
-  await $.command.run({ command: "trace" });
+  expect((await $.command.run({ command: "trace" })).text).toContain("Trace Memory · S1");
   expect(seen.filter(args => args.includes(" menu --json")).some(args => args.includes("--session before-clear"))).toBe(true);
   expect(seen.filter(args => args.includes(" menu --json")).some(args => args.includes("--session after-clear"))).toBe(true);
 });

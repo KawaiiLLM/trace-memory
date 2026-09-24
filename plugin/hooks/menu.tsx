@@ -141,19 +141,20 @@ function buildSettingsWorkers(input) {
   return { showModeColumn: input.some((w) => w.mode !== void 0), rows: input.map((w) => ({ ...w })) };
 }
 function buildSettingsChoices(input) {
+  const budgetRows = buildSettingsBudgets(input.budgets).rows;
   const budgets = ["global", "project", "session"].map((scope, i) => ({
     id: `budget.${scope}`,
-    label: `${buildSettingsBudgets(input.budgets).rows[i].label} Knowledge budget: ${buildSettingsBudgets(input.budgets).rows[i].value}`
+    label: `${budgetRows[i].label} Knowledge budget: ${budgetRows[i].value}`
   }));
   const workers = input.workers.flatMap((w) => {
-    const phase = w.phase.toLowerCase() === "noter" ? "noting" : w.phase.toLowerCase() === "consolidator" ? "consolidation" : "dreaming";
+    const phase = w.phase === "Noter" ? "noting" : w.phase === "Consolidator" ? "consolidation" : "dreaming";
     return [
       ...w.mode !== void 0 ? [{ id: `${phase}.mode`, label: `${w.phase} mode: ${w.mode}`, source: w.sources?.mode }] : [],
       { id: `${phase}.model`, label: `${w.phase} model: ${w.model}`, source: w.sources?.model ?? w.source },
       { id: `${phase}.thinking`, label: `${w.phase} thinking: ${w.thinking}`, source: w.sources?.thinking }
     ].map((row) => ({ id: row.id, label: `${row.label}${row.source ? ` (${row.source})` : ""}` }));
   });
-  return [...budgets, ...workers, { id: "closedSessionScope", label: `Closed sessions: ${input.closedSessionScope}` }];
+  return [...budgets, ...workers, { id: "closedSessionScope", label: `Closed sessions: ${input.closedSessionScope}${input.closedSessionSource ? ` (${input.closedSessionSource})` : ""}` }];
 }
 var SCOPE_CHOICES = ["off", "project", "global"];
 function buildTraceSettings(input) {
@@ -161,7 +162,7 @@ function buildTraceSettings(input) {
     header: `Trace Memory \xB7 Settings                 database ${input.database}`,
     budgets: buildSettingsBudgets(input.budgets),
     workers: buildSettingsWorkers(input.workers),
-    closedSessionsLine: `Closed sessions   ${input.closedSessionScope}   (${SCOPE_CHOICES.join(" \xB7 ")})`
+    closedSessionsLine: `Closed sessions   ${input.closedSessionScope}   (${SCOPE_CHOICES.join(" \xB7 ")})${input.closedSessionSource ? `  ${input.closedSessionSource}` : ""}`
   };
 }
 var TRACE_MENU_FIXTURE = {
@@ -228,11 +229,18 @@ var TRACE_SETTINGS_FIXTURE_CC = {
 var MEMORY_COLOR = MEMORY_COLOR_HEX;
 var memorySplitSum = (m) => m.knowledge + m.facts + m.raw + m.unclassified;
 function scaleMemoryToMessages(memory, messagesTokens, contextTokens) {
-  if (memorySplitSum(memory) === 0) return memory;
-  if (messagesTokens === void 0 || !contextTokens) return void 0;
+  const sum = memorySplitSum(memory);
+  if (sum === 0) return memory;
+  if (messagesTokens === void 0 || !contextTokens || sum > contextTokens || messagesTokens < 0) return void 0;
   const factor = messagesTokens / contextTokens;
-  const scale = (n) => Math.round(n * factor);
-  return { knowledge: scale(memory.knowledge), facts: scale(memory.facts), raw: scale(memory.raw), unclassified: scale(memory.unclassified) };
+  const keys = ["knowledge", "facts", "raw", "unclassified"];
+  const parts = keys.map((key, index) => ({ key, index, exact: memory[key] * factor, amount: Math.floor(memory[key] * factor) }));
+  let remainder = Math.round(sum * factor) - parts.reduce((total, part) => total + part.amount, 0);
+  for (const part of [...parts].sort((a, b) => b.exact - b.amount - (a.exact - a.amount) || a.index - b.index)) {
+    if (remainder-- <= 0) break;
+    part.amount++;
+  }
+  return { knowledge: parts[0].amount, facts: parts[1].amount, raw: parts[2].amount, unclassified: parts[3].amount };
 }
 var ccCompact = (n) => {
   if (n >= 1e6) {
@@ -409,6 +417,7 @@ var selectedAction = "";
 var selectedSetting;
 var paneWidth = 70;
 var runsLimit = 10;
+var activeSession = "";
 var id = "trace-memory-menu";
 function renderCurrent() {
   if (!reply) throw new Error("Trace Memory: menu has not loaded");
@@ -423,11 +432,26 @@ function decode(result, label) {
   if (!result.stdout) throw new Error(`${label}: empty CLI response${result.stderr ? ` (${result.stderr})` : ""}`);
   return result.stdout.trim();
 }
+async function load($) {
+  const session = await $.session.id();
+  let messages;
+  try {
+    messages = await $.session.messages({ as: "api" });
+  } catch {
+    messages = null;
+  }
+  const result = await $.process.run(
+    ["node", `${pluginRoot}/dist/cc.cjs`, "cli", "--config", `${pluginRoot}/cc.config.json`, "--session", session, "menu", "--json", "--snapshot"],
+    { stdin: JSON.stringify({ session, messages }) }
+  );
+  if (await $.session.id() !== session) throw new Error("native session changed while loading menu");
+  return { session, data: JSON.parse(decode(result, "Trace Memory menu")) };
+}
 export const register = (on) => {
   on("session.start", async ($, e, next) => {
     try {
-      pluginRoot = await $.env.get("CLAUDE_PLUGIN_ROOT");
-      if (!pluginRoot) throw new Error("CLAUDE_PLUGIN_ROOT is unavailable");
+      pluginRoot = $.plugin.root;
+      if (!pluginRoot) throw new Error("Claude Code plugin root is unavailable");
       const output = await $.process.run(["claude", "--version"]);
       const seen = decode(output, "Claude Code version").split(/\s+/)[0];
       if (seen !== PINNED_VERSION) throw new Error(`version mismatch, pinned ${PINNED_VERSION}, running ${seen}`);
@@ -449,11 +473,11 @@ export const register = (on) => {
     try {
       screen = "main";
       notice = "";
-      const session = await $.session.id();
-      const result = await $.process.run(["node", `${pluginRoot}/dist/cc.cjs`, "cli", "--config", `${pluginRoot}/cc.config.json`, "--session", session, "menu", "--json"]);
-      reply = JSON.parse(decode(result, "Trace Memory menu"));
+      const loaded = await load($);
+      reply = loaded.data;
+      activeSession = loaded.session;
       try {
-        const usage = await $.session.usage({ breakdown: "full", columns: paneWidth });
+        const usage = await $.session.usage({ breakdown: "summary", columns: paneWidth });
         const b = usage?.context?.breakdown;
         breakdown = b ? {
           model: b.model,
@@ -467,6 +491,7 @@ export const register = (on) => {
       } catch {
         breakdown = void 0;
       }
+      if (await $.session.id() !== activeSession) throw new Error("native session changed while reading context");
       const text = renderTraceMenuText(renderCurrent());
       await $.ui.open({ id, title: "Trace Memory", focus: true, closeOnEscape: true, rows: 45 });
       return { text };
@@ -484,13 +509,30 @@ export const register = (on) => {
     if (!reply) return <Text>{notice || "Trace Memory: unavailable"}</Text>;
     const menu = renderCurrent();
     const reload = async () => {
-      const session = await $.session.id();
-      const result = await $.process.run(["node", `${pluginRoot}/dist/cc.cjs`, "cli", "--config", `${pluginRoot}/cc.config.json`, "--session", session, "menu", "--json"]);
-      reply = JSON.parse(decode(result, "Trace Memory menu"));
+      const loaded = await load($);
+      reply = loaded.data;
+      activeSession = loaded.session;
+      try {
+        const usage = await $.session.usage({ breakdown: "summary", columns: paneWidth });
+        const b = usage?.context?.breakdown;
+        breakdown = b ? {
+          model: b.model,
+          totalTokens: b.totalTokens,
+          maxTokens: b.maxTokens,
+          percentage: b.percentage,
+          categories: b.categories,
+          displayName: b.displayName,
+          terminalWidth: paneWidth
+        } : void 0;
+      } catch {
+        breakdown = void 0;
+      }
+      if (await $.session.id() !== activeSession) throw new Error("native session changed while reading context");
       $.ui.invalidate("ui.render");
     };
     const run = async (verb, args = []) => {
       const session = await $.session.id();
+      if (session !== activeSession) throw new Error("native session changed; reopen /trace");
       const result = await $.process.run(["node", `${pluginRoot}/dist/cc.cjs`, "cli", "--config", `${pluginRoot}/cc.config.json`, "--session", session, verb, ...args]);
       return decode(result, `Trace Memory ${verb}`);
     };

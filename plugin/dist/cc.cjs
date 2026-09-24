@@ -34,8 +34,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/hosts/cc/index.ts
-var import_node_fs10 = require("node:fs");
-var import_node_path9 = require("node:path");
+var import_node_fs11 = require("node:fs");
+var import_node_path10 = require("node:path");
 var import_node_url = require("node:url");
 
 // src/hosts/cc/config.ts
@@ -330,7 +330,7 @@ function validateNotingFact(path, raw, problems) {
   };
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/base.js
+// node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options = {}) {
     let callback;
@@ -532,7 +532,7 @@ var Diff = class {
   }
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/array.js
+// node_modules/diff/libesm/diff/array.js
 var ArrayDiff = class extends Diff {
   tokenize(value) {
     return value.slice();
@@ -721,7 +721,7 @@ function migrateDreamingRanges64d(db) {
     ALTER TABLE dreaming_ranges_64d RENAME TO dreaming_ranges;
     CREATE UNIQUE INDEX idx_dreaming_open_range ON dreaming_ranges(session_id,branch) WHERE completed_run IS NULL AND closed_at IS NULL`);
   if (sequence) db.prepare("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='dreaming_ranges'").run(sequence.seq);
-  for (const object7 of objects) db.exec(object7.sql);
+  for (const object9 of objects) db.exec(object9.sql);
 }
 function migrateKnowledgeLineage(db, transactionOwned = false) {
   const revision = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_revisions'").get();
@@ -746,7 +746,7 @@ function migrateKnowledgeLineage(db, transactionOwned = false) {
       db.exec(migrated.replace(/CREATE TABLE (?:IF NOT EXISTS )?knowledge_revisions/i, "CREATE TABLE knowledge_revisions_34a"));
       db.exec("INSERT INTO knowledge_revisions_34a SELECT * FROM knowledge_revisions; DROP TABLE knowledge_revisions; ALTER TABLE knowledge_revisions_34a RENAME TO knowledge_revisions");
       if (sequence) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'knowledge_revisions'").run(sequence.seq);
-      for (const object7 of objects) db.exec(String(object7.sql));
+      for (const object9 of objects) db.exec(String(object9.sql));
     }
     const addOrigin = (table, entryIds = true) => {
       const existing = columns(table);
@@ -807,7 +807,7 @@ function migrateDreaming(db, transactionOwned = false) {
       db.exec(sql.replace(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?"?${name}"?`, "i"), `CREATE TABLE ${name}_32b`));
       db.exec(`INSERT INTO ${name}_32b SELECT * FROM ${name}; DROP TABLE ${name}; ALTER TABLE ${name}_32b RENAME TO ${name}`);
       if (sequence) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq, name);
-      for (const object7 of objects) db.exec(String(object7.sql));
+      for (const object9 of objects) db.exec(String(object9.sql));
     }
     if (!transactionOwned && db.prepare("PRAGMA foreign_key_check").all().length)
       throw new Error("Dreaming migration: foreign key violations");
@@ -1720,7 +1720,7 @@ var Store = class {
     this.db.exec(`INSERT INTO ${table}_migrate (${keep.join(",")}) SELECT ${keep.join(",")} FROM ${table};
       DROP TABLE ${table}; ALTER TABLE ${table}_migrate RENAME TO ${table}`);
     if (sequence) this.db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq, table);
-    for (const object7 of objects) this.db.exec(String(object7.sql));
+    for (const object9 of objects) this.db.exec(String(object9.sql));
   }
   /** Convert legacy JSON membership under the same schema transaction as the rest of Store open. */
   migrateSourcePaths() {
@@ -4363,11 +4363,11 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   }
 };
 
-// src/core/render/index.ts
+// src/core/render/tokens.ts
 var PUNCTUATION = /[.,!?;(){}[\]<>:/\\|@#$%^&*+=`~_"-]/;
 var SPLIT = new RegExp(`(\\s+|${PUNCTUATION.source}+)`);
-var NON_ASCII = /[\u0080-\uFFFF]/;
-var CJK = /[\u4E00-\u9FFF\u3400-\u4DBF\u3000-\u30FF\uFF00-\uFFEF\u2E80-\u2EFF\u31C0-\u31EF\u3200-\u32FF\u3300-\u33FF\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F\uA960-\uA97F\uD7B0-\uD7FF]/;
+var NON_ASCII = /[\u0080-￿]/;
+var CJK = /[一-鿿㐀-䶿　-ヿ＀-￯⺀-⻿㇀-㇯㈀-㋿㌀-㏿가-힯ᄀ-ᇿ㄰-㆏ꥠ-꥿ힰ-퟿]/;
 var DIGITS = /^\d+$/;
 var LOWERCASE_WORD = /^[a-z]+$/;
 var LETTERS_AND_DIGITS = /^(?=.*[a-z])(?=.*\d)[a-z\d]+$/i;
@@ -4375,8 +4375,8 @@ var SCRIPTS = [
   { pattern: /[äöüßẞ]/i, charsPerToken: 3 },
   { pattern: /[éèêëàâîïôûùüÿçœæáíóúñ]/i, charsPerToken: 4.5 },
   { pattern: /[ąćęłńóśźżěščřžýůúďťň]/i, charsPerToken: 2.5 },
-  { pattern: /[\u0430-\u044F\u0451]/i, charsPerToken: 6 },
-  { pattern: /[\u03AC-\u03CE]/i, charsPerToken: 3 },
+  { pattern: /[а-яё]/i, charsPerToken: 6 },
+  { pattern: /[ά-ώ]/i, charsPerToken: 3 },
   // Anchored to pure pictographic runs: symbols like ™ are Extended_Pictographic too, and an
   // unanchored match would misprice the word they are attached to.
   { pattern: new RegExp("^\\p{Extended_Pictographic}[\\p{Extended_Pictographic}\\p{Emoji_Component}]*$", "u"), charsPerToken: 0.9 }
@@ -4522,6 +4522,8 @@ var JoinedTokens = class {
     return this.#total;
   }
 };
+
+// src/core/render/index.ts
 var rawResultText = (result) => ({ text: result });
 var ENTRY_VIEW_VERSION = "50-v1-whitespace-pricing";
 var truncated = (characters) => `[... ${characters} characters truncated]`;
@@ -5543,6 +5545,46 @@ function measuredMemory(text, material) {
     facts: tokens((material.facts ?? []).join("\n")),
     raw: tokens((material.entries ?? []).map((entry) => entry.view).join("\n\n"))
   } };
+}
+function measureRetainedMemoryText(rendered, original, offset, length) {
+  const out = { knowledge: 0, facts: 0, raw: 0, unclassified: 0 };
+  const end = offset + length;
+  const regions = [];
+  const knowledgeStart = original.indexOf("\n<knowledge>\n");
+  if (knowledgeStart >= 0 && original.indexOf("\n<knowledge>\n", knowledgeStart + 1) < 0) {
+    const closing = original.indexOf("\n</knowledge>", knowledgeStart);
+    if (closing >= 0 && original.indexOf("\n</knowledge>", closing + 1) < 0)
+      regions.push({ start: knowledgeStart + 1, end: closing + "\n</knowledge>".length, key: "knowledge" });
+  }
+  const episodic = original.indexOf("\n<episodic>\n");
+  const episodicEnd = episodic >= 0 ? original.indexOf("\n</episodic>", episodic) : -1;
+  const factsStart = episodic >= 0 ? original.indexOf(`
+${FACTS_TITLE}
+`, episodic) : -1;
+  const rawStart = episodic >= 0 ? original.indexOf(`
+
+${RAW_TITLE}
+`, episodic) : -1;
+  if (episodicEnd >= 0 && original.indexOf("\n<episodic>\n", episodic + 1) < 0 && original.indexOf("\n</episodic>", episodicEnd + 1) < 0 && (factsStart < 0 || original.indexOf(`
+${FACTS_TITLE}
+`, factsStart + 1) < 0) && (rawStart < 0 || original.indexOf(`
+
+${RAW_TITLE}
+`, rawStart + 1) < 0)) {
+    if (factsStart >= 0 && factsStart < episodicEnd && (rawStart < 0 || factsStart < rawStart))
+      regions.push({ start: factsStart + 1, end: rawStart >= 0 ? rawStart : episodicEnd, key: "facts" });
+    if (rawStart >= 0 && rawStart < episodicEnd)
+      regions.push({ start: rawStart + 2, end: episodicEnd, key: "raw" });
+  }
+  const intervals = regions.map((region) => ({ start: Math.max(offset, offset + region.start), end: Math.min(end, offset + region.end), key: region.key })).filter((region) => region.start < region.end).sort((a, b) => a.start - b.start);
+  let cursor = 0;
+  for (const span of intervals) {
+    if (span.start > cursor) out.unclassified += tokens(rendered.slice(0, span.start)) - tokens(rendered.slice(0, cursor));
+    out[span.key] += tokens(rendered.slice(0, span.end)) - tokens(rendered.slice(0, span.start));
+    cursor = span.end;
+  }
+  out.unclassified += tokens(rendered) - tokens(rendered.slice(0, cursor));
+  return out;
 }
 var FACTS_TITLE = "Recent facts (by Turn):";
 var RAW_TITLE = "Raw:";
@@ -9456,7 +9498,7 @@ var import_node_os3 = require("node:os");
 var import_node_path5 = require("node:path");
 var import_node_util = require("node:util");
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -15880,12 +15922,12 @@ function baseIsNative(value) {
   return pattern.test(_toSource_default(value));
 }
 var _baseIsNative_default = baseIsNative;
-function getValue(object7, key) {
-  return object7 == null ? void 0 : object7[key];
+function getValue(object9, key) {
+  return object9 == null ? void 0 : object9[key];
 }
 var _getValue_default = getValue;
-function getNative(object7, key) {
-  var value = _getValue_default(object7, key);
+function getNative(object9, key) {
+  var value = _getValue_default(object9, key);
   return _baseIsNative_default(value) ? value : void 0;
 }
 var _getNative_default = getNative;
@@ -17675,10 +17717,10 @@ var util;
       return obj[e];
     });
   };
-  util2.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object7) => {
+  util2.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object9) => {
     const keys = [];
-    for (const key in object7) {
-      if (Object.prototype.hasOwnProperty.call(object7, key)) {
+    for (const key in object9) {
+      if (Object.prototype.hasOwnProperty.call(object9, key)) {
         keys.push(key);
       }
     }
@@ -21569,19 +21611,19 @@ function floatSafeRemainder2(val, step) {
   const stepInt = Number.parseInt(step.toFixed(decCount).replace(".", ""));
   return valInt % stepInt / 10 ** decCount;
 }
-function defineLazy(object7, key, getter) {
+function defineLazy(object9, key, getter) {
   const set2 = false;
-  Object.defineProperty(object7, key, {
+  Object.defineProperty(object9, key, {
     get() {
       if (!set2) {
         const value = getter();
-        object7[key] = value;
+        object9[key] = value;
         return value;
       }
       throw new Error("cached value already set");
     },
     set(v) {
-      Object.defineProperty(object7, key, {
+      Object.defineProperty(object9, key, {
         value: v
       });
     },
@@ -30254,7 +30296,7 @@ function query({
   return queryInstance;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
+// node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -30328,7 +30370,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
+// node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -30457,9 +30499,9 @@ function floatSafeRemainder3(val, step) {
   return valInt % stepInt / 10 ** decCount;
 }
 var EVALUATING = /* @__PURE__ */ Symbol("evaluating");
-function defineLazy2(object7, key, getter) {
+function defineLazy2(object9, key, getter) {
   let value = void 0;
-  Object.defineProperty(object7, key, {
+  Object.defineProperty(object9, key, {
     get() {
       if (value === EVALUATING) {
         return void 0;
@@ -30471,7 +30513,7 @@ function defineLazy2(object7, key, getter) {
       return value;
     },
     set(v) {
-      Object.defineProperty(object7, key, {
+      Object.defineProperty(object9, key, {
         value: v
         // configurable: true,
       });
@@ -31007,7 +31049,7 @@ var Class2 = class {
   }
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
+// node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -31073,7 +31115,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
+// node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -31153,7 +31195,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
+// node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -31310,7 +31352,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
+// node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -31858,7 +31900,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
+// node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -31894,14 +31936,14 @@ var Doc2 = class {
   }
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
+// node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
+// node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -33872,7 +33914,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
+// node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -33981,7 +34023,7 @@ function en_default3() {
   };
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
+// node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -34029,7 +34071,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
+// node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -34833,7 +34875,7 @@ function _stringFormat(Class3, format, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
+// node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -35185,7 +35227,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
+// node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -35661,7 +35703,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -35830,7 +35872,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
+// node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -35864,7 +35906,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
+// node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -35905,7 +35947,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
+// node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -35945,7 +35987,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
+// node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -35959,7 +36001,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -37038,22 +37080,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
+// node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
+// node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
+// node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -39628,12 +39670,15 @@ var CcImporter = class {
   memory;
   projection;
   config;
+  runAgent;
+  workerDependencies;
   /** 63: every native lineage this facade has served; the source normalizer renders them all. */
   lineages = /* @__PURE__ */ new Set();
   reopened = false;
   constructor(config3, binding, workerDependencies = {}) {
     let memory;
-    const runAgent = config3.worker ? createCcRunAgent(
+    this.workerDependencies = workerDependencies;
+    this.runAgent = config3.worker ? createCcRunAgent(
       config3,
       workerDependencies,
       (kind) => memory.config[kind].maxToolRounds
@@ -39641,7 +39686,7 @@ var CcImporter = class {
     this.lineages.add(binding.nativeSessionId);
     memory = TraceMemory(
       config3.dbPath,
-      runAgent ?? unavailableRunner,
+      (input) => this.runAgent ? this.runAgent(input) : unavailableRunner(),
       config3.coreConfig,
       void 0,
       (entry) => this.lineages.has(entry.nativeLineage) ? ccSourceBlocks(entry) : void 0
@@ -39652,6 +39697,15 @@ var CcImporter = class {
   }
   currentBinding() {
     return this.projection.currentBinding();
+  }
+  /** Core invokes the runner synchronously before yielding to the provider. An in-flight task
+   * holds its invoked worker Promise; only a later task reads this replacement. */
+  applyWorker(config3) {
+    this.runAgent = config3.worker ? createCcRunAgent(
+      config3,
+      this.workerDependencies,
+      (kind) => this.memory.config[kind].maxToolRounds
+    ) : void 0;
   }
   /** 63: project another native lineage of the same core session on the same facade. */
   retarget(binding) {
@@ -39749,7 +39803,7 @@ async function startControlServer(config3, initial, memory, bindingTimeoutMs, si
       void (async () => {
         try {
           const request2 = JSON.parse(input.slice(0, newline));
-          if (request2.token !== token || typeof request2.verb !== "string" || request2.verb !== "stop" && request2.verb !== "off" && request2.verb !== "catchup")
+          if (request2.token !== token || typeof request2.verb !== "string" || request2.verb !== "stop" && request2.verb !== "off" && request2.verb !== "catchup" && request2.verb !== "settings" && request2.verb !== "apply")
             throw new Error("invalid CC control request");
           const current = readBinding(config3, binding.nativeSessionId);
           if (!current) throw new Error("CC binding disappeared before control");
@@ -39757,6 +39811,30 @@ async function startControlServer(config3, initial, memory, bindingTimeoutMs, si
           if (binding.coreSessionId !== null && current.coreSessionId !== binding.coreSessionId || current.executor?.token !== token)
             throw new Error("CC core or executor identity changed before control");
           const verb = request2.verb;
+          if (verb === "settings") {
+            if (!handlers?.effectiveConfig) throw new Error("effective settings are unavailable on this executor");
+            connection.end(`${JSON.stringify({
+              ok: true,
+              verb,
+              config: handlers.effectiveConfig(),
+              catchup: handlers.catchupSnapshot?.() ?? null
+            })}
+`);
+            return;
+          }
+          if (verb === "apply") {
+            if (!handlers?.applyConfig || typeof request2.path !== "string" || !request2.path.startsWith("/") || typeof request2.expected !== "string")
+              throw new Error("invalid CC settings apply request");
+            const current2 = (0, import_node_fs6.readFileSync)(request2.path, "utf8");
+            if (current2 !== request2.expected) throw new Error("CC settings file changed before executor apply");
+            const next = resolveCcHostConfig(JSON.parse(current2));
+            if (next.dbPath !== config3.dbPath || next.stateDir !== config3.stateDir)
+              throw new Error("CC settings apply cannot change executor database or state directory");
+            handlers.applyConfig(next);
+            connection.end(`${JSON.stringify({ ok: true, verb })}
+`);
+            return;
+          }
           if (verb === "catchup") {
             if (!handlers) throw new Error("catchup is unavailable on this executor");
             const reply2 = { ok: true, verb, catchup: await handlers.catchup(), abortRequested: [] };
@@ -39849,7 +39927,7 @@ async function startControlServer(config3, initial, memory, bindingTimeoutMs, si
     await release(previous);
   } };
 }
-function request(executor, verb, timeoutMs) {
+function request(executor, verb, timeoutMs, detail = {}) {
   return new Promise((resolve4, reject) => {
     const connection = (0, import_node_net.createConnection)(executor.socketPath);
     let output = "", settled = false;
@@ -39862,7 +39940,7 @@ function request(executor, verb, timeoutMs) {
     };
     const timer = setTimeout(() => finish2(new Error(`CC executor did not acknowledge ${verb} within ${timeoutMs} ms`)), timeoutMs);
     connection.setEncoding("utf8");
-    connection.on("connect", () => connection.write(`${JSON.stringify({ verb, token: executor.token })}
+    connection.on("connect", () => connection.write(`${JSON.stringify({ verb, token: executor.token, ...detail })}
 `));
     connection.on("data", (chunk) => output += chunk);
     connection.on("end", () => {
@@ -39878,6 +39956,27 @@ function request(executor, verb, timeoutMs) {
     });
     connection.on("error", (error3) => finish2(error3));
   });
+}
+async function executorSnapshot(config3, nativeSessionId) {
+  const reply = await executorSettingsRequest(config3, nativeSessionId, "settings");
+  if (reply.verb !== "settings") throw new Error("invalid CC effective settings reply");
+  if (reply.config.dbPath !== config3.dbPath || reply.config.stateDir !== config3.stateDir)
+    throw new Error("CC executor returned a different database or state directory");
+  return { config: reply.config, catchup: reply.catchup };
+}
+async function executorSettingsRequest(config3, nativeSessionId, verb, apply) {
+  const binding = readBinding(config3, nativeSessionId);
+  if (!binding || binding.dbPath !== config3.dbPath || binding.clearedInto)
+    throw new Error("current CC session has no valid executor binding");
+  const executor = binding.executor;
+  if (!executor || executorLiveness(executor) !== "alive") throw new Error("running CC executor is unavailable");
+  return request(executor, verb, 2e3, apply ?? {});
+}
+async function executorSettings(config3, nativeSessionId, apply) {
+  if (!apply) return (await executorSnapshot(config3, nativeSessionId)).config;
+  const reply = await executorSettingsRequest(config3, nativeSessionId, "apply", apply);
+  if (reply.verb !== "apply") throw new Error("invalid CC settings apply reply");
+  return true;
 }
 function validatedOperatorBinding(config3, nativeSessionId) {
   const store = new Store(config3.dbPath);
@@ -39980,6 +40079,10 @@ var CcTaskScheduler = class {
   running() {
     return [...this.slots.keys()];
   }
+  /** A future admission reads this snapshot; already reserved slots retain their captured phase config. */
+  applyWorker(worker) {
+    this.worker = worker;
+  }
   safeNotify(reason) {
     try {
       this.notify(reason);
@@ -40069,6 +40172,10 @@ var CcTaskScheduler = class {
     };
     this.driveCatchup();
     return this.catchupStatus();
+  }
+  /** Read the existing drain only. A menu read is not a catchup checkpoint or admission. */
+  catchupSnapshot() {
+    return this.catchup ? this.catchupStatus() : null;
   }
   catchupStatus() {
     if (!this.catchup) return this.failedStatus("no catchup has been started");
@@ -40498,6 +40605,7 @@ var CcCoordinator = class {
    * own `finalReconcile`) are exempt — a hold never blocks the operation that is holding it. */
   importHolds = 0;
   config;
+  appliedConfig;
   /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
   nativeSessionId;
   diagnostic;
@@ -40516,6 +40624,7 @@ var CcCoordinator = class {
   }) {
     validateNativeSessionId(nativeSessionId);
     this.config = config3;
+    this.appliedConfig = config3;
     this.nativeSessionId = nativeSessionId;
     this.diagnostic = diagnostic;
     this.importTuning = importTuning;
@@ -40597,8 +40706,8 @@ var CcCoordinator = class {
     if (!binding || binding.lastClose?.confirmed) return;
     this.observe("attach-start", { final });
     try {
-      this.importer = new CcImporter(this.config, binding, { journal: this.journal });
-      this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic, (reason) => this.publish(reason));
+      this.importer = new CcImporter(this.appliedConfig, binding, { journal: this.journal });
+      this.scheduler = new CcTaskScheduler(this.importer.memory, this.appliedConfig.worker, this.diagnostic, (reason) => this.publish(reason));
       const timeout = deadline === void 0 ? void 0 : Math.max(1, deadline - Date.now());
       await startControlServer(this.config, binding, this.importer.memory, timeout, final ? void 0 : this.startup.signal, {
         catchup: async () => {
@@ -40624,7 +40733,48 @@ var CcCoordinator = class {
           return scheduler.startCatchup(projection, ticket);
         },
         beforeCancel: () => this.scheduler?.stopCatchup(),
-        holdImport: () => this.holdImport()
+        holdImport: () => this.holdImport(),
+        effectiveConfig: () => this.appliedConfig,
+        catchupSnapshot: () => this.scheduler?.catchupSnapshot() ?? null,
+        applyConfig: (next) => {
+          if (!this.importer || !this.scheduler) throw new Error("CC executor is not attached for settings apply");
+          const prior = this.appliedConfig;
+          const nonLive = (value) => {
+            const fields2 = {
+              dbPath: value.dbPath,
+              stateDir: value.stateDir,
+              baseline: value.baseline,
+              retry: value.retry,
+              pollIntervalMs: value.pollIntervalMs,
+              finalSyncTimeoutMs: value.finalSyncTimeoutMs,
+              finalSyncStablePolls: value.finalSyncStablePolls,
+              writeSourceTimeoutMs: value.writeSourceTimeoutMs,
+              "worker.claudeExecutable": value.worker?.claudeExecutable,
+              "worker.claudeVersion": value.worker?.claudeVersion,
+              "worker.cwd": value.worker?.cwd,
+              "worker.responseOriginTimeoutMs": value.worker?.responseOriginTimeoutMs
+            };
+            for (const [section, settings] of Object.entries(value.coreConfig)) {
+              if (section === "closedSessionScope") continue;
+              if (settings && typeof settings === "object") for (const [field, current] of Object.entries(settings))
+                fields2[`${section}.${field}`] = current;
+              else fields2[section] = settings;
+            }
+            return fields2;
+          };
+          const existingFields = nonLive(prior), nextFields = nonLive(next);
+          for (const key of Object.keys(existingFields))
+            if (JSON.stringify(existingFields[key]) !== JSON.stringify(nextFields[key]))
+              throw new Error(`CC executor cannot hot-apply ${key}; saved file is not applied`);
+          for (const [model, capacity] of Object.entries(prior.worker?.contextWindows ?? {}))
+            if (next.worker?.contextWindows[model] !== capacity)
+              throw new Error(`CC executor cannot hot-apply a changed capacity for ${model}`);
+          if (next.closedSessionScope !== this.appliedConfig.closedSessionScope)
+            this.importer.memory.configure({ closedSessionScope: next.closedSessionScope });
+          this.importer.applyWorker(next);
+          this.scheduler.applyWorker(next.worker);
+          this.appliedConfig = next;
+        }
       }).then((control) => {
         this.control = control;
       });
@@ -41223,8 +41373,8 @@ async function operateCcSession(config3, nativeSessionId, command, timeoutMs) {
 }
 async function declareCcProject(config3, nativeSessionId, name) {
   const id = validateNativeSessionId(nativeSessionId);
-  const unavailable = async () => ({ outcome: "failure", output: "operator does not run workers" });
-  const memory = TraceMemory(config3.dbPath, unavailable, { closedSessionScope: config3.closedSessionScope });
+  const unavailable2 = async () => ({ outcome: "failure", output: "operator does not run workers" });
+  const memory = TraceMemory(config3.dbPath, unavailable2, { closedSessionScope: config3.closedSessionScope });
   let result = "", coreSessionId = 0;
   try {
     await updateBindingInStoreTransaction(config3, id, memory.store, (current) => {
@@ -41352,6 +41502,501 @@ async function ccHandleClear(config3, input) {
   }
 }
 
+// src/hosts/cc/menu-context.ts
+var unavailable = (reason) => ({ presence: "unavailable", reason });
+var object7 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+var memoryKeys = ["knowledge", "facts", "raw", "unclassified"];
+var zero = () => ({ knowledge: 0, facts: 0, raw: 0, unclassified: 0 });
+function originalSlice(rendered, original, preview) {
+  if (rendered.includes(original)) {
+    if (rendered.indexOf(original) !== rendered.lastIndexOf(original)) return null;
+    return { offset: rendered.indexOf(original), length: original.length };
+  }
+  const match = /(?:^|\n)Preview \(first 2KB\):\n([\s\S]*?)\n\.\.\.\n<\/persisted-output>/.exec(preview);
+  if (!match || !match[1] || !original.startsWith(match[1])) return null;
+  const offset = rendered.indexOf(match[1]);
+  if (offset < 0 || rendered.indexOf(match[1], offset + 1) >= 0) return null;
+  return { offset, length: match[1].length };
+}
+function estimateBlock(block2) {
+  if (block2.type === "text" && typeof block2.text === "string") return tokens(block2.text);
+  if (block2.type === "thinking" && typeof block2.thinking === "string") return tokens(block2.thinking);
+  if (block2.type === "tool_use" && typeof block2.name === "string" && object7(block2.input)) return tokens(block2.name + JSON.stringify(block2.input));
+  if (block2.type === "tool_result" && typeof block2.tool_use_id === "string") {
+    const content = block2.content;
+    if (typeof content === "string") return tokens(content);
+    if (Array.isArray(content) && content.every((part) => object7(part) && part.type === "text" && typeof part.text === "string"))
+      return content.reduce((sum, part) => sum + tokens(part.text), 0);
+  }
+  return null;
+}
+function ccContextEvidence(records, binding, dbPath, snapshot2) {
+  if (!snapshot2) return unavailable("current Messages snapshot unavailable");
+  if (snapshot2.session !== binding.nativeSessionId) return unavailable("native session changed");
+  if (!Array.isArray(snapshot2.messages) || snapshot2.messages.length >= 4096) return unavailable("Messages snapshot incomplete");
+  let selected;
+  try {
+    selected = selectedCcVisibleRecords(records);
+  } catch (error3) {
+    return unavailable(error3 instanceof Error ? error3.message : String(error3));
+  }
+  if (!selected.length) {
+    const nodes = records.filter((record3) => typeof record3.uuid === "string" && record3.isSidechain !== true);
+    const seen = /* @__PURE__ */ new Set();
+    for (const node of nodes) {
+      if (seen.has(node.uuid)) return unavailable("ambiguous native attachment chain");
+      seen.add(node.uuid);
+    }
+    if (nodes.length && (nodes[0].parentUuid !== null || nodes.some((node, index) => index > 0 && node.parentUuid !== nodes[index - 1].uuid))) return unavailable("native attachment chain is not uniquely selected");
+    selected = nodes;
+  }
+  const byId = new Map(selected.filter((record3) => typeof record3.uuid === "string").map((record3) => [record3.uuid, record3]));
+  const carriers = /* @__PURE__ */ new Map();
+  const unverified = /* @__PURE__ */ new Set();
+  const identity = { db: databaseIdentity(dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
+  for (const record3 of selected) {
+    const a = record3.attachment;
+    if (record3.type !== "attachment" || record3.isSidechain === true || !object7(a) || a.type !== "hook_additional_context" || a.hookEvent !== "SessionStart" || !Array.isArray(a.content) || !Array.isArray(record3.rendered)) continue;
+    if (a.content.length !== 1 || typeof a.content[0] !== "string" || record3.rendered.length !== 1 || !object7(record3.rendered[0]) || typeof record3.rendered[0].content !== "string") continue;
+    const rendered = record3.rendered[0].content;
+    if (rendered.includes("TRACE-MEMORY-CC/1 ")) unverified.add(rendered);
+    let parent = typeof record3.parentUuid === "string" ? byId.get(record3.parentUuid) : void 0;
+    while (parent && object7(parent.attachment) && parent.attachment.type === "hook_system_message" && parent.attachment.hookEvent === "SessionStart")
+      parent = typeof parent.parentUuid === "string" ? byId.get(parent.parentUuid) : void 0;
+    const p = parent?.attachment;
+    if (!parent || !object7(p) || p.type !== "hook_success" || p.hookEvent !== "SessionStart" || typeof p.stdout !== "string") continue;
+    let output;
+    try {
+      output = JSON.parse(p.stdout);
+    } catch {
+      continue;
+    }
+    const hook = object7(output) && object7(output.hookSpecificOutput) ? output.hookSpecificOutput : null;
+    const original = hook?.additionalContext;
+    if (typeof original !== "string" || !decodeCcInjection(original, identity)) continue;
+    if (carriers.has(rendered)) return unavailable("ambiguous repeated native carrier");
+    unverified.delete(rendered);
+    carriers.set(rendered, { original, preview: a.content[0] });
+  }
+  const memory = zero();
+  let estimatedMessagesTokens = 0;
+  const matched = /* @__PURE__ */ new Set();
+  for (const message of snapshot2.messages) {
+    if (!object7(message) || message.role !== "user" && message.role !== "assistant" || !Array.isArray(message.content))
+      return unavailable("unsupported Messages content");
+    for (const block2 of message.content) {
+      if (!object7(block2)) return unavailable("unsupported Messages content");
+      const amount = estimateBlock(block2);
+      if (amount === null) return unavailable("unsupported Messages content");
+      estimatedMessagesTokens += amount;
+      if (message.role !== "user" || block2.type !== "text" || typeof block2.text !== "string") continue;
+      if (unverified.has(block2.text)) return unavailable("native memory carrier could not be authenticated");
+      const carrier = carriers.get(block2.text);
+      if (!carrier) {
+        if (block2.text.startsWith("<system-reminder>\nSessionStart hook additional context:") && block2.text.includes("TRACE-MEMORY-CC/1 ")) return unavailable("native memory carrier is missing from selected transcript");
+        continue;
+      }
+      if (matched.has(block2.text)) return unavailable("ambiguous repeated Messages carrier");
+      matched.add(block2.text);
+      const slice = originalSlice(block2.text, carrier.original, carrier.preview);
+      if (!slice) return unavailable("native carrier preview cannot be measured");
+      const parts = measureRetainedMemoryText(block2.text, carrier.original, slice.offset, slice.length);
+      for (const key of memoryKeys) memory[key] += parts[key];
+    }
+  }
+  return { presence: "confirmed", estimatedMessagesTokens, memory };
+}
+
+// src/hosts/cc/menu-notices.ts
+var object8 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+function ccLastCompactionNotice(snapshot2, binding) {
+  if (snapshot2.problem || snapshot2.incompleteBytes || !binding.clearedFrom?.compactionTurnId || !snapshot2.exists || snapshot2.path !== binding.transcriptPath) return null;
+  const selected = selectedNativePath(snapshot2.records);
+  if (selected.problem || selected.leafUuid !== binding.selectedLeafUuid) return null;
+  const records = selected.leafUuid ? selected.records : snapshot2.records;
+  const successes = records.filter((record3) => {
+    const hook2 = object8(record3.attachment);
+    return record3.type === "attachment" && record3.sessionId === binding.nativeSessionId && hook2?.type === "hook_success" && hook2.hookEvent === "SessionStart" && typeof hook2.command === "string" && hook2.command.includes('/dist/cc.cjs" hook --config ') && hook2.exitCode === 0;
+  });
+  if (!selected.leafUuid && successes.length !== 1) return null;
+  const success2 = successes.at(-1), hook = object8(success2?.attachment);
+  if (!success2 || !hook || typeof hook.stdout !== "string") return null;
+  let output;
+  try {
+    output = object8(JSON.parse(hook.stdout));
+  } catch {
+    return null;
+  }
+  if (object8(output?.hookSpecificOutput)?.hookEventName !== "SessionStart") return null;
+  const warning = output?.systemMessage;
+  if (warning === void 0) return null;
+  if (typeof warning !== "string" || !warning.startsWith("Trace Memory: compaction omitted ") || !warning.endsWith("; they remain pending for Noting and Consolidation.")) return null;
+  const shown = records.find((record3) => {
+    const attachment = object8(record3.attachment);
+    return record3.type === "attachment" && record3.sessionId === binding.nativeSessionId && record3.parentUuid === success2.uuid && attachment?.type === "hook_system_message" && attachment.content === warning && attachment.hookEvent === hook.hookEvent && attachment.hookName === hook.hookName && attachment.toolUseID === hook.toolUseID;
+  });
+  return shown ? warning : null;
+}
+
+// src/hosts/cc/menu.ts
+var localMidnight2 = () => {
+  const now = /* @__PURE__ */ new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+};
+function ccCatchupNotice(status) {
+  if (!status) return null;
+  const entries = `${status.entriesDone}/${status.entriesTotal} entries`;
+  const facts = `${status.factsDone}/${status.factsTotal} facts`;
+  if (status.state === "completed")
+    return `Catchup: completed (${status.entriesDone} entries noted, ${status.factsDone} facts integrated; below-threshold work may remain pending)`;
+  if (status.state === "stopped")
+    return `Catchup: stopped (${entries}, ${facts} processed; unprocessed work stays pending; /trace catchup resumes it)`;
+  if (status.state === "failed")
+    return `Catchup: failed \u2014 ${status.diagnostic ?? "executor reported failure"} (${entries}, ${facts} processed)`;
+  if (status.state === "waiting") return `Catchup: waiting for ${status.phase ?? "a task"} (${entries}, ${facts})`;
+  return `Catchup: running${status.phase ? ` ${status.phase}` : ""} (${entries}, ${facts})`;
+}
+function runsFor(store, sessionId, limit) {
+  return store.db.prepare(`SELECT id, kind, outcome, usage_cost, created_at FROM runs
+    WHERE session_id = ? ORDER BY id DESC LIMIT ?`).all(sessionId, limit).map((run) => ({
+    id: run.id,
+    phase: run.kind,
+    status: run.outcome,
+    cost: run.usage_cost ?? 0,
+    at: run.created_at
+  }));
+}
+function readCcRuns(config3, nativeSessionId, limit) {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Runs count must be a positive safe integer");
+  const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
+  if (!binding || binding.clearedInto) throw new Error("current Claude Code session has no active binding");
+  const store = new Store(config3.dbPath);
+  try {
+    assertOperatorBinding(config3, binding, store);
+    return binding.coreSessionId === null ? [] : runsFor(store, binding.coreSessionId, limit);
+  } finally {
+    store.close();
+  }
+}
+function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup = null, current) {
+  if (!Number.isSafeInteger(runLimit) || runLimit < 1) throw new Error("Runs count must be a positive safe integer");
+  const id = validateNativeSessionId(nativeSessionId), binding = readBinding(config3, id);
+  if (!binding) throw new Error(`Claude Code session ${id} is not bound`);
+  if (binding.clearedInto) throw new Error(`Claude Code session ${id} was cleared into ${binding.clearedInto.nativeSessionId}; use the current native session id`);
+  const memory = TraceMemory(config3.dbPath, async () => {
+    throw new Error("menu cannot run model work");
+  }, config3.coreConfig);
+  try {
+    const store = memory.store;
+    assertOperatorBinding(config3, binding, store);
+    const session = binding.coreSessionId === null ? null : store.getSession(binding.coreSessionId);
+    const project = binding.projectId === null ? null : store.getProject(binding.projectId);
+    const enabled2 = sessionEnabled(binding, store);
+    const head = binding.coreSessionId !== null && binding.selectedLeafUuid ? store.findSourceEntry(binding.coreSessionId, id, binding.selectedLeafUuid)?.turnId ?? store.findNativeTurn(binding.coreSessionId, id, binding.selectedLeafUuid)?.turnId : void 0;
+    const target = binding.coreSessionId !== null && head ? { sessionId: binding.coreSessionId, branch: binding.branch, headTurnId: head } : void 0;
+    const pending = (phase) => {
+      const result = memory.pendingTokens(phase, target);
+      return { tokens: result.tokens, trigger: result.trigger };
+    };
+    const pools = memory.dreamingPending(target);
+    const pool = (scope) => {
+      const row = pools.pools?.find((value) => value.scope === scope);
+      return row ? { tokens: row.tokens, trigger: row.trigger } : { tokens: null, trigger: null };
+    };
+    const spend = session ? memory.spend(session.id) : null;
+    const budgets2 = memory.knowledgeBudgets();
+    const active = effective ?? config3;
+    const workers = ["noting", "consolidation", "dreaming"].map((phase, index) => {
+      const name = ["Noter", "Consolidator", "Dreamer"][index];
+      const current2 = effective?.worker?.phases[phase];
+      const saved = config3.worker?.phases[phase];
+      const sources = !effective ? { model: "effective configuration unavailable", thinking: "effective configuration unavailable" } : saved && current2 && (saved.model !== current2.model || saved.thinking !== current2.thinking) ? {
+        ...saved.model !== current2.model ? { model: "saved file differs from running executor" } : {},
+        ...saved.thinking !== current2.thinking ? { thinking: "saved file differs from running executor" } : {}
+      } : void 0;
+      return { phase: name, model: current2?.model ?? "unavailable", thinking: current2?.thinking ?? "unavailable", ...sources ? { sources } : {} };
+    });
+    const settings = {
+      database: config3.dbPath,
+      budgets: {
+        global: budgets2.global,
+        project: budgets2.project,
+        session: budgets2.session,
+        sharedAllowanceTokens: active.coreConfig.compaction.sharedAllowanceTokens
+      },
+      workers,
+      closedSessionScope: active.closedSessionScope,
+      ...!effective ? { closedSessionSource: "saved file; effective configuration unavailable" } : active.closedSessionScope !== config3.closedSessionScope ? { closedSessionSource: "saved file differs from running executor" } : {}
+    };
+    const runs = session ? runsFor(store, session.id, runLimit) : [];
+    const snapshot2 = readCompleteTranscript(binding.transcriptPath);
+    const notices = [];
+    if (!snapshot2.problem && !snapshot2.incompleteBytes) {
+      const truncation = ccLastCompactionNotice(snapshot2, binding);
+      if (truncation) notices.push(truncation);
+    }
+    if (session && !enabled2) for (const task of store.taskFailures(session.id).filter((value) => value.count >= 3))
+      notices.push(`Automatic off: ${task.phase} failed ${task.count} times (R${task.lastRunId}: ${task.lastReason}). Turn on to resume.`);
+    if (!effective) notices.push("Running executor configuration unavailable");
+    else if (active.closedSessionScope !== config3.closedSessionScope || workers.some((w) => w.sources))
+      notices.push("Saved file settings differ from running executor");
+    const progress = ccCatchupNotice(catchup);
+    if (progress) notices.push(progress);
+    if (binding.clearedFrom || binding.clearedInto) notices.push("Shared identity");
+    const data = {
+      header: {
+        session: session ? `S${session.id}` : "unbound",
+        project: project?.name ?? "unavailable",
+        enabled: enabled2,
+        explicit: binding.enrollment.choice !== null
+      },
+      context: { model: "Claude Code" },
+      pending: { noting: pending("noting"), consolidation: pending("consolidation"), dreaming: {
+        global: pool("global"),
+        project: pool("project"),
+        session: pool("session")
+      } },
+      spend: {
+        session: spend?.cost ?? 0,
+        noting: { runs: spend?.runs.noting ?? 0, cost: spend?.costs.noting ?? 0 },
+        consolidation: { runs: spend?.runs.consolidation ?? 0, cost: spend?.costs.consolidation ?? 0 },
+        dreaming: { runs: spend?.runs.dreaming ?? 0, cost: spend?.costs.dreaming ?? 0 },
+        today: memory.spendSince(localMidnight2())
+      },
+      notices,
+      actions: { enabled: enabled2, retryForkAvailable: false }
+    };
+    const context = snapshot2.problem || snapshot2.incompleteBytes ? {
+      presence: "unavailable",
+      reason: snapshot2.problem ?? "incomplete native transcript"
+    } : ccContextEvidence(snapshot2.records, binding, config3.dbPath, current);
+    return { menu: data, settings, context, runs };
+  } finally {
+    memory.store.close();
+  }
+}
+
+// src/hosts/cc/menu-config.ts
+var import_node_fs10 = require("node:fs");
+var import_node_path9 = require("node:path");
+var import_node_crypto14 = require("node:crypto");
+var PHASE_KEYS = {
+  "noting.model": "notingModel",
+  "noting.thinking": "notingThinking",
+  "consolidation.model": "consolidationModel",
+  "consolidation.thinking": "consolidationThinking",
+  "dreaming.model": "dreaming.model",
+  "dreaming.thinking": "dreaming.thinking",
+  closedSessionScope: "closedSessionScope"
+};
+function propertySpans(text) {
+  const spans = /* @__PURE__ */ new Map();
+  let index = text.indexOf("{") + 1;
+  if (!index) throw new Error("CC configuration must be a JSON object");
+  const whitespace = () => {
+    while (/\s/.test(text[index] ?? "")) index++;
+  };
+  const stringEnd = () => {
+    const begin = index++;
+    while (index < text.length) {
+      if (text[index] === "\\") {
+        index += 2;
+        continue;
+      }
+      if (text[index++] === '"') return { value: JSON.parse(text.slice(begin, index)), end: index };
+    }
+    throw new Error("unterminated JSON string");
+  };
+  while (index < text.length) {
+    whitespace();
+    if (text[index] === "}") return spans;
+    if (text[index] === ",") {
+      index++;
+      whitespace();
+    }
+    if (text[index] !== '"') throw new Error("invalid CC configuration property");
+    const key = stringEnd().value;
+    whitespace();
+    if (text[index++] !== ":") throw new Error("invalid CC configuration property separator");
+    whitespace();
+    const start = index;
+    if (text[index] === '"') stringEnd();
+    else if (text[index] === "{" || text[index] === "[") {
+      let depth = 0, quoted = false;
+      while (index < text.length) {
+        const ch = text[index++];
+        if (quoted) {
+          if (ch === "\\") index++;
+          else if (ch === '"') quoted = false;
+        } else if (ch === '"') quoted = true;
+        else if (ch === "{" || ch === "[") depth++;
+        else if (ch === "}" || ch === "]") {
+          depth--;
+          if (!depth) break;
+        }
+      }
+      if (depth) throw new Error("unterminated CC configuration value");
+    } else while (index < text.length && !/[\s,}]/.test(text[index])) index++;
+    if (spans.has(key)) throw new Error(`duplicate CC configuration key ${key}`);
+    spans.set(key, [start, index]);
+    whitespace();
+    if (text[index] !== "," && text[index] !== "}") throw new Error("invalid CC configuration value terminator");
+  }
+  throw new Error("unterminated CC configuration object");
+}
+function replaceCcConfigValues(text, changes) {
+  const parsed2 = JSON.parse(text);
+  if (!parsed2 || typeof parsed2 !== "object" || Array.isArray(parsed2)) throw new Error("CC configuration must be a JSON object");
+  const spans = propertySpans(text), edits = [];
+  const missing = [];
+  for (const [key, value] of Object.entries(changes)) {
+    const span = spans.get(key);
+    if (span) edits.push({ start: span[0], end: span[1], value: JSON.stringify(value) });
+    else missing.push(`${JSON.stringify(key)}: ${JSON.stringify(value)}`);
+  }
+  const close = text.lastIndexOf("}");
+  if (missing.length) {
+    const indent = text.match(/\n([ \t]*)"[^"\n]+"\s*:/)?.[1] ?? "  ";
+    const multiline = text.slice(0, close).includes("\n");
+    const at = close - (text.slice(0, close).match(/\s*$/)?.[0].length ?? 0);
+    const prefix = spans.size ? "," : "";
+    edits.push({ start: at, end: at, value: multiline ? `${prefix}
+${indent}${missing.join(`,
+${indent}`)}` : `${prefix}${missing.join(", ")}` });
+  }
+  return edits.sort((a, b) => b.start - a.start).reduce((current, edit) => current.slice(0, edit.start) + edit.value + current.slice(edit.end), text);
+}
+function editedCcConfig(text, id, value, capacity) {
+  const input = JSON.parse(text);
+  resolveCcHostConfig(input);
+  const key = PHASE_KEYS[id];
+  if (!key) throw new Error(`unsupported CC setting ${id}`);
+  if (id !== "closedSessionScope" && !input.worker) throw new Error("CC worker must be configured to edit phase settings");
+  if (id === "closedSessionScope" && !["off", "project", "global"].includes(value))
+    throw new Error("closedSessionScope must be off, project or global");
+  if (id.endsWith(".thinking") && !CC_EFFORT_LEVELS.includes(value))
+    throw new Error(`thinking must be ${CC_EFFORT_LEVELS.join(", ")}`);
+  if (id.endsWith(".model") && (!value.trim() || value === "session" || value === "follow foreground"))
+    throw new Error("CC model must be an explicit model id");
+  let changes = { [key]: value };
+  if (id.endsWith(".model")) {
+    if (!input.worker) throw new Error("CC worker must be configured to edit models");
+    const known = Object.hasOwn(input.worker.contextWindows, value);
+    if (known && capacity !== void 0) throw new Error("capacity already exists for this model");
+    if (!known) {
+      const amount = Number(capacity);
+      if (!Number.isSafeInteger(amount) || amount <= CC_CONTEXT_HEADROOM)
+        throw new Error(`new model requires a context capacity greater than ${CC_CONTEXT_HEADROOM}`);
+      const workerSpan = propertySpans(text).get("worker");
+      const workerText = text.slice(...workerSpan);
+      const capacitySpan = propertySpans(workerText).get("contextWindows");
+      const capacityText = workerText.slice(...capacitySpan);
+      const editedCapacity = replaceCcConfigValues(capacityText, { [value]: amount });
+      const output2 = replaceCcConfigValues(text, { [key]: value });
+      const span = propertySpans(output2).get("worker");
+      const windows = propertySpans(output2.slice(...span)).get("contextWindows");
+      const start = span[0] + windows[0], end = span[0] + windows[1];
+      const result = output2.slice(0, start) + editedCapacity + output2.slice(end);
+      resolveCcHostConfig(JSON.parse(result));
+      return result;
+    }
+  } else if (capacity !== void 0) throw new Error("capacity applies only to a new model");
+  const output = replaceCcConfigValues(text, changes);
+  resolveCcHostConfig(JSON.parse(output));
+  return output;
+}
+function saveCcConfig(path, original, updated) {
+  const next = resolveCcHostConfig(JSON.parse(updated));
+  if ((0, import_node_fs10.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
+  const temporary = `${path}.${process.pid}.${(0, import_node_crypto14.randomUUID)()}`;
+  let fd;
+  try {
+    fd = (0, import_node_fs10.openSync)(temporary, "wx", 384);
+    (0, import_node_fs10.writeFileSync)(fd, updated);
+    (0, import_node_fs10.fsyncSync)(fd);
+    (0, import_node_fs10.closeSync)(fd);
+    fd = void 0;
+    (0, import_node_fs10.renameSync)(temporary, path);
+    const dir = (0, import_node_fs10.openSync)((0, import_node_path9.dirname)(path), "r");
+    try {
+      (0, import_node_fs10.fsyncSync)(dir);
+    } finally {
+      (0, import_node_fs10.closeSync)(dir);
+    }
+  } catch (error3) {
+    if (fd !== void 0) (0, import_node_fs10.closeSync)(fd);
+    (0, import_node_fs10.rmSync)(temporary, { force: true });
+    throw error3;
+  }
+  return next;
+}
+
+// src/hosts/trace-menu.ts
+function parseRunsCount(input) {
+  if (!/^[1-9]\d*$/.test(input) || !Number.isSafeInteger(Number(input)))
+    throw new Error("Runs count must be a positive safe integer in decimal notation");
+  return Number(input);
+}
+var TRACE_MENU_FIXTURE = {
+  header: { session: "S3", project: "trace-memory", enabled: true },
+  context: {
+    model: "openai-codex/gpt-6-astra",
+    sdk: { tokens: 142200, window: 4e5 },
+    categories: [
+      { name: "System", tokens: 1900 },
+      { name: "Tools", tokens: 5e3 },
+      { name: "Skills", tokens: 1200 },
+      { name: "Knowledge", tokens: 17300 },
+      { name: "Facts", tokens: 9900 },
+      { name: "Raw", tokens: 1e4 },
+      { name: "Unclassified", tokens: 200 },
+      { name: "Conversation", tokens: 96600 },
+      { name: "Other", tokens: 200 }
+    ],
+    complete: true
+  },
+  pending: {
+    noting: { tokens: 3200, trigger: 1e4 },
+    consolidation: { tokens: 400, trigger: 5e3 },
+    dreaming: {
+      global: { tokens: 0, trigger: 4e3 },
+      project: { tokens: 1500, trigger: 5e3 },
+      session: { tokens: 319, trigger: 1e3 }
+    }
+  },
+  spend: {
+    session: 1.23,
+    noting: { runs: 12, cost: 0.4 },
+    consolidation: { runs: 3, cost: 0.5 },
+    dreaming: { runs: 1, cost: 0.33 },
+    today: 5.31
+  },
+  notices: [],
+  actions: { enabled: true, retryForkAvailable: false }
+};
+var TRACE_MENU_FIXTURE_WITH_NOTICE = {
+  ...TRACE_MENU_FIXTURE,
+  notices: ["Automatic off: noting failed 3 times at T4412 (R881: model request timed out after 3 attempts). Turn on to resume."]
+};
+var TRACE_SETTINGS_FIXTURE = {
+  database: "~/.trace-memory/trace.db",
+  budgets: { global: 4e3, project: 15e3, session: 1e3, sharedAllowanceTokens: 1e4 },
+  workers: [
+    { phase: "Noter", mode: "subagent", model: "follow foreground", thinking: "inherit" },
+    { phase: "Consolidator", mode: "subagent", model: "claude-sonnet-5", thinking: "medium" },
+    { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" }
+  ],
+  closedSessionScope: "project"
+};
+var TRACE_SETTINGS_FIXTURE_CC = {
+  ...TRACE_SETTINGS_FIXTURE,
+  workers: [
+    { phase: "Noter", model: "claude-sonnet-5", thinking: "medium" },
+    { phase: "Consolidator", model: "claude-sonnet-5", thinking: "medium" },
+    { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" }
+  ]
+};
+
 // src/hosts/cc/index.ts
 async function handleCcHook(configInput, input) {
   const config3 = resolveCcHostConfig(configInput);
@@ -41383,13 +42028,13 @@ async function handleCcHook(configInput, input) {
 }
 async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID) {
   const config3 = resolveCcHostConfig(configInput), sessionId = validateNativeSessionId(nativeSessionId);
-  const runtimeDirectory = (0, import_node_path9.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path9.join)(runtimeDirectory, `${sessionId}.jsonl`);
-  (0, import_node_fs10.mkdirSync)(runtimeDirectory, { recursive: true });
+  const runtimeDirectory = (0, import_node_path10.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path10.join)(runtimeDirectory, `${sessionId}.jsonl`);
+  (0, import_node_fs11.mkdirSync)(runtimeDirectory, { recursive: true });
   const runtimeEvent = (event, details = {}) => {
     const value = { event, at: Date.now(), pid: process.pid, ...details };
     console.error(`Trace Memory CC: lifecycle ${JSON.stringify(value)}`);
     try {
-      (0, import_node_fs10.appendFileSync)(runtimePath, `${JSON.stringify(value)}
+      (0, import_node_fs11.appendFileSync)(runtimePath, `${JSON.stringify(value)}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -41399,7 +42044,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
   const coordinator = new CcCoordinator(config3, sessionId, (message) => {
     console.error(`Trace Memory CC: ${message}`);
     try {
-      (0, import_node_fs10.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
+      (0, import_node_fs11.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -41517,7 +42162,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
 }
 function readConfig(path) {
   if (!path.startsWith("/")) throw new Error("CC configuration path must be absolute");
-  return resolveCcHostConfig(JSON.parse((0, import_node_fs10.readFileSync)(path, "utf8")));
+  return resolveCcHostConfig(JSON.parse((0, import_node_fs11.readFileSync)(path, "utf8")));
 }
 async function readStdin() {
   let input = "";
@@ -41541,7 +42186,77 @@ async function runCcCommand(argv = process.argv.slice(2)) {
     return;
   }
   if (sessionFlag !== "--session" || !nativeSessionId || !verb)
-    throw new Error("CLI requires --session <native-id> and on, off, stop, catchup, or project <name>");
+    throw new Error("CLI requires --session <native-id> and a command");
+  if (verb === "menu" || verb === "runs") {
+    if (rest[0] !== "--json" || verb === "menu" && !(rest.length === 1 || rest.length === 2 && rest[1] === "--snapshot") || verb === "runs" && rest.length !== 2)
+      throw new Error(verb === "runs" ? "runs requires --json <count>" : "menu requires --json [--snapshot]");
+    const runLimit = verb === "runs" ? parseRunsCount(rest[1]) : 10;
+    if (verb === "runs") {
+      process.stdout.write(`${JSON.stringify({ runs: readCcRuns(config3, nativeSessionId, runLimit) })}
+`);
+      return;
+    }
+    let effective;
+    try {
+      effective = await executorSnapshot(config3, nativeSessionId);
+    } catch {
+    }
+    const current = rest[1] === "--snapshot" ? JSON.parse(await readStdin()) : void 0;
+    const data = readCcMenu(config3, nativeSessionId, effective?.config, 10, effective?.catchup, current);
+    process.stdout.write(`${JSON.stringify(data)}
+`);
+    return;
+  }
+  if (verb === "setting") {
+    const [id, value, capacity] = rest;
+    if (!id || value === void 0 || rest.length > 3) throw new Error("setting requires <row-id> <value> [capacity]");
+    if (id.startsWith("budget.")) {
+      if (!["budget.global", "budget.project", "budget.session"].includes(id) || capacity !== void 0)
+        throw new Error(`unsupported CC setting ${id}`);
+      const amount = Number(value);
+      if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("Knowledge budget must be a non-negative safe integer");
+      const store2 = new Store(config3.dbPath);
+      try {
+        const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
+        if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
+        if (binding.clearedInto) throw new Error(`Claude Code session ${nativeSessionId} was cleared into ${binding.clearedInto.nativeSessionId}`);
+        assertOperatorBinding(config3, binding, store2);
+        store2.setKnowledgeBudget(id.slice(7), amount);
+      } finally {
+        store2.close();
+      }
+      process.stdout.write(`${JSON.stringify({ saved: true, applied: true })}
+`);
+      return;
+    }
+    const store = new Store(config3.dbPath);
+    try {
+      const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
+      if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
+      if (binding.clearedInto) throw new Error(`Claude Code session ${nativeSessionId} was cleared into ${binding.clearedInto.nativeSessionId}`);
+      assertOperatorBinding(config3, binding, store);
+    } finally {
+      store.close();
+    }
+    const original = (0, import_node_fs11.readFileSync)(configPath, "utf8");
+    const updated = editedCcConfig(original, id, value, capacity);
+    const prepared = resolveCcHostConfig(JSON.parse(updated));
+    if (prepared.dbPath !== config3.dbPath || prepared.stateDir !== config3.stateDir) throw new Error("setting cannot change database or state directory");
+    const next = saveCcConfig(configPath, original, updated);
+    try {
+      await executorSettings(next, nativeSessionId, { path: configPath, expected: updated });
+      process.stdout.write(`${JSON.stringify({ saved: true, applied: true })}
+`);
+    } catch (error3) {
+      process.stdout.write(`${JSON.stringify({
+        saved: true,
+        applied: false,
+        diagnostic: error3 instanceof Error ? error3.message : String(error3)
+      })}
+`);
+    }
+    return;
+  }
   if (verb !== "project" && rest.length) throw new Error(`CC operator command ${verb} accepts no arguments`);
   const result = verb === "project" ? await declareCcProject(config3, nativeSessionId, rest.join(" ")) : verb === "on" || verb === "off" || verb === "stop" || verb === "catchup" ? await operateCcSession(config3, nativeSessionId, verb) : (() => {
     throw new Error(`unknown CC operator command ${verb}`);
@@ -41549,7 +42264,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify(result)}
 `);
 }
-var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path9.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
+var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path10.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
 if (direct) void runCcCommand().catch((error3) => {
   console.error(`Trace Memory CC: ${error3 instanceof Error ? error3.message : String(error3)}`);
   process.exitCode = 1;

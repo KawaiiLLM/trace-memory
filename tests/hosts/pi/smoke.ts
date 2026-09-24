@@ -43,10 +43,10 @@ try {
   const requestsBeforePanel = h.requests.length;
   h.setContextUsage({ tokens: 1, contextWindow: 200000, percent: 0 });
   await trace("");
-  assert.ok(h.notices.at(-1)!.includes("~1 / 200k tokens (<0.1%)"));
-  assert.ok(h.notices.at(-1)!.includes("grid colors project"));
-  assert.ok(h.notices.at(-1)!.includes("proportions to SDK occupancy."));
-  assert.ok(h.notices.at(-1)!.includes("Free ~200k (<100% window)"));
+  assert.ok(h.notices.at(-1)!.includes("1 / 200k tokens (<0.1%, SDK)"));
+  assert.ok(!h.notices.at(-1)!.includes("grid colors project"));
+  assert.ok(!h.notices.at(-1)!.includes("proportions to SDK occupancy."));
+  assert.match(h.notices.at(-1)!, /Free\s+200k\s+\(100\.0% of window\)/);
   assert.ok(!h.notices.at(-1)!.includes("Difference"));
   assert.ok(h.notices.at(-1)!.includes("Estimated usage by category"));
   assert.ok(!h.notices.at(-1)!.includes("?".repeat(20)));
@@ -71,25 +71,25 @@ try {
         assert.equal(screen.length, terminal.rows);
         const plain = screen.map(stripTerminalSequences);
         assert.ok(!plain.some((line: string) => line.includes("background")), "open overlay must cover every viewport row");
-        for (const action of ["Off", "Runs", "Project"])
+        for (const action of ["Turn off", "Runs…", "Project…"])
           assert.ok(plain.some((line: string) => line.trim().replace(/^→ /, "") === action));
         seen.push(...plain); component.handleInput?.("\x1b[6~");
       }
-      assert.ok(seen.join(" ").includes("Pending / trigger (~tokens)"));
+      assert.ok(seen.join(" ").includes("Pending / trigger"));
       // Each Knowledge pool (global/project/session) triggers Dreaming separately, so each shows its
       // own bar rather than one merged "Dreaming" line.
-      for (const label of ["Dream global", "Dream project", "Dream session"])
+      for (const label of ["global", "project", "session"])
         assert.ok(new RegExp(`${label}\\s+░░░░░░░░░░`).test(seen.join(" ")), `missing empty ${label} bar`);
       assert.ok(seen.join(" ").includes("⛶") && !seen.join(" ").includes("not task completion or worker"));
       assert.ok(!seen.join(" ").includes("Memory ~0"));
       assert.ok(!seen.join(" ").includes("Pi rebuilt text estimate"));
       assert.ok(seen.join(" ").includes("Estimated usage by category"));
-      assert.ok(seen.join(" ").includes("Tools ~"));
+      assert.match(seen.join(" "), /Tools\s+\S+/);
       component.handleInput?.("\x1b"); assert.ok(cancelled);
     } finally { handle.hide(); component.dispose?.(); }
     return undefined as never;
   };
-  h.ctx.mode = "tui"; h.ctx.hasUI = true; h.answers.push("Current session"); await trace(""); h.ctx.hasUI = false;
+  h.ctx.mode = "tui"; h.ctx.hasUI = true; await trace(""); h.ctx.hasUI = false;
   assert.equal(h.requests.length, requestsBeforePanel, "opening/cancelling Current session calls no model");
   await trace("off");
   assert.ok(h.memory.status(1).includes("Disabled (explicit choice)"), "/trace off disables this session at once");

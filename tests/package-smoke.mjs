@@ -30,7 +30,7 @@ try {
   const [pack] = JSON.parse(execFileSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", temporary],
     { cwd: root, encoding: "utf8", timeout: 60000 }));
   const files = pack.files.map(file => file.path);
-  for (const required of ["src/hosts/phase-settings.ts", "src/hosts/status-line.ts", "src/hosts/pi/index.ts", "src/hosts/pi/session-status.ts", "src/hosts/pi/context-composition.ts", "src/hosts/pi/session-panel.ts", "src/hosts/pi/native.ts", "src/hosts/pi/fork.ts", "src/core/prompts/noting.md", "src/core/prompts/consolidation.md", "src/core/prompts/dreaming.md", "src/core/dreaming/index.ts", "docs/core.md", "docs/pi.md", "docs/live-verification.md", "CONTEXT.md", "README.md", "LICENSE"])
+  for (const required of ["src/hosts/phase-settings.ts", "src/hosts/status-line.ts", "src/hosts/trace-menu.ts", "src/hosts/pi/index.ts", "src/hosts/pi/session-status.ts", "src/hosts/pi/context-composition.ts", "src/hosts/pi/session-panel.ts", "src/hosts/pi/native.ts", "src/hosts/pi/fork.ts", "src/core/prompts/noting.md", "src/core/prompts/consolidation.md", "src/core/prompts/dreaming.md", "src/core/dreaming/index.ts", "docs/core.md", "docs/pi.md", "docs/live-verification.md", "CONTEXT.md", "README.md", "LICENSE"])
     assert.ok(files.includes(required), `Missing runtime file: ${required}`);
   assert.deepEqual(files.filter(path => /\.test\.ts$|__snapshots__|^tests?\/|^src\/hosts\/cc\/|test-host|native-fixture|smoke\.ts$|^\.scratch\/|\.(sqlite|db)$/.test(path)), [], "Development files or databases must not ship");
 

@@ -49,6 +49,7 @@
     "src/hosts/pi",
     "src/hosts/phase-settings.ts",
     "src/hosts/status-line.ts",
+    "src/hosts/trace-menu.ts",
     "docs",
     "CONTEXT.md",
     "README.md",
