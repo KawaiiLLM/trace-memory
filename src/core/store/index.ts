@@ -1434,23 +1434,20 @@ export class Store {
 
   private relabelProject(fromProjectId: number, intoProjectId: number): void {
     if (fromProjectId === intoProjectId) return;
-    this.requireProjectRelabelFence(fromProjectId, intoProjectId);
+    this.clearMovedProjectProcessing(fromProjectId, intoProjectId);
     this.db.prepare("UPDATE projects SET merged_into = ? WHERE id = ?").run(intoProjectId, fromProjectId);
     this.db.prepare("UPDATE sessions SET project_id = ? WHERE project_id = ?").run(intoProjectId, fromProjectId);
     this.db.prepare("UPDATE knowledge SET project_id = ? WHERE project_id = ?").run(intoProjectId, fromProjectId);
   }
 
-  private requireProjectRelabelFence(fromProjectId: number, intoProjectId: number): void {
-    const now = Date.now();
-    const live = this.db.prepare(`SELECT c.session_id FROM task_claims c JOIN sessions s ON s.id = c.session_id
-      WHERE c.phase = 'dreaming' AND c.expires_at > ? AND s.project_id IN (?,?) LIMIT 1`)
-      .get(now, fromProjectId, intoProjectId);
-    if (live) throw new Error("Project relabel waits for the active Dreamer in an affected project");
-    const ranged = this.db.prepare(`SELECT 1 FROM dreaming_ranges r JOIN task_claims c
-      ON c.session_id = r.session_id AND c.phase = 'dreaming' AND c.token = r.claim_token
-      WHERE r.completed_run IS NULL AND r.closed_at IS NULL AND c.expires_at > ? AND r.pool IN (?,?) LIMIT 1`)
-      .get(now, `project:${fromProjectId}`, `project:${intoProjectId}`);
-    if (ranged) throw new Error("Project relabel waits for the active Dreamer range of an affected pool");
+  /** Only revisions owned by the moved project lose destination processing history. In particular,
+   * global and session pools, and revisions already owned by the destination, are untouched. */
+  private clearMovedProjectProcessing(fromProjectId: number, intoProjectId: number, sessionId?: number): void {
+    this.db.prepare(`DELETE FROM knowledge_processed WHERE pool = ? AND revision_id IN (
+      SELECT r.id FROM knowledge_revisions r JOIN runs u ON u.id = r.run_id
+      JOIN sessions s ON s.id = u.session_id
+      WHERE r.scope = 'project' AND s.project_id = ?${sessionId === undefined ? "" : " AND s.id = ?"})`)
+      .run(...(sessionId === undefined ? [`project:${intoProjectId}`, fromProjectId] : [`project:${intoProjectId}`, fromProjectId, sessionId]));
   }
 
   /** Relabel a merged project's sessions and project-scoped knowledge onto the survivor. */
@@ -2093,6 +2090,7 @@ export class Store {
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const batchIds: number[] = [];
         for (const f of input.facts) {
+          if (input.run.kind === "noting") this.requireWorkerItemSize(f.text, "Fact");
           const turn = this.getTurn(f.turnId);
           if (!turn || turn.sessionId !== sessionId) {
             throw new Error(`turn T${f.turnId} does not belong to session S${sessionId}`);
@@ -3019,6 +3017,11 @@ export class Store {
     }
   }
 
+  private requireWorkerItemSize(text: string, label: string): void {
+    const size = tokens(text);
+    if (size > 1_000) throw new Error(`${label} exceeds 1000-token limit: ${size} tokens`);
+  }
+
   private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,
     sessionId: number, path: KnowledgePath | null, dreaming = false, role: "consolidation" | "dreaming" | "manual" = "manual",
     dreamingPool: string | null = null): { ok: true; value: CommittedKnowledgeOp[] } | { ok: false; reason: string } {
@@ -3070,6 +3073,7 @@ export class Store {
     const bad = this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId));
     if (bad) return { ok: false, reason: bad };
     const insertRevision = (knowledgeId: number, parentId: number | null, text: string, category: KnowledgeCategory, topics: string[], revisionOp: KnowledgeOp) => {
+      if (role !== "manual") this.requireWorkerItemSize(text, "Knowledge item");
       const info = this.db.prepare(`INSERT INTO knowledge_revisions
         (knowledge_id, parent_id, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role)
         VALUES (?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, text, category, scope,
@@ -3304,11 +3308,9 @@ export class Store {
       for (const revision of due.pending) {
         if (reserved.has(revision.revisionId)) continue;
         const candidate = ["Pending current knowledge:", ...selected.map(value => value.material), revision.material].join("\n");
-        if (tokens(candidate) > this.poolBudget(pool)) break;
+        if (selected.length && tokens(candidate) > this.poolBudget(pool)) break;
         selected.push(revision);
       }
-      if (due.pending.length && !selected.length)
-        throw new Error(`Pool ${pool}: oldest pending version with its complete framing exceeds ${this.poolBudget(pool)}`);
       const ids = selected.map(revision => revision.revisionId);
       const origin = this.triggerOrigin(target, target.triggerEntryId);
       const id = Number(this.db.prepare(`INSERT INTO dreaming_ranges
@@ -3452,21 +3454,22 @@ export class Store {
       if (!name.trim()) throw new Error("project name must not be empty");
       const prior = this.projectDeclaration(sessionId);
       if (source === "marker" && prior === "mark") return this.getProject(session.projectId)!;
-      if (prior === "undeclared") {
+      let target = this.findProjectByName(name);
+      while (target && target.mergedInto !== null) target = this.getProject(target.mergedInto)!;
+      if (!target || session.projectId !== target.id) {
         if (!context || context.path.sessionId !== sessionId || context.path.branch === undefined || context.path.headTurnId === null ||
             this.getTurn(context.path.headTurnId)?.sessionId !== sessionId)
           throw new Error("Project declaration requires the host's selected session path");
-        for (const phase of ["noting", "consolidation"] as const) if (context.atTrigger(phase))
-          throw new Error(`Project declaration rejected: ${phase} is due; run /trace catchup, then retry`);
-        const live = this.db.prepare("SELECT phase FROM task_claims WHERE session_id = ? AND phase IN ('noting','consolidation') AND expires_at > ? ORDER BY phase LIMIT 1")
+        const live = this.db.prepare("SELECT phase FROM task_claims WHERE session_id = ? AND phase IN ('noting','consolidation','dreaming') AND expires_at > ? ORDER BY phase LIMIT 1")
           .get(sessionId, Date.now()) as { phase: Phase } | undefined;
         if (live) throw new Error(`Project declaration rejected: ${live.phase} has a live claim; wait for it to finish, then retry`);
+        for (const phase of ["noting", "consolidation", "dreaming"] as const) if (context.atTrigger(phase))
+          throw new Error(`Project declaration rejected: ${phase} is due; run /trace catchup, then retry`);
       }
-      let target = this.findProjectByName(name) ?? this.createProject({ name, declaredBy: source });
-      while (target.mergedInto !== null) target = this.getProject(target.mergedInto)!;
+      target ??= this.createProject({ name, declaredBy: source });
       if (session.projectId !== target.id) {
         if (prior === "undeclared") this.relabelProject(session.projectId, target.id);
-        else this.requireProjectRelabelFence(session.projectId, target.id);
+        else this.clearMovedProjectProcessing(session.projectId, target.id, sessionId);
       }
       this.db.prepare("UPDATE sessions SET project_id = ?, project_declaration = ? WHERE id = ?").run(target.id, source, sessionId);
       return target;

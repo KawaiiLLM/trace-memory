@@ -48,6 +48,22 @@ test.each([
   expect(own()).toMatchObject({ trigger: weight - 1 });
 });
 
+test("86: Dreamer executes the oldest pending revision even when its framing exceeds its pool budget", async () => {
+  let seen: string[] = [];
+  const f = setup(async task => {
+    seen = handles(task);
+    const write = task.tools.find(tool => tool.name === "memory")!;
+    expect(write.execute({ operations: [], skipped: [{ knowledge: seen[0], because: "Reviewed unchanged" }] })).toContain("committed");
+    return { outcome: "success", output: "reviewed oldest", ...exact };
+  });
+  const first = f.create("oldest"), second = f.create("later");
+  f.memory.setKnowledgeBudget("project", 1);
+  const result = await f.memory.dream(f.target);
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  expect(seen).toEqual([`K${first.knowledgeId}@${first.commit}`]);
+  expect(f.store.pendingVersions(f.pool, f.target).map(value => value.revisionId)).toEqual([second.commit]);
+});
+
 test.each(["success", "failure", "cancelled", "timeout"] as const)("68: 86 frozen items retain exactly the untouched remainder after %s", async outcome => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   let pass = 0;

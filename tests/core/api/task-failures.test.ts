@@ -193,6 +193,52 @@ test("68: Dreamer terminal outcomes consume accepted skips; a later range settle
   expect(m.store.settleExecution(execution(m, succeeded.runId), "failure", succeeded.runId, "post-success audit")).toEqual({});
 });
 
+test("86: three Dreamer failures on one unchanged pending revision turn memory off; later oldest starts independently", async () => {
+  let skip = false;
+  const m = open(":memory:", async raw => {
+    const input = raw as DreamingAgentInput;
+    if (skip && input.kind === "dreaming") {
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [
+        { knowledge: /K\d+@\d+/.exec(input.material.changed)![0], because: "Reviewed without a change" },
+      ] });
+      return { outcome: "success", output: "processed", request };
+    }
+    return failed(raw);
+  });
+  m.config.dreaming.triggerTokens = 1;
+  const target = seed(m), pool = `session:${target.sessionId}`;
+  const facts = m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
+    { turnId: target.headTurnId, category: "decision", actor: "user", text: "evidence", source: [`T${target.headTurnId}#user`], createdAt: "now" },
+  ] });
+  if (!facts.ok) throw Error(facts.problems.join("; "));
+  const create = (text: string) => {
+    const committed = m.store.commitConsolidationRun({ path: target,
+      run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, operations: [
+        { op: "create", handle: "$1", author: "test", text, category: "constraint", scope: "session",
+          topics: [], supports: [facts.facts[0]!.id], reason: "evidence", createdAt: "now" },
+      ] });
+    if (!committed.ok) throw Error(committed.problems.join("; "));
+    return committed.committed[0]!;
+  };
+  const first = create("first task");
+  for (let i = 1; i <= 3; i++) {
+    const result = await m.dream(target);
+    expect(result.outcome).toBe("failure");
+    expect(streaks(m)).toMatchObject([{ phase: "dreaming", head: first.commit, count: i }]);
+    expect(m.store.pendingVersions(pool, target).map(v => v.revisionId)).toEqual([first.commit]);
+    expect(!!result.automaticOff).toBe(i === 3);
+  }
+  expect(m.store.enabled(target.sessionId)).toBe(false);
+  m.store.setEnrollment(target.sessionId, true);
+  skip = true;
+  expect((await m.dream(target)).outcome).toBe("success");
+  expect(m.store.pendingVersions(pool, target)).toEqual([]);
+  const second = create("independent task");
+  skip = false;
+  expect((await m.dream(target)).outcome).toBe("failure");
+  expect(streaks(m).filter(row => Number(row.count) > 0)).toMatchObject([{ phase: "dreaming", head: second.commit, count: 1 }]);
+});
+
 test("32c: successful Consolidation accounting resets its own task in the commit transaction", () => {
   const m = open(), target = seed(m);
   const f = m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [

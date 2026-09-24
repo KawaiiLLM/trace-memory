@@ -73,7 +73,7 @@ test("64c hand-over keeps source processing history and makes current project ve
   expect(store.pendingVersions(targetPool, reader.path)).toEqual([]);
 });
 
-test("64c project processing is keyed by destination pool and revision across a round trip", () => {
+test("86 moved project versions become pending again on a round trip, without clearing other pools", () => {
   const store = new Store(":memory:"); stores.push(store);
   const implicit = store.createProject({ name: "implicit", declaredBy: "mark" });
   const target = store.createProject({ name: "target", declaredBy: "mark" });
@@ -88,11 +88,69 @@ test("64c project processing is keyed by destination pool and revision across a 
   expect(store.pendingVersions(targetPool, reader.path)).toEqual([]);
 
   store.declareProject(author.value.id, implicit.name, "mark", ready(author.path));
-  expect(store.pendingVersions(sourcePool, author.path)).toEqual([]);
+  expect(store.pendingVersions(sourcePool, author.path).map(value => value.revisionId)).toEqual([item.commit]);
   expect(store.db.prepare("SELECT pool, revision_id FROM knowledge_processed WHERE revision_id = ? ORDER BY pool").all(item.commit)).toEqual([
-    { pool: sourcePool, revision_id: item.commit }, { pool: targetPool, revision_id: item.commit },
+    { pool: targetPool, revision_id: item.commit },
   ]);
   expect(store.listKnowledgeRevisions(item.knowledgeId).map(revision => revision.id)).toEqual([item.commit]);
+});
+
+test("86: moving only the initiating session unprocesses only its project versions, not destination, global or session versions", () => {
+  const store = new Store(":memory:"); stores.push(store);
+  const source = store.createProject({ name: "source", declaredBy: "mark" });
+  const target = store.createProject({ name: "destination", declaredBy: "mark" });
+  const moving = session(store, source.id), other = session(store, source.id), reader = session(store, target.id);
+  const moved = create(store, moving, "moved project");
+  const stationary = create(store, other, "stationary project");
+  const targetItem = create(store, reader, "destination project");
+  const global = create(store, moving, "global unchanged", "global");
+  const local = create(store, moving, "session unchanged", "session");
+  const from = `project:${source.id}`, into = `project:${target.id}`;
+  processPool(store, moving.path, from);
+  processPool(store, reader.path, into);
+  processPool(store, moving.path, "global");
+  processPool(store, moving.path, `session:${moving.value.id}`);
+  store.declareProject(moving.value.id, target.name, "mark", ready(moving.path));
+  expect(store.pendingVersions(into, reader.path).map(value => value.revisionId)).toContain(moved.commit);
+  expect(store.pendingVersions(into, reader.path).map(value => value.revisionId)).not.toContain(targetItem.commit);
+  expect(store.pendingVersions(from, other.path).map(value => value.revisionId)).not.toContain(stationary.commit);
+  expect(store.pendingVersions("global", moving.path).map(value => value.revisionId)).not.toContain(global.commit);
+  expect(store.pendingVersions(`session:${moving.value.id}`, moving.path).map(value => value.revisionId)).not.toContain(local.commit);
+});
+
+test("86: moved current revision becomes pending, while another writer's processed ancestor remains a diff baseline", () => {
+  const store = new Store(":memory:"); stores.push(store);
+  const target = store.createProject({ name: "mixed-target", declaredBy: "mark" });
+  const source = store.createProject({ name: "mixed-source", declaredBy: "mark" });
+  const author = session(store, target.id), moving = session(store, target.id);
+  const original = create(store, author, "first author original text");
+  const pool = `project:${target.id}`;
+  processPool(store, author.path, pool);
+  const revised = store.commitConsolidationRun({ path: moving.path, run: { kind: "consolidation", sessionId: moving.value.id, branch: "main", createdAt: "now" }, operations: [
+    { op: "update", knowledgeId: original.knowledgeId, baseCommit: original.commit, text: "second author revised text",
+      category: "constraint", scope: "project", supports: [moving.fact.id], topics: [], reason: "new evidence", createdAt: "now" },
+  ] });
+  if (!revised.ok) throw Error(revised.problems.join("; "));
+  const current = revised.committed[0]!;
+  processPool(store, moving.path, pool);
+  store.declareProject(moving.value.id, source.name, "mark", ready(moving.path));
+  store.declareProject(moving.value.id, target.name, "mark", ready(moving.path));
+  expect(store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool)
+    .map(row => Number(row.revision_id))).toEqual([original.commit]);
+  const pending = store.pendingVersions(pool, author.path);
+  expect(pending.map(item => item.revisionId)).toEqual([current.commit]);
+  expect(pending[0]!.material).toContain(`(from @${original.commit})`); // Existing 76 differential weighting still applies.
+});
+
+test("86: oldest pending Knowledge with complete framing exceeding its pool budget is retained first", () => {
+  const store = new Store(":memory:"); stores.push(store);
+  const project = store.createProject({ name: "tiny", declaredBy: "mark" }), author = session(store, project.id);
+  const oldest = create(store, author, "oldest whole knowledge"), later = create(store, author, "later whole knowledge");
+  store.setKnowledgeBudget("project", 1);
+  const claim = store.acquireClaim(author.path, "dreaming", "worker")!;
+  const range = store.retainKnowledgePoolRange(author.path, `project:${project.id}`, claim);
+  expect(range.eventIds).toEqual([oldest.commit]);
+  expect(store.pendingVersions(`project:${project.id}`, author.path).map(value => value.revisionId)).toEqual([oldest.commit, later.commit]);
 });
 
 test("64c hand-over may cross the target budget; budget triggers but never blocks destination processing", () => {

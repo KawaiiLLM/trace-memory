@@ -420,18 +420,16 @@ test("20b 2026-09-08 scenario 7: successive token-bounded batches advance exactl
   expect(consolidated(lateId)).toBe(false); // the hole between ids is not processed by implication
 });
 
-/** Ticket 20 "Oversized fact" and acceptance scenario 8. A fact has no primary-entry-style size
- * bound, so an oldest one that cannot fit alone stays pending with a capacity problem: it is not
- * clipped, not skipped for a smaller later fact, and not marked consolidated without being presented. */
-test("20b 2026-09-08 scenario 8: an oldest fact over the batch ceiling stays pending with a capacity problem and is never bypassed", async () => {
+/** Ticket 86 supersedes the old single-item batch refusal: the oldest fact always enters first. */
+test("86: an oldest fact over the batch cap is admitted before a smaller later fact", async () => {
   const huge = fact("word ".repeat(400)), small = fact(memories.base);
   const cap = tokens(memory.trace(`F${huge}`)) - 1;
   memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: cap } });
-  script.push(async () => { throw new Error("no model call may happen"); });
-  await expect(consolidation()).rejects.toThrow("Consolidation capacity: oldest fact exceeds consolidation.batchTokens");
-  expect(calls).toEqual([]);
-  expect(memory.store.listRuns(sessionId).filter(r => r.kind === "consolidation")).toEqual([]);
-  expect(consolidated(huge)).toBe(false);
+  queue(empty);
+  const result = await consolidation();
+  expect(result.outcome === "success" && result.range.facts.map(f => f.id)).toEqual([huge]);
+  expect(calls).toHaveLength(1);
+  expect(consolidated(huge)).toBe(true);
   expect(consolidated(small)).toBe(false); // the smaller later fact did not jump the queue
   expect(memory.trace(`F${huge}`)).toContain("word word"); // the evidence text is untouched
 });
@@ -466,21 +464,16 @@ test("21a 2026-09-08: one malformed reason among valid operations commits nothin
 
 // Ticket 21 "Review cues": the diagnostics read knowledge text and facts, never commit messages.
 
-/** Ticket 25a: the pending-fact allowance carries the batch's required framing too, so a ceiling that
- * holds a fact line alone does not make that fact admissible. It stays pending with the capacity
- * diagnostic — never clipped, never framed outside a budget, never marked consolidated unpresented. */
-test("25a 2026-09-09: a batch whose smallest unit and required framing exceed the pending-fact allowance stays pending with the diagnostic", async () => {
+/** Ticket 86: even the complete framing of the first fact may exceed the soft batch cap. */
+test("86: a first fact whose framing exceeds the batch cap is still admitted", async () => {
   const one = fact(memories.base);
   const alone = memory.store.getFact(one)!;
   const line = tokens(grouped([alone]).join("\n")), framed = withFraming([alone]);
   expect(framed).toBeGreaterThan(line);
   memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: line } });
-  await expect(consolidation()).rejects.toThrow(/Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation\.batchTokens/);
-  expect(calls).toEqual([]);
-  expect(memory.store.consolidationBatch(sessionId, "main").map(f => f.id)).toEqual([one]); // still pending
-  // Room for the fact and the framing it must be sent with, and the same batch runs.
-  memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: framed } });
-  queue(empty, empty);
+  queue(empty);
   const result = await consolidation();
+  expect(calls).toHaveLength(1);
+  expect(memory.store.consolidationBatch(sessionId, "main").map(f => f.id)).toEqual([]);
   expect(result.outcome === "success" && result.range.facts.map(f => f.id)).toEqual([one]);
 });

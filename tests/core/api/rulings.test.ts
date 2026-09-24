@@ -700,7 +700,7 @@ test("search previews and cursor fragments never refresh a knowledge write base"
     const write = input.tools.find(tool => tool.name === "memory")!;
     completeToolRead(trace, "K1@1");
     const first = JSON.parse(write.execute({ operations: [{ op: "update", id: "K1@1", topics: [], reason: "A substantive correction.",
-      ...content(root.fact, `Unread successor ${"中文😀".repeat(3000)}`) }], skipped: [] }));
+      ...content(root.fact, `Unread successor ${"中文😀".repeat(350)}`) }], skipped: [] }));
     const successor = first.committed[0] as { commit: number };
     const edit = (id = "K1@1") => JSON.parse(write.execute({ operations: [{ op: "update", topics: [], reason: "A substantive correction.", id,
       ...content(other.fact) }], skipped: [] }));
@@ -712,19 +712,20 @@ test("search previews and cursor fragments never refresh a knowledge write base"
     }
     expect(edit().results[0]).toContain(`current: K1@${successor.commit}`);
     expect(edit(`K1@${successor.commit}`).results[0]).toContain("knowledge was not read");
-    page = trace.execute({ address: "K1", full: true });
+    page = trace.execute({ address: "K1", full: true, pageBudget: 256 });
+    expect(page).toContain("cursor=");
     for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
-      expect(tokens(page)).toBeLessThanOrEqual(2000); expect(edit(`K1@${successor.commit}`).results[0]).toContain("knowledge was not read");
+      expect(tokens(page)).toBeLessThanOrEqual(256); expect(edit(`K1@${successor.commit}`).results[0]).toContain("knowledge was not read");
       page = trace.execute({ address: `cursor=${cursor}` });
     }
-    expect(tokens(page)).toBeLessThanOrEqual(2000);
+    expect(tokens(page)).toBeLessThanOrEqual(256);
     const done = edit(`K1@${successor.commit}`); expect(done.committed[0].knowledgeId).toBe(1);
     completeToolRead(trace, `K${trigger.knowledgeId}@${trigger.commit}`);
     expect(JSON.parse(write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`,
       supports: [other.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] })).committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request };
   });
-  expect(result.outcome).toBe("success");
+  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
 });
 
 test("trace K1 cap=1 replaces stale read bases only on the final page", async () => {
@@ -2788,4 +2789,35 @@ test("79 item 1: sourcePath, pendingEntries and listSourceEntries never touch so
     expect(statements.some(sql => sql.includes("source_entry_raw"))).toBe(false);
     expect(statements.some(sql => /\bcontent\b/.test(sql) || /\bblocks\b/.test(sql))).toBe(false);
   } finally { memory.close(); }
+});
+
+test("86 rule 2: '必须等该会话无 N C D 运行且未达到任意触发阈值'", () => {
+  const { s, t } = session(), path = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  const held = memory.store.acquireClaim(path, "noting", "busy-session")!;
+  expect(() => memory.declareProject(s.id, "cannot-move", "mark", path)).toThrow(/noting has a live claim/);
+  expect(memory.store.findProjectByName("cannot-move")).toBeNull();
+  memory.store.releaseClaim(held);
+  memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
+  memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
+  expect(memory.declareProject(s.id, "can-move", "mark", path)).toContain("can-move");
+});
+
+test("86 rule 3: '超出一批处理上限的，都应该按序先处理旧的'", () => {
+  const { s, t } = session();
+  const first = memory.store.listSourceEntries(s.id, t.id)[0]!;
+  memory.config.noting.batchTokens = 1;
+  const selected = memory.notingBatch({ sessionId: s.id, branch: "main", headTurnId: t.id });
+  expect(selected.map(entry => entry.id)).toEqual([first.id]);
+});
+
+test("86 rule 4: '单条事实/知识不能超过1k'", () => {
+  const { s, t } = session();
+  const oversized = "x ".repeat(1001);
+  expect(tokens(oversized)).toBe(1001);
+  const rejected = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, createdAt: time }, facts: [
+    { turnId: t.id, text: oversized, category: "decision", actor: "user", source: [`T${t.id}#user`], createdAt: time },
+  ] });
+  expect(rejected.ok).toBe(false);
+  if (!rejected.ok) expect(rejected.problems.join(" ")).toContain("1000-token limit: 1001 tokens");
+  expect(memory.store.listTurnFacts(t.id)).toEqual([]);
 });

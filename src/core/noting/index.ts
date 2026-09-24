@@ -98,7 +98,7 @@ export type NotingResult = { executionId?: string; automaticOff?: string } & (
  * model" from every other admission failure, and reroutes a fork that raised it to the subagent path
  * with its own capacity (parent 27 amendment 5). A batch over `noting.batchTokens` is not one of
  * these: no model capacity decided it and no fresh child would change it. */
-export const NOTING_CAPACITY = "Noting capacity: oldest entry cannot fit the episodic budget or the model context: ";
+export const NOTING_CAPACITY = "Noting capacity: selected evidence cannot fit the model context: ";
 
 /** 27d (parent 27 amendment 6): the opening of the diagnostic a `boundary.exactEntryIds` freeze raises
  * when its exact membership is no longer pending in full. The evidence was processed elsewhere —
@@ -143,7 +143,7 @@ export const notingBatch = (store: Store, pending: readonly SourceEntryMeta[], c
   for (const meta of pending) {
     const entry = store.getSourceEntry(meta.id)!;
     const view = renderEntry(entry, config.render, resultText);
-    if (tokens([...views, view.content].join(BLOCK)) > config.noting.batchTokens) break;
+    if (entries.length && tokens([...views, view.content].join(BLOCK)) > config.noting.batchTokens) break;
     entries.push(entry); views.push(view.content); rendered.set(entry.id, view);
   }
   return { entries, views, rendered };
@@ -188,7 +188,6 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${instructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`}`
       + ` already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
   const { entries, views, rendered } = notingBatch(store, pending, config, resultText);
-  if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
   // 27d: the same whole-or-nothing rule against the batch ceiling the selection loop above stops at.
   // A membership selected under that ceiling once can only fail this on a configuration change, and
   // then its entries wait together rather than half of them running.
@@ -261,9 +260,9 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const priced = inheriting ? initial.inheritedTokens + instructions + tokens(prepared.text)
       : instructions + tools + tokens(prepared.text);
     last = { priced, episodic: prepared.over.episodic };
-    // Ticket 20 "Complete task evidence" (review 2026-09-08): the domain episodic budget is a reduction
-    // signal too, never a receipt that lets the task run over it.
-    const fits = !prepared.over.episodic && (!capacity || priced <= capacity.inputTokens);
+    // The episodic allowance reduces multi-entry batches; one oldest entry may exceed its soft cap.
+    // The supplied model input capacity remains a hard limit for that entry.
+    const fits = (!prepared.over.episodic || entries.length === 1) && (!capacity || priced <= capacity.inputTokens);
     if (fits) return { ...frozen, prepared };
     // Optional history goes first (review 2026-09-08): trim the historical facts by the excess before
     // a selected entry is given up; only when none are left does the batch shrink.

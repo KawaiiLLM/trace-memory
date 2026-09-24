@@ -98,7 +98,7 @@ test("64c/49: disabled enrollment does not mask the preserved Consolidation decl
   expect(f.store.consolidationBatch(f.session.id, "main", f.turn.id).map(value => value.id)).toContain(pending.id);
 });
 
-test.each(["project", "global"] as const)("64c: active affected-project Dreamer blocks a move even while processing %s", scope => {
+test.each(["project", "global"] as const)("86: declaring session's Dreamer blocks its move while processing %s", scope => {
   const f = base(false), item = knowledge(f, scope);
   const pool = scope === "global" ? "global" : `project:${f.own.id}`;
   f.memory.config.dreaming.triggerTokens = 1;
@@ -108,11 +108,12 @@ test.each(["project", "global"] as const)("64c: active affected-project Dreamer 
   expect(claim).not.toBeNull();
   const range = f.store.retainKnowledgePoolRange(f.path, pool, claim);
   const before = { session: f.store.getSession(f.session.id), revisions: f.store.listKnowledgeRevisions() };
-  expect(() => f.memory.declareProject(f.session.id, "move-target", "mark", f.path)).toThrow(/active Dreamer.*affected project/);
+  expect(() => f.memory.declareProject(f.session.id, "move-target", "mark", f.path)).toThrow(/dreaming has a live claim/);
   expect(f.store.findProjectByName("move-target")).toBeNull();
   expect(f.store.getSession(f.session.id)).toEqual(before.session);
   expect(f.store.listKnowledgeRevisions()).toEqual(before.revisions);
   f.store.releaseClaim(claim);
+  f.memory.config.dreaming.triggerTokens = Number.MAX_SAFE_INTEGER;
   expect(f.memory.declareProject(f.session.id, "move-target", "mark", f.path)).toContain("move-target");
   expect(f.store.dreamingRange(range.id)).not.toBeNull(); // an inactive old range is not a declaration gate
   const target = f.store.findProjectByName("move-target")!;
@@ -120,15 +121,48 @@ test.each(["project", "global"] as const)("64c: active affected-project Dreamer 
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
 });
 
-test.each(["noting", "consolidation"] as const)("64c/49: %s live claim still blocks declaration", phase => {
+test.each(["global", "project", "session"] as const)("86: declaring session's %s Dreamer backlog blocks declaration", scope => {
+  const f = base(false), item = knowledge(f, scope);
+  f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
+  f.memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
+  f.memory.config.dreaming.triggerTokens = 1;
+  const pool = scope === "global" ? "global" : scope === "project" ? `project:${f.own.id}` : `session:${f.session.id}`;
+  expect(f.store.pendingVersions(pool, f.path).map(value => value.revisionId)).toContain(item.commit);
+  expect(() => f.memory.declareProject(f.session.id, `dreaming-${scope}`, "mark", f.path)).toThrow(/dreaming is due/);
+  expect(f.store.findProjectByName(`dreaming-${scope}`)).toBeNull();
+});
+
+test("86: marking the same project is a metadata no-op even with a claim or backlog", () => {
+  const f = base(true);
+  f.memory.config.noting.triggerTokens = 1;
+  const held = f.store.acquireClaim(f.path, "noting", "busy")!;
+  expect(held).not.toBeNull();
+  expect(f.memory.declareProject(f.session.id, f.own.name, "mark")).toContain(f.own.name);
+  expect(f.store.getSession(f.session.id)!.projectId).toBe(f.own.id);
+  expect(f.store.getClaim(f.session.id, "noting")).toEqual(held);
+});
+
+test("86: explicit redeclaration checks backlog even after the session was previously marked", () => {
+  const f = base(false);
+  f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
+  f.memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
+  expect(f.memory.declareProject(f.session.id, "first", "mark", f.path)).toContain("first");
+  fact(f);
+  f.memory.config.consolidation.triggerTokens = 1;
+  expect(() => f.memory.declareProject(f.session.id, "second", "mark", f.path)).toThrow(/consolidation is due/);
+  expect(f.store.findProjectByName("second")).toBeNull();
+});
+
+test.each(["noting", "consolidation", "dreaming"] as const)("86: %s live claim blocks declaration", phase => {
   const f = base(true); fact(f);
+  if (phase === "dreaming") knowledge(f);
   const held = f.store.acquireClaim(f.path, phase, "worker");
   expect(held).not.toBeNull();
   expect(() => f.store.declareProject(f.session.id, `claim-${phase}`, "mark", { path: f.path, atTrigger: () => false }))
     .toThrow(new RegExp(`${phase} has a live claim`));
 });
 
-test.each(["source", "target", "unrelated"] as const)("64c: a %s project peer's live Dreamer is fenced by affected ownership, not the declaring session's claim", relation => {
+test.each(["source", "target", "unrelated"] as const)("86: a %s project peer's live Dreamer does not block the declaring session", relation => {
   const f = base(false); knowledge(f);
   const destination = f.store.createProject({ name: `destination-${relation}`, declaredBy: "mark" });
   const peerProject = relation === "source" ? f.own : relation === "target" ? destination
@@ -137,19 +171,27 @@ test.each(["source", "target", "unrelated"] as const)("64c: a %s project peer's 
     enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const peerTurn = f.store.appendTurn({ sessionId: peerSession.id, kind: "turn", userPrompt: "peer evidence", startedAt: "now" });
   const peerPath = { sessionId: peerSession.id, branch: "main", headTurnId: peerTurn.id };
-  knowledge({ ...f, own: peerProject, session: peerSession, turn: peerTurn, path: peerPath });
+  const peerItem = knowledge({ ...f, own: peerProject, session: peerSession, turn: peerTurn, path: peerPath });
   const held = f.store.acquireClaim(peerPath, "dreaming", "peer-executor")!;
   expect(held).not.toBeNull();
   const range = f.store.retainKnowledgePoolRange(peerPath, `project:${peerProject.id}`, held);
+  const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: peerSession.id, branch: "main", projectId: peerProject.id,
+    claim: held, dreamingRangeId: range.id, executionId: f.store.beginExecution({ sessionId: peerSession.id, phase: "dreaming", head: range.anchor, origin: range.origin }), createdAt: "now" });
   const move = () => f.memory.declareProject(f.session.id, destination.name, "mark", f.path);
-  if (relation === "unrelated") expect(move()).toContain(destination.name);
-  else {
-    expect(move).toThrow(/active Dreamer.*affected project/);
-    expect(f.store.getSession(f.session.id)!.projectId).toBe(f.own.id);
-  }
+  expect(move()).toContain(destination.name);
+  expect(f.store.getSession(f.session.id)!.projectId).toBe(destination.id);
   expect(f.store.getClaim(peerSession.id, "dreaming")).toEqual(held);
   expect(f.store.dreamingRange(range.id)!.pool).toBe(`project:${peerProject.id}`);
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
+  const before = f.store.listKnowledgeRevisions().length;
+  const commit = f.store.commitConsolidationRun({ path: peerPath, run, operations: [{ op: "update", knowledgeId: peerItem.knowledgeId,
+    baseCommit: peerItem.commit, text: "Peer maintenance after another session moved", category: "constraint", scope: "project",
+    topics: [], supports: [], reason: "Peer's exact running task", createdAt: "now" }] });
+  if (relation === "source") {
+    expect(commit.ok).toBe(false); // Its frozen project no longer matches; the peer sees its own failure.
+    if (!commit.ok) expect(commit.problems.join(" ")).toMatch(/target project changed after admission/);
+  } else expect(commit.ok).toBe(true); // Destination/unrelated project runs remain valid.
+  expect(f.store.listKnowledgeRevisions()).toHaveLength(before + Number(commit.ok));
 });
 
 function claimFixture() {

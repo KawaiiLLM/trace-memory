@@ -251,14 +251,15 @@ test("full expands selected calls; cap is the listing budget and address flags a
   expect(() => memory.trace("T1 cap=0")).toThrow("invalid trace address");
 });
 
-test("an oldest entry the episodic budget cannot hold leaves Noting pending (the 'raw overage' receipt was superseded 2026-09-08)", async () => {
+test("86: an oldest entry exceeding the batch envelope still reaches the Noter", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   memory.close(); open({ render: { episodicBlockTokens: 1 } });
   const second = turn(first.id, 1);
   const before = hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store);
-  await expect(noting(second.id)).rejects.toThrow(/Noting capacity/);
-  expect(calls).toHaveLength(1); // no model call ran over the budget
-  expect(hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store)).toEqual(before);
+  script.push(async () => success([]));
+  await noting(second.id);
+  expect(calls).toHaveLength(2); // the first item is admitted despite the soft ceiling
+  expect(hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store).length).toBeLessThan(before.length);
 });
 
 // 25a moved this scenario from the Noter to the Consolidator: the Noter has no knowledge block to
@@ -268,7 +269,7 @@ test("64c: no knowledge category bypasses the cap, newer commits are kept, and o
   const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: categories.map((category, i) => ({
     op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const,
-    text: `${memories.knowledge} ${"word ".repeat(1_000)}`, supports: [1], createdAt: time,
+    text: `${memories.knowledge} ${"word ".repeat(800)}`, supports: [1], createdAt: time,
   })) });
   const item = (id: number) => renderKnowledge(memory.store.currentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!);
   const consolidate = () => memory.consolidate({ sessionId, branch: "main", mode: "subagent" });

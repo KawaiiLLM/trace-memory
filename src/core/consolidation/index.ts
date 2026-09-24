@@ -76,7 +76,7 @@ export type ConsolidateResult = { executionId?: string; automaticOff?: string } 
  * raise — the preflight floor and the loop exit that pops the batch down to its oldest fact. The Pi
  * host matches this one string to tell "this batch does not fit the model" from every other admission
  * failure, and reroutes a fork that raised it to the subagent path with its own capacity. */
-export const CONSOLIDATION_CAPACITY = "Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context: ";
+export const CONSOLIDATION_CAPACITY = "Consolidation capacity: selected evidence cannot fit the model context: ";
 
 /** 29e, the twin of `NOTING_MEMBERSHIP` (27d, parent 27 amendment 6): the opening of the diagnostic an
  * `exactFactIds` freeze raises when its exact membership is no longer pending in full. The evidence was
@@ -154,16 +154,14 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   // Ticket 20 "Consolidation": the oldest-first whole-fact prefix whose rendered lines — the same
   // representation, relations and joining separator the trigger and the run itself count — fit
   // `consolidation.batchTokens`. Arrival order is the store's; path eligibility is already applied.
-  // "Oversized fact": a fact has no primary-entry-style size bound, so an oldest one that cannot fit
-  // alone stays pending with a capacity problem. It is never clipped, skipped for a smaller later
-  // fact, or marked consolidated without being presented.
+  // The batch cap is soft for its first fact, including the framing around that fact. The model's
+  // input capacity remains a hard guard below; no smaller later fact may leapfrog the oldest.
   const rangeFacts: Fact[] = [];
   for (const fact of applicable) {
     const candidate = renderFactGroups([...rangeFacts, fact], f => lines.get(f.id)!, factTurns);
-    if (tokens(candidate.join("\n")) > config.consolidation.batchTokens) break;
+    if (rangeFacts.length && tokens(candidate.join("\n")) > config.consolidation.batchTokens) break;
     rangeFacts.push(fact);
   }
-  if (applicable.length && !rangeFacts.length) throw new Error("Consolidation capacity: oldest fact exceeds consolidation.batchTokens; left pending");
   // 29e: the same whole-or-nothing rule against the batch ceiling the selection loop above stops at.
   // A membership selected under that ceiling once can only fail this on a configuration change, and
   // then its facts wait together rather than half of them running.
@@ -189,7 +187,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
     const priced = inheriting ? initial.inheritedTokens + instructions + tokens(prepared.text)
       : instructions + tools + tokens(prepared.text);
     last = { priced, episodic: prepared.over.episodic };
-    const fits = !prepared.over.episodic && (!capacity || priced <= capacity.inputTokens);
+    const fits = (!prepared.over.episodic || rangeFacts.length === 1) && (!capacity || priced <= capacity.inputTokens);
     if (fits) return { ...frozen, prepared };
     // 29e (parent 29 "Capacity, fallback and audit"): optional material goes before selected evidence.
     // The knowledge block is dropped whole rather than by a lowered cap, because a cap small enough to

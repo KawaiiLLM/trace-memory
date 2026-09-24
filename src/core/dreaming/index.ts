@@ -62,9 +62,6 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const frozenIds = new Set(range.eventIds);
   const pending = due.pending.filter(value => frozenIds.has(value.revisionId));
   const changed = ["Pending current knowledge:", ...pending.map(value => value.material)].join("\n");
-  if (tokens(changed) > due.budget)
-    throw new Error(`Dreaming pool ${due.pool} changed material exceeds its ${due.budget}-token budget including framing`);
-
   const references = due.versions.filter(value => !frozenIds.has(value.revision.id));
   const budgets = store.knowledgeBudgets();
   const knowledgeCapacity = budgets.injection + config.compaction.sharedAllowanceTokens;

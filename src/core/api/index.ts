@@ -855,7 +855,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         projectId = store.getSession(input.sessionId)!.projectId;
         const frozen = admitted.frozen;
         origin = frozen.range.origin;
-        executionId = store.beginExecution({ sessionId: target.sessionId, phase, head: frozen.range.id, origin }, input.executionId);
+        // The range id is audit/binding authority, not logical task identity: each retry reserves a
+        // fresh range for the same oldest pending revision. Failure streaks follow that revision.
+        executionId = store.beginExecution({ sessionId: target.sessionId, phase, head: frozen.range.anchor, origin }, input.executionId);
         return frozen;
       }
       const pendingNow = phase === "noting" ? store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
