@@ -217,9 +217,12 @@ export class CcTaskScheduler {
       catch (error) { this.diagnostic(`${phase} eligibility failed: ${error instanceof Error ? error.message : String(error)}`); return; }
       if (phase !== "noting") this.armed[phase] = due; // not-due disarms; due leaves it armed until launch settles
     }
-    const candidates = [...(due ? [{ ...own, borrowed: false }] : []),
-      ...(phase === "dreaming" || !includeBorrowed ? [] : this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope)
-        .map(target => ({ ...target, borrowed: true })))];
+    const candidates = due ? [{ ...own, borrowed: false }] : [];
+    if (phase !== "dreaming" && includeBorrowed) {
+      try { candidates.push(...this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope)
+        .map(target => ({ ...target, borrowed: true }))); }
+      catch (error) { this.diagnostic(`${phase} closed-session scan failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     if (!candidates.length) return;
     if (!this.worker) {
       this.diagnostic(`${phase} admission failed: CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured`);

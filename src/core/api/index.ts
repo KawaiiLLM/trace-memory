@@ -850,7 +850,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     try { frozen = store.transaction(() => {
       // Candidate discovery is advisory: recheck the executor and borrowing scope atomically
       // with claim acquisition, before loading a closed target's evidence or constructing material.
-      if (input.borrowed && !store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope)) return null;
+      if (input.borrowed && (!store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope) ||
+          !store.borrowedTargetActive(target))) return null;
       if (phase === "dreaming") {
         const admitted = admitDreaming(store, { ...input, ...target }, cfg, executorId);
         empty = admitted.outcome === "empty";

@@ -1018,9 +1018,12 @@ export default function (pi: ExtensionAPI) {
       // OWN C/D urgency immediately after a commit, not to give idle-time borrowed work an extra,
       // earlier chance to fan out. `includeBorrowed=false` there keeps the scan's timing exactly what
       // it was — the next ordinary per-entry opportunity — while still admitting due OWN work now.
-      const candidates = [...(due && !waiting ? [{ ...own, borrowed: false }] : []),
-        ...(kind === "dreaming" || !includeBorrowed ? [] : memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope)
-          .map(target => ({ ...target, borrowed: true })))];
+      const candidates = due && !waiting ? [{ ...own, borrowed: false }] : [];
+      if (kind !== "dreaming" && includeBorrowed) {
+        try { candidates.push(...memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope)
+          .map(target => ({ ...target, borrowed: true }))); }
+        catch (error) { context.ui.notify(`${kind} closed-session scan failed: ${String(error)}`, "error"); }
+      }
       if (!candidates.length) continue;
       const slot: Slot = { target: own }; // ordinary automatic work: the whole pending set, no frozen boundary
       slots.set(kind, slot); // Reserve before any asynchronous admission or model work.

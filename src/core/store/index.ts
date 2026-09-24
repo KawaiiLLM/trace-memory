@@ -1765,7 +1765,26 @@ export class Store {
       (scope === "global" || executor.projectId === target.projectId) && this.enabled(executorSessionId) && this.enabled(targetSessionId);
   }
 
-  closedTasks(phase: Phase, executorSessionId: number, scope: ClosedSessionScope = "project"): TaskTarget[] {
+  /** Recorded foregrounds are the borrowing authority. An invalid cursor fails the whole scan
+   * (or admission), never silently grants the no-cursor all-path compatibility. */
+  private borrowedCursorTargets(sessionId: number): { branch: string; headTurnId: number }[] {
+    const cursors = this.db.prepare(`SELECT DISTINCT branch, head_turn_id FROM session_lineage_cursors
+      WHERE session_id = ? ORDER BY branch, head_turn_id`).all(sessionId) as { branch: string; head_turn_id: number }[];
+    return cursors.map(cursor => {
+      const headTurnId = Number(cursor.head_turn_id);
+      const problem = this.currentPathProblem(sessionId, cursor.branch, headTurnId);
+      if (problem) throw new Error(`invalid borrowed cursor for session S${sessionId}: ${problem}`);
+      return { branch: cursor.branch, headTurnId };
+    });
+  }
+
+  /** Rechecked within borrowed admission's transaction after candidate discovery. */
+  borrowedTargetActive(target: TaskTarget): boolean {
+    const cursors = this.borrowedCursorTargets(target.sessionId);
+    return !cursors.length || cursors.some(cursor => cursor.branch === target.branch && cursor.headTurnId === target.headTurnId);
+  }
+
+  closedTasks(phase: "noting" | "consolidation", executorSessionId: number, scope: ClosedSessionScope = "project"): TaskTarget[] {
     const executor = this.getSession(executorSessionId);
     if (scope === "off" || !executor || executor.closedAt !== null || !this.enabled(executorSessionId)) return [];
     const targets: (TaskTarget & { oldest: number })[] = [];
@@ -1773,21 +1792,18 @@ export class Store {
       .all(scope, executor.projectId, executorSessionId);
     for (const row of sessions) {
       const sessionId = Number(row.id);
-      if ((this.getClaim(sessionId, phase)?.expiresAt ?? 0) > Date.now()) continue;
-      const branches = this.db.prepare("SELECT branch FROM source_paths WHERE session_id = ? UNION SELECT branch FROM runs WHERE session_id = ? AND branch IS NOT NULL ORDER BY branch").all(sessionId, sessionId);
-      for (const { branch } of branches) {
-        const headTurnId = this.knowledgePath(sessionId, String(branch)).headTurnId;
+      const claimed = (this.getClaim(sessionId, phase)?.expiresAt ?? 0) > Date.now();
+      const cursors = this.borrowedCursorTargets(sessionId);
+      if (claimed) continue;
+      const paths = cursors.length ? cursors
+        : (this.db.prepare(`SELECT branch FROM source_paths WHERE session_id = ? UNION
+            SELECT branch FROM runs WHERE session_id = ? AND branch IS NOT NULL ORDER BY branch`).all(sessionId, sessionId) as { branch: string }[])
+          .map(({ branch }) => ({ branch, headTurnId: this.knowledgePath(sessionId, branch).headTurnId }));
+      for (const { branch, headTurnId } of paths) {
         if (!headTurnId) continue;
-        if (phase === "dreaming") {
-          const path = { sessionId, branch: String(branch), headTurnId };
-          const due = this.duePools(path);
-          if (!this.openDreamingRange(sessionId, String(branch)) && due.length) targets.push({ ...path,
-            oldest: due.flatMap(pool => pool.pending.map(value => value.revisionId))[0] ?? Number.MAX_SAFE_INTEGER });
-          continue;
-        }
-        const pending = phase === "noting" ? this.pendingEntries(sessionId, String(branch), headTurnId)
-          : this.consolidationBatch(sessionId, String(branch), headTurnId);
-        if (pending.length) targets.push({ sessionId, branch: String(branch), headTurnId,
+        const pending = phase === "noting" ? this.pendingEntries(sessionId, branch, headTurnId)
+          : this.consolidationBatch(sessionId, branch, headTurnId);
+        if (pending.length) targets.push({ sessionId, branch, headTurnId,
           oldest: Math.min(...pending.map(value => value.id)) });
       }
     }
