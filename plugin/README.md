@@ -14,7 +14,7 @@ CC uses the same flat phase-setting keys as Pi. The shipped defaults are:
 
 These are top-level JSON keys, including the literal dots in the Dreamer keys. CC and Pi store their values separately: this file neither reads nor changes Pi settings. CC does not inherit the foreground selection, so `session` and `inherit` fail explicitly. Its adapter converts each thinking setting to the SDK's effort and verifies native model support; unsupported settings are not silently replaced. All six settings are required when `worker` is present. Omit `worker` only for ingestion/read-only operation.
 
-A phase uses its selected model, thinking level and capacity consistently for admission, execution and run records, including borrowed work and catchup. Capacity is looked up by model name, not copied from another phase. Restart CC after configuration changes; an already running executor retains its resolved settings.
+A phase uses its selected model, thinking level and capacity consistently for admission, execution and run records, including borrowed work and catchup. Capacity is looked up by model name, not copied from another phase. The local `/trace` Settings screen saves edits to this file and applies them to subsequent tasks on the running executor. It reports file save and executor apply separately; already admitted tasks retain their settings. Manual edits outside that command still require a restart.
 
 Core phase bounds use optional top-level keys in the same file:
 
@@ -55,7 +55,7 @@ rewrites them.
 
 Omit `dbPath` to use `~/.trace-memory/trace.db`, the same default as Pi. An existing database is opened in place, never replaced or copied by installation; an absent database is created on first use. Set an explicit absolute `dbPath` only to use another database (or to match a customized Pi path). Database reuse includes the existing Store's normal schema migration checks; it does not reset facts, knowledge, or enrollment. A new session on either host joins the project its repository directory (the git repository root, or the real cwd outside a repository) already has when that is exactly one project; the home directory and temporary directories are excluded, and `project <name>` overrides.
 
-The plugin registers one SessionStart Hook, one SessionEnd Hook, one stdio MCP server, and the user-invoked `trace` skill. Installation does not run a package manager.
+The plugin registers one SessionStart Hook, one SessionEnd Hook, one stdio MCP server and a local function-hooks `/trace` command. Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in Claude Code's process environment or its settings `env` block before starting Claude Code. The command requires pinned Claude Code 2.1.280; a mismatch disables it with a visible status message. With function hooks disabled, `/trace` is unavailable: there is no model-invoked fallback skill. Installation does not run a package manager. This repository never edits personal Claude Code settings or the user's status-line script.
 
 ## Status line
 
@@ -78,7 +78,9 @@ Stdin is read exactly once and forwarded unchanged to both commands; powerline's
 
 ## Session commands
 
-Use `/trace-memory:trace catchup` to drain pending memory work. The same entry accepts these subcommands:
+Use `/trace` to open the local, zero-foreground-model-turn menu. It shows the current context (when verifiable), pending triggers, spend and recent runs, with actions for enrollment, catchup, stop, project and settings. Its Settings screen writes database budgets and `cc.config.json` worker preferences, preserving unrelated keys. The running executor applies successful edits to future tasks, while already running tasks keep their admitted configuration. If a save succeeds but apply fails, both outcomes are reported separately; the menu does not claim that the saved value is already effective. `/clear` changes the native session identity; every menu action resolves the live ID before dispatch. The command runs only on the pinned function-hooks API. Opening the menu starts no memory work.
+
+The direct CLI accepts the following existing verbs:
 
 | Subcommand | Effect |
 | --- | --- |
@@ -88,9 +90,7 @@ Use `/trace-memory:trace catchup` to drain pending memory work. The same entry a
 | `stop` | Stop this executor's work without disabling memory. |
 | `project <name>` | Declare this session's shared project. |
 
-The pinned Claude Code version also gives the skill a `/trace` alias. Use the full `/trace-memory:trace` name when another skill or command is named `trace`; the native alias resolver does not reject ambiguous matches. Pi's command remains `/trace`.
-
-The skill forwards to the same CLI shown below, using the current native session ID. Unlike Pi's direct command callback, a Claude Code skill instructs the foreground model to execute that CLI under normal shell permissions. No permission bypass or model-side security boundary is implied. A bare or invalid invocation shows usage; there is no Pi-style settings menu.
+The former model-invoked `trace` skill is removed so its bare alias cannot conflict with the local command. The direct CLI remains available from a trusted shell; it does not silently fall back to a model turn when function hooks are disabled.
 
 `catchup` requires an enabled session and its live MCP executor. It reconciles the current path and freezes the pending Raw boundary. Noting drains it in bounded subagent batches, ignoring only N's trigger threshold; later Raw does not extend the drain. One checkpoint at start and after every successful catchup-owned N, C or D completion checks all three phases. C and D use ordinary pending thresholds; excess pool size alone does not make D due. No new foreground message or intervening N batch is needed. Completion requires exhausted frozen Raw, neither C nor D due, and all owned work settled. Empty/dropped results do not re-arm the loop. A failed catchup step immediately retries the same phase and boundary without checking other phases. Three consecutive failures of one logical task turn memory off and end the drain; cancellation also ends it.
 

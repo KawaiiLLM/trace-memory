@@ -81,4 +81,5 @@ try {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   console.log(await buildCc());
   console.log(await buildCcStatus());
+  await import("./build-cc-hooks.mjs");
 }

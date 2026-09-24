@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,19 +32,15 @@ try {
   for (const retired of ["model", "effort", "contextWindow"])
     assert.equal(Object.hasOwn(defaults.worker, retired), false, `retired shared worker.${retired} must not ship`);
   assert.equal(Object.hasOwn(defaults, "dbPath"), false, "CC shares Pi's default database without sharing model preferences");
-  const skill = readFileSync(join(plugin, "skills/trace/SKILL.md"), "utf8");
-  assert.match(skill, /^---\nname: trace\n/);
-  assert.match(skill, /disable-model-invocation: true/);
-  for (const parameter of ["${CLAUDE_PLUGIN_ROOT}", "${CLAUDE_SESSION_ID}", "$ARGUMENTS"])
-    assert.ok(skill.includes(parameter), `operator skill must receive ${parameter} from the native host`);
-  assert.ok(skill.includes("catchup"));
-  assert.ok(skill.includes("dist/cc.cjs"));
-  assert.equal(/^allowed-tools:/m.test(skill), false, "operator skill must retain normal native tool permissions");
+  assert.equal(Object.hasOwn(JSON.parse(readFileSync(join(plugin, "hooks/hooks.json"), "utf8")), "modules"), true);
+  assert.match(readFileSync(join(plugin, "hooks/menu.tsx"), "utf8"), /export const register = /);
+  assert.equal(existsSync(join(plugin, "skills/trace/SKILL.md")), false, "the model-invoked skill must not shadow /trace");
   assert.match(readFileSync(join(plugin, "dist/cc.cjs"), "utf8"), /Trace Memory CC requires Node >=24\.6\.0/);
   assert.equal(readFileSync(join(plugin, "dist/cc.cjs"), "utf8").includes(root), false, "bundle must not contain a checkout path");
   for (const phrase of ["You are the Noter", "You are the Consolidator", "You are the Dreamer"])
     assert.ok(readFileSync(join(plugin, "dist/cc.cjs"), "utf8").includes(phrase), `missing bundled prompt: ${phrase}`);
   const hooks = JSON.parse(readFileSync(join(plugin, "hooks/hooks.json"), "utf8"));
+  assert.deepEqual(hooks.modules, ["./menu.tsx"]);
   assert.equal(hooks.hooks.SessionStart[0].hooks.length, 1);
   assert.equal(hooks.hooks.SessionEnd[0].hooks.length, 1);
   const session = "packed-smoke", transcript = join(temporary, "transcript.jsonl"), database = join(temporary, "memory.sqlite");

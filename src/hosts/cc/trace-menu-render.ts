@@ -217,7 +217,7 @@ export function buildCcContextSection(breakdown: CcContextBreakdown | undefined,
   const messagesCategory = breakdown.categories.find(c => c.name === "Messages");
   const scaledMemory = memory ? scaleMemoryToMessages(memory, messagesCategory?.tokens, contextTokens) : undefined;
   const overflow = scaledMemory !== undefined && messagesCategory !== undefined && memorySplitSum(scaledMemory) > messagesCategory.tokens;
-  const inconsistent = memory !== undefined && (scaledMemory === undefined || overflow);
+  const inconsistent = memory !== undefined && (scaledMemory === undefined || overflow || (!messagesCategory && memorySplitSum(scaledMemory!) > 0));
   const effectiveMemory = inconsistent ? undefined : scaledMemory;
 
   const displayCategories = buildDisplayCategories(breakdown, effectiveMemory);
@@ -247,6 +247,21 @@ export function buildCcContextSection(breakdown: CcContextBreakdown | undefined,
   const gridRows = computeCcGrid(displayCategories, breakdown.maxTokens, breakdown.terminalWidth, legendLineCount);
 
   return { headerLines, gridRows, legendHeading, legend, memoryUnavailable };
+}
+
+/** Text-only fallback returned by the local command when no interactive pane is available. */
+export function renderTraceMenuText(rendered: RenderedMenu): string {
+  const context = rendered.context;
+  return [rendered.header, "",
+    ...(context ? [
+      ...context.headerLines,
+      context.legendHeading,
+      ...context.legend.map(row => `${row.glyph} ${row.label}: ${row.tokensLabel}${row.suffix} (${row.percent})`),
+      ...(context.memoryUnavailable ? [context.memoryUnavailable] : []),
+    ] : [rendered.contextUnavailable ?? "unavailable — see the built-in /context"]),
+    "", rendered.pendingHeading, ...rendered.pendingLines, "", ...rendered.spendLines,
+    ...rendered.notices.map(notice => `! ${notice}`), "", rendered.actions.map(action => action.label).join("   "),
+  ].join("\n");
 }
 
 // ---- Pending / trigger (shared wording, CC's own plain-text bar) ----------------------------------

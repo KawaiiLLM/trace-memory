@@ -1,5 +1,6 @@
 {
-  "description": "Trace Memory lifecycle and knowledge injection",
+  "description": "Trace Memory lifecycle, knowledge injection and local menu",
+  "modules": ["./menu.tsx"],
   "hooks": {
     "SessionStart": [
       {
