@@ -1114,6 +1114,11 @@ export class Store {
       migrateDreamingRanges64d(this.db);
       this.db.exec(PROCESSING_SQL);
       this.db.exec(EXECUTIONS_SQL);
+      // 86, option A: legacy Dreamer streaks used a range ID, not the oldest pending revision.
+      // SQLite's application version was previously unused. Version 1 marks this data-only reset,
+      // in the same transaction as the upgrade; later opens must preserve new revision-keyed streaks.
+      if (Number(this.db.prepare("PRAGMA user_version").get()!.user_version) === 0)
+        this.db.exec("DELETE FROM task_failures WHERE phase = 'dreaming'; PRAGMA user_version = 1");
       migrateKnowledgeLineage(this.db, true);
       // The policy is part of the same schema transaction. Concurrent openers serialize at BEGIN;
       // INSERT OR IGNORE preserves an edited existing row and initializes an absent row once.
