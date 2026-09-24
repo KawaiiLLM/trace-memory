@@ -3,8 +3,8 @@ import { knowledgeStatusNotes } from "../../../src/core/api/read.ts";
 import { compacted, recorded } from "../../source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
 // from. Names identify the ruling and its conversation date.
-import { afterEach, beforeEach, expect, test } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,12 @@ import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
+import { resolveCcHostConfig } from "../../../src/hosts/cc/config.ts";
+import { recordSessionStart } from "../../../src/hosts/cc/binding.ts";
+import { recordCcSessionEnd } from "../../../src/hosts/cc/lifecycle.ts";
+import { CcImporter } from "../../../src/hosts/cc/importer.ts";
+import { Store } from "../../../src/core/store/index.ts";
 
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -76,6 +82,64 @@ function session() {
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command: "pnpm install" }), result: JSON.stringify({ stdout: "done", stderr: "" }), status: "success" });
   return { s, t };
 }
+
+test("2026-09-24, 86: 'catchup 选A' and '任务失败后不检查' — retry the failed phase before checking other phases", async () => {
+  let attempts = 0;
+  const retryMemory = sourceSeededMemory(":memory:", async raw => {
+    const task = raw as NotingAgentInput;
+    attempts++;
+    expect(task.kind).toBe("noting");
+    if (attempts === 1) return { outcome: "failure", request: { fake: true }, output: "first attempt failed" };
+    expect(checks.mock.calls.map(([phase]) => phase)).toEqual(["consolidation", "dreaming"]);
+    expect(retryMemory.store.taskFailures(target.sessionId).some(row => row.count === 1)).toBe(true);
+    task.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    return ok([]);
+  });
+  const project = retryMemory.store.createProject({ name: "retry", declaredBy: "mark" });
+  const session = retryMemory.store.createSession({ host: "cc:retry", projectId: project.id,
+    enrollmentChoice: true, startedAt: time, firstReplyAt: time });
+  const turn = retryMemory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "one pending entry", startedAt: time });
+  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+  const ids = retryMemory.store.pendingEntryIds(session.id, "main", turn.id);
+  const checks = vi.spyOn(retryMemory, "taskEligibility");
+  const worker = resolveCcHostConfig({ dbPath: join(directory, "unused.sqlite"), stateDir: directory,
+    notingModel: "synthetic", notingThinking: "medium", consolidationModel: "synthetic", consolidationThinking: "medium",
+    "dreaming.model": "synthetic", "dreaming.thinking": "medium",
+    worker: { cwd: directory, claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } }).worker;
+  const scheduler = new CcTaskScheduler(retryMemory, worker, () => {});
+  try {
+    scheduler.startCatchup({ state: "ready", coreSessionId: session.id, branch: "main", headTurnId: turn.id,
+      selectedEntryIds: ids, selectedCount: ids.length, selectedTailId: ids.at(-1)!,
+      selectedAppendedEntryIds: [], appendedEntryIds: [], problems: [], snapshot: {} as any });
+    await vi.waitFor(() => expect(scheduler.catchupStatus().state).toBe("completed"));
+    expect(attempts).toBe(2);
+    expect(checks.mock.calls.length).toBeGreaterThan(2);
+    expect(retryMemory.store.enabled(session.id)).toBe(true);
+  } finally { scheduler.stop(); await scheduler.settle(); checks.mockRestore(); retryMemory.close(); }
+});
+
+test("2026-09-24, 86: '除了 clear，任何 SessionEnd 都算正常关闭' — native end closes without an executor", async () => {
+  const config = resolveCcHostConfig({ dbPath: join(directory, "cc.sqlite"), stateDir: join(directory, "cc-state"), baseline: "2025-01-01T00:00:00.000Z" });
+  const transcript = join(directory, "cc.jsonl"), nativeId = "ruled-close";
+  writeFileSync(transcript, [
+    { uuid: "u", parentUuid: null, type: "user", timestamp: time, promptId: "p", promptSource: "sdk", userType: "external", message: { role: "user", content: "rule" } },
+    { uuid: "a", parentUuid: "u", type: "assistant", timestamp: time, message: { role: "assistant", content: [{ type: "text", text: "recorded" }] } },
+  ].map(record => JSON.stringify(record)).join("\n") + "\n");
+  vi.stubEnv("CLAUDE_PID", String(process.pid));
+  try {
+    const binding = await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: nativeId, transcript_path: transcript }, time);
+    const importer = new CcImporter(config, binding);
+    let id: number;
+    try { id = (await importer.reconcile()).coreSessionId!; } finally { importer.close(); }
+    const input = { hook_event_name: "SessionEnd" as const, session_id: nativeId, transcript_path: transcript };
+    expect((await recordCcSessionEnd(config, { ...input, reason: "clear" })).confirmed).toBe(false);
+    const open = new Store(config.dbPath);
+    try { expect(open.getSession(id)!.closedAt).toBeNull(); } finally { open.close(); }
+    expect((await recordCcSessionEnd(config, { ...input, reason: "other" })).confirmed).toBe(true);
+    const closed = new Store(config.dbPath);
+    try { expect(closed.getSession(id)!.closedAt).not.toBeNull(); } finally { closed.close(); }
+  } finally { vi.unstubAllEnvs(); }
+});
 
 test("2026-09-07: the estimate is segment-based, superseding the Q12 two-weight formula, and Chinese is still never priced as ASCII", () => {
   // Q12 ruled 0.75 per CJK character and 0.25 per other; measurement against a real tokenizer put that
