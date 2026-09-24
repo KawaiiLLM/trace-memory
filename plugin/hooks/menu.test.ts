@@ -35,7 +35,7 @@ function mockHost(on: any, seen: string[], version = "2.1.280", sessionId = () =
   on("session.start", ($: any, e: any) => ({ cwd: e.cwd }));
   on("command.register", ($: any, e: any) => ({ value: { command: e.name } }));
   on("command.run", () => ({ text: "command unavailable" }));
-  on("session.usage", () => ({ value: { startedAt: 0, context: { breakdown: undefined }, rateLimits: [] } }));
+  on("session.usage", () => ({ value: { startedAt: 0, context: { window: 10000 }, rateLimits: [] } }));
   on("ui.status", () => ({ value: undefined }));
   on("ui.open", () => ({ value: { isPlaced: true } }));
   on("ui.invalidate", () => ({ value: undefined }));
