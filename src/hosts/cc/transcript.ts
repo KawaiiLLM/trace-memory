@@ -116,12 +116,23 @@ const humanCommandPrompt = (content: string): string | null => {
 
 export class CcNativeLineageError extends Error {}
 
-/** Decode native lineage exactly once. A malformed present value is not an absent parent. */
-export function nativeParentId(record: CcNativeRecord): string | null {
+/** Decode native lineage exactly once. A malformed present value is not an absent parent.
+ * `writtenBefore` says whether a UUID was written earlier in the file than `record`. Claude Code
+ * 2.1.280's automatic compaction can name, as the boundary's logical parent, a preserved message
+ * written after the boundary and descending from it (a production transcript, 2026-09-23). Such a
+ * boundary continues from its last preserved message written before it, which is what every other
+ * boundary names as its logical parent. */
+export function nativeParentId(record: CcNativeRecord, writtenBefore?: (uuid: string) => boolean): string | null {
   const value = record.logicalParentUuid ?? record.parentUuid;
   if (value === null || value === undefined) return null;
   if (typeof value !== "string" || !value) throw new CcNativeLineageError(
     `native lineage parent of ${nativeId(record) ?? "record without UUID"} is invalid`);
+  if (writtenBefore && value === record.logicalParentUuid && record.type === "system" &&
+      record.subtype === "compact_boundary" && !writtenBefore(value)) {
+    const preserved = (record.compactMetadata as { preservedMessages?: { uuids?: unknown } } | undefined)?.preservedMessages?.uuids;
+    const earlier = Array.isArray(preserved) ? preserved.filter((id): id is string => typeof id === "string" && !!id && writtenBefore(id)) : [];
+    if (earlier.length) return earlier.at(-1)!;
+  }
   return value;
 }
 
@@ -172,12 +183,12 @@ export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | n
   return { kind: "user", record, nativeId: id, timestamp: timestamp(record), text, calls: [] };
 }
 
-const nodeOf = (record: CcNativeRecord): CcNativeNode | null => {
+const nodeOf = (record: CcNativeRecord, writtenBefore: (uuid: string) => boolean): CcNativeNode | null => {
   const uuid = nativeId(record);
   if (!uuid) return null;
   const source = classifySourceRecord(record);
   try {
-    return { uuid, parentUuid: nativeParentId(record), sourceKind: source?.kind ?? null,
+    return { uuid, parentUuid: nativeParentId(record, writtenBefore), sourceKind: source?.kind ?? null,
       calls: source?.kind === "assistant" ? source.calls.map(call => ({ id: call.callId, name: call.name })) : [], timestamp: source?.timestamp ?? timestamp(record) };
   } catch (error) {
     if (!(error instanceof CcNativeLineageError)) throw error;
@@ -375,7 +386,7 @@ export class CcTranscriptCursor {
         const record = object(parsed);
         if (!record) throw new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${lines}: expected an object`));
         physicalRecords += 1;
-        let source = classifySourceRecord(record), node = nodeOf(record);
+        let source = classifySourceRecord(record), node = nodeOf(record, id => scanNodes.has(id));
         if (node) {
           const prior = scanNodes.get(node.uuid), collected = collectedById.get(node.uuid), identity = nativeIdentity(record);
           if (prior && (prior.parentUuid !== node.parentUuid || prior.sourceKind !== node.sourceKind || prior.lineageProblem !== node.lineageProblem) ||
@@ -535,6 +546,8 @@ export function nativeCreatedAt(records: readonly CcNativeRecord[]): string | nu
 
 export function selectedNativePath(records: readonly CcNativeRecord[]): { leafUuid: string | null; records: CcNativeRecord[]; problem?: string } {
   const byId = new Map(records.flatMap(record => nativeId(record) ? [[record.uuid as string, record] as const] : []));
+  const position = new Map<string, number>();
+  records.forEach((record, index) => { const id = nativeId(record); if (id && !position.has(id)) position.set(id, index); });
   const leaf = [...records].reverse().find(record => classifySourceRecord(record) !== null);
   const leafUuid = leaf ? nativeId(leaf) : null;
   if (!leafUuid) return { leafUuid: null, records: [] };
@@ -546,7 +559,8 @@ export function selectedNativePath(records: readonly CcNativeRecord[]): { leafUu
     if (seen.has(id)) return { leafUuid, records: [], problem: `native lineage cycle at ${id}` };
     seen.add(id); reverse.push(current);
     let rawParent: string | null;
-    try { rawParent = nativeParentId(current); }
+    const at = position.get(id)!;
+    try { rawParent = nativeParentId(current, uuid => (position.get(uuid) ?? Infinity) < at); }
     catch (error) { return { leafUuid, records: [], problem: error instanceof Error ? error.message : String(error) }; }
     if (rawParent === null) break;
     current = byId.get(rawParent);

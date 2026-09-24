@@ -230,8 +230,11 @@ export class CcProjection {
     const addProblem = (problem: string): void => { if (!problems.includes(problem)) problems.push(problem); };
     const nearestTurn = (record: CcNativeRecord, scan: CcTranscriptScan): number | null => {
       const seen = new Set<string>();
+      // The scan resolved this record's lineage in file order; resolve the same parent here.
+      const own = typeof record.uuid === "string" ? scan.node(record.uuid) : undefined;
+      if (own?.lineageProblem) throw new CcIntegrityError(own.lineageProblem);
       let parent: string | null;
-      try { parent = nativeParentId(record); }
+      try { parent = own ? own.parentUuid : nativeParentId(record); }
       catch (error) { throw new CcIntegrityError(error instanceof Error ? error.message : String(error)); }
       while (parent) {
         if (seen.has(parent)) throw new CcIntegrityError(`native lineage cycle at ${parent}`);
@@ -314,6 +317,11 @@ export class CcProjection {
         } else {
           const owner = nearestTurn(record, scan);
           ownerTurn = owner === null ? null : this.memory.store.getTurn(owner);
+          // Claude Code 2.1.280 can compact automatically in the middle of a reply, which then goes on
+          // under the same prompt (CC records the same prompt id). As on Pi, the reply's content belongs
+          // to the user Turn the compaction interrupted.
+          while (ownerTurn?.kind === "compaction")
+            ownerTurn = ownerTurn.parentTurnId === null ? null : this.memory.store.getTurn(ownerTurn.parentTurnId);
           if (!ownerTurn || ownerTurn.kind !== "turn")
             throw new CcIntegrityError(`owning user Turn for native source ${source.nativeId} is unavailable`);
           turnId = ownerTurn.id;

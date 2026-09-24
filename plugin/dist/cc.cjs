@@ -8922,12 +8922,17 @@ var humanCommandPrompt = (content) => {
 };
 var CcNativeLineageError = class extends Error {
 };
-function nativeParentId(record3) {
+function nativeParentId(record3, writtenBefore) {
   const value = record3.logicalParentUuid ?? record3.parentUuid;
   if (value === null || value === void 0) return null;
   if (typeof value !== "string" || !value) throw new CcNativeLineageError(
     `native lineage parent of ${nativeId(record3) ?? "record without UUID"} is invalid`
   );
+  if (writtenBefore && value === record3.logicalParentUuid && record3.type === "system" && record3.subtype === "compact_boundary" && !writtenBefore(value)) {
+    const preserved = record3.compactMetadata?.preservedMessages?.uuids;
+    const earlier = Array.isArray(preserved) ? preserved.filter((id) => typeof id === "string" && !!id && writtenBefore(id)) : [];
+    if (earlier.length) return earlier.at(-1);
+  }
   return value;
 }
 var snapshot = (path, stamp, values = {}) => ({
@@ -8996,14 +9001,14 @@ function classifySourceRecord(record3) {
   const text = !nativePrompt && typeof content === "string" ? humanCommandPrompt(content) ?? content : textBlocks(content).join("\n");
   return { kind: "user", record: record3, nativeId: id, timestamp: timestamp(record3), text, calls: [] };
 }
-var nodeOf = (record3) => {
+var nodeOf = (record3, writtenBefore) => {
   const uuid5 = nativeId(record3);
   if (!uuid5) return null;
   const source = classifySourceRecord(record3);
   try {
     return {
       uuid: uuid5,
-      parentUuid: nativeParentId(record3),
+      parentUuid: nativeParentId(record3, writtenBefore),
       sourceKind: source?.kind ?? null,
       calls: source?.kind === "assistant" ? source.calls.map((call) => ({ id: call.callId, name: call.name })) : [],
       timestamp: source?.timestamp ?? timestamp(record3)
@@ -9227,7 +9232,7 @@ var CcTranscriptCursor = class {
         const record3 = object3(parsed2);
         if (!record3) throw new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${lines}: expected an object`));
         physicalRecords += 1;
-        let source = classifySourceRecord(record3), node = nodeOf(record3);
+        let source = classifySourceRecord(record3), node = nodeOf(record3, (id) => scanNodes.has(id));
         if (node) {
           const prior = scanNodes.get(node.uuid), collected = collectedById.get(node.uuid), identity = nativeIdentity(record3);
           if (prior && (prior.parentUuid !== node.parentUuid || prior.sourceKind !== node.sourceKind || prior.lineageProblem !== node.lineageProblem) || collected && collected.identity !== identity) {
@@ -9428,6 +9433,11 @@ function nativeCreatedAt(records) {
 }
 function selectedNativePath(records) {
   const byId = new Map(records.flatMap((record3) => nativeId(record3) ? [[record3.uuid, record3]] : []));
+  const position = /* @__PURE__ */ new Map();
+  records.forEach((record3, index) => {
+    const id = nativeId(record3);
+    if (id && !position.has(id)) position.set(id, index);
+  });
   const leaf = [...records].reverse().find((record3) => classifySourceRecord(record3) !== null);
   const leafUuid = leaf ? nativeId(leaf) : null;
   if (!leafUuid) return { leafUuid: null, records: [] };
@@ -9440,8 +9450,9 @@ function selectedNativePath(records) {
     seen.add(id);
     reverse.push(current);
     let rawParent;
+    const at = position.get(id);
     try {
-      rawParent = nativeParentId(current);
+      rawParent = nativeParentId(current, (uuid5) => (position.get(uuid5) ?? Infinity) < at);
     } catch (error3) {
       return { leafUuid, records: [], problem: error3 instanceof Error ? error3.message : String(error3) };
     }
@@ -39379,9 +39390,11 @@ var CcProjection = class {
     };
     const nearestTurn = (record3, scan2) => {
       const seen = /* @__PURE__ */ new Set();
+      const own = typeof record3.uuid === "string" ? scan2.node(record3.uuid) : void 0;
+      if (own?.lineageProblem) throw new CcIntegrityError(own.lineageProblem);
       let parent;
       try {
-        parent = nativeParentId(record3);
+        parent = own ? own.parentUuid : nativeParentId(record3);
       } catch (error3) {
         throw new CcIntegrityError(error3 instanceof Error ? error3.message : String(error3));
       }
@@ -39452,6 +39465,8 @@ var CcProjection = class {
         } else {
           const owner = nearestTurn(record3, scan2);
           ownerTurn = owner === null ? null : this.memory.store.getTurn(owner);
+          while (ownerTurn?.kind === "compaction")
+            ownerTurn = ownerTurn.parentTurnId === null ? null : this.memory.store.getTurn(ownerTurn.parentTurnId);
           if (!ownerTurn || ownerTurn.kind !== "turn")
             throw new CcIntegrityError(`owning user Turn for native source ${source.nativeId} is unavailable`);
           turnId = ownerTurn.id;
