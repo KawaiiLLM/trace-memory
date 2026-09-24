@@ -4,7 +4,7 @@ import { coreHostOf, readBinding, recordSessionStart, updateBinding, validateNat
   type CcHookInput, type CcSessionBinding } from "./binding.ts";
 import { CcProjection } from "./importer.ts";
 import { databaseIdentity, encodeCcInjection, ccSessionStartInjection, type CcHookOutput, type CcVisibleBinding } from "./injection.ts";
-import { assignedNativeSession, parsePid, processStartedAt } from "./native-session.ts";
+import { assignedNativeSession, currentNativeProcess, parsePid, processStartedAt } from "./native-session.ts";
 import { ccSourceBlocks, nativeCreatedAt, readCompleteTranscript } from "./transcript.ts";
 
 export type CcClearResult = { handled: false } | { handled: true; output: CcHookOutput | null };
@@ -23,6 +23,7 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
   const parentBinding = readBinding(config, record.nativeSessionId);
   if (!parentBinding) return { handled: false };
   const childId = validateNativeSessionId(input.session_id);
+  const nativeProcess = currentNativeProcess();
   const childSnapshot = readCompleteTranscript(input.transcript_path);
   const createdAt = childSnapshot.exists && !childSnapshot.problem ? nativeCreatedAt(childSnapshot.records) : null;
 
@@ -59,6 +60,7 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
           // 64b: each native lineage owns an independent persisted source path. Reusing the
           // parent's branch would let the child overwrite the parent's retained foreground.
           branch: `cc:${childId}`, selectedLeafUuid: null, executor: null, lastClose: null,
+          ...(nativeProcess ? { nativeProcess } : {}),
           ...(synced.cwd !== undefined ? { cwd: synced.cwd } : {}),
           coreHost: coreHostOf(synced), clearedFrom,
         };

@@ -80,6 +80,14 @@ export const parsePid = (value: string | undefined): number | null => {
   const pid = Number(value); return value !== undefined && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 };
 
+/** The native process that invoked this hook, not the independently running MCP executor. */
+export function currentNativeProcess(): CcProcessIdentity | null {
+  const pid = parsePid(process.env.CLAUDE_PID);
+  if (pid === null) return null;
+  const startedAt = processStartedAt(pid);
+  return startedAt === null ? null : { pid, startedAt };
+}
+
 function readNativeSession(config: ResolvedCcHostConfig, pid: number): CcNativeSessionRecord | null {
   let record: Partial<CcNativeSessionRecord>;
   try { record = JSON.parse(readFileSync(nativeSessionPath(config, pid), "utf8")); }

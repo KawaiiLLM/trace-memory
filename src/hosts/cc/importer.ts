@@ -532,7 +532,8 @@ export class CcImporter {
   }
   async reconcile(signal?: AbortSignal, instrumentation?: CcImportInstrumentation): Promise<CcReconcileResult> {
     const result = await this.projection.synchronize(signal, instrumentation);
-    if (!this.reopened && result.coreSessionId !== null && result.state !== "disabled") {
+    if (!this.reopened && result.coreSessionId !== null && result.state !== "disabled" &&
+        !this.projection.currentBinding().lastClose?.confirmed) {
       this.memory.store.reopenSession(result.coreSessionId, this.memory.executorId);
       this.reopened = true;
     }

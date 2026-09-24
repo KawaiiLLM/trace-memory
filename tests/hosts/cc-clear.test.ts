@@ -47,7 +47,7 @@ function fixture(label: string, overrides: Record<string, unknown> = {}) {
     writeChild: (records: CcNativeRecord[]) => writeFileSync(childTranscriptPath, records.map(line).join("")) };
 }
 
-async function startParent(f: ReturnType<typeof fixture>, pid = 90_001) {
+async function startParent(f: ReturnType<typeof fixture>, pid = process.pid) {
   vi.stubEnv("CLAUDE_PID", String(pid));
   await handleCcHook(f.config, { hook_event_name: "SessionStart", source: "startup", session_id: f.parentId, transcript_path: f.parentTranscriptPath });
   return readBinding(f.config, f.parentId)!;

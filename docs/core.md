@@ -39,10 +39,11 @@ of each identity for which that pool has no `(pool, revision)` processing record
 revisions do not accumulate weight. A pool is due when nonempty pending reaches
 `min(dreaming.triggerTokens, pool budget)`; excess size alone does not trigger a run.
 
-Each run freezes one due pool and an oldest eligible prefix no larger than that pool's full budget.
+Each run freezes one due pool and an oldest eligible prefix under that pool's soft batch budget.
+The first item is included even when its complete framing exceeds the batch budget; later items wait.
 The database defaults are Global 4,000, Project 15,000 and Session 1,000 tokens. With the configured
 5,000-token cap, effective pending triggers are 4,000/5,000/1,000. Small pools have a reachable pending
-path at their full budget; budget excess will often trigger first. There is one database-wide Dreamer seat. The ordinary target claim,
+path at their full budget; excess pool size alone never triggers a run. There is one database-wide Dreamer seat. The ordinary target claim,
 token, expiry, reserved takeover and project/range checks remain commit fences; a stale or lost claim
 cannot commit. Dreaming has no closed-session borrowing, frozen family, pool-budget write gate or
 retry range. Material windows and actual model context capacity remain hard limits.
@@ -110,9 +111,9 @@ on both hosts, including Pi where this adds a new time bound. Expiry closes writ
 the bound in its reason, settles partial work and releases its claim; it is not a completed pass.
 
 Budget excess is not a due condition; a pending-triggered run still archives until its pool fits.
-Project relabelling creates no processing event:
-a moved project revision is pending in the destination only when that destination pool lacks its
-exact processing record. Global and session records do not move.
+Project relabelling creates no processing event or knowledge revision. It removes destination-pool
+processing records only for moved-in project versions, so returning versions become pending again.
+Unrelated destination records and global/session records are unchanged; order follows revision creation.
 
 The old [external-conflict design](dreamer-external-conflict.md) and its
 [verification record](dreamer-external-conflict-verification.md) are historical evidence only; their
@@ -130,7 +131,7 @@ Run `npm test` for the Vitest suite, `npm run typecheck` for TypeScript, and
 
 ## Logical-task outcomes (32c)
 
-A logical task is `(target session, phase, oldest selected backlog item)`, independent of its run ids. Noting uses the first frozen source entry and Consolidation the first selected fact. A Dreamer range is terminal after one run and is never retried.
+A logical task is `(target session, phase, oldest selected backlog item)`, independent of its run ids. Noting uses the first frozen source entry, Consolidation the first selected fact, and Dreamer the first pending revision, not the range ID. A Dreamer range is terminal after one run; a catchup retry admits a new range and preserves prior committed work.
 
 `Store.beginExecution(task, previous?)` creates a durable execution or continues the same unsettled Noting or Consolidation execution after fork refusal. Each attempt run carries `RunInput.executionId` and is linked through `execution_runs`. Attempt audit outcomes do not settle executions.
 
@@ -937,13 +938,13 @@ Cursors freeze rendered output, are single-use, belong to this facade instance
 and calling session/project, and preserve the remaining lines on later pages.
 
 `declareProject(sessionId, name, source, path)` declares attribution through an explicit user
-command and the host's currently selected path. Pi does not discover marker files. Declaration keeps
-Noting and Consolidation protections but is not blocked merely because Dreaming is due or an inactive
-range exists. It waits when an active Dreamer belongs to an affected project or its frozen range
-touches an affected pool. Relabelling creates no Knowledge revision or processing event and clears no
-processing record: moved project revisions are pending in the destination only when that pool lacks
-the exact `(pool, revision)` record. Global and session records are unchanged. Existing project
-assignment provenance is retained. Only undeclared projects merge via `mergeProject`; leaving a named
+command and the host's currently selected path. Pi does not discover marker files. An ownership
+change requires the declaring session to have no running N/C/D and no reached N/C/D trigger,
+including its applicable global/project/session knowledge pools. Refusal names the phase and starts
+no work. Other sessions do not block the move; their in-flight commits retain ordinary authority
+checks and may fail visibly. Relabelling creates no Knowledge revision or processing event; only
+moved-in project versions lose destination processing records and become pending again. Global,
+session and unrelated destination records are unchanged. Existing project assignment provenance is retained. Only undeclared projects merge via `mergeProject`; leaving a named
 project moves the declaring session and its session Knowledge, not peers.
 `status(sessionId)` reports session/project fact counts, visible active knowledge
 count and latest attempts by run id. The derived Turn watermark readers and status line were removed
@@ -1053,6 +1054,8 @@ to ids no later than `maxEntryId` before its usual batch-token loop, and
 building its range; both reuse the same store readers rather than adding a second
 selection query. Manual catchup drains its frozen Noting boundary. Ticket 68 checks N, C and D
 at start and after every successful catchup-owned phase completion; C and D use ordinary eligibility.
+Ticket 86 immediately retries a failed catchup step in the same phase and boundary, without checking
+other phases. It uses the ordinary three-business-failures rule; off or cancellation ends the drain.
 It no longer freezes a fact set for forced below-threshold Consolidation. The *exact* target is what a fork fallback re-admits on: `exactEntryIds`
 (27d's `entryIds`) and `exactFactIds` (29e). Under either, the freeze selects exactly those pending
 members, trims optional material to fit them — the Noter's history, the Consolidator's knowledge

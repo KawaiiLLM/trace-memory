@@ -8,17 +8,18 @@ import { createConnection } from "node:net";
 import { TraceMemory } from "../../src/core/api/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
-import { bindingMutexPath, bindingPath, readBinding, recordSessionStart, updateBinding, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
+import { bindingMutexPath, bindingPath, readBinding, recordSessionStart, updateBinding, withCcBindingLock, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
 import { controlSession, startControlServer } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 
 const dirs: string[] = [];
-afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const now = "2026-01-01T00:00:00.000Z";
 const sdkPrompt = (promptId: string) => ({ promptId, promptSource: "sdk", userType: "external" });
 function fixture(label = "lifecycle") {
+  vi.stubEnv("CLAUDE_PID", String(process.pid));
   const dir = mkdtempSync(join(tmpdir(), `tm-cc-${label}-`)); dirs.push(dir);
   const transcriptPath = join(dir, "native.jsonl"), nativeSessionId = `native-${label}`;
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "s"), baseline: "2025-01-01T00:00:00.000Z",
@@ -691,55 +692,106 @@ test("prompt_input_exit closes from the imported eligible projection with stale 
   try { expect(retried.getSession(imported.coreSessionId!)!.closedAt).toBe(closedAt); } finally { retried.close(); }
 });
 
-test("prompt_input_exit refuses an executor identity change while waiting for owner death", async () => {
+test("86: SessionEnd refuses an executor identity change while waiting for the binding lock", async () => {
   const f = fixture("session-end-owner-change"); f.write();
   const started = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const importer = new CcImporter(f.config, started); const imported = await importer.reconcile(); importer.close();
-  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 1000)"]);
-  const expected = { executorId: "ending-owner", pid: child.pid!, token: "ending-token", socketPath: join(f.dir, "ending.sock"), startedAt: now };
+  const expected = { executorId: "ending-owner", pid: process.pid, token: "ending-token", socketPath: join(f.dir, "ending.sock"), startedAt: now };
+  const replacement = { ...expected, executorId: "replacement-owner", token: "replacement-token" };
   await updateBinding(f.config, f.nativeSessionId, current => ({ ...current!, executor: expected }));
-  const input = { hook_event_name: "SessionEnd" as const, session_id: f.nativeSessionId, transcript_path: f.transcriptPath,
-    reason: "prompt_input_exit" };
-  const closing = recordCcSessionEnd(f.config, input);
-  await sleep(20);
-  const replacement = { executorId: "replacement-owner", pid: process.pid, token: "replacement-token",
-    socketPath: join(f.dir, "replacement.sock"), startedAt: now };
-  await updateBinding(f.config, f.nativeSessionId, current => ({ ...current!, executor: replacement }));
-  child.kill("SIGTERM"); await new Promise<void>(resolveExit => child.once("exit", () => resolveExit()));
+  let entered!: () => void, release!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const changing = withCcBindingLock(f.config, f.nativeSessionId, async lock => {
+    entered(); await hold;
+    lock.update(current => ({ ...current!, executor: replacement }));
+  });
+  await ready;
+  const closing = recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath, reason: "other" });
+  release(); await changing;
   expect(await closing).toMatchObject({ confirmed: false, diagnostic: "CC executor identity changed during SessionEnd close" });
   expect(readBinding(f.config, f.nativeSessionId)!.executor).toEqual(replacement);
   const store = new Store(f.config.dbPath);
   try { expect(store.getSession(imported.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
 });
 
-test("SessionEnd leaves unsupported, live-executor, and unimported-tail sessions explicitly unconfirmed", async () => {
-  const f = fixture("session-end-pending"); f.config.finalSyncTimeoutMs = 20; f.write();
+test.each(["prompt_input_exit", "other", "logout"])("86: SessionEnd %s closes with a live executor and an unimported tail", async reason => {
+  const f = fixture(`session-end-${reason}`); f.write();
   const started = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const importer = new CcImporter(f.config, started); const imported = await importer.reconcile(); importer.close();
   const alive = { executorId: "live-owner", pid: process.pid, token: "live-token", socketPath: join(f.dir, "live.sock"), startedAt: now };
   await updateBinding(f.config, f.nativeSessionId, current => ({ ...current!, executor: alive }));
-  const normalInput = { hook_event_name: "SessionEnd" as const, session_id: f.nativeSessionId, transcript_path: f.transcriptPath,
-    reason: "prompt_input_exit" };
-  expect(await recordCcSessionEnd(f.config, normalInput)).toMatchObject({ confirmed: false,
-    diagnostic: expect.stringContaining("named executor remained alive through the SessionEnd close bound") });
-  let store = new Store(f.config.dbPath); try { expect(store.getSession(imported.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
-  expect((await recordCcSessionEnd(f.config, { ...normalInput, reason: "other" })).confirmed).toBe(false);
-  expect(readBinding(f.config, f.nativeSessionId)!.lastClose).toMatchObject({ confirmed: false, reason: "SessionEnd other" });
-
-  const child = spawn(process.execPath, ["-e", ""]); const deadPid = child.pid!;
-  await new Promise<void>(resolveExit => child.once("exit", () => resolveExit()));
-  await updateBinding(f.config, f.nativeSessionId, current => ({ ...current!, executor: { ...alive, pid: deadPid, token: "dead" } }));
   writeFileSync(f.transcriptPath, [...f.records,
-    { uuid: "u2", parentUuid: "a1", type: "user", timestamp: "2026-01-01T00:00:02.000Z", ...sdkPrompt("p2"), message: { role: "user", content: "not imported" } },
-    { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z",
-      message: { role: "assistant", content: [{ type: "text", text: "not imported" }] } }]
-    .map(record => `${JSON.stringify(record)}\n`).join(""));
-  expect(await recordCcSessionEnd(f.config, normalInput)).toMatchObject({ confirmed: false,
-    diagnostic: "latest complete eligible native source has not already been imported as the selected projection" });
-  writeFileSync(f.transcriptPath, f.records.map(record => `${JSON.stringify(record)}\n`).join("") + '{"uuid":');
-  expect(await recordCcSessionEnd(f.config, normalInput)).toMatchObject({ confirmed: false,
-    diagnostic: expect.stringContaining("incomplete trailing bytes") });
-  store = new Store(f.config.dbPath); try { expect(store.getSession(imported.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
+    { uuid: "u2", parentUuid: "a1", type: "user", timestamp: "2026-01-01T00:00:02.000Z", ...sdkPrompt("p2"),
+      message: { role: "user", content: "not imported" } }].map(record => `${JSON.stringify(record)}\n`).join("") + '{"uuid":');
+  expect(await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath, reason })).toMatchObject({ confirmed: true });
+  const store = new Store(f.config.dbPath);
+  try {
+    expect(store.getSession(imported.coreSessionId!)!.closedAt).not.toBeNull();
+    expect(store.findSourceEntry(imported.coreSessionId!, f.nativeSessionId, "u2")).toBeNull();
+    const peer = store.createSession({ host: "cc:borrower", enrollmentChoice: true, projectId: store.getSession(imported.coreSessionId!)!.projectId,
+      startedAt: now, firstReplyAt: now });
+    expect(store.closedTasks("noting", peer.id).some(task => task.sessionId === imported.coreSessionId)).toBe(true);
+    expect(readBinding(f.config, f.nativeSessionId)).toMatchObject({ executor: null, lastClose: { confirmed: true, reason: `SessionEnd ${reason}` } });
+  } finally { store.close(); }
+});
+
+test("86: SessionEnd needs no executor and never guesses a missing native process identity", async () => {
+  const f = fixture("session-end-no-executor"); f.write();
+  const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  const importer = new CcImporter(f.config, binding); const imported = await importer.reconcile(); importer.close();
+  const input = { hook_event_name: "SessionEnd" as const, session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath, reason: "logout" };
+  expect(readBinding(f.config, f.nativeSessionId)!.executor).toBeNull();
+  vi.stubEnv("CLAUDE_PID", "");
+  expect(await recordCcSessionEnd(f.config, input)).toMatchObject({ confirmed: false,
+    diagnostic: expect.stringContaining("native process identity is unavailable") });
+  const store = new Store(f.config.dbPath);
+  try { expect(store.getSession(imported.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
+  vi.stubEnv("CLAUDE_PID", String(process.pid));
+  expect(await recordCcSessionEnd(f.config, input)).toMatchObject({ confirmed: true });
+});
+
+test("86: a still-running coordinator cannot undo SessionEnd by polling or final shutdown", async () => {
+  const f = fixture("end-live"); f.write();
+  f.config.stateDir = mkdtempSync("/tmp/tm86-close-"); dirs.push(f.config.stateDir);
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId);
+  try {
+    await coordinator.start();
+    const before = readBinding(f.config, f.nativeSessionId)!;
+    expect(before.executor).not.toBeNull();
+    expect(await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.nativeSessionId,
+      transcript_path: f.transcriptPath, reason: "other" })).toMatchObject({ confirmed: true });
+    await coordinator.requestReconcile("after native close");
+    await coordinator.shutdown("stdin EOF");
+    expect(readBinding(f.config, f.nativeSessionId)).toMatchObject({ executor: null,
+      lastClose: { confirmed: true, reason: "SessionEnd other" } });
+    const store = new Store(f.config.dbPath);
+    try { expect(store.getSession(before.coreSessionId!)!.closedAt).not.toBeNull(); } finally { store.close(); }
+  } finally { await coordinator.shutdown("test cleanup"); }
+});
+
+test("86: a late SessionEnd from an earlier native process cannot close a reopened session", async () => {
+  const f = fixture("session-end-native-generation"); f.write();
+  const start = { hook_event_name: "SessionStart" as const, session_id: f.nativeSessionId, transcript_path: f.transcriptPath };
+  const binding = await recordSessionStart(f.config, start, now);
+  const importer = new CcImporter(f.config, binding); const imported = await importer.reconcile(); importer.close();
+  const newer = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+  try {
+    vi.stubEnv("CLAUDE_PID", String(newer.pid!));
+    await recordSessionStart(f.config, { ...start, source: "resume" }, now);
+    expect(readBinding(f.config, f.nativeSessionId)!.nativeProcess!.pid).toBe(newer.pid);
+    vi.stubEnv("CLAUDE_PID", String(process.pid));
+    expect(await recordCcSessionEnd(f.config, { ...start, hook_event_name: "SessionEnd", reason: "logout" }))
+      .toMatchObject({ confirmed: false, diagnostic: "SessionEnd belongs to an earlier native process" });
+    const store = new Store(f.config.dbPath);
+    try { expect(store.getSession(imported.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
+  } finally { newer.kill("SIGTERM"); await childExit(newer); }
 });

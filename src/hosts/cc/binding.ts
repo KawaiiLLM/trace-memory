@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { enrollmentDefault } from "../../core/api/index.ts";
 import type { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
+import { currentNativeProcess, type CcProcessIdentity } from "./native-session.ts";
 
 export interface CcHookInput {
   hook_event_name: "SessionStart" | "SessionEnd";
@@ -43,6 +44,8 @@ export interface CcSessionBinding {
   branch: string;
   selectedLeafUuid: string | null;
   executor: CcExecutorBinding | null;
+  /** Native SessionStart owner; fences a delayed SessionEnd from a previous native process. */
+  nativeProcess?: CcProcessIdentity;
   lastClose: { at: string; reason: string; confirmed: boolean; diagnostic?: string } | null;
   /** 62: the SessionStart hook's cwd, read once when the core session is allocated. Absent on
    * bindings written before 62 or by a hook without cwd: such a session keeps its own project. */
@@ -112,6 +115,8 @@ function parseBinding(value: unknown): CcSessionBinding {
       (binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId! < 1)) ||
       (binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId! < 1)) ||
       typeof binding.branch !== "string" || !binding.branch ||
+      (binding.nativeProcess !== undefined && (!Number.isSafeInteger(binding.nativeProcess?.pid) || binding.nativeProcess.pid <= 0 ||
+        typeof binding.nativeProcess.startedAt !== "string" || !binding.nativeProcess.startedAt)) ||
       (binding.cwd !== undefined && (typeof binding.cwd !== "string" || !isAbsolute(binding.cwd))) ||
       (binding.coreHost !== undefined && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:"))) ||
       (binding.clearedFrom !== undefined && !validClearedFrom(binding.clearedFrom)) ||
@@ -256,11 +261,14 @@ export async function recordSessionStart(config: ResolvedCcHostConfig, input: Cc
   const nativeSessionId = validateNativeSessionId(input.session_id);
   if (typeof input.transcript_path !== "string" || !isAbsolute(input.transcript_path))
     throw new Error("SessionStart transcript_path must be absolute");
+  const nativeProcess = currentNativeProcess();
   return updateBinding(config, nativeSessionId, current => {
     if (current) {
       if (current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path)
         throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
-      return current;
+      if (!current.lastClose && (!nativeProcess || (current.nativeProcess?.pid === nativeProcess.pid &&
+          current.nativeProcess.startedAt === nativeProcess.startedAt))) return current;
+      return { ...current, ...(nativeProcess ? { nativeProcess } : {}), lastClose: null };
     }
     // Prepare the database's parent, never the database itself. Store opens an existing file in
     // place or creates it on first use, just as the Pi host does.
@@ -277,6 +285,7 @@ export async function recordSessionStart(config: ResolvedCcHostConfig, input: Cc
       branch: "main",
       selectedLeafUuid: null,
       executor: null,
+      ...(nativeProcess ? { nativeProcess } : {}),
       lastClose: null,
       ...(typeof input.cwd === "string" && isAbsolute(input.cwd) ? { cwd: input.cwd } : {}),
     };

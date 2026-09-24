@@ -427,12 +427,11 @@ Its target must still be closed, and a frozen project-scoped borrowing relation 
 commit. Current-session work, manual catchup, explicit reads and Dreaming are independent of this
 setting.
 
-A project declaration preserves existing Noting and Consolidation due/live-claim guards. Dreaming
-being due or an inactive range being open does not block it. It waits only when the active Dreamer's
-session belongs to an affected project or its frozen range touches an affected project pool. This
-prevents the relabel from invalidating later commits or consuming the wrong pool. Relabel creates no
-Knowledge revision and clears no processing record; a moved project revision is pending in the
-destination only when that pool has not handled that exact revision.
+Changing a session's project requires that declaring session to have no running N/C/D and no reached
+N/C/D trigger, including every applicable knowledge pool. Refusal names the running phase or backlog
+and starts no catchup or queued declaration. Other sessions do not block the move; their in-flight
+writes retain ordinary authority checks. Relabel creates no Knowledge revision and clears only
+moved-in project versions' destination processing records, making return moves pending again.
 
 Normal shutdown stops admission and cancels this executor's model calls under one five-second
 cleanup deadline. Cancellation closes Knowledge tools immediately, but an exact Dreaming claim is
@@ -910,8 +909,10 @@ It checks all three phases: N drains the frozen entry boundary even below `notin
 while C and D use ordinary eligibility, with D due only on the pending threshold. Batch and context
 limits still apply. Several C batches or due D pools can therefore run without another N batch.
 Completion requires no frozen Raw left, neither C nor D due, and no owned task still running.
-Below-threshold tails remain. Empty/dropped results do not re-arm; failure or cancellation ends the
-drain. A waiting state need not imply an in-flight task when a due phase could not progress.
+Below-threshold tails remain. Empty/dropped results do not re-arm. A failed catchup step immediately
+retries the same phase under the existing boundary, without checking other phases. Ordinary failure
+accounting disables memory after three consecutive failures of the same logical task and ends the
+drain. Cancellation also ends it. A waiting state need not imply an in-flight task when a due phase could not progress.
 
 N and C can overlap. Successful owned completions remain checkpoints after the final N batch.
 Stop/off/shutdown/path changes fence those callbacks. This remains the sole exception to ordinary

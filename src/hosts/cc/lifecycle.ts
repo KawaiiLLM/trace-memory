@@ -2,12 +2,12 @@ import { existsSync, readdirSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, validateNativeSessionId, type CcExecutorBinding, type CcHookInput,
+import { bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, updateBindingInStoreTransaction, validateNativeSessionId, type CcExecutorBinding, type CcHookInput,
   type CcSessionBinding } from "./binding.ts";
 import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
 import type { CcWorkerJournal } from "./worker.ts";
 import { startControlServer, type CcControlServer } from "./control.ts";
-import { classifySourceRecord, readCompleteTranscript, selectedNativePath } from "./transcript.ts";
+import { currentNativeProcess } from "./native-session.ts";
 import { CcTaskScheduler } from "./scheduler.ts";
 import { removeCcStatus, writeCcStatus, type CcStatusFile } from "./status.ts";
 
@@ -27,8 +27,9 @@ const localMidnight = (now = new Date()) => new Date(now.getFullYear(), now.getM
 
 export interface CcSessionEndResult { confirmed: boolean; reason: string; diagnostic?: string }
 
-const sameExecutor = (left: CcExecutorBinding | null, right: CcExecutorBinding): boolean => !!left &&
-  left.executorId === right.executorId && left.pid === right.pid && left.token === right.token && left.socketPath === right.socketPath;
+const sameExecutor = (left: CcExecutorBinding | null, right: CcExecutorBinding | null): boolean =>
+  left === null || right === null ? left === right :
+    left.executorId === right.executorId && left.pid === right.pid && left.token === right.token && left.socketPath === right.socketPath;
 const executorLiveness = (executor: CcExecutorBinding): "alive" | "dead" | "unknown" => {
   try { process.kill(executor.pid, 0); return "alive"; }
   catch (error) {
@@ -36,8 +37,6 @@ const executorLiveness = (executor: CcExecutorBinding): "alive" | "dead" | "unkn
     return "unknown";
   }
 };
-const samePath = (left: readonly number[], right: readonly number[]): boolean =>
-  left.length === right.length && left.every((id, index) => id === right[index]);
 
 /** 63: every other native lineage bound to the same core session, read from the shared bindings
  * directory. A best-effort scan: an unreadable sibling file is treated as no sibling, never a fault. */
@@ -56,106 +55,45 @@ function siblingLineages(config: ResolvedCcHostConfig, coreSessionId: number, ex
   return siblings;
 }
 
-/** SessionEnd records native close metadata only. It validates but never imports the authoritative persisted projection. */
+/** A native SessionEnd closes its bound lineage; it never imports or waits for the executor. */
 export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: CcHookInput): Promise<CcSessionEndResult> {
   if (input.hook_event_name !== "SessionEnd") throw new Error("expected a SessionEnd Hook input");
   const nativeSessionId = validateNativeSessionId(input.session_id), binding = readBinding(config, nativeSessionId);
-  if (!binding) return { confirmed: false, reason: "native SessionEnd unconfirmed", diagnostic: "trusted binding is missing" };
+  const reason = `SessionEnd ${input.reason ?? "unknown"}`;
+  if (!binding) return { confirmed: false, reason, diagnostic: "trusted binding is missing" };
   if (binding.dbPath !== config.dbPath || binding.transcriptPath !== input.transcript_path)
     throw new Error("SessionEnd disagrees with the trusted binding");
-  const at = new Date().toISOString(), reason = `SessionEnd ${input.reason ?? "unknown"}`;
-  const deadline = Date.now() + config.finalSyncTimeoutMs;
-  const unconfirmed = async (diagnostic: string, expected?: CcExecutorBinding): Promise<CcSessionEndResult> => {
-    try {
-      await updateBinding(config, nativeSessionId, current => {
-        if (!current || current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path)
-          throw new Error("CC binding changed during SessionEnd");
-        if (expected && !sameExecutor(current.executor, expected)) return current;
-        return { ...current, lastClose: { at, reason, confirmed: false, diagnostic } };
-      }, Math.max(1, deadline - Date.now()));
-      return { confirmed: false, reason, diagnostic };
-    } catch (error) {
-      return { confirmed: false, reason, diagnostic: `${diagnostic}; close metadata write failed: ${error instanceof Error ? error.message : String(error)}` };
-    }
-  };
-  if (input.reason !== "prompt_input_exit")
-    return unconfirmed(`native SessionEnd reason ${String(input.reason)} is not proven to be a normal close`);
-  if (!binding.executor) {
-    if (binding.lastClose?.confirmed && binding.coreSessionId !== null) {
-      const store = new Store(config.dbPath);
-      try {
-        if (store.getSession(binding.coreSessionId)?.closedAt) return { confirmed: true, reason: binding.lastClose.reason };
-      } finally { store.close(); }
-    }
-    return unconfirmed("normal SessionEnd has no named executor whose termination can be established");
-  }
-  const expected = binding.executor;
-  let liveness = executorLiveness(expected);
-  while (liveness === "alive" && Date.now() < deadline) {
-    await wait(Math.min(100, config.pollIntervalMs, Math.max(1, deadline - Date.now())));
-    liveness = executorLiveness(expected);
-  }
-  if (liveness !== "dead") return unconfirmed(liveness === "alive"
-    ? "named executor remained alive through the SessionEnd close bound"
-    : "named executor liveness could not be established", expected);
-  const snapshot = readCompleteTranscript(input.transcript_path);
-  if (!snapshot.exists || snapshot.problem || snapshot.incompleteBytes) return unconfirmed(!snapshot.exists
-    ? "native transcript is unavailable at SessionEnd"
-    : snapshot.problem ?? `native transcript retained ${snapshot.incompleteBytes} incomplete trailing bytes`, expected);
-  const imported = readBinding(config, nativeSessionId);
-  if (!imported || imported.dbPath !== config.dbPath || imported.transcriptPath !== input.transcript_path)
-    return unconfirmed("CC binding changed during SessionEnd", expected);
-  if (!sameExecutor(imported.executor, expected)) return unconfirmed("CC executor identity changed during SessionEnd close", expected);
-  const selected = selectedNativePath(snapshot.records);
-  if (selected.problem) return unconfirmed(`native persisted projection is invalid: ${selected.problem}`, expected);
-  if (!selected.leafUuid || imported.selectedLeafUuid !== selected.leafUuid)
-    return unconfirmed(!selected.leafUuid ? "native transcript has no complete eligible source"
-      : "latest complete eligible native source has not already been imported as the selected projection", expected);
-  const store = new Store(config.dbPath);
+  if (input.reason === "clear") return { confirmed: false, reason, diagnostic: "clear continues the core session" };
+  const nativeProcess = currentNativeProcess();
+  if (!nativeProcess || !binding.nativeProcess)
+    return { confirmed: false, reason, diagnostic: "SessionEnd native process identity is unavailable; a matching SessionStart is required" };
+  const matchesNative = (current: CcSessionBinding) => current.nativeProcess?.pid === nativeProcess.pid &&
+    current.nativeProcess.startedAt === nativeProcess.startedAt;
+  if (!matchesNative(binding)) return { confirmed: false, reason, diagnostic: "SessionEnd belongs to an earlier native process" };
+  const store = binding.coreSessionId === null ? null : new Store(config.dbPath);
   try {
-    if (imported.coreSessionId === null) return unconfirmed("CC binding has no allocated core session", expected);
-    // 63: a cleared-into session's path starts with the prefix inherited from its parent.
-    const selectedEntryIds = [...imported.clearedFrom?.inheritedEntryIds ?? [], ...selected.records.flatMap(record => {
-      const source = classifySourceRecord(record);
-      if (!source || source.kind === "compaction") return [];
-      const entry = store.findSourceEntry(imported.coreSessionId!, nativeSessionId, source.nativeId);
-      return entry ? [entry.id] : [];
-    })];
-    const expectedSources = (imported.clearedFrom?.inheritedEntryIds.length ?? 0) + selected.records.filter(record => {
-      const source = classifySourceRecord(record); return source !== null && source.kind !== "compaction";
-    }).length;
-    const storedPath = store.selectedSourceEntryIds(imported.coreSessionId, imported.branch);
-    if (selectedEntryIds.length !== expectedSources || storedPath === null || !samePath(storedPath, selectedEntryIds))
-      return unconfirmed("latest complete eligible native source has not already been imported as the selected projection", expected);
-    await updateBinding(config, nativeSessionId, current => {
-      if (!current || current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path)
+    const close = (current: CcSessionBinding | null): CcSessionBinding => {
+      if (!current || current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path ||
+          current.coreSessionId !== binding.coreSessionId || !matchesNative(current))
         throw new Error("CC binding changed during SessionEnd close");
-      if (!sameExecutor(current.executor, expected)) throw new Error("CC executor identity changed during SessionEnd close");
-      if (executorLiveness(expected) !== "dead") throw new Error("CC executor liveness changed during SessionEnd close");
-      if (current.coreSessionId === null || current.selectedLeafUuid !== selected.leafUuid || current.branch !== imported.branch ||
-          !samePath(store.selectedSourceEntryIds(current.coreSessionId, current.branch) ?? [], selectedEntryIds))
-        throw new Error("CC selected projection changed during SessionEnd close");
-      const session = store.getSession(current.coreSessionId);
-      if (!session || session.host !== coreHostOf(current)) throw new Error("bound core session identity changed during SessionEnd close");
-      const head = store.getSourceEntry(selectedEntryIds.at(-1)!)?.turnId;
-      if (head === undefined) throw new Error("CC selected projection has no persisted foreground head");
-      // 63: another lineage of the same core session (this one's `clearedFrom` parent, or a lineage
-      // cleared from it) may still have a live executor; this close releases only its own and the
-      // core session stays open until the last live lineage ends.
-      const liveSibling = siblingLineages(config, current.coreSessionId, nativeSessionId)
-        .some(sibling => sibling.executor && executorLiveness(sibling.executor) !== "dead");
-      store.transaction(() => {
-        store.setCurrentPath(current.coreSessionId!, current.branch, head, nativeSessionId);
-        store.releaseExecutor(expected.executorId);
-        if (session.closedAt === null && !liveSibling) store.closeSession(current.coreSessionId!);
-      });
+      if (!sameExecutor(current.executor, binding.executor)) throw new Error("CC executor identity changed during SessionEnd close");
+      if (store && current.coreSessionId !== null) {
+        const session = store.getSession(current.coreSessionId);
+        if (!session || session.host !== coreHostOf(current)) throw new Error("bound core session identity changed during SessionEnd close");
+        // A clear sibling still executing keeps the shared core session open. Its claim is untouched.
+        const liveSibling = siblingLineages(config, current.coreSessionId, nativeSessionId)
+          .some(sibling => sibling.executor && executorLiveness(sibling.executor) !== "dead");
+        if (current.executor) store.releaseExecutor(current.executor.executorId);
+        if (session.closedAt === null && !liveSibling) store.closeSession(current.coreSessionId);
+      }
       return { ...current, executor: null, lastClose: { at: new Date().toISOString(), reason, confirmed: true } };
-    }, Math.max(1, deadline - Date.now()));
+    };
+    if (store) await updateBindingInStoreTransaction(config, nativeSessionId, store, close, config.finalSyncTimeoutMs);
+    else await updateBinding(config, nativeSessionId, close, config.finalSyncTimeoutMs);
     return { confirmed: true, reason };
   } catch (error) {
-    const diagnostic = error instanceof Error ? error.message : String(error);
-    return unconfirmed(diagnostic, expected);
-  } finally { store.close(); }
+    return { confirmed: false, reason, diagnostic: error instanceof Error ? error.message : String(error) };
+  } finally { store?.close(); }
 }
 
 export class CcCoordinator {
@@ -264,7 +202,7 @@ export class CcCoordinator {
   private async attach(final: boolean, deadline?: number): Promise<void> {
     if (this.importer || this.closed || this.closing && !final) return;
     const binding = readBinding(this.config, this.nativeSessionId);
-    if (!binding) return;
+    if (!binding || binding.lastClose?.confirmed) return;
     this.observe("attach-start", { final });
     try {
       this.importer = new CcImporter(this.config, binding, { journal: this.journal });
@@ -407,6 +345,11 @@ export class CcCoordinator {
         // scheduler's epoch now, not after control can acknowledge a stop while initial import waits.
         const epoch = opportunityEpoch ?? this.scheduler?.catchupTicket();
         await attaching;
+        if (!final && readBinding(this.config, this.nativeSessionId)?.lastClose?.confirmed) {
+          this.scheduler?.stop();
+          this.importer?.memory.cancelTasks(true);
+          return null;
+        }
         // 70: a hold outstanding means a preempting operation (off, retarget or shutdown) is racing
         // this reconcile for the binding lock. Skip the scan rather than contest it: stamp and offset
         // stay unadvanced, so nothing is lost — the next wake after the hold releases imports
@@ -529,8 +472,8 @@ export class CcCoordinator {
         await this.scheduler?.settle();
         this.importer.memory.store.releaseExecutor(this.importer.memory.executorId);
       }
-      // MCP teardown is never close authority. Preserve the named executor so the
-      // trusted SessionEnd Hook can verify that exact owner after process death.
+      // MCP teardown is never close authority. Preserve its executor binding unless SessionEnd
+      // already cleared it, so another attach cannot mistake an unfinished teardown for no owner.
       const owner = this.control?.executor.token;
       if (this.control) await this.control.close(true);
       // Ticket 75: the file is removed on shutdown, but only while the binding still names this
@@ -543,6 +486,7 @@ export class CcCoordinator {
       } catch (error) { this.diagnostic(`status removal failed: ${error instanceof Error ? error.message : String(error)}`); }
       if (readBinding(this.config, this.nativeSessionId)) await updateBinding(this.config, this.nativeSessionId, binding => {
         if (!binding) throw new Error("CC binding disappeared during shutdown");
+        if (binding.lastClose?.confirmed || (owner !== undefined && binding.executor?.token !== owner)) return binding;
         return { ...binding, lastClose: { at: new Date().toISOString(), reason, confirmed: result.confirmed,
           ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}) } };
       });
