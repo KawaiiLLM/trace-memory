@@ -4136,12 +4136,14 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   selectedSourceEntryIds(sessionId, branch) {
     const state = this.sourcePathState(sessionId, branch);
     if (!state) return null;
-    const rows = this.db.prepare(`SELECT j.position, j.entry_id, e.id AS owned_id FROM source_paths p
-      JOIN source_path_entries j ON j.path_id = p.id
-      LEFT JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
-      WHERE p.session_id = ? AND p.branch = ? ORDER BY j.position`).all(sessionId, branch);
-    this.validatePathMembers(state, rows);
-    return rows.map((row) => row.entry_id);
+    const row = this.db.prepare(`SELECT json_group_array(entry_id) AS ids, MAX(position) AS last_position
+      FROM (SELECT entry_id, position FROM source_path_entries
+        WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = ?)
+        ORDER BY position)`).get(sessionId, branch);
+    const ids = JSON.parse(row.ids);
+    if (ids.length !== state.count || (ids.at(-1) ?? null) !== state.tailId || row.last_position !== (ids.length ? ids.length - 1 : null))
+      throw new Error("stored source path is malformed");
+    return ids;
   }
   /** Full readers validate the rows they already need, not a second membership enumeration. */
   validatePathMembers(state, rows) {
@@ -4428,18 +4430,21 @@ function runTokens(run) {
   if (PUNCTUATION.test(run)) return Math.ceil(run.length / PUNCTUATION_CHARS_PER_TOKEN);
   return Math.ceil(run.length / DEFAULT_CHARS_PER_TOKEN);
 }
+function whitespaceRunTokens(length, newline, precedingPunctuation, indented, alone) {
+  if (newline) return Math.ceil((length - (precedingPunctuation ? 1 : 0)) / 16);
+  return length > 1 || indented || alone ? Math.ceil(length / 128) : 0;
+}
 function whitespaceTokens(segment, previous, next) {
   let count = 0, context = previous;
   const parts = segment.match(/\n+|[^\S\n]+/g);
   for (const part of parts) {
-    if (part[0] === "\n") {
-      const charged = PUNCTUATION.test(context.slice(-1)) ? part.length - 1 : part.length;
-      count += Math.ceil(charged / 16);
-    } else {
-      const alone = parts.length === 1 && !previous && !next;
-      const indented = context.endsWith("\n");
-      if (part.length > 1 || indented || alone) count += Math.ceil(part.length / 128);
-    }
+    count += whitespaceRunTokens(
+      part.length,
+      part[0] === "\n",
+      PUNCTUATION.test(context.slice(-1)),
+      context.endsWith("\n"),
+      parts.length === 1 && !previous && !next
+    );
     context = part;
   }
   return count;
@@ -4473,62 +4478,39 @@ var PUNCTUATION_RUN = wholeRun(PUNCTUATION);
 var JOINED_SPLIT = new RegExp(`(\\n+|[^\\S\\n]+|${PUNCTUATION.source}+)`);
 var segmentClass = (segment) => segment[0] === "\n" ? 0 : /^\s+$/.test(segment) ? 1 : PUNCTUATION_RUN.test(segment) ? 2 : 3;
 var JoinedTokens = class {
-  #first;
   #last;
   #total = 0;
-  #length = 0;
-  #refresh(segment) {
-    if (!segment) return;
+  #refresh(segment, hasNext) {
     this.#total -= segment.charge;
-    segment.charge = segment.kind === 0 ? Math.ceil((segment.length - (segment.previous?.kind === 2 ? 1 : 0)) / 16) : segment.kind === 1 ? segment.length > 1 || segment.previous?.kind === 0 || !segment.previous && !segment.next ? Math.ceil(segment.length / 128) : 0 : segmentTokens(segment.text, "", "");
+    segment.charge = segment.kind <= 1 ? whitespaceRunTokens(
+      segment.length,
+      segment.kind === 0,
+      segment.previousKind === 2,
+      segment.previousKind === 0,
+      segment.previousKind === void 0 && !hasNext
+    ) : segmentTokens(segment.text, "", "");
     this.#total += segment.charge;
   }
   add(text) {
-    this.#length += text.length;
     for (const part of text.split(JOINED_SPLIT).filter(Boolean)) {
       const kind = segmentClass(part);
       if (this.#last?.kind === kind) {
         this.#last.length += part.length;
         if (kind >= 2) this.#last.text += part;
-        this.#refresh(this.#last.previous);
-        this.#refresh(this.#last);
+        this.#refresh(this.#last, false);
       } else {
         const segment = {
           kind,
           text: kind >= 2 ? part : "",
           length: part.length,
           charge: 0,
-          previous: this.#last
+          previousKind: this.#last?.kind
         };
-        if (this.#last) this.#last.next = segment;
-        else this.#first = segment;
+        if (this.#last) this.#refresh(this.#last, true);
         this.#last = segment;
-        this.#refresh(segment.previous);
-        this.#refresh(segment);
+        this.#refresh(segment, false);
       }
     }
-  }
-  removePrefix(length) {
-    if (!Number.isSafeInteger(length) || length < 0 || length > this.#length) throw new RangeError("invalid token prefix length");
-    this.#length -= length;
-    while (length && this.#first) {
-      const segment = this.#first;
-      if (length < segment.length) {
-        this.#total -= segment.charge;
-        segment.charge = 0;
-        segment.length -= length;
-        if (segment.kind >= 2) segment.text = segment.text.slice(length);
-        length = 0;
-        break;
-      }
-      length -= segment.length;
-      this.#total -= segment.charge;
-      this.#first = segment.next;
-      if (this.#first) this.#first.previous = void 0;
-      else this.#last = void 0;
-    }
-    this.#refresh(this.#first);
-    this.#refresh(this.#first?.next);
   }
   get count() {
     return this.#total;
@@ -8056,16 +8038,18 @@ relations retained by explicit Fact read; other endpoints not applicable on this
     }
     if (pending.offset > prefix.offset) {
       const removedEnd = Math.min(pending.offset, prefix.end);
-      let removedChars = 0;
       for (let position = prefix.offset; position < removedEnd; position++) {
         const view = prefix.views.get(position);
-        removedChars += view.text.length + (position + 1 < prefix.end ? 2 : 0);
         notingViewCache.delete(view.id);
         prefix.views.delete(position);
       }
-      prefix.count.removePrefix(removedChars);
       prefix.offset = pending.offset;
       prefix.end = Math.max(prefix.end, pending.offset);
+      prefix.count = new JoinedTokens();
+      for (let position = prefix.offset; position < prefix.end; position++) {
+        if (position > prefix.offset) prefix.count.add("\n\n");
+        prefix.count.add(prefix.views.get(position).text);
+      }
     }
     while (prefix.end - pending.offset < pending.length && prefix.count.count < limit) {
       const id = pending.at(prefix.end - pending.offset);
