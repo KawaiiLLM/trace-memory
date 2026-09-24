@@ -4438,12 +4438,13 @@ function whitespaceTokens(segment, previous, next) {
   let count = 0, context = previous;
   const parts = segment.match(/\n+|[^\S\n]+/g);
   for (const part of parts) {
+    const newline = part[0] === "\n";
     count += whitespaceRunTokens(
       part.length,
-      part[0] === "\n",
-      PUNCTUATION.test(context.slice(-1)),
-      context.endsWith("\n"),
-      parts.length === 1 && !previous && !next
+      newline,
+      newline && PUNCTUATION.test(context.slice(-1)),
+      !newline && context.endsWith("\n"),
+      !newline && parts.length === 1 && !previous && !next
     );
     context = part;
   }
