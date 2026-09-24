@@ -20,6 +20,7 @@ export function ccCatchupNotice(status: CcCatchupStatus | null): string | null {
     return `Catchup: stopped (${entries}, ${facts} processed; unprocessed work stays pending; /trace catchup resumes it)`;
   if (status.state === "failed")
     return `Catchup: failed — ${status.diagnostic ?? "executor reported failure"} (${entries}, ${facts} processed)`;
+  if (status.state === "starting") return "Catchup: starting (syncing the transcript); reopen /trace for progress";
   if (status.state === "waiting") return `Catchup: waiting for ${status.phase ?? "a task"} (${entries}, ${facts})`;
   return `Catchup: running${status.phase ? ` ${status.phase}` : ""} (${entries}, ${facts})`;
 }

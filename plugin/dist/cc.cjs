@@ -40192,7 +40192,30 @@ var CcTaskScheduler = class {
   }
   /** Read the existing drain only. A menu read is not a catchup checkpoint or admission. */
   catchupSnapshot() {
-    return this.catchup ? this.catchupStatus() : null;
+    return this.startStatus ?? (this.catchup ? this.catchupStatus() : null);
+  }
+  /** A manual catchup is acknowledged at once, because its transcript sync can outlast the operator's
+   * 2-second wait; the sync and `startCatchup` then follow in the executor. A repeated command while
+   * starting or draining is only reported (and a stalled waiting drain re-driven, as `startCatchup`). */
+  activeCatchup() {
+    if (this.startStatus?.state === "starting") return this.startStatus;
+    if (!this.catchup || this.catchup.state !== "running" && this.catchup.state !== "waiting") return null;
+    if (this.catchup.state === "waiting" && !this.catchup.active.size) this.driveCatchup(true);
+    return this.catchupStatus();
+  }
+  beginCatchup() {
+    return this.startStatus = {
+      state: "starting",
+      entriesDone: 0,
+      entriesTotal: 0,
+      factsDone: 0,
+      factsTotal: 0,
+      diagnostic: "syncing the transcript"
+    };
+  }
+  /** A failed start stays visible until the next one; a started drain reports itself. */
+  endCatchup(result) {
+    this.startStatus = result.state === "failed" ? result : null;
   }
   catchupStatus() {
     if (!this.catchup) return this.failedStatus("no catchup has been started");
@@ -40217,6 +40240,7 @@ var CcTaskScheduler = class {
     this.catchup.phase = void 0;
     this.catchup.diagnostic = diagnostic;
   }
+  startStatus = null;
   failedStatus(diagnostic) {
     return { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0, diagnostic };
   }
@@ -40737,17 +40761,34 @@ var CcCoordinator = class {
             factsTotal: 0,
             diagnostic: "CC executor scheduler is unavailable"
           };
-          const ticket = scheduler.catchupTicket();
-          const projection = await this.requestReconcile("manual catchup");
-          if (!projection) return {
-            state: "failed",
-            entriesDone: 0,
-            entriesTotal: 0,
-            factsDone: 0,
-            factsTotal: 0,
-            diagnostic: "authoritative transcript reconciliation is unavailable"
-          };
-          return scheduler.startCatchup(projection, ticket);
+          const active = scheduler.activeCatchup();
+          if (active) return active;
+          const ticket = scheduler.catchupTicket(), starting = scheduler.beginCatchup();
+          void (async () => {
+            let result;
+            try {
+              const projection = await this.requestReconcile("manual catchup");
+              result = projection ? scheduler.startCatchup(projection, ticket) : {
+                state: "failed",
+                entriesDone: 0,
+                entriesTotal: 0,
+                factsDone: 0,
+                factsTotal: 0,
+                diagnostic: "authoritative transcript reconciliation is unavailable"
+              };
+            } catch (error3) {
+              result = {
+                state: "failed",
+                entriesDone: 0,
+                entriesTotal: 0,
+                factsDone: 0,
+                factsTotal: 0,
+                diagnostic: error3 instanceof Error ? error3.message : String(error3)
+              };
+            }
+            scheduler.endCatchup(result);
+          })();
+          return starting;
         },
         beforeCancel: () => this.scheduler?.stopCatchup(),
         holdImport: () => this.holdImport(),
@@ -41805,6 +41846,7 @@ function ccCatchupNotice(status) {
     return `Catchup: stopped (${entries}, ${facts} processed; unprocessed work stays pending; /trace catchup resumes it)`;
   if (status.state === "failed")
     return `Catchup: failed \u2014 ${status.diagnostic ?? "executor reported failure"} (${entries}, ${facts} processed)`;
+  if (status.state === "starting") return "Catchup: starting (syncing the transcript); reopen /trace for progress";
   if (status.state === "waiting") return `Catchup: waiting for ${status.phase ?? "a task"} (${entries}, ${facts})`;
   return `Catchup: running${status.phase ? ` ${status.phase}` : ""} (${entries}, ${facts})`;
 }

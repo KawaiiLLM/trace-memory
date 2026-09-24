@@ -183,13 +183,14 @@ test("control stop fences catchup while coordinator reconciliation is blocked", 
   f.write();
   const mutex = new DatabaseSync(bindingMutexPath(f.config, f.nativeSessionId), { timeout: 0 }); mutex.exec("BEGIN IMMEDIATE");
   try {
-    const catching = directControl(executor, "catchup");
-    await sleep(20);
+    // The command is acknowledged at once; its sync and admission follow in the executor.
+    await expect(directControl(executor, "catchup")).resolves.toMatchObject({ ok: true, verb: "catchup", catchup: { state: "starting" } });
+    await expect(directControl(executor, "catchup")).resolves.toMatchObject({ catchup: { state: "starting" } }); // a repeat is only reported
     const stopped = await directControl(executor, "stop");
     expect(stopped).toMatchObject({ ok: true, verb: "stop" });
     mutex.exec("ROLLBACK"); mutex.close();
-    await expect(catching).resolves.toMatchObject({ ok: true, verb: "catchup",
-      catchup: { state: "failed", diagnostic: "catchup was cancelled before admission" } });
+    await vi.waitFor(async () => expect((await directControl(executor, "settings")).catchup)
+      .toMatchObject({ state: "failed", diagnostic: "catchup was cancelled before admission" }), { timeout: 5_000 });
   } finally {
     try { mutex.exec("ROLLBACK"); } catch {}
     try { mutex.close(); } catch {}

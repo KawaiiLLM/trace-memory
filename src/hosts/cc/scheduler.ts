@@ -5,7 +5,7 @@ import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
 export type CcWorkerPhase = "noting" | "consolidation" | "dreaming";
 type CcTaskResult = NotingResult | ConsolidateResult | DreamingResult;
-export type CcCatchupState = "running" | "waiting" | "completed" | "stopped" | "failed";
+export type CcCatchupState = "starting" | "running" | "waiting" | "completed" | "stopped" | "failed";
 export interface CcCatchupStatus {
   state: CcCatchupState;
   phase?: CcWorkerPhase;
@@ -158,7 +158,23 @@ export class CcTaskScheduler {
   }
 
   /** Read the existing drain only. A menu read is not a catchup checkpoint or admission. */
-  catchupSnapshot(): CcCatchupStatus | null { return this.catchup ? this.catchupStatus() : null; }
+  catchupSnapshot(): CcCatchupStatus | null { return this.startStatus ?? (this.catchup ? this.catchupStatus() : null); }
+
+  /** A manual catchup is acknowledged at once, because its transcript sync can outlast the operator's
+   * 2-second wait; the sync and `startCatchup` then follow in the executor. A repeated command while
+   * starting or draining is only reported (and a stalled waiting drain re-driven, as `startCatchup`). */
+  activeCatchup(): CcCatchupStatus | null {
+    if (this.startStatus?.state === "starting") return this.startStatus;
+    if (!this.catchup || (this.catchup.state !== "running" && this.catchup.state !== "waiting")) return null;
+    if (this.catchup.state === "waiting" && !this.catchup.active.size) this.driveCatchup(true);
+    return this.catchupStatus();
+  }
+  beginCatchup(): CcCatchupStatus {
+    return this.startStatus = { state: "starting", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0,
+      diagnostic: "syncing the transcript" };
+  }
+  /** A failed start stays visible until the next one; a started drain reports itself. */
+  endCatchup(result: CcCatchupStatus): void { this.startStatus = result.state === "failed" ? result : null; }
 
   catchupStatus(): CcCatchupStatus {
     if (!this.catchup) return this.failedStatus("no catchup has been started");
@@ -180,6 +196,8 @@ export class CcTaskScheduler {
     if (!this.catchup || this.catchup.state === "completed" || this.catchup.state === "failed" || this.catchup.state === "stopped") return;
     this.catchup.state = "stopped"; this.catchup.phase = undefined; this.catchup.diagnostic = diagnostic;
   }
+
+  private startStatus: CcCatchupStatus | null = null;
 
   private failedStatus(diagnostic: string): CcCatchupStatus {
     return { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0, diagnostic };

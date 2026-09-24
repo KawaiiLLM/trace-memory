@@ -8,7 +8,7 @@ import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type Cc
 import type { CcWorkerJournal } from "./worker.ts";
 import { startControlServer, type CcControlServer } from "./control.ts";
 import { assignedNativeSession, currentNativeProcess, nativeSessionRecords, processStartedAt } from "./native-session.ts";
-import { CcTaskScheduler } from "./scheduler.ts";
+import { CcTaskScheduler, type CcCatchupStatus } from "./scheduler.ts";
 import { removeCcStatus, writeCcStatus, type CcStatusFile } from "./status.ts";
 
 export interface CcCloseResult {
@@ -234,11 +234,23 @@ export class CcCoordinator {
           const scheduler = this.scheduler;
           if (!scheduler) return { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0,
             diagnostic: "CC executor scheduler is unavailable" };
-          const ticket = scheduler.catchupTicket();
-          const projection = await this.requestReconcile("manual catchup");
-          if (!projection) return { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0,
-            diagnostic: "authoritative transcript reconciliation is unavailable" };
-          return scheduler.startCatchup(projection, ticket);
+          const active = scheduler.activeCatchup();
+          if (active) return active;
+          const ticket = scheduler.catchupTicket(), starting = scheduler.beginCatchup();
+          void (async () => {
+            let result: CcCatchupStatus;
+            try {
+              const projection = await this.requestReconcile("manual catchup");
+              result = projection ? scheduler.startCatchup(projection, ticket)
+                : { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0,
+                  diagnostic: "authoritative transcript reconciliation is unavailable" };
+            } catch (error) {
+              result = { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0,
+                diagnostic: error instanceof Error ? error.message : String(error) };
+            }
+            scheduler.endCatchup(result);
+          })();
+          return starting;
         },
         beforeCancel: () => this.scheduler?.stopCatchup(),
         holdImport: () => this.holdImport(),
