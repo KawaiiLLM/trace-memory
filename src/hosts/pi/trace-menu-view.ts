@@ -9,7 +9,7 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { projectComposition, type Paint } from "./session-status.ts";
 import type { ContextComposition } from "./context-composition.ts";
-import { buildTraceMenu, buildTraceSettings, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
+import { buildTraceMenu, buildTraceSettings, formatCompactTokens, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
 
 export type { Paint } from "./session-status.ts";
 
@@ -48,8 +48,23 @@ function toContextComposition(input: TraceMenuInput["context"]): ContextComposit
 // The complete-layout floor, unchanged from Pi's existing grid module (`context-composition.ts`):
 // below 20 columns the grid is dropped entirely, never squeezed into a broken one-cell-per-row reflow.
 const GRID_WIDTH_FLOOR = 20;
+// A full spaced grid row (20 glyphs, single-space separated) vs. a compact one (no separator).
+const GRID_SPACED_WIDTH = GRID_COLUMNS * 2 - 1;
+const GRID_COMPACT_WIDTH = GRID_COLUMNS;
+// Gap between the grid column and the legend column in the side-by-side layout.
+const LEGEND_GAP = "   ";
 
-function renderContextGrid(input: TraceMenuInput["context"], paint: Paint, spaced: boolean): string[] {
+/**
+ * `minRows` pads every row — including rows past `projectComposition`'s own last row — out to
+ * `GRID_COLUMNS` FREE glyphs, instead of leaving them short or empty. Ticket 82 requirement 4: a
+ * short row padded with plain ASCII spaces measures the same *character count* as a full glyph row
+ * under `visibleWidth` (which reports 1 column per glyph), but many terminals actually draw these
+ * dice/box-drawing glyphs wider than a plain space; mixing the two within what must be one aligned
+ * column then visibly shifts every legend line beside a short or grid-less row to the left. Padding
+ * with the same FREE glyph the real cells use keeps every row's rendered width consistent with a
+ * full row, regardless of how wide the terminal actually draws that glyph.
+ */
+function renderContextGrid(input: TraceMenuInput["context"], paint: Paint, spaced: boolean, minRows: number): string[] {
   if (!input.sdk || !input.categories) return [];
   const composition = toContextComposition(input);
   const projection = projectComposition(composition);
@@ -61,7 +76,12 @@ function renderContextGrid(input: TraceMenuInput["context"], paint: Paint, space
   }
   for (let i = 0; i < projection.freeGlyphs; i++) cells.push(paint("free", FREE));
   const separator = spaced ? " " : "";
-  return Array.from({ length: projection.rows }, (_, row) => cells.slice(row * GRID_COLUMNS, row * GRID_COLUMNS + GRID_COLUMNS).join(separator));
+  const rows = Math.max(projection.rows, minRows);
+  return Array.from({ length: rows }, (_, row) => {
+    const rowCells = cells.slice(row * GRID_COLUMNS, row * GRID_COLUMNS + GRID_COLUMNS);
+    while (rowCells.length < GRID_COLUMNS) rowCells.push(paint("free", FREE));
+    return rowCells.join(separator);
+  });
 }
 
 /** Pi renderer for the main screen: header, context, Pending/trigger, spend, notices, actions. */
@@ -69,8 +89,6 @@ export function renderTraceMenu(input: TraceMenuInput, width: number, paint: Pai
   const model = buildTraceMenu(input);
   const lines: string[] = [model.header, ""];
 
-  const spaced = width >= 80;
-  const grid = width < GRID_WIDTH_FLOOR ? [] : renderContextGrid(input.context, paint, spaced);
   const legend: string[] = [
     model.context.model,
     model.context.sdkLine ?? `SDK usage ${model.context.sdkUnavailable}`,
@@ -78,14 +96,25 @@ export function renderTraceMenu(input: TraceMenuInput, width: number, paint: Pai
     model.context.localHeading,
   ];
   if (model.context.categoriesUnavailable) legend.push(model.context.categoriesUnavailable);
-  else for (const c of model.context.categories) legend.push(paint(c.color, `${FULL} ${c.label.padEnd(21)} ${c.tokens.toLocaleString("en-US").padStart(7)}  (${c.share})`));
-  if (model.context.free) legend.push(paint("free", `${FREE} ${"Free".padEnd(21)} ${model.context.free.tokens.toLocaleString("en-US").padStart(7)}  (${model.context.free.share} of window)`));
-  const gridWidth = grid.length ? visibleWidth(grid[0]!) : 0;
-  if (spaced && grid.length) {
+  else for (const c of model.context.categories) legend.push(paint(c.color, `${FULL} ${c.label.padEnd(21)} ${formatCompactTokens(c.tokens).padStart(6)}  (${c.share})`));
+  if (model.context.free) legend.push(paint("free", `${FREE} ${"Free".padEnd(21)} ${formatCompactTokens(model.context.free.tokens).padStart(6)}  (${model.context.free.share} of window)`));
+
+  // Side by side when the pane is wide enough for a full grid row, the gap and the longest legend
+  // line without wrapping; otherwise stacked (grid first, then legend, ticket 82 requirement 3). The
+  // grid glyphs themselves are single-space separated whenever a full spaced row still fits `width`
+  // on its own — that choice is independent of the side-by-side/stacked one, since a stacked grid
+  // gets the whole line to itself.
+  const spaced = width >= GRID_SPACED_WIDTH;
+  const gridRowWidth = spaced ? GRID_SPACED_WIDTH : GRID_COMPACT_WIDTH;
+  const legendWidth = legend.length ? Math.max(...legend.map(l => visibleWidth(l))) : 0;
+  const sideBySide = width >= GRID_WIDTH_FLOOR && width >= gridRowWidth + LEGEND_GAP.length + legendWidth;
+  const grid = width < GRID_WIDTH_FLOOR ? [] : renderContextGrid(input.context, paint, spaced, sideBySide ? legend.length : 0);
+
+  if (sideBySide && grid.length) {
+    const gridWidth = visibleWidth(grid[0]!);
     for (let i = 0; i < Math.max(grid.length, legend.length); i++) {
-      const left = grid[i] ?? "";
-      const padded = left + " ".repeat(Math.max(0, gridWidth - visibleWidth(left)));
-      lines.push(legend[i] ? `${padded}   ${legend[i]}` : padded);
+      const left = grid[i] ?? " ".repeat(gridWidth);
+      lines.push(legend[i] ? `${left}${LEGEND_GAP}${legend[i]}` : left);
     }
   } else {
     lines.push(...grid, ...legend);
@@ -97,7 +126,7 @@ export function renderTraceMenu(input: TraceMenuInput, width: number, paint: Pai
     if (row.tokens === null) return `${indent}${row.label.padEnd(13)} Unknown / ${row.trigger ?? "Unknown"}`;
     const filled = Math.min(10, Math.floor((row.ratio ?? 0) * 10));
     const bar = paint("accent", "█".repeat(filled)) + paint("dim", "░".repeat(10 - filled));
-    return `${indent}${row.label.padEnd(13)} ${bar} ${row.percent.padStart(5)}   ${row.tokens.toLocaleString("en-US")} / ${row.trigger!.toLocaleString("en-US")}`;
+    return `${indent}${row.label.padEnd(13)} ${bar} ${row.percent.padStart(4)}   ${formatCompactTokens(row.tokens)} / ${formatCompactTokens(row.trigger!)}`;
   };
   lines.push(pendingLine(model.pending.noting), pendingLine(model.pending.consolidation));
   lines.push(`  ${model.pending.dreamingHeading}`);
