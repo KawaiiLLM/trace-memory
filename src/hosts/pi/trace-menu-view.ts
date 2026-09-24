@@ -154,7 +154,11 @@ export function renderTraceSettings(input: SettingsInput, width: number, paint: 
   lines.push(`  ${model.budgets.derivedLine}`, "", model.workers.showModeColumn ? "Workers        mode       model                thinking" : "Workers        model                thinking");
   for (const w of model.workers.rows) {
     const mode = model.workers.showModeColumn ? `${(w.mode ?? "—").padEnd(10)} ` : "";
-    lines.push(`  ${w.phase.padEnd(12)} ${mode}${w.model.padEnd(20)} ${w.thinking}${w.source ? ` (${w.source})` : ""}`);
+    lines.push(`  ${w.phase.padEnd(12)} ${mode}${w.model.padEnd(20)} ${w.thinking}`);
+    for (const field of ["mode", "model", "thinking"] as const) {
+      const source = w.sources?.[field] ?? (field === "model" ? w.source : undefined);
+      if (source) lines.push(`    ${w.phase} ${field}: ${source}`);
+    }
   }
   lines.push("", model.closedSessionsLine);
   return lines.flatMap(line => wrapTextWithAnsi(line, Math.max(1, width))).map(line => truncateToWidth(line, Math.max(1, width), ""));

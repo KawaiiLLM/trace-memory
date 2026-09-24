@@ -22,7 +22,7 @@ test.each(["before", "after", "equal", "missing", "malformed"])("18a 2026-09-08:
   h.setHeaderTimestamp(kind === "before" ? "2000-01-01T00:00:00Z" : kind === "after" ? "2099-01-01T00:00:00Z" : kind === "equal" ? baseline : kind === "missing" ? undefined : "bad timestamp");
   await h.emit("session_start");
   await command(h, "");
-  expect(h.notices.at(-1)).toContain(`Enrollment: ${kind === "after" ? "Enabled" : "Disabled"} (default)`);
+  expect(h.notices.at(-1)).toContain(`· ${kind === "after" ? "On" : "Off"}`);
   expect(h.memory.store.getSession(1)).toBeNull();
   await h.turn();
   expect(!!h.memory.store.getSession(1)).toBe(kind === "after");
@@ -36,20 +36,20 @@ test("18a 2026-09-08: provisional toggle, cancel, menu parity and headless statu
   await h.emit("session_start");
   await command(h, ""); expect(h.notices.at(-1)).toContain("/trace on");
   h.ctx.hasUI = true;
-  h.answers.push("Current session", "On", false);
+  h.answers.push("Turn on", false);
   await command(h, ""); expect(state(h).enrollment.choice).toBeNull();
-  h.answers.push("Current session", "On", true);
+  h.answers.push("Turn on", true);
   await command(h, "");
   expect(h.memory.store.getSession(1)).toBeNull();
   await h.emit("session_start");
   h.ctx.hasUI = false; // 24b: `status` is retired; headless bare /trace is where it is printed
-  await command(h, ""); expect(h.notices.at(-1)).toContain("Enabled (explicit choice)");
+  await command(h, ""); expect(h.notices.at(-1)).toContain("On (explicit)");
   h.ctx.hasUI = true;
   await h.turn();
   expect(h.memory.store.listTurns(1)).toHaveLength(1);
   expect(h.memory.store.getSession(2)).toBeNull();
   expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
-  h.answers.push("Current session", "Off", true); await command(h, "");
+  h.answers.push("Turn off", true); await command(h, "");
   expect(h.memory.status(1)).toContain("Disabled (explicit choice)");
   expect(h.statuses.get("trace-memory")).toBe("🧠 <dim>○ off</dim>"); // 24a: the off footer is the compact form
   await command(h, "on"); expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
@@ -91,7 +91,7 @@ test("18a 2026-09-08: historical tree and newer clone never overwrite the curren
   await h.emit("session_tree");
   expect(h.memory.status(1)).toContain("Disabled (explicit choice)");
   expect(await h.prompt("clone remains paused")).toBeUndefined();
-  h.ctx.hasUI = true; h.answers.push("Current session", undefined); await command(h, "");
+  h.ctx.hasUI = true; h.answers.push(undefined); await command(h, "");
   expect(h.dialogs.at(-1)?.title).toContain("Shared identity");
   await command(h, "on");
   h.entries.splice(0, h.entries.length, ...old); await h.emit("session_tree");
@@ -170,34 +170,18 @@ test("18a/24b, as 29e left it: Settings shows each phase's three preferences wit
   writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true, "consolidation.forkModeDefault": false, "render.entryTokens": 333 } }));
   const before = [readFileSync(globalPath), readFileSync(projectPath)];
   await h.emit("session_start"); h.ctx.hasUI = true;
-  h.answers.push("Settings", undefined); await command(h, ""); // opened, then cancelled: inert
+  h.answers.push("Settings…", undefined); await command(h, ""); // opened, then cancelled: inert
   const shown = h.dialogs.at(-1)!.options!;
   expect(shown).toEqual([
-    // 64c: the same editor begins with the bound database's three editable pool values, followed
-    // by the base window, the one shared allowance, and their maximum combined Knowledge input.
-    "Global Knowledge budget: 4000 tokens (database)",
-    "Project Knowledge budget: 15000 tokens per project owner pool (database)",
-    "Session Knowledge budget: 1000 tokens per session owner pool (database)",
-    "Knowledge base window: 20000 tokens (derived, read-only)",
-    "Shared material allowance: 10000 tokens (compaction.sharedAllowanceTokens; configured)",
-    "Maximum Knowledge input: 30000 tokens (derived, read-only)",
-    "Noter mode: fork (Project); Global=subagent masked",
-    `Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test`,
-    // 26d: a fork inherits the foreground thinking level too, so the Noter's line discloses it here
-    // for the same reason the model line does.
-    "Noter thinking: inherit (Default); fork mode inherits the foreground thinking level",
-    // 29e: the Consolidator's own mode line honours the layers exactly as the Noter's does — the
-    // Project layer decides and the Global value it masks is named. It resolves to subagent here, so
-    // neither its model nor its level is annotated with an inheriting mode.
-    "Consolidator mode: subagent (Project); Global=fork masked",
-    "Consolidator model: fake/test (Global)",
-    "Consolidator thinking: inherit (Default)",
-    "Dreamer model: follow foreground (Default)",
-    "Dreamer thinking: inherit (Default)",
-    "Closed-session scope: project (Default)",
+    "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
+    "Noter mode: fork (Project setting — this edit will not take effect)",
+    "Noter model: follow foreground", "Noter thinking: inherit",
+    "Consolidator mode: subagent (Project setting — this edit will not take effect)",
+    "Consolidator model: fake/test", "Consolidator thinking: inherit",
+    "Dreamer model: follow foreground", "Dreamer thinking: inherit", "Closed sessions: project",
   ]);
-  expect(h.dialogs.at(-1)!.title).toContain(`bound database: ${join(h.dir, "trace.db")}`);
-  expect(h.dialogs.at(-1)!.title).toContain(globalPath); // where a saved preference goes
+  expect(h.dialogs.at(-1)!.title).toContain(join(h.dir, "trace.db"));
+  expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + shared allowance 10,000 = 30,000 max input");
   expect([readFileSync(globalPath), readFileSync(projectPath)]).toEqual(before);
   expect(h.requests).toEqual([]);
   // The advanced keys the menu no longer displays are still loaded and still validated by name.
@@ -241,7 +225,7 @@ test("18a 2026-09-08: disabled reads retain tool validation before and after all
 
 test.each(["2099-02-30T00:00:00Z", "2099", "2099-01-01", 4070908800000])("18a 2026-09-08: malformed native creation metadata stays disabled (%s)", async value => {
   const h = setup(); h.setHeaderTimestamp(value); await h.emit("session_start");
-  await command(h, ""); expect(h.notices.at(-1)).toContain("Disabled (default)");
+  await command(h, ""); expect(h.notices.at(-1)).toContain("· Off");
 });
 
 test("18a 2026-09-08: all count/token keys and masked layers validate by key", async () => {
@@ -335,7 +319,7 @@ test("18a 2026-09-08: pre-reply choice survives loss of Pi unflushed custom entr
   h.entries.length = 0; h.allEntries.length = 0;
   h.setHeaderTimestamp("2099-12-31T00:00:00Z");
   await h.emit("session_start"); await command(h, "");
-  expect(h.notices.at(-1)).toContain("Disabled (explicit choice)");
+  expect(h.notices.at(-1)).toContain("Off (explicit)");
   expect(h.memory.store.getSession(1)).toBeNull();
   await command(h, "on");
   h.entries.length = 0; h.allEntries.length = 0;
@@ -352,8 +336,8 @@ test("19c 2026-09-08: the legacy execution-mode key still selects the mode, and 
   await h.turn();
   expect(h.memory.store.listRuns(1).map(r => r.mode)).toEqual(["subagent"]); // the alias selected fresh context
   h.ctx.hasUI = true;
-  h.answers.push("Settings", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: subagent (Environment)"); // canonical key, honest source
+  h.answers.push("Settings…", undefined); await command(h, "");
+  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: subagent (Environment setting — this edit will not take effect)"); // canonical key, honest source
   expect(h.dialogs.at(-1)!.options!.join("\n")).not.toContain("branchModeDefault"); // and only the canonical key
 });
 
@@ -364,9 +348,9 @@ test("19c 2026-09-08: a legacy key in one layer is masked by the canonical key i
   writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.branchModeDefault": false } }));
   writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true } }));
   await h.emit("session_start"); h.ctx.hasUI = true;
-  h.answers.push("Settings", undefined); await command(h, "");
+  h.answers.push("Settings…", undefined); await command(h, "");
   // 18a precedence decides; supplying the two spellings in two layers is migration, not a conflict.
-  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Project); Global=subagent masked");
+  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Project setting — this edit will not take effect)");
   writeFileSync(globalPath, "{}"); writeFileSync(projectPath, "{}");
 });
 
@@ -379,7 +363,7 @@ test("19c 2026-09-08: one layer supplying both execution-mode spellings with dif
   // Agreeing values are not a conflict: the canonical key wins and the load succeeds.
   writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.branchModeDefault": false, "noting.forkModeDefault": false } }));
   await h.emit("session_start"); h.ctx.hasUI = true;
-  h.answers.push("Settings", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: subagent (Global)");
+  h.answers.push("Settings…", undefined); await command(h, "");
+  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: subagent");
   writeFileSync(globalPath, "{}");
 });

@@ -41,7 +41,7 @@ test("19c 2026-09-08/09: two consecutive zero-cache fork responses downgrade the
     expect(Number.isFinite(Date.parse(suppression.at))).toBe(true);
     expect(suppression.runId).toBe(run.id); // the audit names the run that detected it
     await command(f.h, "");
-    expect(f.h.notices.at(-1)).toContain(`Fork: suppressed since ${suppression.at} (cache miss on R${run.id}); Retry fork in the /trace menu`);
+    expect(f.h.notices.at(-1)).toContain(`Fork suppressed since ${suppression.at} (R${run.id})`);
   } finally { await f.dispose(); }
 }, 20000);
 
@@ -69,8 +69,8 @@ test("19c 2026-09-08: while the latch is set a requested fork is admitted as a s
     // Global configuration and unrelated sessions are untouched.
     // `h.memory` is a separate observer facade; Settings reads the actual executor configuration.
     f.h.ctx.hasUI = true;
-    f.h.answers.push("Settings", undefined); await command(f.h, "");
-    expect(f.h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment)");
+    f.h.answers.push("Settings…", undefined); await command(f.h, "");
+    expect(f.h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment setting — this edit will not take effect)");
     const other = f.h.memory.store.createSession({ host: "pi:other", startedAt: at, firstReplyAt: at, projectId: 1 });
     expect(f.h.memory.store.forkSuppression(other.id)).toBeNull();
   } finally { await f.dispose(); }
@@ -217,20 +217,20 @@ test("19c 2026-09-08: the latch survives reopen and clears only through the menu
     await h.emit("session_start");
     expect(h.memory.store.forkSuppression(1)).toEqual({ at: "2026-09-08T00:00:00.000Z", runId: 1 });
     await command(h, "");
-    expect(h.notices.at(-1)).toContain("Fork: suppressed since 2026-09-08T00:00:00.000Z (cache miss on R1); Retry fork in the /trace menu");
+    expect(h.notices.at(-1)).toContain("Fork suppressed since 2026-09-08T00:00:00.000Z (R1)");
     const runs = h.memory.store.listRuns(1).length;
     h.ctx.hasUI = true;
-    h.answers.push("Current session", "Retry fork");
+    h.answers.push("Retry fork");
     await command(h, "");
-    expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project", "Retry fork"]); // Retry fork only while downgraded
+    expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Stop", "Project…", "Runs…", "Settings…", "Retry fork"]); // Retry fork only while downgraded
     expect(h.memory.store.forkSuppression(1)).toBeNull();
     expect(h.notices.at(-1)).toContain("fork retry enabled for this session");
     expect(h.memory.store.listRuns(1)).toHaveLength(runs); // the reset launches no extraction
     expect(h.conversations).toEqual([]);
     // Gone from the menu once used, and a later eligible miss may start a new episode and warn again.
-    h.answers.push("Current session", undefined);
+    h.answers.push(undefined);
     await command(h, "");
-    expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project"]);
+    expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Stop", "Project…", "Runs…", "Settings…"]);
     expect(h.memory.store.suppressFork(1)).toBe(true);
     // No dedicated reset subcommand was registered: the word is only in the menu, and an unknown
     // command form prints the usage (24b) instead of acting.

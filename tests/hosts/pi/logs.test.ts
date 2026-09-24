@@ -95,42 +95,19 @@ test("24c: an explicit runsDir keeps 19a's precedence and its per-parent layout"
   } finally { await f.dispose(); rmSync(custom, { recursive: true, force: true }); }
 }, 20000);
 
-test("24c/24b: the Settings entry names where new worker logs go, and discloses a runsDir that leaves Pi's scanned tree", async () => {
+test("82 Settings omits worker-log diagnostics without changing configured runsDir", async () => {
   const outside = join(tmpdir(), "trace-memory-outside");
-  // 24b supersedes the read-only settings view; this disclosure moved to the header of the Settings
-  // entry, which is where a user now reads global facts about this installation.
-  const shown = async (config: Record<string, unknown>) => {
-    const h = host(config);
-    try {
-      await h.emit("session_start");
-      h.ctx.hasUI = true;
-      h.answers.push("Settings", undefined); // opening it and cancelling: a display, no write
-      await command(h, "");
-      return { title: h.dialogs.at(-1)!.title, dir: h.dir };
-    } finally { await h.dispose(); }
-  };
-  // Default: the 24c destination, with nothing to disclose.
-  const byDefault = await shown({});
-  expect(byDefault.title).toContain(`Worker logs: ${join(byDefault.dir, "agent", "sessions", "trace-memory")}`);
-  expect(byDefault.title).not.toContain("outside Pi's scanned sessions tree");
-  // Explicit: 19a's precedence and `<runsDir>/<parent Pi session id>/` layout, plus the disclosure.
-  const explicit = await shown({ runsDir: outside });
-  expect(explicit.title).toContain(`Worker logs: ${join(outside, "pi-test")}`);
-  expect(explicit.title).toContain("outside Pi's scanned sessions tree");
-  // An explicit runsDir that IS the sessions root still lands one level down, so it is inside the
-  // scanned tree and nothing is disclosed. Its own agent directory is only known once the host
-  // exists, so this one is supplied through the global settings file the host reloads at start.
-  const h = host({});
+  const h = host({ runsDir: outside });
   try {
-    const settingsPath = join(h.dir, "agent", "settings.json");
-    const root = join(h.dir, "agent", "sessions");
-    writeFileSync(settingsPath, JSON.stringify({ ...JSON.parse(readFileSync(settingsPath, "utf8")), "trace-memory": { runsDir: root } }));
     await h.emit("session_start");
+    const before = readFileSync(join(h.dir, "agent", "settings.json"));
     h.ctx.hasUI = true;
-    h.answers.push("Settings", undefined);
-    await command(h, "");
-    expect(h.dialogs.at(-1)!.title).toContain(`Worker logs: ${join(root, "pi-test")}`);
+    h.answers.push("Settings…", undefined); await command(h, "");
+    expect(h.dialogs.at(-1)!.title).toContain("Knowledge budgets");
+    expect(h.dialogs.at(-1)!.title).not.toContain("Worker logs:");
     expect(h.dialogs.at(-1)!.title).not.toContain("outside Pi's scanned sessions tree");
+    expect(readFileSync(join(h.dir, "agent", "settings.json"))).toEqual(before);
+    expect(h.requests).toEqual([]);
   } finally { await h.dispose(); }
 });
 

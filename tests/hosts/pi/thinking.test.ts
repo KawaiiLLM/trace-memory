@@ -261,7 +261,7 @@ test("26d: the configured level is frozen at admission — a preference saved wh
       if (!edited) { // the user opens Settings and saves a different level while the worker is at the wire
         edited = true;
         h.ctx.hasUI = true;
-        h.answers.push("Settings", "Noter thinking: high (Global)", "off");
+        h.answers.push("Settings…", "Noter thinking: high", "off");
         await command(h, "");
         h.ctx.hasUI = false;
       }
@@ -304,7 +304,7 @@ test("27/26d: the levels frozen at admission survive fallback", async () => {
         switched = true;
         f.h.setThinkingLevel("low");           // the foreground level moves
         f.h.ctx.hasUI = true;                  // and the user saves the preference as well
-        f.h.answers.push("Settings", "Noter thinking: high (Global); fork mode inherits the foreground thinking level", "low");
+        f.h.answers.push("Settings…", "Noter thinking: high", "low");
         await command(f.h, "");
         f.h.ctx.hasUI = false;
       }

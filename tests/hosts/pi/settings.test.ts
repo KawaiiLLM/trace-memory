@@ -28,7 +28,18 @@ const seed = (h: ReturnType<typeof host>, traceMemory: Record<string, unknown> =
 /** Open Settings and choose one preference line, then one value. */
 const edit = async (h: ReturnType<typeof host>, line: string, value: string | undefined) => {
   h.ctx.hasUI = true;
-  h.answers.push("Settings", line, value);
+  // Select by the canonical setting identity; values in older test call sites describe the
+  // pre-redesign presentation, not a second Settings protocol.
+  const key = line.split(":", 1)[0]!;
+  const labels = ["Global Knowledge budget", "Project Knowledge budget", "Session Knowledge budget",
+    "Noter mode", "Noter model", "Noter thinking", "Consolidator mode", "Consolidator model",
+    "Consolidator thinking", "Dreamer model", "Dreamer thinking", "Closed-session scope"];
+  if (!labels.includes(key)) throw new Error(`Unknown editable settings row: ${line}`);
+  h.answers.push("Settings…", undefined);
+  await command(h, "");
+  const current = h.dialogs.at(-1)!.options!.find(option => option.startsWith(`${key === "Closed-session scope" ? "Closed sessions" : key}:`));
+  if (!current) throw new Error(`Missing settings row: ${key}`);
+  h.answers.push("Settings…", current, value);
   await command(h, "");
 };
 
@@ -59,16 +70,12 @@ test("35d Settings edits the bound database row, shows derived diagnostics, and 
   await h.emit("session_start");
   const before = readFileSync(globalPath(h), "utf8");
   h.ctx.hasUI = true;
-  h.answers.push("Settings", undefined);
+  h.answers.push("Settings…", undefined);
   await command(h, "");
-  expect(h.dialogs.at(-1)!.title).toContain(`bound database: ${join(h.dir, "trace.db")}`);
-  expect(h.dialogs.at(-1)!.options!.slice(0, 6)).toEqual([
-    "Global Knowledge budget: 4000 tokens (database)",
-    "Project Knowledge budget: 15000 tokens per project owner pool (database)",
-    "Session Knowledge budget: 1000 tokens per session owner pool (database)",
-    "Knowledge base window: 20000 tokens (derived, read-only)",
-    "Shared material allowance: 10000 tokens (compaction.sharedAllowanceTokens; configured)",
-    "Maximum Knowledge input: 30000 tokens (derived, read-only)",
+  expect(h.dialogs.at(-1)!.title).toContain(`\n${join(h.dir, "trace.db")}`);
+  expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + shared allowance 10,000 = 30,000 max input");
+  expect(h.dialogs.at(-1)!.options!.slice(0, 3)).toEqual([
+    "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
   ]);
   await edit(h, "Project Knowledge budget: 15000 tokens per project owner pool (database)", "16000");
   expect(h.memory.knowledgeBudgets()).toMatchObject({ global: 4000, project: 16000, session: 1000,
@@ -142,14 +149,12 @@ test("both modes default to subagent in Settings and ordinary execution; saving 
     || /Range: F\d+/.test(c.messages.map(m => String(m.content)).join("\n")) ? consolidate(c) : notingFact(c));
   await h.emit("session_start");
   h.ctx.hasUI = true;
-  h.answers.push("Settings", undefined); await command(h, ""); // opened and cancelled: the list itself is the assertion
+  h.answers.push("Settings…", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Consolidator"))).toEqual([
-    // 29e restored the entry 25b withdrew, beside the Noter's, with this phase's own default.
-    "Consolidator mode: subagent (Default)",
-    "Consolidator model: follow foreground (Default)", "Consolidator thinking: inherit (Default)"]);
+    "Consolidator mode: subagent", "Consolidator model: follow foreground", "Consolidator thinking: inherit"]);
   h.ctx.hasUI = false;
   expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Noter"))).toEqual([
-    "Noter mode: subagent (Default)", "Noter model: follow foreground (Default)", "Noter thinking: inherit (Default)"]);
+    "Noter mode: subagent", "Noter model: follow foreground", "Noter thinking: inherit"]);
   // Neither mode was configured: both ordinary slots must request subagent, not fall back to it.
   await h.turn();
   await h.answer("tick"); await h.emit("agent_settled"); await h.drain();
@@ -196,23 +201,12 @@ test("24b: each control writes only its canonical key, and every other setting i
   });
   // The values read back exactly as the menu shows them, from the Global layer. 29e: each phase's
   // mode, model and thinking level plus the borrowing scope.
-  h.answers.push("Settings", undefined); await command(h, "");
+  h.answers.push("Settings…", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
-    "Global Knowledge budget: 4000 tokens (database)",
-    "Project Knowledge budget: 15000 tokens per project owner pool (database)",
-    "Session Knowledge budget: 1000 tokens per session owner pool (database)",
-    "Knowledge base window: 20000 tokens (derived, read-only)",
-    "Shared material allowance: 10000 tokens (compaction.sharedAllowanceTokens; configured)",
-    "Maximum Knowledge input: 30000 tokens (derived, read-only)",
-    "Noter mode: subagent (Global)",
-    "Noter model: fake/test-mini (Global)",
-    "Noter thinking: inherit (Default)",
-    "Consolidator mode: subagent (Default)",
-    "Consolidator model: fake/test (Global)",
-    "Consolidator thinking: inherit (Default)",
-    "Dreamer model: follow foreground (Default)",
-    "Dreamer thinking: inherit (Default)",
-    "Closed-session scope: project (Default)",
+    "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
+    "Noter mode: subagent", "Noter model: fake/test-mini", "Noter thinking: inherit",
+    "Consolidator mode: subagent", "Consolidator model: fake/test", "Consolidator thinking: inherit",
+    "Dreamer model: follow foreground", "Dreamer thinking: inherit", "Closed sessions: project",
   ]);
   expect(h.requests).toEqual([]); // editing settings calls no model
 });
@@ -234,23 +228,12 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
   const file = globalFile(h);
   expect(file["other-extension"]).toEqual({ keep: "me" });
   expect(file["trace-memory"]).toEqual({ "render.entryTokens": 222, notingThinking: "high", consolidationThinking: "minimal" });
-  h.answers.push("Settings", undefined); await command(h, "");
+  h.answers.push("Settings…", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
-    "Global Knowledge budget: 4000 tokens (database)",
-    "Project Knowledge budget: 15000 tokens per project owner pool (database)",
-    "Session Knowledge budget: 1000 tokens per session owner pool (database)",
-    "Knowledge base window: 20000 tokens (derived, read-only)",
-    "Shared material allowance: 10000 tokens (compaction.sharedAllowanceTokens; configured)",
-    "Maximum Knowledge input: 30000 tokens (derived, read-only)",
-    "Noter mode: subagent (Default)",
-    "Noter model: follow foreground (Default)",
-    "Noter thinking: high (Global)",
-    "Consolidator mode: subagent (Default)",
-    "Consolidator model: follow foreground (Default)",
-    "Consolidator thinking: minimal (Global)",
-    "Dreamer model: follow foreground (Default)",
-    "Dreamer thinking: inherit (Default)",
-    "Closed-session scope: project (Default)",
+    "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
+    "Noter mode: subagent", "Noter model: follow foreground", "Noter thinking: high",
+    "Consolidator mode: subagent", "Consolidator model: follow foreground", "Consolidator thinking: minimal",
+    "Dreamer model: follow foreground", "Dreamer thinking: inherit", "Closed sessions: project",
   ]);
   // A level nothing accepts never reaches the file, and the refusal names the key and the list.
   const before = readFileSync(globalPath(h), "utf8");
@@ -335,9 +318,10 @@ test("24b: a saved model is used by the next subagent run, and selecting a model
   // Switching the mode back to fork preserves the saved subagent model and only discloses that fork
   // inherits the foreground model; choosing a model again does not switch the mode back.
   await edit(h, "Noter mode: subagent (Global)", "fork");
-  h.answers.push("Settings", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![7]).toBe("Noter model: fake/test-mini (Global); fork mode inherits the foreground model fake/test");
-  await edit(h, "Noter model: fake/test-mini (Global); fork mode inherits the foreground model fake/test", "Follow foreground");
+  h.answers.push("Settings…", undefined); await command(h, "");
+  expect(h.dialogs.at(-1)!.options![4]).toBe("Noter model: fake/test-mini");
+  expect(h.dialogs.at(-1)!.title).toMatch(/Noter\s+fork\s+fake\/test-mini\s+inherit/);
+  await edit(h, "Noter model: fake/test-mini", "Follow foreground");
   expect(globalFile(h)["trace-memory"]).toEqual({ "noting.forkModeDefault": true, notingModel: "session" });
   expect(h.dialogs.at(-1)!.title).toContain("inherits the foreground model fake/test; this choice is used by subagent runs");
 });
@@ -354,12 +338,12 @@ test("24b: a project override stays effective and is explained; a global edit ne
   expect(h.notices.at(-1)).toContain("A Project setting takes precedence, so the effective Noter mode stays fork (Project); it was not removed.");
   expect(readFileSync(projectPath)).toEqual(project);                       // the override file is untouched
   expect(globalFile(h)["trace-memory"]).toEqual({ "noting.forkModeDefault": false }); // the global edit was saved
-  h.answers.push("Settings", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![6]).toBe("Noter mode: fork (Project); Global=subagent masked");
+  h.answers.push("Settings…", undefined); await command(h, "");
+  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter mode: fork (Project setting — this edit will not take effect)");
   // And the override survives a reopen, which re-reads every layer through the same load path.
   await h.emit("session_start");
-  h.answers.push("Settings", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![6]).toBe("Noter mode: fork (Project); Global=subagent masked");
+  h.answers.push("Settings…", undefined); await command(h, "");
+  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter mode: fork (Project setting — this edit will not take effect)");
 });
 
 test("24b: cancelled, invalid, unavailable and failed edits leave the file and the effective settings alone", async () => {
@@ -400,15 +384,15 @@ test("24b: the legacy spelling of the edited preference is replaced, and unrelat
   seed(h, { "noting.branchModeDefault": true, "render.entryTokens": 222 });
   await h.emit("session_start");
   h.ctx.hasUI = true;
-  h.answers.push("Settings", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![6]).toBe("Noter mode: fork (Global)"); // the alias, shown canonically
+  h.answers.push("Settings…", undefined); await command(h, "");
+  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter mode: fork"); // the alias, shown canonically
   await edit(h, "Noter mode: fork (Global)", "subagent");
   expect(h.notices.at(-1)).toContain("The legacy spelling noting.branchModeDefault of the same preference was replaced by noting.forkModeDefault");
   expect(globalFile(h)["trace-memory"]).toEqual({ "render.entryTokens": 222, "noting.forkModeDefault": false });
   // The file the edit produced loads without an alias conflict, which is what the replacement is for.
   await h.emit("session_start");
-  h.answers.push("Settings", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![6]).toBe("Noter mode: subagent (Global)");
+  h.answers.push("Settings…", undefined); await command(h, "");
+  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter mode: subagent");
 });
 
 test("24b: editing a setting starts no worker and does not clear the cache-miss latch", async () => {

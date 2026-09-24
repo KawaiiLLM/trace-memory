@@ -1,5 +1,5 @@
 import { Theme, type ExtensionContext, type KeybindingsManager, type ThemeColor } from "@earendil-works/pi-coding-agent";
-import { SelectList, truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import { truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { CONTEXT_PALETTE, type Paint, type PaletteColor } from "./session-status.ts";
 
 const paletteToken: Record<PaletteColor, ThemeColor> = {
@@ -58,7 +58,6 @@ export class SessionPanel implements Component {
   private offset = 0;
   private pageSize = 1;
   private maxOffset = 0;
-  private list: SelectList;
   private body: SessionBody;
   private actions: string[];
   private height: () => number;
@@ -71,11 +70,6 @@ export class SessionPanel implements Component {
     done: (value: string | undefined) => void, refresh: () => void) {
     this.body = body; this.actions = actions; this.height = height; this.theme = theme;
     this.kb = kb; this.done = done; this.refresh = refresh;
-    const accent = (s: string) => this.theme.fg("accent", s);
-    this.list = new SelectList(actions.map(value => ({ value, label: value })), actions.length, {
-      selectedPrefix: accent, selectedText: accent, description: s => this.theme.fg("muted", s),
-      scrollInfo: s => this.theme.fg("dim", s), noMatch: s => this.theme.fg("warning", s),
-    });
   }
   handleInput(data: string) {
     const is = (key: Parameters<KeybindingsManager["matches"]>[1]) => this.kb.matches(data, key);
@@ -86,7 +80,6 @@ export class SessionPanel implements Component {
     else if (is("tui.select.confirm")) { this.done(this.actions[this.selected]); return; }
     else if (is("tui.select.pageUp")) this.offset = Math.max(0, this.offset - this.pageSize);
     else if (is("tui.select.pageDown")) this.offset = Math.min(this.maxOffset, this.offset + this.pageSize);
-    this.list.setSelectedIndex(this.selected);
     this.refresh();
   }
   render(width: number): string[] {
@@ -102,18 +95,19 @@ export class SessionPanel implements Component {
       help.push(...wrapTextWithAnsi(`${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} Scroll`, width));
     // Keep a body row and the selected action even in very short terminals. At 24 rows
     // all original actions and help fit; the remaining rows belong to the scrollable body.
-    const chrome = height >= 10 ? [this.theme.fg("accent", "Current session"), ...help.slice(0, 3).map(s => this.theme.fg("dim", s))] : [this.theme.fg("dim", `${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} · ${hint("tui.select.cancel")} cancel`)];
+    const chrome = height >= 10 ? help.slice(0, 3).map(s => this.theme.fg("dim", s)) : [this.theme.fg("dim", `${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} · ${hint("tui.select.cancel")} cancel`)];
     const actionRows = Math.min(this.actions.length, Math.max(1, height - chrome.length - 5));
     this.pageSize = Math.max(1, height - chrome.length - actionRows);
     this.maxOffset = Math.max(0, lines.length - this.pageSize);
     this.offset = Math.min(this.offset, this.maxOffset);
-    const first = Math.min(this.selected, this.actions.length - actionRows);
-    const menu = this.list.render(width).slice(first, first + actionRows);
+    const first = Math.max(0, Math.min(this.selected, this.actions.length - actionRows));
+    const menu = this.actions.slice(first, first + actionRows).map((label, index) => first + index === this.selected
+      ? this.theme.fg("accent", `→ ${label}`) : `  ${label}`);
     const rendered = [...chrome, ...lines.slice(this.offset, this.offset + this.pageSize), ...menu]
       .map(line => truncateToWidth(line, width, ""));
     // The public compositor already pads each rendered row to the overlay width.
     // Supply every viewport row so no base content remains vertically exposed.
     return [...rendered, ...Array(height - rendered.length).fill("")];
   }
-  invalidate() { this.list.invalidate(); }
+  invalidate() {}
 }

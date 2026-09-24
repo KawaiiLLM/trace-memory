@@ -52,20 +52,13 @@ const CATEGORY_COLOR: Record<ContextCategoryName, ContextColor> = {
   Conversation: "conversation", Other: "other", Unclassified: "unclassified",
 };
 
-/** The one green colour family the four memory rows (Knowledge, Facts, Raw, Memory-unclassified) share
- * on both hosts (maintainer ruling, 2026-09-24: “trace memory类型的记忆应该用同族颜色”, superseded same day
- * by “三处同意，可以用绿色族” after the first warm family was found to sit beside Claude Code's own
- * `Memory files` role, orange, and `Skills` role, yellow). All four sit at the same hue (~115°, a true
- * green — deliberately short of Pi's own `tools` teal at ~158°, so the two don't read as one colour at a
- * glance): Knowledge is darkest and most saturated, Facts and Raw step down in that order, and
- * Unclassified is a desaturated, muted shade of the same hue (not the neutral "other" grey used
- * elsewhere). Defined once here so neither host's palette can drift from the other's; Claude Code's
- * `<Text color>` accepts these hex values directly (verified live, ticket 82 delegation report). */
+/** Approved yellow-green cluster shared by both hosts; distinct xterm 256-colour matches are
+ * 191, 155, 83 and 107 respectively. */
 export const MEMORY_COLOR_HEX: Record<"knowledge" | "facts" | "raw" | "unclassified", string> = {
-  knowledge: "#217619",
-  facts: "#3aa630",
-  raw: "#7aca72",
-  unclassified: "#537c50",
+  knowledge: "#DDEE49",
+  facts: "#A1EE49",
+  raw: "#65EE49",
+  unclassified: "#8EA970",
 };
 
 export interface ContextCategoryInput { name: ContextCategoryName; tokens: number }
@@ -171,10 +164,26 @@ export function buildHeader(input: HeaderInput): string {
 }
 
 export interface MenuActionsInput { enabled: boolean; retryForkAvailable: boolean }
-export function buildActions(input: MenuActionsInput): string[] {
-  const toggle = input.enabled ? "Turn off" : "Turn on";
-  return [toggle, "Catch up", "Stop", "Project…", "Runs…", "Settings…", ...(input.retryForkAvailable ? ["Retry fork"] : [])];
+export type MenuAction = "Turn on" | "Turn off" | "Catch up" | "Stop" | "Project…" | "Runs…" | "Settings…" | "Retry fork";
+export function buildActions(input: MenuActionsInput): MenuAction[] {
+  const toggle: MenuAction = input.enabled ? "Turn off" : "Turn on";
+  return [toggle, "Catch up", "Stop", "Project…", "Runs…", "Settings…", ...(input.retryForkAvailable ? ["Retry fork" as const] : [])];
 }
+export const toggleConfirmation = (turnOn: boolean, shared: boolean) => ({
+  title: `Turn Trace Memory ${turnOn ? "on" : "off"} for this session?`,
+  message: (shared ? " Shared identity: this switch also affects forks or clones carrying this memory identity." : " Forks or clones carrying this memory identity share this switch.") + (turnOn
+    ? " Available history, including the paused interval, will be queued without a model call."
+    : " Processing and future injection stop; stored memory and already-injected text remain."),
+});
+export function parseRunsCount(input: string): number {
+  if (!/^[1-9]\d*$/.test(input) || !Number.isSafeInteger(Number(input)))
+    throw new Error("Runs count must be a positive safe integer in decimal notation");
+  return Number(input);
+}
+export const MENU_INPUTS = {
+  runs: "Runs: number to show",
+  project: "Project name (every session declaring this name in this database shares its knowledge; without a name, a new session joins the project its repository directory already has when that is exactly one project — home and temporary directories excluded)",
+} as const;
 
 // ---- Whole-menu model ------------------------------------------------------------------------------
 
@@ -222,18 +231,35 @@ export function buildSettingsBudgets(input: SettingsBudgetsInput): SettingsBudge
   };
 }
 
-export interface WorkerRowInput { phase: "Noter" | "Consolidator" | "Dreamer"; mode?: string; model: string; thinking: string; source?: string }
-export interface WorkerRow { phase: string; mode?: string; model: string; thinking: string; source?: string }
+export interface WorkerRowInput { phase: "Noter" | "Consolidator" | "Dreamer"; mode?: string; model: string; thinking: string; source?: string; sources?: { mode?: string; model?: string; thinking?: string } }
+export interface WorkerRow { phase: string; mode?: string; model: string; thinking: string; source?: string; sources?: WorkerRowInput["sources"] }
 export interface SettingsWorkers { showModeColumn: boolean; rows: WorkerRow[] }
 export function buildSettingsWorkers(input: WorkerRowInput[]): SettingsWorkers {
   return { showModeColumn: input.some(w => w.mode !== undefined), rows: input.map(w => ({ ...w })) };
 }
 
+export type SettingsRowId = "budget.global" | "budget.project" | "budget.session" | "noting.mode" | "noting.model" | "noting.thinking" | "consolidation.mode" | "consolidation.model" | "consolidation.thinking" | "dreaming.model" | "dreaming.thinking" | "closedSessionScope";
+export interface SettingsChoice { id: SettingsRowId; label: string }
+/** Stable row identifiers and labels: adapters implement edits, not menu copy or ordering. */
+export function buildSettingsChoices(input: SettingsInput): SettingsChoice[] {
+  const budgetRows = buildSettingsBudgets(input.budgets).rows;
+  const budgets: SettingsChoice[] = (["global", "project", "session"] as const).map((scope, i) => ({
+    id: `budget.${scope}` as SettingsRowId, label: `${budgetRows[i]!.label} Knowledge budget: ${budgetRows[i]!.value}`,
+  }));
+  const workers: SettingsChoice[] = input.workers.flatMap(w => {
+    const phase = w.phase === "Noter" ? "noting" : w.phase === "Consolidator" ? "consolidation" : "dreaming";
+    return ([...(w.mode !== undefined ? [{ id: `${phase}.mode` as SettingsRowId, label: `${w.phase} mode: ${w.mode}`, source: w.sources?.mode }] : []),
+      { id: `${phase}.model` as SettingsRowId, label: `${w.phase} model: ${w.model}`, source: w.sources?.model ?? w.source },
+      { id: `${phase}.thinking` as SettingsRowId, label: `${w.phase} thinking: ${w.thinking}`, source: w.sources?.thinking }]).map(row => ({ id: row.id, label: `${row.label}${row.source ? ` (${row.source})` : ""}` }));
+  });
+  return [...budgets, ...workers, { id: "closedSessionScope", label: `Closed sessions: ${input.closedSessionScope}${input.closedSessionSource ? ` (${input.closedSessionSource})` : ""}` }];
+}
 export interface SettingsInput {
   database: string;
   budgets: SettingsBudgetsInput;
   workers: WorkerRowInput[];
   closedSessionScope: "off" | "project" | "global";
+  closedSessionSource?: string;
 }
 export interface SettingsModel {
   header: string;
@@ -247,7 +273,7 @@ export function buildTraceSettings(input: SettingsInput): SettingsModel {
     header: `Trace Memory · Settings                 database ${input.database}`,
     budgets: buildSettingsBudgets(input.budgets),
     workers: buildSettingsWorkers(input.workers),
-    closedSessionsLine: `Closed sessions   ${input.closedSessionScope}   (${SCOPE_CHOICES.join(" · ")})`,
+    closedSessionsLine: `Closed sessions   ${input.closedSessionScope}   (${SCOPE_CHOICES.join(" · ")})${input.closedSessionSource ? `  ${input.closedSessionSource}` : ""}`,
   };
 }
 

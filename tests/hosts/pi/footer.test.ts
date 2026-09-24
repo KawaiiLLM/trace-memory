@@ -136,9 +136,10 @@ test("footer chains facts to consolidate, changed current Knowledge and all curr
     JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } } }));
   await h.commands.get("trace")!.handler("", h.ctx);
   const panel = h.notices.at(-1)!;
-  expect(panel).toContain("Cost: $0.8700");
-  expect(panel).toMatch(/Noting 4 runs \$0\.3700 · Consolidation \d+ runs \$0\.0000/); // the fixture's unpriced runs count but cost nothing
-  expect(panel).toMatch(/Dreaming \d+ runs \$0\.5000 · Manual \d+ runs \$0\.0000/);
+  expect(panel).toContain("Spend   session $0.87");
+  expect(panel).toMatch(/Noting 4 runs \$0\.37 · Consolidation \d+ run[s]? \$0\.00/);
+  expect(panel).toMatch(/Dreaming \d+ runs \$0\.50/);
+  expect(panel).toContain("today   $10.74");
   expect(h.requests).toEqual([]); // nothing here called a model
 });
 
@@ -304,17 +305,17 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   expect(h.memory.store.getSession(1)).toBeNull();
   expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: ?->? memory: ?->?/? cost: $0.00</dim>"); // 51: today's database-wide spend is readable without a session identity
   await h.commands.get("trace")!.handler("", h.ctx);
-  expect(h.notices.at(-1)).toContain("Session: None (no assistant reply)");
-  expect(h.notices.at(-1)).toContain("Unknown / 1,000,000,000 (no session)");
+  expect(h.notices.at(-1)).toContain("Trace Memory · No session");
+  expect(h.notices.at(-1)).toContain("Noting        Unknown / Unknown");
 
   // With an identity and nothing imported yet, the same details carry real zeros — a different
   // condition, and still not a claim that no native history exists.
   await h.turn();
   expect(h.memory.store.getSession(1)).not.toBeNull();
   await h.commands.get("trace")!.handler("", h.ctx);
-  expect(h.notices.at(-1)).toContain("Session: S1");
-  expect(h.notices.at(-1)).toContain("Consolidation: [..........] 0 / 1,000,000,000 (0.0%)");
-  expect(h.notices.at(-1)).not.toContain("(no session)");
+  expect(h.notices.at(-1)).toContain("Trace Memory · S1");
+  expect(h.notices.at(-1)).toContain("Consolidation ░░░░░░░░░░   0%   0 / 1000M");
+  expect(h.notices.at(-1)).not.toContain("No session");
   expect(h.requests).toEqual([]);
 });
 

@@ -19,7 +19,7 @@ vi.mock("@earendil-works/pi-tui", async importOriginal => {
 const hosts: ReturnType<typeof host>[] = [];
 const setup = (config: Record<string, unknown> = {}) => { const h = host(config); h.ctx.ui.theme.fg = (_color, text) => text; hosts.push(h); return h; };
 afterEach(async () => { vi.restoreAllMocks(); for (const h of hosts.splice(0)) await h.dispose(); });
-const open = async (h: ReturnType<typeof host>) => { h.ctx.hasUI = true; h.answers.push("Current session", undefined); await h.commands.get("trace").handler("", h.ctx); return h.dialogs.at(-1)!.title; };
+const open = async (h: ReturnType<typeof host>) => { h.ctx.hasUI = true; h.answers.push(undefined); await h.commands.get("trace").handler("", h.ctx); return h.dialogs.at(-1)!.title; };
 const changes = (h: ReturnType<typeof host>) => JSON.stringify(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()
   .map(row => [row.name, h.memory.store.db.prepare(`SELECT * FROM "${String(row.name).replaceAll('"', '""')}"`).all()]));
 
@@ -131,22 +131,21 @@ test("compact identity distinguishes provider, enrollment source and project dec
   const h = setup(); await h.turn();
   let title = await open(h);
   expect(title).toContain("fake/test");
-  expect(title).toContain("S1 | On(default) | $0.0000");
-  expect(title).toContain("Project: pi:pi-test (undeclared)");
+  expect(title).toContain("Trace Memory · S1 · pi:pi-test · On");
+  expect(title).toContain("Spend   session $0.00");
   expect(title).not.toContain("Shared identity");
   await h.commands.get("trace").handler("off", h.ctx);
-  expect(await open(h)).toContain("S1 | Off(explicit) | $0.0000");
+  expect(await open(h)).toContain("Trace Memory · S1 · pi:pi-test · Off (explicit)");
   await h.commands.get("trace").handler("on", h.ctx);
   await h.commands.get("trace").handler("project example", h.ctx);
   title = await open(h);
-  expect(title).toContain("S1 | On(explicit) | $0.0000");
-  expect(title).toContain("Project: example (mark)");
+  expect(title).toContain("Trace Memory · S1 · example · On (explicit)");
 });
 
 test("compact default Off stays distinct from an explicit choice", async () => {
   const h = setup(); h.setHeaderTimestamp("2000-01-01T00:00:00Z");
   await h.emit("session_start");
-  expect(await open(h)).toContain("Off(default)");
+  expect(await open(h)).toContain("Trace Memory · No session · Unassigned · Off");
 });
 
 test.each([9999, 10001])("headless threshold formatting remains unchanged at %i", tokens => {
@@ -167,18 +166,18 @@ test("no session, Off, zero and unavailable remain distinct; original actions an
   const h = setup(); await h.emit("session_start");
   h.setContextUsage(undefined);
   let title = await open(h);
-  expect(title).toContain("Session: No session"); expect(title).toContain("(no session)"); expect(title).toContain("Context window ~200k tokens");
-  expect(title).toContain("SDK usage unavailable."); // Model capacity and local categories remain available without SDK usage.
+  expect(title).toContain("Trace Memory · No session");
+  expect(title).toContain("SDK usage unavailable"); // Model capacity and local categories remain available without SDK usage.
   await h.turn();
   const before = changes(h), entries = structuredClone(h.entries), footer = h.statuses.get("trace-memory");
   title = await open(h);
-  expect(title).toContain("Consolidation ░░░░░░░░░░   0.0% 0/5k");
-  expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project"]);
+  expect(title).toContain("Consolidation ░░░░░░░░░░   0%   0 / 5k");
+  expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Stop", "Project…", "Runs…", "Settings…"]);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries); expect(h.statuses.get("trace-memory")).toBe(footer);
   await h.commands.get("trace").handler("off", h.ctx);
-  expect(await open(h)).toContain("Off; stored evidence only");
+  expect(await open(h)).toContain("Trace Memory · S1 · pi:pi-test · Off (explicit)");
   vi.spyOn(Store.prototype, "pendingEntryState").mockImplementation(() => { throw Error("unreadable"); });
-  expect(await open(h)).toContain("Noting        ?????????? Unknown/10k (unavailable)");
+  expect(await open(h)).toContain("Noting        Unknown / Unknown");
   expect(h.requests).toEqual([]);
 });
 
@@ -186,12 +185,12 @@ test("reopening replaces unavailable SDK capacity with the current valid estimat
   const h = setup(); await h.turn();
   h.setContextUsage(undefined);
   const unavailable = await open(h);
-  expect(unavailable).toContain("SDK usage unavailable.");
+  expect(unavailable).toContain("SDK usage unavailable");
   expect(unavailable).not.toContain("?".repeat(20));
   h.setContextUsage({ tokens: 60237, contextWindow: 512000, percent: 0 });
   const available = await open(h);
-  expect(available).toContain("~60.2k / 512k tokens (11.8%)");
-  expect(available).toContain("Free ~451.8k (88.2% window)");
+  expect(available).toContain("60.2k / 512k tokens (11.8%, SDK)");
+  expect(available).toContain("Free"); expect(available).toContain("451.8k");
   expect(available).toContain("Estimated usage by category");
   expect(h.requests).toEqual([]);
 });
@@ -212,7 +211,7 @@ test("repeated Dreaming pool reads show identical pending data without DB writes
   h.memory.setKnowledgeBudget("project", 2468);
   const before = changes(h), entries = structuredClone(h.entries);
   const first = await open(h);
-  expect(first).toContain("/2,468"); expect(first).toContain("/4,321");
+  expect(first).toContain("/ 2.5k"); expect(first).toContain("/ 4.3k");
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
   expect(await open(h)).toBe(first);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
@@ -225,12 +224,12 @@ test("shared identity stays concise in overview and complete in On/Off confirmat
   h.ctx.sessionManager.getSessionId = () => "cloned-session";
   await h.emit("session_start");
   expect(await open(h)).toContain("Shared identity");
-  h.answers.push("Current session", "Off", false);
+  h.answers.push("Turn off", false);
   await h.commands.get("trace").handler("", h.ctx);
   expect(h.dialogs.at(-1)!.title).toContain("this switch also affects forks or clones carrying this memory identity.");
   expect(h.memory.store.enabled(1)).toBe(true);
   await h.commands.get("trace").handler("off", h.ctx);
-  h.answers.push("Current session", "On", false);
+  h.answers.push("Turn on", false);
   await h.commands.get("trace").handler("", h.ctx);
   expect(h.dialogs.at(-1)!.title).toContain("this switch also affects forks or clones carrying this memory identity.");
   expect(h.memory.store.enabled(1)).toBe(false);
@@ -245,8 +244,9 @@ test("headless shares compact composition while retaining operational explanatio
   expect(status).not.toContain("Pi rebuilt text estimate (not provider wire)");
   expect(status).not.toContain("Memory ~0");
   expect(status).toContain("/trace project");
-  expect(status).toContain("Enrollment: Enabled (default)");
-  expect(status).toContain("Pending / trigger is not task completion or worker readiness.");
+  expect(status).toContain("Trace Memory · S1 · pi:pi-test · On");
+  expect(status).toContain("Pending / trigger");
+  expect(status).not.toContain("worker readiness");
 });
 
 test.each([false, true])("enrollment notices share only lightweight session wording (allocated=%s)", async allocated => {
@@ -276,10 +276,11 @@ test.each([false, true])("enrollment notices share only lightweight session word
     expect(measurements).not.toHaveBeenCalled(); expect(census).not.toHaveBeenCalled();
     expect(notice).not.toMatch(/Pending.*trigger|Pi rebuilt text estimate|Memory ~/);
     await command("");
-    const body = h.notices.at(-1)!.slice("Current session\n".length).split("\n/trace (menu;")[0]!;
+    const body = h.notices.at(-1)!.split("\n/trace (menu;")[0]!;
     expect(measurements.mock.calls.map(([phase]) => phase)).toEqual(["noting", "consolidation", "dreaming"]);
     expect(census).toHaveBeenCalledTimes(1);
-    for (const line of notice.split("\n").slice(0, -1)) expect(body.split("\n")).toContain(line);
+    // Toggle notices keep their lightweight legacy wording; the new panel uses the shared model.
+    expect(body).toContain("Pending / trigger");
     expect(notice).toContain(value === "on"
       ? "Available history, including the paused interval, is queued; ordinary completions check thresholds."
       : "Processing and future injection are paused. Stored memory and already-injected text remain.");
@@ -337,18 +338,16 @@ test("headless and UI read the same composition once per opening without writes 
   expect(usage).toHaveBeenCalledTimes(2); expect(census).toHaveBeenCalledTimes(2);
   const composition = (text: string) => {
     const start = text.indexOf("fake/test");
-    const ends = [text.indexOf("\nSession:", start), text.indexOf("\nS1 |", start)].filter(index => index >= 0);
-    return text.slice(start, Math.min(...ends));
+    const end = text.indexOf("\nPending / trigger", start);
+    return text.slice(start, end);
   };
   expect(composition(headless)).toBe(composition(title));
   for (const text of [headless, title]) {
-    expect(text).toContain("~1 / 1k tokens (0.1%)");
-    expect(text).toContain("grid colors project");
-    expect(text).toContain("proportions to SDK occupancy.");
-    expect(text).toContain("Free ~999 (99.9% window)");
+    expect(text).toContain("1 / 1k tokens (0.1%, SDK)");
+    expect(text).toContain("Free"); expect(text).toContain("999");
     expect(text).not.toContain("Difference");
     expect(text).not.toContain("?".repeat(20));
-    expect(text).toContain("Fork: suppressed");
+    expect(text).toContain("Fork suppressed");
   }
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
   expect(h.statuses.get("trace-memory")).toBe(footer); expect(h.requests).toEqual([]);
@@ -366,7 +365,7 @@ test("real Pi selector wraps the dim body and keeps every original action", asyn
       expect(lines.every(line => visibleWidth(line) <= width)).toBe(true);
       expect(lines.join("\n")).toContain("Runs"); expect(lines.join("\n")).toContain("Project");
     }
-    expect(title.startsWith("Current session")).toBe(true);
+    expect(title.startsWith("Trace Memory · S1")).toBe(true);
   } finally { selector.dispose(); }
 });
 
@@ -391,10 +390,10 @@ test("automatic-off reason and fork reset remain actionable and opening is inert
   s.suppressFork(1, "2026-09-11T00:00:00Z");
   const before = changes(h), title = await open(h);
   expect(title).toContain("Automatic off: noting"); expect(title).toContain("incomplete submission");
-  expect(title.replace(/\s+/g, " ")).toContain("Use /trace on to resume."); expect(title).toContain("Fork: suppressed since 2026-09-11");
-  expect(h.dialogs.at(-1)!.options).toEqual(["On", "Runs", "Project", "Retry fork"]);
+  expect(title.replace(/\s+/g, " ")).toContain("Turn on to resume."); expect(title).toContain("Fork suppressed since 2026-09-11");
+  expect(h.dialogs.at(-1)!.options).toEqual(["Turn on", "Catch up", "Stop", "Project…", "Runs…", "Settings…", "Retry fork"]);
   expect(changes(h)).toBe(before);
-  h.answers.push("Current session", "Retry fork"); await h.commands.get("trace").handler("", h.ctx);
+  h.answers.push("Retry fork"); await h.commands.get("trace").handler("", h.ctx);
   expect(s.forkSuppression(1)).toBeNull(); expect(s.enabled(1)).toBe(false); expect(h.requests).toEqual([]);
 });
 
@@ -413,6 +412,6 @@ test("panel queries occur only on open; failure and shared-identity recovery rem
   expect(performance.now() - start).toBeLessThan(1000);
   expect(h.dialogs.at(-1)!.title).not.toContain("Shared identity");
   expect(h.dialogs.at(-1)!.title).not.toContain("Last noting:");
-  expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger (~tokens)");
+  expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger");
   expect(h.dialogs.at(-1)!.title).not.toContain("worker readiness");
 });

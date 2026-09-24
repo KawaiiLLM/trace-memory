@@ -46,17 +46,17 @@ test("24b: before the first reply, on and off persist the provisional choice and
   const h = setup(); h.setHeaderTimestamp("2000-01-01T00:00:00Z"); // Disabled by default
   await h.emit("session_start");
   await command(h, "");
-  expect(h.notices.at(-1)).toContain("Enrollment: Disabled (default)");
+  expect(h.notices.at(-1)).toContain("Trace Memory · No session · Unassigned · Off");
   await command(h, "on");
   expect(h.memory.store.getSession(1)).toBeNull();      // no artificial Turn, no identity yet
   expect(existsSync(join(h.dir, "agent", "trace-memory-enrollment"))).toBe(true); // the provisional receipt
   await h.emit("session_start");                        // reopen before any reply
   await command(h, "");
-  expect(h.notices.at(-1)).toContain("Enabled (explicit choice)");
+  expect(h.notices.at(-1)).toContain("On (explicit)");
   await h.turn();
   expect(h.memory.store.enrollment(1)).toEqual({ defaultEnabled: false, choice: true }); // transferred at allocation
   // Keep the shared fork/clone scope in the confirmation, not permanent overview prose.
-  h.ctx.hasUI = true; h.answers.push("Current session", "Off", false);
+  h.ctx.hasUI = true; h.answers.push("Turn off", false);
   await command(h, "");
   expect(h.dialogs.at(-1)!.title).toContain("Forks or clones carrying this memory identity share this switch.");
 });
@@ -89,7 +89,7 @@ test("24b: the retained forms work headless, and bare /trace prints status and t
   expect(h.ctx.hasUI).toBe(false);
   await h.turn();
   await command(h, "");
-  expect(h.notices.at(-1)).toContain("Session: S1");
+  expect(h.notices.at(-1)).toContain("Trace Memory · S1");
   expect(h.notices.at(-1)).toContain("/trace (menu; status when headless) | /trace on | /trace off | /trace catchup | /trace stop | " +
     "/trace project <name>");
   expect(h.dialogs).toEqual([]);           // no dialog was opened without UI
@@ -105,26 +105,26 @@ test("24b: the retained forms work headless, and bare /trace prints status and t
   await command(h, "on"); expect(h.memory.status(1)).toContain("Enabled");
 });
 
-test("24b: the menu has four entries and Current session keeps status, participation, runs and project", async () => {
+test("82: the single menu keeps status, participation, runs and project", async () => {
   const h = setup();
   await h.turn();
   h.ctx.hasUI = true;
   h.answers.push(undefined);                       // cancelling the top level is inert
   await command(h, "");
-  expect(h.dialogs.at(-1)!.options).toEqual(["Current session", "Catch up", "Stop", "Settings"]);
+  expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Stop", "Project…", "Runs…", "Settings…"]);
   const quiet = h.notices.length;
-  h.answers.push("Current session", undefined);
+  h.answers.push(undefined);
   await command(h, "");
-  expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project"]); // no Retry fork while not downgraded
-  expect(h.dialogs.at(-1)!.title).toContain("S1 | On(default) | $0.0000");                      // status, with 24a's counts
-  expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger (~tokens)");
+  expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Stop", "Project…", "Runs…", "Settings…"]);
+  expect(h.dialogs.at(-1)!.title).toContain("Trace Memory · S1");
+  expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger");
   expect(h.notices).toHaveLength(quiet);                                          // cancelling wrote nothing
   // Runs, with its count selection.
-  h.answers.push("Current session", "Runs", "3");
+  h.answers.push("Runs…", "3");
   await command(h, "");
   expect(h.notices.at(-1)).toContain("no runs yet");
   // Project assignment, through the same declaration core owns.
-  h.answers.push("Current session", "Project", "menu-project");
+  h.answers.push("Project…", "menu-project");
   await command(h, "");
   expect(h.notices.at(-1)).toContain("project: menu-project (mark)");
   expect(h.memory.store.getProject(h.memory.store.getSession(1)!.projectId)!.name).toBe("menu-project");
@@ -139,13 +139,12 @@ test("24b: cancelling any menu step changes nothing and makes no request", async
   h.ctx.hasUI = true;
   const cancels: (string | boolean | undefined)[][] = [
     [undefined],                                   // the top level
-    ["Current session", undefined],                // the session menu
-    ["Current session", "Off", false],             // the participation confirmation
-    ["Current session", "Runs", undefined],        // the count input
-    ["Current session", "Project", undefined],     // the name input
+    ["Turn off", false],                            // the participation confirmation
+    ["Runs…", undefined],                           // the count input
+    ["Project…", undefined],                        // the name input
     ["Catch up"],                                  // nothing pending: reports, starts nothing
-    ["Settings", undefined],                       // the preference list
-    ["Settings", "Noter mode: fork (Default)", undefined], // the value selection
+    ["Settings…", undefined],                      // the preference list
+    ["Settings…", "Noter mode: subagent", undefined], // the value selection
   ];
   for (const answers of cancels) { h.answers.push(...answers); await command(h, ""); }
   expect(readFileSync(globalSettings, "utf8")).toBe(before.settings);

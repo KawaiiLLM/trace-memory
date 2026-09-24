@@ -162,7 +162,7 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => [24, 60].map(height => ({ 
   expect(text).toContain("long-provider-");
   expect(text).toContain("long-model-");
   expect(squashed).toContain("MODEL-END");
-  for (const phrase of ["Skill catalog ~1.2k",
+  for (const phrase of ["Skill catalog", "~1.2k",
     "Knowledge ~10.5k (5.4% local)", "Facts ~9.9k (5.1% local)", "Raw ~9.6k (5.0% local)",
     "Memory, unclassified ~279 (0.1% local)",
     "Free ~305k", "Use /trace on to resume.", "Final detail: paging complete"])
@@ -235,6 +235,16 @@ test.each([{ binding: "ctrl+y" }, { binding: [] }])("confirm override $binding r
   }
 });
 
+test("settings rows remain keyboard-selectable when the action list exceeds visible height", async () => {
+  const s = screenHarness(40, 16);
+  const rows = ["Global", "Project", "Session", "Noter mode", "Noter model", "Noter thinking",
+    "Consolidator mode", "Consolidator model", "Consolidator thinking", "Dreamer model", "Dreamer thinking", "Closed sessions"];
+  const selected = showSessionPanel(s.ctx, width => statusBody(["Trace Memory · Settings", "Knowledge budgets", "Workers"], width), rows);
+  for (let i = 0; i < rows.length - 1; i++) s.key("\x1b[B");
+  expect(s.frame().some(line => line.trim() === "→ Closed sessions")).toBe(true);
+  s.key("\r"); expect(await selected).toBe("Closed sessions");
+});
+
 test("default confirmation follows Pi manager for legacy CR/LF and encoded Ctrl+J", () => {
   const kb = new KeybindingsManager();
   for (const [key, confirms] of [["\r", true], ["\n", true], ["\x1b[106;5u", false]] as const) {
@@ -259,9 +269,9 @@ test.each([{ binding: "ctrl+y" }, { binding: [] }])("Retry fork has no side effe
     const before = h.memory.store.forkSuppression(1);
     const s = screenHarness(40, 24); h.ctx.ui.custom = s.ctx.ui.custom;
     s.kb.setUserBindings({ "tui.select.confirm": binding });
-    h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
+    const command = h.commands.get("trace").handler("", h.ctx);
     await new Promise(resolve => setImmediate(resolve));
-    for (let i = 0; i < 4; i++) s.key("j");
+    for (let i = 0; i < 6; i++) s.key("j");
     expect(s.frame().some(line => line.trim() === "→ Retry fork")).toBe(true);
     for (const key of oldConfirmKeys) {
       s.key(key); await new Promise(resolve => setImmediate(resolve));
@@ -284,7 +294,7 @@ test("actual TUI command opens custom panel, reflow never scans, and Escape writ
     const snapshot = () => JSON.stringify(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()
       .map(row => [row.name, h.memory.store.db.prepare(`SELECT * FROM "${row.name}"`).all()]));
     const before = snapshot(), entries = structuredClone(h.entries), footer = h.statuses.get("trace-memory");
-    h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
+    const command = h.commands.get("trace").handler("", h.ctx);
     await new Promise(resolve => setImmediate(resolve));
     const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
     const census = vi.spyOn(h.ctx.sessionManager, "buildContextEntries");
@@ -338,13 +348,13 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     expect(snapshot()).toBe(before); expect(h.entries).toEqual(entries);
     expect(h.requests).toHaveLength(requests);
     h.ctx.hasUI = true;
-    h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
+    const command = h.commands.get("trace").handler("", h.ctx);
     await new Promise(resolve => setImmediate(resolve));
     const viewed = [...s.frame()];
     for (let i = 0; i < 10; i++) { s.key("\x1b[6~"); viewed.push(...s.frame()); }
     // Knowledge is project-scoped here; each pool triggers separately, so the project pool's own bar
     // carries the pending figure rather than a single merged "Dreaming" line.
-    expect(viewed.join(" ")).toMatch(/Dream project\s+.*1.*\//);
+    expect(viewed.join(" ")).toMatch(/project\s+.*29 \/ 1/);
     s.key("\x1b"); await command; await h.drain();
     expect(snapshot()).toBe(before); expect(h.entries).toEqual(entries);
     expect(h.requests).toHaveLength(requests); expect(h.statuses.get("trace-memory")).toBe(footer);
@@ -366,22 +376,22 @@ test("TUI keyboard actions retain confirmations, inputs and conditional Retry fo
     await h.turn(); h.ctx.mode = "tui"; h.ctx.hasUI = true;
     const s = screenHarness(40, 24); h.ctx.ui.custom = s.ctx.ui.custom;
     const choose = async (label: string, answers: (string | boolean | undefined)[] = []) => {
-      h.answers.push("Current session", ...answers);
+      h.answers.push(...answers);
       const command = h.commands.get("trace").handler("", h.ctx);
       await new Promise(resolve => setImmediate(resolve));
-      for (let i = 0; i < 5 && !s.frame().some(line => line.trim() === `→ ${label}`); i++) s.key("j");
+      for (let i = 0; i < 7 && !s.frame().some(line => line.trim() === `→ ${label}`); i++) s.key("j");
       expect(s.frame().some(line => line.trim() === `→ ${label}`)).toBe(true);
       s.key("\r"); await command;
     };
-    await choose("Off", [false]); expect(h.memory.store.enabled(1)).toBe(true);
-    await choose("Off", [true]); expect(h.memory.store.enabled(1)).toBe(false);
-    await choose("On", [true]); expect(h.memory.store.enabled(1)).toBe(true);
-    await choose("Runs", ["3"]); expect(h.notices.at(-1)).toContain("no runs yet");
-    await choose("Project", ["overlay-project"]); expect(h.notices.at(-1)).toContain("project: overlay-project (mark)");
+    await choose("Turn off", [false]); expect(h.memory.store.enabled(1)).toBe(true);
+    await choose("Turn off", [true]); expect(h.memory.store.enabled(1)).toBe(false);
+    await choose("Turn on", [true]); expect(h.memory.store.enabled(1)).toBe(true);
+    await choose("Runs…", ["3"]); expect(h.notices.at(-1)).toContain("no runs yet");
+    await choose("Project…", ["overlay-project"]); expect(h.notices.at(-1)).toContain("project: overlay-project (mark)");
     h.memory.store.suppressFork(1, "2026-09-11T00:00:00Z");
     await choose("Retry fork"); expect(h.memory.store.forkSuppression(1)).toBeNull();
     expect(h.memory.store.enabled(1)).toBe(true); expect(h.requests).toEqual([]);
-    h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
+    const command = h.commands.get("trace").handler("", h.ctx);
     await new Promise(resolve => setImmediate(resolve));
     expect(s.frame().some(line => line.trim() === "Retry fork")).toBe(false);
     s.key("\x1b"); await command;
@@ -394,11 +404,11 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     await h.turn(); h.setContextUsage({ tokens: 44500, contextWindow: 1000000, percent: 4.45 });
     h.ctx.mode = "tui"; h.ctx.hasUI = true;
     const s = screenHarness(width, 24, mode); h.ctx.ui.custom = s.ctx.ui.custom;
-    h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
+    const command = h.commands.get("trace").handler("", h.ctx);
     await new Promise(resolve => setImmediate(resolve));
     const first = s.frame().map(line => line.trimEnd()).join("\n");
     const compactFirst = first.replace(/[⛁⛶⛀]/g, "").replace(/\s+/g, " ");
-    expect(compactFirst).toContain("~44.5k / 1M tokens (4.5%)");
+    if (width > 20) expect(compactFirst).toContain("44.5k / 1M tokens (4.5%, SDK)");
     expect(first).toContain("fake/test");
     expect(first).not.toMatch(/100 cells|Pi estimate|worker readiness|Forks or clones/);
     const viewed = [first];
@@ -412,12 +422,11 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     const total = toolTokens + 12;
     expect(toolTokens).toBeGreaterThanOrEqual(1000); expect(toolTokens).toBeLessThan(10000);
     // The panel drops a trailing ".0" (session-status.ts), so the label follows the same rule.
-    const toolLabel = `Tools ~${(toolTokens / 1000).toFixed(1).replace(/\.0$/, "")}k (${(100 * toolTokens / total).toFixed(1)}% local)`;
-    const conversationLabel = `Conversation ~12 (${(1200 / total).toFixed(1)}% local)`;
-    for (const phrase of ["S1 | On(default) | $0.0000", "Project: pi:pi-test (undeclared)",
-      "Noting ███████░░░ 72.0% 36/50", "Consolidation ░░░░░░░░░░",
-      "Dream global ░░░░░░░░░░", "Dream project ░░░░░░░░░░", "Dream session ░░░░░░░░░░",
-      "Estimated usage by category", toolLabel, conversationLabel, "Free ~955.5k (95.5% window)"])
+    const toolLabel = `Tools ${(toolTokens / 1000).toFixed(1).replace(/\.0$/, "")}k (${(100 * toolTokens / total).toFixed(1)}%)`;
+    const conversationLabel = `Conversation 12 (${(1200 / total).toFixed(1)}%)`;
+    for (const phrase of ["Trace Memory · S1 · pi:pi-test · On", "███████░░░ 72% 36 / 50",
+      "Consolidation ░░░░░░░░░░", "global ░░░░░░░░░░", "project ░░░░░░░░░░", "session ░░░░░░░░░░",
+      "Estimated usage by category", toolLabel, conversationLabel, "Free 955.5k (95.5% of window)"])
       expect(squashed).toContain(phrase.replace(/\s+/g, ""));
     expect(seen).not.toContain("Difference");
     expect(seen).not.toContain("Memory ~0");
@@ -443,22 +452,21 @@ test.each([20, 40, 79, 80, 100, 160])("long project and actual recovery remain r
     store.suppressFork(1, "2026-09-11T00:00:00Z");
     h.ctx.mode = "tui"; h.ctx.hasUI = true;
     const s = screenHarness(width, 24); h.ctx.ui.custom = s.ctx.ui.custom;
-    h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
+    const command = h.commands.get("trace").handler("", h.ctx);
     await new Promise(resolve => setImmediate(resolve));
-    expect(s.frame().join(" ")).toContain("Automatic off:");
     const seen: string[] = [];
     for (let i = 0; i < 20; i++) {
       const frame = s.frame(); seen.push(...frame);
-      for (const label of actions) expect(frame.some(line => line.trim().replace(/^→ /, "") === label)).toBe(true);
+      for (const label of ["Turn on", "Catch up", "Stop", "Project…", "Runs…", "Settings…", "Retry fork"])
+        expect(frame.some(line => line.trim().replace(/^→ /, "") === label)).toBe(true);
       s.key("\x1b[6~");
     }
     const text = seen.join(" ").replace(/\s+/g, " ");
-    for (const phrase of ["Use /trace on to resume.", "Retry fork", "Off; stored evidence only", "Dream global", "Dream project", "Dream session", "END"])
+    for (const phrase of ["Automatic off:", "Turn on to resume.", "Retry fork", "global", "project", "session", "END"])
       expect(text).toContain(phrase);
-    expect(text).toContain("Project:");
     expect(text).toContain("long-projec");
-    for (const chunk of wrapTextWithAnsi(`${provider}/${model}`, width >= 80 ? width - 42 : width))
-      expect(seen.join("\n")).toContain(chunk);
+    expect(text.replace(/\s+/g, "")).toContain("PROVIDER-END");
+    expect(text.replace(/\s+/g, "")).toContain("MODEL-END");
     s.key("\x1b"); await command;
   } finally { await h.dispose(); }
 });

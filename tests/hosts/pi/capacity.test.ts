@@ -235,8 +235,8 @@ test("27b 2026-09-10: an unknown context measure is not a fork base — the task
     expect(h.memory.store.forkSuppression(1)).toBeNull();
     // Read the executor's preference, not the separate observer facade's defaults.
     h.ctx.hasUI = true;
-    h.answers.push("Settings", undefined); await h.commands.get("trace")!.handler("", h.ctx);
-    expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment)");
+    h.answers.push("Settings…", undefined); await h.commands.get("trace")!.handler("", h.ctx);
+    expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment setting — this edit will not take effect)");
   } finally { await h.dispose(); }
 });
 

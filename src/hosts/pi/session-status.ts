@@ -4,10 +4,7 @@ import type { TraceMemory } from "../../core/api/index.ts";
 import type { ContextComposition } from "./context-composition.ts";
 import { MEMORY_COLOR_HEX } from "../trace-menu.ts";
 
-// Knowledge/Facts/Raw/unclassified come from the shared model's `MEMORY_COLOR_HEX` (ticket 82 colour
-// ruling, 2026-09-24, green family) so Pi and Claude Code paint the same family; every other role stays
-// Pi's own — including `tools`, a teal that sits close in hue to the memory green, so the shared family
-// was deliberately tuned away from it (see `MEMORY_COLOR_HEX`'s own comment).
+// The four memory colours come from the shared yellow-green cluster; every other role stays Pi's own.
 export const CONTEXT_PALETTE = {
   system: "#ee80af", tools: "#70c4a5", skills: "#b3a4f4",
   knowledge: MEMORY_COLOR_HEX.knowledge, facts: MEMORY_COLOR_HEX.facts, raw: MEMORY_COLOR_HEX.raw,

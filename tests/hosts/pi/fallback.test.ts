@@ -82,8 +82,8 @@ test("27b 2026-09-10: a fork prefix the freeze cannot fit is re-admitted once as
     expect(h.memory.store.forkSuppression(1)).toBeNull();
     // Settings belongs to the executor; `h.memory` is only an independent database observer.
     h.ctx.hasUI = true;
-    h.answers.push("Settings", undefined); await h.commands.get("trace")!.handler("", h.ctx);
-    expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment)");
+    h.answers.push("Settings…", undefined); await h.commands.get("trace")!.handler("", h.ctx);
+    expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment setting — this edit will not take effect)");
     expect(JSON.parse(readFileSync(`${h.dir}/agent/settings.json`, "utf8")).compaction).toBeUndefined();
   } finally { await h.dispose(); }
 });
@@ -435,8 +435,8 @@ test.each([
     expect(h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
     expect(h.conversations[0]!.systemPrompt).toContain("Noting (fact extraction)"); // fresh material
     h.ctx.hasUI = true;
-    h.answers.push("Settings", undefined); await h.commands.get("trace")!.handler("", h.ctx);
-    expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment)"); // no executor mode change
+    h.answers.push("Settings…", undefined); await h.commands.get("trace")!.handler("", h.ctx);
+    expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment setting — this edit will not take effect)"); // no executor mode change
   } finally { await h.dispose(); }
 });
 

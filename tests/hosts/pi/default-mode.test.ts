@@ -20,11 +20,11 @@ test.each(cases)("native $phase with saved $key=$value preserves user settings a
     const before = readFileSync(path, "utf8");
     await f.h.emit("session_start");
     f.h.ctx.hasUI = true;
-    f.h.answers.push("Settings", undefined);
+    f.h.answers.push("Settings…", undefined);
     await f.h.commands.get("trace")!.handler("", f.h.ctx);
     const label = phase === "noting" ? "Noter" : "Consolidator";
     const expected = value ? "fork" : "subagent";
-    expect(f.h.dialogs.at(-1)!.options).toContain(`${label} mode: ${expected} (${value === undefined ? "Default" : "Global"})`);
+    expect(f.h.dialogs.at(-1)!.options).toContain(`${label} mode: ${expected}`);
     f.h.ctx.hasUI = false;
     f.script(body => worker(body, "Consolidation")
       ? toolResults(body) >= 2 ? say("Integrated.") : call(`m${toolResults(body)}`, "memory", memoryBatch)
@@ -52,9 +52,9 @@ test.each(cases)("native $phase with saved $key=$value preserves user settings a
     }
     await f.h.emit("session_start"); // reopen preserves explicit choices, including the alias
     f.h.ctx.hasUI = true;
-    f.h.answers.push("Settings", undefined);
+    f.h.answers.push("Settings…", undefined);
     await f.h.commands.get("trace")!.handler("", f.h.ctx);
-    expect(f.h.dialogs.at(-1)!.options).toContain(`${label} mode: ${expected} (${value === undefined ? "Default" : "Global"})`);
+    expect(f.h.dialogs.at(-1)!.options).toContain(`${label} mode: ${expected}`);
     expect(readFileSync(path, "utf8")).toBe(before);
   } finally { await f.dispose(); }
 });

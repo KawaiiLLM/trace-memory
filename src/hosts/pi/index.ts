@@ -5,10 +5,12 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, SessionEntry, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
 import { contextComposition } from "./context-composition.ts";
-import { compositionMap, pendingBar, statusBody } from "./session-status.ts";
-import { showSessionPanel, type SessionBody } from "./session-panel.ts";
+import { statusBody } from "./session-status.ts";
+import { showSessionPanel } from "./session-panel.ts";
+import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
+import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
 import { checkpointReadiness } from "./native.ts";
-import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
+import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
 import { TraceMemory, directoryAllocation, enrollmentDefault, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
@@ -1232,7 +1234,6 @@ export default function (pi: ExtensionAPI) {
     return visibleView(at < 0 ? [] : entries.slice(at), binding());
   };
   const PHASE_LABEL = { noting: "Noting", consolidation: "Consolidation", dreaming: "Dreamer" } as const;
-  const DREAM_POOL_LABEL = { global: "Dream global", project: "Dream project", session: "Dream session" } as const;
   // Ticket 73 "Shared allowance": core allocates once and never falls back — compact truncates
   // unprocessed material instead of asking for recovery or native delegation. This handler freezes the
   // path, allocates, and either publishes the replacement or (a host-caught error only) delegates.
@@ -1504,32 +1505,32 @@ export default function (pi: ExtensionAPI) {
     // Selecting a model never switches the mode: only `${p.key}` is written.
     saveGlobal(p, choice === follow ? "session" : choice);
   };
+  const settingsInput = (): SettingsInput => {
+    const worker = (phase: "Noter" | "Consolidator" | "Dreamer", key: "noting" | "consolidation" | "dreaming") => {
+      const pref = (kind: Preference["kind"]) => preferences.find(p => p.phase === key && p.kind === kind);
+      const model = pref("model")!, thinking = pref("thinking")!, mode = pref("mode");
+      const effective = (p: Preference) => shownValue(p, preferenceValue(flat, p));
+      const source = (p: Preference) => sources[p.key] && sources[p.key] !== "Global" ? `${sources[p.key]} setting — this edit will not take effect` : undefined;
+      return { phase, ...(mode ? { mode: effective(mode) } : {}), model: effective(model), thinking: effective(thinking),
+        sources: { mode: mode && source(mode) || undefined, model: source(model), thinking: source(thinking) } };
+    };
+    return { database: dbPath, budgets: { ...memory.knowledgeBudgets(), sharedAllowanceTokens: memory.config.compaction.sharedAllowanceTokens },
+      workers: [worker("Noter", "noting"), worker("Consolidator", "consolidation"), worker("Dreamer", "dreaming")],
+      closedSessionScope: memory.config.closedSessionScope,
+      closedSessionSource: sources.closedSessionScope && sources.closedSessionScope !== "Global"
+        ? `${sources.closedSessionScope} setting — this edit will not take effect` : undefined };
+  };
   const settingsMenu = async () => {
-    // Database policy and installation preferences share the existing row editor, but never an
-    // authority: the first rows commit only to this bound database; the remaining rows retain their
-    // settings-file precedence. Derived capacities are display-only.
-    const logs = `Worker logs: ${runsDirectory(state.piId)}${runsOutsideScan() ? " — outside Pi's scanned sessions tree, so file-based daily statistics do not see them" : ""}`;
-    const title = [`Settings — bound database: ${dbPath}`,
-      `Knowledge budgets are stored in this database. Global preferences below are saved under \"trace-memory\" in ${settingsFile}.`,
-      "Project and environment layers still take precedence for global preferences; advanced values stay in the settings files.", logs].join("\n");
-    const budgets = memory.knowledgeBudgets();
-    const budgetRows = [
-      { field: "global" as const, name: "Global Knowledge budget", line: `Global Knowledge budget: ${budgets.global} tokens (database)` },
-      { field: "project" as const, name: "Project Knowledge budget", line: `Project Knowledge budget: ${budgets.project} tokens per project owner pool (database)` },
-      { field: "session" as const, name: "Session Knowledge budget", line: `Session Knowledge budget: ${budgets.session} tokens per session owner pool (database)` },
-    ];
-    const knowledgeBaseWindow = budgets.global + budgets.project + budgets.session;
-    const sharedMaterialAllowance = memory.config.compaction.sharedAllowanceTokens;
-    const diagnostics = [
-      `Knowledge base window: ${knowledgeBaseWindow} tokens (derived, read-only)`,
-      `Shared material allowance: ${sharedMaterialAllowance} tokens (compaction.sharedAllowanceTokens; configured)`,
-      `Maximum Knowledge input: ${knowledgeBaseWindow + sharedMaterialAllowance} tokens (derived, read-only)`,
-    ];
-    const preferenceRows = preferences.map(p => preferenceLine(p, { flat, sources, layers }, foregroundModel()));
-    const lines = [...budgetRows.map(row => row.line), ...diagnostics, ...preferenceRows];
-    const choice = await ctx.ui.select(title, lines);
+    const input = settingsInput();
+    const rows = buildSettingsChoices(input);
+    const choice = ctx.mode === "tui" ? await showSessionPanel(ctx,
+      (width, paint) => renderTraceSettings(input, width, paint).join("\n"), rows.map(row => row.label))
+      : await ctx.ui.select(renderTraceSettings(input, Math.max(1, (process.stdout.columns ?? 100) - 2)).join("\n"), rows.map(row => row.label));
     if (choice === undefined) return;
-    const budget = budgetRows.find(row => row.line === choice);
+    const selected = rows.find(row => row.label === choice);
+    if (!selected) throw new Error(`Unknown settings row: ${choice}`);
+    const field = selected.id.startsWith("budget.") ? selected.id.slice(7) as "global" | "project" | "session" : undefined;
+    const budget = field ? { field, name: `${field[0]!.toUpperCase()}${field.slice(1)} Knowledge budget` } : undefined;
     if (budget) {
       const input = await ctx.ui.input(`${budget.name} — enter tokens; changing this database policy does not run maintenance`);
       if (input === undefined) return;
@@ -1545,9 +1546,11 @@ export default function (pi: ExtensionAPI) {
       } catch (error) { ctx.ui.notify(`Trace Memory: ${budget.name} unchanged — ${String(error)}`, "error"); }
       return;
     }
-    if (diagnostics.includes(choice)) return;
-    const index = preferenceRows.indexOf(choice);
-    if (index >= 0) await editPreference(preferences[index]!);
+    const [phase, kind] = selected.id.split(".");
+    const preference = selected.id === "closedSessionScope" ? preferences.find(p => p.kind === "scope")
+      : preferences.find(p => p.phase === phase && p.kind === kind);
+    if (!preference) throw new Error(`Unknown settings preference: ${selected.id}`);
+    await editPreference(preference);
   };
   // Shared wording only: enrollment confirmations must not census context or render pending material.
   const sessionSummary = (compact = false) => {
@@ -1586,43 +1589,52 @@ export default function (pi: ExtensionAPI) {
         : "Forks or clones carrying this memory identity share this switch."];
     return { lines, recovery, cost, composition, shared };
   };
-  // Full measurements only on explicit panel/headless status opening, never on toggle confirmation.
-  // No reconciliation, compact allocation, tool grants or worker admission.
-  const sessionStatus = (compact = false): SessionBody => {
-    const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "Model: Unknown";
+  // The panel reads one snapshot. It never reconciles, admits work or mutates a setting.
+  const menuInput = (): TraceMenuInput => {
     const composition = contextComposition(ctx, pi);
-    const summary = sessionSummary(compact);
-    const lines: (string | ((paint: Parameters<SessionBody>[1]) => string))[] = [...summary.lines];
+    const e = enrollment();
     const target = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
-    lines.push(`${compact ? "Pending / trigger (~tokens)" : "Pending: / trigger — estimated tokens"}${enabled() ? "" : " (Off; stored evidence only)"}`);
-    for (const phase of ["noting", "consolidation"] as const) {
-      const pending = memory.pendingTokens(phase, target);
-      lines.push(paint => pendingBar(PHASE_LABEL[phase], pending, compact, paint));
-    }
-    // Knowledge is split into scope pools (global/project/session) that each trigger Dreaming
-    // independently, so each gets its own bar rather than one merged into the pool with the
-    // highest progress (maintainer 2026-09-24).
+    const noting = memory.pendingTokens("noting", target), consolidation = memory.pendingTokens("consolidation", target);
     const dreaming = memory.dreamingPending(target);
-    if (dreaming.pools) for (const pool of dreaming.pools)
-      lines.push(paint => pendingBar(DREAM_POOL_LABEL[pool.scope],
-        { tokens: pool.tokens, trigger: pool.trigger, state: "known" }, compact, paint));
-    else lines.push(paint => pendingBar("Dreaming",
-      { tokens: null, trigger: memory.config.dreaming.triggerTokens, state: dreaming.state }, compact, paint));
-    if (!compact) lines.push("Pending / trigger is not task completion or worker readiness.", summary.cost, ...summary.composition);
-    lines.push(...summary.shared);
-    return (width, paint) => statusBody([...summary.recovery, ...compositionMap(composition, model, width, paint), ...lines.map(line => typeof line === "string" ? line : line(paint))], width, paint);
-  };
-  // ---- 24b: the menu ----
-  const sessionMenu = async () => {
-    const shared = state.shared ? " Shared identity: this switch also affects forks or clones carrying this memory identity." : " Forks or clones carrying this memory identity share this switch.";
-    // 19c "Menu-only reset": Retry fork exists only while this session is automatically downgraded.
-    // No slash subcommand and no permanent menu item; it clears the suppression only.
+    const pools = Object.fromEntries((dreaming.pools ?? []).map(pool => [pool.scope, { tokens: pool.tokens, trigger: pool.trigger }]));
+    const unavailable = { tokens: null, trigger: memory.config.dreaming.triggerTokens };
+    const totals = state.sessionId ? memory.spend(state.sessionId) : undefined;
+    const notices: string[] = [];
+    if (state.sessionId && !enabled()) for (const task of memory.store.taskFailures(state.sessionId).filter(t => t.count >= 3))
+      notices.push(`Automatic off: ${task.phase} failed ${task.count} times (R${task.lastRunId}: ${task.lastReason}). Turn on to resume.`);
     const downgrade = suppressed();
-    const participation = enabled() ? "Off" : "On";
-    const body = sessionStatus(true);
-    const actions = [participation, "Runs", "Project", ...(downgrade ? ["Retry fork"] : [])];
-    const choice = ctx.mode === "tui" ? await showSessionPanel(ctx, body, actions)
-      : await ctx.ui.select(`Current session\n${body(Math.max(1, (process.stdout.columns ?? 100) - 2))}`, actions);
+    if (downgrade) notices.push(`Fork suppressed since ${downgrade.at}${downgrade.runId ? ` (R${downgrade.runId})` : ""}.`);
+    if (lastCompaction) notices.push(`Compaction: ${lastCompaction}`);
+    const catchup = catchupLine();
+    if (catchup) notices.push(catchup);
+    if (state.shared) notices.push("Shared identity");
+    return {
+      header: { session: state.sessionId ? `S${state.sessionId}` : "No session",
+        project: state.sessionId ? memory.store.getProject(memory.store.getSession(state.sessionId)!.projectId)!.name : state.project ?? "Unassigned",
+        enabled: enabled(), explicit: e.choice !== null },
+      context: { model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "Model unavailable",
+        ...(composition.sdkTokens !== undefined && composition.window !== undefined ? { sdk: { tokens: composition.sdkTokens, window: composition.window } } : {}),
+        categories: [
+          ...(["System", "Tools", "Skills"] as const).map(name => ({ name, tokens: composition.amounts[name] })),
+          ...(["Knowledge", "Facts", "Raw"] as const).map(name => ({ name, tokens: composition.memory[name] })),
+          { name: "Unclassified" as const, tokens: composition.memory.Unclassified },
+          ...(["Conversation", "Other"] as const).map(name => ({ name, tokens: composition.amounts[name] })),
+        ], complete: composition.complete },
+      pending: { noting: { tokens: noting.tokens, trigger: noting.trigger }, consolidation: { tokens: consolidation.tokens, trigger: consolidation.trigger },
+        dreaming: { global: pools.global ?? unavailable, project: pools.project ?? unavailable, session: pools.session ?? unavailable } },
+      spend: { session: totals?.cost ?? 0,
+        noting: { runs: totals?.runs.noting ?? 0, cost: totals?.costs.noting ?? 0 },
+        consolidation: { runs: totals?.runs.consolidation ?? 0, cost: totals?.costs.consolidation ?? 0 },
+        dreaming: { runs: totals?.runs.dreaming ?? 0, cost: totals?.costs.dreaming ?? 0 }, today: memory.spendSince(localMidnight()) },
+      notices, actions: { enabled: enabled(), retryForkAvailable: !!downgrade },
+    };
+  };
+  const sessionMenu = async () => {
+    const input = menuInput();
+    const actions = buildActions(input.actions);
+    const choice = ctx.mode === "tui" ? await showSessionPanel(ctx,
+      (width, paint) => renderTraceMenu(input, width, paint).slice(0, -1).join("\n"), actions)
+      : await ctx.ui.select(renderTraceMenu(input, Math.max(1, (process.stdout.columns ?? 100) - 2)).join("\n"), actions);
     if (choice === undefined) return; // cancellation is inert: no write, no request
     if (choice === "Retry fork") {
       memory.store.clearForkSuppression(state.sessionId!);
@@ -1631,29 +1643,30 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify("Trace Memory: fork retry enabled for this session. The next memory task may request fork again; no task was started and global settings are unchanged.", "info");
       return;
     }
-    if (choice === "Runs") {
-      const count = await ctx.ui.input("Runs: number to show", "10");
-      if (count !== undefined) runView(Math.max(1, Number(count) || 10));
+    if (choice === "Runs…") {
+      const count = await ctx.ui.input(MENU_INPUTS.runs, "10");
+      if (count !== undefined) {
+        try { runView(parseRunsCount(count)); }
+        catch (error) { ctx.ui.notify(`Trace Memory: ${String(error)}`, "error"); }
+      }
       return;
     }
-    if (choice === "Project") {
+    if (choice === "Project…") {
       if (!state.sessionId) { ctx.ui.notify("Trace Memory: a project assignment requires an assistant reply.", "warning"); return; }
-      const name = await ctx.ui.input("Project name (every session declaring this name in this database shares its knowledge; without a name, a new session joins the project its repository directory already has when that is exactly one project — home and temporary directories excluded)", state.project ?? "");
+      const name = await ctx.ui.input(MENU_INPUTS.project, state.project ?? "");
       if (name === undefined) return;
       if (!String(name).trim()) { ctx.ui.notify("Trace Memory: no project name given; nothing changed.", "warning"); return; }
       try { assignProject(String(name).trim()); } catch (error) { ctx.ui.notify(String(error), "error"); }
       return;
     }
-    if (choice === participation && await ctx.ui.confirm(`Turn Trace Memory ${participation.toLowerCase()} for this session?`, shared + (participation === "Off"
-      ? " Processing and future injection stop; stored memory and already-injected text remain."
-      : " Available history, including the paused interval, will be queued without a model call."))) toggle(participation === "On");
-  };
-  const menu = async () => {
-    const selected = await ctx.ui.select("Trace Memory", ["Current session", "Catch up", "Stop", "Settings"]);
-    if (selected === "Current session") await sessionMenu();
-    else if (selected === "Catch up") { try { startCatchup(); } catch (error) { ctx.ui.notify(String(error), "error"); } }
-    else if (selected === "Stop") stopCatchup();
-    else if (selected === "Settings") await settingsMenu();
+    if (choice === "Settings…") { await settingsMenu(); return; }
+    if (choice === "Catch up") { try { startCatchup(); } catch (error) { ctx.ui.notify(String(error), "error"); } return; }
+    if (choice === "Stop") { stopCatchup(); return; }
+    if (choice === "Turn on" || choice === "Turn off") {
+      const on = choice === "Turn on";
+      const confirmation = toggleConfirmation(on, !!state.shared);
+      if (await ctx.ui.confirm(confirmation.title, confirmation.message)) toggle(on);
+    }
   };
   pi.registerCommand("trace", { description: "Trace Memory: menu, session participation (on/off), catchup/stop and project assignment.",
     async handler(args, context) {
@@ -1661,7 +1674,7 @@ export default function (pi: ExtensionAPI) {
       const parts = args.trim() ? args.trim().split(/\s+/) : [];
       // Bare `/trace` opens the menu; without dialog-capable UI (`-p`, rpc scripting) it prints the
       // status the menu would have shown and the forms that replace the retired subcommands.
-      if (!parts.length) { if (context.hasUI) await menu(); else context.ui.notify(`Current session\n${sessionStatus()(Math.max(1, (process.stdout.columns ?? 100) - 2))}\n${commands}`, "info"); return; }
+      if (!parts.length) { if (context.hasUI) await sessionMenu(); else context.ui.notify(`${renderTraceMenu(menuInput(), Math.max(1, (process.stdout.columns ?? 100) - 2)).join("\n")}\n${commands}`, "info"); return; }
       const [verb, ...rest] = parts;
       if ((verb === "on" || verb === "off") && !rest.length) { toggle(verb === "on"); return; }
       if (verb === "catchup" && !rest.length) { startCatchup(); return; }
