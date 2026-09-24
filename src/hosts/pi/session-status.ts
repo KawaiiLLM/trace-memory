@@ -2,10 +2,14 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import type { ContextUsage } from "@earendil-works/pi-coding-agent";
 import type { TraceMemory } from "../../core/api/index.ts";
 import type { ContextComposition } from "./context-composition.ts";
+import { MEMORY_COLOR_HEX } from "../trace-menu.ts";
 
+// Knowledge/Facts/Raw/unclassified come from the shared model's `MEMORY_COLOR_HEX` (ticket 82 colour
+// ruling, 2026-09-24) so Pi and Claude Code paint the same warm family; every other role stays Pi's own.
 export const CONTEXT_PALETTE = {
   system: "#ee80af", tools: "#70c4a5", skills: "#b3a4f4",
-  knowledge: "#f08b48", facts: "#f4b552", raw: "#ebd873",
+  knowledge: MEMORY_COLOR_HEX.knowledge, facts: MEMORY_COLOR_HEX.facts, raw: MEMORY_COLOR_HEX.raw,
+  unclassified: MEMORY_COLOR_HEX.unclassified,
   conversation: "#79ade8", other: "#a7adb6", free: "#63707b",
 } as const;
 export type PaletteColor = keyof typeof CONTEXT_PALETTE;
@@ -66,7 +70,7 @@ const share = (value: number, total: number) => total ? (value < total / 100 && 
 const categoryOrder = ["System", "Tools", "Skills", "Memory", "Conversation", "Other"] as const;
 const memoryOrder = ["Knowledge", "Facts", "Raw", "Unclassified"] as const;
 const topColors = { System: "system", Tools: "tools", Skills: "skills", Conversation: "conversation", Other: "other" } as const;
-const memoryColors = { Knowledge: "knowledge", Facts: "facts", Raw: "raw", Unclassified: "other" } as const;
+const memoryColors = { Knowledge: "knowledge", Facts: "facts", Raw: "raw", Unclassified: "unclassified" } as const;
 const GRID_COLUMNS = 20;
 const NOMINAL_CELLS = 200;
 

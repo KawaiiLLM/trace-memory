@@ -4,7 +4,7 @@ import { CONTEXT_PALETTE, type Paint, type PaletteColor } from "./session-status
 
 const paletteToken: Record<PaletteColor, ThemeColor> = {
   system: "syntaxKeyword", tools: "syntaxFunction", skills: "syntaxString",
-  knowledge: "syntaxVariable", facts: "syntaxNumber", raw: "syntaxOperator",
+  knowledge: "syntaxVariable", facts: "syntaxNumber", raw: "syntaxOperator", unclassified: "syntaxPunctuation",
   conversation: "syntaxType", other: "syntaxComment", free: "dim",
 };
 const fallback = CONTEXT_PALETTE.free;
@@ -21,7 +21,7 @@ const paletteForegrounds = {
   syntaxKeyword: CONTEXT_PALETTE.system, syntaxFunction: CONTEXT_PALETTE.tools,
   syntaxVariable: CONTEXT_PALETTE.knowledge, syntaxString: CONTEXT_PALETTE.skills,
   syntaxNumber: CONTEXT_PALETTE.facts, syntaxType: CONTEXT_PALETTE.conversation,
-  syntaxOperator: CONTEXT_PALETTE.raw, syntaxPunctuation: fallback,
+  syntaxOperator: CONTEXT_PALETTE.raw, syntaxPunctuation: CONTEXT_PALETTE.unclassified,
   thinkingOff: fallback, thinkingMinimal: fallback, thinkingLow: fallback,
   thinkingMedium: fallback, thinkingHigh: fallback, thinkingXhigh: fallback,
   thinkingMax: fallback, bashMode: fallback,

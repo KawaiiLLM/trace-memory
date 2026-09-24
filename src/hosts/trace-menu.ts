@@ -46,10 +46,23 @@ const CATEGORY_LABEL: Record<ContextCategoryName, string> = {
   Raw: "Raw", Conversation: "Conversation", Other: "Other", Unclassified: "Memory, unclassified",
 };
 /** The palette role each category paints with; hosts map this onto their own color system. */
-export type ContextColor = "system" | "tools" | "skills" | "knowledge" | "facts" | "raw" | "conversation" | "other" | "free";
+export type ContextColor = "system" | "tools" | "skills" | "knowledge" | "facts" | "raw" | "unclassified" | "conversation" | "other" | "free";
 const CATEGORY_COLOR: Record<ContextCategoryName, ContextColor> = {
   System: "system", Tools: "tools", Skills: "skills", Knowledge: "knowledge", Facts: "facts", Raw: "raw",
-  Conversation: "conversation", Other: "other", Unclassified: "other",
+  Conversation: "conversation", Other: "other", Unclassified: "unclassified",
+};
+
+/** The one warm colour family the four memory rows (Knowledge, Facts, Raw, Memory-unclassified) share
+ * on both hosts (maintainer ruling, 2026-09-24: “trace memory类型的记忆应该用同族颜色”). Knowledge is
+ * darkest, Raw is lightest — Pi's pre-existing family, kept as the base. Unclassified is a muted shade
+ * of the same family (desaturated toward grey, still warm — R>G>B — not the neutral "other" grey used
+ * elsewhere). Defined once here so neither host's palette can drift from the other's; Claude Code's
+ * `<Text color>` accepts these hex values directly (verified live, ticket 82 delegation report). */
+export const MEMORY_COLOR_HEX: Record<"knowledge" | "facts" | "raw" | "unclassified", string> = {
+  knowledge: "#f08b48",
+  facts: "#f4b552",
+  raw: "#ebd873",
+  unclassified: "#bf9173",
 };
 
 export interface ContextCategoryInput { name: ContextCategoryName; tokens: number }
