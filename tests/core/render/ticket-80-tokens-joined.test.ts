@@ -57,7 +57,7 @@ test("adversarial boundaries: trailing/leading whitespace and punctuation runs a
   for (const parts of cases) check(parts);
 });
 
-test("recounting retained rendered views stays exact across punctuation and whitespace boundaries", () => {
+test("removing rendered-view prefixes stays exact across punctuation and whitespace boundaries", () => {
   const views = [
     entry(1, "user", "one!!!  "), entry(2, "assistant", "  二\n\n"),
     entry(3, "assistant", "three..."), entry(4, "user", "  four\t"),
@@ -66,13 +66,16 @@ test("recounting retained rendered views stays exact across punctuation and whit
   const samples = [...views, "", "\n\n", "hello!!!  ", " \t..\n", "\n".repeat(18)];
   let seed = 923, parts: string[] = [];
   const random = () => (seed = (seed * 1664525 + 1013904223) >>> 0);
-  let counter = new JoinedTokens();
+  const counter = new JoinedTokens();
   for (let i = 0; i < 500; i++) {
     if (parts.length && random() % 3 === 0) {
       const count = 1 + random() % parts.length;
+      const removed = parts.slice(0, count);
+      const characters = removed.reduce((sum, part) => sum + part.length, 0)
+        + Math.min(count, parts.length - 1) * 2;
+      // Each removed part owns its following separator, except the last part of an empty suffix.
+      counter.removePrefix(characters);
       parts = parts.slice(count);
-      counter = new JoinedTokens();
-      parts.forEach((part, index) => { if (index) counter.add("\n\n"); counter.add(part); });
     } else {
       const part = samples[random() % samples.length]!;
       if (parts.length) counter.add("\n\n");
@@ -94,9 +97,8 @@ test("empty-view separators never rescan the retained whitespace run", () => {
     expect(longest).toBeLessThanOrEqual(2);
     const joined = first + "\n\n".repeat(2000);
     expect(counter.count).toBe(tokens(joined));
-    const suffix = new JoinedTokens();
-    suffix.add(joined.slice(2000));
-    expect(suffix.count).toBe(tokens(joined.slice(2000)));
+    counter.removePrefix(2000);
+    expect(counter.count).toBe(tokens(joined.slice(2000)));
   }
 });
 

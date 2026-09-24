@@ -57,8 +57,8 @@ test("noting an entry drops its cached view, so a later re-render (if it were ev
   } finally { memory.close(); }
 });
 
-test("own Noting commit drops only counted head entries and retains rendered suffix", () => {
-  const { memory, store, session, target } = seeded(35);
+test("own Noting commit drops counted head entries without recounting a large rendered suffix", () => {
+  const { memory, store, session, target } = seeded(220);
   try {
     memory.config.noting.triggerTokens = 1_000_000;
     store.publishSourcePath(session.id, "main", store.pendingEntryIds(session.id, "main", target.headTurnId), target.headTurnId, "native");
@@ -78,10 +78,12 @@ test("own Noting commit drops only counted head entries and retains rendered suf
     const expected = render.tokens(ids.map(id => render.renderEntry(store.getSourceEntry(id)!, memory.config.render).content).join("\n\n"));
     rendered.mockClear();
     const raw = vi.spyOn(store, "getSourceEntry");
+    const added = vi.spyOn(render.JoinedTokens.prototype, "add");
     expect(memory.pendingTokens("noting", target).tokens).toBe(expected);
+    expect(added).not.toHaveBeenCalled();
     expect(rendered).not.toHaveBeenCalled();
     expect(raw).not.toHaveBeenCalled();
-    raw.mockRestore(); rendered.mockRestore();
+    added.mockRestore(); raw.mockRestore(); rendered.mockRestore();
   } finally { memory.close(); }
 });
 

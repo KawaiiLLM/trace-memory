@@ -133,39 +133,69 @@ interface TokenSegment {
   text: string;
   length: number;
   charge: number;
-  previousKind?: 0 | 1 | 2 | 3;
+  previous?: TokenSegment;
+  next?: TokenSegment;
 }
 
-/** Exact token count for an appended string. Whitespace uses the same newline/horizontal sub-run
- * pricing as tokens(); all other segments match tokens(). Charges depend only on adjacent runs.
- * Whitespace is stored as lengths, so empty-view separators never trigger quadratic rescanning
- * or retain an ever-growing string. */
+/** Exact token count for an appended string with removable leading characters. Whitespace uses
+ * the same newline/horizontal sub-run pricing as tokens(); all other segments match tokens().
+ * Charges depend only on adjacent runs. Whitespace is stored as lengths, so empty-view separators
+ * never trigger quadratic rescanning or retain an ever-growing string. */
 export class JoinedTokens {
+  #first?: TokenSegment;
   #last?: TokenSegment;
   #total = 0;
-  #refresh(segment: TokenSegment, hasNext: boolean): void {
+  #length = 0;
+  #refresh(segment: TokenSegment | undefined): void {
+    if (!segment) return;
     this.#total -= segment.charge;
     segment.charge = segment.kind <= 1
-      ? whitespaceRunTokens(segment.length, segment.kind === 0, segment.previousKind === 2,
-        segment.previousKind === 0, segment.previousKind === undefined && !hasNext)
+      ? whitespaceRunTokens(segment.length, segment.kind === 0, segment.previous?.kind === 2,
+        segment.previous?.kind === 0, !segment.previous && !segment.next)
       : segmentTokens(segment.text, "", "");
     this.#total += segment.charge;
   }
   add(text: string): void {
+    this.#length += text.length;
     for (const part of text.split(JOINED_SPLIT).filter(Boolean)) {
       const kind = segmentClass(part);
       if (this.#last?.kind === kind) {
         this.#last.length += part.length;
         if (kind >= 2) this.#last.text += part;
-        this.#refresh(this.#last, false);
+        this.#refresh(this.#last.previous);
+        this.#refresh(this.#last);
       } else {
         const segment: TokenSegment = { kind, text: kind >= 2 ? part : "", length: part.length,
-          charge: 0, previousKind: this.#last?.kind };
-        if (this.#last) this.#refresh(this.#last, true);
+          charge: 0, previous: this.#last };
+        if (this.#last) this.#last.next = segment;
+        else this.#first = segment;
         this.#last = segment;
-        this.#refresh(segment, false);
+        this.#refresh(segment.previous);
+        this.#refresh(segment);
       }
     }
+  }
+  removePrefix(length: number): void {
+    if (!Number.isSafeInteger(length) || length < 0 || length > this.#length) throw new RangeError("invalid token prefix length");
+    this.#length -= length;
+    while (length && this.#first) {
+      const segment = this.#first;
+      if (length < segment.length) {
+        this.#total -= segment.charge;
+        segment.charge = 0;
+        segment.length -= length;
+        if (segment.kind >= 2) segment.text = segment.text.slice(length);
+        length = 0;
+        break;
+      }
+      length -= segment.length;
+      this.#total -= segment.charge;
+      this.#first = segment.next;
+      if (this.#first) this.#first.previous = undefined;
+      else this.#last = undefined;
+    }
+    this.#refresh(this.#first);
+    this.#refresh(this.#first?.next);
   }
   get count(): number { return this.#total; }
 }
