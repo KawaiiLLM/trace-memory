@@ -98,7 +98,7 @@ test.each(["consolidation", "dreaming"] as const)("R4 a non-success ordinary %s 
   expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase });
 });
 
-test("86: catchup D failure preserves partial writes and admits a fresh range without checking C/D", async () => {
+test("86: scheduler retries D after reported partial writes without checking C/D", async () => {
   const f = fixture();
   const writes: string[] = [];
   let attempt = 0;
@@ -115,7 +115,7 @@ test("86: catchup D failure preserves partial writes and admits a fresh range wi
   expect(attempt).toBe(2);
   expect(writes).toEqual(["committed revision 1", "committed revision 2"]);
   expect(checks.slice(0, 2)).toEqual(["consolidation", "dreaming"]);
-  expect(checks.slice(2)).toEqual(["consolidation", "dreaming", "consolidation", "dreaming"]); // success checkpoint and completion only
+  expect(checks.slice(2)).toEqual(["consolidation", "dreaming", "consolidation", "dreaming"]); // only the success checkpoint and completion
 });
 
 test("86: a failed ordinary D with partial writes does not checkpoint C or D", async () => {
@@ -134,7 +134,7 @@ test("86: a failed ordinary D with partial writes does not checkpoint C or D", a
   expect(signal).toBe("partial-write");
 });
 
-test("86: a Dreamer wall-clock failure retries its frozen phase; stop at completion fences retry", async () => {
+test("86: stop before a reported Dreamer deadline failure settles fences its retry", async () => {
   const f = fixture();
   let release!: () => void;
   const execute = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; });
