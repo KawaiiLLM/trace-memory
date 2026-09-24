@@ -54,6 +54,35 @@ test("adversarial boundaries: trailing/leading whitespace and punctuation runs a
   for (const parts of cases) check(parts);
 });
 
+test("removing rendered-view prefixes stays exact across punctuation and whitespace boundaries", () => {
+  const views = [
+    entry(1, "user", "one!!!  "), entry(2, "assistant", "  二\n\n"),
+    entry(3, "assistant", "three..."), entry(4, "user", "  four\t"),
+    entry(5, "user", "五??"),
+  ].map(source => view(source));
+  const samples = [...views, "", "\n\n", "hello!!!  ", " \t..\n", "\n".repeat(18)];
+  let seed = 923, parts: string[] = [];
+  const random = () => (seed = (seed * 1664525 + 1013904223) >>> 0);
+  const counter = new JoinedTokens();
+  for (let i = 0; i < 500; i++) {
+    if (parts.length && random() % 3 === 0) {
+      const count = 1 + random() % parts.length;
+      const removed = parts.slice(0, count);
+      const characters = removed.reduce((sum, part) => sum + part.length, 0)
+        + Math.min(count, parts.length - 1) * 2;
+      // Each removed part owns its following separator, except the last part of an empty suffix.
+      counter.removePrefix(characters);
+      parts = parts.slice(count);
+    } else {
+      const part = samples[random() % samples.length]!;
+      if (parts.length) counter.add("\n\n");
+      counter.add(part);
+      parts.push(part);
+    }
+    expect(counter.count, `step ${i}; parts: ${JSON.stringify(parts)}`).toBe(tokens(parts.join("\n\n")));
+  }
+});
+
 test("a direct append matches string concatenation for a running total", () => {
   const counter = new JoinedTokens();
   const pieces = ["[T1#E1@text] user: first", "\n\n", "[T1#E2@text] assistant: second\n", "\n\n", "[T1#E3@text] user: third"];

@@ -125,29 +125,66 @@ const PUNCTUATION_RUN = wholeRun(PUNCTUATION);
 // 0 = whitespace run, 1 = punctuation run, 2 = everything else (`SPLIT`'s three delimiter classes).
 const segmentClass = (segment: string): 0 | 1 | 2 => /^\s+$/.test(segment) ? 0 : PUNCTUATION_RUN.test(segment) ? 1 : 2;
 
-/** Ticket 80: an exact running token count of text appended piece by piece, without re-tokenizing
- * the whole prefix on every append the way `tokens(joined)` on a growing string does (quadratic in
- * the number of pieces). Exact because `segmentTokens` only ever consults the segment immediately
- * before or after it (`whitespaceTokens`'s `context`/`next`), and `String.split(SPLIT)` never leaves
- * two adjacent segments of the same delimiter class — each match is already the longest one possible
- * for its class — so splitting each appended piece on its own and re-merging a same-class pair that
- * meets at the seam reproduces the identical segment sequence `tokens()` would find on the full
- * string; only the one segment still open at the seam needs to wait for its real neighbor before it
- * is charged. */
+interface TokenSegment {
+  text: string;
+  charge: number;
+  previous?: TokenSegment;
+  next?: TokenSegment;
+}
+
+/** Exact token count for an appended string with removable leading characters. The split segments
+ * are the same maximal runs as `tokens()`. A segment's charge depends only on its immediate
+ * neighbors, so appending or removing at an end changes at most two surviving charges. */
 export class JoinedTokens {
+  #first?: TokenSegment;
+  #last?: TokenSegment;
   #total = 0;
-  #pending = "";
-  #before = "";
-  #open = false;
+  #length = 0;
+  #refresh(segment: TokenSegment | undefined): void {
+    if (!segment) return;
+    this.#total -= segment.charge;
+    segment.charge = segmentTokens(segment.text, segment.previous?.text ?? "", segment.next?.text ?? "");
+    this.#total += segment.charge;
+  }
   add(text: string): void {
-    for (const segment of text.split(SPLIT).filter(Boolean)) {
-      if (this.#open && segmentClass(this.#pending) === segmentClass(segment)) { this.#pending += segment; continue; }
-      if (this.#open) { this.#total += segmentTokens(this.#pending, this.#before, segment); this.#before = this.#pending; }
-      this.#pending = segment;
-      this.#open = true;
+    this.#length += text.length;
+    for (const part of text.split(SPLIT).filter(Boolean)) {
+      if (this.#last && segmentClass(this.#last.text) === segmentClass(part)) {
+        this.#last.text += part;
+        this.#refresh(this.#last.previous);
+        this.#refresh(this.#last);
+      } else {
+        const segment: TokenSegment = { text: part, charge: 0, previous: this.#last };
+        if (this.#last) this.#last.next = segment;
+        else this.#first = segment;
+        this.#last = segment;
+        this.#refresh(segment.previous);
+        this.#refresh(segment);
+      }
     }
   }
-  get count(): number { return this.#open ? this.#total + segmentTokens(this.#pending, this.#before, "") : this.#total; }
+  removePrefix(length: number): void {
+    if (!Number.isSafeInteger(length) || length < 0 || length > this.#length) throw new RangeError("invalid token prefix length");
+    this.#length -= length;
+    while (length && this.#first) {
+      const segment = this.#first;
+      if (length < segment.text.length) {
+        this.#total -= segment.charge;
+        segment.charge = 0;
+        segment.text = segment.text.slice(length);
+        length = 0;
+        break;
+      }
+      length -= segment.text.length;
+      this.#total -= segment.charge;
+      this.#first = segment.next;
+      if (this.#first) this.#first.previous = undefined;
+      else this.#last = undefined;
+    }
+    this.#refresh(this.#first);
+    this.#refresh(this.#first?.next);
+  }
+  get count(): number { return this.#total; }
 }
 
 /** Exact tokens of `parts.join(separator)`, tokenizing each part once instead of re-tokenizing the

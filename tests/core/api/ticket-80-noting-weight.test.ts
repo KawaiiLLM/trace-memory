@@ -57,6 +57,32 @@ test("noting an entry drops its cached view, so a later re-render (if it were ev
   } finally { memory.close(); }
 });
 
+test("own Noting commit drops only counted head entries and retains rendered suffix", () => {
+  const { memory, store, session, target } = seeded(35);
+  try {
+    memory.config.noting.triggerTokens = 1_000_000;
+    store.publishSourcePath(session.id, "main", store.pendingEntryIds(session.id, "main", target.headTurnId), target.headTurnId, "native");
+    const pending = store.pendingEntryState(session.id, "main", target.headTurnId);
+    const before = memory.pendingTokens("noting", target).tokens;
+    expect(before).toBeGreaterThan(0);
+    const removed = [...pending].slice(0, 7);
+    const result = store.commitNotingRun({ run: { kind: "noting", sessionId: session.id,
+      branch: "main", rangeFrom: `S${session.id}/T${store.getSourceEntry(removed[0]!)!.turnId}`,
+      rangeTo: `S${session.id}/T${store.getSourceEntry(removed.at(-1)!)!.turnId}`, createdAt: "now" },
+      entryIds: removed, facts: [] });
+    expect(result.ok).toBe(true);
+    expect(store.pendingEntryState(session.id, "main", target.headTurnId)).toBe(pending);
+    expect(pending.offset).toBe(removed.length);
+    const rendered = vi.spyOn(render, "renderEntry");
+    const ids = [...pending];
+    const expected = render.tokens(ids.map(id => render.renderEntry(store.getSourceEntry(id)!, memory.config.render).content).join("\n\n"));
+    rendered.mockClear();
+    expect(memory.pendingTokens("noting", target).tokens).toBe(expected);
+    expect(rendered).not.toHaveBeenCalled();
+    rendered.mockRestore();
+  } finally { memory.close(); }
+});
+
 test("early stop: a cold due check against a large backlog renders only up to the crossing entry", () => {
   const { memory, target } = seeded(400, 60);
   try {

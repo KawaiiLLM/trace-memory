@@ -32,7 +32,7 @@ export type { TriggerOrigin, TriggerOriginRelation } from "../model/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
 export type { NotingDiagnostic, NotingNearAudit, NotingUnansweredNearPair } from "../noting/review.ts";
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
-import { Store, type SourceInput, type SourceEntry, type SourceEntryMeta, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
+import { Store, type PendingEntries, type SourceInput, type SourceEntry, type SourceEntryMeta, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
 import { admitDreaming, freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
@@ -730,9 +730,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // (never re-reading Raw) for an entry already seen. Pruned to exactly the still-pending set on every
   // read: an entry drops out the moment it is noted, instead of leaking for the life of the process.
   const notingViewCache = new Map<number, string>();
-  let lastPending: readonly number[] | undefined;
-  const counted = new WeakMap<readonly number[], { count: JoinedTokens; length: number }>();
-  const pendingState = (target: TaskTarget): readonly number[] => {
+  let lastPending: PendingEntries | undefined;
+  type CountedPrefix = { count: JoinedTokens; offset: number; end: number; views: Map<number, { id: number; text: string }> };
+  const counted = new WeakMap<PendingEntries, CountedPrefix>();
+  const pendingState = (target: TaskTarget): PendingEntries => {
     const pending = store.pendingEntryState(target.sessionId, target.branch, target.headTurnId);
     if (pending !== lastPending) {
       const stillPending = new Set(pending);
@@ -741,19 +742,37 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }
     return pending;
   };
-  const countPending = (pending: readonly number[], limit: number): number => {
+  const countPending = (pending: PendingEntries, limit: number): number => {
     let prefix = counted.get(pending);
-    if (!prefix) { prefix = { count: new JoinedTokens(), length: 0 }; counted.set(pending, prefix); }
-    while (prefix.length < pending.length && prefix.count.count < limit) {
-      const id = pending[prefix.length]!;
+    if (!prefix) {
+      prefix = { count: new JoinedTokens(), offset: pending.offset, end: pending.offset, views: new Map() };
+      counted.set(pending, prefix);
+    }
+    if (pending.offset > prefix.offset) {
+      const removedEnd = Math.min(pending.offset, prefix.end);
+      let removedChars = 0;
+      for (let position = prefix.offset; position < removedEnd; position++) {
+        const view = prefix.views.get(position)!;
+        removedChars += view.text.length + (position + 1 < prefix.end ? 2 : 0);
+        notingViewCache.delete(view.id);
+        prefix.views.delete(position);
+      }
+      // Every removed view except the last counted view also removes its following separator.
+      // The suffix keeps the exact segment boundaries of the original joined string.
+      prefix.count.removePrefix(removedChars);
+      prefix.offset = pending.offset;
+      prefix.end = Math.max(prefix.end, pending.offset);
+    }
+    while (prefix.end - pending.offset < pending.length && prefix.count.count < limit) {
+      const id = pending.at(prefix.end - pending.offset)!;
       let view = notingViewCache.get(id);
       if (view === undefined) {
         view = renderEntry(store.getSourceEntry(id)!, cfg.render, resultText).content;
         notingViewCache.set(id, view);
       }
-      if (prefix.length) prefix.count.add("\n\n");
+      if (prefix.end > pending.offset) prefix.count.add("\n\n");
       prefix.count.add(view);
-      prefix.length++;
+      prefix.views.set(prefix.end++, { id, text: view });
     }
     return prefix.count.count;
   };

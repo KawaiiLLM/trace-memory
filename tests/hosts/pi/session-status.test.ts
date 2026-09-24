@@ -177,7 +177,7 @@ test("no session, Off, zero and unavailable remain distinct; original actions an
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries); expect(h.statuses.get("trace-memory")).toBe(footer);
   await h.commands.get("trace").handler("off", h.ctx);
   expect(await open(h)).toContain("Off; stored evidence only");
-  vi.spyOn(Store.prototype, "pendingEntryIds").mockImplementation(() => { throw Error("unreadable"); });
+  vi.spyOn(Store.prototype, "pendingEntryState").mockImplementation(() => { throw Error("unreadable"); });
   expect(await open(h)).toContain("Noting        ?????????? Unknown/10k (unavailable)");
   expect(h.requests).toEqual([]);
 });

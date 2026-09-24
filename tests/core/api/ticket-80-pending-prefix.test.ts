@@ -88,13 +88,13 @@ test("80: a historical head never inherits a newly appended future Turn", () => 
     const t2 = add(t1.turn.id, "t2");
     store.appendSourcePath(session.id, "main", store.sourcePathState(session.id, "main")!,
       [t2.entry.id], t2.turn.id, "native");
-    expect(store.pendingEntryState(session.id, "main", t1.turn.id)).toEqual([t1.entry.id]);
+    expect([...store.pendingEntryState(session.id, "main", t1.turn.id)]).toEqual([t1.entry.id]);
     expect(store.pendingEntryState(session.id, "main", t1.turn.id)).not.toBe(historical);
     // Warm the historical head while the selected path already extends beyond it.
     const t3 = add(t2.turn.id, "t3");
     store.appendSourcePath(session.id, "main", store.sourcePathState(session.id, "main")!,
       [t3.entry.id], t3.turn.id, "native");
-    expect(store.pendingEntryState(session.id, "main", t3.turn.id))
+    expect([...store.pendingEntryState(session.id, "main", t3.turn.id)])
       .toEqual([t1.entry.id, t2.entry.id, t3.entry.id]);
   } finally { memory.close(); }
 });
