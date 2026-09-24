@@ -308,6 +308,36 @@ function memoryWriter() {
   return { s, t, path, tools, write, create };
 }
 
+test("2026-09-24, 85: '余量只有一点，几乎必然导致每次C都会触发D' — over budget alone never makes Dreaming due", async () => {
+  const { path, create, write } = memoryWriter();
+  const first = write([{ ...create, text: "Durable user constraint ".repeat(150) }]).committed[0];
+  expect(first).toBeTruthy();
+  memory.config.dreaming.triggerTokens = 1;
+  const finished = await admittedScenarios.run(memory, path, input => {
+    input.acknowledgeRequest();
+    const result = input.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      skipped: [{ knowledge: `K${first.knowledgeId}@${first.commit}`, because: "Reviewed unchanged" }] });
+    expect(result).toContain("committed");
+    return ok([]);
+  });
+  expect(finished.outcome).toBe("success");
+  memory.config.dreaming.triggerTokens = 5_000;
+  const projectPool = `project:${memory.store.getSession(path.sessionId)!.projectId}`;
+  const size = memory.store.poolSizes(path).find(pool => pool.pool === projectPool)!.tokens;
+  const second = write([{ ...create, text: "A later small correction" }]).committed[0];
+  expect(second).toBeTruthy();
+  memory.setKnowledgeBudget("project", size - 1);
+  const projected = memory.store.knowledgePools(path, 5_000).find(pool => pool.pool === projectPool)!;
+  expect(projected.tokens).toBeGreaterThan(projected.budget);
+  expect(projected.pending.length).toBe(1);
+  expect(projected.pending[0]!.tokens).toBeLessThan(projected.budget);
+  expect(memory.store.duePools(path, 5_000)).not.toContainEqual(expect.objectContaining({ pool: projectPool }));
+  expect(memory.taskEligibility("dreaming", path)).toEqual({ due: false });
+  expect(memory.store.admitKnowledgePool(path, memory.executorId, false, undefined, 5_000).outcome).toBe("empty");
+  memory.setKnowledgeBudget("project", projected.pending[0]!.tokens);
+  expect(memory.store.duePools(path, 5_000)).toContainEqual(expect.objectContaining({ pool: projectPool }));
+});
+
 test("2026-09-07: one operation shape, inapplicable fields rejected", () => {
   const { create, write } = memoryWriter();
   write([create]);

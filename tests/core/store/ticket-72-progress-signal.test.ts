@@ -45,7 +45,7 @@ test("72: a knowledge-budget edit changes the signal", () => {
   expect(store.progressSignal(sessionId)).not.toBe(before);
 });
 
-test("72: an over-budget suppression state change (knowledge_pool_state) changes the signal", () => {
+test("85: settling a Dreaming range changes the signal through processing records, not pool state", () => {
   const store = open();
   const { sessionId, turnId, entry } = seeded(store);
   const noted = store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time },
@@ -58,13 +58,12 @@ test("72: an over-budget suppression state change (knowledge_pool_state) changes
   const path = { sessionId, branch: "main", headTurnId: turnId };
   const claim = store.acquireClaim(path, "dreaming", "ticket-72-test")!;
   const range = store.retainKnowledgePoolRange(path, `session:${sessionId}`, claim);
-  // Shrink the budget after the range froze (so retain-time selection already succeeded), so the
-  // pool reads as over budget once this run completes.
+  // Shrink the budget after the range froze; range settlement still writes processing records.
   store.setKnowledgeBudget("session", 1);
   const executionId = store.beginExecution({ sessionId, phase: "dreaming", head: range.anchor, origin: range.origin });
   const run = store.bindDreamingRun({ kind: "dreaming", sessionId, branch: "main", dreamingRangeId: range.id, executionId, claim, createdAt: time });
   const before = store.progressSignal(sessionId);
-  store.completeKnowledgePoolRange(run, "success", range.eventIds); // no operation: leaves the pool over budget and suppressed
+  store.completeKnowledgePoolRange(run, "success", range.eventIds); // skip records, no pool-state write
   store.releaseClaim(claim);
   expect(store.progressSignal(sessionId)).not.toBe(before);
 });

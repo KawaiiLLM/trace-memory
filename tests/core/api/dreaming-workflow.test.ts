@@ -74,6 +74,30 @@ test("64c prompt and fixture use only the current maintenance contract", () => {
   expect(prompt).toContain("Another pool over budget is reported, not acted on");
 });
 
+test("85: a pending-triggered deterministic Dreamer still archives until its selected pool fits", async () => {
+  const state = seeded([{ text: "Routine progress record ".repeat(600), category: "reference", scope: "project", topics: [] }]);
+  const pool = `project:${state.store.getSession(state.target.sessionId)!.projectId}`;
+  const size = state.store.poolSizes(state.target).find(value => value.pool === pool)!.tokens;
+  const weight = state.store.pendingPoolWeight(pool, state.target);
+  expect(weight).toBeGreaterThan(5_000);
+  state.store.setKnowledgeBudget("project", Math.max(5_700, Math.floor(size * 0.75)));
+  expect(state.store.poolSizes(state.target).find(value => value.pool === pool)!.tokens).toBeGreaterThan(state.store.knowledgeBudgets().project);
+  expect(state.store.duePools(state.target, state.memory.config.dreaming.triggerTokens).map(value => value.pool)).toContain(pool);
+  const outcome = await state.scenarios.run(state.memory, state.target, task => {
+    task.acknowledgeRequest();
+    const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [
+      { op: "archive", id: handle(state.items[0]!), supports: [], reason: "Reviewed low-value routine progress retired to fit budget" }],
+      skipped: [] }));
+    expect(receipt.committed).toHaveLength(1);
+    expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
+    return success;
+  });
+  expect(outcome.outcome, JSON.stringify(outcome)).toBe("success");
+  const final = state.store.poolSizes(state.target).find(value => value.pool === pool)!;
+  expect(final.tokens).toBeLessThanOrEqual(final.budget);
+  expect(state.store.currentCommit(state.items[0]!.knowledgeId, state.target)[0]!.op).toBe("archive");
+});
+
 test("35c faithful merge keeps authority, conditions, exception and rendered topics through a real pool run", async () => {
   const reviewed = example("faithful-authority-merge"), body = reviewed.result as unknown as ParentExample, state = seeded(reviewed.parents);
   let merged!: { knowledgeId: number; commit: number };

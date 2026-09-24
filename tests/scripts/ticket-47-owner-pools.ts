@@ -52,7 +52,7 @@ try {
       path,
       pools: store.poolSizes(path),
       pending: Object.fromEntries(owners.map(owner => [owner, store.pendingVersions(owner, path).length])),
-      due: store.duePools(path).map(value => ({ pool: value.pool, reason: value.reason, pending: value.pending.length })),
+      due: store.duePools(path).map(value => ({ pool: value.pool, pending: value.pending.length })),
       activePath: {
         owners: Object.fromEntries(owners.map(owner => [owner, measured(activePools.get(owner)!.values())])),
         applicable: measured(active),

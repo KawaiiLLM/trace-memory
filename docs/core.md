@@ -36,8 +36,8 @@ Dreaming maintains one due Knowledge pool in a fresh subagent. The three pool id
 `global`, `project:<id>` and `session:<id>`. After every ingested entry, the host checks the pools
 visible at that node independently. Pending membership is the current visible, non-archived revision
 of each identity for which that pool has no `(pool, revision)` processing record. Intermediate
-revisions do not accumulate weight. A pool is due when pending tokens reach
-`min(dreaming.triggerTokens, pool budget)`, or when over budget and re-armed.
+revisions do not accumulate weight. A pool is due when nonempty pending reaches
+`min(dreaming.triggerTokens, pool budget)`; excess size alone does not trigger a run.
 
 Each run freezes one due pool and an oldest eligible prefix no larger than that pool's full budget.
 The database defaults are Global 4,000, Project 15,000 and Session 1,000 tokens. With the configured
@@ -109,8 +109,8 @@ Dreamer has no tool-round ceiling. The shared `dreaming.timeoutMs` default is 60
 on both hosts, including Pi where this adds a new time bound. Expiry closes writes, fails the run with
 the bound in its reason, settles partial work and releases its claim; it is not a completed pass.
 
-An over-budget pool with pending material stays due. With none pending, it is suppressed only while
-its recorded size and budget are unchanged; residual revision sets do not decide eligibility. Project relabelling creates no processing event:
+Budget excess is not a due condition; a pending-triggered run still archives until its pool fits.
+Project relabelling creates no processing event:
 a moved project revision is pending in the destination only when that destination pool lacks its
 exact processing record. Global and session records do not move.
 

@@ -916,6 +916,7 @@ export class Store {
       }
       this.db.exec(SCHEMA_SQL);
       migrateDreaming(this.db, true);
+      this.db.exec("DROP TABLE IF EXISTS knowledge_pool_state");
       this.transaction(() => {
         // 62: existing sessions keep NULL; they are never re-attributed to a directory.
         const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
@@ -1682,7 +1683,7 @@ export class Store {
   acquireClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed = false, eligible: () => boolean = () => true): TaskClaim | null {
     return this.transaction(() => this.acquireAvailableClaim(target, phase, executorId, borrowed, () => {
       const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId)
-        : phase === "dreaming" ? this.knowledgePools(target).filter(pool => pool.reason !== null || pool.pending.length > 0)
+        : phase === "dreaming" ? this.knowledgePools(target).filter(pool => pool.pending.length > 0)
         : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
       return pending.length > 0;
     }, eligible));
@@ -3171,8 +3172,6 @@ export class Store {
     const history = this.db.prepare(`SELECT p.pool, p.revision_id FROM knowledge_processed p
       WHERE p.pool IN (SELECT value FROM json_each(?))`).all(JSON.stringify(pools.map(([pool]) => pool)));
     const processed = new Set(history.map(row => `${row.pool}:${row.revision_id}`));
-    const states = new Map(this.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool IN (SELECT value FROM json_each(?))")
-      .all(JSON.stringify(pools.map(([pool]) => pool))).map(row => [String(row.pool), row]));
     return pools.map(([pool, budget]) => {
       const values = versions.get(pool)!;
       const rendered = new Map(values.map(value => [value.revision.id, renderKnowledge(value)]));
@@ -3209,18 +3208,9 @@ export class Store {
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(archivedBody), material };
       });
       const pending = [...pendingUpdates, ...pendingArchives].sort((left, right) => left.revisionId - right.revisionId);
-      let reason: DueKnowledgePool["reason"] | null = null;
       const pendingTokens = pending.reduce((sum, value) => sum + value.tokens, 0);
-      const effectiveTrigger = Math.min(dreamingTriggerTokens, budget);
-      if (pending.length && pendingTokens >= effectiveTrigger) reason = "pending";
-      else if (size > budget) {
-        const state = states.get(pool);
-        // Pending always wins on the over-budget path. Only a fully deliberated residual may be
-        // suppressed while its measured size and budget remain unchanged.
-        if (pending.length || !state || Number(state.last_over_size) !== size || Number(state.last_over_budget) !== budget)
-          reason = "over-budget";
-      }
-      return { pool, budget, tokens: size, versions: values, rendered, archived: archivedVersions.get(pool) ?? [], pending, reason };
+      const due = pending.length > 0 && pendingTokens >= Math.min(dreamingTriggerTokens, budget);
+      return { pool, budget, tokens: size, versions: values, rendered, archived: archivedVersions.get(pool) ?? [], pending, due };
     });
   }
 
@@ -3247,7 +3237,7 @@ export class Store {
   }
 
   duePools(path: KnowledgePath, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS): DueKnowledgePool[] {
-    return this.knowledgePools(path, dreamingTriggerTokens).flatMap(({ pool, budget, tokens, pending, reason }) => reason ? [{ pool, budget, tokens, pending, reason }] : []);
+    return this.knowledgePools(path, dreamingTriggerTokens).flatMap(({ pool, budget, tokens, pending, due }) => due ? [{ pool, budget, tokens, pending }] : []);
   }
 
   private poolBudget(pool: string): number {
@@ -3262,7 +3252,7 @@ export class Store {
     return this.transaction(() => {
       if (!this.enabled(target.sessionId) || (executorSessionId !== undefined && !this.enabled(executorSessionId)))
         return { outcome: "dropped" as const };
-      const pool = this.knowledgePools(target, dreamingTriggerTokens).find(value => value.reason !== null);
+      const pool = this.knowledgePools(target, dreamingTriggerTokens).find(value => value.due);
       if (!pool) return { outcome: "empty" as const };
       const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true);
       if (!claim) return { outcome: "dropped" as const };
@@ -3275,7 +3265,7 @@ export class Store {
    * inside this operation; no caller can submit a stale prepared projection as write authority. */
   freezeKnowledgePool(target: TaskTarget, claim: TaskClaim, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
     return this.transaction(() => {
-      const pool = this.knowledgePools(target, dreamingTriggerTokens).find(value => value.reason !== null);
+      const pool = this.knowledgePools(target, dreamingTriggerTokens).find(value => value.due);
       if (!pool) throw new Error("No Knowledge pool is due");
       return { pool, range: this.retainProjectedPoolRange(target, pool, claim) };
     });
@@ -3309,7 +3299,7 @@ export class Store {
           ON c.session_id = r.session_id AND c.phase = 'dreaming' AND c.token = r.claim_token
         WHERE r.pool IS NOT NULL AND r.completed_run IS NULL AND r.closed_at IS NULL AND c.expires_at > ?`)
         .all(now) as { event_id: number }[]).map(row => row.event_id));
-      if (!due.reason && !due.pending.length) throw new Error(`Pool ${pool} is not due`);
+      if (!due.pending.length) throw new Error(`Pool ${pool} has no pending versions`);
       const selected: PendingKnowledgeVersion[] = [];
       for (const revision of due.pending) {
         if (reserved.has(revision.revisionId)) continue;
@@ -3361,20 +3351,6 @@ export class Store {
       const closed = this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ?, closed_at = ?
         WHERE id = ? AND completed_run IS NULL AND closed_at IS NULL`).run(runId, new Date().toISOString(), range.id);
       if (closed.changes !== 1) throw new Error("Knowledge pool range was not closed atomically");
-      // A pre-commit cancellation closes its reservation but does not service or suppress the pool:
-      // a run that neither committed a revision nor skipped a version leaves no trace in pool state.
-      const consumes = outcome !== "cancelled" || own.length > 0 || skippedRevisionIds.length > 0;
-      if (consumes) {
-        const path = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
-        const size = this.knowledgePools(path).find(value => value.pool === range.pool)!;
-        // A run with pending untouched material must not establish an excess-suppression baseline.
-        // residual_revisions remains schema history only; admission no longer reads it.
-        if (size.tokens > size.budget && !size.pending.length) {
-          this.db.prepare(`INSERT INTO knowledge_pool_state(pool,last_over_size,last_over_budget,residual_revisions) VALUES (?,?,?,?)
-            ON CONFLICT(pool) DO UPDATE SET last_over_size=excluded.last_over_size,last_over_budget=excluded.last_over_budget,
-              residual_revisions=excluded.residual_revisions`).run(size.pool, size.tokens, size.budget, "[]");
-        } else if (size.tokens <= size.budget) this.db.prepare("DELETE FROM knowledge_pool_state WHERE pool = ?").run(size.pool);
-      }
     });
   }
 
@@ -3605,9 +3581,7 @@ export class Store {
    *    memoized graph, footer count and C/D arming alike, reproduced across two connections: A and B
    *    share a project and A sees B's project knowledge; B is moved to another project; A's signal was
    *    unchanged, so a reused graph kept showing knowledge that no longer applies.)
-   *  - the knowledge budget policy (`knowledge_budget_policy`, a single point-lookup row) and the
-   *    over-budget suppression state (`knowledge_pool_state`) of exactly the three pools this session's
-   *    Dreaming can be due for (global, its project, itself) — bounded point lookups by primary key;
+   *  - the knowledge budget policy (`knowledge_budget_policy`, a single point-lookup row);
    *  - other sessions' current-path cursors (`session_lineage_cursors.version`, ticket 72: bumped only
    *    by a branch switch or a head moving back to an ancestor, never an ordinary forward move) and
    *    non-append rewrites of `source_paths` membership under an unchanged cursor
@@ -3629,15 +3603,11 @@ export class Store {
         (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) AS pa,
         (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) AS pm,
         (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id = 1) AS bp,
-        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'global'), '') AS psg,
-        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state
-          WHERE pool = 'project:' || (SELECT project_id FROM sessions WHERE id = ?)), '') AS psp,
-        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'session:' || ?), '') AS pss,
         (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cv,
         (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv`)
-      .get(sessionId, sessionId) as { f: number; cf: number; ne: number; kr: number; kp: number; pa: string | null; pm: number;
-        bp: string; psg: string; psp: string; pss: string; cv: number; sv: number };
-    return `${row.f}:${row.cf}:${row.ne}:${row.kr}:${row.kp}:${row.pa}:${row.pm}:${row.bp}:${row.psg}:${row.psp}:${row.pss}:${row.cv}:${row.sv}`;
+      .get() as { f: number; cf: number; ne: number; kr: number; kp: number; pa: string | null; pm: number;
+        bp: string; cv: number; sv: number };
+    return `${row.f}:${row.cf}:${row.ne}:${row.kr}:${row.kp}:${row.pa}:${row.pm}:${row.bp}:${row.cv}:${row.sv}`;
   }
   /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one
    * fact at a time, never "every fact minus the cited ones" (22b, restated by 24a for the footer).

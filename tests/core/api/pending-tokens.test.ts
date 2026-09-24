@@ -93,8 +93,7 @@ test("dreamingPending lists every pool in fixed order (global, project, session)
       if (!written.ok) throw Error(written.problems.join());
     };
     // Three pools with different pending amounts. Budgets stay above each pool's whole rendered
-    // size so only the "pending at/over trigger" rule is exercised here, not the separate
-    // over-budget rule (covered elsewhere) — keeping this test's due/not-due split unambiguous.
+    // size so the pending threshold alone determines due/not-due.
     create("global", "global body ".repeat(5));
     create("project", "project body ".repeat(30));
     create("session", "session body ".repeat(15));

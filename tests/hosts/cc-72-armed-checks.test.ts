@@ -237,6 +237,52 @@ test("72: after a retarget, a later legitimate checkpoint evaluates the new path
   expect(f.closedQueried).not.toContain("dreaming");
 });
 
+test("85: CC scheduler does not launch Dreamer for an over-budget pool with below-trigger pending", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trace-memory-85-cc-not-due-"));
+  try {
+    const memory = TraceMemory(join(dir, "trace.db"), async () => ({ outcome: "failure" as const, output: "unexpected worker" }));
+    const store = memory.store;
+    const project = store.createProject({ name: "A", declaredBy: "mark" });
+    const session = store.createSession({ host: "cc", enrollmentChoice: true, projectId: project.id, startedAt: "now", firstReplyAt: "now" });
+    const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
+    const entry = store.appendSourceEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "cc", nativeId: "u", role: "user", text: "rule", raw: "rule", calls: [] });
+    memory.selectEntries(session.id, "main", [entry.id]);
+    const fact = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [
+      { turnId: turn.id, entryIds: [entry.id], category: "decision", actor: "user", text: "rule", source: [`T${turn.id}#E1`], createdAt: "now" }] });
+    if (!fact.ok) throw Error(fact.problems.join());
+    const create = (text: string) => {
+      const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" },
+        operations: [{ op: "create", handle: "$rule", author: "test", text, category: "constraint", scope: "project",
+          supports: [fact.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
+      if (!result.ok) throw Error(result.problems.join());
+    };
+    const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+    const pool = `project:${project.id}`;
+    create("Long durable constraint ".repeat(120));
+    const claim = store.acquireClaim(path, "dreaming", "fixture")!;
+    const range = store.retainKnowledgePoolRange(path, pool, claim);
+    const executionId = store.beginExecution({ sessionId: session.id, phase: "dreaming", head: range.anchor, origin: range.origin });
+    const run = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", dreamingRangeId: range.id, executionId, claim, createdAt: "now" });
+    store.completeKnowledgePoolRange(run, "success", range.eventIds);
+    store.releaseClaim(claim);
+    const oldSize = store.poolSizes(path).find(value => value.pool === pool)!.tokens;
+    create("Small new rule");
+    store.setKnowledgeBudget("project", oldSize - 1);
+    expect(store.pendingPoolWeight(pool, path)).toBeLessThan(oldSize - 1);
+    expect(store.poolSizes(path).find(value => value.pool === pool)!.tokens).toBeGreaterThan(oldSize - 1);
+    expect(memory.taskEligibility("dreaming", path).due).toBe(false);
+    const dream = vi.spyOn(memory, "dream");
+    const scheduler = new CcTaskScheduler(memory, worker, () => {});
+    scheduler.reconcile({ state: "ready", coreSessionId: session.id, branch: "main", headTurnId: turn.id,
+      selectedEntryIds: [entry.id], selectedCount: 1, selectedTailId: entry.id,
+      selectedAppendedEntryIds: [entry.id], appendedEntryIds: [entry.id], problems: [], snapshot: {} as any });
+    await tick();
+    expect(dream).not.toHaveBeenCalled();
+    scheduler.stop(); await scheduler.settle();
+    memory.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("72: inertness — driving entry ingestion through a real Store leaves consolidationBatch and duePools unchanged", async () => {
   const time = "2026-09-23T00:00:00Z";
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-72-cc-inert-"));

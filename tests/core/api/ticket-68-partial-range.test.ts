@@ -36,11 +36,11 @@ test.each([
   const pool = f.store.knowledgePools(f.target, 5000).find(value => value.pending.some(version => version.revisionId === item.commit))!;
   const weight = pool.pending[0]!.tokens;
   f.memory.setKnowledgeBudget(scope, weight + 1);
-  // Pool framing may already make this over budget; only the pending-path threshold is under test.
-  expect(f.store.duePools(f.target, 5000).find(value => value.pool === pool.pool)?.reason).not.toBe("pending");
+  // A pool can exceed its budget without making below-trigger pending due.
+  expect(f.store.duePools(f.target, 5000).some(value => value.pool === pool.pool)).toBe(false);
   expect(own()).toMatchObject({ trigger: weight + 1, tokens: weight });
   f.memory.setKnowledgeBudget(scope, weight);
-  expect(f.store.duePools(f.target, 5000)).toContainEqual(expect.objectContaining({ pool: pool.pool, reason: "pending" }));
+  expect(f.store.duePools(f.target, 5000)).toContainEqual(expect.objectContaining({ pool: pool.pool }));
   expect(own()).toMatchObject({ trigger: weight, tokens: weight });
   f.memory.setKnowledgeBudget(scope, weight + 1);
   f.memory.config.dreaming.triggerTokens = weight - 1;

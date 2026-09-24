@@ -91,8 +91,8 @@ pending trigger is `min(cap, pool budget)` (4,000/5,000/1,000 by default). Conso
 the shared allowance. Dreamer uses that same maximum for its Changed-plus-reference input, while a
 single due pool's Changed range is capped by that pool's budget. Database budget edits accept exact
 decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
-connections to that database. Budgets are maintenance triggers, not write gates: an over-budget pool
-is reported and scheduled rather than rejecting a Knowledge write. Running Dreamer and Consolidator
+connections to that database. Budgets cap the effective pending trigger and a run's Changed range, not writes: an over-budget pool
+is reported but is scheduled only after nonempty pending reaches its threshold. Running Dreamer and Consolidator
 requests keep their frozen admitted capacities; later admissions use the current policy. Actual
 provider context capacity remains an independent hard gate.
 
@@ -271,7 +271,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 - Dreaming is checked **per pool** on every reconciled eligible entry: `global`, this session's
   project and this session. Pending is each pool's current visible, non-archived revision lacking a
   `(pool, revision)` processing record, one revision per identity at its full rendered size. A pool is
-  due at `min(dreaming.triggerTokens, pool budget)` (4,000/5,000/1,000 by default), or when over budget and re-armed. One run handles one due pool; its Changed range is capped at that pool's full budget,
+  due when nonempty pending reaches `min(dreaming.triggerTokens, pool budget)` (4,000/5,000/1,000 by default). One run handles one due pool; its Changed range is capped at that pool's full budget,
   4,000 / 15,000 / 1,000 by default. Changed material and current same-scope references share the
   30,000-token Knowledge-base-plus-shared-allowance window; direct facts have a separate 10,000-token cap.
   There is no automatic Raw block or `note` tool.
@@ -282,9 +282,8 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   parents' union for merge. Exact current bases and the live database-wide Dreamer claim are checked
   atomically. Processing records skipped frozen versions and the run's own commits, including on
   failure or cancellation. Untouched versions remain pending; own outputs do not trigger themselves.
-  An over-budget pool stays due while pending remains. With no pending material, unchanged recorded
-  size and budget suppress repeat maintenance. A run's range ends once; remaining material may form
-  a later range.
+  Budget excess alone does not make a pool due. A run's range ends once; remaining material may form
+  a later range when its pending weight reaches the trigger.
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
   the fact line with its relations and the joining separator — the trigger over the whole applicable
@@ -908,7 +907,7 @@ starting a second one or extending its snapshot.
 
 Ticket 68 uses one checkpoint at start and after each successful catchup-owned N, C or D completion.
 It checks all three phases: N drains the frozen entry boundary even below `noting.triggerTokens`,
-while C and D use ordinary eligibility, including re-armed over-budget pools. Batch and context
+while C and D use ordinary eligibility, with D due only on the pending threshold. Batch and context
 limits still apply. Several C batches or due D pools can therefore run without another N batch.
 Completion requires no frozen Raw left, neither C nor D due, and no owned task still running.
 Below-threshold tails remain. Empty/dropped results do not re-arm; failure or cancellation ends the

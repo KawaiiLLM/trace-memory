@@ -201,7 +201,6 @@ test.each([
   expect(f.store.currentCommit(base.knowledgeId, f.target)[0]!.id).toBe(own);
   expect(f.store.knowledgeRevision(own)!.runId).toBe(result.runId);
   expect(processed(f)).toEqual([]);
-  expect(f.store.db.prepare("SELECT * FROM knowledge_pool_state").all()).toEqual([]);
   const range = f.store.db.prepare("SELECT completed_run, closed_at FROM dreaming_ranges WHERE id = ?").get(rangeId)!;
   expect(range).toEqual({ completed_run: null, closed_at: null });
   expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();

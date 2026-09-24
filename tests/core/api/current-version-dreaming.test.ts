@@ -47,7 +47,7 @@ test("67: admission, freeze, final check and consumption have bounded independen
     // Discovery, claim admission and freeze share one unchanged atomic snapshot.
     expect(admissionGraphs).toBe(1);
     // Final read-only check and terminal writes are separate operations, each seeing fresh state.
-    expect(graph).toHaveBeenCalledTimes(3);
+    expect(graph).toHaveBeenCalledTimes(2); // terminal settlement no longer recomputes pool suppression state
   } finally { graph.mockRestore(); }
 });
 
@@ -83,7 +83,7 @@ test("64c facade leaves an external mid-run revision pending while recording the
   expect((await running).outcome).toBe("success");
   expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([late.commit]);
   expect(f.store.pendingPoolWeight(pool, f.target) * 2).toBeLessThan(f.store.knowledgeBudgets().project);
-  expect(f.store.duePools(f.target).map(value => value.pool)).toContain(pool); // mid-run arrival is not swallowed by the residual baseline
+  expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool); // mid-run arrival retains pending eligibility
   expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ?",).all(pool).map(row => Number(row.revision_id))).toEqual([first.commit]);
 });
 
@@ -99,9 +99,8 @@ test("64c facade cancellation before a commit closes the range without processin
   await new Promise(resolve => setTimeout(resolve, 0)); controller.abort();
   expect((await running).outcome).toBe("cancelled");
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
-  expect(f.store.db.prepare("SELECT * FROM knowledge_pool_state").all()).toEqual([]);
   expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
-  expect(f.store.duePools(f.target).map(value => value.pool)).toContain(pool);
+  expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
 });
 
 test("64c cancelled run after a scope-changing commit processes the frozen source and resulting owner", async () => {
@@ -173,7 +172,7 @@ test.each([
     expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
     expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool)
       .map(row => Number(row.revision_id))).toEqual(committed ? [output] : []);
-    expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(!committed);
+    expect(f.store.duePools(f.target, 1).some(value => value.pool === pool)).toBe(!committed);
     expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(!committed && !stopping && !disabled);
     expect(f.store.enabled(f.session.id)).toBe(!disabled);
     expect(f.store.taskFailures(f.session.id).every(failure => failure.count === 0)).toBe(true);
@@ -225,8 +224,8 @@ test("64c a shared global threshold can be serviced from another session while p
   f.memory.selectEntries(otherSession.id, "main", [otherEntry.id]);
   const other = { sessionId: otherSession.id, branch: "main", headTurnId: otherTurn.id, triggerEntryId: otherEntry.id };
   f.store.setKnowledgeBudget("global", f.store.pendingPoolWeight("global", other) * 2);
-  expect(f.store.duePools(other).map(value => value.pool)).toContain("global");
-  expect(f.store.duePools(other).map(value => value.pool)).not.toContain(`project:${f.project.id}`);
+  expect(f.store.duePools(other, 1).map(value => value.pool)).toContain("global");
+  expect(f.store.duePools(other, 1).map(value => value.pool)).not.toContain(`project:${f.project.id}`);
   expect((await f.memory.dream(other)).outcome).toBe("success");
   expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all()).toEqual([{ pool: "global", revision_id: global.commit }]);
 });
@@ -254,14 +253,14 @@ test("68 untouched residual stays due before and after an older version becomes 
   const remaining = f.store.pendingPoolWeight(pool, f.target);
   expect(remaining).toBeGreaterThan(0);
   expect(remaining * 2).toBeLessThan(f.store.knowledgeBudgets().project);
-  expect(f.store.duePools(f.target).map(value => value.pool)).toContain(pool);
+  expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
 
   f.store.mergeProject(q.id, f.project.id);
   expect(old.committed[0]!.commit).toBeLessThan(Math.min(...f.store.pendingVersions(pool, f.target).filter(v => v.revisionId !== old.committed[0]!.commit).map(v => v.revisionId)));
-  expect(f.store.duePools(f.target).map(value => value.pool)).toContain(pool);
+  expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
 });
 
-test("64c an unchanged residual above half budget remains due independently of the over-budget baseline", async () => {
+test("85: an untouched residual above the pending threshold remains due", async () => {
   const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
   f.create("project", "large ".repeat(400));
   f.create("project", "small ".repeat(250));
@@ -273,7 +272,7 @@ test("64c an unchanged residual above half budget remains due independently of t
   expect((await f.memory.dream(f.target)).outcome).toBe("success");
   const residual = f.store.pendingPoolWeight(pool, f.target);
   expect(residual * 2).toBeGreaterThanOrEqual(one);
-  expect(f.store.duePools(f.target).find(value => value.pool === pool)?.reason).toBe("pending");
+  expect(f.store.duePools(f.target, 1).some(value => value.pool === pool)).toBe(true);
 });
 
 test("64c successful terminal transaction persists the full provider audit", async () => {
@@ -316,7 +315,7 @@ test("64c rejected terminal transaction rolls back processing but preserves atte
   expect(JSON.parse(f.store.getRun(result.runId)!.response!)).toMatchObject({ check: { pool }, output: "done" });
 });
 
-test("64c over-budget completion does not loop and rearms on growth or budget change", async () => {
+test("85: over-budget without pending is not due; growth and budget edits adjust pending threshold", async () => {
   const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
   f.create("project", "large ".repeat(100));
   const pool = `project:${f.project.id}`;
@@ -325,20 +324,22 @@ test("64c over-budget completion does not loop and rearms on growth or budget ch
 
   const firstSize = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
   f.store.setKnowledgeBudget("project", firstSize - 1);
-  const before = Number(f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions").get()!.n);
-  expect((await f.memory.dream(f.target)).outcome).toBe("success"); // budget-only range
-  expect(Number(f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions").get()!.n)).toBe(before);
   expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(false);
+  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(false);
 
   f.create("project", "growth");
-  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(true);
+  const weight = f.store.pendingPoolWeight(pool, f.target);
+  f.store.setKnowledgeBudget("project", weight + 1);
+  expect(f.store.duePools(f.target, 5000).some(value => value.pool === pool)).toBe(false);
+  f.store.setKnowledgeBudget("project", weight);
+  expect(f.store.duePools(f.target, 5000).some(value => value.pool === pool)).toBe(true);
+  // The configured trigger is 1 in this fixture, but a below-budget framing still fits.
+  f.store.setKnowledgeBudget("project", firstSize + weight + 100);
   expect((await f.memory.dream(f.target)).outcome).toBe("success");
   expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(false);
-  f.store.setKnowledgeBudget("project", firstSize - 2);
-  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(true);
 });
 
-test("68 fix 3: a cancelled no-op Dreamer run on an over-budget pool with nothing pending does not suppress it", async () => {
+test("85: a cancelled pending run does not consume its frozen versions", async () => {
   let mode: "skip" | "cancel" = "skip";
   const f = fixture(async task => {
     task.acknowledgeRequest();
@@ -349,21 +350,17 @@ test("68 fix 3: a cancelled no-op Dreamer run on an over-budget pool with nothin
   const pool = `project:${f.project.id}`;
   f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2); // generous: under budget
   expect((await f.memory.dream(f.target)).outcome).toBe("success"); // clears pending; under budget writes no state row
-  expect(f.store.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool = ?").all(pool)).toEqual([]);
-
   const firstSize = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
-  f.store.setKnowledgeBudget("project", firstSize - 1); // over budget, nothing pending, no baseline recorded yet
-  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(true);
-
+  f.store.setKnowledgeBudget("project", firstSize - 1);
+  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(false);
+  f.create("project", "another rule");
+  expect(f.store.duePools(f.target, 1).some(value => value.pool === pool)).toBe(true);
   mode = "cancel";
   expect((await f.memory.dream(f.target)).outcome).toBe("cancelled");
-  // Baseline instructions: a pre-commit cancellation with nothing committed or skipped must not
-  // establish an excess-suppression baseline for the pool it did not service.
-  expect(f.store.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool = ?").all(pool)).toEqual([]);
-  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(true); // still due
+  expect(f.store.duePools(f.target, 1).some(value => value.pool === pool)).toBe(true);
 });
 
-test("68 fix 3: a cancelled run that did skip something still records the over-budget baseline", async () => {
+test("85: a cancelled run still records skipped versions without suppression state", async () => {
   let mode: "skip" | "cancelAfterSkip" = "skip";
   const f = fixture(async task => {
     task.acknowledgeRequest();
@@ -380,6 +377,6 @@ test("68 fix 3: a cancelled run that did skip something still records the over-b
   f.create("project", "another rule to skip"); // something pending this run actually deliberates
   mode = "cancelAfterSkip";
   expect((await f.memory.dream(f.target)).outcome).toBe("cancelled");
-  // Unaffected by the fix: a cancelled run that skipped a version still records the baseline, as today.
-  expect(f.store.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool = ?").all(pool)).toHaveLength(1);
+  expect(f.store.pendingVersions(pool, f.target)).toEqual([]);
+  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(false);
 });

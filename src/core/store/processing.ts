@@ -31,12 +31,6 @@ CREATE TABLE IF NOT EXISTS knowledge_processed (
   run_id INTEGER NOT NULL REFERENCES runs(id),
   PRIMARY KEY(pool, revision_id)
 );
-CREATE TABLE IF NOT EXISTS knowledge_pool_state (
-  pool TEXT PRIMARY KEY,
-  last_over_size INTEGER NOT NULL CHECK(last_over_size >= 0),
-  last_over_budget INTEGER NOT NULL CHECK(last_over_budget >= 0),
-  residual_revisions TEXT NOT NULL DEFAULT '[]'
-);
 CREATE TABLE IF NOT EXISTS dreaming_ranges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id INTEGER NOT NULL REFERENCES sessions(id), branch TEXT NOT NULL,
@@ -69,14 +63,12 @@ export interface PendingKnowledgeVersion {
 export interface KnowledgePoolSize { pool: string; tokens: number; budget: number }
 export interface DueKnowledgePool extends KnowledgePoolSize {
   pending: PendingKnowledgeVersion[];
-  reason: "pending" | "over-budget";
 }
 export interface DreamingRange {
   id: number;
   sessionId: number;
   branch: string;
   headTurnId: number;
-  /** Zero represents a budget-only range whose persisted anchor is NULL. */
   anchor: number;
   eventIds: number[];
   origin: TriggerOrigin | null;

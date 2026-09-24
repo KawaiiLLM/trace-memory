@@ -68,6 +68,33 @@ function update(f: Fixture, run: RunInput, base: { knowledgeId: number; commit: 
   return result.committed[0]!;
 }
 
+test("85: direct Dreaming claim and range allow below-threshold pending, never an empty over-budget range", () => {
+  const f = setup(), pool = `project:${f.project.id}`;
+  f.create("project", "long durable rule ".repeat(150));
+  consume(f, pool);
+  const originalSize = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
+  f.create("project", "short rule");
+  const weight = f.store.pendingPoolWeight(pool, f.target);
+  const budget = originalSize - 1;
+  expect(weight).toBeLessThan(budget);
+  f.store.setKnowledgeBudget("project", budget);
+  expect(f.store.duePools(f.target)).toEqual([]);
+  expect(f.store.admitKnowledgePool(f.target, "auto").outcome).toBe("empty");
+  const held = claim(f);
+  expect(() => f.store.freezeKnowledgePool(f.target, held)).toThrow(/No Knowledge pool is due/);
+  const range = f.store.retainKnowledgePoolRange(f.target, pool, held);
+  expect(range.eventIds).toHaveLength(1);
+  const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", head: range.anchor, origin: range.origin });
+  const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: f.session.id, branch: "main",
+    dreamingRangeId: range.id, executionId, claim: held, createdAt: "now" });
+  f.store.completeKnowledgePoolRange(run, "success", range.eventIds);
+  f.store.releaseClaim(held);
+  f.store.setKnowledgeBudget("project", 0);
+  expect(f.store.duePools(f.target)).toEqual([]);
+  expect(f.store.acquireClaim(f.target, "dreaming", "empty")).toBeNull();
+  expect(f.store.admitKnowledgePool(f.target, "auto").outcome).toBe("empty");
+});
+
 test("64c current versions: global is shared, project is shared only within its project, and session stays local", () => {
   const a = setup(), same = setup(a.store, "A", a.project.id), other = setup(a.store, "B");
   const global = a.create("global"), project = a.create("project"), session = a.create("session");
@@ -234,7 +261,7 @@ test.each(["cancelled", "failure"] as const)("64c current versions: %s after a r
   ]);
 });
 
-test("64c over-budget residual baseline survives reopen without becoming a validity state", () => {
+test("85: pending residual eligibility survives reopen without pool suppression state", () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-64c-residual-")), path = join(directory, "trace.db");
   try {
     const f = setup(new Store(path));
@@ -245,13 +272,13 @@ test("64c over-budget residual baseline survives reopen without becoming a valid
     f.store.setKnowledgeBudget("project", Math.floor(Math.max(...weights) * 2.5));
     consume(f, pool);
     expect(f.store.pendingPoolWeight(pool, f.target)).toBeGreaterThan(0);
-    expect(f.store.duePools(f.target).map(value => value.pool)).toContain(pool);
+    expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
     stores.splice(stores.indexOf(f.store), 1);
     f.store.close();
 
     const reopened = new Store(path); stores.push(reopened);
     expect(reopened.pendingPoolWeight(pool, f.target)).toBeGreaterThan(0);
-    expect(reopened.duePools(f.target).map(value => value.pool)).toContain(pool);
+    expect(reopened.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -321,7 +348,7 @@ test("67: create batches skip writer graphs while consuming operations recheck a
   } finally { graph.mockRestore(); }
 });
 
-test("67: freeze and terminal consumption each build one fresh pool projection", () => {
+test("85: freeze builds one pool projection; terminal consumption no longer reads pool suppression state", () => {
   const f = setup();
   f.store.setKnowledgeBudget("global", 100);
   const first = f.create("global", "evidence ".repeat(25));
@@ -338,7 +365,7 @@ test("67: freeze and terminal consumption each build one fresh pool projection",
     const own = update(f, run, first, "maintained body");
     graph.mockClear();
     f.store.completeKnowledgePoolRange(run, "success");
-    expect(graph).toHaveBeenCalledTimes(1);
+    expect(graph).not.toHaveBeenCalled();
     expect(f.store.pendingVersions("global", f.target)).toEqual([]);
     expect(f.store.poolVersions("global", f.target).map(value => value.revision.id)).toEqual([own.commit]);
     expect(f.store.pendingVersions(`project:${f.project.id}`, f.target)).toHaveLength(1);
@@ -378,7 +405,7 @@ test("67: admission observes intervening knowledge mutation and preserves enroll
   const f = setup(), executor = setup(f.store, "executor");
   f.store.setKnowledgeBudget("global", 100);
   const item = f.create("global", "evidence ".repeat(25));
-  expect(f.store.knowledgePools(f.target, 1).some(pool => pool.reason !== null)).toBe(true);
+  expect(f.store.knowledgePools(f.target, 1).some(pool => pool.due)).toBe(true);
   f.store.setEnrollment(executor.session.id, false);
   expect(f.store.admitKnowledgePool(f.target, "executor", false, executor.session.id, 1)).toEqual({ outcome: "dropped" });
   expect(f.store.admitKnowledgePool(f.target, "borrowed", true, undefined, 1)).toEqual({ outcome: "dropped" });

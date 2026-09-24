@@ -330,7 +330,7 @@ function validateNotingFact(path, raw, problems) {
   };
 }
 
-// node_modules/diff/libesm/diff/base.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options = {}) {
     let callback;
@@ -532,7 +532,7 @@ var Diff = class {
   }
 };
 
-// node_modules/diff/libesm/diff/array.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/array.js
 var ArrayDiff = class extends Diff {
   tokenize(value) {
     return value.slice();
@@ -934,12 +934,6 @@ CREATE TABLE IF NOT EXISTS knowledge_processed (
   revision_id INTEGER NOT NULL REFERENCES knowledge_revisions(id),
   run_id INTEGER NOT NULL REFERENCES runs(id),
   PRIMARY KEY(pool, revision_id)
-);
-CREATE TABLE IF NOT EXISTS knowledge_pool_state (
-  pool TEXT PRIMARY KEY,
-  last_over_size INTEGER NOT NULL CHECK(last_over_size >= 0),
-  last_over_budget INTEGER NOT NULL CHECK(last_over_budget >= 0),
-  residual_revisions TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS dreaming_ranges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1532,6 +1526,7 @@ var Store = class {
       }
       this.db.exec(SCHEMA_SQL);
       migrateDreaming(this.db, true);
+      this.db.exec("DROP TABLE IF EXISTS knowledge_pool_state");
       this.transaction(() => {
         const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
         if (!sessionColumns.some((r) => r.name === "directory")) this.db.exec("ALTER TABLE sessions ADD COLUMN directory TEXT");
@@ -2142,7 +2137,7 @@ var Store = class {
   }
   acquireClaim(target, phase, executorId, borrowed = false, eligible = () => true) {
     return this.transaction(() => this.acquireAvailableClaim(target, phase, executorId, borrowed, () => {
-      const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId) : phase === "dreaming" ? this.knowledgePools(target).filter((pool) => pool.reason !== null || pool.pending.length > 0) : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
+      const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId) : phase === "dreaming" ? this.knowledgePools(target).filter((pool) => pool.pending.length > 0) : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
       return pending.length > 0;
     }, eligible));
   }
@@ -3537,7 +3532,6 @@ var Store = class {
     const history = this.db.prepare(`SELECT p.pool, p.revision_id FROM knowledge_processed p
       WHERE p.pool IN (SELECT value FROM json_each(?))`).all(JSON.stringify(pools.map(([pool]) => pool)));
     const processed = new Set(history.map((row) => `${row.pool}:${row.revision_id}`));
-    const states = new Map(this.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool IN (SELECT value FROM json_each(?))").all(JSON.stringify(pools.map(([pool]) => pool))).map((row) => [String(row.pool), row]));
     return pools.map(([pool, budget]) => {
       const values = versions.get(pool);
       const rendered = new Map(values.map((value) => [value.revision.id, renderKnowledge(value)]));
@@ -3570,16 +3564,9 @@ ${archivedBody}${evidenceLine}${diffLine}`;
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(archivedBody), material };
       });
       const pending = [...pendingUpdates, ...pendingArchives].sort((left, right) => left.revisionId - right.revisionId);
-      let reason = null;
       const pendingTokens = pending.reduce((sum, value) => sum + value.tokens, 0);
-      const effectiveTrigger = Math.min(dreamingTriggerTokens, budget);
-      if (pending.length && pendingTokens >= effectiveTrigger) reason = "pending";
-      else if (size > budget) {
-        const state = states.get(pool);
-        if (pending.length || !state || Number(state.last_over_size) !== size || Number(state.last_over_budget) !== budget)
-          reason = "over-budget";
-      }
-      return { pool, budget, tokens: size, versions: values, rendered, archived: archivedVersions.get(pool) ?? [], pending, reason };
+      const due = pending.length > 0 && pendingTokens >= Math.min(dreamingTriggerTokens, budget);
+      return { pool, budget, tokens: size, versions: values, rendered, archived: archivedVersions.get(pool) ?? [], pending, due };
     });
   }
   pendingPoolWeight(pool, path) {
@@ -3600,7 +3587,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     return this.knowledgePools(path).map(({ pool, budget, tokens: tokens2 }) => ({ pool, budget, tokens: tokens2 }));
   }
   duePools(path, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
-    return this.knowledgePools(path, dreamingTriggerTokens).flatMap(({ pool, budget, tokens: tokens2, pending, reason }) => reason ? [{ pool, budget, tokens: tokens2, pending, reason }] : []);
+    return this.knowledgePools(path, dreamingTriggerTokens).flatMap(({ pool, budget, tokens: tokens2, pending, due }) => due ? [{ pool, budget, tokens: tokens2, pending }] : []);
   }
   poolBudget(pool) {
     const budgets2 = this.knowledgeBudgets();
@@ -3612,7 +3599,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     return this.transaction(() => {
       if (!this.enabled(target.sessionId) || executorSessionId !== void 0 && !this.enabled(executorSessionId))
         return { outcome: "dropped" };
-      const pool = this.knowledgePools(target, dreamingTriggerTokens).find((value) => value.reason !== null);
+      const pool = this.knowledgePools(target, dreamingTriggerTokens).find((value) => value.due);
       if (!pool) return { outcome: "empty" };
       const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true);
       if (!claim) return { outcome: "dropped" };
@@ -3624,7 +3611,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
    * inside this operation; no caller can submit a stale prepared projection as write authority. */
   freezeKnowledgePool(target, claim, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
     return this.transaction(() => {
-      const pool = this.knowledgePools(target, dreamingTriggerTokens).find((value) => value.reason !== null);
+      const pool = this.knowledgePools(target, dreamingTriggerTokens).find((value) => value.due);
       if (!pool) throw new Error("No Knowledge pool is due");
       return { pool, range: this.retainProjectedPoolRange(target, pool, claim) };
     });
@@ -3653,7 +3640,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
         JOIN dreaming_ranges r ON r.id = e.range_id JOIN task_claims c
           ON c.session_id = r.session_id AND c.phase = 'dreaming' AND c.token = r.claim_token
         WHERE r.pool IS NOT NULL AND r.completed_run IS NULL AND r.closed_at IS NULL AND c.expires_at > ?`).all(now).map((row) => row.event_id));
-      if (!due.reason && !due.pending.length) throw new Error(`Pool ${pool} is not due`);
+      if (!due.pending.length) throw new Error(`Pool ${pool} has no pending versions`);
       const selected = [];
       for (const revision of due.pending) {
         if (reserved2.has(revision.revisionId)) continue;
@@ -3715,16 +3702,6 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       const closed = this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ?, closed_at = ?
         WHERE id = ? AND completed_run IS NULL AND closed_at IS NULL`).run(runId, (/* @__PURE__ */ new Date()).toISOString(), range.id);
       if (closed.changes !== 1) throw new Error("Knowledge pool range was not closed atomically");
-      const consumes = outcome !== "cancelled" || own.length > 0 || skippedRevisionIds.length > 0;
-      if (consumes) {
-        const path = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
-        const size = this.knowledgePools(path).find((value) => value.pool === range.pool);
-        if (size.tokens > size.budget && !size.pending.length) {
-          this.db.prepare(`INSERT INTO knowledge_pool_state(pool,last_over_size,last_over_budget,residual_revisions) VALUES (?,?,?,?)
-            ON CONFLICT(pool) DO UPDATE SET last_over_size=excluded.last_over_size,last_over_budget=excluded.last_over_budget,
-              residual_revisions=excluded.residual_revisions`).run(size.pool, size.tokens, size.budget, "[]");
-        } else if (size.tokens <= size.budget) this.db.prepare("DELETE FROM knowledge_pool_state WHERE pool = ?").run(size.pool);
-      }
     });
   }
   dreamingRange(id) {
@@ -3923,9 +3900,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
    *    memoized graph, footer count and C/D arming alike, reproduced across two connections: A and B
    *    share a project and A sees B's project knowledge; B is moved to another project; A's signal was
    *    unchanged, so a reused graph kept showing knowledge that no longer applies.)
-   *  - the knowledge budget policy (`knowledge_budget_policy`, a single point-lookup row) and the
-   *    over-budget suppression state (`knowledge_pool_state`) of exactly the three pools this session's
-   *    Dreaming can be due for (global, its project, itself) — bounded point lookups by primary key;
+   *  - the knowledge budget policy (`knowledge_budget_policy`, a single point-lookup row);
    *  - other sessions' current-path cursors (`session_lineage_cursors.version`, ticket 72: bumped only
    *    by a branch switch or a head moving back to an ancestor, never an ordinary forward move) and
    *    non-append rewrites of `source_paths` membership under an unchanged cursor
@@ -3947,13 +3922,9 @@ ${archivedBody}${evidenceLine}${diffLine}`;
         (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) AS pa,
         (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) AS pm,
         (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id = 1) AS bp,
-        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'global'), '') AS psg,
-        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state
-          WHERE pool = 'project:' || (SELECT project_id FROM sessions WHERE id = ?)), '') AS psp,
-        IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'session:' || ?), '') AS pss,
         (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cv,
-        (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv`).get(sessionId, sessionId);
-    return `${row.f}:${row.cf}:${row.ne}:${row.kr}:${row.kp}:${row.pa}:${row.pm}:${row.bp}:${row.psg}:${row.psp}:${row.pss}:${row.cv}:${row.sv}`;
+        (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv`).get();
+    return `${row.f}:${row.cf}:${row.ne}:${row.kr}:${row.kp}:${row.pa}:${row.pm}:${row.bp}:${row.cv}:${row.sv}`;
   }
   /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one
    * fact at a time, never "every fact minus the cited ones" (22b, restated by 24a for the footer).
@@ -9319,7 +9290,7 @@ var import_node_os3 = require("node:os");
 var import_node_path4 = require("node:path");
 var import_node_util = require("node:util");
 
-// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -30117,7 +30088,7 @@ function query({
   return queryInstance;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -30191,7 +30162,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// node_modules/zod/v4/core/util.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -30870,7 +30841,7 @@ var Class2 = class {
   }
 };
 
-// node_modules/zod/v4/core/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -30936,7 +30907,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -31016,7 +30987,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// node_modules/zod/v4/core/regexes.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -31173,7 +31144,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// node_modules/zod/v4/core/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -31721,7 +31692,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -31757,14 +31728,14 @@ var Doc2 = class {
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -33735,7 +33706,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -33844,7 +33815,7 @@ function en_default3() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -33892,7 +33863,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/api.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -34696,7 +34667,7 @@ function _stringFormat(Class3, format, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -35048,7 +35019,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -35524,7 +35495,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -35693,7 +35664,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// node_modules/zod/v4/classic/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -35727,7 +35698,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// node_modules/zod/v4/classic/iso.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -35768,7 +35739,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -35808,7 +35779,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -35822,7 +35793,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -36901,22 +36872,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// node_modules/zod/v4/classic/compat.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// node_modules/zod/v4/classic/from-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// node_modules/zod/v4/classic/external.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));

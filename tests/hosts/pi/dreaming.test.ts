@@ -25,7 +25,7 @@ async function seeded(config: Record<string, unknown> = {}, text = "Keep the use
     .find(value => value.revisionId === item.commit)!.tokens;
   const pool = `project:${store.getSession(1)!.projectId}`;
   h.memory.setKnowledgeBudget("project", renderedTokens * 2);
-  expect(store.duePools(path).map(value => value.pool)).toContain(pool);
+  expect(store.duePools(path, 1).map(value => value.pool)).toContain(pool);
   return { h, store, item, content, pool };
 }
 const terminal = async (h: ReturnType<typeof host>) => vi.waitFor(() => {
@@ -34,6 +34,30 @@ const terminal = async (h: ReturnType<typeof host>) => vi.waitFor(() => {
 }, { timeout: 5000 });
 const processedIn = (store: Store, pool: string, revisionId: number) => !!store.db.prepare(
   "SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?").get(pool, revisionId);
+
+test("85: Pi does not launch Dreamer for an over-budget pool below its pending trigger", async () => {
+  const { h, store, content, pool } = await seeded({ "dreaming.triggerTokens": 5000 }, "Durable constraint ".repeat(100));
+  const path = { sessionId: 1, branch: "main", headTurnId: store.knowledgePath(1, "main").headTurnId! };
+  const claim = store.acquireClaim(path, "dreaming", "fixture")!;
+  const range = store.retainKnowledgePoolRange(path, pool, claim);
+  const executionId = store.beginExecution({ sessionId: 1, phase: "dreaming", head: range.anchor, origin: range.origin });
+  const run = store.bindDreamingRun({ kind: "dreaming", sessionId: 1, branch: path.branch,
+    dreamingRangeId: range.id, executionId, claim, createdAt: "now" });
+  store.completeKnowledgePoolRange(run, "success", range.eventIds);
+  store.releaseClaim(claim);
+  const priorSize = store.poolSizes(path).find(value => value.pool === pool)!.tokens;
+  const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [
+    { op: "create", handle: "$later", author: "test", ...content, text: "Small new rule" }] });
+  if (!created.ok) throw Error(created.problems.join());
+  h.memory.setKnowledgeBudget("project", priorSize - 1);
+  expect(store.pendingPoolWeight(pool, path)).toBeLessThan(priorSize - 1);
+  expect(store.poolSizes(path).find(value => value.pool === pool)!.tokens).toBeGreaterThan(priorSize - 1);
+  expect(h.memory.taskEligibility("dreaming", path).due).toBe(false);
+  const before = store.listRuns(1).filter(value => value.kind === "dreaming").length;
+  await h.turn(); await h.drain();
+  const after = store.listRuns(1).filter(value => value.kind === "dreaming");
+  expect(after.length).toBe(before);
+});
 
 test("Dreamer pre-request capacity failure names its own phase and retains its work", async () => {
   const { h, store, item, pool } = await seeded();

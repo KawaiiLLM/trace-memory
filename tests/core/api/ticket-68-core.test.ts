@@ -149,8 +149,8 @@ test("68 each pool uses min(configured trigger cap, pool budget) and untouched p
   f.store.setKnowledgeBudget("session", budget);
   expect(f.store.pendingPoolWeight(pool, f.target)).toBeLessThan(5_000);
   expect(f.memory.dreamingPending(f.target).pools!.find(value => value.pool === pool)).toMatchObject({ trigger: budget });
-  expect(f.store.duePools(f.target, 5_000).find(value => value.pool === pool)?.reason).toBe("pending");
+  expect(f.store.duePools(f.target, 5_000).some(value => value.pool === pool)).toBe(true);
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([first.commit, second.commit]);
-  expect(f.store.duePools(f.target, 5_000).find(value => value.pool === pool)?.reason).toBe("pending");
+  expect(f.store.duePools(f.target, 5_000).some(value => value.pool === pool)).toBe(true);
 });
