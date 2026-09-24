@@ -29,7 +29,7 @@ function menuNotice(records: CcNativeRecord[], leaf: string | null = null, curre
   const path = join(dir, "native.jsonl");
   writeFileSync(path, records.map(record => JSON.stringify(record)).join("\n") + "\n");
   const binding = { nativeSessionId: current, transcriptPath: path, selectedLeafUuid: leaf,
-    clearedFrom: { nativeSessionId: "parent", at: "2026-01-01", compactionTurnId: compact, inheritedEntryIds: [] } }; 
+    clearedFrom: { nativeSessionId: "parent", at: "2026-01-01", compactionTurnId: compact, inheritedEntryIds: [] } };
   return ccLastCompactionNotice(readCompleteTranscript(path), binding);
 }
 
