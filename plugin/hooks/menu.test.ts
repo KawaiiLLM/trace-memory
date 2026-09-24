@@ -38,7 +38,6 @@ function mockHost(on: any, seen: string[], version = "2.1.280", sessionId = () =
   on("session.usage", () => ({ value: { startedAt: 0, context: { window: 10000 }, rateLimits: [] } }));
   on("ui.status", () => ({ value: undefined }));
   on("ui.open", () => ({ value: { isPlaced: true } }));
-  on("ui.invalidate", () => ({ value: undefined }));
   on("session.id", () => ({ value: sessionId() }));
 }
 
@@ -49,38 +48,45 @@ test("local command renders headless text and a mountable narrow pane, then disp
   const result = await $.command.run({ command: "trace" });
   expect(result.text).toContain("Trace Memory · S1");
   const ui = await $.ui.mount({ plugin: "trace-memory", surface: "terminal", component: "Pane", requestId: "trace-memory-menu", props: pane });
-  expect(await ui.find({ type: "Text", text: "Pending / trigger" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Pending / trigger" }), `main mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
   await ui.select({ key: "actions", value: "settings" });
-  expect(await ui.find({ type: "Text", text: "Knowledge budgets" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Knowledge budgets" }), `settings mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
   await ui.select({ key: "setting-rows", value: "budget.global" });
   await ui.input({ key: "edit-budget.global", text: "5000" });
-  expect(await ui.find({ type: "Text", text: "saved; not applied" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "saved; not applied" }), `saved-not-applied mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
   expect(seen.some(args => args.includes("setting budget.global 5000"))).toBe(true);
   for (const row of ["budget.project", "budget.session", "noting.model", "noting.thinking", "consolidation.model", "consolidation.thinking", "dreaming.model", "dreaming.thinking", "closedSessionScope"]) {
     await ui.select({ key: "setting-rows", value: row });
-    expect(await ui.find({ key: row === "closedSessionScope" ? "scope-choice" : `edit-${row}` })).toBeDefined();
+    expect(await ui.find({ key: row === "closedSessionScope" ? "scope-choice" : `edit-${row}` }), `setting row ${row}: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
     await ui.select({ key: row === "closedSessionScope" ? "scope-back" : "edit-back", value: "back" });
   }
+  await ui.select({ key: "setting-rows", value: "closedSessionScope" });
+  await ui.select({ key: "scope-choice", value: "global" });
+  expect(seen.some(args => args.includes("setting closedSessionScope global"))).toBe(true);
   await ui.select({ key: "setting-rows", value: "back" });
+  await ui.select({ key: "actions", value: "project" });
+  const writesBeforeCancel = seen.length;
+  await ui.input({ key: "project-name", text: "" });
+  expect(seen.length).toBe(writesBeforeCancel);
   await ui.select({ key: "actions", value: "project" });
   await ui.input({ key: "project-name", text: "new-project" });
   expect(seen.some(args => args.includes("project new-project"))).toBe(true);
   await ui.select({ key: "actions", value: "runs" });
-  expect(await ui.find({ type: "Text", text: "R1 noting completed" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "R1 noting completed" }), `runs mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
   expect(seen.some(args => args.includes("runs --json 10"))).toBe(true);
   const runsReads = seen.filter(args => args.includes(" runs --json ")).length;
   await ui.input({ key: "run-count", text: "" }); // Empty input does not dispatch another read.
   expect(seen.filter(args => args.includes(" runs --json ")).length).toBe(runsReads);
   await ui.input({ key: "run-count", text: "25" });
   expect(seen.some(args => args.includes("runs --json 25"))).toBe(true);
-  expect(await ui.find({ type: "Text", text: "R25 noting completed" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "R25 noting completed" }), `requested runs mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
   await ui.select({ key: "runs-back", value: "back" });
   await ui.select({ key: "actions", value: "catch-up" });
   await ui.select({ key: "actions", value: "stop" });
   expect(seen.some(args => args.endsWith(" catchup"))).toBe(true);
   expect(seen.some(args => args.endsWith(" stop"))).toBe(true);
   await ui.select({ key: "actions", value: "turn-off" });
-  expect(await ui.find({ type: "Text", text: "Turn Trace Memory off" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Turn Trace Memory off" }), `confirmation mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
   await ui.select({ key: "confirm", value: "no" });
   expect(seen.some(args => args.endsWith(" off"))).toBe(false);
   await ui.select({ key: "actions", value: "turn-off" });
