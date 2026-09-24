@@ -56,13 +56,13 @@ test("context: a partial estimate marks the heading, not a footnote paragraph", 
   expect(context.localHeading).toBe("Estimated usage by category (partial) (local)");
 });
 
-test("pending: Noting/Consolidation/Dreaming rows with compact ratios", () => {
+test("pending: Noting/Consolidation/Dreaming rows with compact ratios and whole-number percentages", () => {
   const { pending } = buildTraceMenu(TRACE_MENU_FIXTURE);
-  expect(pending.noting).toEqual({ label: "Noting", tokens: 3_200, trigger: 10_000, ratio: 0.32, percent: "32.0%" });
-  expect(pending.consolidation).toEqual({ label: "Consolidation", tokens: 400, trigger: 5_000, ratio: 0.08, percent: "8.0%" });
-  expect(pending.dreaming.global).toEqual({ label: "global", tokens: 0, trigger: 4_000, ratio: 0, percent: "0.0%" });
-  expect(pending.dreaming.project).toEqual({ label: "project", tokens: 1_500, trigger: 5_000, ratio: 0.3, percent: "30.0%" });
-  expect(pending.dreaming.session).toEqual({ label: "session", tokens: 319, trigger: 1_000, ratio: 0.319, percent: "31.9%" });
+  expect(pending.noting).toEqual({ label: "Noting", tokens: 3_200, trigger: 10_000, ratio: 0.32, percent: "32%" });
+  expect(pending.consolidation).toEqual({ label: "Consolidation", tokens: 400, trigger: 5_000, ratio: 0.08, percent: "8%" });
+  expect(pending.dreaming.global).toEqual({ label: "global", tokens: 0, trigger: 4_000, ratio: 0, percent: "0%" });
+  expect(pending.dreaming.project).toEqual({ label: "project", tokens: 1_500, trigger: 5_000, ratio: 0.3, percent: "30%" });
+  expect(pending.dreaming.session).toEqual({ label: "session", tokens: 319, trigger: 1_000, ratio: 0.319, percent: "32%" });
 });
 
 test("pending: an unknown value never renders 0", () => {
@@ -70,10 +70,10 @@ test("pending: an unknown value never renders 0", () => {
   expect(pending.noting).toEqual({ label: "Noting", tokens: null, trigger: null, ratio: null, percent: "?" });
 });
 
-test("spend: session total, per-phase split and today's figure", () => {
+test("spend: session total, per-phase split (with the singular 'run') and today's figure", () => {
   const { spend } = buildTraceMenu(TRACE_MENU_FIXTURE);
   expect(spend.sessionLine).toBe("Spend   session $1.23");
-  expect(spend.phaseLine).toBe("Noting 12 runs $0.40 · Consolidation 3 runs $0.50 · Dreaming 1 runs $0.33");
+  expect(spend.phaseLine).toBe("Noting 12 runs $0.40 · Consolidation 3 runs $0.50 · Dreaming 1 run $0.33");
   expect(spend.todayLine).toBe("        today   $5.31");
 });
 

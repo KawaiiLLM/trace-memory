@@ -28,6 +28,9 @@ export const formatPercent = (ratio: number): string => {
 };
 export const formatShare = (value: number, total: number): string => total > 0 ? formatPercent(value / total) : "0.0%";
 export const formatMoney = (n: number): string => `$${n.toFixed(2)}`;
+/** Pending/trigger rows round to a whole percent ("32%"), unlike the context section's one-decimal
+ * shares — the ticket's mockup shows no decimal on any Pending row ("32%", "8%", "0%", "31%"). */
+export const formatWholePercent = (ratio: number): string => `${Math.round(ratio * 100)}%`;
 
 // ---- Context section ---------------------------------------------------------------------------
 
@@ -99,7 +102,7 @@ export interface PendingRow { label: string; tokens: number | null; trigger: num
 const pendingRow = (label: string, value: PendingInput): PendingRow => {
   if (value.tokens === null || value.trigger === null) return { label, tokens: null, trigger: null, ratio: null, percent: "?" };
   const ratio = value.trigger === 0 ? (value.tokens === 0 ? 0 : 1) : Math.min(1, value.tokens / value.trigger);
-  return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatPercent(value.trigger === 0 ? (value.tokens === 0 ? 0 : 1) : value.tokens / value.trigger) };
+  return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio) };
 };
 
 export interface PendingSectionInput {
@@ -134,7 +137,7 @@ export interface SpendPhase { runs: number; cost: number }
 export interface SpendSectionInput { session: number; noting: SpendPhase; consolidation: SpendPhase; dreaming: SpendPhase; today: number }
 export interface SpendSection { sessionLine: string; phaseLine: string; todayLine: string }
 export function buildSpendSection(input: SpendSectionInput): SpendSection {
-  const phase = (label: string, p: SpendPhase) => `${label} ${p.runs} runs ${formatMoney(p.cost)}`;
+  const phase = (label: string, p: SpendPhase) => `${label} ${p.runs} ${p.runs === 1 ? "run" : "runs"} ${formatMoney(p.cost)}`;
   return {
     sessionLine: `Spend   session ${formatMoney(input.session)}`,
     phaseLine: `${phase("Noting", input.noting)} · ${phase("Consolidation", input.consolidation)} · ${phase("Dreaming", input.dreaming)}`,
