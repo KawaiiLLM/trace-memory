@@ -778,6 +778,26 @@ test("86: a still-running coordinator cannot undo SessionEnd by polling or final
   } finally { await coordinator.shutdown("test cleanup"); }
 });
 
+test.each([false, true])("86: unknown-identity SessionStart invalidates the old owner (previously closed=%s)", async closed => {
+  const f = fixture(`unknown-owner-${closed}`); f.write();
+  const start = { hook_event_name: "SessionStart" as const, session_id: f.nativeSessionId, transcript_path: f.transcriptPath };
+  const initial = await recordSessionStart(f.config, start, now);
+  const importer = new CcImporter(f.config, initial);
+  const imported = await importer.reconcile(); importer.close();
+  if (closed) expect((await recordCcSessionEnd(f.config, { ...start, hook_event_name: "SessionEnd", reason: "other" })).confirmed).toBe(true);
+  vi.stubEnv("CLAUDE_PID", "");
+  const unknown = await recordSessionStart(f.config, { ...start, source: "resume" }, now);
+  expect(unknown.nativeProcess).toBeUndefined();
+  expect(unknown.lastClose).toBeNull();
+  const resumed = new CcImporter(f.config, unknown);
+  await resumed.reconcile(); resumed.close();
+  vi.stubEnv("CLAUDE_PID", String(process.pid));
+  expect(await recordCcSessionEnd(f.config, { ...start, hook_event_name: "SessionEnd", reason: "logout" }))
+    .toMatchObject({ confirmed: false, diagnostic: expect.stringContaining("native process identity is unavailable") });
+  const store = new Store(f.config.dbPath);
+  try { expect(store.getSession(imported.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
+});
+
 test("86: a late SessionEnd from an earlier native process cannot close a reopened session", async () => {
   const f = fixture("session-end-native-generation"); f.write();
   const start = { hook_event_name: "SessionStart" as const, session_id: f.nativeSessionId, transcript_path: f.transcriptPath };

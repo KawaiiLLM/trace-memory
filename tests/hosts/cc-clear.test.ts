@@ -366,6 +366,50 @@ test("SessionEnd prompt_input_exit on the child confirms the close; SessionEnd c
   try { expect(verified.getSession(child.coreSessionId!)!.closedAt).not.toBeNull(); } finally { verified.close(); }
 });
 
+test("86: a native child with no MCP executor keeps the core open until its SessionEnd", async () => {
+  const f = fixture("native-sibling");
+  const parent = await startParent(f);
+  await clearInto(f);
+  expect(readBinding(f.config, f.childId)!.executor).toBeNull();
+  expect(await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.parentId,
+    transcript_path: f.parentTranscriptPath, reason: "other" })).toMatchObject({ confirmed: true });
+  const store = new Store(f.config.dbPath);
+  try {
+    expect(store.getSession(parent.coreSessionId!)!.closedAt).toBeNull();
+    expect(await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.childId,
+      transcript_path: f.childTranscriptPath, reason: "logout" })).toMatchObject({ confirmed: true });
+    expect(store.getSession(parent.coreSessionId!)!.closedAt).not.toBeNull();
+  } finally { store.close(); }
+});
+
+test("86: a parent resumed in another native process remains live without an executor", async () => {
+  const f = fixture("resumed-parent");
+  const parent = await startParent(f);
+  await clearInto(f);
+  const resumed = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+  try {
+    vi.stubEnv("CLAUDE_PID", String(resumed.pid!));
+    await handleCcHook(f.config, { hook_event_name: "SessionStart", source: "resume", session_id: f.parentId,
+      transcript_path: f.parentTranscriptPath });
+    expect(readBinding(f.config, f.parentId)!.executor).toBeNull();
+    vi.stubEnv("CLAUDE_PID", String(process.pid));
+    expect(await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.childId,
+      transcript_path: f.childTranscriptPath, reason: "other" })).toMatchObject({ confirmed: true });
+    const store = new Store(f.config.dbPath);
+    try {
+      expect(store.getSession(parent.coreSessionId!)!.closedAt).toBeNull();
+      vi.stubEnv("CLAUDE_PID", String(resumed.pid!));
+      expect(await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.parentId,
+        transcript_path: f.parentTranscriptPath, reason: "logout" })).toMatchObject({ confirmed: true });
+      expect(store.getSession(parent.coreSessionId!)!.closedAt).not.toBeNull();
+    } finally { store.close(); }
+  } finally {
+    resumed.kill("SIGTERM");
+    if (resumed.exitCode === null && resumed.signalCode === null)
+      await new Promise<void>(resolve => resumed.once("exit", () => resolve()));
+  }
+});
+
 test("a SessionEnd on one lineage while another lineage's executor is live releases only its own executor and does not close the core session", async () => {
   const f = fixture("session-end-sibling");
   await startParent(f);

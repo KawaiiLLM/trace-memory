@@ -255,6 +255,16 @@ export async function updateBindingInStoreTransaction(config: ResolvedCcHostConf
   }, timeoutMs, signal);
 }
 
+/** A new SessionStart replaces native ownership even when its new identity is unavailable.
+ * Keeping the old owner in that case would authorize a delayed hook from the previous process. */
+export function renewNativeBinding(current: CcSessionBinding, nativeProcess: CcProcessIdentity | null): CcSessionBinding {
+  const sameOwner = nativeProcess ? current.nativeProcess?.pid === nativeProcess.pid &&
+    current.nativeProcess.startedAt === nativeProcess.startedAt : current.nativeProcess === undefined;
+  if (!current.lastClose && sameOwner) return current;
+  const { nativeProcess: previous, ...rest } = current;
+  return { ...rest, ...(nativeProcess ? { nativeProcess } : {}), lastClose: null };
+}
+
 export async function recordSessionStart(config: ResolvedCcHostConfig, input: CcHookInput,
   nativeCreatedAt: string | null): Promise<CcSessionBinding> {
   if (input.hook_event_name !== "SessionStart") throw new Error("expected a SessionStart Hook input");
@@ -266,9 +276,7 @@ export async function recordSessionStart(config: ResolvedCcHostConfig, input: Cc
     if (current) {
       if (current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path)
         throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
-      if (!current.lastClose && (!nativeProcess || (current.nativeProcess?.pid === nativeProcess.pid &&
-          current.nativeProcess.startedAt === nativeProcess.startedAt))) return current;
-      return { ...current, ...(nativeProcess ? { nativeProcess } : {}), lastClose: null };
+      return renewNativeBinding(current, nativeProcess);
     }
     // Prepare the database's parent, never the database itself. Store opens an existing file in
     // place or creates it on first use, just as the Pi host does.

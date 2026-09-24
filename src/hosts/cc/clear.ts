@@ -1,6 +1,6 @@
 import { TraceMemory, type Injection } from "../../core/api/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { coreHostOf, readBinding, recordSessionStart, updateBinding, validateNativeSessionId, withCcBindingLock,
+import { coreHostOf, readBinding, recordSessionStart, renewNativeBinding, updateBinding, validateNativeSessionId, withCcBindingLock,
   type CcHookInput, type CcSessionBinding } from "./binding.ts";
 import { CcProjection } from "./importer.ts";
 import { databaseIdentity, encodeCcInjection, ccSessionStartInjection, type CcHookOutput, type CcVisibleBinding } from "./injection.ts";
@@ -52,7 +52,7 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
         if (current) {
           if (current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path)
             throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
-          return current;
+          return renewNativeBinding(current, nativeProcess);
         }
         return {
           version: 1, nativeSessionId: childId, transcriptPath: input.transcript_path, dbPath: config.dbPath,

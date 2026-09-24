@@ -7,7 +7,7 @@ import { bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, up
 import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
 import type { CcWorkerJournal } from "./worker.ts";
 import { startControlServer, type CcControlServer } from "./control.ts";
-import { currentNativeProcess } from "./native-session.ts";
+import { assignedNativeSession, currentNativeProcess, processStartedAt } from "./native-session.ts";
 import { CcTaskScheduler } from "./scheduler.ts";
 import { removeCcStatus, writeCcStatus, type CcStatusFile } from "./status.ts";
 
@@ -30,29 +30,40 @@ export interface CcSessionEndResult { confirmed: boolean; reason: string; diagno
 const sameExecutor = (left: CcExecutorBinding | null, right: CcExecutorBinding | null): boolean =>
   left === null || right === null ? left === right :
     left.executorId === right.executorId && left.pid === right.pid && left.token === right.token && left.socketPath === right.socketPath;
-const executorLiveness = (executor: CcExecutorBinding): "alive" | "dead" | "unknown" => {
-  try { process.kill(executor.pid, 0); return "alive"; }
+const processLiveness = (identity: { pid: number }): "alive" | "dead" | "unknown" => {
+  try { process.kill(identity.pid, 0); return "alive"; }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") return "dead";
     return "unknown";
   }
 };
 
-/** 63: every other native lineage bound to the same core session, read from the shared bindings
- * directory. A best-effort scan: an unreadable sibling file is treated as no sibling, never a fault. */
-function siblingLineages(config: ResolvedCcHostConfig, coreSessionId: number, excludeNativeSessionId: string): CcSessionBinding[] {
-  let files: string[];
-  try { files = readdirSync(dirname(bindingPath(config, excludeNativeSessionId))); } catch { return []; }
-  const siblings: CcSessionBinding[] = [];
-  for (const file of files) {
+/** Every other native lineage of this core session. Unknown identity must not masquerade as an
+ * ended sibling: that would make an active session borrowable. */
+function hasLiveSibling(config: ResolvedCcHostConfig, coreSessionId: number, excludeNativeSessionId: string): boolean {
+  for (const file of readdirSync(dirname(bindingPath(config, excludeNativeSessionId)))) {
     if (!file.endsWith(".json")) continue;
     const nativeSessionId = file.slice(0, -".json".length);
     if (nativeSessionId === excludeNativeSessionId) continue;
-    let binding: CcSessionBinding | null;
-    try { binding = readBinding(config, nativeSessionId); } catch { continue; }
-    if (binding && binding.coreSessionId === coreSessionId) siblings.push(binding);
+    const sibling = readBinding(config, nativeSessionId);
+    if (!sibling || sibling.coreSessionId !== coreSessionId || sibling.lastClose?.confirmed) continue;
+    const native = sibling.nativeProcess;
+    if (!native) throw new Error(`CC sibling ${nativeSessionId} has no native process identity`);
+    const liveness = processLiveness(native);
+    if (liveness === "dead") continue;
+    if (liveness === "unknown") throw new Error(`CC sibling ${nativeSessionId} native process liveness is unknown`);
+    const startedAt = processStartedAt(native.pid);
+    if (startedAt === null) throw new Error(`CC sibling ${nativeSessionId} native process identity is unavailable`);
+    if (startedAt !== native.startedAt) continue; // PID reused after the bound native process ended.
+    const assigned = assignedNativeSession(config, [{ pid: native.pid, startedAt }]);
+    if (!assigned) throw new Error(`CC sibling ${nativeSessionId} has no native session assignment`);
+    // /clear moves the same native process to its child; the cleared-away parent is not live.
+    if (assigned.nativeSessionId !== nativeSessionId) continue;
+    if (assigned.transcriptPath !== sibling.transcriptPath)
+      throw new Error(`CC sibling ${nativeSessionId} disagrees with its native session assignment`);
+    return true;
   }
-  return siblings;
+  return false;
 }
 
 /** A native SessionEnd closes its bound lineage; it never imports or waits for the executor. */
@@ -80,9 +91,8 @@ export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: Cc
       if (store && current.coreSessionId !== null) {
         const session = store.getSession(current.coreSessionId);
         if (!session || session.host !== coreHostOf(current)) throw new Error("bound core session identity changed during SessionEnd close");
-        // A clear sibling still executing keeps the shared core session open. Its claim is untouched.
-        const liveSibling = siblingLineages(config, current.coreSessionId, nativeSessionId)
-          .some(sibling => sibling.executor && executorLiveness(sibling.executor) !== "dead");
+        // A live native sibling keeps the core open even before its MCP executor attaches.
+        const liveSibling = hasLiveSibling(config, current.coreSessionId, nativeSessionId);
         if (current.executor) store.releaseExecutor(current.executor.executorId);
         if (session.closedAt === null && !liveSibling) store.closeSession(current.coreSessionId);
       }
