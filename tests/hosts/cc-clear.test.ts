@@ -14,7 +14,8 @@ import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { nativeSessionDirectory, nativeSessionPath, publishNativeSession } from "../../src/hosts/cc/native-session.ts";
 import * as nativeSession from "../../src/hosts/cc/native-session.ts";
-import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+import { readCompleteTranscript, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+import { ccLastCompactionNotice } from "../../src/hosts/cc/menu-notices.ts";
 
 // 63: `/clear` binds the cleared-into native session as another lineage of the SAME core session as
 // the one it was cleared from — Claude Code's equivalent of Pi's in-place compaction.
@@ -138,6 +139,19 @@ test("73: clear truncates the Raw window rather than falling back, and warns in 
   expect(output!.systemMessage).toContain("pending Raw");
   expect(output!.systemMessage).toContain("pending for Noting and Consolidation");
   expect(output!.systemMessage!.length).toBeLessThan(4_000);
+  // Native 2.1.280 records the Hook stdout and then the displayed warning on its child
+  // hook_system_message; additional_context may come after both, not adjacent to success.
+  const base = { type: "attachment", sessionId: f.childId };
+  f.writeChild([
+    { ...base, uuid: "success", parentUuid: null, attachment: { type: "hook_success", hookEvent: "SessionStart",
+      hookName: "SessionStart:clear", toolUseID: "clear-hook", command: 'node "${CLAUDE_PLUGIN_ROOT}/dist/cc.cjs" hook --config "${CLAUDE_PLUGIN_ROOT}/cc.config.json"',
+      exitCode: 0, stdout: JSON.stringify(output) } },
+    { ...base, uuid: "notice", parentUuid: "success", attachment: { type: "hook_system_message", hookEvent: "SessionStart",
+      hookName: "SessionStart:clear", toolUseID: "clear-hook", content: output!.systemMessage } },
+    { ...base, uuid: "injection", parentUuid: "notice", attachment: { type: "hook_additional_context",
+      content: [output!.hookSpecificOutput.additionalContext] } },
+  ]);
+  expect(ccLastCompactionNotice(readCompleteTranscript(f.childTranscriptPath), child)).toBe(output!.systemMessage);
 });
 
 test("clear without CLAUDE_PID, without a native-session record, or with an unbound parent is an ordinary new session", async () => {
