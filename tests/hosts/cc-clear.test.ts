@@ -12,14 +12,15 @@ import { handleCcHook } from "../../src/hosts/cc/index.ts";
 import { ccHandleClear } from "../../src/hosts/cc/clear.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
-import { publishNativeSession } from "../../src/hosts/cc/native-session.ts";
+import { nativeSessionDirectory, nativeSessionPath, publishNativeSession } from "../../src/hosts/cc/native-session.ts";
+import * as nativeSession from "../../src/hosts/cc/native-session.ts";
 import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 
 // 63: `/clear` binds the cleared-into native session as another lineage of the SAME core session as
 // the one it was cleared from — Claude Code's equivalent of Pi's in-place compaction.
 
 const dirs: string[] = [];
-afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const sleep = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 const until = async (condition: () => boolean, timeoutMs = 3_000) => {
   const deadline = Date.now() + timeoutMs;
@@ -409,6 +410,90 @@ test("86: a parent resumed in another native process remains live without an exe
       await new Promise<void>(resolve => resumed.once("exit", () => resolve()));
   }
 });
+
+test.each(["none", "dead", "reused", "live"] as const)("86: legacy sibling liveness comes from native-session records (%s)", async state => {
+  const f = fixture(`legacy-${state}`);
+  const parent = await startParent(f);
+  await clearInto(f); // This process's assignment now points at the child, not the parent.
+  await updateBinding(f.config, f.parentId, current => {
+    const { nativeProcess: _oldIdentity, ...legacy } = current!;
+    return legacy;
+  });
+  const processForRecord = state === "none" ? null : spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+  try {
+    if (processForRecord) {
+      const record = publishNativeSession(f.config, { hook_event_name: "SessionStart", session_id: f.parentId,
+        transcript_path: f.parentTranscriptPath }, processForRecord.pid!)!;
+      expect(record.startedAt).not.toBeNull();
+      if (state === "dead") {
+        processForRecord.kill("SIGTERM");
+        await new Promise<void>(resolve => processForRecord.once("exit", () => resolve()));
+      } else if (state === "reused") {
+        writeFileSync(nativeSessionPath(f.config, processForRecord.pid!), JSON.stringify({ ...record, startedAt: "older process" }));
+      }
+    }
+    expect(readBinding(f.config, f.parentId)!.nativeProcess).toBeUndefined();
+    expect(await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.childId,
+      transcript_path: f.childTranscriptPath, reason: "other" })).toMatchObject({ confirmed: true });
+    const store = new Store(f.config.dbPath);
+    try {
+      const closedAt = store.getSession(parent.coreSessionId!)!.closedAt;
+      if (state === "live") expect(closedAt).toBeNull();
+      else expect(closedAt).not.toBeNull();
+    } finally { store.close(); }
+  } finally {
+    if (processForRecord && processForRecord.exitCode === null && processForRecord.signalCode === null) {
+      processForRecord.kill("SIGTERM");
+      await new Promise<void>(resolve => processForRecord.once("exit", () => resolve()));
+    }
+  }
+});
+
+test.each(["directory", "json", "record", "record-start", "process-start", "permission"] as const)(
+  "86: unknown legacy sibling state rejects close rather than guessing dead (%s)", async fault => {
+    const f = fixture(`legacy-unknown-${fault}`);
+    const parent = await startParent(f);
+    await clearInto(f);
+    await updateBinding(f.config, f.parentId, current => {
+      const { nativeProcess: _oldIdentity, ...legacy } = current!;
+      return legacy;
+    });
+    // A second assignment points at the old parent while the ending child's binding remains intact.
+    const sibling = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+    try {
+      const record = publishNativeSession(f.config, { hook_event_name: "SessionStart", session_id: f.parentId,
+        transcript_path: f.parentTranscriptPath }, sibling.pid!)!;
+      const path = nativeSessionPath(f.config, sibling.pid!);
+      if (fault === "directory") {
+        rmSync(nativeSessionDirectory(f.config), { recursive: true });
+        writeFileSync(nativeSessionDirectory(f.config), "not a directory");
+      } else if (fault === "json") writeFileSync(path, "{");
+      else if (fault === "record") writeFileSync(path, JSON.stringify({ ...record, pid: 0 }));
+      else if (fault === "record-start") writeFileSync(path, JSON.stringify({ ...record, startedAt: null }));
+      else if (fault === "process-start") {
+        const actual = nativeSession.processStartedAt;
+        vi.spyOn(nativeSession, "processStartedAt").mockImplementation(pid => pid === sibling.pid ? null : actual(pid));
+      } else {
+        const actual = process.kill;
+        vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+          if (pid === sibling.pid && signal === 0) throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+          return actual(pid, signal);
+        });
+      }
+      const result = await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.childId,
+        transcript_path: f.childTranscriptPath, reason: "other" });
+      expect(result.confirmed).toBe(false);
+      expect(result.diagnostic).toBeTruthy();
+      expect(readBinding(f.config, f.childId)!.lastClose?.confirmed).not.toBe(true);
+      const store = new Store(f.config.dbPath);
+      try { expect(store.getSession(parent.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
+    } finally {
+      vi.restoreAllMocks();
+      sibling.kill("SIGTERM");
+      if (sibling.exitCode === null && sibling.signalCode === null)
+        await new Promise<void>(resolve => sibling.once("exit", () => resolve()));
+    }
+  });
 
 test("a SessionEnd on one lineage while another lineage's executor is live releases only its own executor and does not close the core session", async () => {
   const f = fixture("session-end-sibling");

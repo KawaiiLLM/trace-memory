@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -96,6 +96,19 @@ function readNativeSession(config: ResolvedCcHostConfig, pid: number): CcNativeS
     throw new Error(`invalid native session record for pid ${pid}`);
   validateNativeSessionId(record.nativeSessionId);
   return record as CcNativeSessionRecord;
+}
+
+/** Legacy bindings have no process identity. Enumerate the native assignments without treating an
+ * unreadable directory or malformed record as evidence that their processes have ended. */
+export function nativeSessionRecords(config: ResolvedCcHostConfig): CcNativeSessionRecord[] {
+  return readdirSync(nativeSessionDirectory(config)).filter(file => file.endsWith(".json")).map(file => {
+    const pid = parsePid(file.slice(0, -".json".length));
+    if (pid === null || file !== `${pid}.json`) throw new Error(`invalid native session record filename: ${file}`);
+    const record = readNativeSession(config, pid);
+    if (!record || (record.startedAt !== null && (typeof record.startedAt !== "string" || !record.startedAt.trim())))
+      throw new Error(`invalid native session record for pid ${pid}`);
+    return record;
+  });
 }
 
 /** Executor side: the assignment published for the closest ancestor that has one. A record whose

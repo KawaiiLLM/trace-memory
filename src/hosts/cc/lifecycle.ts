@@ -7,7 +7,7 @@ import { bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, up
 import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
 import type { CcWorkerJournal } from "./worker.ts";
 import { startControlServer, type CcControlServer } from "./control.ts";
-import { assignedNativeSession, currentNativeProcess, processStartedAt } from "./native-session.ts";
+import { assignedNativeSession, currentNativeProcess, nativeSessionRecords, processStartedAt } from "./native-session.ts";
 import { CcTaskScheduler } from "./scheduler.ts";
 import { removeCcStatus, writeCcStatus, type CcStatusFile } from "./status.ts";
 
@@ -45,7 +45,20 @@ function hasLiveSibling(config: ResolvedCcHostConfig, coreSessionId: number, exc
     const sibling = readBinding(config, nativeSessionId);
     if (!sibling || sibling.coreSessionId !== coreSessionId || sibling.lastClose?.confirmed) continue;
     const native = sibling.nativeProcess;
-    if (!native) throw new Error(`CC sibling ${nativeSessionId} has no native process identity`);
+    if (!native) {
+      // Pre-86 bindings lack nativeProcess. Only a matching live assignment keeps them open.
+      for (const record of nativeSessionRecords(config)) {
+        if (record.nativeSessionId !== nativeSessionId) continue;
+        const liveness = processLiveness(record);
+        if (liveness === "dead") continue;
+        if (liveness === "unknown") throw new Error(`CC sibling ${nativeSessionId} native process liveness is unknown`);
+        const startedAt = processStartedAt(record.pid);
+        if (record.startedAt === null || startedAt === null)
+          throw new Error(`CC sibling ${nativeSessionId} native process identity is unavailable`);
+        if (startedAt === record.startedAt) return true;
+      }
+      continue;
+    }
     const liveness = processLiveness(native);
     if (liveness === "dead") continue;
     if (liveness === "unknown") throw new Error(`CC sibling ${nativeSessionId} native process liveness is unknown`);
