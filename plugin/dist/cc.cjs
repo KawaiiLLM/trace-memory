@@ -4479,39 +4479,68 @@ var PUNCTUATION_RUN = wholeRun(PUNCTUATION);
 var JOINED_SPLIT = new RegExp(`(\\n+|[^\\S\\n]+|${PUNCTUATION.source}+)`);
 var segmentClass = (segment) => segment[0] === "\n" ? 0 : /^\s+$/.test(segment) ? 1 : PUNCTUATION_RUN.test(segment) ? 2 : 3;
 var JoinedTokens = class {
+  #first;
   #last;
   #total = 0;
-  #refresh(segment, hasNext) {
+  #length = 0;
+  #refresh(segment) {
+    if (!segment) return;
     this.#total -= segment.charge;
     segment.charge = segment.kind <= 1 ? whitespaceRunTokens(
       segment.length,
       segment.kind === 0,
-      segment.previousKind === 2,
-      segment.previousKind === 0,
-      segment.previousKind === void 0 && !hasNext
+      segment.previous?.kind === 2,
+      segment.previous?.kind === 0,
+      !segment.previous && !segment.next
     ) : segmentTokens(segment.text, "", "");
     this.#total += segment.charge;
   }
   add(text) {
+    this.#length += text.length;
     for (const part of text.split(JOINED_SPLIT).filter(Boolean)) {
       const kind = segmentClass(part);
       if (this.#last?.kind === kind) {
         this.#last.length += part.length;
         if (kind >= 2) this.#last.text += part;
-        this.#refresh(this.#last, false);
+        this.#refresh(this.#last.previous);
+        this.#refresh(this.#last);
       } else {
         const segment = {
           kind,
           text: kind >= 2 ? part : "",
           length: part.length,
           charge: 0,
-          previousKind: this.#last?.kind
+          previous: this.#last
         };
-        if (this.#last) this.#refresh(this.#last, true);
+        if (this.#last) this.#last.next = segment;
+        else this.#first = segment;
         this.#last = segment;
-        this.#refresh(segment, false);
+        this.#refresh(segment.previous);
+        this.#refresh(segment);
       }
     }
+  }
+  removePrefix(length) {
+    if (!Number.isSafeInteger(length) || length < 0 || length > this.#length) throw new RangeError("invalid token prefix length");
+    this.#length -= length;
+    while (length && this.#first) {
+      const segment = this.#first;
+      if (length < segment.length) {
+        this.#total -= segment.charge;
+        segment.charge = 0;
+        segment.length -= length;
+        if (segment.kind >= 2) segment.text = segment.text.slice(length);
+        length = 0;
+        break;
+      }
+      length -= segment.length;
+      this.#total -= segment.charge;
+      this.#first = segment.next;
+      if (this.#first) this.#first.previous = void 0;
+      else this.#last = void 0;
+    }
+    this.#refresh(this.#first);
+    this.#refresh(this.#first?.next);
   }
   get count() {
     return this.#total;
@@ -8039,18 +8068,16 @@ relations retained by explicit Fact read; other endpoints not applicable on this
     }
     if (pending.offset > prefix.offset) {
       const removedEnd = Math.min(pending.offset, prefix.end);
+      let removedChars = 0;
       for (let position = prefix.offset; position < removedEnd; position++) {
         const view = prefix.views.get(position);
+        removedChars += view.text.length + (position + 1 < prefix.end ? 2 : 0);
         notingViewCache.delete(view.id);
         prefix.views.delete(position);
       }
+      prefix.count.removePrefix(removedChars);
       prefix.offset = pending.offset;
       prefix.end = Math.max(prefix.end, pending.offset);
-      prefix.count = new JoinedTokens();
-      for (let position = prefix.offset; position < prefix.end; position++) {
-        if (position > prefix.offset) prefix.count.add("\n\n");
-        prefix.count.add(prefix.views.get(position).text);
-      }
     }
     while (prefix.end - pending.offset < pending.length && prefix.count.count < limit) {
       const id = pending.at(prefix.end - pending.offset);
