@@ -1047,9 +1047,8 @@ export default function (pi: ExtensionAPI) {
         context.ui.notify(String(error), "error");
       }), context, () => {
         showSpend(context);
-        // Ticket 69's completion checkpoint: a successful N/C or a non-cancelled D completion can
-        // have committed work and re-checks C/D immediately at the current head. A failed D may
-        // retain partial writes. Gated against `signal` — this call's own progress
+        // Ticket 86: only a successful completion may check C/D. A failed D can retain partial
+        // writes, but failure itself starts no check. Gated against `signal` — this call's own progress
         // snapshot, taken before this task was admitted, not the shared `lastArmSignal` another
         // concurrent phase or entry may have moved meanwhile: a run that settles without moving
         // `consolidationBatch`/`duePools` at all (success or failure, nothing committed — a Consolidator
@@ -1066,11 +1065,11 @@ export default function (pi: ExtensionAPI) {
         // N/C report success once their atomic commit succeeds, even if the provider later fails.
         // Only D can fail after partial writes. A failed N/C must not relay an unrelated empty N's
         // processing-signal change into an immediate retry of work that committed nothing.
-        if (settled && settled.outcome !== "cancelled" && (settled.outcome === "success" || kind === "dreaming") && epoch === cancellationEpoch &&
+        if (settled?.outcome === "success" && epoch === cancellationEpoch &&
           memory.store.progressSignal(own.sessionId) !== signal) { armCD(); checkQueues(undefined, ["consolidation", "dreaming"], false); }
         // R4: a successful ordinary completion while a drain is active is a full checkpoint; any other
         // outcome (failure, cancelled, empty, dropped, bounced) stays N-only, matching the per-poll drive.
-        if (catchup) driveCatchup(settled?.outcome === "success");
+        if (catchup && settled?.outcome !== "failure" && settled?.outcome !== "cancelled") driveCatchup(settled?.outcome === "success");
       });
     }
     if (catchup) driveCatchup(false); // Ordinary completion may free N's drain slot, but is not an R4 checkpoint.
@@ -1109,22 +1108,22 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(`Trace Memory: catchup completed (${p.entriesDone} entries noted, ${p.factsDone} facts integrated; below-threshold work may remain pending).`, "info");
     showSpend(ctx);
   };
-  const driveCatchup = (checkAll = true) => {
+  const driveCatchup = (checkAll = true, retryPhase?: WorkerPhase) => {
     const c = catchup;
     if (!c || c.stopped || c.outcome || closed || !enabled()) return;
     const context = ctx;
     const own = { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId, triggerEntryId: c.triggerEntryId };
     const remainingEntries = pendingCatchupEntryIds(c);
-    if (!checkAll && !remainingEntries.length && c.waitingPhase && c.waitingPhase !== "noting") {
+    if (!checkAll && !retryPhase && !remainingEntries.length && c.waitingPhase && c.waitingPhase !== "noting") {
       finishCatchup(c); // Ordinary release may have cleared all due work; settle only, never replay its busy check.
       return;
     }
     let launched = false, blockedNoting = false;
     if (checkAll) c.waitingPhase = undefined;
-    const phases: readonly WorkerPhase[] = checkAll ? ["noting", "consolidation", "dreaming"] : ["noting"];
+    const phases: readonly WorkerPhase[] = retryPhase ? [retryPhase] : checkAll ? ["noting", "consolidation", "dreaming"] : ["noting"];
     for (const phase of phases) {
-      let due = phase === "noting" ? remainingEntries.length > 0 : false;
-      try { if (phase !== "noting") due = memory.taskEligibility(phase, own).due; }
+      let due = retryPhase === phase || phase === "noting" && remainingEntries.length > 0;
+      try { if (phase !== "noting" && !retryPhase) due = memory.taskEligibility(phase, own).due; }
       catch (error) { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); return; }
       if (!due || slots.has(phase)) { if (phase === "noting" && due) blockedNoting = true; continue; }
       if (phase === "noting") {
@@ -1140,16 +1139,10 @@ export default function (pi: ExtensionAPI) {
       const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) },
         { borrowed: false, automatic: phase !== "noting", ...(boundary ? { boundary } : {}) });
       slot.result = promise.catch(() => undefined);
-      let checkpoint = false;
-      // Ticket 69: independent of R4's own catchup checkpoint (`checkpoint` above, successful-only),
-      // any non-empty non-dropped outcome of ANY phase — including a catchup-owned failure — arms C
-      // and D (a partial commit before a failure is still a commit), for the ordinary per-entry path
-      // to pick up once the drain ends. This does NOT also run an immediate ordinary-path check here:
-      // a successful completion already gets one, more completely, from `driveCatchup()`'s own R4
-      // recursion below (noting's drain condition plus C and D, with proper `c.active` bookkeeping);
-      // running the ordinary `checkQueues` here too would race it for the slot and can leave a
-      // catchup-owned admission invisible to the drain's own state. A non-success outcome must not
-      // launch a new admission at all here — the drain ends honestly on it, exactly as before 69.
+      let checkpoint = false, retry = false;
+      // A failure may retain partial commits. Arm ordinary C/D for the next entry, but do not
+      // check either phase at failure: retry this phase after its slot is released. A successful
+      // completion drives the full catchup checkpoint instead of racing an ordinary check.
       let completed = false;
       const handled = promise.then(result => {
         if (phase === "noting" && result && Array.isArray((result as { facts?: unknown }).facts))
@@ -1162,7 +1155,11 @@ export default function (pi: ExtensionAPI) {
         const permanent = (result as { permanent?: string }).permanent;
         if (outcome === "dropped" && permanent) { c.outcome = "failed"; c.diagnostic = permanent; checkpoint = false; return; }
         if (outcome === "dropped") { if (phase === "noting") c.waitingPhase = phase; return; }
-        if (outcome !== "success" && outcome !== "empty") {
+        if (outcome === "failure") {
+          c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
+          if ((result as { automaticOff?: string }).automaticOff) c.outcome = "stopped";
+          else retry = true;
+        } else if (outcome !== "success" && outcome !== "empty") {
           c.outcome = outcome === "cancelled" ? "stopped" : "failed";
           c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
           checkpoint = false;
@@ -1172,7 +1169,8 @@ export default function (pi: ExtensionAPI) {
         c.active.delete(phase); showSpend(context);
         if (completed) armCD();
         if (catchup !== c) return; // A late completion owns no checkpoint in a replacement drain.
-        if (checkpoint) driveCatchup();
+        if (retry) driveCatchup(false, phase); // Slot released; retry only the failed phase under the frozen boundary.
+        else if (checkpoint) driveCatchup();
         else finishCatchup(c); // empty/dropped settle this opportunity but never re-arm it.
       });
     }

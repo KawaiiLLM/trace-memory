@@ -98,6 +98,56 @@ test.each(["consolidation", "dreaming"] as const)("R4 a non-success ordinary %s 
   expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase });
 });
 
+test("86: catchup D failure preserves partial writes and admits a fresh range without checking C/D", async () => {
+  const f = fixture();
+  const writes: string[] = [];
+  let attempt = 0;
+  const checks: string[] = [];
+  f.memory.taskEligibility.mockImplementation(phase => { checks.push(phase); return { due: phase === "dreaming" && attempt < 2 }; });
+  f.memory.dream.mockImplementation(async () => {
+    attempt++;
+    if (attempt === 1) { writes.push("committed revision 1"); return { outcome: "failure", problems: ["time bound after write"] } as any; }
+    expect(writes).toEqual(["committed revision 1"]);
+    writes.push("committed revision 2");
+    return { outcome: "success" } as any;
+  });
+  f.scheduler.startCatchup(projection); await settle(f);
+  expect(attempt).toBe(2);
+  expect(writes).toEqual(["committed revision 1", "committed revision 2"]);
+  expect(checks.slice(0, 2)).toEqual(["consolidation", "dreaming"]);
+  expect(checks.slice(2)).toEqual(["consolidation", "dreaming", "consolidation", "dreaming"]); // success checkpoint and completion only
+});
+
+test("86: a failed ordinary D with partial writes does not checkpoint C or D", async () => {
+  const f = fixture();
+  let signal = "before";
+  f.memory.store.progressSignal = vi.fn(() => signal);
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" }));
+  f.memory.dream.mockImplementation(async () => {
+    signal = "partial-write";
+    return { outcome: "failure", problems: ["time bound after write"] } as any;
+  });
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1], selectedAppendedEntryIds: [1] });
+  for (let i = 0; i < 5; i++) await tick();
+  expect(f.memory.dream).toHaveBeenCalledTimes(1);
+  expect(f.memory.taskEligibility.mock.calls.map(([phase]) => phase)).toEqual(["noting", "consolidation", "dreaming"]);
+  expect(signal).toBe("partial-write");
+});
+
+test("86: a Dreamer wall-clock failure retries its frozen phase; stop at completion fences retry", async () => {
+  const f = fixture();
+  let release!: () => void;
+  const execute = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; });
+    return { outcome: "failure", problems: ["Dreamer exceeded wall-clock limit"] } as any; });
+  f.memory.dream = execute as any;
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" }));
+  f.scheduler.startCatchup(projection);
+  await tick(); expect(execute).toHaveBeenCalledTimes(1);
+  f.scheduler.stopCatchup(); release(); await tick(); await tick();
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(f.scheduler.catchupStatus().state).toBe("stopped");
+});
+
 test.each(["consolidation", "dreaming"] as const)("R4 a repeated catchup command re-checks a waiting idle drain and launches a due %s", async phase => {
   const f = fixture();
   let calls = 0;
@@ -149,12 +199,32 @@ test("R4 ordinary completion may settle a zero-Raw wait when it clears all due w
   expect(f.scheduler.catchupStatus().state).toBe("completed");
 });
 
-test("R4 terminal failure fences every later phase", async () => {
-  const f = fixture(); f.c(2); f.d(1); f.entries.push(1);
-  f.memory.consolidate.mockImplementation(async () => ({ outcome: "failure", problems: ["terminal"] }) as any);
+test("86: 'catchup 同样遵守三次失败转为off' retries one logical C task without failure checkpoints", async () => {
+  const f = fixture(); f.c(1);
+  const checks: string[] = [];
+  f.memory.taskEligibility.mockImplementation(phase => { checks.push(phase); return { due: phase === "consolidation" }; });
+  f.memory.consolidate.mockImplementation(async () => {
+    f.starts.push("C");
+    const attempts = f.starts.filter(phase => phase === "C").length;
+    return { outcome: "failure", problems: ["terminal"], ...(attempts === 3 ? { automaticOff: "off after three failures" } : {}) } as any;
+  });
   f.scheduler.startCatchup(projection);
-  for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "failed"; i++) await tick();
-  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "failed", diagnostic: "terminal" });
-  const before = [...f.starts]; await tick(); f.scheduler.reconcile(projection, false); await tick();
-  expect(f.starts).toEqual(before);
+  for (let i = 0; i < 15 && f.scheduler.catchupStatus().state !== "stopped"; i++) await tick();
+  expect(f.starts).toEqual(["C", "C", "C"]);
+  expect(checks).toEqual(["consolidation", "dreaming"]); // first checkpoint only; failures check neither.
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "stopped", diagnostic: "terminal" });
+});
+
+test.each(["consolidation", "dreaming"] as const)("86: '任务失败后不检查' — %s retries before another eligibility check, then succeeds", async phase => {
+  const f = fixture();
+  const trace: string[] = [];
+  let attempt = 0;
+  f.memory.taskEligibility.mockImplementation(candidate => { trace.push(`check:${candidate}`); return { due: candidate === phase && attempt < 2 }; });
+  const execute = vi.fn(async () => { trace.push(`run:${phase}`); return { outcome: ++attempt === 1 ? "failure" : "success" }; });
+  if (phase === "consolidation") f.memory.consolidate = execute as any;
+  else f.memory.dream = execute as any;
+  f.scheduler.startCatchup(projection);
+  await settle(f);
+  expect(trace.slice(0, 4)).toEqual(["check:consolidation", "check:dreaming", `run:${phase}`, `run:${phase}`]);
+  expect(f.scheduler.catchupStatus().state).toBe("completed");
 });

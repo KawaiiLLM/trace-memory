@@ -297,7 +297,7 @@ test("68: a repeated catchup command re-checks a waiting idle drain and recovers
   } finally { await h.dispose(); }
 });
 
-test.each(["C", "D"] as const)("67: downstream %s business failure ends catchup honestly and never launches more work", async failedPhase => {
+test("86: downstream C business failure retries its logical task and three failures turn memory off", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1 });
   let release = () => {};
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -314,7 +314,7 @@ test.each(["C", "D"] as const)("67: downstream %s business failure ends catchup 
         }
         return notingFact(c);
       }
-      if (phase(c) === failedPhase) {
+      if (phase(c) === "C") {
         failingCalls++;
         await gate;
         // The deterministic worker terminates unsuccessfully (non-retryable), so core
@@ -327,24 +327,47 @@ test.each(["C", "D"] as const)("67: downstream %s business failure ends catchup 
     await command(h, "catchup");
     await vi.waitFor(() => { expect(failingCalls).toBeGreaterThan(0); expect(nextNoterHeld).toBe(true); });
     release();
-    const kind = failedPhase === "C" ? "consolidation" : "dreaming";
-    await vi.waitFor(() => expect(h.memory.store.listRuns(1).some(r => r.kind === kind && r.outcome === "failure")).toBe(true));
-    // Existing work may commit, but failure must fence the next Noting batch, not
-    // merely report failed after a drain that had already exhausted all its Raw.
+    const kind = "consolidation";
+    await vi.waitFor(() => expect(h.memory.store.listRuns(1).filter(r => r.kind === kind && r.outcome === "failure")).toHaveLength(3));
     releaseNextNoter(); await settle(h);
     const runs = h.memory.store.listRuns(1);
-    expect(runs.filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(2);
-    expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
-    expect(runs.filter(r => r.kind === kind && r.outcome === "failure")).toHaveLength(1);
-    if (failedPhase === "C") expect(runs.some(r => r.kind === "dreaming")).toBe(false);
-    else expect(h.memory.store.listKnowledgeRevisions().length).toBeGreaterThan(0);
-    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: failed");
+    expect(failingCalls).toBe(3);
+    expect(runs.filter(r => r.kind === kind && r.outcome === "failure")).toHaveLength(3);
+    expect(runs.some(r => r.kind === "dreaming")).toBe(false);
+    expect(h.notices.some(n => n.includes("off after three failures"))).toBe(true);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: stopped");
     const requests = h.requests.length;
     await settle(h); await h.emit("session_tree"); await settle(h);
     expect(h.requests).toHaveLength(requests);
-    expect(h.memory.store.listRuns(1)).toEqual(runs);
-    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: failed");
   } finally { release(); releaseNextNoter(); await h.dispose(); }
+}, 30000);
+
+test("86: D retries the same pending revision and three business failures turn memory off", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
+  let dreams = 0;
+  try {
+    await h.turn(); h.memory.setKnowledgeBudget("session", 1000);
+    const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
+    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user",
+      text: "Keep this conclusion.", source: ["T1#user"] }] })).toContain("ok: F1");
+    expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", topics: [],
+      reason: "Seed one unchanged revision.", text: "constraint ".repeat(250), category: "constraint",
+      scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
+    h.provider(async c => {
+      if (phase(c) === "N") return notingFact(c);
+      if (phase(c) !== "D") throw new Error("Unexpected consolidation admission");
+      if (++dreams > 4) throw new Error("D attempted an unbounded retry");
+      return { ...reply(""), stopReason: "error", errorMessage: "fixture D failure" };
+    });
+    await command(h, "catchup"); await settle(h);
+    const executions = h.memory.store.db.prepare("SELECT head, outcome, terminal_run FROM task_executions WHERE phase = 'dreaming' ORDER BY rowid").all();
+    const failures = h.memory.store.db.prepare("SELECT head, count FROM task_failures WHERE phase = 'dreaming'").all();
+    expect(dreams).toBe(3);
+    expect(new Set(executions.map(row => row.head)).size).toBe(1);
+    expect(executions.map(row => row.outcome)).toEqual(["failure", "failure", "failure"]);
+    expect(failures).toEqual([{ head: executions[0]!.head, count: 3 }]);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: stopped");
+  } finally { await command(h, "stop"); await h.dispose(); }
 }, 30000);
 
 test("67: entries persisted after catchup freezes do not extend Noting's boundary", async () => {

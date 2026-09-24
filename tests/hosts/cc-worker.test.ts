@@ -1126,7 +1126,7 @@ test("manual catchup drains bounded Noting but leaves below-threshold facts and 
   memory.close();
 });
 
-test("catchup reports a C terminal failure without rolling back its committed knowledge", async () => {
+test("86: catchup retries C after a committed write without rolling back its knowledge", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-partial-c-")); dirs.push(directory);
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
     const input = raw as NotingAgentInput | ConsolidationAgentInput;
@@ -1148,8 +1148,10 @@ test("catchup reports a C terminal failure without rolling back its committed kn
     firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
   const source = append(memory, session.id, "partial", "The committed knowledge must survive its worker's later failure.");
   const consolidate = memory.consolidate;
+  let calls = 0;
   const failure = vi.spyOn(memory, "consolidate").mockImplementation(async options => {
     const result = await consolidate(options);
+    if (++calls !== 1) return result;
     expect(result.outcome).toBe("success");
     if (result.outcome !== "success") throw new Error("fixture C did not commit");
     return { outcome: "failure", runId: result.runId, problems: ["terminal failure after commit"] };
@@ -1159,12 +1161,12 @@ test("catchup reports a C terminal failure without rolling back its committed kn
   try {
     scheduler.startCatchup({ state: "ready", coreSessionId: session.id, branch: "main", headTurnId: source.turn.id,
       selectedEntryIds: source.ids, appendedEntryIds: [], problems: [], snapshot: {} as any });
-    for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "failed"; i++) await tick();
-    expect(scheduler.catchupStatus()).toMatchObject({ state: "failed", diagnostic: "terminal failure after commit" });
+    for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
+    expect(scheduler.catchupStatus()).toMatchObject({ state: "completed" });
     expect(memory.store.db.prepare("SELECT text FROM knowledge_revisions").all()).toEqual([
       { text: "Committed before terminal failure." }]);
     expect(dream).not.toHaveBeenCalled();
-    await tick(); expect(failure).toHaveBeenCalledTimes(1);
+    await tick(); expect(failure).toHaveBeenCalledTimes(2);
   } finally { scheduler.stop(); await scheduler.settle(); memory.close(); }
 });
 

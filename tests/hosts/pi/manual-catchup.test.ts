@@ -120,9 +120,12 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
     await command(h, "catchup"); // repeating reports the same waiting operation, not a second one
     expect(h.notices.at(-1)).toContain("Catchup: waiting for noting");
     h.provider(async c => phaseOf(c) === "consolidation" ? consolidationReply() : emptyNote(c) ?? reply("No durable material."));
-    release[0]!(reply("No durable material.")); // free the ordinary worker's slot
+    release[0]!(reply("No durable material.")); // failed ordinary work is not a completion checkpoint
     await settle(h);
-    expect(h.requests.length).toBeGreaterThan(1); // the released slot let the waiting catchup continue
+    expect(h.requests).toHaveLength(1);
+    await command(h, "catchup"); // explicit recovery resumes the waiting drain after slot release
+    await settle(h);
+    expect(h.requests.length).toBeGreaterThan(1);
     expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(2);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
@@ -298,7 +301,8 @@ test("18b 2026-09-08: a failure after one successful Noting batch preserves it a
     expect(notingRuns.some(r => r.outcome === "failure")).toBe(true);
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0); // the rest stays pending
     await command(h, "");
-    expect(h.notices.at(-1)).toContain("Catchup: failed");
+    expect(h.notices.at(-1)).toContain("3 failures");
+    expect(h.notices.at(-1)).toContain("Catchup: stopped");
     expect(h.notices.at(-1)).toContain("boom");
   } finally { await h.dispose(); }
 }, 30000);

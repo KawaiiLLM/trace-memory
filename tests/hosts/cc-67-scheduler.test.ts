@@ -179,7 +179,7 @@ test.each(["consolidation", "dreaming"] as const)("catchup-owned %s terminal fai
     const execute = vi.fn(async () => {
       await new Promise<void>(resolve => { failDownstream = resolve; });
       if (outcome === "throw") throw new Error("downstream transport failed");
-      return { outcome, problems: ["downstream terminated"] };
+      return { outcome, problems: ["downstream terminated"], ...(outcome === "failure" ? { automaticOff: "off after three failures" } : {}) };
     });
     if (phase === "consolidation") f.memory.consolidate = execute as any;
     else f.memory.dream = execute as any;
@@ -188,7 +188,7 @@ test.each(["consolidation", "dreaming"] as const)("catchup-owned %s terminal fai
     for (let i = 0; i < 10 && (!releaseN || !failDownstream); i++) await tick();
     expect(releaseN).toBeTypeOf("function"); expect(failDownstream).toBeTypeOf("function");
     failDownstream(); await tick();
-    expect(f.scheduler.catchupStatus()).toMatchObject({ state: outcome === "cancelled" ? "stopped" : "failed",
+    expect(f.scheduler.catchupStatus()).toMatchObject({ state: outcome === "cancelled" || outcome === "failure" ? "stopped" : "failed",
       diagnostic: outcome === "throw" ? "downstream transport failed" : "downstream terminated" });
     const before = { n: f.memory.noting.mock.calls.length, c: f.memory.consolidate.mock.calls.length, d: f.memory.dream.mock.calls.length };
     // The in-flight N retains ownership, but its completion must not launch another N/C/D.

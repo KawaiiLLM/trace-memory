@@ -208,14 +208,14 @@ export class CcTaskScheduler {
 
   /**
    * R4: a successful ordinary completion while a drain is active is a full checkpoint (all of N/C/D
-   * checked); any other ordinary outcome (failure, cancelled, empty, dropped, bounced) stays N-only,
-   * matching the per-poll drive.
+   * checked). Failure and cancellation start no checks; empty/dropped/bounced retain the N-only drive.
    */
   private reserve(phase: CcWorkerPhase, sessionId: number, run: () => Promise<CcTaskResult | undefined>,
     shouldDrive: (result: CcTaskResult | undefined) => boolean = result => {
       const drain = this.catchup;
       const drainActive = !!drain && (drain.state === "running" || drain.state === "waiting");
-      this.driveCatchup(drainActive && result?.outcome === "success");
+      if (result?.outcome !== "failure" && result?.outcome !== "cancelled")
+        this.driveCatchup(drainActive && result?.outcome === "success");
       return false;
     }): void {
     const epoch = this.cancellationEpoch;
@@ -228,15 +228,12 @@ export class CcTaskScheduler {
       .finally(() => {
         this.slots.delete(phase);
         this.safeNotify(`${phase} settled`);
-        // Ticket 72's completion checkpoint: any non-empty, non-dropped, non-cancelled completion may have moved
-        // consolidationBatch/duePools (success or failure — a failed run may still have committed
-        // incrementally), so it re-checks own C and D immediately rather than waiting for the next
-        // appended entry. Gated on the signal actually having moved since this task's own admission, so
+        // Ticket 86: only a successful completion may check C/D. A failed D may retain partial
+        // writes, but failure starts no check. Gated on the signal having moved since admission, so
         // a run that settles without committing anything falls back to the ordinary pace, as before.
         // N/C retain success after their atomic commit, even when a later provider reply fails.
         // Only D may fail with partial writes; failed N/C must not replay an unrelated signal change.
-        if (settled && settled.outcome !== "empty" && settled.outcome !== "dropped" && settled.outcome !== "cancelled" &&
-          (settled.outcome === "success" || phase === "dreaming") &&
+        if (settled?.outcome === "success" &&
           this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointCD(sessionId, epoch);
         if (shouldDrive(settled)) this.driveCatchup();
       });
@@ -307,7 +304,7 @@ export class CcTaskScheduler {
    * checkAll and independently check N, C and D. The per-poll/per-entry drive stays N-only (checkAll
    * false). Busy ordinary slots are observed once and never adopted or queued.
    */
-  private driveCatchup(checkAll = true): void {
+  private driveCatchup(checkAll = true, retryPhase?: CcWorkerPhase): void {
     const drain = this.catchup;
     if (!drain || this.stopped || (drain.state !== "running" && drain.state !== "waiting")) return;
     if (!this.memory.store.enabled(drain.target.sessionId)) { this.stopCatchup("Trace Memory was disabled"); return; }
@@ -316,7 +313,7 @@ export class CcTaskScheduler {
       (drain.state === "running" || drain.state === "waiting");
     const remaining = drain.maxEntryId === undefined ? [] : this.pendingEntryIds(drain.target)
       .filter(id => id <= drain.maxEntryId!);
-    if (!checkAll && !remaining.length && drain.phase && drain.phase !== "noting") {
+    if (!checkAll && !retryPhase && !remaining.length && drain.phase && drain.phase !== "noting") {
       this.finishWithoutCheckpoint(drain); // Ordinary release may have cleared all due work; settle without replaying it.
       return;
     }
@@ -324,10 +321,10 @@ export class CcTaskScheduler {
     let blockedNoting = false;
     let launched = false;
 
-    const phases: readonly CcWorkerPhase[] = checkAll ? ["noting", "consolidation", "dreaming"] : ["noting"];
+    const phases: readonly CcWorkerPhase[] = retryPhase ? [retryPhase] : checkAll ? ["noting", "consolidation", "dreaming"] : ["noting"];
     for (const phase of phases) {
-      let due = phase === "noting" ? remaining.length > 0 : false;
-      if (phase !== "noting") {
+      let due = retryPhase === phase || phase === "noting" && remaining.length > 0;
+      if (phase !== "noting" && !retryPhase) {
         try { due = this.memory.taskEligibility(phase, drain.target).due; }
         catch (error) {
           drain.state = "failed"; drain.phase = undefined;
@@ -348,7 +345,7 @@ export class CcTaskScheduler {
       }
       launched = true; drain.active.add(phase); drain.state = "running";
       if (phase !== "dreaming") drain.phase = phase;
-      let checkpoint = false;
+      let checkpoint = false, retry = false;
       this.reserve(phase, drain.target.sessionId, async () => {
         if (!owned()) return;
         try {
@@ -364,6 +361,10 @@ export class CcTaskScheduler {
           checkpoint = result.outcome === "success";
           if (result.outcome === "dropped") {
             if (phase === "noting") { drain.state = "waiting"; drain.phase = "noting"; }
+          } else if (result.outcome === "failure") {
+            drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : undefined) || result.outcome;
+            if (result.automaticOff) { drain.state = "stopped"; drain.phase = undefined; }
+            else retry = true;
           } else if (result.outcome !== "success" && result.outcome !== "empty") {
             drain.state = result.outcome === "cancelled" ? "stopped" : "failed";
             drain.phase = undefined;
@@ -379,7 +380,8 @@ export class CcTaskScheduler {
       }, () => {
         drain.active.delete(phase);
         if (this.catchup !== drain) return false;
-        if (!checkpoint) this.finishWithoutCheckpoint(drain, blockedNoting);
+        if (retry) this.driveCatchup(false, phase); // Released slot, same phase and frozen boundary; no other eligibility check.
+        else if (!checkpoint) this.finishWithoutCheckpoint(drain, blockedNoting);
         return checkpoint;
       });
     }
