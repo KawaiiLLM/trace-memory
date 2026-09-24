@@ -1,11 +1,11 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { TraceMemory } from "../../core/api/index.ts";
 import type { CcCatchupStatus } from "./scheduler.ts";
 import { Store } from "../../core/store/index.ts";
-import type { ResolvedCcHostConfig } from "./config.ts";
+import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
 import { assertOperatorBinding, readBinding, updateBinding, updateBindingInStoreTransaction, type CcExecutorBinding, type CcSessionBinding } from "./binding.ts";
 
 export type ControlVerb = "stop" | "off" | "catchup";
@@ -32,6 +32,8 @@ export interface CcControlHandlers {
    * any reconcile that starts before the returned release is called, so none of them can grab that
    * same lock before `off` waits for it through `disableEnrollment` below. Never called for `stop`. */
   holdImport(): () => void;
+  effectiveConfig?(): ResolvedCcHostConfig;
+  applyConfig?(next: ResolvedCcHostConfig): void;
 }
 
 export interface CcControlServer {
@@ -111,9 +113,10 @@ export async function startControlServer(config: ResolvedCcHostConfig, initial: 
       handled = true;
       void (async () => {
         try {
-          const request = JSON.parse(input.slice(0, newline)) as { verb?: unknown; token?: unknown };
+          const request = JSON.parse(input.slice(0, newline)) as { verb?: unknown; token?: unknown; path?: unknown; expected?: unknown };
           if (request.token !== token || typeof request.verb !== "string" ||
-              (request.verb !== "stop" && request.verb !== "off" && request.verb !== "catchup"))
+              (request.verb !== "stop" && request.verb !== "off" && request.verb !== "catchup" &&
+                request.verb !== "settings" && request.verb !== "apply"))
             throw new Error("invalid CC control request");
           const current = readBinding(config, binding.nativeSessionId);
           if (!current) throw new Error("CC binding disappeared before control");
@@ -124,7 +127,22 @@ export async function startControlServer(config: ResolvedCcHostConfig, initial: 
           if ((binding.coreSessionId !== null && current.coreSessionId !== binding.coreSessionId) ||
               current.executor?.token !== token)
             throw new Error("CC core or executor identity changed before control");
-          const verb = request.verb as ControlVerb;
+          const verb = request.verb as ControlVerb | "settings" | "apply";
+          if (verb === "settings") {
+            if (!handlers?.effectiveConfig) throw new Error("effective settings are unavailable on this executor");
+            connection.end(`${JSON.stringify({ ok: true, verb, config: handlers.effectiveConfig() })}\n`); return;
+          }
+          if (verb === "apply") {
+            if (!handlers?.applyConfig || typeof request.path !== "string" || !request.path.startsWith("/") || typeof request.expected !== "string")
+              throw new Error("invalid CC settings apply request");
+            const current = readFileSync(request.path, "utf8");
+            if (current !== request.expected) throw new Error("CC settings file changed before executor apply");
+            const next = resolveCcHostConfig(JSON.parse(current) as CcHostConfig);
+            if (next.dbPath !== config.dbPath || next.stateDir !== config.stateDir)
+              throw new Error("CC settings apply cannot change executor database or state directory");
+            handlers.applyConfig(next);
+            connection.end(`${JSON.stringify({ ok: true, verb })}\n`); return;
+          }
           if (verb === "catchup") {
             if (!handlers) throw new Error("catchup is unavailable on this executor");
             const reply: CatchupControlReply = { ok: true, verb, catchup: await handlers.catchup(), abortRequested: [] };
@@ -202,13 +220,14 @@ export async function startControlServer(config: ResolvedCcHostConfig, initial: 
   } };
 }
 
-function request(executor: CcExecutorBinding, verb: ControlVerb, timeoutMs: number): Promise<ControlReply> {
+function request(executor: CcExecutorBinding, verb: ControlVerb | "settings" | "apply", timeoutMs: number,
+  detail: Record<string, string> = {}): Promise<ControlReply | { ok: true; verb: "settings"; config: ResolvedCcHostConfig } | { ok: true; verb: "apply" }> {
   return new Promise((resolve, reject) => {
     const connection = createConnection(executor.socketPath); let output = "", settled = false;
     const finish = (error?: Error) => { if (settled) return; settled = true; clearTimeout(timer); connection.destroy(); error ? reject(error) : undefined; };
     const timer = setTimeout(() => finish(new Error(`CC executor did not acknowledge ${verb} within ${timeoutMs} ms`)), timeoutMs);
     connection.setEncoding("utf8");
-    connection.on("connect", () => connection.write(`${JSON.stringify({ verb, token: executor.token })}\n`));
+    connection.on("connect", () => connection.write(`${JSON.stringify({ verb, token: executor.token, ...detail })}\n`));
     connection.on("data", chunk => output += chunk);
     connection.on("end", () => {
       try {
@@ -219,6 +238,22 @@ function request(executor: CcExecutorBinding, verb: ControlVerb, timeoutMs: numb
     });
     connection.on("error", error => finish(error));
   });
+}
+
+export async function executorSettings(config: ResolvedCcHostConfig, nativeSessionId: string,
+  apply?: { path: string; expected: string }): Promise<ResolvedCcHostConfig | true> {
+  const binding = readBinding(config, nativeSessionId);
+  if (!binding || binding.dbPath !== config.dbPath || binding.clearedInto)
+    throw new Error("current CC session has no valid executor binding");
+  const executor = binding.executor;
+  if (!executor || executorLiveness(executor) !== "alive") throw new Error("running CC executor is unavailable");
+  const reply = await request(executor, apply ? "apply" : "settings", 2_000, apply ?? {});
+  if (apply) return true;
+  if (reply.verb !== "settings") throw new Error("invalid CC effective settings reply");
+  const effective = reply.config;
+  if (effective.dbPath !== config.dbPath || effective.stateDir !== config.stateDir)
+    throw new Error("CC executor returned a different database or state directory");
+  return effective;
 }
 
 export type OperatorControlResult =
@@ -274,6 +309,6 @@ export async function controlSession(config: ResolvedCcHostConfig, nativeSession
   const finalBinding = await validatedOperatorBinding(config, nativeSessionId);
   if (finalBinding.executor?.token !== executor.token)
     throw new Error(`CC executor binding changed before ${verb}`);
-  try { return { state: "acknowledged", reply: await request(executor, verb, timeoutMs) }; }
+  try { return { state: "acknowledged", reply: await request(executor, verb, timeoutMs) as ControlReply }; }
   catch (error) { return { state: "unknown", diagnostic: `executor is live but ${verb} communication failed: ${String(error)}` }; }
 }

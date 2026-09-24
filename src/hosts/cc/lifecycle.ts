@@ -138,6 +138,7 @@ export class CcCoordinator {
    * own `finalReconcile`) are exempt — a hold never blocks the operation that is holding it. */
   private importHolds = 0;
   private readonly config: ResolvedCcHostConfig;
+  private appliedConfig: ResolvedCcHostConfig;
   /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
   nativeSessionId: string;
   private readonly diagnostic: CcDiagnostic;
@@ -157,7 +158,7 @@ export class CcCoordinator {
     diagnostic: CcDiagnostic = message => console.error(`Trace Memory CC: ${message}`), importTuning?: CcImportInstrumentation,
     journal: CcWorkerJournal = () => {}) {
     validateNativeSessionId(nativeSessionId);
-    this.config = config; this.nativeSessionId = nativeSessionId; this.diagnostic = diagnostic;
+    this.config = config; this.appliedConfig = config; this.nativeSessionId = nativeSessionId; this.diagnostic = diagnostic;
     this.importTuning = importTuning; this.journal = journal;
   }
 
@@ -224,9 +225,9 @@ export class CcCoordinator {
     if (!binding || binding.lastClose?.confirmed) return;
     this.observe("attach-start", { final });
     try {
-      this.importer = new CcImporter(this.config, binding, { journal: this.journal });
+      this.importer = new CcImporter(this.appliedConfig, binding, { journal: this.journal });
       // Ticket 75: task admission and settlement are their own publish points, independent of reconcile.
-      this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic, reason => this.publish(reason));
+      this.scheduler = new CcTaskScheduler(this.importer.memory, this.appliedConfig.worker, this.diagnostic, reason => this.publish(reason));
       const timeout = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
       await startControlServer(this.config, binding, this.importer.memory, timeout, final ? undefined : this.startup.signal, {
         catchup: async () => {
@@ -241,6 +242,41 @@ export class CcCoordinator {
         },
         beforeCancel: () => this.scheduler?.stopCatchup(),
         holdImport: () => this.holdImport(),
+        effectiveConfig: () => this.appliedConfig,
+        applyConfig: next => {
+          if (!this.importer || !this.scheduler) throw new Error("CC executor is not attached for settings apply");
+          const prior = this.appliedConfig;
+          const nonLive = (value: ResolvedCcHostConfig): Record<string, unknown> => {
+            const fields: Record<string, unknown> = {
+              dbPath: value.dbPath, stateDir: value.stateDir, baseline: value.baseline, retry: value.retry,
+              pollIntervalMs: value.pollIntervalMs, finalSyncTimeoutMs: value.finalSyncTimeoutMs,
+              finalSyncStablePolls: value.finalSyncStablePolls, writeSourceTimeoutMs: value.writeSourceTimeoutMs,
+              "worker.claudeExecutable": value.worker?.claudeExecutable,
+              "worker.claudeVersion": value.worker?.claudeVersion, "worker.cwd": value.worker?.cwd,
+              "worker.responseOriginTimeoutMs": value.worker?.responseOriginTimeoutMs,
+            };
+            for (const [section, settings] of Object.entries(value.coreConfig)) {
+              if (section === "closedSessionScope") continue;
+              if (settings && typeof settings === "object") for (const [field, current] of Object.entries(settings))
+                fields[`${section}.${field}`] = current;
+              else fields[section] = settings;
+            }
+            return fields;
+          };
+          const existingFields = nonLive(prior), nextFields = nonLive(next);
+          for (const key of Object.keys(existingFields))
+            if (JSON.stringify(existingFields[key]) !== JSON.stringify(nextFields[key]))
+              throw new Error(`CC executor cannot hot-apply ${key}; saved file is not applied`);
+          for (const [model, capacity] of Object.entries(prior.worker?.contextWindows ?? {}))
+            if (next.worker?.contextWindows[model] !== capacity)
+              throw new Error(`CC executor cannot hot-apply a changed capacity for ${model}`);
+          // No reconciliation or admission: only subsequent tasks observe these replacements.
+          if (next.closedSessionScope !== this.appliedConfig.closedSessionScope)
+            this.importer.memory.configure({ closedSessionScope: next.closedSessionScope });
+          this.importer.applyWorker(next);
+          this.scheduler.applyWorker(next.worker);
+          this.appliedConfig = next;
+        },
       }).then(control => { this.control = control; });
       this.watchTranscript(binding);
       if (final) this.importer.memory.cancelTasks(true);

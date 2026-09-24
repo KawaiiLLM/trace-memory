@@ -502,16 +502,19 @@ export class CcImporter {
   readonly memory: TraceMemoryFacade;
   private projection: CcProjection;
   private readonly config: ResolvedCcHostConfig;
+  private runAgent: ReturnType<typeof createCcRunAgent> | undefined;
+  private readonly workerDependencies: CcWorkerDependencies;
   /** 63: every native lineage this facade has served; the source normalizer renders them all. */
   private readonly lineages = new Set<string>();
   private reopened = false;
 
   constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, workerDependencies: CcWorkerDependencies = {}) {
     let memory!: TraceMemoryFacade;
-    const runAgent = config.worker ? createCcRunAgent(config, workerDependencies,
+    this.workerDependencies = workerDependencies;
+    this.runAgent = config.worker ? createCcRunAgent(config, workerDependencies,
       kind => memory.config[kind].maxToolRounds) : undefined;
     this.lineages.add(binding.nativeSessionId);
-    memory = TraceMemory(config.dbPath, runAgent ?? unavailableRunner,
+    memory = TraceMemory(config.dbPath, input => this.runAgent ? this.runAgent(input) : unavailableRunner(),
       config.coreConfig, undefined,
       entry => this.lineages.has(entry.nativeLineage) ? ccSourceBlocks(entry) : undefined);
     this.memory = memory;
@@ -520,6 +523,12 @@ export class CcImporter {
   }
 
   currentBinding(): CcSessionBinding { return this.projection.currentBinding(); }
+  /** Core invokes the runner synchronously before yielding to the provider. An in-flight task
+   * holds its invoked worker Promise; only a later task reads this replacement. */
+  applyWorker(config: ResolvedCcHostConfig): void {
+    this.runAgent = config.worker ? createCcRunAgent(config, this.workerDependencies,
+      kind => this.memory.config[kind].maxToolRounds) : undefined;
+  }
   /** 63: project another native lineage of the same core session on the same facade. */
   retarget(binding: CcSessionBinding): void {
     const current = this.projection.currentBinding();

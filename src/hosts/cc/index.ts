@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
-import { recordSessionStart, validateNativeSessionId, type CcHookInput } from "./binding.ts";
+import { assertOperatorBinding, readBinding, recordSessionStart, validateNativeSessionId, type CcHookInput } from "./binding.ts";
 import { nativeCreatedAt, readCompleteTranscript } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
@@ -11,6 +11,11 @@ import { declareCcProject, operateCcSession } from "./operator.ts";
 import { followNativeSession, processAncestors, publishNativeSession, type CcNativeSessionFollower } from "./native-session.ts";
 import { ccHandleClear } from "./clear.ts";
 import { installCcNativeRejectionGuard } from "./native-rejection.ts";
+import { readCcMenu, readCcRuns } from "./menu.ts";
+import { editedCcConfig, saveCcConfig, type CcSettingId } from "./menu-config.ts";
+import { executorSettings } from "./control.ts";
+import { Store } from "../../core/store/index.ts";
+import { parseRunsCount } from "../trace-menu.ts";
 
 export * from "./config.ts";
 export * from "./binding.ts";
@@ -179,7 +184,56 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
     return;
   }
   if (sessionFlag !== "--session" || !nativeSessionId || !verb)
-    throw new Error("CLI requires --session <native-id> and on, off, stop, catchup, or project <name>");
+    throw new Error("CLI requires --session <native-id> and a command");
+  if (verb === "menu" || verb === "runs") {
+    if (rest[0] !== "--json" || verb === "menu" && rest.length !== 1 || verb === "runs" && rest.length !== 2)
+      throw new Error(verb === "runs" ? "runs requires --json <count>" : "menu requires --json");
+    const runLimit = verb === "runs" ? parseRunsCount(rest[1]!) : 10;
+    if (verb === "runs") { process.stdout.write(`${JSON.stringify({ runs: readCcRuns(config, nativeSessionId, runLimit) })}\n`); return; }
+    let effective: ResolvedCcHostConfig | undefined;
+    try { effective = await executorSettings(config, nativeSessionId) as ResolvedCcHostConfig; }
+    catch { /* The menu remains navigable; its worker values are explicitly unavailable. */ }
+    const data = readCcMenu(config, nativeSessionId, effective);
+    process.stdout.write(`${JSON.stringify(data)}\n`);
+    return;
+  }
+  if (verb === "setting") {
+    const [id, value, capacity] = rest;
+    if (!id || value === undefined || rest.length > 3) throw new Error("setting requires <row-id> <value> [capacity]");
+    if (id.startsWith("budget.")) {
+      if (!["budget.global", "budget.project", "budget.session"].includes(id) || capacity !== undefined)
+        throw new Error(`unsupported CC setting ${id}`);
+      const amount = Number(value);
+      if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("Knowledge budget must be a non-negative safe integer");
+      const store = new Store(config.dbPath);
+      try {
+        const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
+        if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
+        if (binding.clearedInto) throw new Error(`Claude Code session ${nativeSessionId} was cleared into ${binding.clearedInto.nativeSessionId}`);
+        assertOperatorBinding(config, binding, store);
+        store.setKnowledgeBudget(id.slice(7) as "global" | "project" | "session", amount);
+      }
+      finally { store.close(); }
+      process.stdout.write(`${JSON.stringify({ saved: true, applied: true })}\n`); return;
+    }
+    const store = new Store(config.dbPath);
+    try {
+      const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
+      if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
+      if (binding.clearedInto) throw new Error(`Claude Code session ${nativeSessionId} was cleared into ${binding.clearedInto.nativeSessionId}`);
+      assertOperatorBinding(config, binding, store);
+    } finally { store.close(); }
+    const original = readFileSync(configPath, "utf8");
+    const updated = editedCcConfig(original, id as CcSettingId, value, capacity);
+    const prepared = resolveCcHostConfig(JSON.parse(updated));
+    if (prepared.dbPath !== config.dbPath || prepared.stateDir !== config.stateDir) throw new Error("setting cannot change database or state directory");
+    const next = saveCcConfig(configPath, original, updated);
+    try { await executorSettings(next, nativeSessionId, { path: configPath, expected: updated });
+      process.stdout.write(`${JSON.stringify({ saved: true, applied: true })}\n`);
+    } catch (error) { process.stdout.write(`${JSON.stringify({ saved: true, applied: false,
+      diagnostic: error instanceof Error ? error.message : String(error) })}\n`); }
+    return;
+  }
   if (verb !== "project" && rest.length) throw new Error(`CC operator command ${verb} accepts no arguments`);
   const result = verb === "project" ? await declareCcProject(config, nativeSessionId, rest.join(" "))
     : verb === "on" || verb === "off" || verb === "stop" || verb === "catchup" ? await operateCcSession(config, nativeSessionId, verb)

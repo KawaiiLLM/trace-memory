@@ -31,7 +31,7 @@ interface Catchup {
 /** One CC-local slot per phase. Core remains the authority for eligibility, claims, borrowing and settlement. */
 export class CcTaskScheduler {
   private readonly memory: TraceMemory;
-  private readonly worker: ResolvedCcWorkerConfig | undefined;
+  private worker: ResolvedCcWorkerConfig | undefined;
   private readonly diagnostic: (message: string) => void;
   /** Ticket 75: a status-publish hook, fired when a phase is admitted and when it settles (slot
    * cleared). Best-effort, synchronous and never awaited; wrapped in `safeNotify` below so a fault in
@@ -72,6 +72,8 @@ export class CcTaskScheduler {
   }
 
   running(): CcWorkerPhase[] { return [...this.slots.keys()]; }
+  /** A future admission reads this snapshot; already reserved slots retain their captured phase config. */
+  applyWorker(worker: ResolvedCcWorkerConfig | undefined): void { this.worker = worker; }
 
   private safeNotify(reason: string): void {
     try { this.notify(reason); } catch (error) { this.diagnostic(`status notify failed (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
