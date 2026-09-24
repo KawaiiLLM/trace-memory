@@ -95,7 +95,7 @@ test("early stop: a cold due check against a large backlog renders only up to th
   } finally { memory.close(); }
 });
 
-test("no quadratic re-tokenization: tokens() is called at most once per rendered/joined piece, not per growing prefix", () => {
+test("no quadratic re-tokenization: tokenized inputs remain bounded per entry, not growing prefixes", () => {
   const { memory, target } = seeded(200, 30);
   try {
     memory.config.noting.triggerTokens = 1_000_000; // force a full scan
@@ -103,7 +103,7 @@ test("no quadratic re-tokenization: tokens() is called at most once per rendered
     expect(memory.taskEligibility("noting", target).due).toBe(false);
     // A quadratic retokenization of the growing joined string would call tokens() once per entry with
     // an argument whose length grows every time (O(n) calls each O(n) work). Bound the call count by a
-    // small multiple of the entry count instead of letting it explode with backlog size.
+    // bounded number of entry-sized inputs, not any growing joined-prefix input.
     expect(tokenCalls.mock.calls.length).toBeLessThan(200 * 3);
     tokenCalls.mockRestore();
   } finally { memory.close(); }
