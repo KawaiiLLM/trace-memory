@@ -4040,7 +4040,8 @@ export class Store {
 
   /** The queue is owned by Store and must not be mutated by callers. Its identity changes on a
    * rebuild; an append or local Noting prefix consumption retains it and the API's counted prefix. */
-  pendingEntryState(sessionId: number, branch: string, headTurnId: number): PendingEntries {
+  pendingEntryState(sessionId: number, branch: string, headTurnId: number,
+    prepare?: () => PathSnapshot): PendingEntries {
     const ownSnapshot = !this.db.isTransaction;
     const cached = ownSnapshot ? this.pendingPath : undefined;
     if (ownSnapshot) this.db.exec("BEGIN");
@@ -4097,14 +4098,17 @@ export class Store {
             }
           }
         }
-        const source = this.pathSourceMeta(sessionId, branch, headTurnId);
-        const ids = source.map(entry => entry.id);
+        // The factory runs only on a miss, inside this read snapshot. A footer can reuse these
+        // same validated members/ancestors for its other counts without passing a stale snapshot.
+        const prepared = prepare?.();
+        const ids = prepared?.entries ? [...prepared.entries.ids]
+          : this.pathEntryIds(sessionId, branch, headTurnId, prepared);
         const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
           .all(JSON.stringify(ids)) as { entry_id: number }[]).map(row => row.entry_id));
         const pending = new PendingEntries(ids.filter(id => !noted.has(id)));
         return () => {
           if (ownSnapshot) this.pendingPath = { sessionId, branch, headTurnId, signal, path,
-            ids: pending, coversTail: !path || (source.at(-1)?.id ?? null) === path.tailId };
+            ids: pending, coversTail: !path || (ids.at(-1) ?? null) === path.tailId };
           return pending;
         };
       };

@@ -25,6 +25,38 @@ test("80: a general published suffix still filters out intermediate sibling Turn
   } finally { store.close(); }
 });
 
+test("80: a lazy footer snapshot shares pending membership without crossing an external commit", () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-80-footer-snapshot-"));
+  const file = join(directory, "trace.db"), writer = new Store(file), reader = new Store(file);
+  const at = "2026-09-24T00:00:00Z";
+  try {
+    const project = writer.createProject({ name: "footer", declaredBy: "mark" });
+    const session = writer.createSession({ host: "test", projectId: project.id, enrollmentChoice: true,
+      startedAt: at, firstReplyAt: at });
+    const turn = writer.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "root", startedAt: at });
+    const append = (nativeId: string) => writer.appendSourceEntry({ sessionId: session.id, turnId: turn.id,
+      nativeLineage: "native", nativeId, role: "user", text: nativeId, raw: nativeId, calls: [] });
+    const first = append("first");
+    const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+    writer.publishSourcePath(session.id, "main", [first.id], turn.id, "native");
+    let secondId = 0;
+    const pending = reader.pendingEntryState(session.id, "main", turn.id, () => {
+      const snapshot = reader.pathSnapshot(path);
+      expect(writer.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: at },
+        facts: [], entryIds: [first.id] }).ok).toBe(true);
+      secondId = append("second").id;
+      writer.appendSourcePath(session.id, "main", writer.sourcePathState(session.id, "main")!, [secondId], turn.id, "native");
+      return snapshot;
+    });
+    expect([...pending]).toEqual([first.id]);
+    const refreshed = reader.pendingEntryState(session.id, "main", turn.id, () => reader.pathSnapshot(path));
+    expect([...refreshed]).toEqual([secondId]);
+    expect(refreshed).not.toBe(pending);
+    expect(reader.pendingEntryState(session.id, "main", turn.id, () => { throw new Error("cache hit must not prepare"); }))
+      .toBe(refreshed);
+  } finally { reader.close(); writer.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("80: pending refresh cannot combine pre-note membership with a post-note append", () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-80-pending-snapshot-"));
   const file = join(directory, "trace.db"), writer = new Store(file), reader = new Store(file);

@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { DEFAULT_CONFIG, JoinedTokens, renderEntry, tokens, type EntryProfile, type ResultExtractor, type SourceEntry } from "../../../src/core/api/index.ts";
 
 // Ticket 80 item 1, 22b's rule: "the estimate is still of one joined string, exactly as before —
@@ -80,6 +80,22 @@ test("removing rendered-view prefixes stays exact across punctuation and whitesp
       parts.push(part);
     }
     expect(counter.count, `step ${i}; parts: ${JSON.stringify(parts)}`).toBe(tokens(parts.join("\n\n")));
+  }
+});
+
+test("empty-view separators never rescan the retained whitespace run", () => {
+  for (const first of ["", " ", "end! \t\n"]) {
+    const counter = new JoinedTokens();
+    counter.add(first);
+    const scanned = vi.spyOn(RegExp.prototype, "exec");
+    for (let i = 0; i < 2000; i++) { counter.add("\n\n"); void counter.count; }
+    const longest = Math.max(0, ...scanned.mock.calls.map(([text]) => text.length));
+    scanned.mockRestore();
+    expect(longest).toBeLessThanOrEqual(2);
+    const joined = first + "\n\n".repeat(2000);
+    expect(counter.count).toBe(tokens(joined));
+    counter.removePrefix(2000);
+    expect(counter.count).toBe(tokens(joined.slice(2000)));
   }
 });
 

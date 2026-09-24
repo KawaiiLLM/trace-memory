@@ -122,19 +122,25 @@ export const tokens = (text: string): number => {
 
 const wholeRun = (pattern: RegExp) => new RegExp(`^(?:${pattern.source})+$`);
 const PUNCTUATION_RUN = wholeRun(PUNCTUATION);
-// 0 = whitespace run, 1 = punctuation run, 2 = everything else (`SPLIT`'s three delimiter classes).
-const segmentClass = (segment: string): 0 | 1 | 2 => /^\s+$/.test(segment) ? 0 : PUNCTUATION_RUN.test(segment) ? 1 : 2;
+// Split whitespace into the same sub-runs whitespaceTokens prices. Consecutive empty entry
+// views then grow a length, not a string that must be scanned again at every opportunity.
+const JOINED_SPLIT = new RegExp(`(\\n+|[^\\S\\n]+|${PUNCTUATION.source}+)`);
+const segmentClass = (segment: string): 0 | 1 | 2 | 3 => segment[0] === "\n" ? 0
+  : /^\s+$/.test(segment) ? 1 : PUNCTUATION_RUN.test(segment) ? 2 : 3;
 
 interface TokenSegment {
+  kind: 0 | 1 | 2 | 3;
   text: string;
+  length: number;
   charge: number;
   previous?: TokenSegment;
   next?: TokenSegment;
 }
 
-/** Exact token count for an appended string with removable leading characters. The split segments
- * are the same maximal runs as `tokens()`. A segment's charge depends only on its immediate
- * neighbors, so appending or removing at an end changes at most two surviving charges. */
+/** Exact token count for an appended string with removable leading characters. Whitespace uses
+ * whitespaceTokens' newline/horizontal sub-runs; all other segments match tokens(). Charges depend
+ * only on adjacent runs. Whitespace is stored as lengths, so empty-view separators never trigger
+ * quadratic rescanning or retain an ever-growing string. */
 export class JoinedTokens {
   #first?: TokenSegment;
   #last?: TokenSegment;
@@ -143,18 +149,26 @@ export class JoinedTokens {
   #refresh(segment: TokenSegment | undefined): void {
     if (!segment) return;
     this.#total -= segment.charge;
-    segment.charge = segmentTokens(segment.text, segment.previous?.text ?? "", segment.next?.text ?? "");
+    segment.charge = segment.kind === 0
+      ? Math.ceil((segment.length - (segment.previous?.kind === 2 ? 1 : 0)) / 16)
+      : segment.kind === 1
+        ? (segment.length > 1 || segment.previous?.kind === 0 || (!segment.previous && !segment.next)
+          ? Math.ceil(segment.length / 128) : 0)
+        : segmentTokens(segment.text, "", "");
     this.#total += segment.charge;
   }
   add(text: string): void {
     this.#length += text.length;
-    for (const part of text.split(SPLIT).filter(Boolean)) {
-      if (this.#last && segmentClass(this.#last.text) === segmentClass(part)) {
-        this.#last.text += part;
+    for (const part of text.split(JOINED_SPLIT).filter(Boolean)) {
+      const kind = segmentClass(part);
+      if (this.#last?.kind === kind) {
+        this.#last.length += part.length;
+        if (kind >= 2) this.#last.text += part;
         this.#refresh(this.#last.previous);
         this.#refresh(this.#last);
       } else {
-        const segment: TokenSegment = { text: part, charge: 0, previous: this.#last };
+        const segment: TokenSegment = { kind, text: kind >= 2 ? part : "", length: part.length,
+          charge: 0, previous: this.#last };
         if (this.#last) this.#last.next = segment;
         else this.#first = segment;
         this.#last = segment;
@@ -168,14 +182,15 @@ export class JoinedTokens {
     this.#length -= length;
     while (length && this.#first) {
       const segment = this.#first;
-      if (length < segment.text.length) {
+      if (length < segment.length) {
         this.#total -= segment.charge;
         segment.charge = 0;
-        segment.text = segment.text.slice(length);
+        segment.length -= length;
+        if (segment.kind >= 2) segment.text = segment.text.slice(length);
         length = 0;
         break;
       }
-      length -= segment.text.length;
+      length -= segment.length;
       this.#total -= segment.charge;
       this.#first = segment.next;
       if (this.#first) this.#first.previous = undefined;

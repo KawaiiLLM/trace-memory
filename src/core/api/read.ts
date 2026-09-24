@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { knowledgeReadSelection, KNOWLEDGE_REPRESENTATIVE_RECEIPT } from "./knowledge-read.ts";
 import { traceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
-import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry } from "../store/index.ts";
+import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, PathSnapshot } from "../store/index.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
 import { budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { injectionText, compactText, measuredMemory, type MemoryComposition, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
@@ -582,13 +582,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       store.pathExtendsHead(path, cached.headTurnId);
     // Both hit and miss share Noting's queue. A prepared fact snapshot must not cause a second,
     // independent scan of pending membership after every commit. No head means no imported Turn.
-    const entries = path.headTurnId == null ? 0 : store.pendingEntryState(sessionId, branch, path.headTurnId).length;
+    let snapshot: PathSnapshot | undefined;
+    const prepare = () => snapshot ??= store.pathSnapshot(path);
+    const entries = path.headTurnId == null ? 0 : store.pendingEntryState(sessionId, branch, path.headTurnId,
+      reusable ? undefined : prepare).length;
     if (reusable) {
       cached.headTurnId = path.headTurnId!;
       return { entries, facts: cached.facts, unconsolidated: cached.unconsolidated,
         knowledge: cached.knowledge, changedKnowledge: cached.changedKnowledge };
     }
-    const snapshot = store.pathSnapshot(path);
+    snapshot = prepare();
     const facts = store.listBranchFacts(sessionId, branch, path.headTurnId, snapshot);
     const knowledge = store.currentKnowledge(path, {}, snapshot);
     const changedKnowledge = knowledge.length - store.processedCurrentVersions(knowledge).size;

@@ -1189,10 +1189,12 @@ CREATE TABLE IF NOT EXISTS source_entries (
   UNIQUE (session_id, native_lineage, native_id)
 );
 CREATE TABLE IF NOT EXISTS source_paths (
+  id INTEGER PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   branch TEXT NOT NULL,
-  entry_ids TEXT NOT NULL,
-  -- Ticket 72: bumped only when a write replaces entry_ids with something other than an extension of
+  length INTEGER NOT NULL DEFAULT 0 CHECK (length >= 0),
+  tail_entry_id INTEGER REFERENCES source_entries(id),
+  -- Ticket 72: bumped only when a write replaces membership with something other than an extension of
   -- the prior list, or appends an id at or below hwm_entry_id (the writer alone knows this; see
   -- publishSourcePath/selectSourcePath) \u2014 an already-stored entry leaving or rejoining the selected
   -- path under an unchanged cursor. A pure append of genuinely new entries leaves it untouched, so
@@ -1204,8 +1206,16 @@ CREATE TABLE IF NOT EXISTS source_paths (
   -- "once rewritten, bump forever" flag would only approximate: pure appends after a removal-and-
   -- restore never falsely keep bumping.
   hwm_entry_id INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (session_id, branch)
+  CHECK ((length = 0) = (tail_entry_id IS NULL)),
+  UNIQUE (session_id, branch)
 );
+CREATE TABLE IF NOT EXISTS source_path_entries (
+  path_id INTEGER NOT NULL REFERENCES source_paths(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL CHECK (position >= 0),
+  entry_id INTEGER NOT NULL REFERENCES source_entries(id),
+  PRIMARY KEY (path_id, position),
+  UNIQUE (path_id, entry_id)
+) WITHOUT ROWID;
 -- 74: a compact mirror of each source entry's calls (native call id, ordinal, name only -- never
 -- input/result, which stay in content/tool_calls and would move the wide data here). Lets a
 -- rebuild answer call identity, per entry or per Turn, without loading Raw.
@@ -1368,6 +1378,38 @@ function toSourceEntry(row) {
   return { ...JSON.parse(row.content), id: Number(row.id), entryOrdinal: Number(row.entry_ordinal), ...blocks2 ? { blocks: blocks2 } : {} };
 }
 var SOURCE_ENTRY_META_COLUMNS = "id, session_id, native_lineage, native_id, turn_id, entry_ordinal, addresses, digest";
+var StaleSourcePathError = class extends Error {
+  constructor() {
+    super("source path changed since the expected prefix");
+    this.name = "StaleSourcePathError";
+  }
+};
+var PendingEntries = class {
+  entries = /* @__PURE__ */ new Map();
+  first = 0;
+  end = 0;
+  constructor(ids) {
+    for (const id of ids) this.append(id);
+  }
+  get offset() {
+    return this.first;
+  }
+  get length() {
+    return this.end - this.first;
+  }
+  at(index) {
+    return this.entries.get(this.first + index);
+  }
+  append(id) {
+    this.entries.set(this.end++, id);
+  }
+  removePrefix(count) {
+    for (let i = 0; i < count; i++) this.entries.delete(this.first++);
+  }
+  [Symbol.iterator]() {
+    return this.entries.values();
+  }
+};
 var Store = class {
   db;
   migration64d;
@@ -1383,15 +1425,8 @@ var Store = class {
   /** Capture once at admission. The ordered ids end at the exact native entry represented by this target. */
   triggerOrigin(path, triggerEntryId) {
     if (!path.branch || path.headTurnId == null) return null;
-    const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(path.sessionId, path.branch);
-    if (!row) return null;
-    let ids;
-    try {
-      ids = JSON.parse(row.entry_ids);
-    } catch {
-      throw new Error("trigger origin path is malformed");
-    }
-    if (!Array.isArray(ids)) throw new Error("trigger origin path is malformed");
+    const ids = this.selectedSourceEntryIds(path.sessionId, path.branch);
+    if (ids === null) return null;
     const explicit = triggerEntryId === void 0 ? void 0 : ids.indexOf(triggerEntryId);
     if (explicit !== void 0 && explicit < 0) throw new Error("trigger origin does not contain the exact triggering entry");
     const captured = explicit === void 0 ? ids : ids.slice(0, explicit + 1);
@@ -1490,6 +1525,7 @@ var Store = class {
       const policyTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_budget_policy'").get();
       const hadSourceEntryCalls = !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_entry_calls'").get();
       const hadRawFts = !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_fts'").get();
+      const oldPathShape = this.db.prepare("PRAGMA table_info(source_paths)").all().some((row) => row.name === "entry_ids");
       if (policyTable) {
         const row = this.db.prepare("SELECT global_tokens,project_tokens,session_tokens FROM knowledge_budget_policy WHERE id=1").get();
         if (row) priorBudgetPolicy = { global: Number(row.global_tokens), project: Number(row.project_tokens), session: Number(row.session_tokens) };
@@ -1519,8 +1555,9 @@ var Store = class {
         this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_paths_version ON source_paths(version)");
         if (!this.db.prepare("PRAGMA table_info(source_paths)").all().some((r) => r.name === "hwm_entry_id")) {
           this.db.exec("ALTER TABLE source_paths ADD COLUMN hwm_entry_id INTEGER NOT NULL DEFAULT 0");
-          this.db.exec("UPDATE source_paths SET hwm_entry_id = (SELECT IFNULL(MAX(value), 0) FROM json_each(entry_ids))");
+          this.db.exec(oldPathShape ? "UPDATE source_paths SET hwm_entry_id = (SELECT IFNULL(MAX(value), 0) FROM json_each(entry_ids))" : "UPDATE source_paths SET hwm_entry_id = (SELECT IFNULL(MAX(entry_id), 0) FROM source_path_entries e WHERE e.path_id = source_paths.id)");
         }
+        if (oldPathShape) this.migrateSourcePaths();
         const columns = this.db.prepare("PRAGMA table_info(source_entries)").all();
         const alreadySplit = !columns.some((r) => r.name === "content");
         if (!alreadySplit) {
@@ -1687,6 +1724,28 @@ var Store = class {
       DROP TABLE ${table}; ALTER TABLE ${table}_migrate RENAME TO ${table}`);
     if (sequence) this.db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq, table);
     for (const object7 of objects) this.db.exec(String(object7.sql));
+  }
+  /** Convert legacy JSON membership under the same schema transaction as the rest of Store open. */
+  migrateSourcePaths() {
+    if (!this.db.isTransaction) throw new Error("Source path migration requires a transaction");
+    const rows = this.db.prepare("SELECT rowid, session_id, branch, entry_ids FROM source_paths ORDER BY rowid").all();
+    this.db.exec(`CREATE TABLE source_paths_migrate (
+      id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id), branch TEXT NOT NULL,
+      length INTEGER NOT NULL DEFAULT 0 CHECK(length >= 0), tail_entry_id INTEGER REFERENCES source_entries(id),
+      version INTEGER NOT NULL DEFAULT 0, hwm_entry_id INTEGER NOT NULL DEFAULT 0,
+      CHECK ((length = 0) = (tail_entry_id IS NULL)), UNIQUE(session_id,branch))`);
+    const insertHeader = this.db.prepare(`INSERT INTO source_paths_migrate
+      (id,session_id,branch,length,tail_entry_id,version,hwm_entry_id) VALUES (?,?,?,?,?,?,?)`);
+    const insertMember = this.db.prepare("INSERT INTO source_path_entries(path_id,position,entry_id) VALUES (?,?,?)");
+    for (const row of rows) {
+      const ids = this.parsePathEntryIds(row.entry_ids);
+      if (!ids || new Set(ids).size !== ids.length) throw new Error("stored source path is malformed");
+      const old = this.db.prepare("SELECT version,hwm_entry_id FROM source_paths WHERE rowid = ?").get(row.rowid);
+      insertHeader.run(row.rowid, row.session_id, row.branch, ids.length, ids.at(-1) ?? null, old.version, old.hwm_entry_id);
+      ids.forEach((id, position) => insertMember.run(row.rowid, position, id));
+    }
+    this.db.exec(`DROP TABLE source_paths; ALTER TABLE source_paths_migrate RENAME TO source_paths;
+      CREATE INDEX idx_source_paths_version ON source_paths(version)`);
   }
   /** 83: give every source entry whose `entry_ordinal` is NULL the ordinal it should have had, then
    * make the column `NOT NULL`. This codebase's write path (`appendSourceEntry`) always assigns an
@@ -1940,10 +1999,8 @@ var Store = class {
     if (!branch) return "current path requires a non-empty branch";
     const turn = this.db.prepare("SELECT session_id FROM turns WHERE id = ?").get(headTurnId);
     if (!turn || Number(turn.session_id) !== sessionId) return `current path head T${headTurnId} is not a Turn of session S${sessionId}`;
-    const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
-    if (!row) return `current path branch ${branch} is not a persisted source path of session S${sessionId}`;
-    const ids = this.parsePathEntryIds(row.entry_ids);
-    if (!ids) return `current path branch ${branch} has malformed source ancestry`;
+    const ids = this.selectedSourceEntryIds(sessionId, branch);
+    if (ids === null) return `current path branch ${branch} is not a persisted source path of session S${sessionId}`;
     const entryRows = ids.length ? this.db.prepare(`SELECT id, turn_id, session_id FROM source_entries
       WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) : [];
     const entries = new Map(entryRows.map((value) => [Number(value.id), { turnId: Number(value.turn_id), sessionId: Number(value.session_id) }]));
@@ -1963,7 +2020,7 @@ var Store = class {
   }
   writeCurrentPath(sessionId, branch, headTurnId, lineage) {
     this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id, version, hwm_head_turn_id)
-        VALUES (?, ?, ?, ?, 0, ?)
+        VALUES (?, ?, ?, ?, (SELECT IFNULL(MAX(version), 0) + 1 FROM session_lineage_cursors), ?)
       ON CONFLICT (session_id, lineage) DO UPDATE SET
         version = CASE WHEN branch != excluded.branch OR
           (excluded.head_turn_id != head_turn_id AND excluded.head_turn_id <= hwm_head_turn_id)
@@ -2431,11 +2488,16 @@ var Store = class {
    * with outcome "failure" — the run record is always written, business writes are not.
    */
   commitNotingRun(input) {
+    const ownsCommit = !this.db.isTransaction;
+    let publishPending;
     try {
       const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
         this.requireEnabled(sessionId);
         this.requireClaim(input.run);
+        const pending = this.pendingPath, consumed = input.entryIds ?? [];
+        const header = ownsCommit && pending?.path && pending.sessionId === sessionId ? this.sourcePathState(sessionId, pending.branch) : null;
+        const retainPending = !!(header && pending?.path && pending.signal === this.progressSignal(sessionId) && header.version === pending.path.version && header.count === pending.path.count && header.tailId === pending.path.tailId && consumed.length <= pending.ids.length && consumed.every((id, index) => pending.ids.at(index) === id));
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const batchIds = [];
         for (const f of input.facts) {
@@ -2485,8 +2547,17 @@ var Store = class {
           this.db.prepare("INSERT INTO noted_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
         }
         this.completeExecution(runId);
+        if (retainPending) {
+          const signal = this.progressSignal(sessionId);
+          publishPending = () => {
+            if (this.pendingPath !== pending) return;
+            pending.ids.removePrefix(consumed.length);
+            pending.signal = signal;
+          };
+        }
         return { runId, facts: batchIds.map((id) => this.getFact(id)) };
       });
+      publishPending?.();
       return { ok: true, runId: result.runId, facts: result.facts };
     } catch (err) {
       return { ok: false, ...this.recordFailure(input.run, err) };
@@ -2590,6 +2661,21 @@ var Store = class {
     ) SELECT id, parent_turn_id FROM lineage`).all(path.headTurnId, path.sessionId, path.sessionId).map((r) => [r.id, r.parent_turn_id]));
     return this.ancestryFromParents(parents, path.headTurnId);
   }
+  /** Compare against a previously validated head, visiting only newer Turns. Turn ids increase at
+   * insertion, so reaching an older id proves divergence without walking the retained ancestry. */
+  pathExtendsHead(path, previous) {
+    const head = path.headTurnId;
+    if (head == null || head < previous) return false;
+    if (head === previous) return true;
+    const row = this.db.prepare("SELECT parent_turn_id FROM turns WHERE id = ? AND session_id = ?").get(head, path.sessionId);
+    if (row?.parent_turn_id === previous) return true;
+    if (row?.parent_turn_id == null || row.parent_turn_id < previous) return false;
+    return !!this.db.prepare(`WITH RECURSIVE suffix(id, parent_turn_id) AS (
+      SELECT id, parent_turn_id FROM turns WHERE id = ? AND session_id = ?
+      UNION SELECT t.id, t.parent_turn_id FROM turns t JOIN suffix s ON t.id = s.parent_turn_id
+        WHERE s.id > ? AND t.session_id = ?)
+      SELECT 1 FROM suffix WHERE id = ? LIMIT 1`).get(row.parent_turn_id, path.sessionId, previous, path.sessionId, previous);
+  }
   /** Compatibility for callers without a host head: use the branch's latest recorded or manual turn. */
   knowledgePath(sessionId, branch, headTurnId) {
     if (headTurnId !== void 0) return branch === void 0 ? { sessionId, headTurnId } : { sessionId, headTurnId, branch };
@@ -2597,9 +2683,9 @@ var Store = class {
       const row = this.db.prepare("SELECT id FROM turns WHERE session_id = ? ORDER BY id DESC LIMIT 1").get(sessionId);
       return { sessionId, headTurnId: row ? Number(row.id) : null };
     }
-    const native = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
+    const native = this.sourcePathState(sessionId, branch);
     if (native) {
-      const row = this.db.prepare("SELECT turn_id FROM source_entries WHERE id = ?").get(JSON.parse(native.entry_ids).at(-1) ?? 0);
+      const row = this.db.prepare("SELECT turn_id FROM source_entries WHERE id = ?").get(native.tailId ?? 0);
       return { sessionId, headTurnId: row ? Number(row.turn_id) : null, branch };
     }
     const member = this.db.prepare("SELECT s.turn_id FROM noted_entries e JOIN source_entries s ON s.id = e.entry_id JOIN runs r ON r.id = e.run_id WHERE r.session_id = ? AND r.branch = ? ORDER BY s.id DESC LIMIT 1").get(sessionId, branch);
@@ -2637,7 +2723,8 @@ var Store = class {
    * An operation that has already built the path snapshot (22a) passes it: the footer's progress
    * values are one operation and share one membership, exactly as `consolidationBatch` does. */
   commitGraph(path, projectId, prepared, input = this.commitGraphInput()) {
-    const { revisions, parents, metadata } = input;
+    const { revisions, parents } = input;
+    const metadata = prepared ? { ...input.metadata, currentSnapshots: new Map(input.metadata.currentSnapshots) } : input.metadata;
     const foreground = path && metadata.currentPaths?.get(path.sessionId);
     if (prepared && path && Array.isArray(foreground)) {
       const match = foreground.find((value) => value.branch === path.branch && value.headTurnId === path.headTurnId);
@@ -2654,8 +2741,32 @@ var Store = class {
     } : (revision) => this.collectionAdmits(revision, projectId, metadata);
     return this.projectCommitGraph(revisions, parents, grounded, effective, visible);
   }
-  /** DAG, applicability and source-binding inputs for one synchronous projection, before mutation. */
-  commitGraphInput(seed) {
+  /** One global graph input per Store, not a duplicate for each reader session. The graph's
+   * dependencies are global; reader-specific pool-state fields in progressSignal can cause extra
+   * misses but cannot change its contents. A named session opts into this read memo; seeded reads,
+   * unnamed reads and every read inside a transaction rebuild from their own snapshot. */
+  graphInputCache;
+  commitGraphInput(seed, cacheSessionId) {
+    if (seed || cacheSessionId === void 0) return this.buildGraphInput(seed);
+    if (this.db.isTransaction) return this.buildGraphInput();
+    this.db.exec("BEGIN");
+    try {
+      const signal = this.progressSignal(cacheSessionId);
+      const cached3 = this.graphInputCache;
+      if (cached3 && cached3.signal === signal) {
+        this.db.exec("COMMIT");
+        return cached3.input;
+      }
+      const input = this.buildGraphInput();
+      this.db.exec("COMMIT");
+      this.graphInputCache = { signal, input };
+      return input;
+    } catch (error3) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error3;
+    }
+  }
+  buildGraphInput(seed) {
     const revisions = seed ? [...seed] : this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const byId = new Map(revisions.map((revision) => [revision.id, revision]));
     if (seed) {
@@ -2686,7 +2797,7 @@ var Store = class {
     const factIds = JSON.stringify([...new Set(revisions.flatMap((r) => r.supports))]);
     const facts = new Map(this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id WHERE f.id IN (SELECT value FROM json_each(?))`).all(factIds).map((r) => [Number(r.id), { fact: toFact(r), sessionId: Number(r.session_id), runId: Number(r.run_id), entries: [] }]));
     const sessions = [...new Set([...facts.values()].map((value) => value.sessionId))];
-    const cursorRows = this.db.prepare(`SELECT c.session_id, c.lineage, c.branch, c.head_turn_id, p.entry_ids,
+    const cursorRows = this.db.prepare(`SELECT c.session_id, c.lineage, c.branch, c.head_turn_id,
       p.session_id IS NOT NULL AS branch_exists,
       EXISTS(SELECT 1 FROM turns t WHERE t.id = c.head_turn_id AND t.session_id = c.session_id) AS head_exists
       FROM session_lineage_cursors c LEFT JOIN source_paths p ON p.session_id = c.session_id AND p.branch = c.branch
@@ -2719,7 +2830,17 @@ var Store = class {
     };
     for (const row of this.db.prepare("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id").all(factIds))
       metadata.facts.get(Number(row.fact_id)).entries.push(Number(row.entry_id));
-    this.prepareCurrentMembership(metadata, new Map(cursorRows.map((row) => [`${Number(row.session_id)}:${String(row.lineage)}`, row.entry_ids])));
+    this.prepareCurrentMembership(metadata, new Map(cursorRows.map((row) => {
+      let ids = null;
+      try {
+        if (row.branch_exists) ids = this.selectedSourceEntryIds(Number(row.session_id), String(row.branch));
+      } catch (error3) {
+        if (error3 instanceof Error && error3.message === "stored source path is malformed")
+          throw new Error(`session S${Number(row.session_id)} has a corrupted recorded foreground`, { cause: error3 });
+        throw error3;
+      }
+      return [`${Number(row.session_id)}:${String(row.lineage)}`, ids];
+    })));
     return { revisions, parents, metadata };
   }
   /** Build direct-fact owner membership in batched reads local to this graph projection. Bound facts
@@ -2736,7 +2857,8 @@ var Store = class {
       if (current === null) continue;
       if (current === "invalid") return malformed(owner);
       for (const path of current) {
-        const key = `${owner}:${path.lineage}`, ids = this.parsePathEntryIds(rawPaths.get(key)) ?? malformed(owner);
+        const key = `${owner}:${path.lineage}`, ids = rawPaths.get(key);
+        if (!Array.isArray(ids) || ids.some((id) => !Number.isSafeInteger(id) || id < 1)) malformed(owner);
         paths.set(key, { owner, path, ids });
       }
     }
@@ -2963,10 +3085,15 @@ var Store = class {
    * fact written without entry bindings asks. */
   pathEntries(path, turns) {
     if (!path.branch || !path.headTurnId) return null;
-    const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(path.sessionId, path.branch);
-    if (!row) return null;
+    const header = this.sourcePathState(path.sessionId, path.branch);
+    if (!header) return null;
+    const rows = this.db.prepare(`SELECT j.position, j.entry_id, e.id AS owned_id, e.id, e.turn_id, e.addresses
+      FROM source_paths p JOIN source_path_entries j ON j.path_id = p.id
+      LEFT JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
+      WHERE p.session_id = ? AND p.branch = ? ORDER BY j.position`).all(path.sessionId, path.branch);
+    this.validatePathMembers(header, rows);
     const ids = /* @__PURE__ */ new Set(), addresses = /* @__PURE__ */ new Map();
-    for (const { id, turn_id, addresses: raw } of this.db.prepare("SELECT e.id, e.turn_id, e.addresses FROM json_each(?) j JOIN source_entries e ON e.id = j.value").all(row.entry_ids)) {
+    for (const { id, turn_id, addresses: raw } of rows) {
       if (!turns.has(turn_id)) continue;
       ids.add(id);
       if (!addresses.has(turn_id)) addresses.set(turn_id, /* @__PURE__ */ new Set());
@@ -3039,16 +3166,28 @@ var Store = class {
     }
     return result;
   }
+  /** Ticket 80 item 3: every fact's `fact_sources` binding, one batched query regardless of how many
+   * ids are asked for — the replacement for a `factEntries` call per fact inside a loop. A fact with
+   * no bound entries still gets an (empty) entry, so a lookup miss is never confused with "unbound". */
+  factSourceEntries(factIds) {
+    const ids = [...new Set(factIds)];
+    const bound = new Map(ids.map((id) => [id, []]));
+    if (ids.length) for (const row of this.db.prepare(`SELECT fact_id, entry_id FROM fact_sources
+      WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id`).all(JSON.stringify(ids)))
+      bound.get(Number(row.fact_id)).push(Number(row.entry_id));
+    return bound;
+  }
   /** Fact and Raw readers keep their supplied frozen path. Foreign facts remain available for their
    * existing scope-specific selection; only Knowledge support membership consults mutable foregrounds.
    * `owners` (71): a batched turn-id -> session-id map a caller already holds, tried before a
    * per-fact `SELECT * FROM turns WHERE id = ?` — the check itself is unchanged, only where its
-   * answer comes from. */
-  factOnPath(fact, path, snapshot2 = this.pathSnapshot(path), input, owners2) {
+   * answer comes from. `bound` (80): a batched `factSourceEntries` result a caller already holds,
+   * tried before a per-fact `fact_sources` query — same order of preference as `owners`. */
+  factOnPath(fact, path, snapshot2 = this.pathSnapshot(path), input, owners2, bound) {
     const projected = input?.facts.get(fact.id);
     const owner = projected?.sessionId ?? owners2?.get(fact.turnId) ?? this.getTurn(fact.turnId).sessionId;
     if (owner !== path.sessionId) return true;
-    return this.factInSnapshot(fact, snapshot2, projected?.entries);
+    return this.factInSnapshot(fact, snapshot2, projected?.entries ?? bound?.get(fact.id));
   }
   factInSnapshot(fact, snapshot2, projectedEntries) {
     const { turns, entries } = snapshot2;
@@ -3089,11 +3228,12 @@ var Store = class {
   }
   commitApplies(commit, path, snapshot2, input = this.commitGraphInput([commit]).metadata, facts = /* @__PURE__ */ new Map(), commits = /* @__PURE__ */ new Map()) {
     const foreground = input.currentPaths?.get(path.sessionId);
+    const selected = snapshot2 ? { ...input, currentSnapshots: new Map(input.currentSnapshots) } : input;
     if (snapshot2 && Array.isArray(foreground)) {
       const match = foreground.find((value) => value.branch === path.branch && value.headTurnId === path.headTurnId);
-      if (match) input.currentSnapshots?.set(`${path.sessionId}:${match.lineage}`, snapshot2);
+      if (match) selected.currentSnapshots?.set(`${path.sessionId}:${match.lineage}`, snapshot2);
     }
-    return this.revisionApplies(commit, input, facts, commits);
+    return this.revisionApplies(commit, selected, facts, commits);
   }
   /** Grounds are exactly this revision's direct supports; lineage is immutable provenance only. */
   revisionGrounds(commit) {
@@ -3110,10 +3250,16 @@ var Store = class {
   currentCommit(knowledgeId2, path = null) {
     return this.commitGraph(path).current.filter((revision) => revision.knowledgeId === knowledgeId2);
   }
-  /** The graph supplies at most one global current revision per identity. Visibility and active-body
-   * filtering happen only after that selection; consumers never choose a representative fork. */
+  /** Resolve the global current version before filtering visibility and active bodies. A
+   * session-scoped read shares the graph memo with injection and pool reads; write transactions
+   * always build their own graph. */
   currentKnowledge(path = null, filter = {}, snapshot2) {
-    return this.commitGraph(path, filter.projectId, snapshot2).current.filter((revision) => revision.op !== "archive" && (!filter.scope || revision.scope === filter.scope)).map((revision) => ({ knowledge: this.getKnowledge(revision.knowledgeId), revision })).sort((a, b) => a.knowledge.id - b.knowledge.id);
+    return this.commitGraph(
+      path,
+      filter.projectId,
+      snapshot2,
+      path ? this.commitGraphInput(void 0, path.sessionId) : this.commitGraphInput()
+    ).current.filter((revision) => revision.op !== "archive" && (!filter.scope || revision.scope === filter.scope)).map((revision) => ({ knowledge: this.getKnowledge(revision.knowledgeId), revision })).sort((a, b) => a.knowledge.id - b.knowledge.id);
   }
   listVisibleKnowledge(sessionId, projectId, headTurnId, branch) {
     return sessionId ? this.currentKnowledge(this.knowledgePath(sessionId, branch, headTurnId)) : this.currentKnowledge(null, { projectId });
@@ -3371,11 +3517,14 @@ var Store = class {
     return void 0;
   }
   /** One operation-local value: resolve globally before scope filtering, render each current body
-   * once, and batch processing history. Never retain this value across a mutation or transaction. */
+   * once, and batch processing history. Never retain this value across a mutation or transaction.
+   * Read-only — Dreaming eligibility (`duePools`) and the facade's `knowledgePools`/`dreamingPending`
+   * all read through here, never a writer's own validation — so ticket 80 opts this into the
+   * per-session graph memo. */
   knowledgePools(path, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
     const projectId = this.getSession(path.sessionId)?.projectId;
     if (projectId === void 0) throw new Error(`Unknown session ${path.sessionId}`);
-    const budgets2 = this.knowledgeBudgets(), input = this.commitGraphInput();
+    const budgets2 = this.knowledgeBudgets(), input = this.commitGraphInput(void 0, path.sessionId);
     const pools = [["global", budgets2.global], [`project:${projectId}`, budgets2.project], [`session:${path.sessionId}`, budgets2.session]];
     const versions = new Map(pools.map(([pool]) => [pool, []]));
     const archivedVersions = new Map(pools.map(([pool]) => [pool, []]));
@@ -3754,7 +3903,8 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     const path = { sessionId, headTurnId: root2, branch };
     const view = snapshot2 ?? this.pathSnapshot(path);
     const owners2 = new Map(candidates.map((fact) => [fact.turnId, sessionId]));
-    return candidates.filter((fact) => this.factOnPath(fact, path, view, void 0, owners2));
+    const bound = this.factSourceEntries(candidates.map((fact) => fact.id));
+    return candidates.filter((fact) => this.factOnPath(fact, path, view, void 0, owners2, bound));
   }
   /** Ticket 69/72: a cheap composite that changes exactly when a commit could change
    * `consolidationBatch`, `duePools` or the footer's four cached counts — for ANY connection to this
@@ -3763,16 +3913,22 @@ ${archivedBody}${evidenceLine}${diffLine}`;
    *    commit as its `knowledge_revisions` row) and processed records are insert-only, so `MAX(id)`/
    *    `MAX(rowid)` is monotonic and exact for `facts`, `consolidated_facts`, `knowledge_revisions` and
    *    `knowledge_processed`;
-   *  - project assignment and merges: a merge reassigns every session and knowledge row that shared the
-   *    merged-away project in the same transaction as marking it merged, so this session's own
-   *    `sessions.project_id` (a fresh point lookup, not a scan) plus the count of merged projects covers
-   *    every reassignment, this session's own declaration included;
+   *  - project assignment and merges: every session's `project_id`, ordered by id and concatenated in one
+   *    scan of `sessions` (145 rows on production, no schema change), so *any* session's declaration or
+   *    reassignment — not only this reader's own — changes the signal; a merge additionally reassigns
+   *    every session and knowledge row that shared the merged-away project in the same transaction as
+   *    marking it merged, covered the same way, plus the count of merged projects as a second check.
+   *    (Ticket 80, ruled "B": completes the signal — until this, only this reader's own `project_id` was
+   *    read, so another session's declaration left a shared project's knowledge stale in this session's
+   *    memoized graph, footer count and C/D arming alike, reproduced across two connections: A and B
+   *    share a project and A sees B's project knowledge; B is moved to another project; A's signal was
+   *    unchanged, so a reused graph kept showing knowledge that no longer applies.)
    *  - the knowledge budget policy (`knowledge_budget_policy`, a single point-lookup row) and the
    *    over-budget suppression state (`knowledge_pool_state`) of exactly the three pools this session's
    *    Dreaming can be due for (global, its project, itself) — bounded point lookups by primary key;
    *  - other sessions' current-path cursors (`session_lineage_cursors.version`, ticket 72: bumped only
    *    by a branch switch or a head moving back to an ancestor, never an ordinary forward move) and
-   *    non-append rewrites of `source_paths.entry_ids` under an unchanged cursor
+   *    non-append rewrites of `source_paths` membership under an unchanged cursor
    *    (`source_paths.version`, ticket 72: bumped only where the path is written, by the writer's own
    *    prefix check) — both read as one indexed `MAX(version)` each. A bump takes its table's next
    *    version rather than adding one to its own row, so every bump in any row moves the maximum; a
@@ -3785,9 +3941,10 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     const row = this.db.prepare(`SELECT
         (SELECT IFNULL(MAX(id), 0) FROM facts) AS f,
         (SELECT IFNULL(MAX(rowid), 0) FROM consolidated_facts) AS cf,
+        (SELECT IFNULL(MAX(rowid), 0) FROM noted_entries) AS ne,
         (SELECT IFNULL(MAX(id), 0) FROM knowledge_revisions) AS kr,
         (SELECT IFNULL(MAX(rowid), 0) FROM knowledge_processed) AS kp,
-        (SELECT project_id FROM sessions WHERE id = ?) AS pid,
+        (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) AS pa,
         (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) AS pm,
         (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id = 1) AS bp,
         IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'global'), '') AS psg,
@@ -3795,14 +3952,41 @@ ${archivedBody}${evidenceLine}${diffLine}`;
           WHERE pool = 'project:' || (SELECT project_id FROM sessions WHERE id = ?)), '') AS psp,
         IFNULL((SELECT last_over_size || ':' || last_over_budget FROM knowledge_pool_state WHERE pool = 'session:' || ?), '') AS pss,
         (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cv,
-        (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv`).get(sessionId, sessionId, sessionId);
-    return `${row.f}:${row.cf}:${row.kr}:${row.kp}:${row.pid}:${row.pm}:${row.bp}:${row.psg}:${row.psp}:${row.pss}:${row.cv}:${row.sv}`;
+        (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv`).get(sessionId, sessionId);
+    return `${row.f}:${row.cf}:${row.ne}:${row.kr}:${row.kp}:${row.pa}:${row.pm}:${row.bp}:${row.psg}:${row.psp}:${row.pss}:${row.cv}:${row.sv}`;
   }
   /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one
    * fact at a time, never "every fact minus the cited ones" (22b, restated by 24a for the footer).
    * The one definition both the batch and the footer's second count are built from. */
   unconsolidated(facts, path, snapshot2 = this.pathSnapshot(path)) {
-    return facts.filter((f) => !this.consolidatedOnPath(f.id, path, snapshot2));
+    if (!facts.length) return [];
+    const rows = this.db.prepare(`SELECT fact_id, run_id FROM consolidated_facts
+      WHERE fact_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(facts.map((f) => f.id)));
+    const missing = [...new Set(rows.map((row) => row.run_id))].filter((id) => !snapshot2.consolidatedRuns.has(id));
+    if (missing.length) {
+      const runFacts = this.db.prepare(`SELECT i.run_id AS consolidation_run_id, f.* FROM consolidated_facts i JOIN facts f ON f.id = i.fact_id
+        WHERE i.run_id IN (SELECT value FROM json_each(?)) ORDER BY i.run_id, f.id`).all(JSON.stringify(missing));
+      const all = runFacts.map(toFact);
+      const owners2 = new Map(this.db.prepare(`SELECT id, session_id FROM turns
+        WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify([...new Set(all.map((f) => f.turnId))])).map((row) => [Number(row.id), Number(row.session_id)]));
+      const bound = this.factSourceEntries(all.map((f) => f.id));
+      const grouped = /* @__PURE__ */ new Map();
+      for (let i = 0; i < runFacts.length; i++) {
+        const runId = runFacts[i].consolidation_run_id;
+        if (!grouped.has(runId)) grouped.set(runId, []);
+        grouped.get(runId).push(all[i]);
+      }
+      for (const id of missing) snapshot2.consolidatedRuns.set(
+        id,
+        (grouped.get(id) ?? []).every((f) => this.factOnPath(f, path, snapshot2, void 0, owners2, bound))
+      );
+    }
+    const runs = /* @__PURE__ */ new Map();
+    for (const row of rows) {
+      if (!runs.has(row.fact_id)) runs.set(row.fact_id, []);
+      runs.get(row.fact_id).push(row.run_id);
+    }
+    return facts.filter((f) => !(runs.get(f.id) ?? []).some((id) => snapshot2.consolidatedRuns.get(id)));
   }
   /** Committed facts are immediately eligible; progress is path-aware exact membership. */
   consolidationBatch(sessionId, branch, headTurnId) {
@@ -3823,7 +4007,8 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       if (!runs.has(run_id)) {
         const facts = this.listConsolidatedFacts(run_id);
         const owners2 = new Map(this.db.prepare("SELECT id, session_id FROM turns WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...new Set(facts.map((f) => f.turnId))])).map((r) => [Number(r.id), Number(r.session_id)]));
-        runs.set(run_id, facts.every((f) => this.factOnPath(f, path, snapshot2, void 0, owners2)));
+        const bound = this.factSourceEntries(facts.map((f) => f.id));
+        runs.set(run_id, facts.every((f) => this.factOnPath(f, path, snapshot2, void 0, owners2, bound)));
       }
       return runs.get(run_id);
     });
@@ -3927,11 +4112,11 @@ ${archivedBody}${evidenceLine}${diffLine}`;
    * these occurrences hydrates the exact ids it kept through `hydrateSourceEntries`, once. */
   listSourceEntries(sessionId, turnId, branch) {
     const selected = branch === void 0 ? [] : this.db.prepare(
-      `SELECT e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")} FROM source_paths p JOIN json_each(p.entry_ids) j
-       JOIN source_entries e ON e.id = j.value
-       WHERE p.session_id = ? AND p.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.key`
+      `SELECT e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")} FROM source_paths p
+       JOIN source_path_entries j ON j.path_id = p.id JOIN source_entries e ON e.id = j.entry_id
+       WHERE p.session_id = ? AND p.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.position`
     ).all(sessionId, branch, sessionId, turnId ?? null, turnId ?? null);
-    const hasPath = branch !== void 0 && !!this.db.prepare("SELECT 1 FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
+    const hasPath = branch !== void 0 && this.sourcePathState(sessionId, branch) !== null;
     const rows = hasPath ? selected : turnId === void 0 ? this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries WHERE session_id = ? ORDER BY id`).all(sessionId) : this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries INDEXED BY idx_source_turn_ordinal WHERE turn_id = ? AND session_id = ? ORDER BY id`).all(turnId, sessionId);
     return rows.map(toSourceEntryMeta);
   }
@@ -3944,22 +4129,33 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     for (const row of this.db.prepare("SELECT id, turn_id FROM source_entries WHERE turn_id IN (SELECT value FROM json_each(?)) ORDER BY id").all(JSON.stringify([...entries.keys()]))) entries.get(row.turn_id).push(row.id);
     return entries;
   }
+  sourcePathState(sessionId, branch) {
+    const row = this.db.prepare("SELECT length, tail_entry_id, version FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
+    return row ? { count: row.length, tailId: row.tail_entry_id, version: row.version } : null;
+  }
   selectedSourceEntryIds(sessionId, branch) {
-    const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
-    if (!row) return null;
-    const ids = JSON.parse(row.entry_ids);
-    if (!Array.isArray(ids) || ids.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error("stored source path is malformed");
-    return ids;
+    const state = this.sourcePathState(sessionId, branch);
+    if (!state) return null;
+    const rows = this.db.prepare(`SELECT j.position, j.entry_id, e.id AS owned_id FROM source_paths p
+      JOIN source_path_entries j ON j.path_id = p.id
+      LEFT JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
+      WHERE p.session_id = ? AND p.branch = ? ORDER BY j.position`).all(sessionId, branch);
+    this.validatePathMembers(state, rows);
+    return rows.map((row) => row.entry_id);
+  }
+  /** Full readers validate the rows they already need, not a second membership enumeration. */
+  validatePathMembers(state, rows) {
+    if (rows.length !== state.count || (rows.at(-1)?.entry_id ?? null) !== state.tailId || rows.some((row, index) => row.position !== index || row.owned_id !== row.entry_id))
+      throw new Error("stored source path is malformed");
   }
   /** Resolve a persisted native ancestry without exposing source_paths storage to a host adapter.
    * A later extension of the same branch is eligible; a sibling that diverged before the prefix is not. */
   sourceBranchForPrefix(sessionId, entryIds, preferred) {
     if (!entryIds.length || entryIds.some((id) => !Number.isSafeInteger(id) || id < 1)) return null;
-    const matches = this.db.prepare("SELECT branch, entry_ids FROM source_paths WHERE session_id = ? ORDER BY branch").all(sessionId).flatMap((row) => {
-      const ids = JSON.parse(row.entry_ids);
-      if (!Array.isArray(ids) || ids.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error("stored source path is malformed");
-      return entryIds.every((id, index) => ids[index] === id) ? [row.branch] : [];
-    });
+    const matches = this.db.prepare(`SELECT p.branch FROM source_paths p WHERE p.session_id = ? AND p.length >= ?
+      AND NOT EXISTS (SELECT 1 FROM json_each(?) wanted WHERE NOT EXISTS
+        (SELECT 1 FROM source_path_entries e WHERE e.path_id = p.id
+         AND e.position = CAST(wanted.key AS INTEGER) AND e.entry_id = wanted.value)) ORDER BY p.branch`).all(sessionId, entryIds.length, JSON.stringify(entryIds)).map((row) => row.branch);
     return preferred && matches.includes(preferred) ? preferred : matches[0] ?? null;
   }
   /** Publish source selection and its lineage cursor atomically, validating the supplied identities
@@ -3983,6 +4179,63 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
     });
   }
+  /** Append a proven suffix against the exact persisted prefix. Unlike a full publication this
+   * never reads old membership or walks the old head's ancestry. Navigations use publishSourcePath. */
+  appendSourcePath(sessionId, branch, expected, newEntryIds, headTurnId, lineage) {
+    return this.transaction(() => {
+      this.requireEnabled(sessionId);
+      const state = this.sourcePathState(sessionId, branch);
+      if (!state || state.count !== expected.count || state.tailId !== expected.tailId || state.version !== expected.version)
+        throw new StaleSourcePathError();
+      if (!branch || !lineage || new Set(newEntryIds).size !== newEntryIds.length || newEntryIds.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error("invalid source path tail");
+      const rows = this.db.prepare(`SELECT id, turn_id FROM source_entries NOT INDEXED WHERE id IN
+        (SELECT value FROM json_each(?)) AND session_id = ?`).all(JSON.stringify(newEntryIds), sessionId);
+      if (rows.length !== newEntryIds.length) throw new Error("invalid source path tail");
+      const overlap = this.db.prepare(`SELECT 1 FROM source_path_entries WHERE path_id =
+        (SELECT id FROM source_paths WHERE session_id = ? AND branch = ?)
+        AND entry_id IN (SELECT value FROM json_each(?)) LIMIT 1`).get(sessionId, branch, JSON.stringify(newEntryIds));
+      if (overlap) throw new Error("invalid source path tail: duplicate entry");
+      const turns = new Map(rows.map((row) => [row.id, row.turn_id]));
+      const tailTurn = newEntryIds.length ? turns.get(newEntryIds.at(-1)) : null;
+      const oldTail = state.tailId === null ? null : this.db.prepare("SELECT turn_id FROM source_entries WHERE id = ?").get(state.tailId);
+      if (state.tailId !== null && !oldTail) throw new Error("stored source path is malformed");
+      const extendsTurn = (root2, ancestor) => {
+        if (root2 === ancestor) return true;
+        const direct2 = this.db.prepare("SELECT parent_turn_id FROM turns WHERE id = ? AND session_id = ?").get(root2, sessionId);
+        if (direct2?.parent_turn_id === ancestor) return true;
+        const row = this.db.prepare(`WITH RECURSIVE lineage(id,parent_turn_id,session_id) AS (
+          SELECT id,parent_turn_id,session_id FROM turns WHERE id = ?
+          UNION ALL SELECT t.id,t.parent_turn_id,t.session_id FROM turns t JOIN lineage l
+            ON t.id = l.parent_turn_id WHERE l.id != ?)
+          SELECT 1 FROM lineage WHERE id = ? AND session_id = ? LIMIT 1`).get(root2, ancestor, ancestor, sessionId);
+        return !!row;
+      };
+      let previousTurn = oldTail?.turn_id ?? null;
+      for (const id of newEntryIds) {
+        const turn = turns.get(id);
+        if (previousTurn !== null && turn !== previousTurn && !extendsTurn(turn, previousTurn))
+          throw new Error("source path tail is not an extension");
+        previousTurn = turn;
+      }
+      if (!extendsTurn(headTurnId, tailTurn ?? oldTail?.turn_id ?? headTurnId))
+        throw new Error("source path head is not an extension");
+      if (!newEntryIds.length) {
+        this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
+        return state;
+      }
+      const hwm = this.db.prepare("SELECT hwm_entry_id FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch).hwm_entry_id;
+      const restored = newEntryIds.some((id) => id <= hwm);
+      const nextVersion = restored ? Number(this.db.prepare("SELECT IFNULL(MAX(version), 0) + 1 AS next FROM source_paths").get().next) : state.version;
+      const pathId = Number(this.db.prepare("SELECT id FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch).id);
+      const insert = this.db.prepare("INSERT INTO source_path_entries(path_id,position,entry_id) VALUES (?,?,?)");
+      newEntryIds.forEach((id, position) => insert.run(pathId, state.count + position, id));
+      const count = state.count + newEntryIds.length, tailId = newEntryIds.at(-1);
+      this.db.prepare(`UPDATE source_paths SET length = ?, tail_entry_id = ?, version = ?, hwm_entry_id = ?
+        WHERE session_id = ? AND branch = ?`).run(count, tailId, nextVersion, Math.max(hwm, ...newEntryIds), sessionId, branch);
+      this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
+      return { count, tailId, version: nextVersion };
+    });
+  }
   /** Ticket 72: only the writer knows whether the new list extends the stored one — an unbroken
    * prefix relationship, the only shape an ordinary ingested-entry append ever produces. Any other
    * replacement (an entry removed, reordered, or a shorter list) is a membership rewrite the change
@@ -3994,16 +4247,21 @@ ${archivedBody}${evidenceLine}${diffLine}`;
    * genuinely new entries never keeps bumping — exact where a "once rewritten, bump forever" flag
    * would only approximate. A pure append of new entries leaves an unrewritten path's signal untouched. */
   writeSourcePath(sessionId, branch, entryIds) {
-    const priorRow = this.db.prepare("SELECT entry_ids, hwm_entry_id FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
-    const prior = priorRow ? JSON.parse(priorRow.entry_ids) : [];
-    const hwm = priorRow?.hwm_entry_id ?? 0;
+    const prior = this.selectedSourceEntryIds(sessionId, branch) ?? [];
+    const row = this.db.prepare("SELECT hwm_entry_id FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
+    const hwm = row?.hwm_entry_id ?? 0;
     const append = prior.length <= entryIds.length && prior.every((id, index) => entryIds[index] === id);
     const restored = append && entryIds.slice(prior.length).some((id) => id <= hwm);
     const bump = !append || restored;
     const newHwm = entryIds.length ? Math.max(hwm, ...entryIds) : hwm;
-    this.db.prepare(`INSERT INTO source_paths (session_id, branch, entry_ids, version, hwm_entry_id) VALUES (?, ?, ?, 0, ?)
-      ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids,
-        version = CASE WHEN ? THEN (SELECT MAX(version) + 1 FROM source_paths) ELSE version END, hwm_entry_id = ?`).run(sessionId, branch, JSON.stringify(entryIds), newHwm, bump ? 1 : 0, newHwm);
+    this.db.prepare(`INSERT INTO source_paths (session_id, branch, length, tail_entry_id, version, hwm_entry_id)
+      VALUES (?, ?, ?, ?, 0, ?) ON CONFLICT (session_id, branch) DO UPDATE SET
+      length = excluded.length, tail_entry_id = excluded.tail_entry_id,
+      version = CASE WHEN ? THEN (SELECT MAX(version) + 1 FROM source_paths) ELSE version END, hwm_entry_id = ?`).run(sessionId, branch, entryIds.length, entryIds.at(-1) ?? null, newHwm, bump ? 1 : 0, newHwm);
+    const pathId = Number(this.db.prepare("SELECT id FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch).id);
+    this.db.prepare("DELETE FROM source_path_entries WHERE path_id = ?").run(pathId);
+    const insert = this.db.prepare("INSERT INTO source_path_entries(path_id,position,entry_id) VALUES (?,?,?)");
+    entryIds.forEach((id, position) => insert.run(pathId, position, id));
   }
   selectSourcePath(sessionId, branch, entryIds) {
     return this.transaction(() => {
@@ -4013,15 +4271,16 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       this.writeSourcePath(sessionId, branch, entryIds);
     });
   }
-  /** The selected path's source-entry metadata, in the branch's own order, decided by `turn_id`
-   * alone: no Raw payload is loaded to answer membership (22b), and none is joined here either (79
-   * item 1). `json_each`'s key is the position in the stored array, so the branch order survives
-   * the join. */
+  /** The selected path's metadata in persisted branch order; no Raw payload is loaded. */
   pathSourceMeta(sessionId, branch, headTurnId, prepared) {
     const turns = prepared?.turns ?? this.pathTurns({ sessionId, headTurnId });
-    const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
-    const rows = row ? this.db.prepare(`SELECT e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")}
-        FROM json_each(?) j JOIN source_entries e ON e.id = j.value ORDER BY j.key`).all(row.entry_ids) : this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries WHERE session_id = ? ORDER BY id`).all(sessionId);
+    const header = this.sourcePathState(sessionId, branch);
+    const rows = header ? this.db.prepare(`SELECT j.position, j.entry_id, e.id AS owned_id,
+        e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")}
+        FROM source_paths p JOIN source_path_entries j ON j.path_id = p.id
+        LEFT JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
+        WHERE p.session_id = ? AND p.branch = ? ORDER BY j.position`).all(sessionId, branch) : this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries WHERE session_id = ? ORDER BY id`).all(sessionId);
+    if (header) this.validatePathMembers(header, rows);
     return rows.filter((r) => turns.has(Number(r.turn_id))).map(toSourceEntryMeta);
   }
   pathEntryIds(sessionId, branch, headTurnId, prepared) {
@@ -4040,12 +4299,81 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   entryNoted(id) {
     return !!this.db.prepare("SELECT 1 FROM noted_entries WHERE entry_id = ? LIMIT 1").get(id);
   }
-  /** 22b: `noted_entries` decides which of the path's ids are still pending before any content is
-   * loaded, so a caller that needs only the first views does not pay for the whole path. */
+  pendingPath;
+  /** The queue is owned by Store and must not be mutated by callers. Its identity changes on a
+   * rebuild; an append or local Noting prefix consumption retains it and the API's counted prefix. */
+  pendingEntryState(sessionId, branch, headTurnId, prepare) {
+    const ownSnapshot = !this.db.isTransaction;
+    const cached3 = ownSnapshot ? this.pendingPath : void 0;
+    if (ownSnapshot) this.db.exec("BEGIN");
+    try {
+      const read = () => {
+        const signal = this.progressSignal(sessionId);
+        const path = this.sourcePathState(sessionId, branch);
+        if (path && cached3?.path && cached3.sessionId === sessionId && cached3.branch === branch && cached3.signal === signal && cached3.path.version === path.version) {
+          if (cached3.path.count === path.count && cached3.path.tailId === path.tailId && (cached3.headTurnId === headTurnId || cached3.coversTail && this.pathExtendsHead({ sessionId, headTurnId }, cached3.headTurnId))) return () => {
+            cached3.headTurnId = headTurnId;
+            return cached3.ids;
+          };
+          if (cached3.coversTail && cached3.path && path && path.count > cached3.path.count) {
+            const rows = this.db.prepare(`SELECT j.position, j.entry_id, e.turn_id FROM source_paths p
+              JOIN source_path_entries j ON j.path_id = p.id
+              JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
+              WHERE p.session_id = ? AND p.branch = ? AND j.position >= ? ORDER BY j.position`).all(sessionId, branch, cached3.path.count);
+            if (rows.length === path.count - cached3.path.count && rows.at(-1)?.entry_id === path.tailId && rows.every((row, i) => row.position === cached3.path.count + i)) {
+              const direct2 = this.db.prepare("SELECT parent_turn_id, session_id FROM turns WHERE id = ?").get(headTurnId);
+              const turns = direct2?.session_id !== sessionId ? /* @__PURE__ */ new Set() : cached3.headTurnId === headTurnId ? /* @__PURE__ */ new Set([headTurnId]) : direct2.parent_turn_id === cached3.headTurnId ? /* @__PURE__ */ new Set([headTurnId, cached3.headTurnId]) : new Set(this.db.prepare(`WITH RECURSIVE lineage(id,parent_turn_id) AS (
+                    SELECT id,parent_turn_id FROM turns WHERE id = ? AND session_id = ? UNION
+                    SELECT t.id,t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id
+                    WHERE l.id != ? AND t.session_id = ?)
+                    SELECT id FROM lineage`).all(headTurnId, sessionId, cached3.headTurnId, sessionId).map((row) => Number(row.id)));
+              if (turns.has(cached3.headTurnId) && rows.every((row) => turns.has(row.turn_id))) {
+                const newIds = rows.map((row) => row.entry_id);
+                const noted2 = new Set(this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))").all(JSON.stringify(newIds)).map((row) => row.entry_id));
+                const added = newIds.filter((id) => !noted2.has(id));
+                return () => {
+                  for (const id of added) cached3.ids.append(id);
+                  cached3.path = path;
+                  cached3.headTurnId = headTurnId;
+                  return cached3.ids;
+                };
+              }
+            }
+          }
+        }
+        const prepared = prepare?.();
+        const ids = prepared?.entries ? [...prepared.entries.ids] : this.pathEntryIds(sessionId, branch, headTurnId, prepared);
+        const noted = new Set(this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)).map((row) => row.entry_id));
+        const pending = new PendingEntries(ids.filter((id) => !noted.has(id)));
+        return () => {
+          if (ownSnapshot) this.pendingPath = {
+            sessionId,
+            branch,
+            headTurnId,
+            signal,
+            path,
+            ids: pending,
+            coversTail: !path || (ids.at(-1) ?? null) === path.tailId
+          };
+          return pending;
+        };
+      };
+      const publish = read();
+      if (ownSnapshot) this.db.exec("COMMIT");
+      return publish();
+    } catch (error3) {
+      if (ownSnapshot && this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error3;
+    }
+  }
+  /** Return a defensive copy; consumers of the hot due path use pendingEntryState directly. */
   pendingEntryIds(sessionId, branch, headTurnId, prepared) {
-    const ids = this.pathEntryIds(sessionId, branch, headTurnId, prepared);
-    const noted = new Set(this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)).map((r) => r.entry_id));
-    return ids.filter((id) => !noted.has(id));
+    if (prepared) {
+      const ids = this.pathEntryIds(sessionId, branch, headTurnId, prepared);
+      const noted = new Set(this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)).map((r) => r.entry_id));
+      return ids.filter((id) => !noted.has(id));
+    }
+    return [...this.pendingEntryState(sessionId, branch, headTurnId)];
   }
   /** 79 item 1: metadata only, same contract as `sourcePath` above. */
   pendingEntries(sessionId, branch, headTurnId) {
@@ -4137,6 +4465,72 @@ var tokens = (text) => {
     previous = segment;
   }
   return total;
+};
+var wholeRun = (pattern) => new RegExp(`^(?:${pattern.source})+$`);
+var PUNCTUATION_RUN = wholeRun(PUNCTUATION);
+var JOINED_SPLIT = new RegExp(`(\\n+|[^\\S\\n]+|${PUNCTUATION.source}+)`);
+var segmentClass = (segment) => segment[0] === "\n" ? 0 : /^\s+$/.test(segment) ? 1 : PUNCTUATION_RUN.test(segment) ? 2 : 3;
+var JoinedTokens = class {
+  #first;
+  #last;
+  #total = 0;
+  #length = 0;
+  #refresh(segment) {
+    if (!segment) return;
+    this.#total -= segment.charge;
+    segment.charge = segment.kind === 0 ? Math.ceil((segment.length - (segment.previous?.kind === 2 ? 1 : 0)) / 16) : segment.kind === 1 ? segment.length > 1 || segment.previous?.kind === 0 || !segment.previous && !segment.next ? Math.ceil(segment.length / 128) : 0 : segmentTokens(segment.text, "", "");
+    this.#total += segment.charge;
+  }
+  add(text) {
+    this.#length += text.length;
+    for (const part of text.split(JOINED_SPLIT).filter(Boolean)) {
+      const kind = segmentClass(part);
+      if (this.#last?.kind === kind) {
+        this.#last.length += part.length;
+        if (kind >= 2) this.#last.text += part;
+        this.#refresh(this.#last.previous);
+        this.#refresh(this.#last);
+      } else {
+        const segment = {
+          kind,
+          text: kind >= 2 ? part : "",
+          length: part.length,
+          charge: 0,
+          previous: this.#last
+        };
+        if (this.#last) this.#last.next = segment;
+        else this.#first = segment;
+        this.#last = segment;
+        this.#refresh(segment.previous);
+        this.#refresh(segment);
+      }
+    }
+  }
+  removePrefix(length) {
+    if (!Number.isSafeInteger(length) || length < 0 || length > this.#length) throw new RangeError("invalid token prefix length");
+    this.#length -= length;
+    while (length && this.#first) {
+      const segment = this.#first;
+      if (length < segment.length) {
+        this.#total -= segment.charge;
+        segment.charge = 0;
+        segment.length -= length;
+        if (segment.kind >= 2) segment.text = segment.text.slice(length);
+        length = 0;
+        break;
+      }
+      length -= segment.length;
+      this.#total -= segment.charge;
+      this.#first = segment.next;
+      if (this.#first) this.#first.previous = void 0;
+      else this.#last = void 0;
+    }
+    this.#refresh(this.#first);
+    this.#refresh(this.#first?.next);
+  }
+  get count() {
+    return this.#total;
+  }
 };
 var rawResultText = (result) => ({ text: result });
 var ENTRY_VIEW_VERSION = "50-v1-whitespace-pricing";
@@ -5111,7 +5505,7 @@ function knowledgeReadSelection(store, options, namedProject) {
   if (options.scope === "session" && sessionId === void 0) throw new Error("scope:session requires a session context");
   if (options.scope === "project" && projectId === void 0) throw new Error("scope:project requires a project context");
   const path = sessionId === void 0 ? null : store.knowledgePath(sessionId, options.branch, options.headTurnId);
-  const input = store.commitGraphInput();
+  const input = store.commitGraphInput(void 0, sessionId);
   const graph = store.commitGraph(path, namedProject, void 0, input);
   const current = new Set(graph.current.map((r) => r.id));
   const byCommit = input.metadata.revisions;
@@ -5472,7 +5866,7 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
     if (!store.getProject(projectId)) throw new Error(`project ${projectId} does not exist`);
     const path = id === void 0 ? null : typeof target === "object" && "sessionId" in target ? target : store.knowledgePath(id);
     const snapshot2 = path ? store.pathSnapshot(path) : null;
-    const input = store.commitGraphInput();
+    const input = store.commitGraphInput(void 0, id);
     const graph = store.commitGraph(path, path ? void 0 : projectId, snapshot2 ?? void 0, input);
     const records = store.knowledgeRecords(graph.revisions.map((revision) => revision.knowledgeId));
     const values = (revisions) => revisions.map((revision) => ({
@@ -5679,16 +6073,26 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
     const key = `${sessionId}:${branch}`;
     const signal = store.progressSignal(sessionId);
     const cached3 = progressCache.get(key);
-    const reusable = cached3 && cached3.signal === signal && path.headTurnId != null && store.pathTurns({ sessionId, branch, headTurnId: path.headTurnId }).has(cached3.headTurnId);
-    if (reusable) return {
-      entries: store.pendingEntryIds(sessionId, branch, path.headTurnId).length,
-      facts: cached3.facts,
-      unconsolidated: cached3.unconsolidated,
-      knowledge: cached3.knowledge,
-      changedKnowledge: cached3.changedKnowledge
-    };
-    const snapshot2 = store.pathSnapshot(path);
-    const entries = path.headTurnId == null ? 0 : store.pendingEntryIds(sessionId, branch, path.headTurnId, snapshot2).length;
+    const reusable = cached3 && cached3.signal === signal && path.headTurnId != null && store.pathExtendsHead(path, cached3.headTurnId);
+    let snapshot2;
+    const prepare2 = () => snapshot2 ??= store.pathSnapshot(path);
+    const entries = path.headTurnId == null ? 0 : store.pendingEntryState(
+      sessionId,
+      branch,
+      path.headTurnId,
+      reusable ? void 0 : prepare2
+    ).length;
+    if (reusable) {
+      cached3.headTurnId = path.headTurnId;
+      return {
+        entries,
+        facts: cached3.facts,
+        unconsolidated: cached3.unconsolidated,
+        knowledge: cached3.knowledge,
+        changedKnowledge: cached3.changedKnowledge
+      };
+    }
+    snapshot2 = prepare2();
     const facts = store.listBranchFacts(sessionId, branch, path.headTurnId, snapshot2);
     const knowledge = store.currentKnowledge(path, {}, snapshot2);
     const changedKnowledge = knowledge.length - store.processedCurrentVersions(knowledge).size;
@@ -5739,7 +6143,9 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       const knowledge = store.currentKnowledge(path, {}, snapshot2);
       const visible = Array.isArray(retainedView) ? noVisibility() : retainedView;
       const retained = new Set(Array.isArray(retainedView) ? retainedView : visible.raw.keys());
-      const applicable2 = store.listSessionFacts(sessionId).filter((f) => store.factOnPath(f, path, snapshot2));
+      const sessionFacts = store.listSessionFacts(sessionId);
+      const boundEntries = store.factSourceEntries(sessionFacts.map((f) => f.id));
+      const applicable2 = sessionFacts.filter((f) => store.factOnPath(f, path, snapshot2, void 0, void 0, boundEntries));
       const pendingFacts = store.unconsolidated(applicable2, path, snapshot2);
       const pendingFactIds = new Set(pendingFacts.map((f) => f.id));
       const factTurns = store.factTurnTimes(applicable2);
@@ -5902,7 +6308,9 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       if (used + charge(receipt()) > config3.render.episodicBlockTokens)
         throw new Error(`Branch carry capacity: Raw framing and omission receipt exceed render.episodicBlockTokens (${config3.render.episodicBlockTokens})`);
       const path = { sessionId, headTurnId, branch }, snapshot2 = store.pathSnapshot(path);
-      const facts = store.listSessionFacts(sessionId).filter((f) => store.factOnPath(f, path, snapshot2)).sort((a, b) => a.id - b.id);
+      const sessionFacts = store.listSessionFacts(sessionId);
+      const boundEntries = store.factSourceEntries(sessionFacts.map((f) => f.id));
+      const facts = sessionFacts.filter((f) => store.factOnPath(f, path, snapshot2, void 0, void 0, boundEntries)).sort((a, b) => a.id - b.id);
       const factIds = new Set(facts.map((f) => f.id));
       const revisions = store.listKnowledgeRevisions();
       const input = store.commitGraphInput(revisions).metadata;
@@ -7626,20 +8034,51 @@ relations retained by explicit Fact read; other endpoints not applicable on this
     return () => finish(renderTrace(turn, occurrences, profile, { ...options, full: uncompressed }, uncompressed ? rawResultText : resultText));
   };
   const read = readFacade(store, cfg, prepareTrace, resultText);
-  function* notingViews(target) {
-    for (const id of store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId))
-      yield renderEntry(store.getSourceEntry(id), cfg.render, resultText).content;
-  }
-  const notingDue = (target) => {
-    let joined = "";
-    for (const view of notingViews(target)) {
-      joined = joined ? `${joined}
-
-${view}` : view;
-      if (tokens(joined) >= cfg.noting.triggerTokens) return true;
+  const notingViewCache = /* @__PURE__ */ new Map();
+  let lastPending;
+  const counted = /* @__PURE__ */ new WeakMap();
+  const pendingState = (target) => {
+    const pending = store.pendingEntryState(target.sessionId, target.branch, target.headTurnId);
+    if (pending !== lastPending) {
+      const stillPending = new Set(pending);
+      for (const id of notingViewCache.keys()) if (!stillPending.has(id)) notingViewCache.delete(id);
+      lastPending = pending;
     }
-    return false;
+    return pending;
   };
+  const countPending = (pending, limit) => {
+    let prefix = counted.get(pending);
+    if (!prefix) {
+      prefix = { count: new JoinedTokens(), offset: pending.offset, end: pending.offset, views: /* @__PURE__ */ new Map() };
+      counted.set(pending, prefix);
+    }
+    if (pending.offset > prefix.offset) {
+      const removedEnd = Math.min(pending.offset, prefix.end);
+      let removedChars = 0;
+      for (let position = prefix.offset; position < removedEnd; position++) {
+        const view = prefix.views.get(position);
+        removedChars += view.text.length + (position + 1 < prefix.end ? 2 : 0);
+        notingViewCache.delete(view.id);
+        prefix.views.delete(position);
+      }
+      prefix.count.removePrefix(removedChars);
+      prefix.offset = pending.offset;
+      prefix.end = Math.max(prefix.end, pending.offset);
+    }
+    while (prefix.end - pending.offset < pending.length && prefix.count.count < limit) {
+      const id = pending.at(prefix.end - pending.offset);
+      let view = notingViewCache.get(id);
+      if (view === void 0) {
+        view = renderEntry(store.getSourceEntry(id), cfg.render, resultText).content;
+        notingViewCache.set(id, view);
+      }
+      if (prefix.end > pending.offset) prefix.count.add("\n\n");
+      prefix.count.add(view);
+      prefix.views.set(prefix.end++, { id, text: view });
+    }
+    return prefix.count.count;
+  };
+  const notingDue = (target) => countPending(pendingState(target), cfg.noting.triggerTokens) >= cfg.noting.triggerTokens;
   const consolidationTokens = (target) => {
     const path = store.knowledgePath(target.sessionId, target.branch, target.headTurnId);
     const snapshot2 = store.pathSnapshot(path);
@@ -7652,7 +8091,7 @@ ${view}` : view;
     if (!target) return { tokens: null, trigger, state: "no session" };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
-      const count = phase === "noting" ? tokens([...notingViews(target)].join("\n\n")) : consolidationTokens(target);
+      const count = phase === "noting" ? countPending(pendingState(target), Infinity) : consolidationTokens(target);
       return { tokens: count, trigger: cfg[phase].triggerTokens, state: "known" };
     } catch {
       return { tokens: null, trigger, state: "unavailable" };
@@ -38564,6 +39003,8 @@ var CcProjection = class {
   callsByTurn = /* @__PURE__ */ new Map();
   loadedCallTurns = /* @__PURE__ */ new Set();
   lastResult = null;
+  selectedIds = [];
+  selectedState = null;
   synchronized = false;
   constructor(config3, binding, memory) {
     if (binding.dbPath !== config3.dbPath) throw new Error("CC binding uses another database");
@@ -38659,17 +39100,24 @@ var CcProjection = class {
     });
   }
   result(state, snapshot2, problems = [], values = {}) {
-    return {
+    const { selectedEntryIds, ...rest } = values;
+    const backing = selectedEntryIds ?? this.selectedIds;
+    const count = backing.length;
+    const result = {
       state,
       snapshot: snapshot2,
       coreSessionId: this.binding.coreSessionId,
       branch: this.binding.branch,
       headTurnId: this.lastResult?.headTurnId ?? null,
-      selectedEntryIds: this.lastResult?.selectedEntryIds ?? [],
       appendedEntryIds: [],
+      selectedAppendedEntryIds: [],
       problems,
-      ...values
+      selectedCount: count,
+      selectedTailId: backing[count - 1] ?? null,
+      ...rest
     };
+    Object.defineProperty(result, "selectedEntryIds", { enumerable: true, get: () => backing.slice(0, count) });
+    return result;
   }
   async synchronize(signal, instrumentation) {
     const observedBinding = readBinding(this.config, this.binding.nativeSessionId);
@@ -38677,14 +39125,18 @@ var CcProjection = class {
       const unchanged = this.transcript.unchangedSnapshot(observedBinding.transcriptPath);
       if (unchanged) {
         const problems = this.transcript.currentProblems();
-        return {
-          ...this.lastResult,
-          state: problems.length ? "not-ready" : this.lastResult.state,
-          snapshot: problems.length ? { ...unchanged, problem: problems[0] } : unchanged,
-          appendedEntryIds: [],
-          bootstrap: false,
-          problems
-        };
+        return this.result(
+          problems.length ? "not-ready" : this.lastResult.state,
+          problems.length ? { ...unchanged, problem: problems[0] } : unchanged,
+          problems,
+          {
+            coreSessionId: this.lastResult.coreSessionId,
+            branch: this.lastResult.branch,
+            headTurnId: this.lastResult.headTurnId,
+            appendedEntryIds: [],
+            bootstrap: false
+          }
+        );
       }
     }
     return withCcBindingLock(this.config, this.binding.nativeSessionId, async (locked) => {
@@ -38709,6 +39161,8 @@ var CcProjection = class {
       this.callsByTurn.clear();
       this.loadedCallTurns.clear();
       this.lastResult = null;
+      this.selectedIds = [];
+      this.selectedState = null;
     }
     let summary = null, bootstrapSnapshot = null;
     if (this.binding.nativeCreatedAt === null || this.binding.coreSessionId === null) {
@@ -38858,7 +39312,7 @@ var CcProjection = class {
       }
     };
     let scan;
-    let branch = this.binding.branch, selectedEntryIds = [], headTurnId = null, projectionReady = true;
+    let branch = this.binding.branch, selectedEntryIds = null, selectedDelta = [], headTurnId = null, projectionReady = true;
     try {
       scan = await this.transcript.scanCooperative(
         this.binding.transcriptPath,
@@ -38874,7 +39328,6 @@ var CcProjection = class {
       if (scan instanceof CcTranscriptScan) {
         for (const problem of scan.problems) addProblem(problem);
         if (!scan.reset && scan.selectedLeafUuid === this.binding.selectedLeafUuid && this.lastResult) {
-          selectedEntryIds = this.lastResult.selectedEntryIds;
           headTurnId = this.lastResult.headTurnId;
         } else {
           const priorLeaf = this.binding.selectedLeafUuid, extension = [];
@@ -38895,14 +39348,13 @@ var CcProjection = class {
           let selectedNodes;
           if (continuous) {
             selectedNodes = extension.reverse();
-            selectedEntryIds = [...this.lastResult.selectedEntryIds];
             for (const node of selectedNodes) if (node.sourceKind && node.sourceKind !== "compaction") {
               if (node.entryId === void 0) {
                 if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                 projectionReady = false;
                 break;
               }
-              selectedEntryIds.push(node.entryId);
+              selectedDelta.push(node.entryId);
             }
           } else {
             const selected = scan.selectedPath();
@@ -38912,6 +39364,7 @@ var CcProjection = class {
               selectedNodes = [];
             } else {
               selectedNodes = selected.nodes;
+              selectedEntryIds = [];
               for (const node of selectedNodes) if (node.sourceKind && node.sourceKind !== "compaction") {
                 if (node.entryId === void 0) {
                   if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
@@ -38925,12 +39378,47 @@ var CcProjection = class {
             }
           }
           if (projectionReady) {
-            const inherited = this.binding.clearedFrom?.inheritedEntryIds ?? [];
-            if (inherited.length && !inherited.every((id, index) => selectedEntryIds[index] === id)) selectedEntryIds = [...inherited, ...selectedEntryIds];
             headTurnId = [...selectedNodes].reverse().find((node) => node.turnId !== void 0)?.turnId ?? this.lastResult?.headTurnId ?? this.binding.clearedFrom?.compactionTurnId ?? null;
-            if (headTurnId !== null)
-              this.memory.store.publishSourcePath(sessionId, branch, selectedEntryIds, headTurnId, this.binding.nativeSessionId);
-            else this.memory.selectEntries(sessionId, branch, selectedEntryIds);
+            if (continuous && headTurnId !== null && this.selectedState) {
+              try {
+                this.selectedState = this.memory.store.appendSourcePath(
+                  sessionId,
+                  branch,
+                  this.selectedState,
+                  selectedDelta,
+                  headTurnId,
+                  lineage
+                );
+                for (const id of selectedDelta) this.selectedIds.push(id);
+              } catch (error3) {
+                if (!(error3 instanceof StaleSourcePathError)) throw error3;
+                const rebuilt = scan.selectedPath();
+                if (rebuilt.problem) {
+                  addProblem(rebuilt.problem);
+                  projectionReady = false;
+                } else {
+                  selectedEntryIds = [];
+                  for (const node of rebuilt.nodes) if (node.sourceKind && node.sourceKind !== "compaction") {
+                    if (node.entryId === void 0) {
+                      addProblem(`native source ${node.uuid} is not persisted`);
+                      projectionReady = false;
+                      break;
+                    }
+                    selectedEntryIds.push(node.entryId);
+                  }
+                }
+              }
+            } else if (continuous) selectedEntryIds = [...this.selectedIds, ...selectedDelta];
+            if (projectionReady && selectedEntryIds) {
+              const inherited = this.binding.clearedFrom?.inheritedEntryIds ?? [];
+              if (inherited.length && !inherited.every((id, index) => selectedEntryIds[index] === id))
+                selectedEntryIds = [...inherited, ...selectedEntryIds];
+              if (headTurnId !== null)
+                this.memory.store.publishSourcePath(sessionId, branch, selectedEntryIds, headTurnId, lineage);
+              else this.memory.selectEntries(sessionId, branch, selectedEntryIds);
+              this.selectedIds = selectedEntryIds;
+              this.selectedState = this.memory.store.sourcePathState(sessionId, branch);
+            }
           }
         }
       }
@@ -38955,9 +39443,18 @@ var CcProjection = class {
       return ready2;
     }
     const completed = scan;
-    if (projectionReady) await this.persist((binding) => binding.branch === branch && binding.selectedLeafUuid === completed.selectedLeafUuid ? binding : { ...binding, branch, selectedLeafUuid: completed.selectedLeafUuid });
+    if (projectionReady) try {
+      await this.persist((binding) => binding.branch === branch && binding.selectedLeafUuid === completed.selectedLeafUuid ? binding : { ...binding, branch, selectedLeafUuid: completed.selectedLeafUuid });
+    } catch (error3) {
+      this.lastResult = null;
+      this.selectedIds = [];
+      this.selectedState = null;
+      throw error3;
+    }
     this.transcript.commit(completed, problems[0]);
     const state = problems.length ? "not-ready" : "ready";
+    const selectedMembership = selectedEntryIds === null ? null : new Set(this.selectedIds);
+    const newlyImported = selectedEntryIds === null && appendedEntryIds.length ? new Set(appendedEntryIds) : null;
     const ready = this.result(
       state,
       problems.length ? { ...completed.snapshot, problem: problems[0] } : completed.snapshot,
@@ -38966,7 +39463,7 @@ var CcProjection = class {
         coreSessionId: sessionId,
         branch: projectionReady ? branch : this.binding.branch,
         headTurnId: projectionReady ? headTurnId : this.lastResult?.headTurnId ?? null,
-        selectedEntryIds: projectionReady ? selectedEntryIds : this.lastResult?.selectedEntryIds ?? [],
+        selectedAppendedEntryIds: projectionReady ? selectedEntryIds === null ? selectedDelta.filter((id) => newlyImported?.has(id)) : appendedEntryIds.filter((id) => selectedMembership.has(id)) : [],
         appendedEntryIds,
         bootstrap: !this.synchronized
       }
@@ -39350,7 +39847,7 @@ var CcTaskScheduler = class {
         this.memory.cancelTasks();
       }
     }
-    const ready = reconcile.state === "ready" && reconcile.coreSessionId !== null && reconcile.headTurnId !== null && !!reconcile.selectedEntryIds.length;
+    const ready = reconcile.state === "ready" && reconcile.coreSessionId !== null && reconcile.headTurnId !== null && reconcile.selectedCount > 0;
     if (this.lastReady && (!ready || reconcile.branch !== this.lastBranch)) this.cancellationEpoch++;
     if (ready) {
       if (!this.lastReady || reconcile.branch !== this.lastBranch) this.armCD();
@@ -39359,15 +39856,14 @@ var CcTaskScheduler = class {
         sessionId: reconcile.coreSessionId,
         branch: reconcile.branch,
         headTurnId: reconcile.headTurnId,
-        triggerEntryId: reconcile.selectedEntryIds.at(-1)
+        triggerEntryId: reconcile.selectedTailId
       };
     }
     this.lastReady = ready;
     if (!ready) return;
     if (admitAutomatic && opportunityEpoch === entryEpoch && reconcile.appendedEntryIds.length) {
-      const selected = new Set(reconcile.selectedEntryIds);
-      const appended = reconcile.appendedEntryIds.filter((id) => selected.has(id));
-      const opportunities = reconcile.bootstrap && appended.length ? [reconcile.selectedEntryIds.at(-1)] : appended;
+      const appended = reconcile.selectedAppendedEntryIds;
+      const opportunities = reconcile.bootstrap && appended.length ? [reconcile.selectedTailId] : appended;
       for (const entryId of opportunities) {
         const entry = this.memory.store.getSourceEntry(entryId);
         if (!entry) throw new Error(`CC appended entry ${entryId} disappeared before scheduling`);
@@ -39400,14 +39896,14 @@ var CcTaskScheduler = class {
     if (!this.worker)
       return this.failedStatus("CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured");
     if (reconcile.state === "disabled") return this.failedStatus("Trace Memory is disabled for this session");
-    if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length)
+    if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedCount)
       return this.failedStatus(reconcile.problems.join("; ") || "persisted selected source path is not ready");
     if (!this.memory.store.enabled(reconcile.coreSessionId)) return this.failedStatus("Trace Memory is disabled for this session");
     const target = {
       sessionId: reconcile.coreSessionId,
       branch: reconcile.branch,
       headTurnId: reconcile.headTurnId,
-      triggerEntryId: reconcile.selectedEntryIds.at(-1)
+      triggerEntryId: reconcile.selectedTailId
     };
     const entries = this.pendingEntryIds(target);
     const facts = this.memory.store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).map((fact) => fact.id);
@@ -39502,7 +39998,7 @@ var CcTaskScheduler = class {
     void work.catch((error3) => this.diagnostic(`${phase} worker failed: ${error3 instanceof Error ? error3.message : String(error3)}`)).finally(() => {
       this.slots.delete(phase);
       this.safeNotify(`${phase} settled`);
-      if (settled && settled.outcome !== "empty" && settled.outcome !== "dropped" && settled.outcome !== "cancelled" && this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointCD(sessionId, epoch);
+      if (settled && settled.outcome !== "empty" && settled.outcome !== "dropped" && settled.outcome !== "cancelled" && (settled.outcome === "success" || phase === "dreaming") && this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointCD(sessionId, epoch);
       if (shouldDrive(settled)) this.driveCatchup();
     });
   }
