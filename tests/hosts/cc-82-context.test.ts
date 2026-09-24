@@ -119,15 +119,18 @@ test.each([false, true])("database, current native identity, core identity and d
   expect(ccContextEvidence(f.binding, f.db, changed).presence).toBe("unavailable");
 });
 
-test("duplicate full, preview, or full-plus-preview occurrence is unavailable", () => {
+test("every occurrence of a carrier occupies context and counts, repeats included", () => {
+  // A resumed session keeps its earlier SessionStart carrier and receives a new one; unchanged
+  // knowledge makes the two byte-identical, and both are in the context.
   for (const preview of [false, true]) {
     const f = fixture(body, preview);
-    f.snapshot.messages[0]!.content.push({ type: "text", text: `${f.rendered}\n` });
-    expect(ccContextEvidence(f.binding, f.db, f.snapshot).presence).toBe("unavailable");
+    const once = ccContextEvidence(f.binding, f.db, f.snapshot);
+    f.snapshot.messages.push({ role: "user", content: [{ type: "text", text: `${f.rendered}\n` }] });
+    const twice = ccContextEvidence(f.binding, f.db, f.snapshot);
+    expect(twice.presence).toBe("confirmed");
+    expect(twice.memory!.knowledge).toBe(2 * once.memory!.knowledge);
+    expect(memoryTotal(twice)).toBe(twice.estimatedMessagesTokens);
   }
-  const f = fixture(body, true);
-  f.snapshot.messages[0]!.content.push({ type: "text", text: wrap(f.original) });
-  expect(ccContextEvidence(f.binding, f.db, f.snapshot).presence).toBe("unavailable");
 });
 
 test("source-free startup and replaced current context require no transcript evidence", () => {

@@ -24,14 +24,14 @@ const PREVIEW_TITLE = "\n\nPreview (first 2KB):\n";
 
 /** Current Messages is the occurrence/path authority (ticket 82). Only its native hook wrapper
  * is a candidate; quotes, tool results and ordinary envelope-looking prose are not carriers. */
-function carrier(text: string, identity: CcVisibleBinding): { retained: string; offset: number; key: string } {
+function carrier(text: string, identity: CcVisibleBinding): { retained: string; offset: number } {
   const normalized = text.endsWith("\n") ? text.slice(0, -1) : text;
   if (!normalized.endsWith(HOOK_END)) throw new Error("malformed SessionStart memory context");
   const payload = normalized.slice(HOOK_CONTEXT.length, -HOOK_END.length);
   if (!payload.startsWith("<persisted-output>\n")) {
     const header = decodeCcInjection(payload, identity);
     if (!header) throw new Error("memory carrier failed identity or digest verification");
-    return { retained: payload, offset: HOOK_CONTEXT.length, key: JSON.stringify(header) };
+    return { retained: payload, offset: HOOK_CONTEXT.length };
   }
   const preview = /^<persisted-output>\n[^\n]*Full output saved to: ([^\n]+)\n\nPreview \(first 2KB\):\n([\s\S]+)\n\.\.\.\n<\/persisted-output>$/.exec(payload);
   if (!preview || !isAbsolute(preview[1]!)) throw new Error("malformed native memory preview");
@@ -48,8 +48,7 @@ function carrier(text: string, identity: CcVisibleBinding): { retained: string; 
     throw new Error("memory preview disagrees with its authenticated original");
   // The original, when available, verifies authenticity only. Neither classification nor token
   // accounting includes its omitted suffix; both use exactly the retained native prefix.
-  return { retained, offset: HOOK_CONTEXT.length + payload.indexOf(PREVIEW_TITLE) + PREVIEW_TITLE.length,
-    key: JSON.stringify(header) };
+  return { retained, offset: HOOK_CONTEXT.length + payload.indexOf(PREVIEW_TITLE) + PREVIEW_TITLE.length };
 }
 
 function estimateBlock(block: Record<string, unknown>, model?: string): number | null {
@@ -85,7 +84,6 @@ export function ccContextEvidence(binding: Pick<CcSessionBinding, "nativeSession
   const identity = { db: databaseIdentity(dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
   const memory = { knowledge: 0, facts: 0, raw: 0, unclassified: 0 };
   let estimatedMessagesTokens = 0;
-  const matched = new Set<string>();
   for (const message of snapshot.messages) {
     if (!object(message) || (message.role !== "user" && message.role !== "assistant") || !Array.isArray(message.content))
       return unavailable("unsupported Messages content");
@@ -99,8 +97,6 @@ export function ccContextEvidence(binding: Pick<CcSessionBinding, "nativeSession
       let current: ReturnType<typeof carrier>;
       try { current = carrier(block.text, identity); }
       catch (error) { return unavailable(error instanceof Error ? error.message : String(error)); }
-      if (matched.has(current.key)) return unavailable("ambiguous repeated Messages carrier");
-      matched.add(current.key);
       const parts = measureRetainedMemoryText(block.text, current.retained, current.offset, current.retained.length);
       for (const key of memoryKeys) memory[key] += parts[key];
     }

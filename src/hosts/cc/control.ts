@@ -255,7 +255,7 @@ export async function executorSnapshot(config: ResolvedCcHostConfig, nativeSessi
 async function executorSettingsRequest(config: ResolvedCcHostConfig, nativeSessionId: string,
   verb: "settings" | "apply", apply?: { path: string; expected: string }) {
   const binding = readBinding(config, nativeSessionId);
-  if (!binding || binding.dbPath !== config.dbPath || binding.clearedInto)
+  if (!binding || binding.dbPath !== config.dbPath)
     throw new Error("current CC session has no valid executor binding");
   const executor = binding.executor;
   if (!executor || executorLiveness(executor) !== "alive") throw new Error("running CC executor is unavailable");

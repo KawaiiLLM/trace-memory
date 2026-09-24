@@ -39967,7 +39967,7 @@ async function executorSnapshot(config3, nativeSessionId) {
 }
 async function executorSettingsRequest(config3, nativeSessionId, verb, apply) {
   const binding = readBinding(config3, nativeSessionId);
-  if (!binding || binding.dbPath !== config3.dbPath || binding.clearedInto)
+  if (!binding || binding.dbPath !== config3.dbPath)
     throw new Error("current CC session has no valid executor binding");
   const executor = binding.executor;
   if (!executor || executorLiveness(executor) !== "alive") throw new Error("running CC executor is unavailable");
@@ -41705,7 +41705,7 @@ function carrier(text, identity) {
   if (!payload.startsWith("<persisted-output>\n")) {
     const header2 = decodeCcInjection(payload, identity);
     if (!header2) throw new Error("memory carrier failed identity or digest verification");
-    return { retained: payload, offset: HOOK_CONTEXT.length, key: JSON.stringify(header2) };
+    return { retained: payload, offset: HOOK_CONTEXT.length };
   }
   const preview = /^<persisted-output>\n[^\n]*Full output saved to: ([^\n]+)\n\nPreview \(first 2KB\):\n([\s\S]+)\n\.\.\.\n<\/persisted-output>$/.exec(payload);
   if (!preview || !(0, import_node_path9.isAbsolute)(preview[1])) throw new Error("malformed native memory preview");
@@ -41719,11 +41719,7 @@ function carrier(text, identity) {
   }
   if (full !== void 0 && (!decodeCcInjection(full, identity) || !full.startsWith(retained)))
     throw new Error("memory preview disagrees with its authenticated original");
-  return {
-    retained,
-    offset: HOOK_CONTEXT.length + payload.indexOf(PREVIEW_TITLE) + PREVIEW_TITLE.length,
-    key: JSON.stringify(header)
-  };
+  return { retained, offset: HOOK_CONTEXT.length + payload.indexOf(PREVIEW_TITLE) + PREVIEW_TITLE.length };
 }
 function estimateBlock(block2, model) {
   if (block2.type === "text" && typeof block2.text === "string") return tokens(block2.text);
@@ -41753,7 +41749,6 @@ function ccContextEvidence(binding, dbPath, snapshot2) {
   const identity = { db: databaseIdentity(dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
   const memory = { knowledge: 0, facts: 0, raw: 0, unclassified: 0 };
   let estimatedMessagesTokens = 0;
-  const matched = /* @__PURE__ */ new Set();
   for (const message of snapshot2.messages) {
     if (!object7(message) || message.role !== "user" && message.role !== "assistant" || !Array.isArray(message.content))
       return unavailable("unsupported Messages content");
@@ -41769,8 +41764,6 @@ function ccContextEvidence(binding, dbPath, snapshot2) {
       } catch (error3) {
         return unavailable(error3 instanceof Error ? error3.message : String(error3));
       }
-      if (matched.has(current.key)) return unavailable("ambiguous repeated Messages carrier");
-      matched.add(current.key);
       const parts = measureRetainedMemoryText(block2.text, current.retained, current.offset, current.retained.length);
       for (const key of memoryKeys) memory[key] += parts[key];
     }
@@ -41809,7 +41802,7 @@ function runsFor(store, sessionId, limit) {
 function readCcRuns(config3, nativeSessionId, limit) {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Runs count must be a positive safe integer");
   const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
-  if (!binding || binding.clearedInto) throw new Error("current Claude Code session has no active binding");
+  if (!binding) throw new Error("current Claude Code session has no active binding");
   const store = new Store(config3.dbPath);
   try {
     assertOperatorBinding(config3, binding, store);
@@ -41822,7 +41815,6 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
   if (!Number.isSafeInteger(runLimit) || runLimit < 1) throw new Error("Runs count must be a positive safe integer");
   const id = validateNativeSessionId(nativeSessionId), binding = readBinding(config3, id);
   if (!binding) throw new Error(`Claude Code session ${id} is not bound`);
-  if (binding.clearedInto) throw new Error(`Claude Code session ${id} was cleared into ${binding.clearedInto.nativeSessionId}; use the current native session id`);
   const memory = TraceMemory(config3.dbPath, async () => {
     throw new Error("menu cannot run model work");
   }, config3.coreConfig);
@@ -43601,7 +43593,6 @@ async function runCcCommand(argv = process.argv.slice(2)) {
       try {
         const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
         if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
-        if (binding.clearedInto) throw new Error(`Claude Code session ${nativeSessionId} was cleared into ${binding.clearedInto.nativeSessionId}`);
         assertOperatorBinding(config3, binding, store2);
         store2.setKnowledgeBudget(id.slice(7), amount);
       } finally {
@@ -43615,7 +43606,6 @@ async function runCcCommand(argv = process.argv.slice(2)) {
     try {
       const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
       if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
-      if (binding.clearedInto) throw new Error(`Claude Code session ${nativeSessionId} was cleared into ${binding.clearedInto.nativeSessionId}`);
       assertOperatorBinding(config3, binding, store);
     } finally {
       store.close();

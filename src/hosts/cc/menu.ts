@@ -40,7 +40,7 @@ function runsFor(store: Store, sessionId: number, limit: number): CcMenuRun[] {
 export function readCcRuns(config: ResolvedCcHostConfig, nativeSessionId: string, limit: number): CcMenuRun[] {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Runs count must be a positive safe integer");
   const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
-  if (!binding || binding.clearedInto) throw new Error("current Claude Code session has no active binding");
+  if (!binding) throw new Error("current Claude Code session has no active binding");
   const store = new Store(config.dbPath);
   try {
     assertOperatorBinding(config, binding, store);
@@ -54,7 +54,6 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
   if (!Number.isSafeInteger(runLimit) || runLimit < 1) throw new Error("Runs count must be a positive safe integer");
   const id = validateNativeSessionId(nativeSessionId), binding = readBinding(config, id);
   if (!binding) throw new Error(`Claude Code session ${id} is not bound`);
-  if (binding.clearedInto) throw new Error(`Claude Code session ${id} was cleared into ${binding.clearedInto.nativeSessionId}; use the current native session id`);
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("menu cannot run model work"); }, config.coreConfig);
   try {
     const store = memory.store;

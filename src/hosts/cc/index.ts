@@ -211,7 +211,6 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
       try {
         const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
         if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
-        if (binding.clearedInto) throw new Error(`Claude Code session ${nativeSessionId} was cleared into ${binding.clearedInto.nativeSessionId}`);
         assertOperatorBinding(config, binding, store);
         store.setKnowledgeBudget(id.slice(7) as "global" | "project" | "session", amount);
       }
@@ -222,7 +221,6 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
     try {
       const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
       if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
-      if (binding.clearedInto) throw new Error(`Claude Code session ${nativeSessionId} was cleared into ${binding.clearedInto.nativeSessionId}`);
       assertOperatorBinding(config, binding, store);
     } finally { store.close(); }
     const original = readFileSync(configPath, "utf8");

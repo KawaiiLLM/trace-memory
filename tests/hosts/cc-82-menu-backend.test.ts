@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -88,7 +88,7 @@ test("runs uses the requested count beyond 20 with no silent limit", async () =>
   } finally { store.close(); }
 });
 
-test("menu rejects the prior native identity after clear, and reads the live child identity", async () => {
+test("a session reopened after /clear keeps its menu, runs and settings (63: the parent lineage continues)", async () => {
   const f = setup(), transcriptPath = join(f.dir, "native.jsonl"), child = "cc82-child";
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.session,
     transcript_path: transcriptPath, source: "startup" }, null);
@@ -97,10 +97,18 @@ test("menu rejects the prior native identity after clear, and reads the live chi
   const old = readBinding(f.config, f.session)!;
   writeFileSync(bindingPath(f.config, f.session), `${JSON.stringify({ ...old,
     clearedInto: { nativeSessionId: child, at: new Date().toISOString() } })}\n`);
-  expect(() => readCcMenu(f.config, f.session)).toThrow("was cleared into cc82-child");
+  // The user resumes the pre-clear session: its lineage is live again, and the marker is history.
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.session,
+    transcript_path: transcriptPath, source: "resume" }, null);
+  expect(readBinding(f.config, f.session)!.clearedInto?.nativeSessionId).toBe(child);
+  expect(readCcMenu(f.config, f.session).menu.header.project).toBe("unavailable");
+  expect(readCcRuns(f.config, f.session, 5)).toEqual([]);
   expect(readCcMenu(f.config, child).menu.header.project).toBe("unavailable");
-  await expect(runCcCommand(["cli", "--config", f.path, "--session", f.session,
-    "setting", "closedSessionScope", "off"])).rejects.toThrow("was cleared into");
+  let output = "";
+  const stdout = vi.spyOn(process.stdout, "write").mockImplementation(chunk => { output += String(chunk); return true; });
+  try { await runCcCommand(["cli", "--config", f.path, "--session", f.session, "setting", "closedSessionScope", "off"]); }
+  finally { stdout.mockRestore(); }
+  expect(JSON.parse(output)).toMatchObject({ saved: true, applied: false });
 });
 
 test("scheduler captures worker settings separately for each admission", async () => {
