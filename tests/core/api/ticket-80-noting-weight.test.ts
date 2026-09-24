@@ -96,16 +96,28 @@ test("early stop: a cold due check against a large backlog renders only up to th
 });
 
 test("no quadratic re-tokenization: tokenized inputs remain bounded per entry, not growing prefixes", () => {
-  const { memory, target } = seeded(200, 30);
+  const { memory, store, target } = seeded(200, 30);
   try {
+    store.publishSourcePath(target.sessionId, target.branch,
+      store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId), target.headTurnId, "native");
     memory.config.noting.triggerTokens = 1_000_000; // force a full scan
-    const tokenCalls = vi.spyOn(render, "tokens");
+    const tokenCalls = vi.spyOn(render, "tokens"), added = vi.spyOn(render.JoinedTokens.prototype, "add");
+    const rendered = vi.spyOn(render, "renderEntry");
     expect(memory.taskEligibility("noting", target).due).toBe(false);
-    // A quadratic retokenization of the growing joined string would call tokens() once per entry with
-    // an argument whose length grows every time (O(n) calls each O(n) work). Bound the call count by a
-    // bounded number of entry-sized inputs, not any growing joined-prefix input.
+    const views = rendered.mock.results.map(result => result.value.content as string);
+    const largest = Math.max(...views.map(view => view.length));
+    // Call count alone cannot detect one growing-prefix tokenization per entry. Bound both input
+    // size and total processed characters, including the incremental counter's actual inputs.
     expect(tokenCalls.mock.calls.length).toBeLessThan(200 * 3);
-    tokenCalls.mockRestore();
+    expect(tokenCalls.mock.calls.every(([text]) => text.length <= largest)).toBe(true);
+    expect(added.mock.calls.length).toBe(399);
+    expect(added.mock.calls.every(([text]) => text.length <= largest)).toBe(true);
+    expect(added.mock.calls.reduce((sum, [text]) => sum + text.length, 0))
+      .toBe(views.reduce((sum, text) => sum + text.length, 0) + 2 * 199);
+    added.mockClear();
+    memory.taskEligibility("noting", target);
+    expect(added).not.toHaveBeenCalled();
+    tokenCalls.mockRestore(); added.mockRestore(); rendered.mockRestore();
   } finally { memory.close(); }
 });
 
