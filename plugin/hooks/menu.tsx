@@ -286,8 +286,9 @@ function buildDisplayCategories(breakdown2, memory) {
   if (!spliced) out.push(...memoryRows);
   return out;
 }
+var CC_NARROW_COLUMNS = 80;
 function computeCcGrid(categories, window, terminalWidth, minRows = 0) {
-  const narrow = terminalWidth !== void 0 && terminalWidth < 80;
+  const narrow = terminalWidth !== void 0 && terminalWidth < CC_NARROW_COLUMNS;
   const bigWindow = window >= 1e6;
   const columns = narrow ? 5 : bigWindow ? 20 : 10;
   const rows = bigWindow ? 10 : narrow ? 5 : 10;
@@ -343,9 +344,10 @@ function buildCcContextSection(breakdown2, memory, contextTokens) {
   const headerLines = breakdown2.displayName ? [breakdown2.displayName, breakdown2.model, totalLine] : [breakdown2.model, totalLine];
   const legendHeading = "Estimated usage by category";
   const memoryUnavailable = effectiveMemory ? void 0 : inconsistent || messagesCategory ? "Knowledge, Facts, Raw: unavailable" : void 0;
+  const sideBySide = breakdown2.terminalWidth === void 0 || breakdown2.terminalWidth >= CC_NARROW_COLUMNS;
   const legendLineCount = headerLines.length + 1 + 1 + legend.length + (memoryUnavailable ? 1 : 0);
-  const gridRows = computeCcGrid(displayCategories, breakdown2.maxTokens, breakdown2.terminalWidth, legendLineCount);
-  return { headerLines, gridRows, legendHeading, legend, memoryUnavailable };
+  const gridRows = computeCcGrid(displayCategories, breakdown2.maxTokens, breakdown2.terminalWidth, sideBySide ? legendLineCount : 0);
+  return { headerLines, sideBySide, gridRows, legendHeading, legend, memoryUnavailable };
 }
 function renderTraceMenuText(rendered) {
   const context = rendered.context;
@@ -417,7 +419,8 @@ var versionError = "";
 var pluginRoot = "";
 var selectedAction = "";
 var selectedSetting;
-var paneWidth = 70;
+var DOCK_COLUMNS = 96;
+var paneWidth = DOCK_COLUMNS;
 var runsLimit = 10;
 var activeSession = "";
 var id = "trace-memory-menu";
@@ -496,7 +499,7 @@ export const register = (on) => {
       activeSession = loaded.session;
       breakdown = loaded.breakdown;
       const text = renderTraceMenuText(renderCurrent());
-      await $.ui.open({ id, title: "Trace Memory", focus: true, closeOnEscape: true, rows: 45 });
+      await $.ui.open({ id, title: "Trace Memory", focus: true, closeOnEscape: true, rows: 45, columns: DOCK_COLUMNS });
       return { text };
     } catch (error) {
       return { text: `Trace Memory: ${String(error)}` };
@@ -567,12 +570,11 @@ export const register = (on) => {
     const message = notice ? <Text>{notice}</Text> : null;
     if (screen === "main") {
       const ctx = menu.context;
-      const narrow = paneWidth < 80;
       return <Box flexDirection="column">
         <Text>{menu.header}</Text><Text> </Text>
-        {ctx ? <Box flexDirection={narrow ? "column" : "row"}>
+        {ctx ? <Box flexDirection={ctx.sideBySide ? "row" : "column"}>
           <Box flexDirection="column">{ctx.gridRows.map((row2, i) => <Box flexDirection="row" key={`grid-${i}`}>{row2.map((cell, j) => <Text key={`cell-${i}-${j}`} color={cell.color}>{`${cell.glyph} `}</Text>)}</Box>)}</Box>
-          <Box flexDirection="column" marginLeft={narrow ? 0 : 2}>
+          <Box flexDirection="column" marginLeft={ctx.sideBySide ? 2 : 0}>
             {ctx.headerLines.map((line, i) => <Text key={`heading-${i}`}>{line}</Text>)}
             <Text> </Text><Text>{ctx.legendHeading}</Text>
             {ctx.legend.map((row2, i) => <Text key={`legend-${i}`}><Text color={row2.color}>{row2.glyph}</Text>{" "}<Text bold>{`${row2.label}:`}</Text>{` ${row2.tokensLabel}${row2.suffix} (${row2.percent})`}</Text>)}

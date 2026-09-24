@@ -277,3 +277,13 @@ test("Claude Code context: something injected while Messages is entirely absent 
   expect(section.legend.some(r => MEMORY_LABELS.includes(r.label))).toBe(false);
   expect(section.memoryUnavailable).toBe("Knowledge, Facts, Raw: unavailable");
 });
+
+test("buildCcContextSection: a narrow pane stacks the grid above the legend without padding; a wide one pads it beside the legend", () => {
+  const narrow = buildCcContextSection({ ...CC_BREAKDOWN, terminalWidth: 45 }, CC_MEMORY, NO_SCALING)!;
+  expect(narrow.sideBySide).toBe(false);
+  expect(narrow.gridRows).toHaveLength(5); // Claude Code's own 5x5 grid for a narrow pane and a sub-1M window
+  const wide = buildCcContextSection({ ...CC_BREAKDOWN, terminalWidth: 94 }, CC_MEMORY, NO_SCALING)!;
+  expect(wide.sideBySide).toBe(true);
+  const legendLines = wide.headerLines.length + 2 + wide.legend.length + (wide.memoryUnavailable ? 1 : 0);
+  expect(wide.gridRows).toHaveLength(Math.max(10, legendLines));
+});

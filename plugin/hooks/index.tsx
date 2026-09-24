@@ -13,7 +13,10 @@ let versionError = "";
 let pluginRoot = "";
 let selectedAction = "";
 let selectedSetting: SettingsRowId | undefined;
-let paneWidth = 70;
+// Claude Code docks a plugin pane at the width it requests (a person's drag or settings override it).
+// 96 columns keep /context's full grid beside its legend: 20 cells of 2 columns, a gap and ~46-column lines.
+const DOCK_COLUMNS = 96;
+let paneWidth = DOCK_COLUMNS;
 let runsLimit = 10;
 let activeSession = "";
 const id = "trace-memory-menu";
@@ -81,7 +84,7 @@ export const register = (on: any) => {
       // Classification and display use the same summary's model and category estimates.
       breakdown = loaded.breakdown;
       const text = renderTraceMenuText(renderCurrent());
-      await $.ui.open({ id, title: "Trace Memory", focus: true, closeOnEscape: true, rows: 45 });
+      await $.ui.open({ id, title: "Trace Memory", focus: true, closeOnEscape: true, rows: 45, columns: DOCK_COLUMNS });
       return { text };
     } catch (error) {
       return { text: `Trace Memory: ${String(error)}` };
@@ -139,13 +142,12 @@ export const register = (on: any) => {
     const message = notice ? <Text>{notice}</Text> : null;
     if (screen === "main") {
       const ctx = menu.context;
-      const narrow = paneWidth < 80;
       return <Box flexDirection="column">
         <Text>{menu.header}</Text><Text> </Text>
-        {ctx ? <Box flexDirection={narrow ? "column" : "row"}>
+        {ctx ? <Box flexDirection={ctx.sideBySide ? "row" : "column"}>
           <Box flexDirection="column">{ctx.gridRows.map((row, i) =>
             <Box flexDirection="row" key={`grid-${i}`}>{row.map((cell, j) => <Text key={`cell-${i}-${j}`} color={cell.color}>{`${cell.glyph} `}</Text>)}</Box>)}</Box>
-          <Box flexDirection="column" marginLeft={narrow ? 0 : 2}>
+          <Box flexDirection="column" marginLeft={ctx.sideBySide ? 2 : 0}>
             {ctx.headerLines.map((line, i) => <Text key={`heading-${i}`}>{line}</Text>)}
             <Text> </Text><Text>{ctx.legendHeading}</Text>
             {ctx.legend.map((row, i) => <Text key={`legend-${i}`}><Text color={row.color}>{row.glyph}</Text>{" "}<Text bold>{`${row.label}:`}</Text>{` ${row.tokensLabel}${row.suffix} (${row.percent})`}</Text>)}

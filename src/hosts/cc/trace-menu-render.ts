@@ -109,6 +109,8 @@ export interface CcContextLegendRow { label: string; color: string; glyph: strin
 export interface CcGridCellView { glyph: string; color: string }
 export interface CcContextSection {
   headerLines: string[];
+  /** The grid sits beside the legend; below `CC_NARROW_COLUMNS` it sits above it. */
+  sideBySide: boolean;
   gridRows: CcGridCellView[][];
   legendHeading: string;
   legend: CcContextLegendRow[];
@@ -165,8 +167,11 @@ function buildDisplayCategories(breakdown: CcContextBreakdown, memory: CcMemoryS
  * row count, so every legend line — however many there are — has a row of the grid to sit beside; a
  * short legend leaves the extra grid rows genuinely empty of category data, same as Pi's own
  * `renderContextGrid` (`minRows`, `src/hosts/pi/trace-menu-view.ts`) pads for the identical reason. */
+/** Claude Code's `/context` narrows its grid below this many columns; the legend then goes below it. */
+export const CC_NARROW_COLUMNS = 80;
+
 export function computeCcGrid(categories: DisplayCategory[], window: number, terminalWidth: number | undefined, minRows = 0): CcGridCellView[][] {
-  const narrow = terminalWidth !== undefined && terminalWidth < 80;
+  const narrow = terminalWidth !== undefined && terminalWidth < CC_NARROW_COLUMNS;
   const bigWindow = window >= 1_000_000;
   const columns = narrow ? 5 : (bigWindow ? 20 : 10);
   const rows = bigWindow ? 10 : (narrow ? 5 : 10);
@@ -246,12 +251,14 @@ export function buildCcContextSection(breakdown: CcContextBreakdown | undefined,
   const legendHeading = "Estimated usage by category";
   const memoryUnavailable = effectiveMemory ? undefined : (inconsistent || messagesCategory ? "Knowledge, Facts, Raw: unavailable" : undefined);
 
-  // Requirement 3: legend lines past the grid's own row count stay in the legend column, not shifted
-  // left — padding the grid to the legend's total line count (module doc, mirrors Pi's `minRows`).
+  // Requirement 3: beside the grid, legend lines past the grid's own row count stay in the legend
+  // column — padding the grid to the legend's line count (mirrors Pi's `minRows`). Stacked above the
+  // legend, the grid keeps its own rows.
+  const sideBySide = breakdown.terminalWidth === undefined || breakdown.terminalWidth >= CC_NARROW_COLUMNS;
   const legendLineCount = headerLines.length + 1 /* blank */ + 1 /* heading */ + legend.length + (memoryUnavailable ? 1 : 0);
-  const gridRows = computeCcGrid(displayCategories, breakdown.maxTokens, breakdown.terminalWidth, legendLineCount);
+  const gridRows = computeCcGrid(displayCategories, breakdown.maxTokens, breakdown.terminalWidth, sideBySide ? legendLineCount : 0);
 
-  return { headerLines, gridRows, legendHeading, legend, memoryUnavailable };
+  return { headerLines, sideBySide, gridRows, legendHeading, legend, memoryUnavailable };
 }
 
 /** Text-only fallback returned by the local command when no interactive pane is available. */
