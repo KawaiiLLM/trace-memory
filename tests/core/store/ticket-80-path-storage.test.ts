@@ -74,6 +74,38 @@ test("80: non-descendant head and failed writes cannot change membership or curs
   } finally { store.close(); }
 });
 
+test("80: an empty append cannot publish a head owned by another session", () => {
+  const store = new Store(":memory:");
+  try {
+    const { owner, foreign, add } = fixture(store);
+    const root = add(owner.id, null, "root"), outsider = add(foreign.id, null, "outsider");
+    store.publishSourcePath(owner.id, "empty", [], root.turn.id, "native");
+    const state = store.sourcePathState(owner.id, "empty")!;
+    expect(() => store.appendSourcePath(owner.id, "empty", state, [], outsider.turn.id, "native"))
+      .toThrow(/head/);
+    expect(store.sourcePathState(owner.id, "empty")).toEqual(state);
+    expect(store.db.prepare("SELECT head_turn_id FROM session_lineage_cursors WHERE session_id = ?").get(owner.id))
+      .toEqual({ head_turn_id: root.turn.id });
+  } finally { store.close(); }
+});
+
+test("80: incremental ancestry cannot pass through another session's Turn", () => {
+  const store = new Store(":memory:");
+  try {
+    const { owner, foreign, add } = fixture(store);
+    const root = add(owner.id, null, "root");
+    const outsider = add(foreign.id, root.turn.id, "outsider");
+    const head = add(owner.id, outsider.turn.id, "head");
+    store.publishSourcePath(owner.id, "main", [root.entry.id], root.turn.id, "native");
+    const state = store.sourcePathState(owner.id, "main")!;
+    expect(() => store.publishSourcePath(owner.id, "main", [root.entry.id, head.entry.id], head.turn.id, "native"))
+      .toThrow(/ancestry/);
+    expect(() => store.appendSourcePath(owner.id, "main", state, [head.entry.id], head.turn.id, "native"))
+      .toThrow(/extension/);
+    expect(store.sourcePathState(owner.id, "main")).toEqual(state);
+  } finally { store.close(); }
+});
+
 test("80: old JSON paths migrate atomically with exact order and reopen without replay", () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-80-path-")), file = join(directory, "trace.db");
   try {

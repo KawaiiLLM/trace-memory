@@ -4187,6 +4187,8 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       const state = this.sourcePathState(sessionId, branch);
       if (!state || state.count !== expected.count || state.tailId !== expected.tailId || state.version !== expected.version)
         throw new StaleSourcePathError();
+      if (!this.db.prepare("SELECT 1 FROM turns WHERE id = ? AND session_id = ?").get(headTurnId, sessionId))
+        throw new Error(`current path head T${headTurnId} is not a Turn of session S${sessionId}`);
       if (!branch || !lineage || new Set(newEntryIds).size !== newEntryIds.length || newEntryIds.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error("invalid source path tail");
       const rows = this.db.prepare(`SELECT id, turn_id FROM source_entries NOT INDEXED WHERE id IN
         (SELECT value FROM json_each(?)) AND session_id = ?`).all(JSON.stringify(newEntryIds), sessionId);
@@ -4203,11 +4205,11 @@ ${archivedBody}${evidenceLine}${diffLine}`;
         if (root2 === ancestor) return true;
         const direct2 = this.db.prepare("SELECT parent_turn_id FROM turns WHERE id = ? AND session_id = ?").get(root2, sessionId);
         if (direct2?.parent_turn_id === ancestor) return true;
-        const row = this.db.prepare(`WITH RECURSIVE lineage(id,parent_turn_id,session_id) AS (
-          SELECT id,parent_turn_id,session_id FROM turns WHERE id = ?
-          UNION ALL SELECT t.id,t.parent_turn_id,t.session_id FROM turns t JOIN lineage l
-            ON t.id = l.parent_turn_id WHERE l.id != ?)
-          SELECT 1 FROM lineage WHERE id = ? AND session_id = ? LIMIT 1`).get(root2, ancestor, ancestor, sessionId);
+        const row = this.db.prepare(`WITH RECURSIVE lineage(id,parent_turn_id) AS (
+          SELECT id,parent_turn_id FROM turns WHERE id = ? AND session_id = ?
+          UNION SELECT t.id,t.parent_turn_id FROM turns t JOIN lineage l
+            ON t.id = l.parent_turn_id WHERE l.id != ? AND t.session_id = ?)
+          SELECT 1 FROM lineage WHERE id = ? LIMIT 1`).get(root2, sessionId, ancestor, sessionId, ancestor);
         return !!row;
       };
       let previousTurn = oldTail?.turn_id ?? null;
