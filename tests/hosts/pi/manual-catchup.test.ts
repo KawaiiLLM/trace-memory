@@ -72,7 +72,7 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
     expect(h.memory.store.consolidationBatch(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
     await command(h, "");
-    expect(h.notices.at(-1)).toContain(`Catchup: completed (${notingRuns.reduce((n, r) => n + JSON.parse(r.response!).entryAudit.entries.length, 0)} entries noted, 0 facts integrated; below-threshold work may remain pending)`);
+    expect(h.notices.at(-1)?.replace(/\s+/g, " ")).toContain(`Catchup: completed (${notingRuns.reduce((n, r) => n + JSON.parse(r.response!).entryAudit.entries.length, 0)} entries noted, 0 facts integrated; below-threshold work may remain pending)`);
   } finally { await h.dispose(); }
 }, 30000);
 
@@ -301,7 +301,7 @@ test("18b 2026-09-08: a failure after one successful Noting batch preserves it a
     expect(notingRuns.some(r => r.outcome === "failure")).toBe(true);
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0); // the rest stays pending
     await command(h, "");
-    expect(h.notices.at(-1)).toContain("3 failures");
+    expect(h.notices.at(-1)).toContain("noting failed 3 times");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");
     expect(h.notices.at(-1)).toContain("boom");
   } finally { await h.dispose(); }
