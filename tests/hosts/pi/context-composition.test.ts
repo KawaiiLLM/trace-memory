@@ -126,7 +126,7 @@ test("rendering preserves Memory metadata as ordered, separately colored, flat t
   expect(parts.map(part => plain.indexOf(`${label[part]} `))).toEqual([...parts.map(part => plain.indexOf(`${label[part]} `))].sort((a, b) => a - b));
   for (const part of parts) expect(plain.match(new RegExp(`${label[part]} `, "g"))).toHaveLength(1);
   expect(rendered).toContain("<knowledge>"); expect(rendered).toContain("<facts>"); expect(rendered).toContain("<raw>");
-  expect(rendered).toContain("<other>"); // honest Unclassified detail is neutral
+  expect(rendered).toContain("<unclassified>"); // muted shade of the memory family (ticket 82 colour ruling), not the neutral "other"
   expect(plain).not.toMatch(/Memory ~/); // no parent aggregate row
   expect(plain).not.toMatch(/Memory bar|No retained memory/);
 });

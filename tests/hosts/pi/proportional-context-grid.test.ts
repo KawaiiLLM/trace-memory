@@ -68,8 +68,11 @@ test("Memory leaf categories and tiny Skills get separate remainder glyphs witho
   expect(rendered).toContain("<facts>");
   expect(rendered).toContain("<raw>");
   // No Memory parent row and no indentation: Knowledge/Facts/Raw and the "Memory, unclassified"
-  // remainder are top-level rows, in the same shape as System/Tools (maintainer 2026-09-24).
-  expect(rendered).toMatch(/<other>[⛁⛀] Memory, unclassified ~1 \(1\.0% local\)<\/other>/);
+  // remainder are top-level rows, in the same shape as System/Tools (maintainer 2026-09-24). Colour
+  // ruling (2026-09-24): unclassified paints with the muted memory family, not the neutral "other".
+  // ("unclassified" is a longer tag than "other" was, so the wrap point moved; normalize whitespace
+  // rather than pin an exact line break.)
+  expect(rendered.replace(/\s+/g, " ")).toMatch(/<unclassified>[⛁⛀] Memory, unclassified ~1 \(1\.0% local\)<\/unclassified>/);
   expect(rendered).not.toMatch(/Memory ~60\b/);
   expect(rendered).not.toContain("<memory>");
 });
@@ -147,16 +150,18 @@ test("positive SDK with zero local total uses explicit neutral unclassified occu
   expect(text.replace(/\s+/g, " ")).toContain("Unclassified occupied (SDK, not a local estimate) ~1");
 });
 
-test("Memory Unclassified remains a neutral leaf with its exact proportional allocation", () => {
+test("Memory Unclassified remains a leaf with its exact proportional allocation, painted in the muted memory shade", () => {
   const amounts = blank(); amounts.Memory = 10; amounts.System = 5;
   const value = composition(amounts, 11, 100, { Knowledge: 1, Facts: 2, Raw: 3, Unclassified: 4 }, false);
   const projected = projectComposition(value)!;
   expect(projected.segments.map(segment => [segment.name, segment.fullCells, segment.partial])).toEqual([
     ["System", 7, true], ["Knowledge", 1, true], ["Facts", 2, true], ["Raw", 4, true], ["Unclassified", 5, true],
   ]);
-  expect(projected.segments.find(segment => segment.name === "Unclassified")).toMatchObject({ estimate: 4, color: "other" });
+  // Colour ruling (2026-09-24): Unclassified paints with the muted memory family ("unclassified"),
+  // not the neutral "other" — same family as Knowledge/Facts/Raw, not the same role as "Other".
+  expect(projected.segments.find(segment => segment.name === "Unclassified")).toMatchObject({ estimate: 4, color: "unclassified" });
   const text = compositionMap(value, "test/model", 40, ((color: string, rendered: string) => `<${color}>${rendered}</${color}>`) as never).join("\n");
-  expect(text).toContain("<other>");
+  expect(text).toContain("<unclassified>");
   expect(text).toContain("Memory, unclassified ~4");
   expect(text).toContain("Local estimates (partial) total ~15");
 });
