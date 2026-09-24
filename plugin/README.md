@@ -108,6 +108,8 @@ Stop older Pi and CC executors before opening the shared database with this upgr
 
 The old-default budget policy (4k/10k/1k) becomes 4k/15k/1k; custom policies are kept and reported. Legacy processing records are translated only for current visible versions into their current pools. This translation does not mark every version handled or change knowledge validity. Validate the upgrade on a consistent database copy before deployment. Store sets and verifies WAL on file-database open before its schema transaction; new databases therefore use WAL automatically. For this existing shared production database, stop all executors, take and validate a consistent backup, then convert manually and verify the mode before any updated worker starts. The deployment order controls that first conversion; it does not disable Store's normal WAL initialization. Code installation and production cutover are separate operations.
 
+Ticket 86 also clears old Dreamer failure counters once in the normal-open upgrade transaction. They used reservation IDs instead of stable pending-revision IDs. The reset and SQLite application-version marker commit together; later opens retain new counters. N/C counters, all execution/run audit and on/off state are preserved. No counter reset runs on every open.
+
 ## Direct CLI
 
 Run the same operator commands from a trusted shell or Claude Code's `!` shell escape with the native session ID:

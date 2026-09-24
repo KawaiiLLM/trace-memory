@@ -133,6 +133,8 @@ Run `npm test` for the Vitest suite, `npm run typecheck` for TypeScript, and
 
 A logical task is `(target session, phase, oldest selected backlog item)`, independent of its run ids. Noting uses the first frozen source entry, Consolidation the first selected fact, and Dreamer the first pending revision, not the range ID. A Dreamer range is terminal after one run; a catchup retry admits a new range and preserves prior committed work.
 
+Ticket 86's one-time normal-open upgrade clears only legacy Dreamer failure counters, whose heads used range IDs and could collide with revision IDs. SQLite `user_version = 1` records completion in the same transaction; reopening preserves new counters. N/C counters, run/execution audit and enrollment are unchanged. Historical execution heads retain their original meaning; they are not rewritten.
+
 `Store.beginExecution(task, previous?)` creates a durable execution or continues the same unsettled Noting or Consolidation execution after fork refusal. Each attempt run carries `RunInput.executionId` and is linked through `execution_runs`. Attempt audit outcomes do not settle executions.
 
 `Store.settleExecution(id, outcome, runId, reason?)` records one authoritative terminal outcome and updates the logical task's streak in the same transaction. Successful Noting and Consolidation commits settle inside their business transactions. Dreamer processing records skipped frozen versions and own commits, then settles that one execution. Failure and cancellation retain the same partial processing semantics: untouched versions remain pending, and partial writes survive.
