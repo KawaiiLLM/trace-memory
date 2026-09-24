@@ -5562,19 +5562,17 @@ function measureRetainedMemoryText(rendered, original, offset, length) {
 ${FACTS_TITLE}
 `, episodic) : -1;
   const rawStart = episodic >= 0 ? original.indexOf(`
-
 ${RAW_TITLE}
 `, episodic) : -1;
   if (episodicEnd >= 0 && original.indexOf("\n<episodic>\n", episodic + 1) < 0 && original.indexOf("\n</episodic>", episodicEnd + 1) < 0 && (factsStart < 0 || original.indexOf(`
 ${FACTS_TITLE}
 `, factsStart + 1) < 0) && (rawStart < 0 || original.indexOf(`
-
 ${RAW_TITLE}
 `, rawStart + 1) < 0)) {
     if (factsStart >= 0 && factsStart < episodicEnd && (rawStart < 0 || factsStart < rawStart))
       regions.push({ start: factsStart + 1, end: rawStart >= 0 ? rawStart : episodicEnd, key: "facts" });
     if (rawStart >= 0 && rawStart < episodicEnd)
-      regions.push({ start: rawStart + 2, end: episodicEnd, key: "raw" });
+      regions.push({ start: rawStart + 1, end: episodicEnd, key: "raw" });
   }
   const intervals = regions.map((region) => ({ start: Math.max(offset, offset + region.start), end: Math.min(end, offset + region.end), key: region.key })).filter((region) => region.start < region.end).sort((a, b) => a.start - b.start);
   let cursor = 0;

@@ -16,6 +16,8 @@ import { nativeSessionDirectory, nativeSessionPath, publishNativeSession } from 
 import * as nativeSession from "../../src/hosts/cc/native-session.ts";
 import { readCompleteTranscript, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 import { ccLastCompactionNotice } from "../../src/hosts/cc/menu-notices.ts";
+import { ccContextEvidence } from "../../src/hosts/cc/menu-context.ts";
+import { tokens } from "../../src/core/render/tokens.ts";
 
 // 63: `/clear` binds the cleared-into native session as another lineage of the SAME core session as
 // the one it was cleared from — Claude Code's equivalent of Pi's in-place compaction.
@@ -89,6 +91,40 @@ test("SessionStart clear with a bound parent links the same core session and inj
     // The injected text is exactly the compaction Turn's stored material (29a: content and receipt are one carrier).
     expect(output!.hookSpecificOutput.additionalContext).toContain(turn.assistantText!);
   } finally { store.close(); }
+});
+
+test("82: real clear output is measured only under the child identity, before and after its first source", async () => {
+  const f = fixture("menu-context");
+  const parent = await startParent(f);
+  const output = await clearInto(f);
+  const child = readBinding(f.config, f.childId)!;
+  expect(child.coreSessionId).toBe(parent.coreSessionId);
+  expect(child.clearedFrom!.compactionTurnId).toBeGreaterThan(0);
+  const original = output!.hookSpecificOutput.additionalContext;
+  const rendered = `<system-reminder>\nSessionStart hook additional context: ${original}\n</system-reminder>`;
+  const records: CcNativeRecord[] = [
+    { type: "attachment", uuid: "clear-success", parentUuid: null, sessionId: f.childId,
+      attachment: { type: "hook_success", hookEvent: "SessionStart", stdout: JSON.stringify(output) } },
+    { type: "attachment", uuid: "clear-carrier", parentUuid: "clear-success", sessionId: f.childId,
+      attachment: { type: "hook_additional_context", hookEvent: "SessionStart", content: [original] },
+      rendered: [{ content: rendered }] },
+  ];
+  const snapshot = { session: f.childId, messages: [{ role: "user" as const, content: [{ type: "text", text: rendered }] }] };
+  const verify = () => {
+    f.writeChild(records);
+    const current = readCompleteTranscript(f.childTranscriptPath);
+    const result = ccContextEvidence(current.records, child, f.config.dbPath, snapshot);
+    expect(result.presence).toBe("confirmed");
+    expect(result.memory!.raw).toBeGreaterThan(0);
+    expect(result.estimatedMessagesTokens).toBe(tokens(rendered));
+    expect(Object.values(result.memory!).reduce((a, b) => a + b, 0)).toBe(tokens(rendered));
+    expect(ccContextEvidence(current.records, parent, f.config.dbPath, snapshot).presence).toBe("unavailable");
+    expect(ccContextEvidence(current.records, child, f.config.dbPath, { ...snapshot, session: f.parentId }).presence).toBe("unavailable");
+  };
+  verify(); // The first /trace after clear need not have an ordinary source message yet.
+  records.push({ type: "user", uuid: "child-user", parentUuid: "clear-carrier", sessionId: f.childId,
+    timestamp: "2026-01-01T00:02:00.000Z", ...sdkPrompt("child-prompt"), message: { role: "user", content: "next" } });
+  verify();
 });
 
 test("a cleared child's compaction-only selected path publishes its inherited Raw and head", async () => {
