@@ -303,7 +303,7 @@ test("actual TUI command opens custom panel, reflow never scans, and Escape writ
 });
 
 test("Current session is inert with eligible native Dreamer work; the next turn still executes it", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000 });
+  const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000, "dreaming.triggerTokens": 1 });
   try {
     await h.turn();
     const store = h.memory.store;

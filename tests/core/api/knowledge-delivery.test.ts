@@ -225,7 +225,7 @@ test("34c a visible applicable Knowledge view at or above the configured 20,000 
 });
 
 test("68 untouched frozen and post-freeze versions remain pending without affecting delivery eligibility", async () => {
-  const f = fixture();
+  const f = fixture({ dreaming: { triggerTokens: 1 } });
   const processed = f.create("processed", [f.facts[1]!.id]);
   const pool = `project:${f.session.projectId}`;
   f.memory.setKnowledgeBudget("project", f.memory.store.pendingPoolWeight(pool, f.target) * 2);

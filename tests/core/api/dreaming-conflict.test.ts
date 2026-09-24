@@ -13,7 +13,7 @@ function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "dreamer-seat-")); dirs.push(dir);
   const db = join(dir, "memory.sqlite");
   let agent: (task: DreamingAgentInput) => Promise<RunAgentResult> = async () => success;
-  const memory = TraceMemory(db, raw => agent(raw as DreamingAgentInput)); memories.push(memory);
+  const memory = TraceMemory(db, raw => agent(raw as DreamingAgentInput), { dreaming: { triggerTokens: 1 } }); memories.push(memory);
   const store = memory.store, project = store.createProject({ name: "shared", declaredBy: "mark" });
   const session = store.createSession({ host: "offline", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
@@ -30,7 +30,8 @@ function fixture() {
   const item = created.committed[0]!, pool = `project:${project.id}`;
   store.setKnowledgeBudget("project", Math.max(1, store.pendingPoolWeight(pool, target) * 2));
 
-  const other = TraceMemory(db, async () => { throw new Error("occupied seat must prevent provider launch"); }); memories.push(other);
+  const other = TraceMemory(db, async () => { throw new Error("occupied seat must prevent provider launch"); },
+    { dreaming: { triggerTokens: 1 } }); memories.push(other);
   const otherSession = other.store.createSession({ host: "offline", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const otherTurn = other.store.appendTurn({ sessionId: otherSession.id, kind: "turn", userPrompt: "other", startedAt: "now" });
   const otherEntry = other.appendEntry({ sessionId: otherSession.id, turnId: otherTurn.id, nativeLineage: "fixture", nativeId: "other", role: "user", text: "other", raw: "other", calls: [] });
