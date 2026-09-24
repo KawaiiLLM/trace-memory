@@ -47,12 +47,12 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
     const core = synced.coreSessionId;
     const at = new Date().toISOString();
 
-    const linkChild = async (clearedFrom: NonNullable<CcSessionBinding["clearedFrom"]>): Promise<void> => {
+    const linkChild = async (clearedFrom: NonNullable<CcSessionBinding["clearedFrom"]>, lastCompactionNotice: string | null): Promise<void> => {
       await withCcBindingLock(config, childId, locked => locked.update(current => {
         if (current) {
           if (current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path)
             throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
-          return renewNativeBinding(current, nativeProcess);
+          return { ...renewNativeBinding(current, nativeProcess), lastCompactionNotice };
         }
         return {
           version: 1, nativeSessionId: childId, transcriptPath: input.transcript_path, dbPath: config.dbPath,
@@ -62,7 +62,7 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
           branch: `cc:${childId}`, selectedLeafUuid: null, executor: null, lastClose: null,
           ...(nativeProcess ? { nativeProcess } : {}),
           ...(synced.cwd !== undefined ? { cwd: synced.cwd } : {}),
-          coreHost: coreHostOf(synced), clearedFrom,
+          coreHost: coreHostOf(synced), clearedFrom, lastCompactionNotice,
         };
       }));
       await updateBinding(config, synced.nativeSessionId, current => current && current.transcriptPath === synced.transcriptPath
@@ -72,7 +72,7 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
     if (!memory.store.enabled(core)) {
       // Disabled: nothing to compact or inject, but the child still shares the same core session.
       const inheritedEntryIds = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
-      await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: null, inheritedEntryIds });
+      await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: null, inheritedEntryIds }, null);
       return { handled: true, output: null };
     }
 
@@ -88,11 +88,6 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
     if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation unexpectedly: ${compacted.reason}`);
     const injection: Injection = { text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, composition: compacted.composition };
 
-    const turn = memory.store.appendTurn({ sessionId: core, parentTurnId: headTurnId, kind: "compaction",
-      assistantText: injection.text, startedAt: at, endedAt: at });
-    const inheritedEntryIds = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
-    await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: turn.id, inheritedEntryIds });
-
     // 73 "Truncation is announced in the foreground": a top-level `systemMessage` beside
     // `hookSpecificOutput.additionalContext` — Claude Code 2.1.280 shows it to the user (capped at
     // 4,000 characters; this stays well under it).
@@ -102,11 +97,16 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
       ...(omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : []),
       ...(omitted.facts ? [`${omitted.facts.count} unconsolidated ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []),
     ].join(" and ")}; they remain pending for Noting and Consolidation.` : undefined;
-    if (!injection.text) return { handled: true, output: systemMessage
-      ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }, systemMessage } : null };
     const visibleBinding: CcVisibleBinding = { db: databaseIdentity(config.dbPath), nativeSession: childId, coreSession: core };
-    return { handled: true, output: { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },
-      ...(systemMessage ? { systemMessage } : {}) } };
+    const output: CcHookOutput | null = injection.text
+      ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },
+        ...(systemMessage ? { systemMessage } : {}) }
+      : systemMessage ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }, systemMessage } : null;
+    const turn = memory.store.appendTurn({ sessionId: core, parentTurnId: headTurnId, kind: "compaction",
+      assistantText: injection.text, startedAt: at, endedAt: at });
+    const inheritedEntryIds = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
+    await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: turn.id, inheritedEntryIds }, systemMessage ?? null);
+    return { handled: true, output };
   } finally {
     // Mirrors ccSessionStartInjection: this Hook owns no executor or claim, so its Store closes directly.
     memory.store.close();

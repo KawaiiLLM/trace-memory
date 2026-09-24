@@ -14,8 +14,7 @@ import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { nativeSessionDirectory, nativeSessionPath, publishNativeSession } from "../../src/hosts/cc/native-session.ts";
 import * as nativeSession from "../../src/hosts/cc/native-session.ts";
-import { readCompleteTranscript, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
-import { ccLastCompactionNotice } from "../../src/hosts/cc/menu-notices.ts";
+import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 import { ccContextEvidence } from "../../src/hosts/cc/menu-context.ts";
 import { tokens } from "../../src/core/render/tokens.ts";
 
@@ -112,14 +111,13 @@ test("82: real clear output is measured only under the child identity, before an
   const snapshot = { session: f.childId, messages: [{ role: "user" as const, content: [{ type: "text", text: rendered }] }] };
   const verify = () => {
     f.writeChild(records);
-    const current = readCompleteTranscript(f.childTranscriptPath);
-    const result = ccContextEvidence(current.records, child, f.config.dbPath, snapshot);
+    const result = ccContextEvidence(child, f.config.dbPath, snapshot);
     expect(result.presence).toBe("confirmed");
     expect(result.memory!.raw).toBeGreaterThan(0);
     expect(result.estimatedMessagesTokens).toBe(tokens(rendered));
     expect(Object.values(result.memory!).reduce((a, b) => a + b, 0)).toBe(tokens(rendered));
-    expect(ccContextEvidence(current.records, parent, f.config.dbPath, snapshot).presence).toBe("unavailable");
-    expect(ccContextEvidence(current.records, child, f.config.dbPath, { ...snapshot, session: f.parentId }).presence).toBe("unavailable");
+    expect(ccContextEvidence(parent, f.config.dbPath, snapshot).presence).toBe("unavailable");
+    expect(ccContextEvidence(child, f.config.dbPath, { ...snapshot, session: f.parentId }).presence).toBe("unavailable");
   };
   verify(); // The first /trace after clear need not have an ordinary source message yet.
   records.push({ type: "user", uuid: "child-user", parentUuid: "clear-carrier", sessionId: f.childId,
@@ -175,19 +173,17 @@ test("73: clear truncates the Raw window rather than falling back, and warns in 
   expect(output!.systemMessage).toContain("pending Raw");
   expect(output!.systemMessage).toContain("pending for Noting and Consolidation");
   expect(output!.systemMessage!.length).toBeLessThan(4_000);
-  // Native 2.1.280 records the Hook stdout and then the displayed warning on its child
-  // hook_system_message; additional_context may come after both, not adjacent to success.
-  const base = { type: "attachment", sessionId: f.childId };
-  f.writeChild([
-    { ...base, uuid: "success", parentUuid: null, attachment: { type: "hook_success", hookEvent: "SessionStart",
-      hookName: "SessionStart:clear", toolUseID: "clear-hook", command: 'node "${CLAUDE_PLUGIN_ROOT}/dist/cc.cjs" hook --config "${CLAUDE_PLUGIN_ROOT}/cc.config.json"',
-      exitCode: 0, stdout: JSON.stringify(output) } },
-    { ...base, uuid: "notice", parentUuid: "success", attachment: { type: "hook_system_message", hookEvent: "SessionStart",
-      hookName: "SessionStart:clear", toolUseID: "clear-hook", content: output!.systemMessage } },
-    { ...base, uuid: "injection", parentUuid: "notice", attachment: { type: "hook_additional_context",
-      content: [output!.hookSpecificOutput.additionalContext] } },
-  ]);
-  expect(ccLastCompactionNotice(readCompleteTranscript(f.childTranscriptPath), child)).toBe(output!.systemMessage);
+  // The child binding records exactly the warning issued by the same successful clear Hook.
+  expect(child.lastCompactionNotice).toBe(output!.systemMessage);
+  writeFileSync(f.childTranscriptPath, "{malformed native transcript}\n");
+  await expect(handleCcHook(f.config, { hook_event_name: "SessionStart", source: "compact", session_id: f.childId,
+    transcript_path: f.childTranscriptPath })).rejects.toThrow();
+  expect(readBinding(f.config, f.childId)!.lastCompactionNotice).toBe(output!.systemMessage);
+  f.writeChild([{ uuid: "child-compact", parentUuid: null, type: "system", subtype: "compact_boundary",
+    timestamp: "2026-01-01T00:10:00.000Z" }]);
+  await handleCcHook(f.config, { hook_event_name: "SessionStart", source: "compact", session_id: f.childId,
+    transcript_path: f.childTranscriptPath });
+  expect(readBinding(f.config, f.childId)!.lastCompactionNotice).toBeNull();
 });
 
 test("clear without CLAUDE_PID, without a native-session record, or with an unbound parent is an ordinary new session", async () => {

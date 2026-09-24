@@ -47,6 +47,8 @@ export interface CcSessionBinding {
   /** Native SessionStart owner; fences a delayed SessionEnd from a previous native process. */
   nativeProcess?: CcProcessIdentity;
   lastClose: { at: string; reason: string; confirmed: boolean; diagnostic?: string } | null;
+  /** Exact foreground truncation warning emitted by the last successful SessionStart; null if clean. */
+  lastCompactionNotice?: string | null;
   /** 62: the SessionStart hook's cwd, read once when the core session is allocated. Absent on
    * bindings written before 62 or by a hook without cwd: such a session keeps its own project. */
   cwd?: string;
@@ -117,6 +119,7 @@ function parseBinding(value: unknown): CcSessionBinding {
       typeof binding.branch !== "string" || !binding.branch ||
       (binding.nativeProcess !== undefined && (!Number.isSafeInteger(binding.nativeProcess?.pid) || binding.nativeProcess.pid <= 0 ||
         typeof binding.nativeProcess.startedAt !== "string" || !binding.nativeProcess.startedAt)) ||
+      (binding.lastCompactionNotice !== undefined && binding.lastCompactionNotice !== null && typeof binding.lastCompactionNotice !== "string") ||
       (binding.cwd !== undefined && (typeof binding.cwd !== "string" || !isAbsolute(binding.cwd))) ||
       (binding.coreHost !== undefined && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:"))) ||
       (binding.clearedFrom !== undefined && !validClearedFrom(binding.clearedFrom)) ||
