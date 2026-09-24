@@ -2,7 +2,7 @@ import { existsSync, readdirSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, updateBindingInStoreTransaction, validateNativeSessionId, type CcExecutorBinding, type CcHookInput,
+import { bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, updateBindingInStoreTransaction, validateNativeSessionId, type CcHookInput,
   type CcSessionBinding } from "./binding.ts";
 import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
 import type { CcWorkerJournal } from "./worker.ts";
@@ -27,9 +27,6 @@ const localMidnight = (now = new Date()) => new Date(now.getFullYear(), now.getM
 
 export interface CcSessionEndResult { confirmed: boolean; reason: string; diagnostic?: string }
 
-const sameExecutor = (left: CcExecutorBinding | null, right: CcExecutorBinding | null): boolean =>
-  left === null || right === null ? left === right :
-    left.executorId === right.executorId && left.pid === right.pid && left.token === right.token && left.socketPath === right.socketPath;
 const processLiveness = (identity: { pid: number }): "alive" | "dead" | "unknown" => {
   try { process.kill(identity.pid, 0); return "alive"; }
   catch (error) {
@@ -87,7 +84,6 @@ export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: Cc
       if (!current || current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path ||
           current.coreSessionId !== binding.coreSessionId || !matchesNative(current))
         throw new Error("CC binding changed during SessionEnd close");
-      if (!sameExecutor(current.executor, binding.executor)) throw new Error("CC executor identity changed during SessionEnd close");
       if (store && current.coreSessionId !== null) {
         const session = store.getSession(current.coreSessionId);
         if (!session || session.host !== coreHostOf(current)) throw new Error("bound core session identity changed during SessionEnd close");

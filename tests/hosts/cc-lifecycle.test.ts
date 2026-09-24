@@ -692,7 +692,7 @@ test("prompt_input_exit closes from the imported eligible projection with stale 
   try { expect(retried.getSession(imported.coreSessionId!)!.closedAt).toBe(closedAt); } finally { retried.close(); }
 });
 
-test("86: SessionEnd refuses an executor identity change while waiting for the binding lock", async () => {
+test.each([false, true])("86: SessionEnd permits an executor replacement but rejects a native owner change under lock (native changed=%s)", async nativeChanged => {
   const f = fixture("session-end-owner-change"); f.write();
   const started = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
@@ -705,16 +705,23 @@ test("86: SessionEnd refuses an executor identity change while waiting for the b
   const hold = new Promise<void>(resolve => { release = resolve; });
   const changing = withCcBindingLock(f.config, f.nativeSessionId, async lock => {
     entered(); await hold;
-    lock.update(current => ({ ...current!, executor: replacement }));
+    lock.update(current => ({ ...current!, executor: replacement,
+      nativeProcess: nativeChanged ? { ...current!.nativeProcess!, startedAt: "replacement-native-start" } : current!.nativeProcess }));
   });
   await ready;
   const closing = recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath, reason: "other" });
   release(); await changing;
-  expect(await closing).toMatchObject({ confirmed: false, diagnostic: "CC executor identity changed during SessionEnd close" });
-  expect(readBinding(f.config, f.nativeSessionId)!.executor).toEqual(replacement);
+  expect(await closing).toMatchObject(nativeChanged
+    ? { confirmed: false, diagnostic: "CC binding changed during SessionEnd close" }
+    : { confirmed: true });
+  expect(readBinding(f.config, f.nativeSessionId)!.executor).toEqual(nativeChanged ? replacement : null);
   const store = new Store(f.config.dbPath);
-  try { expect(store.getSession(imported.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
+  try {
+    const closedAt = store.getSession(imported.coreSessionId!)!.closedAt;
+    if (nativeChanged) expect(closedAt).toBeNull();
+    else expect(closedAt).not.toBeNull();
+  } finally { store.close(); }
 });
 
 test.each(["prompt_input_exit", "other", "logout"])("86: SessionEnd %s closes with a live executor and an unimported tail", async reason => {

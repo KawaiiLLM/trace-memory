@@ -8780,6 +8780,12 @@ async function updateBindingInStoreTransaction(config3, nativeSessionId, store, 
     }
   }, timeoutMs, signal);
 }
+function renewNativeBinding(current, nativeProcess) {
+  const sameOwner = nativeProcess ? current.nativeProcess?.pid === nativeProcess.pid && current.nativeProcess.startedAt === nativeProcess.startedAt : current.nativeProcess === void 0;
+  if (!current.lastClose && sameOwner) return current;
+  const { nativeProcess: previous, ...rest } = current;
+  return { ...rest, ...nativeProcess ? { nativeProcess } : {}, lastClose: null };
+}
 async function recordSessionStart(config3, input, nativeCreatedAt2) {
   if (input.hook_event_name !== "SessionStart") throw new Error("expected a SessionStart Hook input");
   const nativeSessionId = validateNativeSessionId(input.session_id);
@@ -8790,8 +8796,7 @@ async function recordSessionStart(config3, input, nativeCreatedAt2) {
     if (current) {
       if (current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
         throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
-      if (!current.lastClose && (!nativeProcess || current.nativeProcess?.pid === nativeProcess.pid && current.nativeProcess.startedAt === nativeProcess.startedAt)) return current;
-      return { ...current, ...nativeProcess ? { nativeProcess } : {}, lastClose: null };
+      return renewNativeBinding(current, nativeProcess);
     }
     (0, import_node_fs3.mkdirSync)((0, import_node_path4.dirname)(config3.dbPath), { recursive: true });
     return {
@@ -40379,37 +40384,38 @@ function removeCcStatus(stateDir, nativeSessionId) {
 // src/hosts/cc/lifecycle.ts
 var wait2 = (milliseconds) => new Promise((resolve4) => setTimeout(resolve4, milliseconds));
 var localMidnight = (now = /* @__PURE__ */ new Date()) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-var sameExecutor = (left, right) => left === null || right === null ? left === right : left.executorId === right.executorId && left.pid === right.pid && left.token === right.token && left.socketPath === right.socketPath;
-var executorLiveness2 = (executor) => {
+var processLiveness = (identity) => {
   try {
-    process.kill(executor.pid, 0);
+    process.kill(identity.pid, 0);
     return "alive";
   } catch (error3) {
     if (error3.code === "ESRCH") return "dead";
     return "unknown";
   }
 };
-function siblingLineages(config3, coreSessionId, excludeNativeSessionId) {
-  let files;
-  try {
-    files = (0, import_node_fs8.readdirSync)((0, import_node_path8.dirname)(bindingPath(config3, excludeNativeSessionId)));
-  } catch {
-    return [];
-  }
-  const siblings = [];
-  for (const file2 of files) {
+function hasLiveSibling(config3, coreSessionId, excludeNativeSessionId) {
+  for (const file2 of (0, import_node_fs8.readdirSync)((0, import_node_path8.dirname)(bindingPath(config3, excludeNativeSessionId)))) {
     if (!file2.endsWith(".json")) continue;
     const nativeSessionId = file2.slice(0, -".json".length);
     if (nativeSessionId === excludeNativeSessionId) continue;
-    let binding;
-    try {
-      binding = readBinding(config3, nativeSessionId);
-    } catch {
-      continue;
-    }
-    if (binding && binding.coreSessionId === coreSessionId) siblings.push(binding);
+    const sibling = readBinding(config3, nativeSessionId);
+    if (!sibling || sibling.coreSessionId !== coreSessionId || sibling.lastClose?.confirmed) continue;
+    const native = sibling.nativeProcess;
+    if (!native) throw new Error(`CC sibling ${nativeSessionId} has no native process identity`);
+    const liveness = processLiveness(native);
+    if (liveness === "dead") continue;
+    if (liveness === "unknown") throw new Error(`CC sibling ${nativeSessionId} native process liveness is unknown`);
+    const startedAt = processStartedAt(native.pid);
+    if (startedAt === null) throw new Error(`CC sibling ${nativeSessionId} native process identity is unavailable`);
+    if (startedAt !== native.startedAt) continue;
+    const assigned = assignedNativeSession(config3, [{ pid: native.pid, startedAt }]);
+    if (!assigned) throw new Error(`CC sibling ${nativeSessionId} has no native session assignment`);
+    if (assigned.nativeSessionId !== nativeSessionId) continue;
+    if (assigned.transcriptPath !== sibling.transcriptPath)
+      throw new Error(`CC sibling ${nativeSessionId} disagrees with its native session assignment`);
+    return true;
   }
-  return siblings;
+  return false;
 }
 async function recordCcSessionEnd(config3, input) {
   if (input.hook_event_name !== "SessionEnd") throw new Error("expected a SessionEnd Hook input");
@@ -40429,11 +40435,10 @@ async function recordCcSessionEnd(config3, input) {
     const close = (current) => {
       if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path || current.coreSessionId !== binding.coreSessionId || !matchesNative(current))
         throw new Error("CC binding changed during SessionEnd close");
-      if (!sameExecutor(current.executor, binding.executor)) throw new Error("CC executor identity changed during SessionEnd close");
       if (store && current.coreSessionId !== null) {
         const session = store.getSession(current.coreSessionId);
         if (!session || session.host !== coreHostOf(current)) throw new Error("bound core session identity changed during SessionEnd close");
-        const liveSibling = siblingLineages(config3, current.coreSessionId, nativeSessionId).some((sibling) => sibling.executor && executorLiveness2(sibling.executor) !== "dead");
+        const liveSibling = hasLiveSibling(config3, current.coreSessionId, nativeSessionId);
         if (current.executor) store.releaseExecutor(current.executor.executorId);
         if (session.closedAt === null && !liveSibling) store.closeSession(current.coreSessionId);
       }
@@ -41261,7 +41266,7 @@ async function ccHandleClear(config3, input) {
         if (current) {
           if (current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
             throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
-          return current;
+          return renewNativeBinding(current, nativeProcess);
         }
         return {
           version: 1,
