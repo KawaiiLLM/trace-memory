@@ -91,8 +91,18 @@ test("store: one recorded project joins, none or several allocate the own projec
   expect(s.getSession(a.id)!.directory).toBe(f.root);
   expect(directoryAllocation(s, f.worktree, own, f.options)).toEqual({ projectId: a.projectId, projectDeclaration: "marker", directory: f.root });
   // A second project in the same directory (a session marked elsewhere) makes it ambiguous.
-  const b = session(s, "pi:b", { projectId: a.projectId, projectDeclaration: "marker", directory: f.root });
-  const other = s.declareProject(b.id, "other", "mark");
+  const b = session(s, "pi:b", { projectId: a.projectId, projectDeclaration: "marker", directory: f.root, enrollmentChoice: true });
+  const turn = s.appendTurn({ sessionId: b.id, kind: "turn", userPrompt: "source", startedAt: at });
+  const entry = s.appendSourceEntry({ sessionId: b.id, turnId: turn.id, nativeLineage: "b", nativeId: "user",
+    role: "user", text: "source", raw: "{}", calls: [] });
+  s.selectSourcePath(b.id, "main", [entry.id]);
+  const noted = s.commitNotingRun({ run: { kind: "manual", sessionId: b.id, createdAt: at }, facts: [], entryIds: [entry.id] });
+  expect(noted.ok).toBe(true);
+  const path = { sessionId: b.id, branch: "main", headTurnId: turn.id };
+  const other = s.declareProject(b.id, "other", "mark", { path, atTrigger: phase => phase === "noting"
+    ? s.pendingEntryIds(b.id, path.branch, path.headTurnId).length > 0
+    : phase === "consolidation" ? s.consolidationBatch(b.id, path.branch, path.headTurnId).length > 0
+      : s.duePools(path, 1).length > 0 });
   expect(new Set(s.directoryProjects(f.root))).toEqual(new Set([a.projectId, other.id]));
   const third = directoryAllocation(s, f.repo, own, f.options);
   expect(third).toMatchObject({ projectDeclaration: "undeclared", directory: f.root });
@@ -128,6 +138,7 @@ test("Pi: the first session in a repository owns its project and records the dir
   h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "worktree-session"; h.ctx.cwd = f.worktree;
   await h.emit("session_start"); await h.turn();
   const second = h.memory.store.getSession(2)!;
+  const worktreeEntries = [...h.entries];
   expect(second).toMatchObject({ projectId: first.projectId, directory: f.root });
   expect(h.memory.store.projectDeclaration(2)).toBe("marker");
   expect(h.entries.at(-1).data.projectId).toBe(first.projectId);
@@ -139,7 +150,8 @@ test("Pi: the first session in a repository owns its project and records the dir
   expect(h.memory.store.projectDeclaration(3)).toBe("undeclared");
   expect(h.memory.store.getProject(third.projectId)!.name).toBe("pi:home-session");
   // `project <name>` still wins, and a resume never re-applies the directory to the moved session.
-  h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "worktree-session"; h.ctx.cwd = f.worktree;
+  h.entries.splice(0, h.entries.length, ...worktreeEntries);
+  h.ctx.sessionManager.getSessionId = () => "worktree-session"; h.ctx.cwd = f.worktree;
   await h.emit("session_start");
   await h.commands.get("trace").handler("project elsewhere", h.ctx);
   const moved = h.memory.store.getSession(2)!;

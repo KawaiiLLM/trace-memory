@@ -100,12 +100,12 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     // assistant usage yet on a first round — with the headroom left over.
     expect(estimateContextTokens(conversationOf(h.requests[0]).messages as never).tokens + CONTEXT_HEADROOM).toBeLessThanOrEqual(19000);
     const pending = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
-    // An allowance of 1,000 tokens: under the fixed instruction and tool cost, so nothing is admitted.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 11000 };
+    // The 7,000-token input allowance fits fixed instructions/tools but not those plus the oldest view.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 17000 };
     h.persist(reply("next completion")); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(2); // the refused admission adds none
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).slice(0, pending.length)).toEqual(pending);
-    expect(h.notices.join("\n")).toContain("Noting capacity: oldest entry cannot fit");
+    expect(h.notices.join("\n")).toContain("Noting capacity: selected evidence cannot fit the model context");
   } finally { await h.dispose(); }
 });
 
@@ -220,8 +220,8 @@ test.each(["user", "toolResult"])("17b 2026-09-08: stale branch capture falls ba
 
 // 27b moved the second half of this case — a fork whose inherited prefix does not fit — to
 // `fallback.test.ts`: that batch is no longer left pending but re-admitted once as a subagent.
-// A batch over `noting.batchTokens` still waits, because no model capacity decided it.
-test("17b 2026-09-08: an oldest entry blocked by the batch budget stays pending", async () => {
+// 86 makes the batch cap soft for the oldest entry; model input capacity remains hard.
+test("86: the oldest entry crosses the soft batch budget", async () => {
   // 30: one entry view is capped at 2,000 tokens, so the ceiling this entry must exceed is smaller,
   // and the trigger is lowered with it — 2,000 tokens of pending Raw no longer reach the default one.
   const h = host({ "noting.batchTokens": 1000, "noting.triggerTokens": 30 });
@@ -229,10 +229,13 @@ test("17b 2026-09-08: an oldest entry blocked by the batch budget stays pending"
     h.persist({ role: "user", content: "word ".repeat(20000), timestamp: 1 }); h.persist(reply("tail"));
     await h.emit("session_start");
     h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toEqual([]);
-    expect(h.memory.store.listRuns(1)).toEqual([]);
-    expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.nativeId)).toEqual(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).map(e => e.nativeId));
-    expect(h.notices.join("\n")).toContain("oldest entry exceeds noting.batchTokens");
+    const all = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
+    const runs = h.memory.store.listRuns(1).filter(run => run.kind === "noting");
+    expect(runs).toHaveLength(1);
+    expect(h.requests).toHaveLength(2);
+    expect(JSON.parse(runs[0]!.response!).entryAudit.entries.map((entry: { id: number }) => entry.id)).toEqual([all[0]!.id]);
+    expect(tokens(renderEntry(all[0]!, h.memory.config.render).content)).toBeGreaterThan(1000);
+    expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.id)).toEqual(all.slice(1).map(e => e.id));
   } finally { await h.dispose(); }
 });
 

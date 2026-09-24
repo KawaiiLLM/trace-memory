@@ -118,7 +118,7 @@ test("80: failed C does not relay another connection's empty-Noting signal into 
   expect(f.memory.dream).not.toHaveBeenCalled();
 });
 
-test("80: failed D still checkpoints partial committed work", async () => {
+test("86: failed D keeps partial work but checks C/D only at the next ordinary opportunity", async () => {
   const f = fixture();
   f.setDDue(true);
   f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] });
@@ -127,8 +127,11 @@ test("80: failed D still checkpoints partial committed work", async () => {
   f.setCDue(true); f.setDDue(false);
   f.releases.get("dreaming")!("failure");
   await tick(); await tick();
-  expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
+  expect(f.memory.consolidate).not.toHaveBeenCalled();
   expect(f.memory.dream).toHaveBeenCalledTimes(1);
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [2] });
+  await tick();
+  expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
 });
 
 test("72: attach, retarget and enabling memory re-check C and D at the next opportunity", async () => {

@@ -41,11 +41,13 @@ test.each(["budget", "new knowledge"] as const)("64c: publication reprices %s wi
       if (change === "budget") {
         h.memory.setKnowledgeBudget("project", 7_000);
       } else {
-        // A new same-pool item arrives during preparation; it is optional, even before processing.
-        const create = s.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: "external" }, operations: [{
-          op: "create", handle: "$external", author: "consolidation", text: "external ".repeat(20_000), category: "constraint",
-          scope: "project", supports: [1], topics: [], reason: "external concurrent create", createdAt: "external" }] });
-        expect(create.ok).toBe(true);
+        // New same-pool versions arrive during preparation. Each worker-written item stays below
+        // the 1,000-token limit, while their aggregate exceeds the shared delivery allowance.
+        const create = s.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: "external" },
+          operations: Array.from({ length: 40 }, (_, index) => ({ op: "create" as const, handle: `$external${index}`,
+            author: "consolidation", text: `external-${index} `.repeat(300), category: "constraint" as const,
+            scope: "project" as const, supports: [1], topics: [], reason: "external concurrent create", createdAt: "external" })) });
+        expect(create.ok, JSON.stringify(create)).toBe(true);
       }
     });
     const result = await before(h);
@@ -53,8 +55,11 @@ test.each(["budget", "new knowledge"] as const)("64c: publication reprices %s wi
     expect(!!result?.compaction).toBe(true); // pending knowledge never makes the custom material incomplete
     if (change === "budget") expect(result.compaction.summary).toContain("rule ".repeat(6_000));
     else {
-      expect(result.compaction.summary).toContain("expand: K2");
-      expect(result.compaction.summary).not.toContain("external ".repeat(20_000));
+      expect(result.compaction.summary).toContain("external-39 ".repeat(10)); // newer optional Knowledge is kept
+      expect(result.compaction.summary).toMatch(/omitted \d+ constraint knowledge; expand: K\d+/);
+      expect(result.compaction.summary).toContain("more up to K1"); // omission range includes K2
+      expect(result.compaction.summary).not.toContain("[K2@2]");
+      expect(result.compaction.summary).not.toContain("external-0 ".repeat(300));
     }
     expect(s.listRuns(1).filter(run => run.kind === "dreaming")).toEqual([]);
     expect(h.requests).toHaveLength(0);

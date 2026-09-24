@@ -380,7 +380,9 @@ test("17c 2026-09-08: disabled executors cannot acquire or commit borrowed work;
       const value = transaction(fn);
       // A second connection changes attribution immediately after the freeze transaction ends.
       if (!moved && value && typeof value === "object" && "entries" in value) {
-        moved = true; h.memory.declareProject(t.sessionId, "Moved project");
+        // The borrowed target owns a live N claim and cannot declare. The idle executor can move;
+        // its project-scoped borrowed worker must then fail its commit against the new attribution.
+        moved = true; h.memory.declareProject(1, "Moved project", "mark", { sessionId: 1, branch: "main", headTurnId: 1 });
       }
       return value;
     });
@@ -407,7 +409,7 @@ test("17c 2026-09-08: failed own capacity admission leaves the slot free for a s
     await tick(h);
     expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
     expect(h.conversations[0]!.messages[0]!.content).toContain(`S${t.sessionId}/T${t.headTurnId}`);
-    expect(h.notices.join(" ")).toContain("oldest entry cannot fit");
+    expect(h.notices.join(" ")).toContain("Noting capacity: selected evidence cannot fit the model context");
     expect(h.memory.store.getClaim(1, "noting")).toBeNull();
     expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
     expect(h.memory.pendingEntries(t.sessionId, t.branch, t.headTurnId)).toEqual([]);
