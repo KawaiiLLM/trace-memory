@@ -106,6 +106,34 @@ test("80: incremental ancestry cannot pass through another session's Turn", () =
   } finally { store.close(); }
 });
 
+test("80: whole-path membership is one ordered array with header and position checks", () => {
+  const store = new Store(":memory:");
+  try {
+    const { owner, add } = fixture(store);
+    const a = add(owner.id, null, "a"), b = add(owner.id, a.turn.id, "b"), c = add(owner.id, b.turn.id, "c");
+    const ids = [c.entry.id, a.entry.id, b.entry.id];
+    store.selectSourcePath(owner.id, "main", ids);
+    const reads = vi.spyOn(store.db, "prepare");
+    expect(store.selectedSourceEntryIds(owner.id, "main")).toEqual(ids);
+    expect(reads.mock.calls).toHaveLength(2);
+    const sql = reads.mock.calls.map(([statement]) => statement).join("\n");
+    expect(sql).toContain("json_group_array(entry_id ORDER BY position)");
+    expect(sql).not.toContain("JOIN source_entries");
+    reads.mockRestore();
+    store.db.prepare("UPDATE source_paths SET length = 4 WHERE session_id = ?").run(owner.id);
+    expect(() => store.selectedSourceEntryIds(owner.id, "main")).toThrow("stored source path is malformed");
+    store.db.prepare("UPDATE source_paths SET length = 3, tail_entry_id = ? WHERE session_id = ?").run(c.entry.id, owner.id);
+    expect(() => store.selectedSourceEntryIds(owner.id, "main")).toThrow("stored source path is malformed");
+    store.db.prepare("UPDATE source_paths SET tail_entry_id = ? WHERE session_id = ?").run(b.entry.id, owner.id);
+    store.db.prepare("UPDATE source_path_entries SET position = 5 WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ?) AND position = 2")
+      .run(owner.id);
+    expect(() => store.selectedSourceEntryIds(owner.id, "main")).toThrow("stored source path is malformed");
+    store.selectSourcePath(owner.id, "empty", []);
+    expect(store.selectedSourceEntryIds(owner.id, "empty")).toEqual([]);
+    expect(store.selectedSourceEntryIds(owner.id, "absent")).toBeNull();
+  } finally { store.close(); }
+});
+
 test("80: old JSON paths migrate atomically with exact order and reopen without replay", () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-80-path-")), file = join(directory, "trace.db");
   try {

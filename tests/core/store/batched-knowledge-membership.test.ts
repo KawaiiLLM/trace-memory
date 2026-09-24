@@ -172,6 +172,16 @@ test("no-cursor owners remain globally applicable and recorded corruption fails 
     expect(() => store.currentKnowledge(readPath)).toThrow(`session S${owner.id} has a corrupted recorded foreground`);
     store.db.prepare("UPDATE source_path_entries SET entry_id = ? WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = 'main')").run(node.entry.id, owner.id);
     store.db.prepare("UPDATE source_paths SET tail_entry_id = ? WHERE session_id = ? AND branch = 'main'").run(node.entry.id, owner.id);
+    // A valid entry from another session passes the ordered-array read, then fails the one
+    // authoritative ownership check in graph membership preparation.
+    store.db.prepare("UPDATE source_path_entries SET entry_id = ? WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = 'main')")
+      .run(readNode.entry.id, owner.id);
+    store.db.prepare("UPDATE source_paths SET tail_entry_id = ? WHERE session_id = ? AND branch = 'main'").run(readNode.entry.id, owner.id);
+    expect(store.selectedSourceEntryIds(owner.id, "main")).toEqual([readNode.entry.id]);
+    expect(() => store.currentKnowledge(readPath)).toThrow(`session S${owner.id} has a corrupted recorded foreground`);
+    store.db.prepare("UPDATE source_path_entries SET entry_id = ? WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = 'main')")
+      .run(node.entry.id, owner.id);
+    store.db.prepare("UPDATE source_paths SET tail_entry_id = ? WHERE session_id = ? AND branch = 'main'").run(node.entry.id, owner.id);
     store.db.prepare("UPDATE turns SET parent_turn_id = id WHERE id = ?").run(node.turn.id);
     expect(() => store.currentKnowledge(readPath)).toThrow(`session S${owner.id} has a corrupted recorded foreground`);
   } finally { store.close(); }

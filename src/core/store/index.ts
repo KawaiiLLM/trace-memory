@@ -3846,13 +3846,18 @@ export class Store {
   selectedSourceEntryIds(sessionId: number, branch: string): number[] | null {
     const state = this.sourcePathState(sessionId, branch);
     if (!state) return null;
-    const rows = this.db.prepare(`SELECT j.position, j.entry_id, e.id AS owned_id FROM source_paths p
-      JOIN source_path_entries j ON j.path_id = p.id
-      LEFT JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
-      WHERE p.session_id = ? AND p.branch = ? ORDER BY j.position`).all(sessionId, branch) as
-      { position: number; entry_id: number; owned_id: number | null }[];
-    this.validatePathMembers(state, rows);
-    return rows.map(row => row.entry_id);
+    // Return one ordered value rather than a JS row per member. Graph preparation batches the
+    // ownership check; trigger admission and path writers validate their own selected entries.
+    const row = this.db.prepare(`SELECT json_group_array(entry_id ORDER BY position) AS ids,
+      MAX(position) AS last_position FROM source_path_entries
+      WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = ?)`)
+      .get(sessionId, branch) as { ids: string; last_position: number | null };
+    const ids = JSON.parse(row.ids) as number[];
+    // Nonnegative, unique integer positions and this maximum also exclude a gap in the sequence.
+    if (ids.length !== state.count || (ids.at(-1) ?? null) !== state.tailId ||
+        row.last_position !== (ids.length ? ids.length - 1 : null))
+      throw new Error("stored source path is malformed");
+    return ids;
   }
   /** Full readers validate the rows they already need, not a second membership enumeration. */
   private validatePathMembers(state: SourcePathState,
