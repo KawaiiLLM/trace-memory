@@ -20,25 +20,31 @@
 // to the default text colour rather than throwing).
 //
 // The only change from the real command (ruling B): Knowledge/Facts/Raw/unclassified-memory amounts
-// are spliced out of the SDK's "Messages" row. Since this preview has no live trace-memory database to
-// read them from, it uses the same fixture figures `TRACE_MENU_FIXTURE.context` carries for them — the
-// delegation report says so explicitly: those three (four) numbers are the only non-live figures on
-// this screen; everything else (model, grid, category tokens, Pending/trigger, Spend) is either the
-// live `$.session.usage` reading of the fenced sandbox session or the shared model's own fixture.
+// are spliced out of the SDK's "Messages" row. Requirement 1 (2026-09-24): these are now real numbers,
+// not a fixture. A classic SessionStart hook (`cc-trace-menu-session-start-inject.ts`, run three times
+// by `hooks/hooks.json`) injects the three blocks from `cc-trace-menu-preview-memory-blocks.ts` as
+// `additionalContext`, and this module measures the exact same texts with the project's own `tokens()`
+// estimator (`src/core/render/index.ts`) — the only number on this screen this module computes itself,
+// everything else (model, grid, category tokens, Pending/trigger, Spend) is either the live
+// `$.session.usage` reading of the fenced sandbox session or the shared model's own fixture.
 import {
   TRACE_MENU_FIXTURE, TRACE_MENU_FIXTURE_WITH_NOTICE, TRACE_SETTINGS_FIXTURE_CC,
 } from "../src/hosts/trace-menu.ts";
 import { renderTraceMenu, renderTraceSettings, type CcContextBreakdown, type CcMemorySplit, type RenderedMenu } from "../src/hosts/cc/trace-menu-render.ts";
+// Imported from `tokens.ts` directly, not `render/index.ts`: the latter also imports `../store/index.ts`
+// (`node:sqlite` / `node:crypto`), which this `platform: "neutral"` esbuild bundle cannot resolve.
+import { tokens } from "../src/core/render/tokens.ts";
+import { FACTS_BLOCK, KNOWLEDGE_BLOCK, RAW_BLOCK } from "./cc-trace-menu-preview-memory-blocks.ts";
 
 const PINNED_VERSION = "2.1.280";
 let traceScreen: "main" | "settings" = "main";
-// Ruling B: the delegation report's fixture figures for the three (four) rows this preview has no
-// live database to read (see module doc). Scaled down from the shared model's fixture (17,300 /
-// 9,900 / 10,000 / 200, same proportions) so the split stays under this fenced session's small real
-// "Messages" total (a handful of exchanged turns, not a real conversation) — otherwise the grid-half
-// of the colour ruling (2026-09-24) would recolour every Messages cell and the sample could never
-// show a remaining Messages-coloured cell alongside the memory ones.
-const MEMORY: CcMemorySplit = { knowledge: 120, facts: 70, raw: 50, unclassified: 10 };
+// Requirement 1: measured, not fixture — the exact texts the SessionStart hook injected (see module
+// doc), sized with this project's own `tokens()` so a fresh session's Messages total (which Claude
+// Code counts the injection into) stays comfortably above the sum, leaving a remaining Messages-coloured
+// cell alongside the recoloured memory ones (colour ruling, 2026-09-24). No text is injected as
+// "unclassified" memory, so that row stays at zero — showing the "rows never vanish, zero when nothing
+// injected" rule (requirement 2) for that one row even on the live sample.
+const MEMORY: CcMemorySplit = { knowledge: tokens(KNOWLEDGE_BLOCK), facts: tokens(FACTS_BLOCK), raw: tokens(RAW_BLOCK), unclassified: 0 };
 // Cached once per pane focus, since `ui.render` cannot itself await `$.session.usage`.
 let breakdown: CcContextBreakdown | undefined;
 // The real terminal width isn't exposed to this preview (no confirmed `$` accessor for it, see the
