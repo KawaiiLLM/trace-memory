@@ -44,13 +44,15 @@ test("Consolidation framing over the episodic budget reduces the batch oldest-fi
   } finally { f.m.close(); }
 });
 
-test("review 2026-09-08: a Noting batch that cannot fit the episodic budget stays pending with a capacity error instead of running over it", async () => {
+test("review 2026-09-08: the oldest Noting entry dispatches despite exceeding its soft episodic ceiling", async () => {
   const f = seeded({ render: { episodicBlockTokens: 1 } });
   try {
-    await expect(f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" })).rejects.toThrow(/Noting capacity/);
-    expect(f.calls).toEqual([]);
-    expect(f.m.store.listRuns(f.s.id)).toEqual([]);
-    expect(hydrate(f.m.pendingEntries(f.s.id, "main", f.t.id), f.m.store).length).toBeGreaterThan(0);
+    const pending = hydrate(f.m.pendingEntries(f.s.id, "main", f.t.id), f.m.store);
+    expect(pending.length).toBeGreaterThan(0);
+    expect((await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" })).outcome).toBe("success");
+    expect(f.calls).toHaveLength(1);
+    expect((f.calls[0] as NotingAgentInput).entryIds).toContain(pending[0]!.id);
+    expect(f.m.store.listRuns(f.s.id)).toHaveLength(1);
   } finally { f.m.close(); }
 });
 

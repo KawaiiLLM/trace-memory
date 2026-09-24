@@ -331,7 +331,7 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   const { s, t, read } = seeded();
   read("K1@1");
   const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: "K1@1",
-    topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.", text: "The project uses pnpm " + "word ".repeat(6_000),
+    topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.", text: "The project uses pnpm " + "word ".repeat(900),
     category: "constraint", scope: "project", supports: ["F1"] }, "K1@1"))[0]!;
   const value = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!;
   const bare = { ...value, revision: { ...value.revision, topics: [] } };

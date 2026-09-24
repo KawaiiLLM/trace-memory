@@ -68,7 +68,7 @@ test.each(["noting", "consolidation"] as const)("%s admission rechecks the proje
     expect((await run(other, active.sessionId)).outcome).toBe("dropped");
     expect((await run(same)).outcome).toBe("dropped");
     expect(memory.store.closedTasks(phase, active.sessionId)).toContainEqual(same);
-    memory.declareProject(active.sessionId, "moved between discovery and admission");
+    memory.declareProject(active.sessionId, "moved between discovery and admission", "mark", active);
     expect((await run(same, active.sessionId)).outcome).toBe("dropped");
     expect(dispatched).toBe(0);
     memory.configure({ closedSessionScope: "global" });
@@ -125,7 +125,7 @@ test("a project-scoped borrowed writer cannot commit after its executor moves to
   });
   try {
     const pending = memory.noting({ ...same, borrowed: true, executorSessionId: active.sessionId });
-    memory.declareProject(active.sessionId, "different");
+    memory.declareProject(active.sessionId, "different", "mark", active);
     const receipt = String(await input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "observation", actor: "user", text: "late write", source: [`T${same.headTurnId}#user`] }] }));
     expect(receipt).toContain("borrowed work");
     finish();

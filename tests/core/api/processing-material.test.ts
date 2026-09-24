@@ -31,7 +31,7 @@ test("76: omitted knowledge grants no handle; an explicit complete read authoriz
   const f = fixture(input => {
     expect(input.readKnowledgeCommits).toEqual([]);
     expect(input.text).not.toContain("word ".repeat(400));
-    const batch = { operations: [{ op: "update", id: "K1@1", ...f.content }], skipped: [] };
+    const batch = { operations: [{ op: "update", id: "K1@1", ...f.content, text: "Updated concise rule after reading the complete historical body" }], skipped: [] };
     expect(input.tools[3]!.execute(batch)).toContain("was not read as visible and active");
     expect(completeRead(input.tools[0]!, "K1@1")).toContain("[K1@1]");
     expect(input.tools[3]!.execute(batch)).toContain('"committed"');

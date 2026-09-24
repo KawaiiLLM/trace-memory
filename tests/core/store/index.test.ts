@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
+import { declarationContext } from "../project-declaration-context.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -477,7 +478,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       });
     expect(admitted.result.outcome).toBe("success");
     const privateCommit = store.currentCommit(id, store.knowledgePath(peer.id))[0]!.id;
-    const target = store.declareProject(peer.id, "destination", "mark");
+    const target = store.declareProject(peer.id, "destination", "mark", declarationContext(store, { sessionId: peer.id, branch: "main", headTurnId: turn.id }));
     const survivor = store.createProject({ name: "survivor", declaredBy: "mark" });
     store.mergeProject(target.id, survivor.id);
     store.close(); store = new Store(dbPath);

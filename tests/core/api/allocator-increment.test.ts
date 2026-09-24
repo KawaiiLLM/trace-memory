@@ -12,16 +12,20 @@ afterEach(() => memory.close());
 
 /** `noted`/`consolidated` control whether the fact/entry this fixture creates is processed (never
  * borrows the shared allowance, 73) or still pending (borrows). */
-function fixture(extra = { knowledge: 0, facts: 0, raw: 0 }, consolidated = true, noted = false) {
+function fixture(extra = { knowledge: 0, facts: 0, raw: 0 }, consolidated = true, noted = false, historicalManual = false) {
   const p = memory.store.createProject({ name: "project", declaredBy: "marker" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: p.id });
   const t = memory.store.appendTurn({ sessionId: s.id, userPrompt: "word ".repeat(extra.raw) + "source", assistantText: null, kind: "turn", startedAt: time });
   const entries = memory.store.sourcePath(s.id, "main", t.id);
-  const f = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time }, entryIds: noted ? entries.map(e => e.id) : [],
-    facts: [{ turnId: t.id, text: "word ".repeat(extra.facts) + "required fact", category: "observation", actor: "user", source: [`T${t.id}#user`], entryIds: entries.map(e => e.id), createdAt: time }] });
+  const factText = "word ".repeat(extra.facts) + "required fact";
+  const knowledgeText = "word ".repeat(extra.knowledge) + "current complete knowledge";
+  // Explicit historical/manual fixture mode for one whole giant item at an exact read-only
+  // compaction boundary. The default N/C fixture never silently changes authority by item size.
+  const f = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: historicalManual ? "manual" : "noting", createdAt: time }, entryIds: noted ? entries.map(e => e.id) : [],
+    facts: [{ turnId: t.id, text: factText, category: "observation", actor: "user", source: [`T${t.id}#user`], entryIds: entries.map(e => e.id), createdAt: time }] });
   if (!f.ok) throw new Error(JSON.stringify(f));
-  const k = memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "consolidation", createdAt: time }, consolidated: consolidated ? [f.facts[0]!.id] : [],
-    operations: [{ op: "create", topics: [], handle: "$k", author: "test", text: "word ".repeat(extra.knowledge) + "current complete knowledge", category: "constraint", scope: "project", supports: [f.facts[0]!.id], reason: "initial", createdAt: time }] });
+  const k = memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: historicalManual ? "manual" : "consolidation", createdAt: time }, consolidated: consolidated ? [f.facts[0]!.id] : [],
+    operations: [{ op: "create", topics: [], handle: "$k", author: "test", text: knowledgeText, category: "constraint", scope: "project", supports: [f.facts[0]!.id], reason: "initial", createdAt: time }] });
   if (!k.ok) throw new Error(JSON.stringify(k));
   return { s, t, f: f.facts[0]!, entries };
 }
@@ -42,7 +46,7 @@ function exactFixture(target: { knowledge: number; facts: number; raw: number })
   setKnowledgeInjection(memory, 100_000);
   setSharedAllowance(memory, 100_000);
   const result = fixture({ knowledge: target.knowledge - floor.knowledge,
-    facts: target.facts - floor.facts, raw: target.raw - floor.raw }, false);
+    facts: target.facts - floor.facts, raw: target.raw - floor.raw }, false, false, true);
   expect(charged(memory.compact(result.s.id, "main", result.t.id))).toMatchObject(target);
   setKnowledgeInjection(memory, 20_000);
   setSharedAllowance(memory, 20_000);
@@ -54,7 +58,7 @@ function positiveExcess(value: { knowledge: number; facts: number; raw: number }
 }
 
 test("73: current Knowledge is optional regardless of Dreamer processing state", () => {
-  const { s, t } = fixture({ knowledge: 6_000, facts: 0, raw: 0 });
+  const { s, t } = fixture({ knowledge: 6_000, facts: 0, raw: 0 }, true, false, true);
   setKnowledgeInjection(memory, 1);
   setSharedAllowance(memory, 0);
   const result = memory.compact(s.id, "main", t.id);
@@ -119,7 +123,7 @@ test("73: an unconsolidated fact may still borrow the allowance when the Knowled
   setKnowledgeInjection(memory, 0);
   const raw = memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeId: "history", nativeLineage: "fixture",
     role: "assistant", text: "word ".repeat(2_000), raw: "", calls: [] });
-  const history = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time }, entryIds: [],
+  const history = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "manual", createdAt: time }, entryIds: [],
     facts: [{ turnId: t.id, text: "word ".repeat(2_000) + "historical fact", category: "observation", actor: "user", source: [`T${t.id}#user`], createdAt: time }] });
   if (!history.ok) throw new Error(JSON.stringify(history));
   const result = memory.compact(s.id, "main", t.id);
@@ -141,7 +145,7 @@ test("73: processed Raw and processed facts each fill only their own base remain
   // 8,000 tokens, leaving only 1,000 leftover, short of the processed items''' 9,000.
   const newest = memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeId: "newest", nativeLineage: "fixture",
     role: "assistant", text: "word ".repeat(8_000), raw: "", calls: [] });
-  expect(memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
+  expect(memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "manual", createdAt: time },
     facts: [{ turnId: t.id, text: "word ".repeat(8_000) + "NEWEST FACT", category: "observation", actor: "user", source: [`T${t.id}#user`], createdAt: time }] }).ok).toBe(true);
   const result = memory.compact(s.id, "main", t.id), windows = charged(result);
   expect("native" in result ? [] : result.supplied.entries.map(e => e.id)).toContain(newest.id);
@@ -190,7 +194,7 @@ test("32e coverage filtering precedes fact prefix budgeting and retained fact ID
   const { s, t, entries } = fixture(undefined, true, true);
   const history = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: time }, entryIds: entries.map(e => e.id), facts: [
     { turnId: t.id, text: "older unknown binding", category: "observation", actor: "user", source: [`T${t.id}#user`], createdAt: time },
-    { turnId: t.id, text: "newest covered " + "word ".repeat(3_000), category: "observation", actor: "user", source: [`T${t.id}#user`], entryIds: entries.map(e => e.id), createdAt: time },
+    { turnId: t.id, text: "newest covered " + "word ".repeat(850), category: "observation", actor: "user", source: [`T${t.id}#user`], entryIds: entries.map(e => e.id), createdAt: time },
   ] });
   if (!history.ok) throw new Error(JSON.stringify(history));
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: time }, operations: [], consolidated: history.facts.map(f => f.id) });

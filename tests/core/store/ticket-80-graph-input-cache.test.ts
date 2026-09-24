@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
+import { declarationContext } from "../project-declaration-context.ts";
 
 const time = "2026-09-24T00:00:00Z";
 const stores: Store[] = [], dirs: string[] = [];
@@ -245,7 +246,7 @@ test("80: cross-connection project reassignment (Pi's scenario) invalidates the 
   const signalBefore = reader.progressSignal(a.id);
   reader.knowledgePools(aPath); // warms A's own memo too
 
-  writer.declareProject(b.id, "elsewhere", "mark"); // B moves to another project, through the writer connection
+  writer.declareProject(b.id, "elsewhere", "mark", declarationContext(writer, bPath)); // B moves through the writer connection
   expect(reader.progressSignal(a.id)).not.toBe(signalBefore); // ruling B: A's signal follows another session's reassignment
   const afterKnowledge = reader.currentKnowledge(aPath);
   expect(afterKnowledge).toEqual([]); // the reused footer/knowledge answer no longer shows B's knowledge

@@ -35,8 +35,8 @@ function noting(sessionId: number, turnId: number, text = fixture.base, branch =
   return result;
 }
 function knowledge(sessionId: number, factId: number, category: "constraint" | "open" | "dispute" | "goal" | "mechanism" | "term" | "reference" = "constraint",
-  scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time, topics: string[] = []) {
-  const result = memory.store.commitConsolidationRun({ run: { sessionId, branch: "main", kind: "consolidation", createdAt: time },
+  scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time, topics: string[] = [], historicalManual = false) {
+  const result = memory.store.commitConsolidationRun({ run: { sessionId, branch: "main", kind: historicalManual ? "manual" : "consolidation", createdAt: time },
     operations: [{ op: "create", topics, reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
     consolidated: memory.store.getSession(sessionId)!.projectId === memory.store.getSession(memory.store.getTurn(memory.store.getFact(factId)!.turnId)!.sessionId)!.projectId ? [factId] : [] });
   if (!result.ok) throw new Error(JSON.stringify(result));
@@ -99,7 +99,8 @@ test("visibility includes global, own project and own session only, excluding in
 test("64c category display and commit recency retain whole newer items; lines are never escaped", () => {
   const { s, f } = populated();
   const ids = ["reference", "term", "mechanism", "goal", "dispute", "open"].map((c) => knowledge(s.id, f.id, c as "goal"));
-  const earlier = knowledge(s.id, f.id, "constraint", "project", "<&> " + "word ".repeat(6_000), "2020");
+  // The renderer must also handle a large single body manually stored before any worker runs.
+  const earlier = knowledge(s.id, f.id, "constraint", "project", "<&> " + "word ".repeat(6_000), "2020", [], true);
   const all = memory.inject(s.id);
   expect(all.indexOf(`[K${earlier}@`)).toBeGreaterThan(all.indexOf("[K1@")); // older timestamp, newer commit
   // Injected lines are trace lines byte for byte (ruling 15:14); tags only delimit blocks.
@@ -124,7 +125,7 @@ test("64c category display and commit recency retain whole newer items; lines ar
 
 test("64c compaction is identical across scheduling records and large changed Knowledge is optional", () => {
   const s = session(), t = turn(s.id), f = noting(s.id, t.id).facts[0]!;
-  const id = knowledge(s.id, f.id, "constraint", "project", "large knowledge ".repeat(2_000));
+  const id = knowledge(s.id, f.id, "constraint", "project", "large knowledge ".repeat(2_000), time, [], true);
   setWindows(5_000, 10_000, 10_000);
   const before = memory.compact(s.id, "main", t.id);
   expect("native" in before).toBe(false);
@@ -601,7 +602,7 @@ test("project mark merges an undeclared own project, relabels facts and knowledg
   memory.declareProject(s.id, "ignored marker", "marker");
   expect(memory.store.getSession(s.id)!.projectId).toBe(project.id);
   expect(memory.store.findProjectByName("ignored marker")).toBeNull();
-  memory.declareProject(s.id, "next");
+  memory.declareProject(s.id, "next", "mark", selected);
   expect(memory.store.getSession(peer.id)!.projectId).toBe(project.id);
   expect(memory.store.getProject(project.id)!.mergedInto).toBeNull();
   expect(memory.inject(s.id)).toContain(`[K${own}@${own}]`);
@@ -772,7 +773,8 @@ test("73: 18k knowledge, 14k facts and 6k Raw fit one shared allowance without a
   const s = session(), t = turn(s.id, "head");
   const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
   consolidate(s.id, [seed.id]);
-  for (let i = 0; i < 9; i++) knowledge(s.id, seed.id, "constraint", "project", `K${i} ` + "word ".repeat(1_950), `202${i}`);
+  for (let i = 0; i < 9; i++) for (let part = 0; part < 2; part++)
+    knowledge(s.id, seed.id, "constraint", "project", `K${i} part ${part} ` + "word ".repeat(970), `202${i}`);
   const facts = pendingFacts(s.id, t.id, [...Array(14)].map((_, i) => `FACT_${i} ` + "word ".repeat(990)));
   for (let i = 0; i < 3; i++) entry(s.id, t.id, `raw${i}`, `RAW_${i} ` + "word ".repeat(1_940));
   const result = memory.compact(s.id, "main", t.id);
@@ -798,7 +800,8 @@ test("73: knowledge borrows the shared allowance first, even when it leaves pend
   consolidate(s.id, [seed.id]);
   // A knowledge corpus far past its own window (borrows and still overflows), 7k of pending facts
   // (fits its own base) and enough pending Raw that its base alone cannot hold it.
-  for (let i = 0; i < 20; i++) knowledge(s.id, seed.id, "constraint", "project", `K${i} ` + "word ".repeat(1_950), `20${10 + i}`);
+  for (let i = 0; i < 20; i++) for (let part = 0; part < 2; part++)
+    knowledge(s.id, seed.id, "constraint", "project", `K${i} part ${part} ` + "word ".repeat(970), `20${10 + i}`);
   const facts = pendingFacts(s.id, t.id, [...Array(7)].map((_, i) => `FACT_${i} ` + "word ".repeat(990)));
   for (let i = 0; i < 6; i++) entry(s.id, t.id, `raw${i}`, `RAW_${i} ` + "word ".repeat(1_940));
   const result = memory.compact(s.id, "main", t.id);

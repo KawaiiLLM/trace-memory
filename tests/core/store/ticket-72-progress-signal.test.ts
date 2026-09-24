@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Store } from "../../../src/core/store/index.ts";
+import { declarationContext } from "../project-declaration-context.ts";
 
 const time = "2026-09-23T00:00:00Z";
 const stores: Store[] = [], dirs: string[] = [];
@@ -251,7 +252,7 @@ test("80: another session's project reassignment changes the signal, even though
   const b = seeded(store); // a distinct session, initially in its own project
   const before = store.progressSignal(a.sessionId);
   const untouched = store.getSession(a.sessionId)!.projectId;
-  store.declareProject(b.sessionId, "elsewhere", "mark");
+  store.declareProject(b.sessionId, "elsewhere", "mark", declarationContext(store, { sessionId: b.sessionId, branch: "main", headTurnId: b.turnId }));
   expect(store.progressSignal(a.sessionId)).not.toBe(before);
   expect(store.getSession(a.sessionId)!.projectId).toBe(untouched); // A's own assignment never moved
 });

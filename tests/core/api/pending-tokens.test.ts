@@ -67,7 +67,7 @@ test("Dreaming projection follows the selected head and current project, not dat
     const small = projectTokens(targetA), large = projectTokens(targetB);
     expect(large).toBeGreaterThan(small);
     expect(projectTokens(reader)).toBe(small);
-    s.declareProject(session.id, "B", "mark");
+    memory.declareProject(session.id, "B", "mark", reader);
     expect(projectTokens(reader)).toBe(large);
     const sibling = s.appendTurn({ sessionId: targetB.sessionId, kind: "turn", userPrompt: "unrelated sibling", startedAt: "now" });
     s.selectSourcePath(targetB.sessionId, "sibling", []);

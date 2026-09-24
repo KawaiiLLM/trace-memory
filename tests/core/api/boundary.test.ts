@@ -310,7 +310,7 @@ test("19b 2026-09-08 gate 4: an oldest entry that does not fit the supplied budg
   const before = hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store);
   runAgent = async () => { throw new Error("no model call may happen"); };
   await expect(memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "fork",
-    capacity: { inputTokens: forkOverhead(50), prefixTokens: 50 } })).rejects.toThrow("oldest entry cannot fit");
+    capacity: { inputTokens: forkOverhead(50), prefixTokens: 50 } })).rejects.toThrow(/Noting capacity: selected evidence cannot fit the model context/);
   expect(calls).toEqual([]);
   expect(memory.store.listRuns(sessionId)).toEqual([]);
   expect(hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store)).toEqual(before);

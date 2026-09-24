@@ -362,11 +362,11 @@ test("34c split notice names both children while partial budgeting grants body v
   const parent = f.create("compound parent ".repeat(4_000), [f.facts[0]!.id]);
   const split = await maintain(f, { op: "split", id: `K${parent.knowledgeId}@${parent.commit}`,
     supports: [], reason: "separate", children: [
-      { text: "first child ".repeat(2_000), category: "constraint", topics: [] }, { text: "second child ".repeat(2_000), category: "goal", topics: [] }] },
+      { text: "first child ".repeat(450), category: "constraint", topics: [] }, { text: "second child ".repeat(450), category: "goal", topics: [] }] },
   [`K${parent.knowledgeId}@${parent.commit}`], false);
   const visible = view({ knowledgeCommitIds: new Set([parent.commit]) });
   let partial: ReturnType<typeof f.memory.injection> | undefined;
-  for (let cap = 14_000; cap < 20_000; cap += 100) {
+  for (let cap = 4_000; cap < 10_000; cap += 10) {
     setKnowledgeCapacity(f.memory, cap);
     const offered = f.memory.injection(f.target, visible);
     if (offered.knowledgeCommitIds.length === 1 && offered.knowledgeStates?.length === 1) { partial = offered; break; }

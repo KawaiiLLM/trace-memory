@@ -105,19 +105,25 @@ test("carry, compact, Noter history and the Consolidator range share the one fac
   } finally { m.close(); }
 });
 
-test("Consolidation cannot dispatch a fact when only its ungrouped line fits the batch ceiling", async () => {
+test("Consolidation dispatches its oldest fact even when grouped framing exceeds the soft batch ceiling", async () => {
   let dispatched = false;
-  const m = sourceSeededMemory(":memory:", async () => { dispatched = true; return { outcome: "failure", output: "unexpected" }; });
+  const m = sourceSeededMemory(":memory:", async raw => {
+    dispatched = true;
+    expect((raw as ConsolidationAgentInput).range.facts.map(f => f.id)).toEqual([1]);
+    return { outcome: "failure", output: "deliberate worker failure", request: {} };
+  });
   try {
     const projectId = m.store.createProject({ name: "p", declaredBy: "mark" }).id;
     const s = m.store.createSession({ host: "fake", projectId, startedAt: early, firstReplyAt: early, enrollmentChoice: true });
     const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "question", assistantText: "answer", startedAt: early });
     const write = m.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: early },
       facts: [{ ...fact(1, t.id), createdAt: early }] });
-    expect(write.ok).toBe(true);
+    if (!write.ok) throw new Error(write.problems.join("; "));
     m.config.consolidation.batchTokens = charge([m.trace("F1")]);
-    await expect(m.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" })).rejects.toThrow(/capacity/);
-    expect(dispatched).toBe(false);
+    expect(charge(renderFactGroups(write.facts, f => m.trace(`F${f.id}`), m.store.factTurnTimes(write.facts))))
+      .toBeGreaterThan(m.config.consolidation.batchTokens);
+    expect((await m.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("failure");
+    expect(dispatched).toBe(true);
     expect(m.store.consolidationBatch(s.id, "main", t.id).map(f => f.id)).toEqual([1]);
   } finally { m.close(); }
 });

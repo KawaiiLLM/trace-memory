@@ -6,6 +6,7 @@ import { tokens } from "../../../src/core/render/index.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { Store, type RunInput, type TaskClaim } from "../../../src/core/store/index.ts";
+import { declarationContext } from "../project-declaration-context.ts";
 
 const stores: Store[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); });
@@ -175,13 +176,13 @@ test("64c current versions: legal P to Q to P declarations preserve pair semanti
   const beforeGlobal = f.store.pendingVersions("global", f.target).map(v => v.revisionId);
   const beforeSession = f.store.pendingVersions(`session:${f.session.id}`, f.target).map(v => v.revisionId);
   const q = f.store.createProject({ name: "Q", declaredBy: "mark" });
-  f.store.declareProject(f.session.id, q.name, "mark");
+  f.store.declareProject(f.session.id, q.name, "mark", declarationContext(f.store, f.target));
   expect(f.store.pendingVersions(`project:${q.id}`, f.target)).toMatchObject([{ revisionId: projectItem.commit }]);
   expect(f.store.pendingVersions(`project:${q.id}`, f.target)[0]!.material).not.toContain("moved from");
   expect(f.store.pendingVersions("global", f.target).map(v => v.revisionId)).toEqual(beforeGlobal);
   expect(f.store.pendingVersions(`session:${f.session.id}`, f.target).map(v => v.revisionId)).toEqual(beforeSession);
-  f.store.declareProject(f.session.id, f.project.name, "mark");
-  expect(f.store.pendingVersions(`project:${f.project.id}`, f.target)).toEqual([]);
+  f.store.declareProject(f.session.id, f.project.name, "mark", declarationContext(f.store, f.target));
+  expect(f.store.pendingVersions(`project:${f.project.id}`, f.target).map(v => v.revisionId)).toEqual([projectItem.commit]);
   expect([globalItem.commit, sessionItem.commit]).toEqual([beforeGlobal[0], beforeSession[0]]);
   expect(f.store.getProject(f.project.id)!.mergedInto).toBeNull();
   expect(f.store.getProject(q.id)!.mergedInto).toBeNull();

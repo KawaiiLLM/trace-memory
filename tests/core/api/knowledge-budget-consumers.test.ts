@@ -85,12 +85,13 @@ test("73: zero Knowledge base borrows only the configured shared allowance", () 
   }
 });
 
-test("64c zero changed-pool cap refuses a pending item explicitly without a fake Dreamer run", async () => {
+test("64c zero changed-pool cap still dispatches the oldest pending revision; failure leaves it pending", async () => {
   const f = fixture();
   const created = f.create("changed");
   zeroBase(f.memory);
-  await expect(f.memory.dream(f.target)).rejects.toThrow(/oldest pending version.*exceeds 0/);
-  expect(f.captured).toEqual([]);
+  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
+  expect(f.captured).toHaveLength(1);
+  expect(f.captured[0]!.material.changed).toContain(`[K${created.knowledgeId}@${created.commit}]`);
   expect(f.memory.store.pendingVersions(`project:${f.memory.store.getSession(f.session.id)!.projectId}`, f.target)
     .map(value => value.revisionId)).toEqual([created.commit]);
   expect(f.memory.store.getClaim(f.session.id, "dreaming")).toBeNull();

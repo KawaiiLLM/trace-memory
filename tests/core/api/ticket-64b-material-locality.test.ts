@@ -3,10 +3,11 @@ import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-d
 import { skipRest } from "../../dreaming-skips.ts";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
+import { drainTrace } from "../../trace-pages.ts";
 
 const at = "2026-09-20T12:00:00Z";
 
-function fixture() {
+function fixture(baseText = "divergent base") {
   const scenarios = new AdmittedDreamerScenarios(async () => ({ outcome: "success", output: "unused", request: {} }));
   const memory = sourceSeededMemory(":memory:", scenarios.agent);
   const project = memory.store.createProject({ name: "64b-material-locality", declaredBy: "mark" });
@@ -37,7 +38,7 @@ function fixture() {
   }
   const created = memory.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "root", headTurnId: turn.id },
     run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: at }, operations: [{ op: "create", handle: "$base", author: "test",
-      text: "divergent base", category: "constraint", scope: "project", supports: [fact], topics: [], reason: "Initial rule.", createdAt: at }] });
+      text: baseText, category: "constraint", scope: "project", supports: [fact], topics: [], reason: "Initial rule.", createdAt: at }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   return { memory, scenarios, session, turn, fact, branchFacts, left, right, joined, base: created.committed[0]! };
 }
@@ -60,7 +61,8 @@ async function diverge(f: Fixture, branch: "left" | "right", triggerEntryId: num
     const request = { branch }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!;
     const write = input.tools.find(tool => tool.name === "memory")!;
-    trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
+    drainTrace({ trace: (next, options) => trace.execute({ address: next, ...options }) },
+      trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, full: true, itemBudget: null }));
     trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
     const receipt = write.execute({ operations: [
       { op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`, text, category: "constraint", scope: "project",
@@ -79,11 +81,13 @@ let open: Fixture["memory"] | undefined;
 afterEach(() => open?.close());
 
 test("64b F1: oversized unrelated history does not pin a fitting pending identity", async () => {
-  const f = fixture(); open = f.memory;
-  const left = await diverge(f, "left", f.left.id, `left ${"large ".repeat(5_200)}`);
-  const right = await diverge(f, "right", f.right.id, `right ${"large ".repeat(5_200)}`);
+  // One large manually stored historical parent is legal; each actual D update stays below 1k.
+  const f = fixture(`large historical parent ${"word ".repeat(11_000)}`); open = f.memory;
+  const left = await diverge(f, "left", f.left.id, `left ${"large ".repeat(900)}`);
+  const right = await diverge(f, "right", f.right.id, `right ${"large ".repeat(900)}`);
   const identity = f.memory.store.getKnowledge(f.base.knowledgeId)!;
-  expect(tokens(`Changed:\nK${identity.id}:\n${renderKnowledge({ knowledge: identity, revision: left })}\n${renderKnowledge({ knowledge: identity, revision: right })}`))
+  const historical = f.memory.store.getKnowledgeRevision(f.base.knowledgeId, f.base.commit)!;
+  expect(tokens([historical, left, right].map(revision => renderKnowledge({ knowledge: identity, revision })).join("\n")))
     .toBeGreaterThan(10000);
 
   f.memory.store.setCurrentPath(f.session.id, "joined", f.turn.id, "test-lineage");
