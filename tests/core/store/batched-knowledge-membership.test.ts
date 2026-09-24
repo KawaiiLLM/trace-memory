@@ -166,11 +166,11 @@ test("no-cursor owners remain globally applicable and recorded corruption fails 
     expect(() => store.currentKnowledge(readPath)).toThrow(`session S${owner.id} has a corrupted recorded foreground`);
     store.db.prepare("UPDATE source_paths SET length = 1 WHERE session_id = ? AND branch = 'main'").run(owner.id);
     store.db.exec("PRAGMA foreign_keys = OFF");
-    store.db.prepare("UPDATE source_path_entries SET entry_id = 999999 WHERE session_id = ? AND branch = 'main'").run(owner.id);
+    store.db.prepare("UPDATE source_path_entries SET entry_id = 999999 WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = 'main')").run(owner.id);
     store.db.prepare("UPDATE source_paths SET tail_entry_id = 999999 WHERE session_id = ? AND branch = 'main'").run(owner.id);
     store.db.exec("PRAGMA foreign_keys = ON");
     expect(() => store.currentKnowledge(readPath)).toThrow(`session S${owner.id} has a corrupted recorded foreground`);
-    store.db.prepare("UPDATE source_path_entries SET entry_id = ? WHERE session_id = ? AND branch = 'main'").run(node.entry.id, owner.id);
+    store.db.prepare("UPDATE source_path_entries SET entry_id = ? WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = 'main')").run(node.entry.id, owner.id);
     store.db.prepare("UPDATE source_paths SET tail_entry_id = ? WHERE session_id = ? AND branch = 'main'").run(node.entry.id, owner.id);
     store.db.prepare("UPDATE turns SET parent_turn_id = id WHERE id = ?").run(node.turn.id);
     expect(() => store.currentKnowledge(readPath)).toThrow(`session S${owner.id} has a corrupted recorded foreground`);

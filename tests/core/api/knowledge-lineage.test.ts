@@ -312,7 +312,7 @@ test("34a: bound origin freezes the ordered native path through the exact same-T
   // count/tail, so the read must reject the missing source rather than silently shorten origin.
   store.db.exec("PRAGMA foreign_keys = OFF");
   try {
-    store.db.prepare("UPDATE source_path_entries SET entry_id = 999 WHERE session_id = ? AND branch = 'main' AND position = 0").run(session.id);
+    store.db.prepare("UPDATE source_path_entries SET entry_id = 999 WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = 'main') AND position = 0").run(session.id);
   } finally { store.db.exec("PRAGMA foreign_keys = ON"); }
   expect(() => memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id })).toThrow(/source path|trigger origin/i);
 });

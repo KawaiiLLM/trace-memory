@@ -34,7 +34,7 @@ try {
   const store = new Store(workingPath);
   try {
     const branch = requestedBranch ?? String(store.db.prepare(`SELECT p.branch FROM source_paths p
-      JOIN source_entries e ON e.id = (SELECT value FROM json_each(p.entry_ids) ORDER BY CAST(key AS INTEGER) DESC LIMIT 1)
+      JOIN source_entries e ON e.id = p.tail_entry_id
       WHERE p.session_id = ? ORDER BY e.turn_id DESC, e.id DESC LIMIT 1`).get(sessionId)?.branch ?? "main");
     const path: KnowledgePath = store.knowledgePath(sessionId, branch);
     if (path.headTurnId === null) throw new Error(`S${sessionId}/${branch} has no selected head`);

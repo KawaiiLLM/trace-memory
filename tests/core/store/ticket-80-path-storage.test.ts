@@ -88,24 +88,38 @@ test("80: old JSON paths migrate atomically with exact order and reopen without 
       .run(JSON.stringify([b.entry.id, a.entry.id]));
     db.exec("DROP TABLE source_paths; ALTER TABLE old_paths RENAME TO source_paths; COMMIT");
     db.close();
-    expect(() => new Store(file)).toThrow(/requires explicit upgrade/);
     const legacy = new DatabaseSync(file);
     expect(legacy.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ?").get(owner.id))
       .toEqual({ entry_ids: JSON.stringify([b.entry.id, a.entry.id]) });
-    legacy.prepare("UPDATE source_paths SET entry_ids = ? WHERE session_id = ?")
-      .run(JSON.stringify([b.entry.id, b.entry.id]), owner.id);
+    legacy.prepare(`INSERT INTO source_paths(session_id,branch,entry_ids,version,hwm_entry_id) VALUES (?, 'zbad', ?, 0, 0)`)
+      .run(owner.id, JSON.stringify([b.entry.id, b.entry.id]));
     legacy.close();
-    expect(() => Store.upgradeSourcePaths(file)).toThrow();
+    expect(() => new Store(file)).toThrow(/stored source path is malformed|UNIQUE constraint/);
     const afterFailure = new DatabaseSync(file);
     expect(afterFailure.prepare("PRAGMA table_info(source_paths)").all().some(row => row.name === "entry_ids")).toBe(true);
     expect(afterFailure.prepare("SELECT 1 FROM sqlite_master WHERE name = 'source_path_entries'").get()).toBeUndefined();
-    afterFailure.prepare("UPDATE source_paths SET entry_ids = ? WHERE session_id = ?")
-      .run(JSON.stringify([b.entry.id, a.entry.id]), owner.id);
+    expect(afterFailure.prepare("SELECT branch,entry_ids FROM source_paths WHERE session_id = ? ORDER BY branch")
+      .all(owner.id)).toEqual([
+        { branch: "main", entry_ids: JSON.stringify([b.entry.id, a.entry.id]) },
+        { branch: "zbad", entry_ids: JSON.stringify([b.entry.id, b.entry.id]) },
+      ]);
+    afterFailure.prepare("DELETE FROM source_paths WHERE session_id = ? AND branch = 'zbad'").run(owner.id);
     afterFailure.close();
-    Store.upgradeSourcePaths(file);
     store = new Store(file);
     expect(store.selectedSourceEntryIds(owner.id, "main")).toEqual([b.entry.id, a.entry.id]);
     expect(store.sourcePathState(owner.id, "main")).toEqual({ count: 2, tailId: a.entry.id, version: 0 });
+    const header = store.db.prepare("SELECT id, branch FROM source_paths WHERE session_id = ?").get(owner.id)!;
+    expect(store.db.prepare("SELECT path_id, position, entry_id FROM source_path_entries ORDER BY position").all())
+      .toEqual([{ path_id: header.id, position: 0, entry_id: b.entry.id },
+        { path_id: header.id, position: 1, entry_id: a.entry.id }]);
+    expect(store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'source_path_entries'").get()!.sql)
+      .toContain("WITHOUT ROWID");
+    expect(store.db.prepare("PRAGMA table_info(source_path_entries)").all().map(row => row.name))
+      .toEqual(["path_id", "position", "entry_id"]);
+    expect(store.db.prepare("PRAGMA foreign_key_list(source_path_entries)").all().map(row => row.table))
+      .toContain("source_paths");
+    expect(() => store.db.prepare("INSERT INTO source_path_entries(path_id,position,entry_id) VALUES (?,?,?)")
+      .run(Number(header.id), 2, b.entry.id)).toThrow(/UNIQUE constraint/);
     store.close(); store = new Store(file);
     expect(store.selectedSourceEntryIds(owner.id, "main")).toEqual([b.entry.id, a.entry.id]);
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);

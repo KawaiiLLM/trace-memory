@@ -245,6 +245,7 @@ CREATE TABLE IF NOT EXISTS source_entries (
   UNIQUE (session_id, native_lineage, native_id)
 );
 CREATE TABLE IF NOT EXISTS source_paths (
+  id INTEGER PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   branch TEXT NOT NULL,
   length INTEGER NOT NULL DEFAULT 0 CHECK (length >= 0),
@@ -262,17 +263,15 @@ CREATE TABLE IF NOT EXISTS source_paths (
   -- restore never falsely keep bumping.
   hwm_entry_id INTEGER NOT NULL DEFAULT 0,
   CHECK ((length = 0) = (tail_entry_id IS NULL)),
-  PRIMARY KEY (session_id, branch)
+  UNIQUE (session_id, branch)
 );
 CREATE TABLE IF NOT EXISTS source_path_entries (
-  session_id INTEGER NOT NULL,
-  branch TEXT NOT NULL,
+  path_id INTEGER NOT NULL REFERENCES source_paths(id) ON DELETE CASCADE,
   position INTEGER NOT NULL CHECK (position >= 0),
   entry_id INTEGER NOT NULL REFERENCES source_entries(id),
-  PRIMARY KEY (session_id, branch, position),
-  UNIQUE (session_id, branch, entry_id),
-  FOREIGN KEY (session_id, branch) REFERENCES source_paths(session_id, branch) ON DELETE CASCADE
-);
+  PRIMARY KEY (path_id, position),
+  UNIQUE (path_id, entry_id)
+) WITHOUT ROWID;
 -- 74: a compact mirror of each source entry's calls (native call id, ordinal, name only -- never
 -- input/result, which stay in content/tool_calls and would move the wide data here). Lets a
 -- rebuild answer call identity, per entry or per Turn, without loading Raw.
@@ -765,6 +764,23 @@ export class StaleSourcePathError extends Error {
 
 export interface SourcePathState { count: number; tailId: number | null; version: number }
 
+/** A pending queue with stable identity across appends and local prefix consumption. Positions are
+ * monotonic, so removing a batch neither shifts nor copies the retained backlog. Store owns writes. */
+export class PendingEntries implements Iterable<number> {
+  private readonly entries = new Map<number, number>();
+  private first = 0;
+  private end = 0;
+  constructor(ids: Iterable<number>) { for (const id of ids) this.append(id); }
+  get offset(): number { return this.first; }
+  get length(): number { return this.end - this.first; }
+  at(index: number): number | undefined { return this.entries.get(this.first + index); }
+  append(id: number): void { this.entries.set(this.end++, id); }
+  removePrefix(count: number): void {
+    for (let i = 0; i < count; i++) this.entries.delete(this.first++);
+  }
+  [Symbol.iterator](): IterableIterator<number> { return this.entries.values(); }
+}
+
 export class Store {
   readonly db: DatabaseSync;
   readonly migration64d: Migration64dReport;
@@ -860,15 +876,12 @@ export class Store {
   }
 
   private readonly normalizeSource: SourceNormalizer | undefined;
-  constructor(path: string, normalizeSource?: SourceNormalizer, options?: { upgradeSourcePaths?: true }) {
+  constructor(path: string, normalizeSource?: SourceNormalizer) {
     this.normalizeSource = normalizeSource;
     this.db = new DatabaseSync(path);
     let began = false;
     let priorBudgetPolicy: { global: number; project: number; session: number } | null = null;
     try {
-      const legacyPath = this.db.prepare("PRAGMA table_info(source_paths)").all().some(row => row.name === "entry_ids");
-      if (legacyPath && !options?.upgradeSourcePaths)
-        throw new Error("Source path schema requires explicit upgrade after stopping executors and backing up the database");
       this.db.exec("PRAGMA foreign_keys = ON;");
       this.db.exec("PRAGMA busy_timeout = 5000;");
       // Configure file databases before any transaction; SQLite memory databases cannot use WAL.
@@ -937,7 +950,7 @@ export class Store {
           // Backfill from the row's own current contents: the largest entry id it holds right now.
           this.db.exec(oldPathShape
             ? "UPDATE source_paths SET hwm_entry_id = (SELECT IFNULL(MAX(value), 0) FROM json_each(entry_ids))"
-            : "UPDATE source_paths SET hwm_entry_id = (SELECT IFNULL(MAX(entry_id), 0) FROM source_path_entries e WHERE e.session_id = source_paths.session_id AND e.branch = source_paths.branch)");
+            : "UPDATE source_paths SET hwm_entry_id = (SELECT IFNULL(MAX(entry_id), 0) FROM source_path_entries e WHERE e.path_id = source_paths.id)");
         }
         if (oldPathShape) this.migrateSourcePaths();
         // Derived membership metadata keeps path/coverage queries off large immutable Raw bodies.
@@ -1165,11 +1178,6 @@ export class Store {
     }
   }
 
-  /** Explicit maintenance-window migration; normal opens refuse the legacy path shape. */
-  static upgradeSourcePaths(path: string): void {
-    new Store(path, undefined, { upgradeSourcePaths: true }).close();
-  }
-
   /** Shared table-rebuild procedure (SQLite's documented ALTER-TABLE-by-rebuild recipe): preserve
    * ids and the AUTOINCREMENT sequence, drop and recreate indexes/triggers not explicitly dropped.
    * Foreign keys are verified once, by the caller's caller, at the end of the whole schema
@@ -1188,30 +1196,30 @@ export class Store {
     for (const object of objects) this.db.exec(String(object.sql));
   }
 
-  /** Replace the old JSON authority in the explicit, atomic schema upgrade. */
+  /** Convert legacy JSON membership under the same schema transaction as the rest of Store open. */
   private migrateSourcePaths(): void {
     if (!this.db.isTransaction) throw new Error("Source path migration requires a transaction");
-    const rows = this.db.prepare("SELECT session_id, branch, entry_ids FROM source_paths ORDER BY session_id, branch").all() as
-      { session_id: number; branch: string; entry_ids: string }[];
-    const insert = this.db.prepare("INSERT INTO source_path_entries(session_id,branch,position,entry_id) VALUES (?,?,?,?)");
+    const rows = this.db.prepare("SELECT rowid, session_id, branch, entry_ids FROM source_paths ORDER BY rowid").all() as
+      { rowid: number; session_id: number; branch: string; entry_ids: string }[];
+    // Keep the old table intact until the new header is populated; failures roll back both tables.
+    this.db.exec(`CREATE TABLE source_paths_migrate (
+      id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id), branch TEXT NOT NULL,
+      length INTEGER NOT NULL DEFAULT 0 CHECK(length >= 0), tail_entry_id INTEGER REFERENCES source_entries(id),
+      version INTEGER NOT NULL DEFAULT 0, hwm_entry_id INTEGER NOT NULL DEFAULT 0,
+      CHECK ((length = 0) = (tail_entry_id IS NULL)), UNIQUE(session_id,branch))`);
+    const insertHeader = this.db.prepare(`INSERT INTO source_paths_migrate
+      (id,session_id,branch,length,tail_entry_id,version,hwm_entry_id) VALUES (?,?,?,?,?,?,?)`);
+    const insertMember = this.db.prepare("INSERT INTO source_path_entries(path_id,position,entry_id) VALUES (?,?,?)");
     for (const row of rows) {
       const ids = this.parsePathEntryIds(row.entry_ids);
       if (!ids || new Set(ids).size !== ids.length) throw new Error("stored source path is malformed");
-      ids.forEach((id, position) => insert.run(row.session_id, row.branch, position, id));
+      const old = this.db.prepare("SELECT version,hwm_entry_id FROM source_paths WHERE rowid = ?")
+        .get(row.rowid) as { version: number; hwm_entry_id: number };
+      insertHeader.run(row.rowid, row.session_id, row.branch, ids.length, ids.at(-1) ?? null, old.version, old.hwm_entry_id);
+      ids.forEach((id, position) => insertMember.run(row.rowid, position, id));
     }
-    this.rebuildTable("source_paths", ["entry_ids"], [], `CREATE TABLE source_paths (
-      session_id INTEGER NOT NULL REFERENCES sessions(id), branch TEXT NOT NULL,
-      length INTEGER NOT NULL DEFAULT 0 CHECK(length >= 0),
-      tail_entry_id INTEGER REFERENCES source_entries(id),
-      version INTEGER NOT NULL DEFAULT 0, hwm_entry_id INTEGER NOT NULL DEFAULT 0,
-      CHECK ((length = 0) = (tail_entry_id IS NULL)), PRIMARY KEY(session_id,branch))`);
-    for (const row of rows) {
-      const tail = this.db.prepare(`SELECT position, entry_id FROM source_path_entries
-        WHERE session_id = ? AND branch = ? ORDER BY position DESC LIMIT 1`).get(row.session_id, row.branch) as
-        { position: number; entry_id: number } | undefined;
-      this.db.prepare("UPDATE source_paths SET length = ?, tail_entry_id = ? WHERE session_id = ? AND branch = ?")
-        .run(tail ? tail.position + 1 : 0, tail?.entry_id ?? null, row.session_id, row.branch);
-    }
+    this.db.exec(`DROP TABLE source_paths; ALTER TABLE source_paths_migrate RENAME TO source_paths;
+      CREATE INDEX idx_source_paths_version ON source_paths(version)`);
   }
 
   /** 83: give every source entry whose `entry_ordinal` is NULL the ordinal it should have had, then
@@ -2065,11 +2073,22 @@ export class Store {
    * with outcome "failure" — the run record is always written, business writes are not.
    */
   commitNotingRun(input: CommitNotingRunInput): CommitNotingResult {
+    const ownsCommit = !this.db.isTransaction;
+    let publishPending: (() => void) | undefined;
     try {
       const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
         this.requireEnabled(sessionId);
         this.requireClaim(input.run);
+        const pending = this.pendingPath, consumed = input.entryIds ?? [];
+        // Validate reuse under the write lock. A second writer's commit, unpublished append, or
+        // non-prefix batch must rebuild. Nested callers cannot publish before their outer COMMIT.
+        const header = ownsCommit && pending?.path && pending.sessionId === sessionId
+          ? this.sourcePathState(sessionId, pending.branch) : null;
+        const retainPending = !!(header && pending?.path && pending.signal === this.progressSignal(sessionId) &&
+          header.version === pending.path.version && header.count === pending.path.count &&
+          header.tailId === pending.path.tailId && consumed.length <= pending.ids.length &&
+          consumed.every((id, index) => pending.ids.at(index) === id));
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const batchIds: number[] = [];
         for (const f of input.facts) {
@@ -2118,8 +2137,18 @@ export class Store {
           this.db.prepare("INSERT INTO noted_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
         }
         this.completeExecution(runId);
+        if (retainPending) {
+          const signal = this.progressSignal(sessionId);
+          publishPending = () => {
+            if (this.pendingPath !== pending) return;
+            pending!.ids.removePrefix(consumed.length);
+            pending!.signal = signal;
+          };
+        }
         return { runId, facts: batchIds.map((id) => this.getFact(id)!) };
       });
+      // Queue mutation follows the actual COMMIT, never the writes or a released SAVEPOINT.
+      publishPending?.();
       return { ok: true, runId: result.runId, facts: result.facts };
     } catch (err) {
       return { ok: false, ...this.recordFailure(input.run, err) };
@@ -2231,6 +2260,24 @@ export class Store {
     ) SELECT id, parent_turn_id FROM lineage`).all(path.headTurnId, path.sessionId, path.sessionId) as { id: number; parent_turn_id: number | null }[])
       .map(r => [r.id, r.parent_turn_id]));
     return this.ancestryFromParents(parents, path.headTurnId!);
+  }
+
+  /** Compare against a previously validated head, visiting only newer Turns. Turn ids increase at
+   * insertion, so reaching an older id proves divergence without walking the retained ancestry. */
+  pathExtendsHead(path: KnowledgePath, previous: number): boolean {
+    const head = path.headTurnId;
+    if (head == null || head < previous) return false;
+    if (head === previous) return true;
+    const row = this.db.prepare("SELECT parent_turn_id FROM turns WHERE id = ? AND session_id = ?")
+      .get(head, path.sessionId) as { parent_turn_id: number | null } | undefined;
+    if (row?.parent_turn_id === previous) return true;
+    if (row?.parent_turn_id == null || row.parent_turn_id < previous) return false;
+    return !!this.db.prepare(`WITH RECURSIVE suffix(id, parent_turn_id) AS (
+      SELECT id, parent_turn_id FROM turns WHERE id = ? AND session_id = ?
+      UNION SELECT t.id, t.parent_turn_id FROM turns t JOIN suffix s ON t.id = s.parent_turn_id
+        WHERE s.id > ? AND t.session_id = ?)
+      SELECT 1 FROM suffix WHERE id = ? LIMIT 1`)
+      .get(row.parent_turn_id, path.sessionId, previous, path.sessionId, previous);
   }
 
   /** Compatibility for callers without a host head: use the branch's latest recorded or manual turn. */
@@ -2616,11 +2663,16 @@ export class Store {
    * fact written without entry bindings asks. */
   private pathEntries(path: KnowledgePath, turns: Set<number>): PathSnapshot["entries"] {
     if (!path.branch || !path.headTurnId) return null;
-    if (this.selectedSourceEntryIds(path.sessionId, path.branch) === null) return null;
+    const header = this.sourcePathState(path.sessionId, path.branch);
+    if (!header) return null;
+    const rows = this.db.prepare(`SELECT j.position, j.entry_id, e.id AS owned_id, e.id, e.turn_id, e.addresses
+      FROM source_paths p JOIN source_path_entries j ON j.path_id = p.id
+      LEFT JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
+      WHERE p.session_id = ? AND p.branch = ? ORDER BY j.position`).all(path.sessionId, path.branch) as
+      { position: number; entry_id: number; owned_id: number | null; id: number; turn_id: number; addresses: string }[];
+    this.validatePathMembers(header, rows);
     const ids = new Set<number>(), addresses = new Map<number, Set<string>>();
-    for (const { id, turn_id, addresses: raw } of this.db.prepare(`SELECT e.id, e.turn_id, e.addresses FROM source_path_entries j
-      JOIN source_entries e ON e.id = j.entry_id WHERE j.session_id = ? AND j.branch = ? ORDER BY j.position`)
-      .all(path.sessionId, path.branch) as { id: number; turn_id: number; addresses: string }[]) {
+    for (const { id, turn_id, addresses: raw } of rows) {
       if (!turns.has(turn_id)) continue;
       ids.add(id);
       if (!addresses.has(turn_id)) addresses.set(turn_id, new Set());
@@ -3763,11 +3815,11 @@ export class Store {
    * these occurrences hydrates the exact ids it kept through `hydrateSourceEntries`, once. */
   listSourceEntries(sessionId: number, turnId?: number, branch?: string): SourceEntryMeta[] {
     const selected = branch === undefined ? [] : this.db.prepare(
-      `SELECT e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")} FROM source_path_entries j
-       JOIN source_entries e ON e.id = j.entry_id
-       WHERE j.session_id = ? AND j.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.position`)
+      `SELECT e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")} FROM source_paths p
+       JOIN source_path_entries j ON j.path_id = p.id JOIN source_entries e ON e.id = j.entry_id
+       WHERE p.session_id = ? AND p.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.position`)
       .all(sessionId, branch, sessionId, turnId ?? null, turnId ?? null);
-    const hasPath = branch !== undefined && this.selectedSourceEntryIds(sessionId, branch) !== null;
+    const hasPath = branch !== undefined && this.sourcePathState(sessionId, branch) !== null;
     // 74/79: INDEXED BY pins the turn-ordinal index (67) outright — without it, the planner's stat-free
     // cost estimate can prefer a session_id-prefixed plan instead, adding an unwanted sort.
     const rows = hasPath ? selected
@@ -3794,14 +3846,20 @@ export class Store {
   selectedSourceEntryIds(sessionId: number, branch: string): number[] | null {
     const state = this.sourcePathState(sessionId, branch);
     if (!state) return null;
-    const rows = this.db.prepare(`SELECT p.position, p.entry_id, e.id AS owned_id FROM source_path_entries p
-      LEFT JOIN source_entries e ON e.id = p.entry_id AND e.session_id = p.session_id
-      WHERE p.session_id = ? AND p.branch = ? ORDER BY p.position`).all(sessionId, branch) as
+    const rows = this.db.prepare(`SELECT j.position, j.entry_id, e.id AS owned_id FROM source_paths p
+      JOIN source_path_entries j ON j.path_id = p.id
+      LEFT JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
+      WHERE p.session_id = ? AND p.branch = ? ORDER BY j.position`).all(sessionId, branch) as
       { position: number; entry_id: number; owned_id: number | null }[];
+    this.validatePathMembers(state, rows);
+    return rows.map(row => row.entry_id);
+  }
+  /** Full readers validate the rows they already need, not a second membership enumeration. */
+  private validatePathMembers(state: SourcePathState,
+    rows: { position: number; entry_id: number; owned_id: number | null }[]): void {
     if (rows.length !== state.count || (rows.at(-1)?.entry_id ?? null) !== state.tailId ||
         rows.some((row, index) => row.position !== index || row.owned_id !== row.entry_id))
       throw new Error("stored source path is malformed");
-    return rows.map(row => row.entry_id);
   }
   /** Resolve a persisted native ancestry without exposing source_paths storage to a host adapter.
    * A later extension of the same branch is eligible; a sibling that diverged before the prefix is not. */
@@ -3809,7 +3867,7 @@ export class Store {
     if (!entryIds.length || entryIds.some(id => !Number.isSafeInteger(id) || id < 1)) return null;
     const matches = (this.db.prepare(`SELECT p.branch FROM source_paths p WHERE p.session_id = ? AND p.length >= ?
       AND NOT EXISTS (SELECT 1 FROM json_each(?) wanted WHERE NOT EXISTS
-        (SELECT 1 FROM source_path_entries e WHERE e.session_id = p.session_id AND e.branch = p.branch
+        (SELECT 1 FROM source_path_entries e WHERE e.path_id = p.id
          AND e.position = CAST(wanted.key AS INTEGER) AND e.entry_id = wanted.value)) ORDER BY p.branch`)
       .all(sessionId, entryIds.length, JSON.stringify(entryIds)) as { branch: string }[]).map(row => row.branch);
     return preferred && matches.includes(preferred) ? preferred : matches[0] ?? null;
@@ -3853,7 +3911,8 @@ export class Store {
         (SELECT value FROM json_each(?)) AND session_id = ?`).all(JSON.stringify(newEntryIds), sessionId) as
         { id: number; turn_id: number }[];
       if (rows.length !== newEntryIds.length) throw new Error("invalid source path tail");
-      const overlap = this.db.prepare(`SELECT 1 FROM source_path_entries WHERE session_id = ? AND branch = ?
+      const overlap = this.db.prepare(`SELECT 1 FROM source_path_entries WHERE path_id =
+        (SELECT id FROM source_paths WHERE session_id = ? AND branch = ?)
         AND entry_id IN (SELECT value FROM json_each(?)) LIMIT 1`).get(sessionId, branch, JSON.stringify(newEntryIds));
       if (overlap) throw new Error("invalid source path tail: duplicate entry");
       const turns = new Map(rows.map(row => [row.id, row.turn_id]));
@@ -3895,8 +3954,9 @@ export class Store {
         .get(sessionId, branch) as { hwm_entry_id: number }).hwm_entry_id;
       const restored = newEntryIds.some(id => id <= hwm);
       const nextVersion = restored ? Number(this.db.prepare("SELECT IFNULL(MAX(version), 0) + 1 AS next FROM source_paths").get()!.next) : state.version;
-      const insert = this.db.prepare("INSERT INTO source_path_entries(session_id,branch,position,entry_id) VALUES (?,?,?,?)");
-      newEntryIds.forEach((id, position) => insert.run(sessionId, branch, state.count + position, id));
+      const pathId = Number(this.db.prepare("SELECT id FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch)!.id);
+      const insert = this.db.prepare("INSERT INTO source_path_entries(path_id,position,entry_id) VALUES (?,?,?)");
+      newEntryIds.forEach((id, position) => insert.run(pathId, state.count + position, id));
       const count = state.count + newEntryIds.length, tailId = newEntryIds.at(-1)!;
       this.db.prepare(`UPDATE source_paths SET length = ?, tail_entry_id = ?, version = ?, hwm_entry_id = ?
         WHERE session_id = ? AND branch = ?`).run(count, tailId, nextVersion, Math.max(hwm, ...newEntryIds), sessionId, branch);
@@ -3929,9 +3989,10 @@ export class Store {
       length = excluded.length, tail_entry_id = excluded.tail_entry_id,
       version = CASE WHEN ? THEN (SELECT MAX(version) + 1 FROM source_paths) ELSE version END, hwm_entry_id = ?`)
       .run(sessionId, branch, entryIds.length, entryIds.at(-1) ?? null, newHwm, bump ? 1 : 0, newHwm);
-    this.db.prepare("DELETE FROM source_path_entries WHERE session_id = ? AND branch = ?").run(sessionId, branch);
-    const insert = this.db.prepare("INSERT INTO source_path_entries(session_id,branch,position,entry_id) VALUES (?,?,?,?)");
-    entryIds.forEach((id, position) => insert.run(sessionId, branch, position, id));
+    const pathId = Number(this.db.prepare("SELECT id FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch)!.id);
+    this.db.prepare("DELETE FROM source_path_entries WHERE path_id = ?").run(pathId);
+    const insert = this.db.prepare("INSERT INTO source_path_entries(path_id,position,entry_id) VALUES (?,?,?)");
+    entryIds.forEach((id, position) => insert.run(pathId, position, id));
   }
 
   selectSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
@@ -3948,11 +4009,14 @@ export class Store {
   /** The selected path's metadata in persisted branch order; no Raw payload is loaded. */
   private pathSourceMeta(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): SourceEntryMeta[] {
     const turns = prepared?.turns ?? this.pathTurns({ sessionId, headTurnId });
-    const ids = this.selectedSourceEntryIds(sessionId, branch);
-    const rows = ids ? this.db.prepare(`SELECT e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")}
-        FROM source_path_entries j JOIN source_entries e ON e.id = j.entry_id
-        WHERE j.session_id = ? AND j.branch = ? ORDER BY j.position`).all(sessionId, branch)
+    const header = this.sourcePathState(sessionId, branch);
+    const rows = header ? this.db.prepare(`SELECT j.position, j.entry_id, e.id AS owned_id,
+        e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")}
+        FROM source_paths p JOIN source_path_entries j ON j.path_id = p.id
+        LEFT JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
+        WHERE p.session_id = ? AND p.branch = ? ORDER BY j.position`).all(sessionId, branch)
       : this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries WHERE session_id = ? ORDER BY id`).all(sessionId);
+    if (header) this.validatePathMembers(header, rows as { position: number; entry_id: number; owned_id: number | null }[]);
     return rows.filter((r: any) => turns.has(Number(r.turn_id))).map(toSourceEntryMeta);
   }
   private pathEntryIds(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number[] {
@@ -3972,30 +4036,37 @@ export class Store {
     return !!this.db.prepare("SELECT 1 FROM noted_entries WHERE entry_id = ? LIMIT 1").get(id);
   }
   private pendingPath: { sessionId: number; branch: string; headTurnId: number;
-    signal: string; path: SourcePathState | null; ids: number[]; coversTail: boolean } | undefined;
+    signal: string; path: SourcePathState | null; ids: PendingEntries; coversTail: boolean } | undefined;
 
-  /** The array is owned by Store and must not be mutated by callers. Its identity changes on any
-   * rebuild; an ordinary append extends it in place so the API can retain its counted prefix. */
-  pendingEntryState(sessionId: number, branch: string, headTurnId: number): readonly number[] {
+  /** The queue is owned by Store and must not be mutated by callers. Its identity changes on a
+   * rebuild; an append or local Noting prefix consumption retains it and the API's counted prefix. */
+  pendingEntryState(sessionId: number, branch: string, headTurnId: number): PendingEntries {
     const ownSnapshot = !this.db.isTransaction;
     const cached = ownSnapshot ? this.pendingPath : undefined;
     if (ownSnapshot) this.db.exec("BEGIN");
     try {
       // Read the signal, header, suffix and processing marks from one SQLite snapshot. Otherwise
       // an external note followed by an append can produce a pending set that never existed.
-      const read = (): (() => readonly number[]) => {
+      const read = (): (() => PendingEntries) => {
         const signal = this.progressSignal(sessionId);
         const path = this.sourcePathState(sessionId, branch);
-        if (cached && cached.sessionId === sessionId && cached.branch === branch && cached.signal === signal &&
-            cached.path?.version === path?.version) {
-          if (cached.headTurnId === headTurnId && cached.path?.count === path?.count &&
-              cached.path?.tailId === path?.tailId) return () => cached.ids;
+        // No header means session-occurrence fallback. Raw appends do not change the signal, so
+        // that fallback is always fresh rather than pretending an absent path is a stable prefix.
+        if (path && cached?.path && cached.sessionId === sessionId && cached.branch === branch && cached.signal === signal &&
+            cached.path.version === path.version) {
+          if (cached.path.count === path.count && cached.path.tailId === path.tailId &&
+              (cached.headTurnId === headTurnId || (cached.coversTail &&
+                this.pathExtendsHead({ sessionId, headTurnId }, cached.headTurnId)))) return () => {
+            cached.headTurnId = headTurnId;
+            return cached.ids;
+          };
           // Every rewrite/restored entry bumps the version. The same version and a larger count
           // allow an indexed suffix read; historical-head answers must first cover the old tail.
           if (cached.coversTail && cached.path && path && path.count > cached.path.count) {
-            const rows = this.db.prepare(`SELECT p.position, p.entry_id, e.turn_id FROM source_path_entries p
-              JOIN source_entries e ON e.id = p.entry_id AND e.session_id = p.session_id
-              WHERE p.session_id = ? AND p.branch = ? AND p.position >= ? ORDER BY p.position`)
+            const rows = this.db.prepare(`SELECT j.position, j.entry_id, e.turn_id FROM source_paths p
+              JOIN source_path_entries j ON j.path_id = p.id
+              JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
+              WHERE p.session_id = ? AND p.branch = ? AND j.position >= ? ORDER BY j.position`)
               .all(sessionId, branch, cached.path.count) as { position: number; entry_id: number; turn_id: number }[];
             if (rows.length === path.count - cached.path.count && rows.at(-1)?.entry_id === path.tailId &&
                 rows.every((row, i) => row.position === cached.path!.count + i)) {
@@ -4017,7 +4088,7 @@ export class Store {
                   .all(JSON.stringify(newIds)) as { entry_id: number }[]).map(row => row.entry_id));
                 const added = newIds.filter(id => !noted.has(id));
                 return () => {
-                  for (const id of added) cached.ids.push(id);
+                  for (const id of added) cached.ids.append(id);
                   cached.path = path;
                   cached.headTurnId = headTurnId;
                   return cached.ids;
@@ -4030,7 +4101,7 @@ export class Store {
         const ids = source.map(entry => entry.id);
         const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
           .all(JSON.stringify(ids)) as { entry_id: number }[]).map(row => row.entry_id));
-        const pending = ids.filter(id => !noted.has(id));
+        const pending = new PendingEntries(ids.filter(id => !noted.has(id)));
         return () => {
           if (ownSnapshot) this.pendingPath = { sessionId, branch, headTurnId, signal, path,
             ids: pending, coversTail: !path || (source.at(-1)?.id ?? null) === path.tailId };

@@ -552,8 +552,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   /** Ticket 69/72: `facts`, `unconsolidated`, `knowledge` and `changedKnowledge` are cached per
    * (sessionId, branch), invalidated by `Store.progressSignal` — a cheap composite that changes
    * exactly when a commit (by this process or another connection to the same file) could change one
-   * of them. `entries` is never cached: it is what an ordinary ingested entry changes, and it is the
-   * one count that must always be live. One entry per distinct (sessionId, branch) this process has
+   * of them. `entries` comes from the shared incremental pending queue, never from these cached
+   * knowledge counts. One entry per distinct (sessionId, branch) this process has
    * read progress for; a branch is a UUID created rarely, so this stays small for the footer's one
    * repeatedly re-read path.
    * ponytail: unbounded map, add an eviction policy if a caller ever reads progress for many distinct
@@ -563,8 +563,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * cache missed on every message (measured 430 ms warm, 918 ms cold on an S3-sized path). A forward
    * head move brings Raw only and the path only grows (69's own premise: nothing it selects for
    * facts/knowledge shrinks), so a cached entry is still exact as long as the requested head descends
-   * from the head it was computed at — checked with `pathTurns`, one indexed recursive query, far
-   * cheaper than the full recompute it replaces. A branch switch already keys to a different cache
+   * from the last checked head. Check only the new suffix and advance that head on every hit;
+   * same-head calls never walk ancestors. A branch switch already keys to a different cache
    * entry; a head moved back or a non-append path rewrite is caught by the signal (`source_paths`'s and
    * `session_lineage_cursors`'s own `version` bumps) or, for a same-head backward-then-same case, by
    * the ancestry check itself, since a newer cached head is never an ancestor of an older requested one. */
@@ -579,15 +579,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const signal = store.progressSignal(sessionId);
     const cached = progressCache.get(key);
     const reusable = cached && cached.signal === signal && path.headTurnId != null &&
-      store.pathTurns({ sessionId, branch, headTurnId: path.headTurnId }).has(cached.headTurnId);
-    // No head means no Turn on this path, so nothing of it has been imported: the enumeration's own
-    // answer, not a placeholder for one it could not compute. A cache hit still asks `pendingEntryIds`
-    // fresh (uncached, and without the shared snapshot below, so it costs only its own light path
-    // membership — never the full snapshot's rendered addresses a cached path has no other use for).
-    if (reusable) return { entries: store.pendingEntryIds(sessionId, branch, path.headTurnId!).length,
-      facts: cached!.facts, unconsolidated: cached!.unconsolidated, knowledge: cached!.knowledge, changedKnowledge: cached!.changedKnowledge };
+      store.pathExtendsHead(path, cached.headTurnId);
+    // Both hit and miss share Noting's queue. A prepared fact snapshot must not cause a second,
+    // independent scan of pending membership after every commit. No head means no imported Turn.
+    const entries = path.headTurnId == null ? 0 : store.pendingEntryState(sessionId, branch, path.headTurnId).length;
+    if (reusable) {
+      cached.headTurnId = path.headTurnId!;
+      return { entries, facts: cached.facts, unconsolidated: cached.unconsolidated,
+        knowledge: cached.knowledge, changedKnowledge: cached.changedKnowledge };
+    }
     const snapshot = store.pathSnapshot(path);
-    const entries = path.headTurnId == null ? 0 : store.pendingEntryIds(sessionId, branch, path.headTurnId, snapshot).length;
     const facts = store.listBranchFacts(sessionId, branch, path.headTurnId, snapshot);
     const knowledge = store.currentKnowledge(path, {}, snapshot);
     const changedKnowledge = knowledge.length - store.processedCurrentVersions(knowledge).size;
