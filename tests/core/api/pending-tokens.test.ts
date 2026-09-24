@@ -123,3 +123,23 @@ test("dreamingPending lists every pool in fixed order (global, project, session)
     expect(due.has(sessionPool!.pool)).toBe(false);
   } finally { memory.close(); }
 });
+
+test("upToTrigger counts Noting only up to its trigger and reports the exact pending entry count (maintainer, 2026-09-25)", () => {
+  const memory = sourceSeededMemory(":memory:", vi.fn());
+  try {
+    const store = memory.store, project = store.createProject({ name: "A", declaredBy: "mark" });
+    const session = store.createSession({ host: "test", enrollmentChoice: true, projectId: project.id, startedAt: "now", firstReplyAt: "now" });
+    let parent: number | undefined;
+    for (let i = 0; i < 6; i++) parent = store.appendTurn({ sessionId: session.id, ...(parent ? { parentTurnId: parent } : {}), kind: "turn",
+      userPrompt: `prompt ${i} `.repeat(40), assistantText: `answer ${i}`, startedAt: `2026-01-0${i + 1}T00:00:00Z` }).id;
+    const target = { sessionId: session.id, branch: "main", headTurnId: parent! };
+    const exact = memory.pendingTokens("noting", target), entries = store.pendingEntries(session.id, "main", parent!).length;
+    if (exact.state !== "known") throw Error("pending is unknown");
+    memory.config.noting.triggerTokens = Math.floor(exact.tokens / 3);
+    expect(memory.pendingTokens("noting", target, true)).toEqual({ tokens: memory.config.noting.triggerTokens,
+      trigger: memory.config.noting.triggerTokens, state: "known", atLeast: true, entries });
+    expect(memory.pendingTokens("noting", target).tokens).toBe(exact.tokens); // the default stays exact
+    memory.config.noting.triggerTokens = exact.tokens + 1;
+    expect(memory.pendingTokens("noting", target, true)).toEqual({ tokens: exact.tokens, trigger: exact.tokens + 1, state: "known" });
+  } finally { memory.store.close(); }
+});

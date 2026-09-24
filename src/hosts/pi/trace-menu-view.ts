@@ -126,7 +126,7 @@ export function renderTraceMenu(input: TraceMenuInput, width: number, paint: Pai
     if (row.tokens === null) return `${indent}${row.label.padEnd(13)} Unknown / ${row.trigger ?? "Unknown"}`;
     const filled = Math.min(10, Math.floor((row.ratio ?? 0) * 10));
     const bar = paint("accent", "█".repeat(filled)) + paint("dim", "░".repeat(10 - filled));
-    return `${indent}${row.label.padEnd(13)} ${bar} ${row.percent.padStart(4)}   ${formatCompactTokens(row.tokens)} / ${formatCompactTokens(row.trigger!)}`;
+    return `${indent}${row.label.padEnd(13)} ${bar} ${row.percent.padStart(4)}   ${row.amount}`;
   };
   lines.push(pendingLine(model.pending.noting), pendingLine(model.pending.consolidation));
   lines.push(`  ${model.pending.dreamingHeading}`);

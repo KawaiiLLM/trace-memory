@@ -58,16 +58,23 @@ test("context: a partial estimate marks the heading, not a footnote paragraph", 
 
 test("pending: Noting/Consolidation/Dreaming rows with compact ratios and whole-number percentages", () => {
   const { pending } = buildTraceMenu(TRACE_MENU_FIXTURE);
-  expect(pending.noting).toEqual({ label: "Noting", tokens: 3_200, trigger: 10_000, ratio: 0.32, percent: "32%" });
-  expect(pending.consolidation).toEqual({ label: "Consolidation", tokens: 400, trigger: 5_000, ratio: 0.08, percent: "8%" });
-  expect(pending.dreaming.global).toEqual({ label: "global", tokens: 0, trigger: 4_000, ratio: 0, percent: "0%" });
-  expect(pending.dreaming.project).toEqual({ label: "project", tokens: 1_500, trigger: 5_000, ratio: 0.3, percent: "30%" });
-  expect(pending.dreaming.session).toEqual({ label: "session", tokens: 319, trigger: 1_000, ratio: 0.319, percent: "32%" });
+  expect(pending.noting).toEqual({ label: "Noting", tokens: 3_200, trigger: 10_000, ratio: 0.32, percent: "32%", amount: "3.2k / 10k" });
+  expect(pending.consolidation).toEqual({ label: "Consolidation", tokens: 400, trigger: 5_000, ratio: 0.08, percent: "8%", amount: "400 / 5k" });
+  expect(pending.dreaming.global).toEqual({ label: "global", tokens: 0, trigger: 4_000, ratio: 0, percent: "0%", amount: "0 / 4k" });
+  expect(pending.dreaming.project).toEqual({ label: "project", tokens: 1_500, trigger: 5_000, ratio: 0.3, percent: "30%", amount: "1.5k / 5k" });
+  expect(pending.dreaming.session).toEqual({ label: "session", tokens: 319, trigger: 1_000, ratio: 0.319, percent: "32%", amount: "319 / 1k" });
+});
+
+test("pending: a Noting backlog counted up to its trigger shows at-least with the exact entry count (maintainer, 2026-09-25)", () => {
+  const input = (entries: number) => ({ ...TRACE_MENU_FIXTURE, pending: { ...TRACE_MENU_FIXTURE.pending,
+    noting: { tokens: 10_000, trigger: 10_000, atLeast: true, entries } } });
+  expect(buildTraceMenu(input(21_281)).pending.noting).toMatchObject({ ratio: 1, percent: "100%", amount: "≥10k / 10k (21,281 entries)" });
+  expect(buildTraceMenu(input(1)).pending.noting.amount).toBe("≥10k / 10k (1 entry)");
 });
 
 test("pending: an unknown value never renders 0", () => {
   const { pending } = buildTraceMenu({ ...TRACE_MENU_FIXTURE, pending: { ...TRACE_MENU_FIXTURE.pending, noting: { tokens: null, trigger: null } } });
-  expect(pending.noting).toEqual({ label: "Noting", tokens: null, trigger: null, ratio: null, percent: "?" });
+  expect(pending.noting).toEqual({ label: "Noting", tokens: null, trigger: null, ratio: null, percent: "?", amount: "?" });
 });
 
 test("spend: session total, per-phase split (with the singular 'run') and today's figure", () => {

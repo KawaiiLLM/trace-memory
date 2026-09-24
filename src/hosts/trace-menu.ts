@@ -106,12 +106,17 @@ export function buildContextSection(input: ContextSectionInput): ContextSection 
 
 // ---- Pending / trigger --------------------------------------------------------------------------
 
-export interface PendingInput { tokens: number | null; trigger: number | null }
-export interface PendingRow { label: string; tokens: number | null; trigger: number | null; ratio: number | null; percent: string }
+/** `atLeast`: counting stopped at the trigger; `entries` is then the exact pending entry count. */
+export interface PendingInput { tokens: number | null; trigger: number | null; atLeast?: boolean; entries?: number }
+export interface PendingRow { label: string; tokens: number | null; trigger: number | null; ratio: number | null; percent: string; amount: string }
 const pendingRow = (label: string, value: PendingInput): PendingRow => {
-  if (value.tokens === null || value.trigger === null) return { label, tokens: null, trigger: null, ratio: null, percent: "?" };
+  if (value.tokens === null || value.trigger === null) return { label, tokens: null, trigger: null, ratio: null, percent: "?", amount: "?" };
   const ratio = value.trigger === 0 ? (value.tokens === 0 ? 0 : 1) : Math.min(1, value.tokens / value.trigger);
-  return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio) };
+  const trigger = formatCompactTokens(value.trigger);
+  const amount = value.atLeast
+    ? `≥${trigger} / ${trigger} (${(value.entries ?? 0).toLocaleString("en-US")} ${value.entries === 1 ? "entry" : "entries"})`
+    : `${formatCompactTokens(value.tokens)} / ${trigger}`;
+  return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio), amount };
 };
 
 export interface PendingSectionInput {

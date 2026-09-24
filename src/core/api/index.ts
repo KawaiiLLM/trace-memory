@@ -408,9 +408,11 @@ export interface TraceMemory {
   taskEligibility(phase: Phase, target: TaskTarget): { due: boolean };
   /** On-demand, read-only trigger material estimates; no admission, grants or cache writes. Covers
    * Noting and Consolidation only — Dreaming's Knowledge pools trigger independently, so its
-   * projection is `dreamingPending`. */
-  pendingTokens(phase: "noting" | "consolidation", target?: TaskTarget):
-    | { tokens: number; trigger: number; state: "known" }
+   * projection is `dreamingPending`. With `upToTrigger`, Noting is counted only up to its trigger
+   * (maintainer, 2026-09-25, for the `/trace` menus): a larger backlog reports `atLeast` with its
+   * exact pending entry count, because rendering every entry of a long backlog took seconds. */
+  pendingTokens(phase: "noting" | "consolidation", target?: TaskTarget, upToTrigger?: boolean):
+    | { tokens: number; trigger: number; state: "known"; atLeast?: true; entries?: number }
     | { tokens: null; trigger: number | null; state: "no session" | "unavailable" };
   /** Same read-only contract as `pendingTokens`, one entry per applicable Knowledge pool (fixed
    * order global, project, session) since each pool is due on its own budget-derived trigger and
@@ -789,13 +791,15 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot);
     return tokens(renderFactGroups(facts, f => renderFact(f, relations.get(f.id) ?? []), store.factTurnTimes(facts)).join("\n"));
   };
-  const pendingTokens: TraceMemory["pendingTokens"] = (phase, target) => {
+  const pendingTokens: TraceMemory["pendingTokens"] = (phase, target, upToTrigger = false) => {
     const trigger = cfg[phase].triggerTokens;
     if (!target) return { tokens: null, trigger, state: "no session" };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
-      const count = phase === "noting" ? countPending(pendingState(target), Infinity) : consolidationTokens(target);
-      return { tokens: count, trigger: cfg[phase].triggerTokens, state: "known" };
+      if (phase === "consolidation") return { tokens: consolidationTokens(target), trigger, state: "known" };
+      const pending = pendingState(target), count = countPending(pending, upToTrigger ? trigger : Infinity);
+      return !upToTrigger || count < trigger ? { tokens: count, trigger, state: "known" }
+        : { tokens: trigger, trigger, state: "known", atLeast: true, entries: pending.length };
     } catch { return { tokens: null, trigger, state: "unavailable" }; }
   };
   const poolScope = (pool: string): DreamingPoolPending["scope"] =>

@@ -69,9 +69,11 @@ function buildContextSection(input) {
   };
 }
 var pendingRow = (label, value) => {
-  if (value.tokens === null || value.trigger === null) return { label, tokens: null, trigger: null, ratio: null, percent: "?" };
+  if (value.tokens === null || value.trigger === null) return { label, tokens: null, trigger: null, ratio: null, percent: "?", amount: "?" };
   const ratio = value.trigger === 0 ? value.tokens === 0 ? 0 : 1 : Math.min(1, value.tokens / value.trigger);
-  return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio) };
+  const trigger = formatCompactTokens(value.trigger);
+  const amount = value.atLeast ? `\u2265${trigger} / ${trigger} (${(value.entries ?? 0).toLocaleString("en-US")} ${value.entries === 1 ? "entry" : "entries"})` : `${formatCompactTokens(value.tokens)} / ${trigger}`;
+  return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio), amount };
 };
 function buildPendingSection(input) {
   return {
@@ -370,7 +372,7 @@ var bar = (ratio) => {
   const filled = Math.min(10, Math.floor(ratio * 10));
   return "\u2588".repeat(filled) + "\u2591".repeat(10 - filled);
 };
-var pendingLine = (label, row, indent = "  ") => row.tokens === null ? `${indent}${label}: Unknown / ${row.trigger ?? "Unknown"}` : `${indent}${label.padEnd(13)} ${bar(row.ratio ?? 0)} ${row.percent.padStart(4)}   ${formatCompactTokens(row.tokens)} / ${formatCompactTokens(row.trigger)}`;
+var pendingLine = (label, row, indent = "  ") => row.tokens === null ? `${indent}${label}: Unknown / ${row.trigger ?? "Unknown"}` : `${indent}${label.padEnd(13)} ${bar(row.ratio ?? 0)} ${row.percent.padStart(4)}   ${row.amount}`;
 function renderTraceMenu(input, cc) {
   const model = buildTraceMenu(input);
   const context = buildCcContextSection(cc.breakdown, cc.memory, cc.contextTokens);

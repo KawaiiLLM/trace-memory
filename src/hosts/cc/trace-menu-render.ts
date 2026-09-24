@@ -37,7 +37,7 @@
  * suffix, one-decimal category percentages, whole-number total percentage — is copied from the real
  * command, not redesigned.
  */
-import { buildTraceMenu, formatPercent, formatCompactTokens, buildTraceSettings, MEMORY_COLOR_HEX, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
+import { buildTraceMenu, formatPercent, buildTraceSettings, MEMORY_COLOR_HEX, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
 
 // ---- Claude Code's own context breakdown (from `$.session.usage`, step 0 check 5) ----------------
 
@@ -274,9 +274,9 @@ export function renderTraceMenuText(rendered: RenderedMenu): string {
 // Same bar as Pi's renderer (10 cells, floor(ratio*10) filled) — a decoration, not a number, but the
 // two hosts should still match on it rather than one silently dropping it.
 const bar = (ratio: number) => { const filled = Math.min(10, Math.floor(ratio * 10)); return "█".repeat(filled) + "░".repeat(10 - filled); };
-const pendingLine = (label: string, row: { tokens: number | null; trigger: number | null; ratio: number | null; percent: string }, indent = "  ") =>
+const pendingLine = (label: string, row: { tokens: number | null; trigger: number | null; ratio: number | null; percent: string; amount: string }, indent = "  ") =>
   row.tokens === null ? `${indent}${label}: Unknown / ${row.trigger ?? "Unknown"}`
-    : `${indent}${label.padEnd(13)} ${bar(row.ratio ?? 0)} ${row.percent.padStart(4)}   ${formatCompactTokens(row.tokens)} / ${formatCompactTokens(row.trigger!)}`;
+    : `${indent}${label.padEnd(13)} ${bar(row.ratio ?? 0)} ${row.percent.padStart(4)}   ${row.amount}`;
 
 // ---- Whole-menu model ------------------------------------------------------------------------------
 

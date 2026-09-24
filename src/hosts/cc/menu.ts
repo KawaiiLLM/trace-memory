@@ -67,8 +67,9 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     const target = binding.coreSessionId !== null && head
       ? { sessionId: binding.coreSessionId, branch: binding.branch, headTurnId: head } : undefined;
     const pending = (phase: "noting" | "consolidation") => {
-      const result = memory.pendingTokens(phase, target);
-      return { tokens: result.tokens, trigger: result.trigger };
+      const result = memory.pendingTokens(phase, target, true);
+      return { tokens: result.tokens, trigger: result.trigger,
+        ...(result.state === "known" && result.atLeast ? { atLeast: true, entries: result.entries } : {}) };
     };
     const pools = memory.dreamingPending(target);
     const pool = (scope: "global" | "project" | "session") => {

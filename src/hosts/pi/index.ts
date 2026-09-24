@@ -1594,7 +1594,7 @@ export default function (pi: ExtensionAPI) {
     const composition = contextComposition(ctx, pi);
     const e = enrollment();
     const target = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
-    const noting = memory.pendingTokens("noting", target), consolidation = memory.pendingTokens("consolidation", target);
+    const noting = memory.pendingTokens("noting", target, true), consolidation = memory.pendingTokens("consolidation", target);
     const dreaming = memory.dreamingPending(target);
     const pools = Object.fromEntries((dreaming.pools ?? []).map(pool => [pool.scope, { tokens: pool.tokens, trigger: pool.trigger }]));
     const unavailable = { tokens: null, trigger: memory.config.dreaming.triggerTokens };
@@ -1620,7 +1620,7 @@ export default function (pi: ExtensionAPI) {
           { name: "Unclassified" as const, tokens: composition.memory.Unclassified },
           ...(["Conversation", "Other"] as const).map(name => ({ name, tokens: composition.amounts[name] })),
         ], complete: composition.complete },
-      pending: { noting: { tokens: noting.tokens, trigger: noting.trigger }, consolidation: { tokens: consolidation.tokens, trigger: consolidation.trigger },
+      pending: { noting: { tokens: noting.tokens, trigger: noting.trigger, ...(noting.state === "known" && noting.atLeast ? { atLeast: true, entries: noting.entries } : {}) }, consolidation: { tokens: consolidation.tokens, trigger: consolidation.trigger },
         dreaming: { global: pools.global ?? unavailable, project: pools.project ?? unavailable, session: pools.session ?? unavailable } },
       spend: { session: totals?.cost ?? 0,
         noting: { runs: totals?.runs.noting ?? 0, cost: totals?.costs.noting ?? 0 },

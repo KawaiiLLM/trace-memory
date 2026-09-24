@@ -8115,13 +8115,14 @@ relations retained by explicit Fact read; other endpoints not applicable on this
     const relations = store.listFactRelationsOnPathOf(facts.map((fact) => fact.id), path, snapshot2);
     return tokens(renderFactGroups(facts, (f) => renderFact(f, relations.get(f.id) ?? []), store.factTurnTimes(facts)).join("\n"));
   };
-  const pendingTokens = (phase, target) => {
+  const pendingTokens = (phase, target, upToTrigger = false) => {
     const trigger = cfg[phase].triggerTokens;
     if (!target) return { tokens: null, trigger, state: "no session" };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
-      const count = phase === "noting" ? countPending(pendingState(target), Infinity) : consolidationTokens(target);
-      return { tokens: count, trigger: cfg[phase].triggerTokens, state: "known" };
+      if (phase === "consolidation") return { tokens: consolidationTokens(target), trigger, state: "known" };
+      const pending = pendingState(target), count = countPending(pending, upToTrigger ? trigger : Infinity);
+      return !upToTrigger || count < trigger ? { tokens: count, trigger, state: "known" } : { tokens: trigger, trigger, state: "known", atLeast: true, entries: pending.length };
     } catch {
       return { tokens: null, trigger, state: "unavailable" };
     }
@@ -41827,8 +41828,12 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
     const head = binding.coreSessionId !== null && binding.selectedLeafUuid ? store.findSourceEntry(binding.coreSessionId, id, binding.selectedLeafUuid)?.turnId ?? store.findNativeTurn(binding.coreSessionId, id, binding.selectedLeafUuid)?.turnId : void 0;
     const target = binding.coreSessionId !== null && head ? { sessionId: binding.coreSessionId, branch: binding.branch, headTurnId: head } : void 0;
     const pending = (phase) => {
-      const result = memory.pendingTokens(phase, target);
-      return { tokens: result.tokens, trigger: result.trigger };
+      const result = memory.pendingTokens(phase, target, true);
+      return {
+        tokens: result.tokens,
+        trigger: result.trigger,
+        ...result.state === "known" && result.atLeast ? { atLeast: true, entries: result.entries } : {}
+      };
     };
     const pools = memory.dreamingPending(target);
     const pool = (scope) => {
