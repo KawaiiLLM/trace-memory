@@ -33,8 +33,12 @@ import { renderTraceMenu, renderTraceSettings, type CcContextBreakdown, type CcM
 const PINNED_VERSION = "2.1.280";
 let traceScreen: "main" | "settings" = "main";
 // Ruling B: the delegation report's fixture figures for the three (four) rows this preview has no
-// live database to read (see module doc).
-const MEMORY: CcMemorySplit = { knowledge: 17_300, facts: 9_900, raw: 10_000, unclassified: 200 };
+// live database to read (see module doc). Scaled down from the shared model's fixture (17,300 /
+// 9,900 / 10,000 / 200, same proportions) so the split stays under this fenced session's small real
+// "Messages" total (a handful of exchanged turns, not a real conversation) — otherwise the grid-half
+// of the colour ruling (2026-09-24) would recolour every Messages cell and the sample could never
+// show a remaining Messages-coloured cell alongside the memory ones.
+const MEMORY: CcMemorySplit = { knowledge: 120, facts: 70, raw: 50, unclassified: 10 };
 // Cached once per pane focus, since `ui.render` cannot itself await `$.session.usage`.
 let breakdown: CcContextBreakdown | undefined;
 // The real terminal width isn't exposed to this preview (no confirmed `$` accessor for it, see the
