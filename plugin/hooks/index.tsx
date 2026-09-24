@@ -30,7 +30,6 @@ function decode(result: { stdout?: string; stderr?: string; exitCode: number }, 
   if (!result.stdout) throw new Error(`${label}: empty CLI response${result.stderr ? ` (${result.stderr})` : ""}`);
   return result.stdout.trim();
 }
-const settingKey = (row: SettingsRowId): string => row.startsWith("budget.") ? `${row.slice(7)}Budget` : row.includes(".") ? row.replace(/\.([a-z])/, (_, ch: string) => ch.toUpperCase()) : row;
 
 export const register = (on: any) => {
   on("session.start", async ($: any, e: any, next: any) => {
@@ -191,7 +190,7 @@ export const register = (on: any) => {
           if (!parts[0]) { screen = "settings"; $.ui.invalidate("ui.render"); return; }
           void (async () => {
             try {
-              const output = await run("setting", [settingKey(row), ...parts]);
+              const output = await run("setting", [row, ...parts]);
               const result = JSON.parse(output) as { saved: boolean; applied: boolean; diagnostic?: string };
               notice = `Setting ${result.saved ? "saved" : "not saved"}; ${result.applied ? "applied" : "not applied"}${result.diagnostic ? `: ${result.diagnostic}` : ""}`;
               if (result.saved && result.applied) await reload(); else $.ui.invalidate("ui.render");

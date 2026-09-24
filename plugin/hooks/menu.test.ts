@@ -45,6 +45,7 @@ test("local command renders headless text and a mountable narrow pane, then disp
   await ui.select({ key: "setting-rows", value: "budget.global" });
   await ui.input({ key: "edit-budget.global", text: "5000" });
   expect(await ui.find({ type: "Text", text: "saved; not applied" })).toBeDefined();
+  expect(seen.some(args => args.includes("setting budget.global 5000"))).toBe(true);
   await ui.select({ key: "setting-rows", value: "back" });
   await ui.select({ key: "actions", value: "project" });
   await ui.input({ key: "project-name", text: "new-project" });

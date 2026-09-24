@@ -418,7 +418,6 @@ function decode(result, label) {
   if (!result.stdout) throw new Error(`${label}: empty CLI response${result.stderr ? ` (${result.stderr})` : ""}`);
   return result.stdout.trim();
 }
-var settingKey = (row) => row.startsWith("budget.") ? `${row.slice(7)}Budget` : row.includes(".") ? row.replace(/\.([a-z])/, (_, ch) => ch.toUpperCase()) : row;
 export const register = (on) => {
   on("session.start", async ($, e, next) => {
     try {
@@ -638,7 +637,7 @@ export const register = (on) => {
         }
         void (async () => {
           try {
-            const output = await run("setting", [settingKey(row), ...parts]);
+            const output = await run("setting", [row, ...parts]);
             const result = JSON.parse(output);
             notice = `Setting ${result.saved ? "saved" : "not saved"}; ${result.applied ? "applied" : "not applied"}${result.diagnostic ? `: ${result.diagnostic}` : ""}`;
             if (result.saved && result.applied) await reload();
