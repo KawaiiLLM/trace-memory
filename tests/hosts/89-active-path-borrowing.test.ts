@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { TraceMemory, type TaskTarget } from "../../src/core/api/index.ts";
+import { TraceMemory, type TaskTarget, type NotingAgentInput, type ConsolidationAgentInput } from "../../src/core/api/index.ts";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { host, reply, type Reply } from "./pi/test-host.ts";
@@ -20,30 +20,55 @@ function closedTarget(memory: ReturnType<typeof TraceMemory>, projectId: number,
   return { sessionId: session.id, branch: "active", headTurnId: turn.id };
 }
 
-test("89: Pi borrows only the retained cursor path and leaves its abandoned sibling pending", async () => {
+function abandonedSibling(memory: ReturnType<typeof TraceMemory>, target: TaskTarget) {
+  const store = memory.store;
+  const turn = store.appendTurn({ sessionId: target.sessionId, parentTurnId: target.headTurnId,
+    kind: "turn", userPrompt: "ABANDONED_SIBLING", startedAt: at });
+  const entry = memory.appendEntry({ sessionId: target.sessionId, turnId: turn.id, nativeLineage: "closed", nativeId: "sibling",
+    role: "user", text: "ABANDONED_SIBLING", raw: "ABANDONED_SIBLING", calls: [] });
+  const rootEntries = store.sourcePath(target.sessionId, target.branch, target.headTurnId).map(value => value.id);
+  store.publishSourcePath(target.sessionId, "abandoned", [...rootEntries, entry.id], turn.id, "closed");
+  const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, branch: "abandoned", createdAt: at },
+    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "ABANDONED_SIBLING", source: [`T${turn.id}#user`], createdAt: at }] });
+  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  store.setCurrentPath(target.sessionId, target.branch, target.headTurnId, "closed");
+  return { turn, entry, fact: noted.facts[0]! };
+}
+
+function expectConsumedOnlySibling(memory: ReturnType<typeof TraceMemory>, sessionId: number, sibling: ReturnType<typeof abandonedSibling>) {
+  const store = memory.store;
+  const runs = store.listRuns(sessionId).filter(run => run.kind !== "manual" && run.branch === "abandoned");
+  expect(runs).toHaveLength(2);
+  expect(runs.every(run => run.outcome === "success")).toBe(true);
+  const noting = runs.find(run => run.kind === "noting")!;
+  const consolidation = runs.find(run => run.kind === "consolidation")!;
+  expect(store.db.prepare("SELECT entry_id FROM noted_entries WHERE run_id = ?").all(noting.id).map(row => Number(row.entry_id))).toEqual([sibling.entry.id]);
+  expect(store.listConsolidatedFacts(consolidation.id).map(fact => fact.id)).toEqual([sibling.fact.id]);
+  expect(store.pendingEntries(sessionId, "abandoned", sibling.turn.id)).toEqual([]);
+  expect(store.consolidationBatch(sessionId, "abandoned", sibling.turn.id)).toEqual([]);
+}
+
+test("89: Pi borrows only active paths and consumes reactivated backlog at the next ordinary opportunity", async () => {
   const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000 });
   try {
     await h.turn();
     const store = h.memory.store;
     const target = closedTarget(h.memory, store.getSession(1)!.projectId);
-    const sibling = store.appendTurn({ sessionId: target.sessionId, parentTurnId: target.headTurnId,
-      kind: "turn", userPrompt: "ABANDONED_SIBLING", startedAt: at });
-    const entry = h.memory.appendEntry({ sessionId: target.sessionId, turnId: sibling.id, nativeLineage: "closed", nativeId: "sibling",
-      role: "user", text: "ABANDONED_SIBLING", raw: "ABANDONED_SIBLING", calls: [] });
-    const rootEntries = store.sourcePath(target.sessionId, target.branch, target.headTurnId).map(value => value.id);
-    store.publishSourcePath(target.sessionId, "abandoned", [...rootEntries, entry.id], sibling.id, "closed");
-    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, branch: "abandoned", createdAt: at },
-      facts: [{ turnId: sibling.id, category: "decision", actor: "user", text: "ABANDONED_SIBLING", source: [`T${sibling.id}#user`], createdAt: at }] });
-    if (!noted.ok) throw new Error(noted.problems.join("; "));
-    store.setCurrentPath(target.sessionId, target.branch, target.headTurnId, "closed");
+    const sibling = abandonedSibling(h.memory, target);
     await h.prompt("executor opportunity"); await h.answer(); await h.drain();
     const runs = store.listRuns(target.sessionId).filter(run => run.kind !== "manual");
     expect(runs).toHaveLength(2);
     expect(new Set(runs.map(run => run.kind))).toEqual(new Set(["noting", "consolidation"]));
     expect(runs.every(run => run.branch === target.branch && run.outcome === "success")).toBe(true);
-    expect(store.pendingEntries(target.sessionId, "abandoned", sibling.id).map(value => value.id)).toEqual([entry.id]);
-    expect(store.consolidationBatch(target.sessionId, "abandoned", sibling.id).map(value => value.id)).toEqual([noted.facts[0]!.id]);
+    expect(store.pendingEntries(target.sessionId, "abandoned", sibling.turn.id).map(value => value.id)).toEqual([sibling.entry.id]);
+    expect(store.consolidationBatch(target.sessionId, "abandoned", sibling.turn.id).map(value => value.id)).toEqual([sibling.fact.id]);
     expect(JSON.stringify(h.conversations)).not.toContain("ABANDONED_SIBLING");
+    const requestCount = h.requests.length;
+    store.setCurrentPath(target.sessionId, "abandoned", sibling.turn.id, "closed");
+    await h.drain();
+    expect(h.requests).toHaveLength(requestCount);
+    await h.prompt("next ordinary opportunity"); await h.answer(); await h.drain();
+    expectConsumedOnlySibling(h.memory, target.sessionId, sibling);
   } finally { await h.dispose(); }
 });
 
@@ -51,6 +76,54 @@ const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-89.db", stateDir: "/tm
   notingModel: "synthetic", notingThinking: "medium", consolidationModel: "synthetic", consolidationThinking: "medium",
   "dreaming.model": "synthetic", "dreaming.thinking": "medium",
   worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } }).worker;
+
+test("89: CC borrows only active paths and consumes reactivated backlog at the next ordinary opportunity", async () => {
+  const inputs: (NotingAgentInput | ConsolidationAgentInput)[] = [];
+  const memory = TraceMemory(":memory:", async raw => {
+    const input = raw as NotingAgentInput | ConsolidationAgentInput;
+    inputs.push(input);
+    input.reportRequest({ offline: true });
+    if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    return { outcome: "success", output: "No new knowledge.", request: { offline: true } };
+  }, { noting: { triggerTokens: 1_000_000 }, consolidation: { triggerTokens: 1_000_000 } });
+  try {
+    const store = memory.store;
+    const project = store.createProject({ name: "89-active", declaredBy: "mark" });
+    const own = store.createSession({ host: "cc", projectId: project.id, startedAt: at, firstReplyAt: at, enrollmentChoice: true });
+    const turn = store.appendTurn({ sessionId: own.id, kind: "turn", userPrompt: "own", startedAt: at });
+    const ownEntries: number[] = [];
+    const append = () => {
+      const entry = memory.appendEntry({ sessionId: own.id, turnId: turn.id, nativeLineage: "cc", nativeId: `own-${ownEntries.length}`,
+        role: "assistant", text: "own boundary", raw: "own boundary", calls: [] });
+      ownEntries.push(entry.id);
+      store.publishSourcePath(own.id, "main", ownEntries, turn.id, "cc");
+      return entry.id;
+    };
+    const first = append();
+    const target = closedTarget(memory, own.projectId);
+    const sibling = abandonedSibling(memory, target);
+    const diagnostics: string[] = [];
+    const scheduler = new CcTaskScheduler(memory, worker, message => diagnostics.push(message));
+    const opportunity = (appended: number[]) => scheduler.reconcile({ state: "ready", coreSessionId: own.id, branch: "main", headTurnId: turn.id,
+      selectedEntryIds: [...ownEntries], selectedCount: ownEntries.length, selectedTailId: ownEntries.at(-1)!,
+      selectedAppendedEntryIds: appended, appendedEntryIds: appended, problems: [], snapshot: {} as never });
+    opportunity([first]); await scheduler.settle();
+    expect(inputs).toHaveLength(2);
+    expect(new Set(inputs.map(input => input.kind))).toEqual(new Set(["noting", "consolidation"]));
+    expect(inputs.every(input => input.sessionId === target.sessionId && input.branch === "active")).toBe(true);
+    expect(inputs.every(input => !input.text.includes("ABANDONED_SIBLING"))).toBe(true);
+    expect(store.pendingEntries(target.sessionId, "abandoned", sibling.turn.id).map(entry => entry.id)).toEqual([sibling.entry.id]);
+    expect(store.consolidationBatch(target.sessionId, "abandoned", sibling.turn.id).map(fact => fact.id)).toEqual([sibling.fact.id]);
+    store.setCurrentPath(target.sessionId, "abandoned", sibling.turn.id, "closed");
+    opportunity([]); await scheduler.settle();
+    expect(inputs).toHaveLength(2);
+    opportunity([append()]); await scheduler.settle();
+    expect(inputs).toHaveLength(4);
+    expect(inputs.slice(2).every(input => input.sessionId === target.sessionId && input.branch === "abandoned")).toBe(true);
+    expectConsumedOnlySibling(memory, target.sessionId, sibling);
+    expect(diagnostics).toEqual([]);
+  } finally { memory.close(); }
+});
 
 test("89: CC reports a real invalid cursor, discards the whole borrowed scan, and admits its own N/C/D", async () => {
   const memory = TraceMemory(":memory:", async () => { throw new Error("scheduler fixture must not call a model"); });
