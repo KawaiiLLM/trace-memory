@@ -33,6 +33,7 @@ export interface CcControlHandlers {
    * same lock before `off` waits for it through `disableEnrollment` below. Never called for `stop`. */
   holdImport(): () => void;
   effectiveConfig?(): ResolvedCcHostConfig;
+  catchupSnapshot?(): CcCatchupStatus | null;
   applyConfig?(next: ResolvedCcHostConfig): void;
 }
 
@@ -130,7 +131,8 @@ export async function startControlServer(config: ResolvedCcHostConfig, initial: 
           const verb = request.verb as ControlVerb | "settings" | "apply";
           if (verb === "settings") {
             if (!handlers?.effectiveConfig) throw new Error("effective settings are unavailable on this executor");
-            connection.end(`${JSON.stringify({ ok: true, verb, config: handlers.effectiveConfig() })}\n`); return;
+            connection.end(`${JSON.stringify({ ok: true, verb, config: handlers.effectiveConfig(),
+              catchup: handlers.catchupSnapshot?.() ?? null })}\n`); return;
           }
           if (verb === "apply") {
             if (!handlers?.applyConfig || typeof request.path !== "string" || !request.path.startsWith("/") || typeof request.expected !== "string")
@@ -221,7 +223,8 @@ export async function startControlServer(config: ResolvedCcHostConfig, initial: 
 }
 
 function request(executor: CcExecutorBinding, verb: ControlVerb | "settings" | "apply", timeoutMs: number,
-  detail: Record<string, string> = {}): Promise<ControlReply | { ok: true; verb: "settings"; config: ResolvedCcHostConfig } | { ok: true; verb: "apply" }> {
+  detail: Record<string, string> = {}): Promise<ControlReply | { ok: true; verb: "settings"; config: ResolvedCcHostConfig;
+    catchup: CcCatchupStatus | null } | { ok: true; verb: "apply" }> {
   return new Promise((resolve, reject) => {
     const connection = createConnection(executor.socketPath); let output = "", settled = false;
     const finish = (error?: Error) => { if (settled) return; settled = true; clearTimeout(timer); connection.destroy(); error ? reject(error) : undefined; };
@@ -240,20 +243,31 @@ function request(executor: CcExecutorBinding, verb: ControlVerb | "settings" | "
   });
 }
 
-export async function executorSettings(config: ResolvedCcHostConfig, nativeSessionId: string,
-  apply?: { path: string; expected: string }): Promise<ResolvedCcHostConfig | true> {
+export async function executorSnapshot(config: ResolvedCcHostConfig, nativeSessionId: string): Promise<{
+  config: ResolvedCcHostConfig; catchup: CcCatchupStatus | null }> {
+  const reply = await executorSettingsRequest(config, nativeSessionId, "settings");
+  if (reply.verb !== "settings") throw new Error("invalid CC effective settings reply");
+  if (reply.config.dbPath !== config.dbPath || reply.config.stateDir !== config.stateDir)
+    throw new Error("CC executor returned a different database or state directory");
+  return { config: reply.config, catchup: reply.catchup };
+}
+
+async function executorSettingsRequest(config: ResolvedCcHostConfig, nativeSessionId: string,
+  verb: "settings" | "apply", apply?: { path: string; expected: string }) {
   const binding = readBinding(config, nativeSessionId);
   if (!binding || binding.dbPath !== config.dbPath || binding.clearedInto)
     throw new Error("current CC session has no valid executor binding");
   const executor = binding.executor;
   if (!executor || executorLiveness(executor) !== "alive") throw new Error("running CC executor is unavailable");
-  const reply = await request(executor, apply ? "apply" : "settings", 2_000, apply ?? {});
-  if (apply) return true;
-  if (reply.verb !== "settings") throw new Error("invalid CC effective settings reply");
-  const effective = reply.config;
-  if (effective.dbPath !== config.dbPath || effective.stateDir !== config.stateDir)
-    throw new Error("CC executor returned a different database or state directory");
-  return effective;
+  return request(executor, verb, 2_000, apply ?? {});
+}
+
+export async function executorSettings(config: ResolvedCcHostConfig, nativeSessionId: string,
+  apply?: { path: string; expected: string }): Promise<ResolvedCcHostConfig | true> {
+  if (!apply) return (await executorSnapshot(config, nativeSessionId)).config;
+  const reply = await executorSettingsRequest(config, nativeSessionId, "apply", apply);
+  if (reply.verb !== "apply") throw new Error("invalid CC settings apply reply");
+  return true;
 }
 
 export type OperatorControlResult =

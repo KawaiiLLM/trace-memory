@@ -243,6 +243,7 @@ export class CcCoordinator {
         beforeCancel: () => this.scheduler?.stopCatchup(),
         holdImport: () => this.holdImport(),
         effectiveConfig: () => this.appliedConfig,
+        catchupSnapshot: () => this.scheduler?.catchupSnapshot() ?? null,
         applyConfig: next => {
           if (!this.importer || !this.scheduler) throw new Error("CC executor is not attached for settings apply");
           const prior = this.appliedConfig;

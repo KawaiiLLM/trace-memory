@@ -157,6 +157,9 @@ export class CcTaskScheduler {
     return this.catchupStatus();
   }
 
+  /** Read the existing drain only. A menu read is not a catchup checkpoint or admission. */
+  catchupSnapshot(): CcCatchupStatus | null { return this.catchup ? this.catchupStatus() : null; }
+
   catchupStatus(): CcCatchupStatus {
     if (!this.catchup) return this.failedStatus("no catchup has been started");
     const drain = this.catchup;

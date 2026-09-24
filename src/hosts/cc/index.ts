@@ -13,7 +13,7 @@ import { ccHandleClear } from "./clear.ts";
 import { installCcNativeRejectionGuard } from "./native-rejection.ts";
 import { readCcMenu, readCcRuns } from "./menu.ts";
 import { editedCcConfig, saveCcConfig, type CcSettingId } from "./menu-config.ts";
-import { executorSettings } from "./control.ts";
+import { executorSettings, executorSnapshot } from "./control.ts";
 import { Store } from "../../core/store/index.ts";
 import { parseRunsCount } from "../trace-menu.ts";
 
@@ -190,10 +190,10 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
       throw new Error(verb === "runs" ? "runs requires --json <count>" : "menu requires --json");
     const runLimit = verb === "runs" ? parseRunsCount(rest[1]!) : 10;
     if (verb === "runs") { process.stdout.write(`${JSON.stringify({ runs: readCcRuns(config, nativeSessionId, runLimit) })}\n`); return; }
-    let effective: ResolvedCcHostConfig | undefined;
-    try { effective = await executorSettings(config, nativeSessionId) as ResolvedCcHostConfig; }
+    let effective: Awaited<ReturnType<typeof executorSnapshot>> | undefined;
+    try { effective = await executorSnapshot(config, nativeSessionId); }
     catch { /* The menu remains navigable; its worker values are explicitly unavailable. */ }
-    const data = readCcMenu(config, nativeSessionId, effective);
+    const data = readCcMenu(config, nativeSessionId, effective?.config, 10, effective?.catchup);
     process.stdout.write(`${JSON.stringify(data)}\n`);
     return;
   }

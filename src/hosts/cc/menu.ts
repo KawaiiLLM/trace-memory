@@ -3,12 +3,27 @@ import { Store } from "../../core/store/index.ts";
 import type { SettingsInput, TraceMenuInput } from "../trace-menu.ts";
 
 import type { ResolvedCcHostConfig } from "./config.ts";
+import type { CcCatchupStatus } from "./scheduler.ts";
 import { assertOperatorBinding, readBinding, sessionEnabled, validateNativeSessionId } from "./binding.ts";
 const localMidnight = () => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(); };
 import { readCompleteTranscript } from "./transcript.ts";
 import { ccContextEvidence } from "./menu-context.ts";
 
 export interface CcMenuRun { id: number; phase: string; status: string; cost: number; at: string }
+/** Match Pi's one-line catchup progress, from the executor's existing in-memory drain. */
+export function ccCatchupNotice(status: CcCatchupStatus | null): string | null {
+  if (!status) return null;
+  const entries = `${status.entriesDone}/${status.entriesTotal} entries`;
+  const facts = `${status.factsDone}/${status.factsTotal} facts`;
+  if (status.state === "completed")
+    return `Catchup: completed (${status.entriesDone} entries noted, ${status.factsDone} facts integrated; below-threshold work may remain pending)`;
+  if (status.state === "stopped")
+    return `Catchup: stopped (${entries}, ${facts} processed; unprocessed work stays pending; /trace catchup resumes it)`;
+  if (status.state === "failed")
+    return `Catchup: failed — ${status.diagnostic ?? "executor reported failure"} (${entries}, ${facts} processed)`;
+  if (status.state === "waiting") return `Catchup: waiting for ${status.phase ?? "a task"} (${entries}, ${facts})`;
+  return `Catchup: running${status.phase ? ` ${status.phase}` : ""} (${entries}, ${facts})`;
+}
 export interface CcMenuReply {
   menu: TraceMenuInput;
   settings: SettingsInput;
@@ -35,7 +50,7 @@ export function readCcRuns(config: ResolvedCcHostConfig, nativeSessionId: string
 }
 
 export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string,
-  effective?: ResolvedCcHostConfig, runLimit = 10): CcMenuReply {
+  effective?: ResolvedCcHostConfig, runLimit = 10, catchup: CcCatchupStatus | null = null): CcMenuReply {
   if (!Number.isSafeInteger(runLimit) || runLimit < 1) throw new Error("Runs count must be a positive safe integer");
   const id = validateNativeSessionId(nativeSessionId), binding = readBinding(config, id);
   if (!binding) throw new Error(`Claude Code session ${id} is not bound`);
@@ -88,6 +103,8 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     if (!effective) notices.push("Running executor configuration unavailable");
     else if (active.closedSessionScope !== config.closedSessionScope || workers.some(w => w.sources))
       notices.push("Saved file settings differ from running executor");
+    const progress = ccCatchupNotice(catchup);
+    if (progress) notices.push(progress);
     if (binding.clearedFrom || binding.clearedInto) notices.push("Shared identity");
     const data: TraceMenuInput = {
       header: { session: session ? `S${session.id}` : "unbound", project: project?.name ?? "unavailable", enabled,

@@ -6,7 +6,7 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { editedCcConfig, saveCcConfig } from "../../src/hosts/cc/menu-config.ts";
 import { readCcMenu } from "../../src/hosts/cc/menu.ts";
 import { bindingPath, readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
-import { executorSettings, startControlServer } from "../../src/hosts/cc/control.ts";
+import { executorSettings, executorSnapshot, startControlServer } from "../../src/hosts/cc/control.ts";
 import { TraceMemory } from "../../src/core/api/index.ts";
 import { runCcCommand } from "../../src/hosts/cc/index.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
@@ -127,14 +127,21 @@ test("authenticated control reports actual applied snapshot, and failed apply le
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.session,
     transcript_path: transcriptPath, source: "startup" }, null);
   const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure", output: "unused" }), f.config.coreConfig);
-  let effective = f.config, applications = 0;
+  let effective = f.config, applications = 0, catchupActions = 0, snapshotReads = 0;
   const server = await startControlServer(f.config, readBinding(f.config, f.session)!, memory, undefined, undefined, {
-    catchup: async () => ({ state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0 }),
+    catchup: async () => { catchupActions++; return { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0 }; },
     beforeCancel: () => {}, holdImport: () => () => {}, effectiveConfig: () => effective,
+    catchupSnapshot: () => { snapshotReads++; return { state: "waiting", phase: "noting",
+      entriesDone: 2, entriesTotal: 5, factsDone: 1, factsTotal: 3 }; },
     applyConfig: next => { applications++; effective = next; },
   });
   try {
-    expect((await executorSettings(f.config, f.session) as typeof f.config).worker?.phases.noting.thinking).toBe("high");
+    const snapshot = await executorSnapshot(f.config, f.session);
+    expect(snapshot.config.worker?.phases.noting.thinking).toBe("high");
+    expect(readCcMenu(f.config, f.session, snapshot.config, 10, snapshot.catchup).menu.notices)
+      .toContain("Catchup: waiting for noting (2/5 entries, 1/3 facts)");
+    expect(snapshotReads).toBe(1);
+    expect(catchupActions).toBe(0);
     const edited = editedCcConfig(f.text, "noting.thinking", "medium");
     saveCcConfig(f.path, f.text, edited);
     await expect(executorSettings(f.config, f.session, { path: f.path, expected: f.text })).rejects.toThrow("changed before executor apply");
