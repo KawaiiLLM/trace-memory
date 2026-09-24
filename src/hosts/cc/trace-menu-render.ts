@@ -109,7 +109,18 @@ export function splitMessagesGridCounts(messagesCellCount: number, messagesToken
 /** Builds Claude Code's own context section: the grid verbatim (cell positions and counts are the
  * SDK's, never recomputed here), the legend in `/context`'s own wording, with Knowledge/Facts/Raw
  * spliced in ahead of a reduced "Messages" row (ruling B). Returns `undefined` when Claude Code has no
- * breakdown at all (ticket: shows `unavailable`, points at the built-in `/context`). */
+ * breakdown at all (ticket: shows `unavailable`, points at the built-in `/context`).
+ *
+ * Requirement 2 ("rows never vanish"): Knowledge, Facts and Raw are always in the legend once `memory`
+ * is supplied at all — zero when nothing was injected — and "Memory, unclassified" only when non-zero.
+ * `memory` need not line up with a "Messages" category: a fresh session with no message sent has none
+ * (the bug this fixes), so the three rows are inserted where "Messages" would sit — just before the
+ * first free-kind category, or at the end if there is none — rather than only when "Messages" exists.
+ * When the supplied amounts are inconsistent with what Claude Code reports (their sum exceeds a present
+ * "Messages" category, or "Messages" is absent while the sum is positive), that is not presence: the
+ * three rows and the Messages adjustment fall back to `unavailable`, Messages keeps Claude Code's own
+ * figure, and the grid keeps Claude Code's own colours — same as `memory` being `undefined` (presence
+ * could not be established at all). */
 export function buildCcContextSection(breakdown: CcContextBreakdown | undefined, memory: CcMemorySplit | undefined): CcContextSection | undefined {
   if (!breakdown) return undefined;
   const headerLines = [
@@ -122,14 +133,18 @@ export function buildCcContextSection(breakdown: CcContextBreakdown | undefined,
     ? { glyph: FREE_GLYPH, color: FREE_GLYPH_COLOR }
     : { glyph: cell.squareFullness >= 1 ? FULL_GLYPH : PARTIAL_GLYPH, color: cell.color }));
 
+  const messagesCategory = breakdown.categories.find(c => c.name === "Messages");
+  const memorySum = memory ? memory.knowledge + memory.facts + memory.raw + memory.unclassified : 0;
+  const inconsistent = memory !== undefined && (messagesCategory ? memorySum > messagesCategory.tokens : memorySum > 0);
+  const effectiveMemory = inconsistent ? undefined : memory;
+
   // Grid half of ruling B (maintainer, 2026-09-24): recolour a proportional prefix of the Messages
   // cells to the memory family, in grid order. `.flat()` shares object references with `gridRows`, so
   // painting the flat view mutates the same cells the 2-D array returns — no geometry is rebuilt.
-  const messagesCategory = breakdown.categories.find(c => c.name === "Messages");
-  if (memory && messagesCategory) {
+  if (effectiveMemory && messagesCategory) {
     const messagesCellIndexes = breakdown.gridRows.flat()
       .flatMap((cell, i) => cell.categoryName === "Messages" ? [i] : []);
-    const counts = splitMessagesGridCounts(messagesCellIndexes.length, messagesCategory.tokens, memory);
+    const counts = splitMessagesGridCounts(messagesCellIndexes.length, messagesCategory.tokens, effectiveMemory);
     const flatView = gridRows.flat();
     let cursor = 0;
     const paint = (count: number, color: string) => { for (let k = 0; k < count; k++, cursor++) flatView[messagesCellIndexes[cursor]!]!.color = color; };
@@ -145,19 +160,29 @@ export function buildCcContextSection(breakdown: CcContextBreakdown | undefined,
   });
 
   const rows: CcContextLegendRow[] = [];
+  // Where the (up to) four memory rows land: right where "Messages" was, or — a fresh, empty session
+  // has no "Messages" category at all — just ahead of the first free-kind row, so the rows still show
+  // rather than silently vanishing because there was nothing to splice them into.
+  let memoryInsertAt = -1;
   for (const cat of breakdown.categories) {
     const isFree = cat.kind === "free";
-    if (cat.name === "Messages" && memory) {
-      const split = memory.knowledge + memory.facts + memory.raw + memory.unclassified;
-      const remainder = Math.max(0, cat.tokens - split);
-      if (memory.knowledge > 0) rows.push(row("Knowledge", MEMORY_COLOR.knowledge, memory.knowledge, " tokens", false));
-      if (memory.facts > 0) rows.push(row("Facts", MEMORY_COLOR.facts, memory.facts, " tokens", false));
-      if (memory.raw > 0) rows.push(row("Raw", MEMORY_COLOR.raw, memory.raw, " tokens", false));
-      if (memory.unclassified > 0) rows.push(row("Memory, unclassified", MEMORY_COLOR.unclassified, memory.unclassified, " tokens", false));
+    if (isFree && memoryInsertAt === -1 && effectiveMemory) memoryInsertAt = rows.length;
+    if (cat.name === "Messages") {
+      memoryInsertAt = effectiveMemory ? rows.length : memoryInsertAt;
+      const remainder = effectiveMemory ? Math.max(0, cat.tokens - memorySum) : cat.tokens;
       if (remainder > 0) rows.push(row(cat.name, cat.color, remainder, " tokens", false));
       continue;
     }
     rows.push(row(cat.name, cat.color, cat.tokens, isFree ? "" : " tokens", isFree));
+  }
+  if (effectiveMemory) {
+    const memoryRows: CcContextLegendRow[] = [
+      row("Knowledge", MEMORY_COLOR.knowledge, effectiveMemory.knowledge, " tokens", false),
+      row("Facts", MEMORY_COLOR.facts, effectiveMemory.facts, " tokens", false),
+      row("Raw", MEMORY_COLOR.raw, effectiveMemory.raw, " tokens", false),
+    ];
+    if (effectiveMemory.unclassified > 0) memoryRows.push(row("Memory, unclassified", MEMORY_COLOR.unclassified, effectiveMemory.unclassified, " tokens", false));
+    rows.splice(memoryInsertAt === -1 ? rows.length : memoryInsertAt, 0, ...memoryRows);
   }
 
   return {
@@ -165,7 +190,9 @@ export function buildCcContextSection(breakdown: CcContextBreakdown | undefined,
     gridRows,
     legendHeading: "Estimated usage by category",
     legend: rows,
-    memoryUnavailable: memory ? undefined : (breakdown.categories.some(c => c.name === "Messages") ? "Knowledge, Facts, Raw: unavailable" : undefined),
+    memoryUnavailable: effectiveMemory
+      ? undefined
+      : (inconsistent || messagesCategory ? "Knowledge, Facts, Raw: unavailable" : undefined),
   };
 }
 

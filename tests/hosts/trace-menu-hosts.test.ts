@@ -155,9 +155,12 @@ test("splitMessagesGridCounts: zero messages tokens or zero cells yields zero fo
 
 test("Claude Code grid: a proportional prefix of the Messages cells recolours to the memory family, in grid order; non-Messages cells are untouched", () => {
   const cell = (categoryName: string, color: string): CcGridCell => ({ categoryName, color, isFilled: true, tokens: 0, percentage: 0, squareFullness: 1 });
-  // 10 cells: 2 System prompt, 6 Messages, 2 Free space — Messages tokens 1,000, split 500/300/150/60
-  // (same numbers as the capped `splitMessagesGridCounts` case above, scaled to 6 cells): expect
-  // Knowledge=3, Facts=2, Raw=1, Unclassified=0 to land on the first 6 Messages cells in that order.
+  // 10 cells: 2 System prompt, 6 Messages, 2 Free space — Messages tokens 1,100 (the split's own sum is
+  // 1,010; kept above it so this stays a *consistent* split, not the new "amounts exceed Messages"
+  // unavailable case below — requirement 2), split 500/300/150/60 (same numbers as the capped
+  // `splitMessagesGridCounts` case above, scaled to 6 cells): expect Knowledge=3, Facts=2, Raw=1,
+  // Unclassified=0 to land on the first 6 Messages cells in that order (the rounding lands the same
+  // whether Messages is 1,000 or 1,100 — only the consistency check cares about the difference).
   const breakdown: CcContextBreakdown = {
     model: "m", totalTokens: 1_200, maxTokens: 10_000, percentage: 12,
     gridRows: [[
@@ -169,7 +172,7 @@ test("Claude Code grid: a proportional prefix of the Messages cells recolours to
     ]],
     categories: [
       { name: "System prompt", tokens: 200, color: "promptBorder", kind: "used" },
-      { name: "Messages", tokens: 1_000, color: "purple_FOR_SUBAGENTS_ONLY", kind: "used" },
+      { name: "Messages", tokens: 1_100, color: "purple_FOR_SUBAGENTS_ONLY", kind: "used" },
       { name: "Free space", tokens: 8_800, color: "promptBorder", kind: "free" },
     ],
   };
@@ -183,4 +186,56 @@ test("Claude Code grid: a proportional prefix of the Messages cells recolours to
     MEMORY_COLOR_HEX.raw,
   ]);
   expect(colors.slice(8)).toEqual(["inactive", "inactive"]); // Free space cells always paint "inactive"
+});
+
+// ---- Requirement 2: rows never vanish ----------------------------------------------------------
+
+// Shaped like a fresh session with no message sent (the reported bug): Claude Code reports no
+// "Messages" category at all when there is no conversation yet.
+const CC_BREAKDOWN_NO_MESSAGES: CcContextBreakdown = {
+  model: "claude-opus-5-5[1m]",
+  totalTokens: 25_735,
+  maxTokens: 1_000_000,
+  percentage: 3,
+  gridRows: [],
+  categories: [
+    { name: "System prompt", tokens: 1_876, color: "promptBorder", kind: "used" },
+    { name: "System tools", tokens: 21_899, color: "inactive", kind: "used" },
+    { name: "Skills", tokens: 1_960, color: "warning", kind: "used" },
+    { name: "Free space", tokens: 974_265, color: "promptBorder", kind: "free" },
+  ],
+};
+
+test("Claude Code context: nothing injected shows Knowledge/Facts/Raw as zero rows, no Messages row to touch, no Memory-unclassified row", () => {
+  const section = buildCcContextSection(CC_BREAKDOWN_NO_MESSAGES, { knowledge: 0, facts: 0, raw: 0, unclassified: 0 })!;
+  const labels = section.legend.map(r => r.label);
+  expect(labels).toEqual(["System prompt", "System tools", "Skills", "Knowledge", "Facts", "Raw", "Free space"]);
+  expect(section.legend.find(r => r.label === "Knowledge")?.tokens).toBe(0);
+  expect(section.legend.find(r => r.label === "Facts")?.tokens).toBe(0);
+  expect(section.legend.find(r => r.label === "Raw")?.tokens).toBe(0);
+  expect(section.memoryUnavailable).toBeUndefined();
+});
+
+test("Claude Code context: a normal split still reduces Messages and inserts the memory rows in its place", () => {
+  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY)!;
+  const labels = section.legend.map(r => r.label);
+  expect(labels).toEqual([
+    "System prompt", "System tools", "Skills", "Knowledge", "Facts", "Raw", "Memory, unclassified", "Messages", "Free space",
+  ]);
+  expect(section.legend.find(r => r.label === "Messages")?.tokens).toBe(134_200 - (17_300 + 9_900 + 10_000 + 200));
+  expect(section.memoryUnavailable).toBeUndefined();
+});
+
+test("Claude Code context: injected amounts exceeding Messages is inconsistent — unavailable, Messages and the grid untouched", () => {
+  const overInjected: CcMemorySplit = { knowledge: 100_000, facts: 20_000, raw: 10_000, unclassified: 5_000 }; // sums past 134,200
+  const section = buildCcContextSection(CC_BREAKDOWN, overInjected)!;
+  expect(section.legend.some(r => MEMORY_LABELS.includes(r.label))).toBe(false);
+  expect(section.legend.find(r => r.label === "Messages")?.tokens).toBe(134_200);
+  expect(section.memoryUnavailable).toBe("Knowledge, Facts, Raw: unavailable");
+});
+
+test("Claude Code context: something injected while Messages is entirely absent is inconsistent — unavailable, not zero rows", () => {
+  const section = buildCcContextSection(CC_BREAKDOWN_NO_MESSAGES, { knowledge: 500, facts: 0, raw: 0, unclassified: 0 })!;
+  expect(section.legend.some(r => MEMORY_LABELS.includes(r.label))).toBe(false);
+  expect(section.memoryUnavailable).toBe("Knowledge, Facts, Raw: unavailable");
 });
