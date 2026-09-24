@@ -730,8 +730,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // (never re-reading Raw) for an entry already seen. Pruned to exactly the still-pending set on every
   // read: an entry drops out the moment it is noted, instead of leaking for the life of the process.
   const notingViewCache = new Map<number, string>();
+  const nextViewMarkerTokens = tokens("[");
   let lastPending: PendingEntries | undefined;
-  type CountedPrefix = { count: JoinedTokens; offset: number; end: number; views: Map<number, { id: number; text: string }> };
+  type CountedView = { id: number; text: string; terminal: number; followed: number };
+  type CountedPrefix = { offset: number; end: number; views: Map<number, CountedView>;
+    followedSum: number; last?: CountedView; empty: number; fallback?: JoinedTokens };
+  const prefixTokens = (prefix: CountedPrefix): number => prefix.fallback?.count ??
+    prefix.followedSum - (prefix.last?.followed ?? 0) + (prefix.last?.terminal ?? 0);
   const counted = new WeakMap<PendingEntries, CountedPrefix>();
   const pendingState = (target: TaskTarget): PendingEntries => {
     const pending = store.pendingEntryState(target.sessionId, target.branch, target.headTurnId);
@@ -745,7 +750,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const countPending = (pending: PendingEntries, limit: number): number => {
     let prefix = counted.get(pending);
     if (!prefix) {
-      prefix = { count: new JoinedTokens(), offset: pending.offset, end: pending.offset, views: new Map() };
+      prefix = { offset: pending.offset, end: pending.offset, views: new Map(), followedSum: 0, empty: 0 };
       counted.set(pending, prefix);
     }
     if (pending.offset > prefix.offset) {
@@ -754,35 +759,55 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       for (let position = prefix.offset; position < removedEnd; position++) {
         const view = prefix.views.get(position)!;
         removedChars += view.text.length + (position + 1 < prefix.end ? 2 : 0);
+        prefix.followedSum -= view.followed;
+        if (!view.text) prefix.empty--;
         notingViewCache.delete(view.id);
         prefix.views.delete(position);
       }
-      // Every removed view except the last counted view also removes its following separator.
-      // The suffix keeps the exact segment boundaries of the original joined string.
-      prefix.count.removePrefix(removedChars);
+      prefix.fallback?.removePrefix(removedChars);
       prefix.offset = pending.offset;
       prefix.end = Math.max(prefix.end, pending.offset);
+      if (prefix.end === pending.offset) prefix.last = undefined;
+      if (!prefix.empty) prefix.fallback = undefined;
     }
-    while (prefix.end - pending.offset < pending.length && prefix.count.count < limit) {
+    while (prefix.end - pending.offset < pending.length && prefixTokens(prefix) < limit) {
       const id = pending.at(prefix.end - pending.offset)!;
       let view = notingViewCache.get(id);
       if (view === undefined) {
         view = renderEntry(store.getSourceEntry(id)!, cfg.render, resultText).content;
         notingViewCache.set(id, view);
       }
-      if (prefix.end > pending.offset) prefix.count.add("\n\n");
-      prefix.count.add(view);
-      prefix.views.set(prefix.end++, { id, text: view });
+      if (!view && !prefix.fallback) {
+        prefix.fallback = new JoinedTokens();
+        let first = true;
+        for (const prior of prefix.views.values()) {
+          if (!first) prefix.fallback.add("\n\n");
+          prefix.fallback.add(prior.text);
+          first = false;
+        }
+      }
+      if (prefix.fallback) {
+        if (prefix.end > pending.offset) prefix.fallback.add("\n\n");
+        prefix.fallback.add(view);
+      }
+      // Every nonempty view begins with '['; the separator prevents segment merging. Only
+      // the preceding view's trailing whitespace changes charge, and the next first '[' has
+      // the same charge as this sentinel. Empty views coalesce separators: use the exact
+      // streaming fallback until the empty views leave the counted prefix.
+      const terminal = view ? tokens(view) : 0;
+      const followed = view ? tokens(view + "\n\n[") - nextViewMarkerTokens : 0;
+      const countedView = { id, text: view, terminal, followed };
+      prefix.followedSum += followed;
+      if (!view) prefix.empty++;
+      prefix.last = countedView;
+      prefix.views.set(prefix.end++, countedView);
     }
-    return prefix.count.count;
+    return prefixTokens(prefix);
   };
   // Ticket 22b's rule kept exactly ("the estimate is still of one joined string, exactly as before —
-  // independently estimated views are never summed"): `JoinedTokens` is not a per-entry sum, it is a
-  // running tokenization of the one joined string, proven identical to `tokens(joined)` for every real
-  // and adversarial boundary (tests/core/render/ticket-80-tokens-joined.test.ts) — just built without
-  // re-scanning the whole growing prefix on every append. The early stop is unchanged: rendering (via
-  // `notingViews`, cached) and tokenizing both stop the moment the threshold is reached, never reading
-  // ahead through the rest of the backlog to warm the cache.
+  // independently estimated views are never summed"): the boundary-adjusted weights above are
+  // proven against tokens(views.join("\n\n")) including trailing whitespace and empty entries.
+  // A due check still stops at its threshold instead of counting the entire pending backlog.
   const notingDue = (target: TaskTarget): boolean =>
     countPending(pendingState(target), cfg.noting.triggerTokens) >= cfg.noting.triggerTokens;
   const consolidationTokens = (target: TaskTarget): number => {

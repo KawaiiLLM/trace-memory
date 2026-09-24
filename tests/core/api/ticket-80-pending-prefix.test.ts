@@ -7,8 +7,9 @@ import { Store } from "../../../src/core/store/index.ts";
 import { renderEntry, tokens } from "../../../src/core/render/index.ts";
 
 const at = "2026-09-23T00:00:00Z";
-function fixture(file = ":memory:") {
-  const memory = TraceMemory(file, vi.fn());
+function fixture(file = ":memory:", normalizeEmpty = false) {
+  const memory = TraceMemory(file, vi.fn(), {}, undefined, normalizeEmpty
+    ? input => input.nativeId === "empty-assistant" ? [] : undefined : undefined);
   const store = memory.store;
   const project = store.createProject({ name: "pending-prefix", declaredBy: "mark" });
   const session = store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true,
@@ -141,6 +142,33 @@ test("80: append, noting, branch/head navigation and rewrite agree with a fresh 
       expect(memory.pendingTokens("noting", target).tokens).toBe(expected);
       memory.config.noting.triggerTokens = 1 + random() * 3;
       expect(memory.taskEligibility("noting", target).due).toBe(expected >= memory.config.noting.triggerTokens);
+    }
+  } finally { memory.close(); }
+});
+
+test("80: empty normalized views preserve exact joined weight across local prefix removals", () => {
+  const { memory, store, session, add } = fixture(":memory:", true);
+  try {
+    const first = add(null, "first");
+    const emptyTurn = store.appendTurn({ sessionId: session.id, parentTurnId: first.turn.id,
+      kind: "turn", userPrompt: "empty", startedAt: at });
+    const empty = store.appendSourceEntry({ sessionId: session.id, turnId: emptyTurn.id, nativeLineage: "native",
+      nativeId: "empty-assistant", role: "assistant", text: "nonempty native text", raw: "{}", calls: [] });
+    const second = add(emptyTurn.id, "second");
+    const ids = [first.entry.id, empty.id, second.entry.id];
+    store.publishSourcePath(session.id, "main", ids, second.turn.id, "native");
+    const target = { sessionId: session.id, branch: "main", headTurnId: second.turn.id };
+    const exact = (pending: readonly number[]) => tokens(pending.map(id =>
+      renderEntry(store.getSourceEntry(id)!, memory.config.render).content).join("\n\n"));
+    expect(memory.pendingTokens("noting", target).tokens).toBe(exact(ids));
+    const pending = store.pendingEntryState(session.id, "main", target.headTurnId);
+    for (const removed of [first.entry.id, empty.id]) {
+      const result = store.commitNotingRun({ run: { kind: "noting", sessionId: session.id,
+        branch: "main", rangeFrom: `S${session.id}/T${first.turn.id}`,
+        rangeTo: `S${session.id}/T${second.turn.id}`, createdAt: at }, entryIds: [removed], facts: [] });
+      expect(result.ok).toBe(true);
+      expect(store.pendingEntryState(session.id, "main", target.headTurnId)).toBe(pending);
+      expect(memory.pendingTokens("noting", target).tokens).toBe(exact([...pending]));
     }
   } finally { memory.close(); }
 });

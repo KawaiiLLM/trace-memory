@@ -83,6 +83,28 @@ test("removing rendered-view prefixes stays exact across punctuation and whitesp
   }
 });
 
+test("nonempty rendered views have boundary-exact terminal/followed weights", () => {
+  const views = [
+    entry(1, "user", "one!!!  "), entry(2, "assistant", "two\n\n"),
+    entry(3, "assistant", "three..."), entry(4, "user", "  four\t"),
+    entry(5, "user", "五??"),
+  ].map(source => view(source));
+  const suffixes = ["", " ", "\t", "\n", "\n".repeat(30), "!  ", "  !\t\n"];
+  const samples = views.flatMap(text => suffixes.map(suffix => text + suffix));
+  for (let start = 0; start < samples.length; start++) {
+    for (let length = 1; length <= 6; length++) {
+      const parts = Array.from({ length }, (_, i) => samples[(start + i * 7) % samples.length]!);
+      const expected = tokens(parts.join("\n\n"));
+      const terminal = tokens(parts.at(-1)!);
+      const followed = parts.slice(0, -1).reduce((sum, part) => sum + tokens(part + "\n\n[") - tokens("["), 0);
+      expect(followed + terminal, JSON.stringify(parts)).toBe(expected);
+    }
+  }
+  // An empty assistant message has no source parts: it is a real rendered view but breaks
+  // the fixed-sentinel assumption by coalescing multiple adjacent newline separators.
+  expect(view(entry(99, "assistant", ""))).toBe("");
+});
+
 test("a direct append matches string concatenation for a running total", () => {
   const counter = new JoinedTokens();
   const pieces = ["[T1#E1@text] user: first", "\n\n", "[T1#E2@text] assistant: second\n", "\n\n", "[T1#E3@text] user: third"];
