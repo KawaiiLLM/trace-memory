@@ -750,18 +750,20 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }
     if (pending.offset > prefix.offset) {
       const removedEnd = Math.min(pending.offset, prefix.end);
-      let removedChars = 0;
       for (let position = prefix.offset; position < removedEnd; position++) {
         const view = prefix.views.get(position)!;
-        removedChars += view.text.length + (position + 1 < prefix.end ? 2 : 0);
         notingViewCache.delete(view.id);
         prefix.views.delete(position);
       }
-      // Every removed view except the last counted view also removes its following separator.
-      // The suffix keeps the exact segment boundaries of the original joined string.
-      prefix.count.removePrefix(removedChars);
       prefix.offset = pending.offset;
       prefix.end = Math.max(prefix.end, pending.offset);
+      // Most Noting batches consume the entire counted prefix. For a retained suffix, reuse its
+      // rendered views and recount; no Raw is read or view rendered again.
+      prefix.count = new JoinedTokens();
+      for (let position = prefix.offset; position < prefix.end; position++) {
+        if (position > prefix.offset) prefix.count.add("\n\n");
+        prefix.count.add(prefix.views.get(position)!.text);
+      }
     }
     while (prefix.end - pending.offset < pending.length && prefix.count.count < limit) {
       const id = pending.at(prefix.end - pending.offset)!;
