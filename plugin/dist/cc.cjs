@@ -1640,6 +1640,8 @@ var Store = class {
       migrateDreamingRanges64d(this.db);
       this.db.exec(PROCESSING_SQL);
       this.db.exec(EXECUTIONS_SQL);
+      if (Number(this.db.prepare("PRAGMA user_version").get().user_version) === 0)
+        this.db.exec("DELETE FROM task_failures WHERE phase = 'dreaming'; PRAGMA user_version = 1");
       migrateKnowledgeLineage(this.db, true);
       this.transaction(() => {
         this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_budget_policy (
