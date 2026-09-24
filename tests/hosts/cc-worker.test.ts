@@ -1126,6 +1126,77 @@ test("manual catchup drains bounded Noting but leaves below-threshold facts and 
   memory.close();
 });
 
+test("86: a bounced N retries the frozen entry before checking other phases after correction", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-bounced-then-fixed-")); dirs.push(directory);
+  let attempts = 0;
+  const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
+    const input = raw as NotingAgentInput;
+    expect(input.kind).toBe("noting");
+    const note = input.tools.find(tool => tool.name === "note")!;
+    if (++attempts === 1) {
+      expect(note.execute({ facts: [{ category: "observation", actor: "user", text: "Rejected.",
+        source: ["T99999#user"] }] })).toContain("rejected:");
+    } else {
+      expect(attempts).toBe(2);
+      expect(note.execute({ facts: [] })).toContain("factIds");
+    }
+    return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
+  }, { noting: { triggerTokens: 1_000_000 }, consolidation: { triggerTokens: 1 } });
+  const project = memory.store.createProject({ name: "fixed-n", declaredBy: "mark" });
+  const session = memory.store.createSession({ host: "cc:fixed-n", projectId: project.id,
+    startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
+  const source = append(memory, session.id, "fixed", "One frozen source entry.");
+  const checks = vi.spyOn(memory, "taskEligibility");
+  const scheduler = new CcTaskScheduler(memory, workerConfig(directory).worker, () => {});
+  try {
+    scheduler.startCatchup({ state: "ready", coreSessionId: session.id, branch: "main", headTurnId: source.turn.id,
+      selectedEntryIds: source.ids, appendedEntryIds: [], problems: [], snapshot: {} as any });
+    for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
+    expect(memory.store.listRuns(session.id).filter(run => run.kind === "noting").map(run => run.outcome))
+      .toEqual(["bounced", "success"]);
+    expect(attempts).toBe(2);
+    expect(checks.mock.calls.map(([phase]) => phase)).toEqual([
+      "consolidation", "dreaming", "consolidation", "dreaming", "consolidation", "dreaming"]);
+    expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesDone: 1, entriesTotal: 1 });
+    expect(memory.store.enabled(session.id)).toBe(true);
+  } finally { scheduler.stop(); await scheduler.settle(); memory.close(); }
+});
+
+test("86: rejected uncorrected N submissions bounce and retry without C/D checks until core disables memory", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-bounced-n-")); dirs.push(directory);
+  let attempts = 0;
+  const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
+    const input = raw as NotingAgentInput;
+    expect(input.kind).toBe("noting");
+    attempts++;
+    if (attempts > 3) throw new Error("N retried beyond automatic off");
+    const result = input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "observation",
+      actor: "user", text: "Rejected source.", source: ["T99999#user"] }] });
+    expect(result).toContain("rejected:");
+    // The worker ends without correcting this rejected tool call.
+    return { outcome: "success", output: "I will not correct it.", audit: { available: false, reason: "test" } };
+  }, { noting: { triggerTokens: 1_000_000 }, consolidation: { triggerTokens: 1 } });
+  const project = memory.store.createProject({ name: "bounced-n", declaredBy: "mark" });
+  const session = memory.store.createSession({ host: "cc:bounced-n", projectId: project.id,
+    startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
+  const source = append(memory, session.id, "bounced", "A pending entry whose proposed fact is rejected.");
+  const checks = vi.spyOn(memory, "taskEligibility");
+  const scheduler = new CcTaskScheduler(memory, workerConfig(directory).worker, () => {});
+  try {
+    scheduler.startCatchup({ state: "ready", coreSessionId: session.id, branch: "main", headTurnId: source.turn.id,
+      selectedEntryIds: source.ids, appendedEntryIds: [], problems: [], snapshot: {} as any });
+    for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "stopped"; i++) await tick();
+    const runs = memory.store.listRuns(session.id).filter(run => run.kind === "noting");
+    expect(runs.map(run => run.outcome))
+      .toEqual(["bounced", "bounced", "bounced"]);
+    expect(attempts).toBe(3);
+    expect(checks.mock.calls.map(([phase]) => phase)).toEqual(["consolidation", "dreaming"]);
+    expect(memory.store.enabled(session.id)).toBe(false);
+    expect(memory.store.listSessionFacts(session.id)).toEqual([]);
+    expect(scheduler.catchupStatus()).toMatchObject({ state: "stopped" });
+  } finally { scheduler.stop(); await scheduler.settle(); memory.close(); }
+});
+
 test("86: catchup retries C after a committed write without rolling back its knowledge", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-partial-c-")); dirs.push(directory);
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {

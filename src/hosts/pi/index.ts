@@ -1155,7 +1155,7 @@ export default function (pi: ExtensionAPI) {
         const permanent = (result as { permanent?: string }).permanent;
         if (outcome === "dropped" && permanent) { c.outcome = "failed"; c.diagnostic = permanent; checkpoint = false; return; }
         if (outcome === "dropped") { if (phase === "noting") c.waitingPhase = phase; return; }
-        if (outcome === "failure") {
+        if (outcome === "failure" || outcome === "bounced") {
           c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
           if ((result as { automaticOff?: string }).automaticOff) c.outcome = "stopped";
           else retry = true;

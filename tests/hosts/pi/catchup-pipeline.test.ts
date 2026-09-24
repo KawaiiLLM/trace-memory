@@ -340,6 +340,65 @@ test("68: a repeated catchup command re-checks a waiting idle drain and recovers
   } finally { await h.dispose(); }
 });
 
+test("86: a bounced N retries the frozen entry before checking C/D after correction", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9, "dreaming.triggerTokens": 1e9 });
+  try {
+    await h.turn();
+    const eligibility = vi.spyOn(Store.prototype, "duePools");
+    let attempts = 0;
+    const checksAtAdmission: number[] = [];
+    h.provider(async c => {
+      if (phase(c) !== "N") throw new Error("No other phase should run in this fixture");
+      if (c.messages.some(m => m.role === "toolResult")) return reply("Done.");
+      attempts++;
+      checksAtAdmission.push(eligibility.mock.calls.length);
+      if (attempts === 1) return call("note", { facts: [{ category: "observation", actor: "user",
+        text: "Rejected source.", source: ["T99999#user"] }] });
+      if (attempts === 2) return call("note", { facts: [] });
+      throw new Error("N retried beyond correction");
+    });
+    await command(h, "catchup"); await settle(h);
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting").map(run => run.outcome))
+      .toEqual(["bounced", "success"]);
+    expect(checksAtAdmission[0]).toBeGreaterThan(0); // Initial catchup checkpoint did inspect D.
+    expect(checksAtAdmission).toEqual([checksAtAdmission[0], checksAtAdmission[0]]);
+    expect(eligibility.mock.calls.length).toBeGreaterThan(checksAtAdmission[1]!);
+    expect(h.memory.store.enabled(1)).toBe(true);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
+    eligibility.mockRestore();
+  } finally { await h.dispose(); }
+}, 30000);
+
+test("86: rejected uncorrected N submissions bounce and retry without a C/D checkpoint until three failures turn memory off", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1 });
+  try {
+    await h.turn();
+    const eligibility = vi.spyOn(Store.prototype, "duePools");
+    let attempts = 0;
+    const checksAtAdmission: number[] = [];
+    h.provider(async c => {
+      if (phase(c) !== "N") throw new Error("A bounced N must not check or admit C/D");
+      if (c.messages.some(m => m.role === "toolResult")) return reply("I will not correct the rejected submission.");
+      attempts++;
+      checksAtAdmission.push(eligibility.mock.calls.length);
+      if (attempts > 3) throw new Error("N retried beyond automatic off");
+      return call("note", { facts: [{ category: "observation", actor: "user",
+        text: "Rejected source.", source: ["T99999#user"] }] });
+    });
+    await command(h, "catchup"); await settle(h);
+    const runs = h.memory.store.listRuns(1).filter(run => run.kind === "noting");
+    expect(runs.map(run => run.outcome)).toEqual(["bounced", "bounced", "bounced"]);
+    expect(checksAtAdmission[0]).toBeGreaterThan(0); // Initial checkpoint; no checks on any bounce.
+    expect(checksAtAdmission).toEqual([checksAtAdmission[0], checksAtAdmission[0], checksAtAdmission[0]]);
+    expect(attempts).toBe(3);
+    expect(h.memory.store.listSessionFacts(1)).toEqual([]);
+    expect(h.memory.store.enabled(1)).toBe(false);
+    expect(h.notices.some(notice => notice.includes("off after three failures"))).toBe(true);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: stopped");
+    eligibility.mockRestore();
+  } finally { await h.dispose(); }
+}, 30000);
+
 test("86: downstream C business failure retries its logical task and three failures turn memory off", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1 });
   let release = () => {};

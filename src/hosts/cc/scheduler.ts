@@ -361,7 +361,7 @@ export class CcTaskScheduler {
           checkpoint = result.outcome === "success";
           if (result.outcome === "dropped") {
             if (phase === "noting") { drain.state = "waiting"; drain.phase = "noting"; }
-          } else if (result.outcome === "failure") {
+          } else if (result.outcome === "failure" || result.outcome === "bounced") {
             drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : undefined) || result.outcome;
             if (result.automaticOff) { drain.state = "stopped"; drain.phase = undefined; }
             else retry = true;
