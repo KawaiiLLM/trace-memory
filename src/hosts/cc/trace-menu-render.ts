@@ -19,8 +19,20 @@
  * exactly their sum. Everything else — model line, grid, category wording, the "Free space" row's
  * missing " tokens" suffix, one-decimal category percentages, whole-number total percentage — is
  * copied from the real command, not redesigned.
+ *
+ * Colour ruling (2026-09-24): the four memory rows share one warm family instead of four unrelated
+ * hues, defined once in the shared model (`MEMORY_COLOR_HEX`). `<Text color>` accepts a literal hex
+ * string directly (verified live: a throwaway probe pane rendered `color="#f08b48"` as the exact RGB
+ * under `COLORTERM=truecolor`, and as the nearest 256-color approximation without it — see the ticket
+ * 82 delegation report), so this reuses Pi's own hex values rather than a theme token.
+ *
+ * The ruling extends to the grid, not only the legend (maintainer, 2026-09-24): the SDK's own grid
+ * cells for "Messages" are undifferentiated — they cover the memory tokens too, since the SDK counts
+ * injected memory inside Messages. `splitMessagesGridCounts` recolours a proportional prefix of those
+ * cells (grid order, Knowledge/Facts/Raw/Unclassified) to the memory family; the rest keep the
+ * Messages colour. Cell positions, glyphs and every non-Messages cell are the SDK's, untouched.
  */
-import { buildTraceMenu, formatPercent, formatCompactTokens, buildTraceSettings, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
+import { buildTraceMenu, formatPercent, formatCompactTokens, buildTraceSettings, MEMORY_COLOR_HEX, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
 
 // ---- Claude Code's own context breakdown (from `$.session.usage`, step 0 check 5) ----------------
 
@@ -46,16 +58,10 @@ export interface CcContextBreakdown {
  * for this session — the ticket's rule then is one `unavailable` marker, Messages left untouched. */
 export interface CcMemorySplit { knowledge: number; facts: number; raw: number; unclassified: number }
 
-// The reserved "_FOR_SUBAGENTS_ONLY" colour tokens are Claude Code's own extra categorization palette
-// (seen live coloring "MCP tools" cyan and "Messages" purple); reused here for the three split rows
-// since the SDK has no colour of its own for categories it doesn't know about. A judgment call — the
-// ticket does not name a colour for these rows — flagged in the delegation report.
-const MEMORY_COLOR = {
-  knowledge: "yellow_FOR_SUBAGENTS_ONLY",
-  facts: "green_FOR_SUBAGENTS_ONLY",
-  raw: "blue_FOR_SUBAGENTS_ONLY",
-  unclassified: "red_FOR_SUBAGENTS_ONLY",
-} as const;
+// The shared model's hex values (ticket 82 colour ruling): the SDK has no colour of its own for
+// categories it doesn't know about, so these four rows paint with the same warm family Pi uses,
+// instead of Claude Code's unrelated "_FOR_SUBAGENTS_ONLY" theme tokens.
+const MEMORY_COLOR = MEMORY_COLOR_HEX;
 
 export interface CcContextLegendRow { label: string; color: string; glyph: string; tokens: number; tokensLabel: string; percent: string; suffix: string }
 export interface CcGridCellView { glyph: string; color: string }
@@ -84,6 +90,22 @@ const ccCompact = (n: number): string => {
 const FREE_GLYPH_COLOR = "inactive";
 const FULL_GLYPH = "⛁", PARTIAL_GLYPH = "⛀", FREE_GLYPH = "⛶";
 
+/** How many of the Messages cells (in the grid's own order) become each memory colour: each category's
+ * share is `round(tokens / messagesTokens * messagesCellCount)`, taken in the order Knowledge, Facts,
+ * Raw, Unclassified and capped by the cells still unassigned — so the four counts never sum past
+ * `messagesCellCount`, even when every one of them rounds up. A category whose own rounded share would
+ * overflow what's left is truncated to what's left; it never steals from an earlier category. */
+export function splitMessagesGridCounts(messagesCellCount: number, messagesTokens: number, memory: CcMemorySplit): CcMemorySplit {
+  let remaining = messagesCellCount;
+  const take = (tokens: number): number => {
+    if (messagesTokens <= 0 || remaining <= 0 || tokens <= 0) return 0;
+    const count = Math.min(remaining, Math.round((tokens / messagesTokens) * messagesCellCount));
+    remaining -= count;
+    return count;
+  };
+  return { knowledge: take(memory.knowledge), facts: take(memory.facts), raw: take(memory.raw), unclassified: take(memory.unclassified) };
+}
+
 /** Builds Claude Code's own context section: the grid verbatim (cell positions and counts are the
  * SDK's, never recomputed here), the legend in `/context`'s own wording, with Knowledge/Facts/Raw
  * spliced in ahead of a reduced "Messages" row (ruling B). Returns `undefined` when Claude Code has no
@@ -99,6 +121,23 @@ export function buildCcContextSection(breakdown: CcContextBreakdown | undefined,
   const gridRows: CcGridCellView[][] = breakdown.gridRows.map(row => row.map(cell => freeNames.has(cell.categoryName)
     ? { glyph: FREE_GLYPH, color: FREE_GLYPH_COLOR }
     : { glyph: cell.squareFullness >= 1 ? FULL_GLYPH : PARTIAL_GLYPH, color: cell.color }));
+
+  // Grid half of ruling B (maintainer, 2026-09-24): recolour a proportional prefix of the Messages
+  // cells to the memory family, in grid order. `.flat()` shares object references with `gridRows`, so
+  // painting the flat view mutates the same cells the 2-D array returns — no geometry is rebuilt.
+  const messagesCategory = breakdown.categories.find(c => c.name === "Messages");
+  if (memory && messagesCategory) {
+    const messagesCellIndexes = breakdown.gridRows.flat()
+      .flatMap((cell, i) => cell.categoryName === "Messages" ? [i] : []);
+    const counts = splitMessagesGridCounts(messagesCellIndexes.length, messagesCategory.tokens, memory);
+    const flatView = gridRows.flat();
+    let cursor = 0;
+    const paint = (count: number, color: string) => { for (let k = 0; k < count; k++, cursor++) flatView[messagesCellIndexes[cursor]!]!.color = color; };
+    paint(counts.knowledge, MEMORY_COLOR.knowledge);
+    paint(counts.facts, MEMORY_COLOR.facts);
+    paint(counts.raw, MEMORY_COLOR.raw);
+    paint(counts.unclassified, MEMORY_COLOR.unclassified);
+  }
 
   const row = (label: string, color: string, tokens: number, suffix: string, isFree: boolean): CcContextLegendRow => ({
     label, color: isFree ? FREE_GLYPH_COLOR : color, glyph: isFree ? FREE_GLYPH : FULL_GLYPH, tokens,
