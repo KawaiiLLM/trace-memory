@@ -12,21 +12,26 @@
 // Maintainer correction (2026-09-24): the context section copies Claude Code's own built-in `/context`
 // instead of drawing Pi's grid. `$.session.usage({ breakdown: "full", columns })` is the live source
 // (step 0 check 5); it is fetched once per pane open (`command.run`, async) and cached for the
-// synchronous `ui.render` hook to paint, verbatim, cell by cell — this module never computes a cell
-// count or a colour. Cell and category `color` fields are semantic tokens Claude Code's own `<Text
-// color>` resolves (verified live in the ticket 82 delegation report against a real `/context`
+// synchronous `ui.render` hook to paint. Category `color` fields are semantic tokens Claude Code's own
+// `<Text color>` resolves (verified live in the ticket 82 delegation report against a real `/context`
 // capture and a `probecolor` probe pane: "promptBorder", "inactive", "warning",
 // "purple_FOR_SUBAGENTS_ONLY" all matched the real command's ANSI codes; an unknown token falls back
 // to the default text colour rather than throwing).
 //
-// The only change from the real command (ruling B): Knowledge/Facts/Raw/unclassified-memory amounts
-// are spliced out of the SDK's "Messages" row. Requirement 1 (2026-09-24): these are now real numbers,
-// not a fixture. A classic SessionStart hook (`cc-trace-menu-session-start-inject.ts`, run three times
-// by `hooks/hooks.json`) injects the three blocks from `cc-trace-menu-preview-memory-blocks.ts` as
-// `additionalContext`, and this module measures the exact same texts with the project's own `tokens()`
-// estimator (`src/core/render/index.ts`) — the only number on this screen this module computes itself,
-// everything else (model, grid, category tokens, Pending/trigger, Spend) is either the live
-// `$.session.usage` reading of the fenced sandbox session or the shared model's own fixture.
+// Requirement 2 (2026-09-24 ruling): the grid cells themselves are NOT the SDK's own — the SDK's
+// `gridRows` is never even read here — `buildCcContextSection` (`../src/hosts/cc/trace-menu-render.ts`)
+// computes them locally from `b.categories`, by Claude Code's own grid rule (read from the pinned
+// binary; see that module's doc), so Knowledge/Facts/Raw/Memory-unclassified each get their own cells
+// instead of a recoloured slice of "Messages"'s.
+//
+// The only content change from the real command (ruling B): Knowledge/Facts/Raw/unclassified-memory
+// amounts are spliced out of the SDK's "Messages" row, scaled to Claude Code's own tokenizer
+// (requirement 4). A classic SessionStart hook (`cc-trace-menu-session-start-inject.ts`, run three
+// times by `hooks/hooks.json`) injects the three blocks from `cc-trace-menu-preview-memory-blocks.ts`
+// as `additionalContext`, and this module measures the exact same texts with the project's own
+// `tokens()` estimator (`src/core/render/index.ts`) — the only numbers on this screen this module
+// computes itself, everything else (model, grid, category tokens, Pending/trigger, Spend) is either the
+// live `$.session.usage` reading of the fenced sandbox session or the shared model's own fixture.
 import {
   TRACE_MENU_FIXTURE, TRACE_MENU_FIXTURE_WITH_NOTICE, TRACE_SETTINGS_FIXTURE_CC,
 } from "../src/hosts/trace-menu.ts";
@@ -45,6 +50,13 @@ let traceScreen: "main" | "settings" = "main";
 // "unclassified" memory, so that row stays at zero — showing the "rows never vanish, zero when nothing
 // injected" rule (requirement 2) for that one row even on the live sample.
 const MEMORY: CcMemorySplit = { knowledge: tokens(KNOWLEDGE_BLOCK), facts: tokens(FACTS_BLOCK), raw: tokens(RAW_BLOCK), unclassified: 0 };
+// Requirement 4: the scaling denominator is `tokens()` of every message in the current context, the
+// carriers included. This preview module cannot read the transcript (no Node, no file system — module
+// doc) — the only "messages" a fresh, no-chat-sent sample session has ARE these three injected carriers,
+// so their own `tokens()` sum stands in for it here. That equivalence holds only because these samples
+// are captured with no chat message sent (ticket 82 requirement 4's own instruction); real wiring after
+// the maintainer confirms the layout must sum the transcript's own messages instead.
+const CONTEXT_TOKENS = MEMORY.knowledge + MEMORY.facts + MEMORY.raw + MEMORY.unclassified;
 // Cached once per pane focus, since `ui.render` cannot itself await `$.session.usage`.
 let breakdown: CcContextBreakdown | undefined;
 // The real terminal width isn't exposed to this preview (no confirmed `$` accessor for it, see the
@@ -84,7 +96,7 @@ export const register = (on: any) => {
       const b = usage?.context?.breakdown;
       breakdown = b ? {
         model: b.model, totalTokens: b.totalTokens, maxTokens: b.maxTokens, percentage: b.percentage,
-        gridRows: b.gridRows, categories: b.categories,
+        categories: b.categories, displayName: b.displayName, terminalWidth: PANE_COLUMNS,
       } : undefined;
     } catch { breakdown = undefined; }
     const res = await $.ui.open({ id: "trace-main", title: "Trace Memory", focus: true, closeOnEscape: true, rows: 50, columns: PANE_COLUMNS });
@@ -96,7 +108,7 @@ export const register = (on: any) => {
       const b = usage?.context?.breakdown;
       breakdown = b ? {
         model: b.model, totalTokens: b.totalTokens, maxTokens: b.maxTokens, percentage: b.percentage,
-        gridRows: b.gridRows, categories: b.categories,
+        categories: b.categories, displayName: b.displayName, terminalWidth: PANE_COLUMNS,
       } : undefined;
     } catch { breakdown = undefined; }
     const res = await $.ui.open({ id: "trace-notice", title: "Trace Memory", focus: true, closeOnEscape: true, rows: 50, columns: PANE_COLUMNS });
@@ -124,7 +136,8 @@ export const register = (on: any) => {
               <Text>{rendered.context.legendHeading}</Text>
               {rendered.context.legend.map((row, i) => (
                 <Text key={`cat${i}`}>
-                  <Text color={row.color}>{row.glyph}</Text>{` ${row.label}: ${row.tokensLabel}${row.suffix} (${row.percent})`}
+                  <Text color={row.color}>{row.glyph}</Text>{" "}
+                  <Text bold>{`${row.label}:`}</Text>{` ${row.tokensLabel}${row.suffix} (${row.percent})`}
                 </Text>
               ))}
               {rendered.context.memoryUnavailable ? <Text>{rendered.context.memoryUnavailable}</Text> : null}
@@ -145,10 +158,10 @@ export const register = (on: any) => {
       </Box>
     );
 
-    if (e.requestId === "trace-notice") return menuBody(renderTraceMenu(TRACE_MENU_FIXTURE_WITH_NOTICE, { breakdown, memory: MEMORY }));
+    if (e.requestId === "trace-notice") return menuBody(renderTraceMenu(TRACE_MENU_FIXTURE_WITH_NOTICE, { breakdown, memory: MEMORY, contextTokens: CONTEXT_TOKENS }));
 
     if (e.requestId === "trace-main" && traceScreen === "main") {
-      const rendered = renderTraceMenu(TRACE_MENU_FIXTURE, { breakdown, memory: MEMORY });
+      const rendered = renderTraceMenu(TRACE_MENU_FIXTURE, { breakdown, memory: MEMORY, contextTokens: CONTEXT_TOKENS });
       return (
         <Box flexDirection="column">
           {menuBody(rendered)}

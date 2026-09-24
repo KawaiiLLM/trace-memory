@@ -173,9 +173,11 @@ test("approved RGB palette uses Pi native truecolor and 256-color fallback and r
     getColorMode: () => mode,
   });
   const truePaint = createSessionPaint(outerTheme("truecolor"));
+  // Knowledge/Facts/Raw are the shared model's green family (ticket 82 colour ruling, 2026-09-24;
+  // `MEMORY_COLOR_HEX` in `src/hosts/trace-menu.ts`), not the earlier warm one.
   const expected = {
-    system: "238;128;175", tools: "112;196;165", skills: "179;164;244", knowledge: "240;139;72",
-    facts: "244;181;82", raw: "235;216;115", conversation: "121;173;232", other: "167;173;182",
+    system: "238;128;175", tools: "112;196;165", skills: "179;164;244", knowledge: "33;118;25",
+    facts: "58;166;48", raw: "122;202;114", conversation: "121;173;232", other: "167;173;182",
   } as const;
   for (const [color, rgb] of Object.entries(expected)) {
     const styled = truePaint(color as never, "x");

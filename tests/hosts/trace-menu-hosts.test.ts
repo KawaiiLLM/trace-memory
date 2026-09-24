@@ -6,12 +6,14 @@
 // hosts; the grids are each host's own." Concretely: the Knowledge/Facts/Raw/unclassified-memory
 // amounts both hosts show come from the exact same `TraceMenuInput.context.categories` array (ruling
 // B), so Pi's `buildContextSection` and Claude Code's `buildCcContextSection` must report the same
-// label, token amount and relative order for those categories given the same fixture.
+// label, token amount and relative order for those categories given the same fixture — with Claude
+// Code's `contextTokens` chosen so the requirement 4 scaling factor is exactly 1 (see its own comment),
+// since scaling is a Claude Code-only step Pi never applies.
 import { expect, test } from "vitest";
 import { buildContextSection, MEMORY_COLOR_HEX, TRACE_MENU_FIXTURE } from "../../src/hosts/trace-menu.ts";
 import {
-  buildCcContextSection, renderTraceMenu, splitMessagesGridCounts,
-  type CcContextBreakdown, type CcGridCell, type CcMemorySplit,
+  buildCcContextSection, computeCcGrid, renderTraceMenu, scaleMemoryToMessages,
+  type CcContextBreakdown, type CcMemorySplit,
 } from "../../src/hosts/cc/trace-menu-render.ts";
 import { renderTraceMenu as renderPiTraceMenu } from "../../src/hosts/pi/trace-menu-view.ts";
 import { CONTEXT_PALETTE } from "../../src/hosts/pi/session-status.ts";
@@ -26,7 +28,6 @@ const CC_BREAKDOWN: CcContextBreakdown = {
   totalTokens: 142_200,
   maxTokens: 400_000,
   percentage: 36,
-  gridRows: [],
   categories: [
     { name: "System prompt", tokens: 1_900, color: "promptBorder", kind: "used" },
     { name: "System tools", tokens: 5_000, color: "inactive", kind: "used" },
@@ -39,13 +40,17 @@ const CC_BREAKDOWN: CcContextBreakdown = {
   ],
 };
 const CC_MEMORY: CcMemorySplit = { knowledge: 17_300, facts: 9_900, raw: 10_000, unclassified: 200 };
+// Requirement 4: factor = messagesTokens / contextTokens. Setting the denominator to Messages' own
+// token count makes the factor exactly 1, so these tests can still assert CC_MEMORY's raw numbers
+// unchanged — scaling itself has its own dedicated tests below (`scaleMemoryToMessages`).
+const NO_SCALING = CC_BREAKDOWN.categories.find(c => c.name === "Messages")!.tokens;
 
 test("cross-host: Knowledge/Facts/Raw/unclassified amounts and order match between Pi and Claude Code", () => {
   const piRows = buildContextSection(TRACE_MENU_FIXTURE.context).categories
     .filter(c => MEMORY_LABELS.includes(c.label))
     .map(c => ({ label: c.label, tokens: c.tokens }));
 
-  const ccSection = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY)!;
+  const ccSection = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY, NO_SCALING)!;
   const ccRows = ccSection.legend
     .filter(r => MEMORY_LABELS.includes(r.label))
     .map(r => ({ label: r.label, tokens: r.tokens }));
@@ -54,26 +59,26 @@ test("cross-host: Knowledge/Facts/Raw/unclassified amounts and order match betwe
 });
 
 test("Claude Code context: Messages is reduced by exactly the Knowledge+Facts+Raw+unclassified sum", () => {
-  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY)!;
+  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY, NO_SCALING)!;
   const messages = section.legend.find(r => r.label === "Messages");
   expect(messages?.tokens).toBe(134_200 - (17_300 + 9_900 + 10_000 + 200));
 });
 
 test("Claude Code context: category wording and order is Claude Code's own, not Pi's CONTEXT_CATEGORY_ORDER labels", () => {
-  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY)!;
+  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY, NO_SCALING)!;
   expect(section.legend.map(r => r.label)).toEqual([
     "System prompt", "System tools", "Skills", "Knowledge", "Facts", "Raw", "Memory, unclassified", "Messages", "Free space",
   ]);
 });
 
 test("Claude Code context: the free-space row has no ' tokens' suffix, every other row does", () => {
-  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY)!;
+  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY, NO_SCALING)!;
   expect(section.legend.find(r => r.label === "Free space")?.suffix).toBe("");
   expect(section.legend.find(r => r.label === "System prompt")?.suffix).toBe(" tokens");
 });
 
 test("Claude Code context: no memory split means one unavailable marker, Messages left untouched", () => {
-  const section = buildCcContextSection(CC_BREAKDOWN, undefined)!;
+  const section = buildCcContextSection(CC_BREAKDOWN, undefined, NO_SCALING)!;
   expect(section.legend.some(r => MEMORY_LABELS.includes(r.label))).toBe(false);
   expect(section.legend.find(r => r.label === "Messages")?.tokens).toBe(134_200);
   expect(section.memoryUnavailable).toBe("Knowledge, Facts, Raw: unavailable");
@@ -86,7 +91,7 @@ test("Claude Code context: no breakdown at all renders one unavailable marker", 
 });
 
 test("Claude Code Pending: compact figures and whole-number percentages, same as Pi", () => {
-  const rendered = renderTraceMenu(TRACE_MENU_FIXTURE, { breakdown: CC_BREAKDOWN, memory: CC_MEMORY });
+  const rendered = renderTraceMenu(TRACE_MENU_FIXTURE, { breakdown: CC_BREAKDOWN, memory: CC_MEMORY, contextTokens: NO_SCALING });
   expect(rendered.pendingLines[0]).toContain("32%");
   expect(rendered.pendingLines[0]).toContain("3.2k / 10k");
 });
@@ -120,7 +125,7 @@ test("cross-host: both hosts take the four memory colours from the shared model'
 
   // Claude Code: the rendered legend rows for the four memory categories carry the same hex, not a
   // "_FOR_SUBAGENTS_ONLY" theme token.
-  const ccSection = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY)!;
+  const ccSection = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY, NO_SCALING)!;
   const colorOf = (label: string) => ccSection.legend.find(r => r.label === label)?.color;
   expect(colorOf("Knowledge")).toBe(MEMORY_COLOR_HEX.knowledge);
   expect(colorOf("Facts")).toBe(MEMORY_COLOR_HEX.facts);
@@ -128,64 +133,97 @@ test("cross-host: both hosts take the four memory colours from the shared model'
   expect(colorOf("Memory, unclassified")).toBe(MEMORY_COLOR_HEX.unclassified);
 });
 
-// ---- Grid half of ruling B: the Messages cells the SDK's own grid draws are recoloured too ---------
+// ---- Requirement 4: scaling to Claude Code's own tokenizer -----------------------------------------
 
-test("splitMessagesGridCounts: proportional shares that already sum to the cell count, no cap needed", () => {
-  const counts = splitMessagesGridCounts(20, 2_000, { knowledge: 1_000, facts: 600, raw: 300, unclassified: 100 });
-  expect(counts).toEqual({ knowledge: 10, facts: 6, raw: 3, unclassified: 1 });
-  expect(counts.knowledge + counts.facts + counts.raw + counts.unclassified).toBe(20);
+test("scaleMemoryToMessages: a factor above 1 scales every row up", () => {
+  const memory: CcMemorySplit = { knowledge: 1_000, facts: 500, raw: 200, unclassified: 0 };
+  // factor = 3_200 / 2_000 = 1.6, matching the ticket's own "about 1.6×" measurement.
+  const scaled = scaleMemoryToMessages(memory, 3_200, 2_000);
+  expect(scaled).toEqual({ knowledge: 1_600, facts: 800, raw: 320, unclassified: 0 });
 });
 
-test("splitMessagesGridCounts: rounding that would overflow the cell count is capped, order Knowledge/Facts/Raw/Unclassified", () => {
-  // round(500/1000*10)=5, round(300/1000*10)=3, round(150/1000*10)=2, round(60/1000*10)=1 -> sums to
-  // 11 over a 10-cell budget: Knowledge and Facts get their full rounded share (5, 3), Raw is capped to
-  // what's left (2, no cap needed yet), Unclassified is capped to 0 — the last category in the order
-  // absorbs the overflow, never an earlier one.
-  const counts = splitMessagesGridCounts(10, 1_000, { knowledge: 500, facts: 300, raw: 150, unclassified: 60 });
-  expect(counts).toEqual({ knowledge: 5, facts: 3, raw: 2, unclassified: 0 });
-  expect(counts.knowledge + counts.facts + counts.raw + counts.unclassified).toBeLessThanOrEqual(10);
+test("scaleMemoryToMessages: a factor below 1 scales every row down", () => {
+  const memory: CcMemorySplit = { knowledge: 1_000, facts: 500, raw: 200, unclassified: 100 };
+  // factor = 900 / 1_800 = 0.5.
+  const scaled = scaleMemoryToMessages(memory, 900, 1_800);
+  expect(scaled).toEqual({ knowledge: 500, facts: 250, raw: 100, unclassified: 50 });
 });
 
-test("splitMessagesGridCounts: zero messages tokens or zero cells yields zero for every category", () => {
-  expect(splitMessagesGridCounts(10, 0, { knowledge: 100, facts: 100, raw: 100, unclassified: 100 }))
-    .toEqual({ knowledge: 0, facts: 0, raw: 0, unclassified: 0 });
-  expect(splitMessagesGridCounts(0, 1_000, { knowledge: 100, facts: 100, raw: 100, unclassified: 100 }))
-    .toEqual({ knowledge: 0, facts: 0, raw: 0, unclassified: 0 });
+test("scaleMemoryToMessages: an all-zero split needs no factor and always resolves", () => {
+  const memory: CcMemorySplit = { knowledge: 0, facts: 0, raw: 0, unclassified: 0 };
+  expect(scaleMemoryToMessages(memory, undefined, undefined)).toEqual(memory);
+  expect(scaleMemoryToMessages(memory, 0, 0)).toEqual(memory);
 });
 
-test("Claude Code grid: a proportional prefix of the Messages cells recolours to the memory family, in grid order; non-Messages cells are untouched", () => {
-  const cell = (categoryName: string, color: string): CcGridCell => ({ categoryName, color, isFilled: true, tokens: 0, percentage: 0, squareFullness: 1 });
-  // 10 cells: 2 System prompt, 6 Messages, 2 Free space — Messages tokens 1,100 (the split's own sum is
-  // 1,010; kept above it so this stays a *consistent* split, not the new "amounts exceed Messages"
-  // unavailable case below — requirement 2), split 500/300/150/60 (same numbers as the capped
-  // `splitMessagesGridCounts` case above, scaled to 6 cells): expect Knowledge=3, Facts=2, Raw=1,
-  // Unclassified=0 to land on the first 6 Messages cells in that order (the rounding lands the same
-  // whether Messages is 1,000 or 1,100 — only the consistency check cares about the difference).
-  const breakdown: CcContextBreakdown = {
-    model: "m", totalTokens: 1_200, maxTokens: 10_000, percentage: 12,
-    gridRows: [[
-      cell("System prompt", "promptBorder"), cell("System prompt", "promptBorder"),
-      cell("Messages", "purple_FOR_SUBAGENTS_ONLY"), cell("Messages", "purple_FOR_SUBAGENTS_ONLY"),
-      cell("Messages", "purple_FOR_SUBAGENTS_ONLY"), cell("Messages", "purple_FOR_SUBAGENTS_ONLY"),
-      cell("Messages", "purple_FOR_SUBAGENTS_ONLY"), cell("Messages", "purple_FOR_SUBAGENTS_ONLY"),
-      cell("Free space", "promptBorder"), cell("Free space", "promptBorder"),
-    ]],
-    categories: [
-      { name: "System prompt", tokens: 200, color: "promptBorder", kind: "used" },
-      { name: "Messages", tokens: 1_100, color: "purple_FOR_SUBAGENTS_ONLY", kind: "used" },
-      { name: "Free space", tokens: 8_800, color: "promptBorder", kind: "free" },
-    ],
-  };
-  const memory: CcMemorySplit = { knowledge: 500, facts: 300, raw: 150, unclassified: 60 };
-  const section = buildCcContextSection(breakdown, memory)!;
-  const colors = section.gridRows[0]!.map(c => c.color);
-  expect(colors.slice(0, 2)).toEqual(["promptBorder", "promptBorder"]); // System prompt, untouched
-  expect(colors.slice(2, 8)).toEqual([
-    MEMORY_COLOR_HEX.knowledge, MEMORY_COLOR_HEX.knowledge, MEMORY_COLOR_HEX.knowledge,
-    MEMORY_COLOR_HEX.facts, MEMORY_COLOR_HEX.facts,
-    MEMORY_COLOR_HEX.raw,
+test("scaleMemoryToMessages: an uncomputable factor (no Messages category, or a zero denominator) is undefined", () => {
+  const memory: CcMemorySplit = { knowledge: 100, facts: 0, raw: 0, unclassified: 0 };
+  expect(scaleMemoryToMessages(memory, undefined, 1_000)).toBeUndefined(); // no Messages category
+  expect(scaleMemoryToMessages(memory, 1_000, 0)).toBeUndefined(); // zero denominator
+  expect(scaleMemoryToMessages(memory, 1_000, undefined)).toBeUndefined(); // no denominator at all
+});
+
+// ---- Requirement 2: the grid is computed from the category list, Claude Code's own rule ------------
+
+test("computeCcGrid: a 1M window gets 20x10 cells; a category with a sub-1 raw share is forced to one partial cell", () => {
+  // Matches the reference capture (`/tmp/cc82-samples/cc-context-reference.ans`, this module's own
+  // doc comment): System prompt 1,900/1,000,000 tokens -> raw 0.38 -> forced to 1 cell, partial.
+  const categories = [
+    { name: "System prompt", tokens: 1_900, color: "promptBorder", kind: "used" as const },
+    { name: "System tools", tokens: 27_600, color: "inactive", kind: "used" as const },
+    { name: "Skills", tokens: 2_000, color: "warning", kind: "used" as const },
+    { name: "Free space", tokens: 968_500, color: "promptBorder", kind: "free" as const },
+  ];
+  const grid = computeCcGrid(categories, 1_000_000, 100);
+  expect(grid).toHaveLength(10);
+  expect(grid[0]).toHaveLength(20);
+  const flat = grid.flat();
+  // System prompt: 1 partial cell; System tools: 27,600/1,000,000*200=5.52 -> 5 full + 1 partial;
+  // Skills: 2,000/1,000,000*200=0.4 -> forced to 1 partial cell.
+  expect(flat.slice(0, 1)).toEqual([{ glyph: "⛀", color: "promptBorder" }]);
+  expect(flat.slice(1, 7)).toEqual([
+    { glyph: "⛁", color: "inactive" }, { glyph: "⛁", color: "inactive" }, { glyph: "⛁", color: "inactive" },
+    { glyph: "⛁", color: "inactive" }, { glyph: "⛁", color: "inactive" }, { glyph: "⛀", color: "inactive" },
   ]);
-  expect(colors.slice(8)).toEqual(["inactive", "inactive"]); // Free space cells always paint "inactive"
+  expect(flat[7]).toEqual({ glyph: "⛀", color: "warning" });
+  // The rest of the 200 cells are free, coloured with Free space's own declared colour, whatever is
+  // left over after the occupied categories — not Free's own independently rounded share (module doc).
+  expect(flat.slice(8).every(c => c.glyph === "⛶" && c.color === "promptBorder")).toBe(true);
+  expect(flat.slice(8)).toHaveLength(200 - 8);
+});
+
+test("computeCcGrid: a narrow pane (<80 cols) shrinks the grid to 5 columns; a small window shrinks it to 10x10", () => {
+  const categories = [{ name: "Free space", tokens: 100, color: "promptBorder", kind: "free" as const }];
+  expect(computeCcGrid(categories, 1_000_000, 60)).toHaveLength(10); // big window: always 10 rows
+  expect(computeCcGrid(categories, 1_000_000, 60)[0]).toHaveLength(5); // narrow: 5 columns
+  expect(computeCcGrid(categories, 400_000, 100)).toHaveLength(10); // non-narrow, non-1M: 10x10
+  expect(computeCcGrid(categories, 400_000, 100)[0]).toHaveLength(10);
+  expect(computeCcGrid(categories, 400_000, 60)).toHaveLength(5); // narrow AND small window: 5x5
+  expect(computeCcGrid(categories, 400_000, 60)[0]).toHaveLength(5);
+});
+
+test("computeCcGrid: minRows pads with blank free-glyph rows past the natural row count, never fewer", () => {
+  const categories = [{ name: "Free space", tokens: 100, color: "promptBorder", kind: "free" as const }];
+  const grid = computeCcGrid(categories, 400_000, 100, 15); // natural: 10 rows (non-1M, non-narrow)
+  expect(grid).toHaveLength(15);
+  expect(grid.slice(10).every(row => row.every(c => c.glyph === "⛶" && c.color === "promptBorder"))).toBe(true);
+  expect(computeCcGrid(categories, 400_000, 100, 3)).toHaveLength(10); // minRows below the natural count changes nothing
+});
+
+test("Claude Code context: Knowledge/Facts/Raw each occupy at least one grid cell once injected; a zero Memory-unclassified occupies none", () => {
+  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY, NO_SCALING)!;
+  const flat = section.gridRows.flat();
+  expect(flat.some(c => c.color === MEMORY_COLOR_HEX.knowledge)).toBe(true);
+  expect(flat.some(c => c.color === MEMORY_COLOR_HEX.facts)).toBe(true);
+  expect(flat.some(c => c.color === MEMORY_COLOR_HEX.raw)).toBe(true);
+  // CC_MEMORY.unclassified is 200 tokens (non-zero) — give it its own assertion with an explicit zero.
+  const zeroUnclassified = buildCcContextSection(CC_BREAKDOWN, { ...CC_MEMORY, unclassified: 0 }, NO_SCALING)!;
+  expect(zeroUnclassified.gridRows.flat().some(c => c.color === MEMORY_COLOR_HEX.unclassified)).toBe(false);
+});
+
+test("Claude Code context: the grid is padded so every legend line, however many there are, has a grid row beside it", () => {
+  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY, NO_SCALING)!;
+  const legendLineCount = section.headerLines.length + 1 + 1 + section.legend.length + (section.memoryUnavailable ? 1 : 0);
+  expect(section.gridRows.length).toBeGreaterThanOrEqual(legendLineCount);
 });
 
 // ---- Requirement 2: rows never vanish ----------------------------------------------------------
@@ -197,7 +235,6 @@ const CC_BREAKDOWN_NO_MESSAGES: CcContextBreakdown = {
   totalTokens: 25_735,
   maxTokens: 1_000_000,
   percentage: 3,
-  gridRows: [],
   categories: [
     { name: "System prompt", tokens: 1_876, color: "promptBorder", kind: "used" },
     { name: "System tools", tokens: 21_899, color: "inactive", kind: "used" },
@@ -207,7 +244,7 @@ const CC_BREAKDOWN_NO_MESSAGES: CcContextBreakdown = {
 };
 
 test("Claude Code context: nothing injected shows Knowledge/Facts/Raw as zero rows, no Messages row to touch, no Memory-unclassified row", () => {
-  const section = buildCcContextSection(CC_BREAKDOWN_NO_MESSAGES, { knowledge: 0, facts: 0, raw: 0, unclassified: 0 })!;
+  const section = buildCcContextSection(CC_BREAKDOWN_NO_MESSAGES, { knowledge: 0, facts: 0, raw: 0, unclassified: 0 }, undefined)!;
   const labels = section.legend.map(r => r.label);
   expect(labels).toEqual(["System prompt", "System tools", "Skills", "Knowledge", "Facts", "Raw", "Free space"]);
   expect(section.legend.find(r => r.label === "Knowledge")?.tokens).toBe(0);
@@ -217,7 +254,7 @@ test("Claude Code context: nothing injected shows Knowledge/Facts/Raw as zero ro
 });
 
 test("Claude Code context: a normal split still reduces Messages and inserts the memory rows in its place", () => {
-  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY)!;
+  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY, NO_SCALING)!;
   const labels = section.legend.map(r => r.label);
   expect(labels).toEqual([
     "System prompt", "System tools", "Skills", "Knowledge", "Facts", "Raw", "Memory, unclassified", "Messages", "Free space",
@@ -226,16 +263,17 @@ test("Claude Code context: a normal split still reduces Messages and inserts the
   expect(section.memoryUnavailable).toBeUndefined();
 });
 
-test("Claude Code context: injected amounts exceeding Messages is inconsistent — unavailable, Messages and the grid untouched", () => {
-  const overInjected: CcMemorySplit = { knowledge: 100_000, facts: 20_000, raw: 10_000, unclassified: 5_000 }; // sums past 134,200
-  const section = buildCcContextSection(CC_BREAKDOWN, overInjected)!;
+test("Claude Code context: a scaled sum exceeding Messages is inconsistent — unavailable, Messages and the grid untouched", () => {
+  // A deliberately tiny denominator inflates the scaling factor (134,200 / 100 = 1,342x) enough that
+  // even CC_MEMORY's modest raw sum (37,400) scales past Messages' own 134,200 tokens.
+  const section = buildCcContextSection(CC_BREAKDOWN, CC_MEMORY, 100)!;
   expect(section.legend.some(r => MEMORY_LABELS.includes(r.label))).toBe(false);
   expect(section.legend.find(r => r.label === "Messages")?.tokens).toBe(134_200);
   expect(section.memoryUnavailable).toBe("Knowledge, Facts, Raw: unavailable");
 });
 
 test("Claude Code context: something injected while Messages is entirely absent is inconsistent — unavailable, not zero rows", () => {
-  const section = buildCcContextSection(CC_BREAKDOWN_NO_MESSAGES, { knowledge: 500, facts: 0, raw: 0, unclassified: 0 })!;
+  const section = buildCcContextSection(CC_BREAKDOWN_NO_MESSAGES, { knowledge: 500, facts: 0, raw: 0, unclassified: 0 }, 500)!;
   expect(section.legend.some(r => MEMORY_LABELS.includes(r.label))).toBe(false);
   expect(section.memoryUnavailable).toBe("Knowledge, Facts, Raw: unavailable");
 });

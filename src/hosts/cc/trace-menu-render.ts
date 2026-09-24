@@ -3,44 +3,48 @@
  * module does no JSX and no `$` calls — it turns the shared model plus Claude Code's own context data
  * into plain row/grid data a hooks module's `ui.render` hook can hand to `Box`/`Text` directly.
  *
- * Maintainer correction (2026-09-24): the context section is NOT drawn through the shared
- * `buildContextSection`/`projectComposition` pipeline the way Pi's is. It copies Claude Code's own
- * built-in `/context` command verbatim — same grid, same legend wording, same colours — because
- * reinventing that drawing (this module's earlier hand-rolled grid function) looked nothing like it. The
- * grid comes from `$.session.usage({ breakdown: "full", columns }).context.breakdown.gridRows`,
- * rendered cell by cell exactly as returned: this module never computes cell counts or positions.
- * Each cell and each category carries its own `color`, a semantic token (e.g. "promptBorder",
- * "inactive", "purple_FOR_SUBAGENTS_ONLY") that Claude Code's own `<Text color>` resolves — the same
- * component the built-in UI paints with (`$.ui.resolve(e)`), verified against a live capture of
- * `/context` in the fenced sandbox (see the ticket 82 delegation report for the captured ANSI codes).
+ * The context section copies Claude Code's own built-in `/context` command: same legend wording, same
+ * category colours (semantic tokens Claude Code's own `<Text color>` resolves, e.g. "promptBorder",
+ * "inactive", "purple_FOR_SUBAGENTS_ONLY" — verified against a live capture of `/context` in the fenced
+ * sandbox, `/tmp/cc82-samples/cc-context-reference.ans`, and the ticket 82 delegation report).
  *
- * The only change from the native command (maintainer's ruling B): Knowledge, Facts and Raw are
+ * Requirement 2 (2026-09-24 ruling): the grid is no longer taken from the SDK's own pre-rendered
+ * `context.breakdown.gridRows` — it is computed HERE, from the category list, by Claude Code's own grid
+ * rule (read from the pinned 2.1.280 binary: `name:"Memory files",tokens:` in
+ * `/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`, function `Szt`). That rule:
+ *   - `columns = terminalWidth<80 ? 5 : (maxTokens>=1_000_000 ? 20 : 10)`,
+ *     `rows = maxTokens>=1_000_000 ? 10 : (terminalWidth<80 ? 5 : 10)` — a narrow pane and a small window
+ *     each shrink the grid independently; `cells = columns*rows`.
+ *   - Every category except a `"deferred"` one gets `squares`: `Math.max(1, Math.round(tokens/window*cells))`
+ *     for a `"used"`/`"buffer"` category, plain `Math.round(tokens/window*cells)` (no floor) for the
+ *     `"free"` one — but a category's own `squares` count is NOT what fills the grid for the free-kind
+ *     category: the real algorithm fills free-space cells with *whatever is left* after every other
+ *     category has taken its squares (`Us = totalCells - bufferSquares`, filled with free glyphs until
+ *     `go.length` reaches it), and only then appends the buffer category's own cells. Verified against
+ *     the reference capture: System prompt (1,900/1,000,000 tokens) got a forced 1 partial cell, System
+ *     tools (27,600) got 6 (5 full + 1 partial), Skills (2,000) got 1 partial, and the remaining 192 of
+ *     200 cells were free — not 194, which is what `Math.round(968,400/1,000,000*200)` alone would give.
+ *     This module follows the capture, not the literal `Math.round` wording, for the free category's own
+ *     cell *count* (`computeCcGrid`'s doc comment repeats this).
+ *   - A category's last square may be partial: `squareFullness` is the fractional part of its own raw
+ *     `tokens/window*cells`, applied to the square at that fractional position (not necessarily the last
+ *     one requested, when `squares` was floored up from a sub-1 raw value to the forced minimum of 1).
+ *
+ * The only content change from the real command (maintainer's ruling B): Knowledge, Facts and Raw are
  * pulled out of the SDK's "Messages" category and shown as their own rows, with Messages reduced by
- * exactly their sum. Everything else — model line, grid, category wording, the "Free space" row's
- * missing " tokens" suffix, one-decimal category percentages, whole-number total percentage — is
- * copied from the real command, not redesigned.
- *
- * Colour ruling (2026-09-24): the four memory rows share one warm family instead of four unrelated
- * hues, defined once in the shared model (`MEMORY_COLOR_HEX`). `<Text color>` accepts a literal hex
- * string directly (verified live: a throwaway probe pane rendered `color="#f08b48"` as the exact RGB
- * under `COLORTERM=truecolor`, and as the nearest 256-color approximation without it — see the ticket
- * 82 delegation report), so this reuses Pi's own hex values rather than a theme token.
- *
- * The ruling extends to the grid, not only the legend (maintainer, 2026-09-24): the SDK's own grid
- * cells for "Messages" are undifferentiated — they cover the memory tokens too, since the SDK counts
- * injected memory inside Messages. `splitMessagesGridCounts` recolours a proportional prefix of those
- * cells (grid order, Knowledge/Facts/Raw/Unclassified) to the memory family; the rest keep the
- * Messages colour. Cell positions, glyphs and every non-Messages cell are the SDK's, untouched.
+ * exactly their sum, then scaled to Claude Code's own tokenizer (requirement 4, `scaleMemoryToMessages`).
+ * Everything else — model line, grid rule, category wording, the "Free space" row's missing " tokens"
+ * suffix, one-decimal category percentages, whole-number total percentage — is copied from the real
+ * command, not redesigned.
  */
 import { buildTraceMenu, formatPercent, formatCompactTokens, buildTraceSettings, MEMORY_COLOR_HEX, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
 
 // ---- Claude Code's own context breakdown (from `$.session.usage`, step 0 check 5) ----------------
 
-/** One cell of the SDK's own pre-rendered grid (`context.breakdown.gridRows`), verified live
- * (ticket 82 report): `color` is a semantic token, not a hex/ANSI value. */
-export interface CcGridCell { color: string; isFilled: boolean; categoryName: string; tokens: number; percentage: number; squareFullness: number }
 /** One row of the SDK's own category list (`context.breakdown.categories`), in its own order and
- * wording — never Pi's `CONTEXT_CATEGORY_ORDER` labels. */
+ * wording — never Pi's `CONTEXT_CATEGORY_ORDER` labels. `kind` is Claude Code's own classification
+ * (`Fer` in the pinned binary: `"free"` for the row named "Free space", `"buffer"` for "Autocompact
+ * buffer"/"Compact buffer", `"deferred"` for a row it marked `isDeferred`, `"used"` otherwise). */
 export interface CcSdkCategory { name: string; tokens: number; color: string; kind: "used" | "free" | "buffer" | "deferred" }
 export interface CcContextBreakdown {
   model: string;
@@ -49,19 +53,52 @@ export interface CcContextBreakdown {
   /** The SDK's own whole-number percentage for the total line (`"31.6k/1m tokens (3%)"`) — used as
    * given, never recomputed or rounded differently. */
   percentage: number;
-  gridRows: CcGridCell[][];
   categories: CcSdkCategory[];
+  /** Requirement 3: the real `/context` legend opens with the model's display name ("Opus 5.5 (1M
+   * context)") ahead of its id. The pinned 2.1.280 SDK's `$.session.usage` breakdown carries no such
+   * field — traced to its source (`Ylt`, the function that reshapes `contextData()`'s return value into
+   * the public shape): `model` is the only model-identifying field it forwards. `displayName` is kept
+   * optional so a future SDK version that adds one is picked up with no code change; on this version it
+   * is always `undefined`, and the legend falls back to the id alone (reported in the ticket 82 report,
+   * not guessed at). */
+  displayName?: string;
+  /** The pane width `$.session.usage({ columns })` was called with. Claude Code's own grid rule branches
+   * on it (`terminalWidth < 80`) exactly as it branches on `maxTokens >= 1_000_000`; both together decide
+   * the grid's cell count (see the module doc). `undefined` is treated as "not narrow". */
+  terminalWidth?: number;
 }
 
-/** Ruling B's split: the Knowledge/Facts/Raw/unclassified-memory amounts this host injected, pulled
- * out of the SDK's "Messages" category. `undefined` means presence could not be established exactly
- * for this session — the ticket's rule then is one `unavailable` marker, Messages left untouched. */
+/** Ruling B's split: the Knowledge/Facts/Raw/unclassified-memory amounts this host injected, pulled out
+ * of the SDK's "Messages" category, sized with this project's own `tokens()` estimator (requirement 4:
+ * *before* scaling — see `scaleMemoryToMessages`). `undefined` means presence could not be established
+ * exactly for this session — the ticket's rule then is one `unavailable` marker, Messages left untouched. */
 export interface CcMemorySplit { knowledge: number; facts: number; raw: number; unclassified: number }
 
 // The shared model's hex values (ticket 82 colour ruling): the SDK has no colour of its own for
-// categories it doesn't know about, so these four rows paint with the same warm family Pi uses,
-// instead of Claude Code's unrelated "_FOR_SUBAGENTS_ONLY" theme tokens.
+// categories it doesn't know about, so these four rows paint with the same green family Pi uses, instead
+// of Claude Code's unrelated "_FOR_SUBAGENTS_ONLY" theme tokens.
 const MEMORY_COLOR = MEMORY_COLOR_HEX;
+const memorySplitSum = (m: CcMemorySplit): number => m.knowledge + m.facts + m.raw + m.unclassified;
+
+/**
+ * Requirement 4 (maintainer, 2026-09-24: “把我们的估计按实际上下文比例缩放”): Claude Code's own tokenizer
+ * counts more than this project's `tokens()` estimator. `factor = messagesTokens / contextTokens`, where
+ * `contextTokens` is `tokens()` of every message in the current context, the injected carriers included
+ * — the same content Claude Code's "Messages" total counts, measured with this project's estimator
+ * instead of Claude Code's. Each carrier's row becomes `round(estimate * factor)`.
+ *
+ * An all-zero split needs no scaling and always resolves (a session with nothing injected yet has no
+ * factor to compute, but still has zero rows to show — the "rows never vanish" rule doesn't depend on
+ * this). A non-zero split with no computable factor (`messagesTokens` undefined — no "Messages" category
+ * — or `contextTokens` zero/undefined) returns `undefined`; the caller keeps the existing `unavailable`
+ * path for that case, same as an inconsistent split today. */
+export function scaleMemoryToMessages(memory: CcMemorySplit, messagesTokens: number | undefined, contextTokens: number | undefined): CcMemorySplit | undefined {
+  if (memorySplitSum(memory) === 0) return memory;
+  if (messagesTokens === undefined || !contextTokens) return undefined;
+  const factor = messagesTokens / contextTokens;
+  const scale = (n: number) => Math.round(n * factor);
+  return { knowledge: scale(memory.knowledge), facts: scale(memory.facts), raw: scale(memory.raw), unclassified: scale(memory.unclassified) };
+}
 
 export interface CcContextLegendRow { label: string; color: string; glyph: string; tokens: number; tokensLabel: string; percent: string; suffix: string }
 export interface CcGridCellView { glyph: string; color: string }
@@ -80,120 +117,136 @@ const ccCompact = (n: number): string => {
   return String(n);
 };
 
-// Verified live (ticket 82 report, `probectx`/`probecolor` probes against the fenced sandbox): every
-// grid cell has `isFilled: true`, including the ones that make up "Free space" — `isFilled` marks a
-// cell as assigned to some category, not as "not free". The real UI instead renders every cell whose
-// category is the free-kind one with the empty glyph and the neutral "inactive" colour, regardless of
-// that category's own reported `color` ("promptBorder": the captured free-space legend swatch and grid
-// cells were colour 246 "inactive", not 244 "promptBorder"). Filled (non-free) cells use "⛁"/"⛀" by
-// `squareFullness` and the cell's own colour, matching the capture exactly.
-const FREE_GLYPH_COLOR = "inactive";
 const FULL_GLYPH = "⛁", PARTIAL_GLYPH = "⛀", FREE_GLYPH = "⛶";
 
-/** How many of the Messages cells (in the grid's own order) become each memory colour: each category's
- * share is `round(tokens / messagesTokens * messagesCellCount)`, taken in the order Knowledge, Facts,
- * Raw, Unclassified and capped by the cells still unassigned — so the four counts never sum past
- * `messagesCellCount`, even when every one of them rounds up. A category whose own rounded share would
- * overflow what's left is truncated to what's left; it never steals from an earlier category. */
-export function splitMessagesGridCounts(messagesCellCount: number, messagesTokens: number, memory: CcMemorySplit): CcMemorySplit {
-  let remaining = messagesCellCount;
-  const take = (tokens: number): number => {
-    if (messagesTokens <= 0 || remaining <= 0 || tokens <= 0) return 0;
-    const count = Math.min(remaining, Math.round((tokens / messagesTokens) * messagesCellCount));
-    remaining -= count;
-    return count;
-  };
-  return { knowledge: take(memory.knowledge), facts: take(memory.facts), raw: take(memory.raw), unclassified: take(memory.unclassified) };
-}
+// ---- One combined category list, used by both the legend and the grid -----------------------------
 
-/** Builds Claude Code's own context section: the grid verbatim (cell positions and counts are the
- * SDK's, never recomputed here), the legend in `/context`'s own wording, with Knowledge/Facts/Raw
- * spliced in ahead of a reduced "Messages" row (ruling B). Returns `undefined` when Claude Code has no
- * breakdown at all (ticket: shows `unavailable`, points at the built-in `/context`).
- *
- * Requirement 2 ("rows never vanish"): Knowledge, Facts and Raw are always in the legend once `memory`
- * is supplied at all — zero when nothing was injected — and "Memory, unclassified" only when non-zero.
- * `memory` need not line up with a "Messages" category: a fresh session with no message sent has none
- * (the bug this fixes), so the three rows are inserted where "Messages" would sit — just before the
- * first free-kind category, or at the end if there is none — rather than only when "Messages" exists.
- * When the supplied amounts are inconsistent with what Claude Code reports (their sum exceeds a present
- * "Messages" category, or "Messages" is absent while the sum is positive), that is not presence: the
- * three rows and the Messages adjustment fall back to `unavailable`, Messages keeps Claude Code's own
- * figure, and the grid keeps Claude Code's own colours — same as `memory` being `undefined` (presence
- * could not be established at all). */
-export function buildCcContextSection(breakdown: CcContextBreakdown | undefined, memory: CcMemorySplit | undefined): CcContextSection | undefined {
-  if (!breakdown) return undefined;
-  const headerLines = [
-    breakdown.model,
-    `${ccCompact(breakdown.totalTokens)}/${ccCompact(breakdown.maxTokens)} tokens (${breakdown.percentage}%)`,
+interface DisplayCategory { name: string; tokens: number; color: string; kind: CcSdkCategory["kind"] }
+
+/** Splices Knowledge/Facts/Raw/Memory-unclassified into the SDK's own category list, in place of
+ * "Messages" (ruling B), or — a fresh session with no message sent has no "Messages" category at all —
+ * just ahead of the first free-kind row, so the rows still show rather than silently vanishing.
+ * Requirement 2 ("rows never vanish"): Knowledge, Facts and Raw are always included once `memory` is
+ * supplied at all, zero when nothing was injected; "Memory, unclassified" only when non-zero. */
+function buildDisplayCategories(breakdown: CcContextBreakdown, memory: CcMemorySplit | undefined): DisplayCategory[] {
+  if (!memory) return breakdown.categories.map(c => ({ name: c.name, tokens: c.tokens, color: c.color, kind: c.kind }));
+  const memorySum = memorySplitSum(memory);
+  const memoryRows: DisplayCategory[] = [
+    { name: "Knowledge", tokens: memory.knowledge, color: MEMORY_COLOR.knowledge, kind: "used" },
+    { name: "Facts", tokens: memory.facts, color: MEMORY_COLOR.facts, kind: "used" },
+    { name: "Raw", tokens: memory.raw, color: MEMORY_COLOR.raw, kind: "used" },
+    ...(memory.unclassified > 0 ? [{ name: "Memory, unclassified", tokens: memory.unclassified, color: MEMORY_COLOR.unclassified, kind: "used" as const }] : []),
   ];
-
-  const freeNames = new Set(breakdown.categories.filter(c => c.kind === "free").map(c => c.name));
-  const gridRows: CcGridCellView[][] = breakdown.gridRows.map(row => row.map(cell => freeNames.has(cell.categoryName)
-    ? { glyph: FREE_GLYPH, color: FREE_GLYPH_COLOR }
-    : { glyph: cell.squareFullness >= 1 ? FULL_GLYPH : PARTIAL_GLYPH, color: cell.color }));
-
-  const messagesCategory = breakdown.categories.find(c => c.name === "Messages");
-  const memorySum = memory ? memory.knowledge + memory.facts + memory.raw + memory.unclassified : 0;
-  const inconsistent = memory !== undefined && (messagesCategory ? memorySum > messagesCategory.tokens : memorySum > 0);
-  const effectiveMemory = inconsistent ? undefined : memory;
-
-  // Grid half of ruling B (maintainer, 2026-09-24): recolour a proportional prefix of the Messages
-  // cells to the memory family, in grid order. `.flat()` shares object references with `gridRows`, so
-  // painting the flat view mutates the same cells the 2-D array returns — no geometry is rebuilt.
-  if (effectiveMemory && messagesCategory) {
-    const messagesCellIndexes = breakdown.gridRows.flat()
-      .flatMap((cell, i) => cell.categoryName === "Messages" ? [i] : []);
-    const counts = splitMessagesGridCounts(messagesCellIndexes.length, messagesCategory.tokens, effectiveMemory);
-    const flatView = gridRows.flat();
-    let cursor = 0;
-    const paint = (count: number, color: string) => { for (let k = 0; k < count; k++, cursor++) flatView[messagesCellIndexes[cursor]!]!.color = color; };
-    paint(counts.knowledge, MEMORY_COLOR.knowledge);
-    paint(counts.facts, MEMORY_COLOR.facts);
-    paint(counts.raw, MEMORY_COLOR.raw);
-    paint(counts.unclassified, MEMORY_COLOR.unclassified);
-  }
-
-  const row = (label: string, color: string, tokens: number, suffix: string, isFree: boolean): CcContextLegendRow => ({
-    label, color: isFree ? FREE_GLYPH_COLOR : color, glyph: isFree ? FREE_GLYPH : FULL_GLYPH, tokens,
-    tokensLabel: ccCompact(tokens), percent: formatPercent(breakdown.maxTokens > 0 ? tokens / breakdown.maxTokens : 0), suffix,
-  });
-
-  const rows: CcContextLegendRow[] = [];
-  // Where the (up to) four memory rows land: right where "Messages" was, or — a fresh, empty session
-  // has no "Messages" category at all — just ahead of the first free-kind row, so the rows still show
-  // rather than silently vanishing because there was nothing to splice them into.
-  let memoryInsertAt = -1;
+  const out: DisplayCategory[] = [];
+  let spliced = false;
   for (const cat of breakdown.categories) {
-    const isFree = cat.kind === "free";
-    if (isFree && memoryInsertAt === -1 && effectiveMemory) memoryInsertAt = rows.length;
     if (cat.name === "Messages") {
-      memoryInsertAt = effectiveMemory ? rows.length : memoryInsertAt;
-      const remainder = effectiveMemory ? Math.max(0, cat.tokens - memorySum) : cat.tokens;
-      if (remainder > 0) rows.push(row(cat.name, cat.color, remainder, " tokens", false));
+      spliced = true;
+      out.push(...memoryRows);
+      const remainder = Math.max(0, cat.tokens - memorySum);
+      if (remainder > 0) out.push({ name: cat.name, tokens: remainder, color: cat.color, kind: cat.kind });
       continue;
     }
-    rows.push(row(cat.name, cat.color, cat.tokens, isFree ? "" : " tokens", isFree));
+    if (!spliced && cat.kind === "free") { out.push(...memoryRows); spliced = true; }
+    out.push({ name: cat.name, tokens: cat.tokens, color: cat.color, kind: cat.kind });
   }
-  if (effectiveMemory) {
-    const memoryRows: CcContextLegendRow[] = [
-      row("Knowledge", MEMORY_COLOR.knowledge, effectiveMemory.knowledge, " tokens", false),
-      row("Facts", MEMORY_COLOR.facts, effectiveMemory.facts, " tokens", false),
-      row("Raw", MEMORY_COLOR.raw, effectiveMemory.raw, " tokens", false),
-    ];
-    if (effectiveMemory.unclassified > 0) memoryRows.push(row("Memory, unclassified", MEMORY_COLOR.unclassified, effectiveMemory.unclassified, " tokens", false));
-    rows.splice(memoryInsertAt === -1 ? rows.length : memoryInsertAt, 0, ...memoryRows);
-  }
+  if (!spliced) out.push(...memoryRows);
+  return out;
+}
 
-  return {
-    headerLines,
-    gridRows,
-    legendHeading: "Estimated usage by category",
-    legend: rows,
-    memoryUnavailable: effectiveMemory
-      ? undefined
-      : (inconsistent || messagesCategory ? "Knowledge, Facts, Raw: unavailable" : undefined),
+/**
+ * Claude Code's own grid rule (module doc), computed from `categories` — never from the SDK's own
+ * `gridRows`. `minRows` (requirement 3) pads the grid out with blank free-glyph rows past the natural
+ * row count, so every legend line — however many there are — has a row of the grid to sit beside; a
+ * short legend leaves the extra grid rows genuinely empty of category data, same as Pi's own
+ * `renderContextGrid` (`minRows`, `src/hosts/pi/trace-menu-view.ts`) pads for the identical reason. */
+export function computeCcGrid(categories: DisplayCategory[], window: number, terminalWidth: number | undefined, minRows = 0): CcGridCellView[][] {
+  const narrow = terminalWidth !== undefined && terminalWidth < 80;
+  const bigWindow = window >= 1_000_000;
+  const columns = narrow ? 5 : (bigWindow ? 20 : 10);
+  const rows = bigWindow ? 10 : (narrow ? 5 : 10);
+  const totalCells = columns * rows;
+
+  // Every non-free, non-deferred category is forced to at least one square (`Math.max(1, ...)` in the
+  // source) — free space alone is exempt, and doesn't even reach this function (see below).
+  const squaresFor = (cat: DisplayCategory): CcGridCellView[] => {
+    const raw = window > 0 ? (cat.tokens / window) * totalCells : 0;
+    const count = Math.max(1, Math.round(raw));
+    const whole = Math.floor(raw), remainder = raw - whole;
+    return Array.from({ length: count }, (_, i) => {
+      const fullness = i === whole && remainder > 0 ? remainder : 1;
+      return { glyph: fullness >= 1 ? FULL_GLYPH : PARTIAL_GLYPH, color: cat.color };
+    });
   };
+
+  const used = categories.filter(c => c.kind === "used" && c.tokens > 0);
+  const buffer = categories.find(c => c.kind === "buffer" && c.tokens > 0);
+  const free = categories.find(c => c.kind === "free");
+  const freeColor = free?.color ?? "promptBorder"; // Claude Code's own free-space category colour.
+
+  const cells: CcGridCellView[] = [];
+  for (const cat of used) for (const cell of squaresFor(cat)) if (cells.length < totalCells) cells.push(cell);
+  const bufferCells = buffer ? squaresFor(buffer) : [];
+  const freeBudget = Math.max(0, totalCells - cells.length - bufferCells.length);
+  for (let i = 0; i < freeBudget; i++) cells.push({ glyph: FREE_GLYPH, color: freeColor });
+  for (const cell of bufferCells) if (cells.length < totalCells) cells.push(cell);
+  while (cells.length < totalCells) cells.push({ glyph: FREE_GLYPH, color: freeColor }); // defensive: always a full rectangle.
+
+  const gridRows: CcGridCellView[][] = [];
+  for (let r = 0; r < rows; r++) gridRows.push(cells.slice(r * columns, r * columns + columns));
+  const blankRow = (): CcGridCellView[] => Array.from({ length: columns }, () => ({ glyph: FREE_GLYPH, color: freeColor }));
+  while (gridRows.length < minRows) gridRows.push(blankRow());
+  return gridRows;
+}
+
+/** Builds Claude Code's own context section: the legend in `/context`'s own wording, with
+ * Knowledge/Facts/Raw/Memory-unclassified spliced in ahead of a reduced "Messages" row (ruling B), and
+ * the grid computed by the same rule Claude Code itself uses (module doc). Returns `undefined` when
+ * Claude Code has no breakdown at all (ticket: shows `unavailable`, points at the built-in `/context`).
+ *
+ * `contextTokens` is requirement 4's scaling denominator (`scaleMemoryToMessages`'s doc). When the
+ * supplied amounts are inconsistent with what Claude Code reports (their scaled sum exceeds a present
+ * "Messages" category, or "Messages" is absent while the sum is positive) or the scaling factor cannot
+ * be computed at all for a non-zero split, that is not presence: the memory rows and the Messages
+ * adjustment fall back to `unavailable`, Messages keeps Claude Code's own figure, and the grid keeps
+ * Claude Code's own categories — same as `memory` being `undefined` (presence could not be established
+ * at all). */
+export function buildCcContextSection(breakdown: CcContextBreakdown | undefined, memory: CcMemorySplit | undefined, contextTokens: number | undefined): CcContextSection | undefined {
+  if (!breakdown) return undefined;
+
+  const messagesCategory = breakdown.categories.find(c => c.name === "Messages");
+  const scaledMemory = memory ? scaleMemoryToMessages(memory, messagesCategory?.tokens, contextTokens) : undefined;
+  const overflow = scaledMemory !== undefined && messagesCategory !== undefined && memorySplitSum(scaledMemory) > messagesCategory.tokens;
+  const inconsistent = memory !== undefined && (scaledMemory === undefined || overflow);
+  const effectiveMemory = inconsistent ? undefined : scaledMemory;
+
+  const displayCategories = buildDisplayCategories(breakdown, effectiveMemory);
+
+  const row = (cat: DisplayCategory): CcContextLegendRow => {
+    const isFree = cat.kind === "free";
+    return {
+      label: cat.name, color: cat.color, glyph: isFree ? FREE_GLYPH : FULL_GLYPH, tokens: cat.tokens,
+      tokensLabel: ccCompact(cat.tokens), percent: formatPercent(breakdown.maxTokens > 0 ? cat.tokens / breakdown.maxTokens : 0),
+      suffix: isFree ? "" : " tokens",
+    };
+  };
+  const legend = displayCategories.map(row);
+
+  // Requirement 3: the legend opens with the model's display name, then the id, then the token total —
+  // `displayName` is `undefined` on the pinned SDK version (see `CcContextBreakdown`'s doc), so this
+  // falls back to two lines, not three.
+  const totalLine = `${ccCompact(breakdown.totalTokens)}/${ccCompact(breakdown.maxTokens)} tokens (${breakdown.percentage}%)`;
+  const headerLines = breakdown.displayName ? [breakdown.displayName, breakdown.model, totalLine] : [breakdown.model, totalLine];
+
+  const legendHeading = "Estimated usage by category";
+  const memoryUnavailable = effectiveMemory ? undefined : (inconsistent || messagesCategory ? "Knowledge, Facts, Raw: unavailable" : undefined);
+
+  // Requirement 3: legend lines past the grid's own row count stay in the legend column, not shifted
+  // left — padding the grid to the legend's total line count (module doc, mirrors Pi's `minRows`).
+  const legendLineCount = headerLines.length + 1 /* blank */ + 1 /* heading */ + legend.length + (memoryUnavailable ? 1 : 0);
+  const gridRows = computeCcGrid(displayCategories, breakdown.maxTokens, breakdown.terminalWidth, legendLineCount);
+
+  return { headerLines, gridRows, legendHeading, legend, memoryUnavailable };
 }
 
 // ---- Pending / trigger (shared wording, CC's own plain-text bar) ----------------------------------
@@ -218,9 +271,9 @@ export interface RenderedMenu {
   actions: { value: string; label: string }[];
 }
 
-export function renderTraceMenu(input: TraceMenuInput, cc: { breakdown?: CcContextBreakdown; memory?: CcMemorySplit }): RenderedMenu {
+export function renderTraceMenu(input: TraceMenuInput, cc: { breakdown?: CcContextBreakdown; memory?: CcMemorySplit; contextTokens?: number }): RenderedMenu {
   const model = buildTraceMenu(input);
-  const context = buildCcContextSection(cc.breakdown, cc.memory);
+  const context = buildCcContextSection(cc.breakdown, cc.memory, cc.contextTokens);
   return {
     header: model.header,
     context,

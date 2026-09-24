@@ -52,17 +52,20 @@ const CATEGORY_COLOR: Record<ContextCategoryName, ContextColor> = {
   Conversation: "conversation", Other: "other", Unclassified: "unclassified",
 };
 
-/** The one warm colour family the four memory rows (Knowledge, Facts, Raw, Memory-unclassified) share
- * on both hosts (maintainer ruling, 2026-09-24: “trace memory类型的记忆应该用同族颜色”). Knowledge is
- * darkest, Raw is lightest — Pi's pre-existing family, kept as the base. Unclassified is a muted shade
- * of the same family (desaturated toward grey, still warm — R>G>B — not the neutral "other" grey used
+/** The one green colour family the four memory rows (Knowledge, Facts, Raw, Memory-unclassified) share
+ * on both hosts (maintainer ruling, 2026-09-24: “trace memory类型的记忆应该用同族颜色”, superseded same day
+ * by “三处同意，可以用绿色族” after the first warm family was found to sit beside Claude Code's own
+ * `Memory files` role, orange, and `Skills` role, yellow). All four sit at the same hue (~115°, a true
+ * green — deliberately short of Pi's own `tools` teal at ~158°, so the two don't read as one colour at a
+ * glance): Knowledge is darkest and most saturated, Facts and Raw step down in that order, and
+ * Unclassified is a desaturated, muted shade of the same hue (not the neutral "other" grey used
  * elsewhere). Defined once here so neither host's palette can drift from the other's; Claude Code's
  * `<Text color>` accepts these hex values directly (verified live, ticket 82 delegation report). */
 export const MEMORY_COLOR_HEX: Record<"knowledge" | "facts" | "raw" | "unclassified", string> = {
-  knowledge: "#f08b48",
-  facts: "#f4b552",
-  raw: "#ebd873",
-  unclassified: "#bf9173",
+  knowledge: "#217619",
+  facts: "#3aa630",
+  raw: "#7aca72",
+  unclassified: "#537c50",
 };
 
 export interface ContextCategoryInput { name: ContextCategoryName; tokens: number }
