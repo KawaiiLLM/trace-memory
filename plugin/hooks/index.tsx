@@ -1,5 +1,5 @@
 // Function-hooks module for Claude Code 2.1.280. Bundled from this source for the isolated hooks VM.
-import { buildSettingsChoices, MENU_INPUTS, toggleConfirmation, type SettingsRowId, type TraceMenuInput, type SettingsInput } from "../../src/hosts/trace-menu.ts";
+import { buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type SettingsRowId, type TraceMenuInput, type SettingsInput } from "../../src/hosts/trace-menu.ts";
 import { renderTraceMenu, renderTraceMenuText, renderTraceSettings, type CcContextBreakdown, type CcMemorySplit } from "../../src/hosts/cc/trace-menu-render.ts";
 
 const PINNED_VERSION = "2.1.280";
@@ -14,7 +14,7 @@ let pluginRoot = "";
 let selectedAction = "";
 let selectedSetting: SettingsRowId | undefined;
 let paneWidth = 70;
-let runsLimit = 20;
+let runsLimit = 10;
 const id = "trace-memory-menu";
 
 function renderCurrent() {
@@ -107,7 +107,7 @@ export const register = (on: any) => {
       if (value === "runs") {
         void (async () => {
           try {
-            const rows = JSON.parse(await run("runs", ["--json"])) as { runs: Reply["runs"] };
+            const rows = JSON.parse(await run("runs", ["--json", String(runsLimit)])) as { runs: Reply["runs"] };
             reply!.runs = rows.runs;
             screen = "runs"; $.ui.invalidate("ui.render");
           } catch (error) { notice = String(error); $.ui.invalidate("ui.render"); }
@@ -159,12 +159,18 @@ export const register = (on: any) => {
       </Box>;
     }
     if (screen === "runs") return <Box flexDirection="column"><Text>Trace Memory · Runs</Text>
-      {reply.runs.slice(0, runsLimit).map((run, i) => <Text key={`run-${i}`}>{`R${run.id} ${run.phase} ${run.status} $${run.cost.toFixed(2)} ${run.at}`}</Text>)}
+      {reply.runs.map((run, i) => <Text key={`run-${i}`}>{`R${run.id} ${run.phase} ${run.status} $${run.cost.toFixed(2)} ${run.at}`}</Text>)}
       <Input key="run-count" label={MENU_INPUTS.runs} onSubmit={(value: string) => {
-        if (!/^[1-9]\d*$/.test(value)) { notice = "Run count must be a positive integer"; $.ui.invalidate("ui.render"); return; }
-        runsLimit = Math.min(Number(value), 20);
-        notice = `Showing ${Math.min(runsLimit, reply!.runs.length)} recent runs`;
-        $.ui.invalidate("ui.render");
+        try { runsLimit = parseRunsCount(value); }
+        catch (error) { notice = String(error); $.ui.invalidate("ui.render"); return; }
+        void (async () => {
+          try {
+            const rows = JSON.parse(await run("runs", ["--json", String(runsLimit)])) as { runs: Reply["runs"] };
+            reply!.runs = rows.runs;
+            notice = `Showing ${rows.runs.length} recent runs`;
+          } catch (error) { notice = String(error); }
+          $.ui.invalidate("ui.render");
+        })();
       }} />{message}<Select key="runs-back" label="Action" options={[back]} onSelect={() => { screen = "main"; $.ui.invalidate("ui.render"); }} />
     </Box>;
     if (screen === "project") return <Box flexDirection="column"><Text>{MENU_INPUTS.project}</Text>
@@ -183,6 +189,22 @@ export const register = (on: any) => {
     const row = selectedSetting;
     if (!row) throw new Error("Trace Memory: no setting selected");
     const label = buildSettingsChoices(reply.settings).find(choice => choice.id === row)?.label ?? row;
+    if (row === "closedSessionScope") return <Box flexDirection="column"><Text>{label}</Text>
+      <Select key="scope-choice" label="Closed sessions" autoFocus
+        options={["off", "project", "global"].map(value => ({ value, label: value }))}
+        onSelect={(value: string) => {
+          void (async () => {
+            try {
+              const output = await run("setting", [row, value]);
+              const result = JSON.parse(output) as { saved: boolean; applied: boolean; diagnostic?: string };
+              notice = `Setting ${result.saved ? "saved" : "not saved"}; ${result.applied ? "applied" : "not applied"}${result.diagnostic ? `: ${result.diagnostic}` : ""}`;
+              if (result.saved && result.applied) await reload(); else $.ui.invalidate("ui.render");
+            } catch (error) { notice = String(error); $.ui.invalidate("ui.render"); }
+            screen = "settings"; $.ui.invalidate("ui.render");
+          })();
+        }} />
+      <Select key="scope-back" label="Action" options={[back]} onSelect={() => { screen = "settings"; $.ui.invalidate("ui.render"); }} />
+    </Box>;
     return <Box flexDirection="column"><Text>{label}</Text>
       <Input key={`edit-${row}`} label={row.endsWith(".model") ? "Model and optional capacity (model capacity)" : "New value"} autoFocus
         onSubmit={(value: string) => {

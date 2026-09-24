@@ -107,6 +107,11 @@ var toggleConfirmation = (turnOn, shared) => ({
   title: `Turn Trace Memory ${turnOn ? "on" : "off"} for this session?`,
   message: (shared ? " Shared identity: this switch also affects forks or clones carrying this memory identity." : " Forks or clones carrying this memory identity share this switch.") + (turnOn ? " Available history, including the paused interval, will be queued without a model call." : " Processing and future injection stop; stored memory and already-injected text remain.")
 });
+function parseRunsCount(input) {
+  if (!/^[1-9]\d*$/.test(input) || !Number.isSafeInteger(Number(input)))
+    throw new Error("Runs count must be a positive safe integer in decimal notation");
+  return Number(input);
+}
 var MENU_INPUTS = {
   runs: "Runs: number to show",
   project: "Project name (every session declaring this name in this database shares its knowledge; without a name, a new session joins the project its repository directory already has when that is exactly one project \u2014 home and temporary directories excluded)"
@@ -403,7 +408,7 @@ var pluginRoot = "";
 var selectedAction = "";
 var selectedSetting;
 var paneWidth = 70;
-var runsLimit = 20;
+var runsLimit = 10;
 var id = "trace-memory-menu";
 function renderCurrent() {
   if (!reply) throw new Error("Trace Memory: menu has not loaded");
@@ -509,7 +514,7 @@ export const register = (on) => {
       if (value === "runs") {
         void (async () => {
           try {
-            const rows = JSON.parse(await run("runs", ["--json"]));
+            const rows = JSON.parse(await run("runs", ["--json", String(runsLimit)]));
             reply.runs = rows.runs;
             screen = "runs";
             $.ui.invalidate("ui.render");
@@ -575,16 +580,25 @@ export const register = (on) => {
       </Box>;
     }
     if (screen === "runs") return <Box flexDirection="column"><Text>Trace Memory · Runs</Text>
-      {reply.runs.slice(0, runsLimit).map((run2, i) => <Text key={`run-${i}`}>{`R${run2.id} ${run2.phase} ${run2.status} $${run2.cost.toFixed(2)} ${run2.at}`}</Text>)}
+      {reply.runs.map((run2, i) => <Text key={`run-${i}`}>{`R${run2.id} ${run2.phase} ${run2.status} $${run2.cost.toFixed(2)} ${run2.at}`}</Text>)}
       <Input key="run-count" label={MENU_INPUTS.runs} onSubmit={(value) => {
-      if (!/^[1-9]\d*$/.test(value)) {
-        notice = "Run count must be a positive integer";
+      try {
+        runsLimit = parseRunsCount(value);
+      } catch (error) {
+        notice = String(error);
         $.ui.invalidate("ui.render");
         return;
       }
-      runsLimit = Math.min(Number(value), 20);
-      notice = `Showing ${Math.min(runsLimit, reply.runs.length)} recent runs`;
-      $.ui.invalidate("ui.render");
+      void (async () => {
+        try {
+          const rows = JSON.parse(await run("runs", ["--json", String(runsLimit)]));
+          reply.runs = rows.runs;
+          notice = `Showing ${rows.runs.length} recent runs`;
+        } catch (error) {
+          notice = String(error);
+        }
+        $.ui.invalidate("ui.render");
+      })();
     }} />{message}<Select key="runs-back" label="Action" options={[back]} onSelect={() => {
       screen = "main";
       $.ui.invalidate("ui.render");
@@ -623,6 +637,34 @@ export const register = (on) => {
     const row = selectedSetting;
     if (!row) throw new Error("Trace Memory: no setting selected");
     const label = buildSettingsChoices(reply.settings).find((choice) => choice.id === row)?.label ?? row;
+    if (row === "closedSessionScope") return <Box flexDirection="column"><Text>{label}</Text>
+      <Select
+      key="scope-choice"
+      label="Closed sessions"
+      autoFocus
+      options={["off", "project", "global"].map((value) => ({ value, label: value }))}
+      onSelect={(value) => {
+        void (async () => {
+          try {
+            const output = await run("setting", [row, value]);
+            const result = JSON.parse(output);
+            notice = `Setting ${result.saved ? "saved" : "not saved"}; ${result.applied ? "applied" : "not applied"}${result.diagnostic ? `: ${result.diagnostic}` : ""}`;
+            if (result.saved && result.applied) await reload();
+            else $.ui.invalidate("ui.render");
+          } catch (error) {
+            notice = String(error);
+            $.ui.invalidate("ui.render");
+          }
+          screen = "settings";
+          $.ui.invalidate("ui.render");
+        })();
+      }}
+    />
+      <Select key="scope-back" label="Action" options={[back]} onSelect={() => {
+      screen = "settings";
+      $.ui.invalidate("ui.render");
+    }} />
+    </Box>;
     return <Box flexDirection="column"><Text>{label}</Text>
       <Input
       key={`edit-${row}`}

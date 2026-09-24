@@ -18,18 +18,28 @@ const menu = {
 };
 const pane = { title: "Trace Memory", isFocused: true, bodyColumns: 65, placement: "inline", scroll: { offset: 0, bodyRows: 45 }, view: {} } as const;
 
-function mockHost(on: any, seen: string[], version = "2.1.280") {
+function mockHost(on: any, seen: string[], version = "2.1.280", sessionId = () => "initial-id") {
   mock.env(on, { CLAUDE_PLUGIN_ROOT: "/tmp/fake-plugin" });
   on("process.run", ($: any, e: any) => {
     seen.push(e.argv.join(" "));
     const argv = e.argv as string[];
-    if (argv.includes("--version")) return { exitCode: 0, stdout: `${version} (Claude Code)\n`, stderr: "" };
-    if (argv.includes("menu")) return { exitCode: 0, stdout: JSON.stringify(menu), stderr: "" };
-    if (argv.includes("runs")) return { exitCode: 0, stdout: JSON.stringify({ runs: menu.runs }), stderr: "" };
-    if (argv.includes("setting")) return { exitCode: 0, stdout: JSON.stringify({ saved: true, applied: false, diagnostic: "executor unavailable" }), stderr: "" };
-    return { exitCode: 0, stdout: JSON.stringify({ command: argv.at(-1) }), stderr: "" };
+    if (argv.includes("--version")) return { value: { exitCode: 0, stdout: `${version} (Claude Code)\n`, stderr: "" } };
+    if (argv.includes("menu")) return { value: { exitCode: 0, stdout: JSON.stringify(menu), stderr: "" } };
+    if (argv.includes("runs")) {
+      const count = Number(argv.at(-1));
+      return { value: { exitCode: 0, stdout: JSON.stringify({ runs: Array.from({ length: count }, (_, i) => ({ ...menu.runs[0], id: i + 1 })) }), stderr: "" } };
+    }
+    if (argv.includes("setting")) return { value: { exitCode: 0, stdout: JSON.stringify({ saved: true, applied: false, diagnostic: "executor unavailable" }), stderr: "" } };
+    return { value: { exitCode: 0, stdout: JSON.stringify({ command: argv.at(-1) }), stderr: "" } };
   });
-  on("session.usage", () => ({ context: { breakdown: undefined } }));
+  on("session.start", ($: any, e: any) => ({ cwd: e.cwd }));
+  on("command.register", ($: any, e: any) => ({ value: { command: e.name } }));
+  on("command.run", () => ({ text: "command unavailable" }));
+  on("session.usage", () => ({ value: { startedAt: 0, context: { breakdown: undefined }, rateLimits: [] } }));
+  on("ui.status", () => ({ value: undefined }));
+  on("ui.open", () => ({ value: { isPlaced: true } }));
+  on("ui.invalidate", () => ({ value: undefined }));
+  on("session.id", () => ({ value: sessionId() }));
 }
 
 test("local command renders headless text and a mountable narrow pane, then dispatches live actions", async ($, on) => {
@@ -46,12 +56,24 @@ test("local command renders headless text and a mountable narrow pane, then disp
   await ui.input({ key: "edit-budget.global", text: "5000" });
   expect(await ui.find({ type: "Text", text: "saved; not applied" })).toBeDefined();
   expect(seen.some(args => args.includes("setting budget.global 5000"))).toBe(true);
+  for (const row of ["budget.project", "budget.session", "noting.model", "noting.thinking", "consolidation.model", "consolidation.thinking", "dreaming.model", "dreaming.thinking", "closedSessionScope"]) {
+    await ui.select({ key: "setting-rows", value: row });
+    expect(await ui.find({ key: row === "closedSessionScope" ? "scope-choice" : `edit-${row}` })).toBeDefined();
+    await ui.select({ key: row === "closedSessionScope" ? "scope-back" : "edit-back", value: "back" });
+  }
   await ui.select({ key: "setting-rows", value: "back" });
   await ui.select({ key: "actions", value: "project" });
   await ui.input({ key: "project-name", text: "new-project" });
   expect(seen.some(args => args.includes("project new-project"))).toBe(true);
   await ui.select({ key: "actions", value: "runs" });
   expect(await ui.find({ type: "Text", text: "R1 noting completed" })).toBeDefined();
+  expect(seen.some(args => args.includes("runs --json 10"))).toBe(true);
+  const runsReads = seen.filter(args => args.includes(" runs --json ")).length;
+  await ui.input({ key: "run-count", text: "" }); // Empty input does not dispatch another read.
+  expect(seen.filter(args => args.includes(" runs --json ")).length).toBe(runsReads);
+  await ui.input({ key: "run-count", text: "25" });
+  expect(seen.some(args => args.includes("runs --json 25"))).toBe(true);
+  expect(await ui.find({ type: "Text", text: "R25 noting completed" })).toBeDefined();
   await ui.select({ key: "runs-back", value: "back" });
   await ui.select({ key: "actions", value: "catch-up" });
   await ui.select({ key: "actions", value: "stop" });
@@ -69,9 +91,8 @@ test("local command renders headless text and a mountable narrow pane, then disp
 
 test("a later command resolves the new native identity after clear", async ($, on) => {
   const seen: string[] = [];
-  mockHost(on, seen);
   let currentId = "before-clear";
-  on("session.id", () => currentId);
+  mockHost(on, seen, "2.1.280", () => currentId);
   await $.session.start({ cwd: "/tmp", surface: null, isInteractive: false });
   await $.command.run({ command: "trace" });
   currentId = "after-clear";
