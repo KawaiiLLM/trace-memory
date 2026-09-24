@@ -107,11 +107,17 @@ function nativePreservation(record: CcNativeRecord, byId: ReadonlyMap<string, Cc
       typeof anchorId !== "string" || !anchorId || typeof head !== "string" || typeof tail !== "string" ||
       preserved[0] !== head || preserved.at(-1) !== tail || record.logicalParentUuid !== tail || record.parentUuid !== null)
     return null;
+  // Claude Code's own loader (2.1.280) looks the preserved messages up by UUID and re-inserts them after
+  // the anchor; their parent links are not part of that contract. Its automatic compaction lists, as the
+  // last preserved message, one written under the summary, and puts attachments between the boundary
+  // and the summary. So every preserved message must exist, and the anchor must descend from the boundary.
+  if (!preserved.every(id => byId.has(id))) return null;
   const anchor = byId.get(anchorId);
-  if (!anchor || nativeParentId(anchor) !== record.uuid) return null;
-  for (let index = 0; index < preserved.length; index++) {
-    const retained = byId.get(preserved[index]!);
-    if (!retained || index > 0 && nativeParentId(retained) !== preserved[index - 1]) return null;
+  if (!anchor) return null;
+  for (let current: CcNativeRecord | undefined = anchor, seen = new Set<string>(); current !== record;) {
+    const parent: string | null = current === undefined ? null : nativeParentId(current);
+    if (parent === null || seen.has(parent)) return null;
+    seen.add(parent); current = byId.get(parent);
   }
   return { boundary: record, anchor, preserved: preserved as string[], head, tail };
 }

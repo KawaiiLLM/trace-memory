@@ -41166,11 +41166,14 @@ function nativePreservation(record3, byId) {
   const preserved = messages?.uuids, anchorId = messages?.anchorUuid, head = segment?.headUuid, tail = segment?.tailUuid;
   if (!Array.isArray(preserved) || !preserved.length || !preserved.every((id) => typeof id === "string" && id) || typeof anchorId !== "string" || !anchorId || typeof head !== "string" || typeof tail !== "string" || preserved[0] !== head || preserved.at(-1) !== tail || record3.logicalParentUuid !== tail || record3.parentUuid !== null)
     return null;
+  if (!preserved.every((id) => byId.has(id))) return null;
   const anchor = byId.get(anchorId);
-  if (!anchor || nativeParentId(anchor) !== record3.uuid) return null;
-  for (let index = 0; index < preserved.length; index++) {
-    const retained = byId.get(preserved[index]);
-    if (!retained || index > 0 && nativeParentId(retained) !== preserved[index - 1]) return null;
+  if (!anchor) return null;
+  for (let current = anchor, seen = /* @__PURE__ */ new Set(); current !== record3; ) {
+    const parent = current === void 0 ? null : nativeParentId(current);
+    if (parent === null || seen.has(parent)) return null;
+    seen.add(parent);
+    current = byId.get(parent);
   }
   return { boundary: record3, anchor, preserved, head, tail };
 }

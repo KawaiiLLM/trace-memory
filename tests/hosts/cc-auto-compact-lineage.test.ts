@@ -6,6 +6,7 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { selectedNativePath, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+import { selectedCcVisibleRecords } from "../../src/hosts/cc/injection.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -28,7 +29,8 @@ const autoCompacted = (): CcNativeRecord[] => [
   { uuid: "boundary", parentUuid: null, logicalParentUuid: "t", type: "system", subtype: "compact_boundary", timestamp: at(4),
     compactMetadata: { trigger: "auto", preservedSegment: { headUuid: "a1", anchorUuid: "summary", tailUuid: "t" },
       preservedMessages: { anchorUuid: "summary", uuids: ["a1", "x1", "t"] } } } as CcNativeRecord,
-  { uuid: "summary", parentUuid: "boundary", type: "user", isCompactSummary: true, timestamp: at(5),
+  ({ uuid: "instructions", parentUuid: "boundary", type: "attachment", timestamp: at(4), attachment: { type: "instructions" } }) as CcNativeRecord,
+  { uuid: "summary", parentUuid: "instructions", type: "user", isCompactSummary: true, timestamp: at(5),
     message: { role: "user", content: "summary" } } as CcNativeRecord,
   attachment("t", "summary", 6), prompt("u2", "t", 7), assistant("a2", "u2", 8),
 ];
@@ -51,7 +53,7 @@ test("an automatic compaction whose logical parent is written after it continues
   const records = autoCompacted();
   const selected = selectedNativePath(records);
   expect(selected.problem).toBeUndefined();
-  expect(selected.records.map(record => record.uuid)).toEqual(["u1", "a1", "x1", "boundary", "summary", "t", "u2", "a2"]);
+  expect(selected.records.map(record => record.uuid)).toEqual(["u1", "a1", "x1", "boundary", "instructions", "summary", "t", "u2", "a2"]);
 
   // It imports exactly as the same records do when the boundary names its earlier preserved tail.
   const normal = records.map(record => record.uuid === "boundary" ? { ...record, logicalParentUuid: "x1" } : record);
@@ -86,4 +88,10 @@ test("a reply that goes on after an automatic compaction belongs to the Turn of 
     expect(turnOf("a1-continued")).toBe(turnOf("u1"));
     expect(store.getTurn(turnOf("u2"))!.userPrompt).toBe("u2");
   } finally { importer.close(); }
+});
+
+test("the context after an automatic compaction is its preserved messages, the boundary and what follows it", () => {
+  // Claude Code re-inserts the preserved messages after the summary; earlier messages are gone.
+  expect(selectedCcVisibleRecords(autoCompacted()).map(record => record.uuid))
+    .toEqual(["a1", "x1", "boundary", "instructions", "summary", "t", "u2", "a2"]);
 });
