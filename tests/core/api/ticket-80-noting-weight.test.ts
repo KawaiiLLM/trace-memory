@@ -77,9 +77,11 @@ test("own Noting commit drops only counted head entries and retains rendered suf
     const ids = [...pending];
     const expected = render.tokens(ids.map(id => render.renderEntry(store.getSourceEntry(id)!, memory.config.render).content).join("\n\n"));
     rendered.mockClear();
+    const raw = vi.spyOn(store, "getSourceEntry");
     expect(memory.pendingTokens("noting", target).tokens).toBe(expected);
     expect(rendered).not.toHaveBeenCalled();
-    rendered.mockRestore();
+    expect(raw).not.toHaveBeenCalled();
+    raw.mockRestore(); rendered.mockRestore();
   } finally { memory.close(); }
 });
 

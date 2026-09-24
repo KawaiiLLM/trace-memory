@@ -3848,9 +3848,12 @@ export class Store {
     if (!state) return null;
     // Return one ordered value rather than a JS row per member. Graph preparation batches the
     // ownership check; trigger admission and path writers validate their own selected entries.
-    const row = this.db.prepare(`SELECT json_group_array(entry_id ORDER BY position) AS ids,
-      MAX(position) AS last_position FROM source_path_entries
-      WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = ?)`)
+    // The ordered subquery streams the primary-key order into the aggregate. Putting ORDER BY
+    // inside json_group_array instead builds a redundant temporary sorting tree on this runtime.
+    const row = this.db.prepare(`SELECT json_group_array(entry_id) AS ids, MAX(position) AS last_position
+      FROM (SELECT entry_id, position FROM source_path_entries
+        WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = ?)
+        ORDER BY position)`)
       .get(sessionId, branch) as { ids: string; last_position: number | null };
     const ids = JSON.parse(row.ids) as number[];
     // Nonnegative, unique integer positions and this maximum also exclude a gap in the sequence.

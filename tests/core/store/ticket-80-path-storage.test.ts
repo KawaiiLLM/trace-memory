@@ -117,9 +117,15 @@ test("80: whole-path membership is one ordered array with header and position ch
     expect(store.selectedSourceEntryIds(owner.id, "main")).toEqual(ids);
     expect(reads.mock.calls).toHaveLength(2);
     const sql = reads.mock.calls.map(([statement]) => statement).join("\n");
-    expect(sql).toContain("json_group_array(entry_id ORDER BY position)");
+    expect(sql).toContain("json_group_array(entry_id)");
+    expect(sql).toContain("ORDER BY position");
     expect(sql).not.toContain("JOIN source_entries");
+    const membershipSql = reads.mock.calls.find(([statement]) => statement.includes("json_group_array"))![0];
     reads.mockRestore();
+    const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${membershipSql}`).all(owner.id, "main");
+    expect(plan.some(row => /TEMP B-TREE/.test(String(row.detail)))).toBe(false);
+    store.db.exec("PRAGMA reverse_unordered_selects = ON");
+    expect(store.selectedSourceEntryIds(owner.id, "main")).toEqual(ids);
     store.db.prepare("UPDATE source_paths SET length = 4 WHERE session_id = ?").run(owner.id);
     expect(() => store.selectedSourceEntryIds(owner.id, "main")).toThrow("stored source path is malformed");
     store.db.prepare("UPDATE source_paths SET length = 3, tail_entry_id = ? WHERE session_id = ?").run(c.entry.id, owner.id);
