@@ -143,6 +143,49 @@ test("68: a non-success ordinary C completion does not launch the drain", async 
   } finally { release(); await h.dispose(); }
 });
 
+test("86: ordinary D partial commit survives terminal failure without a C/D completion check", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let writeSubmitted = false, failureWaiting = false;
+  try {
+    await h.turn(); h.memory.setKnowledgeBudget("session", 1000);
+    const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
+    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user",
+      text: "Maintain this conclusion.", source: ["T1#user"] }] })).toContain("ok: F1");
+    expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", topics: [],
+      reason: "Seed version.", text: "Initial rule " + "word ".repeat(230), category: "constraint",
+      scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
+    const store = h.memory.store;
+    const initial = store.listKnowledgeRevisions().at(-1)!;
+    const eligible = vi.spyOn(h.memory, "taskEligibility");
+    h.provider(async c => {
+      if (phase(c) !== "D") return phase(c) === "N" ? notingFact(c) : consolidationReply(c);
+      if (!writeSubmitted) {
+        writeSubmitted = true;
+        return call("memory", { operations: [{ op: "update", id: `K${initial.knowledgeId}@${initial.id}`,
+          text: "Maintained rule " + "word ".repeat(230), category: "constraint", scope: "session",
+          supports: [], topics: [], reason: "Update before worker failure" }], skipped: [] });
+      }
+      failureWaiting = true;
+      await held;
+      return { ...reply(""), stopReason: "error", errorMessage: "terminal D failure after commit" };
+    }, { autoStop: false });
+    await h.turn();
+    await vi.waitFor(() => expect(failureWaiting).toBe(true));
+    expect(store.listKnowledgeRevisions()).toHaveLength(2);
+    const revised = store.listKnowledgeRevisions().at(-1)!;
+    expect(revised.id).toBeGreaterThan(initial.id);
+    const before = eligible.mock.calls.length;
+    release(); await settle(h);
+    expect(store.listKnowledgeRevisions()).toHaveLength(2); // the committed write was not rolled back or replayed
+    expect(store.listKnowledgeRevisions().at(-1)!.id).toBe(revised.id);
+    expect(store.listRuns(1).filter(run => run.kind === "dreaming").map(run => run.outcome)).toEqual(["failure"]);
+    expect(eligible.mock.calls.length).toBe(before); // progress changed, but failure is not a checkpoint
+    eligible.mockRestore();
+  } finally { release(); await h.dispose(); }
+}, 30000);
+
 test("68: a repeated catchup command on a running drain does not start a second run", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1 });
   let release!: () => void;
@@ -368,6 +411,41 @@ test("86: D retries the same pending revision and three business failures turn m
     expect(failures).toEqual([{ head: executions[0]!.head, count: 3 }]);
     await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: stopped");
   } finally { await command(h, "stop"); await h.dispose(); }
+}, 30000);
+
+test.each(["stop", "path"] as const)("86: Pi %s fences catchup retry despite a late D error reply", async action => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let dreams = 0, replied = false;
+  try {
+    await h.turn(); h.memory.setKnowledgeBudget("session", 1000);
+    const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
+    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user",
+      text: "Retain this rule.", source: ["T1#user"] }] })).toContain("ok: F1");
+    expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", topics: [],
+      reason: "Seed revision.", text: "constraint ".repeat(230), category: "constraint", scope: "session",
+      supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
+    h.provider(async c => {
+      if (phase(c) !== "D") return phase(c) === "N" ? notingFact(c) : consolidationReply(c);
+      dreams++;
+      await held;
+      replied = true;
+      return { ...reply(""), stopReason: "error", errorMessage: "terminal D failure after cancellation" };
+    }, { ignoreAbort: true });
+    await command(h, "catchup");
+    await vi.waitFor(() => expect(dreams).toBe(1));
+    if (action === "stop") await command(h, "stop");
+    else {
+      h.entries.length = 0; h.allEntries.length = 0;
+      h.ctx.sessionManager.getSessionId = () => "forked-session";
+      await h.emit("session_tree");
+    }
+    release(); await settle(h);
+    expect(replied).toBe(true);
+    expect(dreams).toBe(1);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: stopped");
+  } finally { release(); await h.dispose(); }
 }, 30000);
 
 test("67: entries persisted after catchup freezes do not extend Noting's boundary", async () => {
