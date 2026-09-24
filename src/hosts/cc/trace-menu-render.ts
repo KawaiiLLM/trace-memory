@@ -87,17 +87,22 @@ const memorySplitSum = (m: CcMemorySplit): number => m.knowledge + m.facts + m.r
  * — the same content Claude Code's "Messages" total counts, measured with this project's estimator
  * instead of Claude Code's. Each carrier's row becomes `round(estimate * factor)`.
  *
- * An all-zero split needs no scaling and always resolves (a session with nothing injected yet has no
- * factor to compute, but still has zero rows to show — the "rows never vanish" rule doesn't depend on
- * this). A non-zero split with no computable factor (`messagesTokens` undefined — no "Messages" category
- * — or `contextTokens` zero/undefined) returns `undefined`; the caller keeps the existing `unavailable`
- * path for that case, same as an inconsistent split today. */
+ * An all-zero split needs no scaling. Allocate the rounded total using largest remainders rather
+ * than rounding every category independently: that conserves the Messages row when several small
+ * memory components would each round up. A missing or inconsistent denominator is unavailable. */
 export function scaleMemoryToMessages(memory: CcMemorySplit, messagesTokens: number | undefined, contextTokens: number | undefined): CcMemorySplit | undefined {
-  if (memorySplitSum(memory) === 0) return memory;
-  if (messagesTokens === undefined || !contextTokens) return undefined;
+  const sum = memorySplitSum(memory);
+  if (sum === 0) return memory;
+  if (messagesTokens === undefined || !contextTokens || sum > contextTokens || messagesTokens < 0) return undefined;
   const factor = messagesTokens / contextTokens;
-  const scale = (n: number) => Math.round(n * factor);
-  return { knowledge: scale(memory.knowledge), facts: scale(memory.facts), raw: scale(memory.raw), unclassified: scale(memory.unclassified) };
+  const keys = ["knowledge", "facts", "raw", "unclassified"] as const;
+  const parts = keys.map((key, index) => ({ key, index, exact: memory[key] * factor, amount: Math.floor(memory[key] * factor) }));
+  let remainder = Math.round(sum * factor) - parts.reduce((total, part) => total + part.amount, 0);
+  for (const part of [...parts].sort((a, b) => (b.exact - b.amount) - (a.exact - a.amount) || a.index - b.index)) {
+    if (remainder-- <= 0) break;
+    part.amount++;
+  }
+  return { knowledge: parts[0]!.amount, facts: parts[1]!.amount, raw: parts[2]!.amount, unclassified: parts[3]!.amount };
 }
 
 export interface CcContextLegendRow { label: string; color: string; glyph: string; tokens: number; tokensLabel: string; percent: string; suffix: string }

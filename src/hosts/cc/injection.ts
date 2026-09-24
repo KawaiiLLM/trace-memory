@@ -45,7 +45,7 @@ export function encodeCcInjection(binding: CcVisibleBinding, injection: Injectio
   return `${BEGIN}\n${HEADER}${JSON.stringify(header)}\n${injection.text}\n${END}`;
 }
 
-function decodeCcInjection(content: unknown, binding: CcVisibleBinding): EnvelopeHeader | null {
+export function decodeCcInjection(content: unknown, binding: CcVisibleBinding): EnvelopeHeader | null {
   if (typeof content !== "string") return null;
   const prefix = `${BEGIN}\n${HEADER}`, suffix = `\n${END}`;
   if (!content.startsWith(prefix) || !content.endsWith(suffix)) return null;

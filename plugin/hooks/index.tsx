@@ -15,6 +15,7 @@ let selectedAction = "";
 let selectedSetting: SettingsRowId | undefined;
 let paneWidth = 70;
 let runsLimit = 10;
+let activeSession = "";
 const id = "trace-memory-menu";
 
 function renderCurrent() {
@@ -34,8 +35,8 @@ function decode(result: { stdout?: string; stderr?: string; exitCode: number }, 
 export const register = (on: any) => {
   on("session.start", async ($: any, e: any, next: any) => {
     try {
-      pluginRoot = await $.env.get("CLAUDE_PLUGIN_ROOT");
-      if (!pluginRoot) throw new Error("CLAUDE_PLUGIN_ROOT is unavailable");
+      pluginRoot = $.plugin.root;
+      if (!pluginRoot) throw new Error("Claude Code plugin root is unavailable");
       const output = await $.process.run(["claude", "--version"]);
       const seen = decode(output, "Claude Code version").split(/\s+/)[0];
       if (seen !== PINNED_VERSION) throw new Error(`version mismatch, pinned ${PINNED_VERSION}, running ${seen}`);
@@ -50,22 +51,34 @@ export const register = (on: any) => {
     return next(e);
   });
 
+  const load = async ($: any) => {
+    const session = await $.session.id();
+    let messages: unknown;
+    try { messages = await $.session.messages({ as: "api" }); }
+    catch { messages = null; }
+    const result = await $.process.run(["node", `${pluginRoot}/dist/cc.cjs`, "cli", "--config", `${pluginRoot}/cc.config.json`, "--session", session, "menu", "--json", "--snapshot"],
+      { stdin: JSON.stringify({ session, messages }) });
+    if (await $.session.id() !== session) throw new Error("native session changed while loading menu");
+    return { session, data: JSON.parse(decode(result, "Trace Memory menu")) as Reply };
+  };
+
   on("command.run", { command: "trace" }, async ($: any, e: any, next: any) => {
     if (versionError) return { text: versionError };
     try {
       screen = "main";
       notice = "";
-      const session = await $.session.id(); // Always live, including after /clear.
-      const result = await $.process.run(["node", `${pluginRoot}/dist/cc.cjs`, "cli", "--config", `${pluginRoot}/cc.config.json`, "--session", session, "menu", "--json"]);
-      reply = JSON.parse(decode(result, "Trace Memory menu"));
+      const loaded = await load($);
+      reply = loaded.data;
+      activeSession = loaded.session;
       // A deliberately narrow initial width avoids claiming space used by Claude Code side panes.
       // The render event's actual width, when present, overrides this before layout.
       try {
-        const usage = await $.session.usage({ breakdown: "full", columns: paneWidth });
+        const usage = await $.session.usage({ breakdown: "summary", columns: paneWidth });
         const b = usage?.context?.breakdown;
         breakdown = b ? { model: b.model, totalTokens: b.totalTokens, maxTokens: b.maxTokens,
           percentage: b.percentage, categories: b.categories, displayName: b.displayName, terminalWidth: paneWidth } : undefined;
       } catch { breakdown = undefined; }
+      if (await $.session.id() !== activeSession) throw new Error("native session changed while reading context");
       const text = renderTraceMenuText(renderCurrent());
       await $.ui.open({ id, title: "Trace Memory", focus: true, closeOnEscape: true, rows: 45 });
       return { text };
@@ -84,13 +97,21 @@ export const register = (on: any) => {
     if (!reply) return <Text>{notice || "Trace Memory: unavailable"}</Text>;
     const menu = renderCurrent();
     const reload = async () => {
-      const session = await $.session.id();
-      const result = await $.process.run(["node", `${pluginRoot}/dist/cc.cjs`, "cli", "--config", `${pluginRoot}/cc.config.json`, "--session", session, "menu", "--json"]);
-      reply = JSON.parse(decode(result, "Trace Memory menu"));
+      const loaded = await load($);
+      reply = loaded.data;
+      activeSession = loaded.session;
+      try {
+        const usage = await $.session.usage({ breakdown: "summary", columns: paneWidth });
+        const b = usage?.context?.breakdown;
+        breakdown = b ? { model: b.model, totalTokens: b.totalTokens, maxTokens: b.maxTokens,
+          percentage: b.percentage, categories: b.categories, displayName: b.displayName, terminalWidth: paneWidth } : undefined;
+      } catch { breakdown = undefined; }
+      if (await $.session.id() !== activeSession) throw new Error("native session changed while reading context");
       $.ui.invalidate("ui.render");
     };
     const run = async (verb: string, args: string[] = []) => {
       const session = await $.session.id();
+      if (session !== activeSession) throw new Error("native session changed; reopen /trace");
       const result = await $.process.run(["node", `${pluginRoot}/dist/cc.cjs`, "cli", "--config", `${pluginRoot}/cc.config.json`, "--session", session, verb, ...args]);
       return decode(result, `Trace Memory ${verb}`);
     };

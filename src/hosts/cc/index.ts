@@ -12,6 +12,7 @@ import { followNativeSession, processAncestors, publishNativeSession, type CcNat
 import { ccHandleClear } from "./clear.ts";
 import { installCcNativeRejectionGuard } from "./native-rejection.ts";
 import { readCcMenu, readCcRuns } from "./menu.ts";
+import type { CcContextSnapshot } from "./menu-context.ts";
 import { editedCcConfig, saveCcConfig, type CcSettingId } from "./menu-config.ts";
 import { executorSettings, executorSnapshot } from "./control.ts";
 import { Store } from "../../core/store/index.ts";
@@ -186,14 +187,15 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
   if (sessionFlag !== "--session" || !nativeSessionId || !verb)
     throw new Error("CLI requires --session <native-id> and a command");
   if (verb === "menu" || verb === "runs") {
-    if (rest[0] !== "--json" || verb === "menu" && rest.length !== 1 || verb === "runs" && rest.length !== 2)
-      throw new Error(verb === "runs" ? "runs requires --json <count>" : "menu requires --json");
+    if (rest[0] !== "--json" || verb === "menu" && !(rest.length === 1 || rest.length === 2 && rest[1] === "--snapshot") || verb === "runs" && rest.length !== 2)
+      throw new Error(verb === "runs" ? "runs requires --json <count>" : "menu requires --json [--snapshot]");
     const runLimit = verb === "runs" ? parseRunsCount(rest[1]!) : 10;
     if (verb === "runs") { process.stdout.write(`${JSON.stringify({ runs: readCcRuns(config, nativeSessionId, runLimit) })}\n`); return; }
     let effective: Awaited<ReturnType<typeof executorSnapshot>> | undefined;
     try { effective = await executorSnapshot(config, nativeSessionId); }
     catch { /* The menu remains navigable; its worker values are explicitly unavailable. */ }
-    const data = readCcMenu(config, nativeSessionId, effective?.config, 10, effective?.catchup);
+    const current = rest[1] === "--snapshot" ? JSON.parse(await readStdin()) as CcContextSnapshot : undefined;
+    const data = readCcMenu(config, nativeSessionId, effective?.config, 10, effective?.catchup, current);
     process.stdout.write(`${JSON.stringify(data)}\n`);
     return;
   }

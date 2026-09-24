@@ -21,6 +21,12 @@ describe("Claude Code local menu rendering", () => {
     expect(section.legend.filter(row => row.label === "Memory, unclassified")).toHaveLength(0);
     expect(section.gridRows.every(row => row.length === 5)).toBe(true);
   });
+  it("allocates independently fractional categories without exceeding Messages", () => {
+    const small = { ...breakdown, categories: breakdown.categories.map(row => row.name === "Messages" ? { ...row, tokens: 2 } : row) };
+    const section = buildCcContextSection(small, { knowledge: 1, facts: 1, raw: 1, unclassified: 0 }, 4)!;
+    expect(section.memoryUnavailable).toBeUndefined();
+    expect(section.legend.filter(row => ["Knowledge", "Facts", "Raw"].includes(row.label)).reduce((sum, row) => sum + row.tokens, 0)).toBe(2);
+  });
   it("never invents a split without a Messages denominator or exact presence", () => {
     const noMessages = { ...breakdown, categories: breakdown.categories.filter(row => row.name !== "Messages") };
     expect(buildCcContextSection(noMessages, { knowledge: 1, facts: 0, raw: 0, unclassified: 0 }, 1)?.memoryUnavailable).toContain("unavailable");

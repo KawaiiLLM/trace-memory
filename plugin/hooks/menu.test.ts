@@ -24,7 +24,11 @@ function mockHost(on: any, seen: string[], version = "2.1.280", sessionId = () =
     seen.push(e.argv.join(" "));
     const argv = e.argv as string[];
     if (argv.includes("--version")) return { value: { exitCode: 0, stdout: `${version} (Claude Code)\n`, stderr: "" } };
-    if (argv.includes("menu")) return { value: { exitCode: 0, stdout: JSON.stringify(menu), stderr: "" } };
+    if (argv.includes("menu")) {
+      expect(argv).toContain("--snapshot");
+      expect(JSON.parse(e.stdin).session).toBe(sessionId());
+      return { value: { exitCode: 0, stdout: JSON.stringify(menu), stderr: "" } };
+    }
     if (argv.includes("runs")) {
       const count = Number(argv.at(-1));
       return { value: { exitCode: 0, stdout: JSON.stringify({ runs: Array.from({ length: count }, (_, i) => ({ ...menu.runs[0], id: i + 1 })) }), stderr: "" } };
@@ -35,7 +39,11 @@ function mockHost(on: any, seen: string[], version = "2.1.280", sessionId = () =
   on("session.start", ($: any, e: any) => ({ cwd: e.cwd }));
   on("command.register", ($: any, e: any) => ({ value: { command: e.name } }));
   on("command.run", () => ({ text: "command unavailable" }));
-  on("session.usage", () => ({ value: { startedAt: 0, context: { window: 10000 }, rateLimits: [] } }));
+  on("session.messages", () => ({ value: [{ role: "user", content: [{ type: "text", text: "hi" }] }] }));
+  on("session.usage", ($: any, e: any) => {
+    expect(e.breakdown).toBe("summary");
+    return { value: { startedAt: 0, context: { window: 10000 }, rateLimits: [] } };
+  });
   on("ui.status", () => ({ value: undefined }));
   on("ui.open", () => ({ value: { isPlaced: true } }));
   on("session.id", () => ({ value: sessionId() }));

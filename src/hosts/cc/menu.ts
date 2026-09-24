@@ -7,7 +7,8 @@ import type { CcCatchupStatus } from "./scheduler.ts";
 import { assertOperatorBinding, readBinding, sessionEnabled, validateNativeSessionId } from "./binding.ts";
 const localMidnight = () => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(); };
 import { readCompleteTranscript } from "./transcript.ts";
-import { ccContextEvidence } from "./menu-context.ts";
+import { ccContextEvidence, type CcContextSnapshot } from "./menu-context.ts";
+import { ccLastCompactionNotice } from "./menu-notices.ts";
 
 export interface CcMenuRun { id: number; phase: string; status: string; cost: number; at: string }
 /** Match Pi's one-line catchup progress, from the executor's existing in-memory drain. */
@@ -50,7 +51,8 @@ export function readCcRuns(config: ResolvedCcHostConfig, nativeSessionId: string
 }
 
 export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string,
-  effective?: ResolvedCcHostConfig, runLimit = 10, catchup: CcCatchupStatus | null = null): CcMenuReply {
+  effective?: ResolvedCcHostConfig, runLimit = 10, catchup: CcCatchupStatus | null = null,
+  current?: CcContextSnapshot): CcMenuReply {
   if (!Number.isSafeInteger(runLimit) || runLimit < 1) throw new Error("Runs count must be a positive safe integer");
   const id = validateNativeSessionId(nativeSessionId), binding = readBinding(config, id);
   if (!binding) throw new Error(`Claude Code session ${id} is not bound`);
@@ -97,7 +99,12 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
         : active.closedSessionScope !== config.closedSessionScope
           ? { closedSessionSource: "saved file differs from running executor" } : {}) };
     const runs: CcMenuRun[] = session ? runsFor(store, session.id, runLimit) : [];
+    const snapshot = readCompleteTranscript(binding.transcriptPath);
     const notices: string[] = [];
+    if (!snapshot.problem && !snapshot.incompleteBytes) {
+      const truncation = ccLastCompactionNotice(snapshot, binding);
+      if (truncation) notices.push(truncation);
+    }
     if (session && !enabled) for (const task of store.taskFailures(session.id).filter(value => value.count >= 3))
       notices.push(`Automatic off: ${task.phase} failed ${task.count} times (R${task.lastRunId}: ${task.lastReason}). Turn on to resume.`);
     if (!effective) notices.push("Running executor configuration unavailable");
@@ -120,9 +127,8 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
       notices,
       actions: { enabled, retryForkAvailable: false },
     };
-    const snapshot = readCompleteTranscript(binding.transcriptPath);
     const context = snapshot.problem || snapshot.incompleteBytes ? { presence: "unavailable" as const,
-      reason: snapshot.problem ?? "incomplete native transcript" } : ccContextEvidence(snapshot.records, binding, config.dbPath);
+      reason: snapshot.problem ?? "incomplete native transcript" } : ccContextEvidence(snapshot.records, binding, config.dbPath, current);
     return { menu: data, settings, context, runs };
   } finally { memory.store.close(); }
 }
