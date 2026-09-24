@@ -14,6 +14,8 @@ test("actual PNG and JPEG headers drive model-tier resizing, not encoded byte le
   // Official standard A4 example: 1075×1520 → 924×1307 → 33×47 patches.
   expect(estimateCcImageTokens(scan, "claude-sonnet-4-6")).toBe(1551);
   expect(estimateCcImageTokens(scan, "claude-3-7-sonnet-20250219")).toBe(1551);
+  expect(estimateCcImageTokens(scan, "claude-3-opus-20240229")).toBe(1551);
+  expect(estimateCcImageTokens(scan, "claude-sonnet-4-20250514")).toBe(1551);
   expect(estimateCcImageTokens(scan, "claude-opus-5-5[1m]")).toBe(2145);
   // Official 4K examples: standard 1456×819, high 2576×1449.
   expect(estimateCcImageTokens(screenshot, "claude-sonnet-4-6")).toBe(1560);

@@ -1,6 +1,7 @@
-import { getImageDimensions } from "@earendil-works/pi-tui";
+// Use the pure header reader, not the package barrel that initializes terminal/editor modules.
+import { getImageDimensions } from "@earendil-works/pi-tui/dist/terminal-image.js";
 
-/** Anthropic Vision and resize reference, read 2026-09-25:
+/** Anthropic Vision and resize reference, checked 2026-09-24 UTC:
  * https://platform.claude.com/docs/en/build-with-claude/vision#evaluate-image-size
  * https://platform.claude.com/docs/en/build-with-claude/vision-coordinates#resize-your-image-before-uploading
  * Only embedded base64 image blocks have locally knowable dimensions. */
@@ -8,11 +9,12 @@ function modelLimits(model: string | undefined): { edge: number; tokens: number 
   if (!model) return null;
   // Accept Claude's family-first and legacy version-first IDs, optional dated/sized suffixes;
   // unrecognized providers/aliases must not be assigned a resolution tier by guesswork.
-  const match = /^(?:claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?|claude-(\d+)-(\d+)-(?:opus|sonnet|haiku))(?:-\d{8})?(?:\[\d+[mk]\])?$/.exec(model);
+  const id = model.replace(/\[\d+[mk]\]$/, "").replace(/-\d{8}$/, "");
+  const match = /^(?:claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?|claude-(\d+)(?:-(\d+))?-(?:opus|sonnet|haiku))$/.exec(id);
   if (!match) return null;
   const major = Number(match[1] ?? match[3]);
   const minor = Number(match[2] ?? match[4] ?? 0);
-  if (major < 3 || major > 9 || minor > 99) return null;
+  if (!Number.isSafeInteger(major) || !Number.isSafeInteger(minor) || major < 3) return null;
   return major > 4 || (major === 4 && minor >= 7)
     ? { edge: 2576, tokens: 4784 }
     : { edge: 1568, tokens: 1568 };

@@ -1,137 +1,163 @@
 import { afterEach, expect, test } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tokens } from "../../src/core/render/tokens.ts";
 import { compactText } from "../../src/core/render/material.ts";
 import { ccContextEvidence, type CcContextSnapshot } from "../../src/hosts/cc/menu-context.ts";
 import { databaseIdentity, encodeCcInjection } from "../../src/hosts/cc/injection.ts";
-import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
-import type { CcSessionBinding } from "../../src/hosts/cc/binding.ts";
 
 const dirs: string[] = [];
 afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
-function fixture(body: string, preview = false, warned = false) {
+const wrap = (text: string) => `<system-reminder>\nSessionStart hook additional context: ${text}\n</system-reminder>`;
+function fixture(body: string, preview = false) {
   const dir = mkdtempSync(join(tmpdir(), "tm-82-context-")); dirs.push(dir);
   const db = join(dir, "db"); writeFileSync(db, "db");
-  const binding = { nativeSessionId: "native-A", coreSessionId: 7 } as CcSessionBinding;
-  const original = encodeCcInjection({ db: databaseIdentity(db), nativeSession: "native-A", coreSession: 7 },
-    { text: body, knowledgeCommitIds: [1] });
-  const captured = preview ? original.slice(0, 250) : original;
-  const nativePreview = preview ? `<persisted-output>\nOutput too large. Full output saved to: /not/read\n\nPreview (first 2KB):\n${captured}\n...\n</persisted-output>` : original;
-  const rendered = `<system-reminder>\nSessionStart hook additional context: ${nativePreview}\n</system-reminder>`;
-  const records: CcNativeRecord[] = [
-    { type: "attachment", uuid: "success", parentUuid: null, attachment: { type: "hook_success", hookEvent: "SessionStart",
-      stdout: JSON.stringify({ hookSpecificOutput: { additionalContext: original } }) } },
-    ...(warned ? [{ type: "attachment", uuid: "warning", parentUuid: "success", attachment: { type: "hook_system_message", hookEvent: "SessionStart" } }] : []),
-    { type: "attachment", uuid: "carrier", parentUuid: warned ? "warning" : "success", attachment: {
-      type: "hook_additional_context", hookEvent: "SessionStart", content: [nativePreview],
-    }, rendered: [{ content: rendered }] },
-    { type: "user", uuid: "user", parentUuid: "carrier", promptSource: "typed", message: { role: "user", content: "hello" } },
-    { type: "assistant", uuid: "answer", parentUuid: "user", message: { role: "assistant", content: [{ type: "text", text: "yes" }] } },
-  ];
-  const snapshot: CcContextSnapshot = { session: "native-A", messages: [{ role: "user", content: [{ type: "text", text: rendered }] }] };
-  return { records, binding, db, original, rendered, snapshot };
+  const binding = { nativeSessionId: "native-A", coreSessionId: 7 };
+  const identity = { db: databaseIdentity(db), nativeSession: "native-A", coreSession: 7 };
+  const original = encodeCcInjection(identity, { text: body, knowledgeCommitIds: [1] });
+  const file = join(dir, "additionalContext.txt");
+  writeFileSync(file, original);
+  const retained = preview ? original.slice(0, original.indexOf(body) + Math.min(80, body.length)) : original;
+  const payload = preview ? `<persisted-output>\nOutput too large. Full output saved to: ${file}\n\nPreview (first 2KB):\n${retained}\n...\n</persisted-output>` : original;
+  const rendered = wrap(payload);
+  const snapshot: CcContextSnapshot = { session: "native-A", model: "claude-opus-5-5[1m]",
+    messages: [{ role: "user", content: [{ type: "text", text: rendered }] }] };
+  return { binding, db, identity, original, retained, rendered, snapshot, file };
 }
+const memoryTotal = (result: ReturnType<typeof ccContextEvidence>) => Object.values(result.memory!).reduce((a, b) => a + b, 0);
+const body = `<knowledge>\n${"Durable knowledge. ".repeat(20)}\n</knowledge>\n<episodic>\nRecent facts (by Turn):\nF1 test\n\nRaw:\n[T1#E1] user: hello\n</episodic>`;
 
-test.each([[false, false], [true, true]])("authenticates retained %s preview with warning=%s and conserves its measured Messages", (preview, warned) => {
-  const f = fixture(`<knowledge>\nSome durable knowledge.\n</knowledge>\n<episodic>\nRecent facts (by Turn):\nF1 test\n\nRaw:\n[T1#E1] user: hello\n</episodic>`, preview, warned);
-  const result = ccContextEvidence(f.records, f.binding, f.db, f.snapshot);
+test.each([false, true])("full/preview carrier authenticates directly from current Messages (preview=%s)", preview => {
+  const f = fixture(body, preview);
+  const result = ccContextEvidence(f.binding, f.db, f.snapshot);
   expect(result.presence).toBe("confirmed");
   expect(result.estimatedMessagesTokens).toBe(tokens(f.rendered));
-  expect(Object.values(result.memory!).reduce((a, b) => a + b, 0)).toBe(tokens(f.rendered));
-  const start = f.rendered.indexOf(f.original.slice(0, preview ? 250 : f.original.length));
-  const knowledgeAt = start + f.original.indexOf("<knowledge>");
-  const knowledgeEnd = start + f.original.indexOf("\n</knowledge>") + "\n</knowledge>".length;
-  const retainedEnd = preview ? start + 250 : f.rendered.length;
-  const expectedKnowledge = tokens(f.rendered.slice(0, Math.min(knowledgeEnd, retainedEnd))) - tokens(f.rendered.slice(0, knowledgeAt));
-  expect(result.memory!.knowledge).toBe(expectedKnowledge);
+  expect(memoryTotal(result)).toBe(tokens(f.rendered));
+  const offset = f.rendered.indexOf(f.retained), start = offset + f.retained.indexOf("<knowledge>");
+  const close = f.retained.indexOf("\n</knowledge>");
+  const end = offset + (close < 0 ? f.retained.length : close + "\n</knowledge>".length);
+  expect(result.memory!.knowledge).toBe(tokens(f.rendered.slice(0, end)) - tokens(f.rendered.slice(0, start)));
   if (!preview) { expect(result.memory!.facts).toBeGreaterThan(0); expect(result.memory!.raw).toBeGreaterThan(0); }
 });
 
-test.each([false, true])("renderer-produced compact Raw is measured with facts=%s, including a Raw-only first section", withFacts => {
-  const body = compactText({ facts: withFacts ? ["[F1] A fact"] : [],
-    entries: [{ id: 1, view: "[T1#E1] user: retained Raw ".repeat(20) }], receipts: [] });
-  const f = fixture(body);
-  const result = ccContextEvidence(f.records, f.binding, f.db, f.snapshot);
-  expect(result.presence).toBe("confirmed");
+test("deleted preview file uses verified header identity and the same retained-prefix classification", () => {
+  const f = fixture(body, true);
+  const before = ccContextEvidence(f.binding, f.db, f.snapshot);
+  rmSync(f.file);
+  expect(ccContextEvidence(f.binding, f.db, f.snapshot)).toEqual(before);
+  expect(before.memory!.knowledge).toBeGreaterThan(0);
+  // A directory at the advertised path is an I/O error, not permission to use identity-only mode.
+  const invalidPath = f.rendered.replace(f.file, join(f.file, ".."));
+  f.snapshot.messages[0]!.content[0]!.text = invalidPath;
+  expect(ccContextEvidence(f.binding, f.db, f.snapshot).presence).toBe("unavailable");
+});
+
+test("readable original must verify digest and actual prefix, but omitted markers never affect classification", () => {
+  const f = fixture(body, true);
+  writeFileSync(f.file, f.original.replace("Durable", "altered"));
+  expect(ccContextEvidence(f.binding, f.db, f.snapshot).presence).toBe("unavailable");
+  writeFileSync(f.file, encodeCcInjection(f.identity, { text: "different", knowledgeCommitIds: [1] }));
+  expect(ccContextEvidence(f.binding, f.db, f.snapshot).presence).toBe("unavailable");
+  const ambiguousSuffix = fixture(`<knowledge>\n${"prefix ".repeat(200)}\n<knowledge>\nnot retained\n</knowledge>`, true);
+  expect(ccContextEvidence(ambiguousSuffix.binding, ambiguousSuffix.db, ambiguousSuffix.snapshot).memory!.knowledge).toBeGreaterThan(0);
+});
+
+test.each([false, true])("renderer compact Raw is classified with facts=%s, including a Raw-only first section", withFacts => {
+  const f = fixture(compactText({ facts: withFacts ? ["[F1] A fact"] : [],
+    entries: [{ id: 1, view: "[T1#E1] user: retained Raw ".repeat(20) }], receipts: [] }));
+  const result = ccContextEvidence(f.binding, f.db, f.snapshot);
   const start = f.rendered.indexOf("Raw:\n"), end = f.rendered.indexOf("\n</episodic>", start);
   expect(result.memory!.raw).toBe(tokens(f.rendered.slice(0, end)) - tokens(f.rendered.slice(0, start)));
   expect(result.memory!.raw).toBeGreaterThan(0);
   expect(result.memory!.facts > 0).toBe(withFacts);
 });
 
-test.each([false, true])("native Messages may append one newline to a recorded carrier (preview=%s)", preview => {
-  const f = fixture(`<knowledge>\n${"真实记忆".repeat(100)}\n</knowledge>`, preview);
-  const baseline = ccContextEvidence(f.records, f.binding, f.db, f.snapshot);
-  const actual = `${f.rendered}\n`;
-  const snapshot: CcContextSnapshot = { session: "native-A", messages: [{ role: "user", content: [{ type: "text", text: actual }] }] };
-  const result = ccContextEvidence(f.records, f.binding, f.db, snapshot);
+test.each(["facts", "raw"] as const)("an unclosed preview %s section counts only its retained bytes", kind => {
+  const material = kind === "facts" ? { facts: ["[F1] fact ".repeat(100)], receipts: [] }
+    : { entries: [{ id: 1, view: "[T1#E1] user: Raw ".repeat(100) }], receipts: [] };
+  const f = fixture(compactText(material), true);
+  const result = ccContextEvidence(f.binding, f.db, f.snapshot);
   expect(result.presence).toBe("confirmed");
-  expect(result.memory!.knowledge).toBe(baseline.memory!.knowledge);
-  expect(result.estimatedMessagesTokens).toBe(tokens(actual));
-  expect(Object.values(result.memory!).reduce((a, b) => a + b, 0)).toBe(tokens(actual));
-  snapshot.messages[0]!.content[0]!.text = `${actual}\n`;
-  expect(ccContextEvidence(f.records, f.binding, f.db, snapshot).presence).toBe("unavailable");
+  expect(result.memory![kind]).toBeGreaterThan(0);
+  expect(memoryTotal(result)).toBe(tokens(f.rendered));
 });
 
-test("ordinary conversation, tool input/results and thinking use existing text estimator; quoted lookalikes are not memory", () => {
-  const f = fixture("<knowledge>\nactual\n</knowledge>");
-  const quotation = `User quoted ${f.rendered}`;
+test.each([false, true])("one native trailing newline is measured; additional suffix text is rejected (preview=%s)", preview => {
+  const f = fixture(body, preview), baseline = ccContextEvidence(f.binding, f.db, f.snapshot);
+  f.snapshot.messages[0]!.content[0]!.text = `${f.rendered}\n`;
+  const result = ccContextEvidence(f.binding, f.db, f.snapshot);
+  expect(result.memory!.knowledge).toBe(baseline.memory!.knowledge);
+  expect(result.estimatedMessagesTokens).toBe(tokens(`${f.rendered}\n`));
+  expect(memoryTotal(result)).toBe(tokens(`${f.rendered}\n`));
+  f.snapshot.messages[0]!.content[0]!.text = `${f.rendered}\n\n`;
+  expect(ccContextEvidence(f.binding, f.db, f.snapshot).presence).toBe("unavailable");
+});
+
+test("conversation, tool input/results, thinking and quoted lookalikes are counted but not classified as carriers", () => {
+  const f = fixture(body);
+  const quote = `User quoted ${f.rendered}`;
   f.snapshot.messages.push({ role: "assistant", content: [
     { type: "thinking", thinking: "careful" }, { type: "tool_use", id: "call", name: "read", input: { path: "a" } },
-  ] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: [{ type: "text", text: "result" }] },
-    { type: "text", text: quotation }] });
-  const result = ccContextEvidence(f.records, f.binding, f.db, f.snapshot);
-  expect(result.estimatedMessagesTokens).toBe(tokens(f.rendered) + tokens("careful") + tokens("read" + JSON.stringify({ path: "a" })) + tokens("result") + tokens(quotation));
-  expect(Object.values(result.memory!).reduce((a, b) => a + b, 0)).toBe(tokens(f.rendered));
+    { type: "text", text: f.rendered },
+  ] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: [{ type: "text", text: f.rendered }] },
+    { type: "text", text: quote }, { type: "text", text: f.original }] });
+  const result = ccContextEvidence(f.binding, f.db, f.snapshot);
+  expect(result.estimatedMessagesTokens).toBe(3 * tokens(f.rendered) + tokens("careful") + tokens("read" + JSON.stringify({ path: "a" })) + tokens(quote) + tokens(f.original));
+  expect(memoryTotal(result)).toBe(tokens(f.rendered));
 });
 
-test("a fresh native hook before any source reply still identifies its authenticated carrier", () => {
-  const f = fixture("<knowledge>\nFresh source-free memory\n</knowledge>");
-  expect(ccContextEvidence(f.records.slice(0, 2), f.binding, f.db, f.snapshot).memory!.knowledge).toBeGreaterThan(0);
+test.each([false, true])("database, current native identity, core identity and digest must verify (preview=%s)", preview => {
+  const f = fixture(body, preview);
+  for (const [before, after] of [[f.identity.db, "another-db"], ['"n":"native-A"', '"n":"native-old"'], ['"s":7', '"s":99']]) {
+    const changed = structuredClone(f.snapshot);
+    changed.messages[0]!.content[0]!.text = f.rendered.replace(before!, after!);
+    expect(ccContextEvidence(f.binding, f.db, changed).presence).toBe("unavailable");
+  }
+  const changed = structuredClone(f.snapshot);
+  changed.messages[0]!.content[0]!.text = f.rendered.replace("Durable", "changed");
+  expect(ccContextEvidence(f.binding, f.db, changed).presence).toBe("unavailable");
 });
 
-test("native compaction replaces old carriers using preservation metadata, not physical transcript history", () => {
-  const f = fixture("<knowledge>\nOld memory removed by native compact\n</knowledge>");
-  const original = encodeCcInjection({ db: databaseIdentity(f.db), nativeSession: "native-A", coreSession: 7 },
-    { text: "<knowledge>\nOnly the new compact carrier remains\n</knowledge>", knowledgeCommitIds: [2] });
-  const rendered = `<system-reminder>\nSessionStart hook additional context: ${original}\n</system-reminder>`;
-  f.records.push(
-    { type: "system", subtype: "compact_boundary", uuid: "boundary", parentUuid: null, logicalParentUuid: "answer",
-      compactMetadata: { preservedSegment: { headUuid: "user", anchorUuid: "summary", tailUuid: "answer" },
-        preservedMessages: { anchorUuid: "summary", uuids: ["user", "answer"] } } },
-    { type: "user", uuid: "summary", parentUuid: "boundary", isCompactSummary: true,
-      message: { role: "user", content: "Native summary" } },
-    { type: "attachment", uuid: "new-success", parentUuid: "summary", attachment: { type: "hook_success",
-      hookEvent: "SessionStart", stdout: JSON.stringify({ hookSpecificOutput: { additionalContext: original } }) } },
-    { type: "attachment", uuid: "new-carrier", parentUuid: "new-success", attachment: { type: "hook_additional_context",
-      hookEvent: "SessionStart", content: [original] }, rendered: [{ content: rendered }] },
-    { type: "user", uuid: "next", parentUuid: "new-carrier", promptSource: "typed", message: { role: "user", content: "continue" } },
-  );
-  const snapshot: CcContextSnapshot = { session: "native-A", messages: [{ role: "user", content: [
-    { type: "text", text: "Native summary" }, { type: "text", text: rendered },
-  ] }] };
-  const result = ccContextEvidence(f.records, f.binding, f.db, snapshot);
-  expect(result.presence).toBe("confirmed");
-  expect(Object.values(result.memory!).reduce((a, b) => a + b, 0)).toBe(tokens(rendered));
-  expect(result.estimatedMessagesTokens).toBe(tokens(rendered) + tokens("Native summary"));
-  // An old physical-file attachment has no retained occurrence authority.
-  expect(ccContextEvidence(f.records, f.binding, f.db, f.snapshot).presence).toBe("unavailable");
-  const broken = structuredClone(f.records);
-  (broken.find(row => row.uuid === "boundary")!.compactMetadata as { preservedMessages: { uuids: string[] } }).preservedMessages.uuids.push("missing");
-  expect(ccContextEvidence(broken, f.binding, f.db, snapshot).presence).toBe("unavailable");
+test("duplicate full, preview, or full-plus-preview occurrence is unavailable", () => {
+  for (const preview of [false, true]) {
+    const f = fixture(body, preview);
+    f.snapshot.messages[0]!.content.push({ type: "text", text: `${f.rendered}\n` });
+    expect(ccContextEvidence(f.binding, f.db, f.snapshot).presence).toBe("unavailable");
+  }
+  const f = fixture(body, true);
+  f.snapshot.messages[0]!.content.push({ type: "text", text: wrap(f.original) });
+  expect(ccContextEvidence(f.binding, f.db, f.snapshot).presence).toBe("unavailable");
 });
 
-test("a retained native carrier absent from the current snapshot is excluded; foreign, duplicated, unsupported or capped snapshots never claim a split", () => {
-  const f = fixture("<knowledge>\nactual\n</knowledge>");
-  expect(ccContextEvidence(f.records, f.binding, f.db, { session: "native-A", messages: [{ role: "user", content: [{ type: "text", text: "ordinary conversation without the carrier" }] }] }).memory)
+test("source-free startup and replaced current context require no transcript evidence", () => {
+  const f = fixture(body);
+  expect(ccContextEvidence(f.binding, f.db, f.snapshot).memory!.knowledge).toBeGreaterThan(0);
+  expect(ccContextEvidence(f.binding, f.db, { session: "native-A", messages: [{ role: "user", content: [{ type: "text", text: "Native compact summary" }] }] }).memory)
     .toEqual({ knowledge: 0, facts: 0, raw: 0, unclassified: 0 });
-  expect(ccContextEvidence(f.records, f.binding, f.db, { ...f.snapshot, session: "native-B" }).presence).toBe("unavailable");
-  expect(ccContextEvidence(f.records, f.binding, f.db, { session: "native-A", messages: Array(4096).fill(f.snapshot.messages[0]) }).presence).toBe("unavailable");
-  expect(ccContextEvidence(f.records, f.binding, f.db, { session: "native-A", messages: [...f.snapshot.messages, ...f.snapshot.messages] }).presence).toBe("unavailable");
-  expect(ccContextEvidence(f.records, f.binding, f.db, { session: "native-A", messages: [{ role: "user", content: [{ type: "image", source: { data: "base64" } }] }] }).presence).toBe("unavailable");
-  const tampered = structuredClone(f.records);
-  (tampered[0]!.attachment as { stdout: string }).stdout = (tampered[0]!.attachment as { stdout: string }).stdout.replace("actual", "tampered");
-  expect(ccContextEvidence(tampered, f.binding, f.db, f.snapshot).presence).toBe("unavailable");
+  expect(ccContextEvidence(f.binding, f.db, { ...f.snapshot, session: "native-B" }).presence).toBe("unavailable");
+  expect(ccContextEvidence(f.binding, f.db, { ...f.snapshot, messages: Array(4096).fill(f.snapshot.messages[0]) }).presence).toBe("unavailable");
+});
+
+const image = (name: string, mime: string) => ({ type: "image", source: { type: "base64", media_type: mime,
+  data: readFileSync(new URL(`./fixtures/cc82/${name}`, import.meta.url)).toString("base64") } });
+for (const [name, mime, expected] of [["scan-1075x1520.png", "image/png", 2145], ["screenshot-3840x2160.jpg", "image/jpeg", 4784]] as const) {
+  test.each([false, true])(`${mime} in user/tool-result content joins the denominator without changing memory (tool=%s)`, tool => {
+    const f = fixture(body), block = image(name, mime);
+    f.snapshot.messages[0]!.content.push(tool ? { type: "tool_result", tool_use_id: "call", content: [block] } : block);
+    const result = ccContextEvidence(f.binding, f.db, f.snapshot);
+    expect(result.presence).toBe("confirmed");
+    expect(result.estimatedMessagesTokens).toBe(tokens(f.rendered) + expected);
+    expect(memoryTotal(result)).toBe(tokens(f.rendered));
+  });
+}
+
+test.each([false, true])("unreadable image or document in user/tool-result content remains unavailable (tool=%s)", tool => {
+  const f = fixture(body);
+  for (const block of [{ type: "image", source: { type: "base64", media_type: "image/png", data: "not-image" } },
+    { type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0=" } }]) {
+    const snapshot = structuredClone(f.snapshot);
+    snapshot.messages[0]!.content.push(tool ? { type: "tool_result", tool_use_id: "call", content: [block] } : block);
+    expect(ccContextEvidence(f.binding, f.db, snapshot).presence).toBe("unavailable");
+  }
 });

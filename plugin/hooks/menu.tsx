@@ -434,6 +434,22 @@ function decode(result, label) {
 }
 async function load($) {
   const session = await $.session.id();
+  let currentBreakdown;
+  try {
+    const usage = await $.session.usage({ breakdown: "summary", columns: paneWidth });
+    const b = usage?.context?.breakdown;
+    currentBreakdown = b ? {
+      model: b.model,
+      totalTokens: b.totalTokens,
+      maxTokens: b.maxTokens,
+      percentage: b.percentage,
+      categories: b.categories,
+      displayName: b.displayName,
+      terminalWidth: paneWidth
+    } : void 0;
+  } catch {
+    currentBreakdown = void 0;
+  }
   let messages;
   try {
     messages = await $.session.messages({ as: "api" });
@@ -442,10 +458,10 @@ async function load($) {
   }
   const result = await $.process.run(
     ["node", `${pluginRoot}/dist/cc.cjs`, "cli", "--config", `${pluginRoot}/cc.config.json`, "--session", session, "menu", "--json", "--snapshot"],
-    { stdin: JSON.stringify({ session, messages }) }
+    { stdin: JSON.stringify({ session, model: currentBreakdown?.model, messages }) }
   );
   if (await $.session.id() !== session) throw new Error("native session changed while loading menu");
-  return { session, data: JSON.parse(decode(result, "Trace Memory menu")) };
+  return { session, data: JSON.parse(decode(result, "Trace Memory menu")), breakdown: currentBreakdown };
 }
 export const register = (on) => {
   on("session.start", async ($, e, next) => {
@@ -476,22 +492,7 @@ export const register = (on) => {
       const loaded = await load($);
       reply = loaded.data;
       activeSession = loaded.session;
-      try {
-        const usage = await $.session.usage({ breakdown: "summary", columns: paneWidth });
-        const b = usage?.context?.breakdown;
-        breakdown = b ? {
-          model: b.model,
-          totalTokens: b.totalTokens,
-          maxTokens: b.maxTokens,
-          percentage: b.percentage,
-          categories: b.categories,
-          displayName: b.displayName,
-          terminalWidth: paneWidth
-        } : void 0;
-      } catch {
-        breakdown = void 0;
-      }
-      if (await $.session.id() !== activeSession) throw new Error("native session changed while reading context");
+      breakdown = loaded.breakdown;
       const text = renderTraceMenuText(renderCurrent());
       await $.ui.open({ id, title: "Trace Memory", focus: true, closeOnEscape: true, rows: 45 });
       return { text };
@@ -512,22 +513,7 @@ export const register = (on) => {
       const loaded = await load($);
       reply = loaded.data;
       activeSession = loaded.session;
-      try {
-        const usage = await $.session.usage({ breakdown: "summary", columns: paneWidth });
-        const b = usage?.context?.breakdown;
-        breakdown = b ? {
-          model: b.model,
-          totalTokens: b.totalTokens,
-          maxTokens: b.maxTokens,
-          percentage: b.percentage,
-          categories: b.categories,
-          displayName: b.displayName,
-          terminalWidth: paneWidth
-        } : void 0;
-      } catch {
-        breakdown = void 0;
-      }
-      if (await $.session.id() !== activeSession) throw new Error("native session changed while reading context");
+      breakdown = loaded.breakdown;
       $.ui.invalidate("ui.render");
     };
     const run = async (verb, args = []) => {

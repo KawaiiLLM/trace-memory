@@ -61,8 +61,9 @@ export function measuredMemory(text: string, material: SharedMaterial): { text: 
 
 /** Measure only the bytes of a renderer-produced block actually retained by a host. `offset`
  * locates the prefix of the original injection inside the host's exact rendered text; `length`
- * may end mid-block (a native preview). Unknown framing stays unclassified. Pi's metadata/hash
- * composition above is intentionally unchanged: it knows original constituent parts directly. */
+ * may end mid-block (a native preview). `original` may itself be only that retained prefix:
+ * an open section then extends to its end, without consulting omitted bytes. Unknown framing
+ * stays unclassified. Pi's metadata/hash composition above is intentionally unchanged. */
 export function measureRetainedMemoryText(rendered: string, original: string, offset: number, length: number):
   { knowledge: number; facts: number; raw: number; unclassified: number } {
   const out = { knowledge: 0, facts: 0, raw: 0, unclassified: 0 };
@@ -71,15 +72,16 @@ export function measureRetainedMemoryText(rendered: string, original: string, of
   const knowledgeStart = original.indexOf("\n<knowledge>\n");
   if (knowledgeStart >= 0 && original.indexOf("\n<knowledge>\n", knowledgeStart + 1) < 0) {
     const closing = original.indexOf("\n</knowledge>", knowledgeStart);
-    if (closing >= 0 && original.indexOf("\n</knowledge>", closing + 1) < 0)
-      regions.push({ start: knowledgeStart + 1, end: closing + "\n</knowledge>".length, key: "knowledge" });
+    if (closing < 0 || original.indexOf("\n</knowledge>", closing + 1) < 0)
+      regions.push({ start: knowledgeStart + 1, end: closing < 0 ? original.length : closing + "\n</knowledge>".length, key: "knowledge" });
   }
   const episodic = original.indexOf("\n<episodic>\n");
-  const episodicEnd = episodic >= 0 ? original.indexOf("\n</episodic>", episodic) : -1;
+  const closingEpisodic = episodic >= 0 ? original.indexOf("\n</episodic>", episodic) : -1;
+  const episodicEnd = episodic < 0 ? -1 : closingEpisodic < 0 ? original.length : closingEpisodic;
   const factsStart = episodic >= 0 ? original.indexOf(`\n${FACTS_TITLE}\n`, episodic) : -1;
   const rawStart = episodic >= 0 ? original.indexOf(`\n${RAW_TITLE}\n`, episodic) : -1;
   if (episodicEnd >= 0 && original.indexOf("\n<episodic>\n", episodic + 1) < 0 &&
-      original.indexOf("\n</episodic>", episodicEnd + 1) < 0 &&
+      (closingEpisodic < 0 || original.indexOf("\n</episodic>", closingEpisodic + 1) < 0) &&
       (factsStart < 0 || original.indexOf(`\n${FACTS_TITLE}\n`, factsStart + 1) < 0) &&
       (rawStart < 0 || original.indexOf(`\n${RAW_TITLE}\n`, rawStart + 1) < 0)) {
     if (factsStart >= 0 && factsStart < episodicEnd && (rawStart < 0 || factsStart < rawStart))
@@ -89,6 +91,8 @@ export function measureRetainedMemoryText(rendered: string, original: string, of
   }
   const intervals = regions.map(region => ({ start: Math.max(offset, offset + region.start), end: Math.min(end, offset + region.end), key: region.key }))
     .filter(region => region.start < region.end).sort((a, b) => a.start - b.start);
+  if (intervals.some((span, index) => index > 0 && span.start < intervals[index - 1]!.end))
+    return { ...out, unclassified: tokens(rendered) }; // Ambiguous nested section markers.
   let cursor = 0;
   for (const span of intervals) {
     if (span.start > cursor) out.unclassified += tokens(rendered.slice(0, span.start)) - tokens(rendered.slice(0, cursor));

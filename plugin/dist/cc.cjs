@@ -34,8 +34,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/hosts/cc/index.ts
-var import_node_fs11 = require("node:fs");
-var import_node_path10 = require("node:path");
+var import_node_fs12 = require("node:fs");
+var import_node_path11 = require("node:path");
 var import_node_url = require("node:url");
 
 // src/hosts/cc/config.ts
@@ -721,7 +721,7 @@ function migrateDreamingRanges64d(db) {
     ALTER TABLE dreaming_ranges_64d RENAME TO dreaming_ranges;
     CREATE UNIQUE INDEX idx_dreaming_open_range ON dreaming_ranges(session_id,branch) WHERE completed_run IS NULL AND closed_at IS NULL`);
   if (sequence) db.prepare("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='dreaming_ranges'").run(sequence.seq);
-  for (const object9 of objects) db.exec(object9.sql);
+  for (const object8 of objects) db.exec(object8.sql);
 }
 function migrateKnowledgeLineage(db, transactionOwned = false) {
   const revision = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_revisions'").get();
@@ -746,7 +746,7 @@ function migrateKnowledgeLineage(db, transactionOwned = false) {
       db.exec(migrated.replace(/CREATE TABLE (?:IF NOT EXISTS )?knowledge_revisions/i, "CREATE TABLE knowledge_revisions_34a"));
       db.exec("INSERT INTO knowledge_revisions_34a SELECT * FROM knowledge_revisions; DROP TABLE knowledge_revisions; ALTER TABLE knowledge_revisions_34a RENAME TO knowledge_revisions");
       if (sequence) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'knowledge_revisions'").run(sequence.seq);
-      for (const object9 of objects) db.exec(String(object9.sql));
+      for (const object8 of objects) db.exec(String(object8.sql));
     }
     const addOrigin = (table, entryIds = true) => {
       const existing = columns(table);
@@ -807,7 +807,7 @@ function migrateDreaming(db, transactionOwned = false) {
       db.exec(sql.replace(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?"?${name}"?`, "i"), `CREATE TABLE ${name}_32b`));
       db.exec(`INSERT INTO ${name}_32b SELECT * FROM ${name}; DROP TABLE ${name}; ALTER TABLE ${name}_32b RENAME TO ${name}`);
       if (sequence) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq, name);
-      for (const object9 of objects) db.exec(String(object9.sql));
+      for (const object8 of objects) db.exec(String(object8.sql));
     }
     if (!transactionOwned && db.prepare("PRAGMA foreign_key_check").all().length)
       throw new Error("Dreaming migration: foreign key violations");
@@ -1720,7 +1720,7 @@ var Store = class {
     this.db.exec(`INSERT INTO ${table}_migrate (${keep.join(",")}) SELECT ${keep.join(",")} FROM ${table};
       DROP TABLE ${table}; ALTER TABLE ${table}_migrate RENAME TO ${table}`);
     if (sequence) this.db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq, table);
-    for (const object9 of objects) this.db.exec(String(object9.sql));
+    for (const object8 of objects) this.db.exec(String(object8.sql));
   }
   /** Convert legacy JSON membership under the same schema transaction as the rest of Store open. */
   migrateSourcePaths() {
@@ -5553,18 +5553,19 @@ function measureRetainedMemoryText(rendered, original, offset, length) {
   const knowledgeStart = original.indexOf("\n<knowledge>\n");
   if (knowledgeStart >= 0 && original.indexOf("\n<knowledge>\n", knowledgeStart + 1) < 0) {
     const closing = original.indexOf("\n</knowledge>", knowledgeStart);
-    if (closing >= 0 && original.indexOf("\n</knowledge>", closing + 1) < 0)
-      regions.push({ start: knowledgeStart + 1, end: closing + "\n</knowledge>".length, key: "knowledge" });
+    if (closing < 0 || original.indexOf("\n</knowledge>", closing + 1) < 0)
+      regions.push({ start: knowledgeStart + 1, end: closing < 0 ? original.length : closing + "\n</knowledge>".length, key: "knowledge" });
   }
   const episodic = original.indexOf("\n<episodic>\n");
-  const episodicEnd = episodic >= 0 ? original.indexOf("\n</episodic>", episodic) : -1;
+  const closingEpisodic = episodic >= 0 ? original.indexOf("\n</episodic>", episodic) : -1;
+  const episodicEnd = episodic < 0 ? -1 : closingEpisodic < 0 ? original.length : closingEpisodic;
   const factsStart = episodic >= 0 ? original.indexOf(`
 ${FACTS_TITLE}
 `, episodic) : -1;
   const rawStart = episodic >= 0 ? original.indexOf(`
 ${RAW_TITLE}
 `, episodic) : -1;
-  if (episodicEnd >= 0 && original.indexOf("\n<episodic>\n", episodic + 1) < 0 && original.indexOf("\n</episodic>", episodicEnd + 1) < 0 && (factsStart < 0 || original.indexOf(`
+  if (episodicEnd >= 0 && original.indexOf("\n<episodic>\n", episodic + 1) < 0 && (closingEpisodic < 0 || original.indexOf("\n</episodic>", closingEpisodic + 1) < 0) && (factsStart < 0 || original.indexOf(`
 ${FACTS_TITLE}
 `, factsStart + 1) < 0) && (rawStart < 0 || original.indexOf(`
 ${RAW_TITLE}
@@ -5575,6 +5576,8 @@ ${RAW_TITLE}
       regions.push({ start: rawStart + 1, end: episodicEnd, key: "raw" });
   }
   const intervals = regions.map((region) => ({ start: Math.max(offset, offset + region.start), end: Math.min(end, offset + region.end), key: region.key })).filter((region) => region.start < region.end).sort((a, b) => a.start - b.start);
+  if (intervals.some((span, index) => index > 0 && span.start < intervals[index - 1].end))
+    return { ...out, unclassified: tokens(rendered) };
   let cursor = 0;
   for (const span of intervals) {
     if (span.start > cursor) out.unclassified += tokens(rendered.slice(0, span.start)) - tokens(rendered.slice(0, cursor));
@@ -8699,7 +8702,7 @@ var validClearedFrom = (value) => {
 };
 function parseBinding(value) {
   const binding = value;
-  if (!binding || binding.version !== 1 || validateNativeSessionId(binding.nativeSessionId) !== binding.nativeSessionId || typeof binding.transcriptPath !== "string" || !binding.transcriptPath || typeof binding.dbPath !== "string" || binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId < 1) || binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId < 1) || typeof binding.branch !== "string" || !binding.branch || binding.nativeProcess !== void 0 && (!Number.isSafeInteger(binding.nativeProcess?.pid) || binding.nativeProcess.pid <= 0 || typeof binding.nativeProcess.startedAt !== "string" || !binding.nativeProcess.startedAt) || binding.cwd !== void 0 && (typeof binding.cwd !== "string" || !(0, import_node_path4.isAbsolute)(binding.cwd)) || binding.coreHost !== void 0 && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:")) || binding.clearedFrom !== void 0 && !validClearedFrom(binding.clearedFrom) || binding.clearedInto !== void 0 && (typeof binding.clearedInto?.nativeSessionId !== "string" || typeof binding.clearedInto.at !== "string") || binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid))
+  if (!binding || binding.version !== 1 || validateNativeSessionId(binding.nativeSessionId) !== binding.nativeSessionId || typeof binding.transcriptPath !== "string" || !binding.transcriptPath || typeof binding.dbPath !== "string" || binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId < 1) || binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId < 1) || typeof binding.branch !== "string" || !binding.branch || binding.nativeProcess !== void 0 && (!Number.isSafeInteger(binding.nativeProcess?.pid) || binding.nativeProcess.pid <= 0 || typeof binding.nativeProcess.startedAt !== "string" || !binding.nativeProcess.startedAt) || binding.lastCompactionNotice !== void 0 && binding.lastCompactionNotice !== null && typeof binding.lastCompactionNotice !== "string" || binding.cwd !== void 0 && (typeof binding.cwd !== "string" || !(0, import_node_path4.isAbsolute)(binding.cwd)) || binding.coreHost !== void 0 && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:")) || binding.clearedFrom !== void 0 && !validClearedFrom(binding.clearedFrom) || binding.clearedInto !== void 0 && (typeof binding.clearedInto?.nativeSessionId !== "string" || typeof binding.clearedInto.at !== "string") || binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid))
     throw new Error("invalid Claude Code binding record");
   return binding;
 }
@@ -9121,12 +9124,12 @@ var CcTranscriptCursor = class {
     const carrierIds = this.callCarriers.get(toolUseId);
     if (!carrierIds?.size) return null;
     if (carrierIds.size !== 1) throw new Error(`native tool call ${toolUseId} is ambiguous in this session`);
-    const carrier = this.nodes.get([...carrierIds][0]);
-    const invocation = carrier.calls.find((call) => call.id === toolUseId);
+    const carrier2 = this.nodes.get([...carrierIds][0]);
+    const invocation = carrier2.calls.find((call) => call.id === toolUseId);
     if (!expectedNames.includes(invocation.name))
       throw new Error(`native tool call ${toolUseId} invoked ${invocation.name}, not ${expectedNames.join(" or ")}`);
     const reverse = [], seen = /* @__PURE__ */ new Set();
-    let current = carrier;
+    let current = carrier2;
     while (current) {
       if (seen.has(current.uuid)) throw new Error(`native lineage cycle at ${current.uuid}`);
       if (current.lineageProblem) throw new Error(current.lineageProblem);
@@ -15920,12 +15923,12 @@ function baseIsNative(value) {
   return pattern.test(_toSource_default(value));
 }
 var _baseIsNative_default = baseIsNative;
-function getValue(object9, key) {
-  return object9 == null ? void 0 : object9[key];
+function getValue(object8, key) {
+  return object8 == null ? void 0 : object8[key];
 }
 var _getValue_default = getValue;
-function getNative(object9, key) {
-  var value = _getValue_default(object9, key);
+function getNative(object8, key) {
+  var value = _getValue_default(object8, key);
   return _baseIsNative_default(value) ? value : void 0;
 }
 var _getNative_default = getNative;
@@ -17715,10 +17718,10 @@ var util;
       return obj[e];
     });
   };
-  util2.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object9) => {
+  util2.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object8) => {
     const keys = [];
-    for (const key in object9) {
-      if (Object.prototype.hasOwnProperty.call(object9, key)) {
+    for (const key in object8) {
+      if (Object.prototype.hasOwnProperty.call(object8, key)) {
         keys.push(key);
       }
     }
@@ -21609,19 +21612,19 @@ function floatSafeRemainder2(val, step) {
   const stepInt = Number.parseInt(step.toFixed(decCount).replace(".", ""));
   return valInt % stepInt / 10 ** decCount;
 }
-function defineLazy(object9, key, getter) {
+function defineLazy(object8, key, getter) {
   const set2 = false;
-  Object.defineProperty(object9, key, {
+  Object.defineProperty(object8, key, {
     get() {
       if (!set2) {
         const value = getter();
-        object9[key] = value;
+        object8[key] = value;
         return value;
       }
       throw new Error("cached value already set");
     },
     set(v) {
-      Object.defineProperty(object9, key, {
+      Object.defineProperty(object8, key, {
         value: v
       });
     },
@@ -30497,9 +30500,9 @@ function floatSafeRemainder3(val, step) {
   return valInt % stepInt / 10 ** decCount;
 }
 var EVALUATING = /* @__PURE__ */ Symbol("evaluating");
-function defineLazy2(object9, key, getter) {
+function defineLazy2(object8, key, getter) {
   let value = void 0;
-  Object.defineProperty(object9, key, {
+  Object.defineProperty(object8, key, {
     get() {
       if (value === EVALUATING) {
         return void 0;
@@ -30511,7 +30514,7 @@ function defineLazy2(object9, key, getter) {
       return value;
     },
     set(v) {
-      Object.defineProperty(object9, key, {
+      Object.defineProperty(object8, key, {
         value: v
         // configurable: true,
       });
@@ -39224,11 +39227,11 @@ var CcProjection = class {
     const carrierNode = ancestry.at(-1);
     const invocation = carrierNode.calls.find((call) => call.id === toolUseId);
     if (!invocation || !nativeToolNames.includes(invocation.name) || carrierNode.entryId === void 0) return null;
-    const carrier = this.memory.store.getSourceEntry(carrierNode.entryId);
-    if (!carrier || !carrier.calls.some((call) => call.callId === toolUseId && call.name === invocation.name)) return null;
+    const carrier2 = this.memory.store.getSourceEntry(carrierNode.entryId);
+    if (!carrier2 || !carrier2.calls.some((call) => call.callId === toolUseId && call.name === invocation.name)) return null;
     const branch = this.memory.store.sourceBranchForPrefix(this.binding.coreSessionId, entryIds, this.binding.branch);
     if (!branch) return null;
-    return { coreSessionId: this.binding.coreSessionId, branch, headTurnId: carrier.turnId, triggerEntryId: carrier.id, entryIds };
+    return { coreSessionId: this.binding.coreSessionId, branch, headTurnId: carrier2.turnId, triggerEntryId: carrier2.id, entryIds };
   }
   persist(update) {
     if (!this.lockedBinding) throw new Error("CC projection binding lock is unavailable");
@@ -41065,7 +41068,7 @@ var CcCoordinator = class {
 var import_node_crypto13 = require("node:crypto");
 var import_node_fs9 = require("node:fs");
 var BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
-var HEADER = "TRACE-MEMORY-CC/1 ";
+var CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
 var END = "TRACE MEMORY KNOWLEDGE END";
 var digest = (text) => (0, import_node_crypto13.createHash)("sha256").update(text, "utf8").digest("hex");
 var databaseIdentity = (path) => {
@@ -41085,22 +41088,21 @@ function encodeCcInjection(binding, injection) {
     h: digest(injection.text)
   };
   const framing = `${BEGIN}
-${HEADER}${JSON.stringify(header)}
+${CC_INJECTION_HEADER}${JSON.stringify(header)}
 
 ${END}`;
   const bound = 300 + 12 * identityCount(injection);
   if (framing.length > bound) throw new Error(`CC injection envelope exceeds its ${bound}-character host framing bound`);
   return `${BEGIN}
-${HEADER}${JSON.stringify(header)}
+${CC_INJECTION_HEADER}${JSON.stringify(header)}
 ${injection.text}
 ${END}`;
 }
-function decodeCcInjection(content, binding) {
+function decodeCcInjectionHeader(content, binding) {
   if (typeof content !== "string") return null;
   const prefix = `${BEGIN}
-${HEADER}`, suffix = `
-${END}`;
-  if (!content.startsWith(prefix) || !content.endsWith(suffix)) return null;
+${CC_INJECTION_HEADER}`;
+  if (!content.startsWith(prefix)) return null;
   const headerEnd = content.indexOf("\n", prefix.length);
   if (headerEnd < 0) return null;
   let parsed2;
@@ -41117,9 +41119,16 @@ ${END}`;
   if (!states.every((state) => positiveId(state.fromCommit) && state.toCommits.every(positiveId))) return null;
   if (parsed2.d !== binding.db || parsed2.n !== binding.nativeSession) return null;
   if (!(parsed2.s === binding.coreSession || parsed2.s === null && binding.coreSession !== null)) return null;
-  const body = content.slice(headerEnd + 1, -suffix.length);
-  if (digest(body) !== parsed2.h) return null;
   return { db: parsed2.d, native: parsed2.n, core: parsed2.s, commits: parsed2.k, states, sha256: parsed2.h };
+}
+function decodeCcInjection(content, binding) {
+  const header = decodeCcInjectionHeader(content, binding), suffix = `
+${END}`;
+  if (!header || typeof content !== "string" || !content.endsWith(suffix)) return null;
+  const headerEnd = content.indexOf("\n", `${BEGIN}
+${CC_INJECTION_HEADER}`.length);
+  const body = content.slice(headerEnd + 1, -suffix.length);
+  return digest(body) === header.sha256 ? header : null;
 }
 var attachmentContents = (record3) => {
   if (record3.type !== "attachment" || record3.isSidechain === true || !object6(record3.attachment) || record3.attachment.type !== "hook_additional_context" || record3.attachment.hookEvent !== "SessionStart" || !Array.isArray(record3.attachment.content)) return [];
@@ -41289,6 +41298,15 @@ async function lockedInjectionBinding(config3, nativeSessionId, transcriptPath, 
   });
 }
 async function ccSessionStartInjection(config3, input) {
+  const output = await prepareSessionStartInjection(config3, input);
+  await updateBinding(config3, input.session_id, (current) => {
+    if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
+      throw new Error("CC binding changed while completing SessionStart");
+    return current.lastCompactionNotice == null ? current : { ...current, lastCompactionNotice: null };
+  });
+  return output;
+}
+async function prepareSessionStartInjection(config3, input) {
   if (!input.source || !["startup", "resume", "clear", "compact"].includes(input.source))
     throw new Error("SessionStart source must be startup, resume, clear or compact");
   const initial = readBinding(config3, input.session_id);
@@ -41431,12 +41449,12 @@ async function ccHandleClear(config3, input) {
     if (synced.coreSessionId === null) return { handled: false };
     const core = synced.coreSessionId;
     const at = (/* @__PURE__ */ new Date()).toISOString();
-    const linkChild = async (clearedFrom) => {
+    const linkChild = async (clearedFrom, lastCompactionNotice) => {
       await withCcBindingLock(config3, childId, (locked) => locked.update((current) => {
         if (current) {
           if (current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
             throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
-          return renewNativeBinding(current, nativeProcess);
+          return { ...renewNativeBinding(current, nativeProcess), lastCompactionNotice };
         }
         return {
           version: 1,
@@ -41456,14 +41474,15 @@ async function ccHandleClear(config3, input) {
           ...nativeProcess ? { nativeProcess } : {},
           ...synced.cwd !== void 0 ? { cwd: synced.cwd } : {},
           coreHost: coreHostOf(synced),
-          clearedFrom
+          clearedFrom,
+          lastCompactionNotice
         };
       }));
       await updateBinding(config3, synced.nativeSessionId, (current) => current && current.transcriptPath === synced.transcriptPath ? { ...current, clearedInto: { nativeSessionId: childId, at } } : current);
     };
     if (!memory.store.enabled(core)) {
       const inheritedEntryIds2 = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
-      await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: null, inheritedEntryIds: inheritedEntryIds2 });
+      await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: null, inheritedEntryIds: inheritedEntryIds2 }, null);
       return { handled: true, output: null };
     }
     if (!synced.selectedLeafUuid) throw new Error("parent Claude Code session has no selected native source to compact from");
@@ -41474,6 +41493,16 @@ async function ccHandleClear(config3, input) {
     const compacted = memory.compact(core, synced.branch, headTurnId);
     if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation unexpectedly: ${compacted.reason}`);
     const injection = { text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, composition: compacted.composition };
+    const omitted = compacted.truncated;
+    const systemMessage = omitted ? `Trace Memory: compaction omitted ${[
+      ...omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : [],
+      ...omitted.facts ? [`${omitted.facts.count} unconsolidated ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []
+    ].join(" and ")}; they remain pending for Noting and Consolidation.` : void 0;
+    const visibleBinding = { db: databaseIdentity(config3.dbPath), nativeSession: childId, coreSession: core };
+    const output = injection.text ? {
+      hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },
+      ...systemMessage ? { systemMessage } : {}
+    } : systemMessage ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }, systemMessage } : null;
     const turn = memory.store.appendTurn({
       sessionId: core,
       parentTurnId: headTurnId,
@@ -41483,100 +41512,246 @@ async function ccHandleClear(config3, input) {
       endedAt: at
     });
     const inheritedEntryIds = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
-    await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: turn.id, inheritedEntryIds });
-    const omitted = compacted.truncated;
-    const systemMessage = omitted ? `Trace Memory: compaction omitted ${[
-      ...omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : [],
-      ...omitted.facts ? [`${omitted.facts.count} unconsolidated ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []
-    ].join(" and ")}; they remain pending for Noting and Consolidation.` : void 0;
-    if (!injection.text) return { handled: true, output: systemMessage ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }, systemMessage } : null };
-    const visibleBinding = { db: databaseIdentity(config3.dbPath), nativeSession: childId, coreSession: core };
-    return { handled: true, output: {
-      hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },
-      ...systemMessage ? { systemMessage } : {}
-    } };
+    await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: turn.id, inheritedEntryIds }, systemMessage ?? null);
+    return { handled: true, output };
   } finally {
     memory.store.close();
   }
 }
 
 // src/hosts/cc/menu-context.ts
+var import_node_fs10 = require("node:fs");
+var import_node_path9 = require("node:path");
+
+// node_modules/@earendil-works/pi-tui/dist/terminal-image.js
+function getPngDimensions(base64Data) {
+  try {
+    const buffer = Buffer.from(base64Data, "base64");
+    if (buffer.length < 24) {
+      return null;
+    }
+    if (buffer[0] !== 137 || buffer[1] !== 80 || buffer[2] !== 78 || buffer[3] !== 71) {
+      return null;
+    }
+    const width = buffer.readUInt32BE(16);
+    const height = buffer.readUInt32BE(20);
+    return { widthPx: width, heightPx: height };
+  } catch {
+    return null;
+  }
+}
+function getJpegDimensions(base64Data) {
+  try {
+    const buffer = Buffer.from(base64Data, "base64");
+    if (buffer.length < 2) {
+      return null;
+    }
+    if (buffer[0] !== 255 || buffer[1] !== 216) {
+      return null;
+    }
+    let offset = 2;
+    while (offset < buffer.length - 9) {
+      if (buffer[offset] !== 255) {
+        offset++;
+        continue;
+      }
+      const marker = buffer[offset + 1];
+      if (marker >= 192 && marker <= 194) {
+        const height = buffer.readUInt16BE(offset + 5);
+        const width = buffer.readUInt16BE(offset + 7);
+        return { widthPx: width, heightPx: height };
+      }
+      if (offset + 3 >= buffer.length) {
+        return null;
+      }
+      const length = buffer.readUInt16BE(offset + 2);
+      if (length < 2) {
+        return null;
+      }
+      offset += 2 + length;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+function getGifDimensions(base64Data) {
+  try {
+    const buffer = Buffer.from(base64Data, "base64");
+    if (buffer.length < 10) {
+      return null;
+    }
+    const sig = buffer.slice(0, 6).toString("ascii");
+    if (sig !== "GIF87a" && sig !== "GIF89a") {
+      return null;
+    }
+    const width = buffer.readUInt16LE(6);
+    const height = buffer.readUInt16LE(8);
+    return { widthPx: width, heightPx: height };
+  } catch {
+    return null;
+  }
+}
+function getWebpDimensions(base64Data) {
+  try {
+    const buffer = Buffer.from(base64Data, "base64");
+    if (buffer.length < 30) {
+      return null;
+    }
+    const riff = buffer.slice(0, 4).toString("ascii");
+    const webp = buffer.slice(8, 12).toString("ascii");
+    if (riff !== "RIFF" || webp !== "WEBP") {
+      return null;
+    }
+    const chunk = buffer.slice(12, 16).toString("ascii");
+    if (chunk === "VP8 ") {
+      if (buffer.length < 30)
+        return null;
+      const width = buffer.readUInt16LE(26) & 16383;
+      const height = buffer.readUInt16LE(28) & 16383;
+      return { widthPx: width, heightPx: height };
+    } else if (chunk === "VP8L") {
+      if (buffer.length < 25)
+        return null;
+      const bits = buffer.readUInt32LE(21);
+      const width = (bits & 16383) + 1;
+      const height = (bits >> 14 & 16383) + 1;
+      return { widthPx: width, heightPx: height };
+    } else if (chunk === "VP8X") {
+      if (buffer.length < 30)
+        return null;
+      const width = (buffer[24] | buffer[25] << 8 | buffer[26] << 16) + 1;
+      const height = (buffer[27] | buffer[28] << 8 | buffer[29] << 16) + 1;
+      return { widthPx: width, heightPx: height };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+function getImageDimensions(base64Data, mimeType) {
+  if (mimeType === "image/png") {
+    return getPngDimensions(base64Data);
+  }
+  if (mimeType === "image/jpeg") {
+    return getJpegDimensions(base64Data);
+  }
+  if (mimeType === "image/gif") {
+    return getGifDimensions(base64Data);
+  }
+  if (mimeType === "image/webp") {
+    return getWebpDimensions(base64Data);
+  }
+  return null;
+}
+
+// src/hosts/cc/image-tokens.ts
+function modelLimits(model) {
+  if (!model) return null;
+  const id = model.replace(/\[\d+[mk]\]$/, "").replace(/-\d{8}$/, "");
+  const match = /^(?:claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?|claude-(\d+)(?:-(\d+))?-(?:opus|sonnet|haiku))$/.exec(id);
+  if (!match) return null;
+  const major = Number(match[1] ?? match[3]);
+  const minor = Number(match[2] ?? match[4] ?? 0);
+  if (!Number.isSafeInteger(major) || !Number.isSafeInteger(minor) || major < 3) return null;
+  return major > 4 || major === 4 && minor >= 7 ? { edge: 2576, tokens: 4784 } : { edge: 1568, tokens: 1568 };
+}
+var patches = (width, height) => Math.ceil(width / 28) * Math.ceil(height / 28);
+var evenRound = (value) => {
+  const floor = Math.floor(value);
+  return value - floor === 0.5 ? floor + floor % 2 : Math.round(value);
+};
+function resizedSize(width, height, edge, budget) {
+  const fits = (w, h) => Math.ceil(w / 28) * 28 <= edge && Math.ceil(h / 28) * 28 <= edge && patches(w, h) <= budget;
+  if (fits(width, height)) return [width, height];
+  if (height > width) {
+    const [h, w] = resizedSize(height, width, edge, budget);
+    return [w, h];
+  }
+  const ratio = width / height;
+  let lo = 1;
+  let hi = width;
+  while (lo + 1 < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (fits(mid, Math.max(evenRound(mid / ratio), 1))) lo = mid;
+    else hi = mid;
+  }
+  return [lo, Math.max(evenRound(lo / ratio), 1)];
+}
+function estimateCcImageTokens(block2, model) {
+  if (block2.type !== "image") return null;
+  const limits = modelLimits(model);
+  const source = block2.source;
+  if (!limits || !source || typeof source !== "object" || Array.isArray(source)) return null;
+  const image = source;
+  if (image.type !== "base64" || typeof image.data !== "string" || typeof image.media_type !== "string") return null;
+  const dimensions = getImageDimensions(image.data, image.media_type);
+  if (!dimensions || !Number.isSafeInteger(dimensions.widthPx) || !Number.isSafeInteger(dimensions.heightPx) || dimensions.widthPx < 1 || dimensions.heightPx < 1) return null;
+  const [width, height] = resizedSize(dimensions.widthPx, dimensions.heightPx, limits.edge, limits.tokens);
+  return patches(width, height);
+}
+
+// src/hosts/cc/menu-context.ts
 var unavailable = (reason) => ({ presence: "unavailable", reason });
 var object7 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 var memoryKeys = ["knowledge", "facts", "raw", "unclassified"];
-var zero = () => ({ knowledge: 0, facts: 0, raw: 0, unclassified: 0 });
-function originalSlice(rendered, original, preview) {
-  if (rendered.includes(original)) {
-    if (rendered.indexOf(original) !== rendered.lastIndexOf(original)) return null;
-    return { offset: rendered.indexOf(original), length: original.length };
+var HOOK_CONTEXT = "<system-reminder>\nSessionStart hook additional context: ";
+var HOOK_END = "\n</system-reminder>";
+var PREVIEW_TITLE = "\n\nPreview (first 2KB):\n";
+function carrier(text, identity) {
+  const normalized = text.endsWith("\n") ? text.slice(0, -1) : text;
+  if (!normalized.endsWith(HOOK_END)) throw new Error("malformed SessionStart memory context");
+  const payload = normalized.slice(HOOK_CONTEXT.length, -HOOK_END.length);
+  if (!payload.startsWith("<persisted-output>\n")) {
+    const header2 = decodeCcInjection(payload, identity);
+    if (!header2) throw new Error("memory carrier failed identity or digest verification");
+    return { retained: payload, offset: HOOK_CONTEXT.length, key: JSON.stringify(header2) };
   }
-  const match = /(?:^|\n)Preview \(first 2KB\):\n([\s\S]*?)\n\.\.\.\n<\/persisted-output>/.exec(preview);
-  if (!match || !match[1] || !original.startsWith(match[1])) return null;
-  const offset = rendered.indexOf(match[1]);
-  if (offset < 0 || rendered.indexOf(match[1], offset + 1) >= 0) return null;
-  return { offset, length: match[1].length };
+  const preview = /^<persisted-output>\n[^\n]*Full output saved to: ([^\n]+)\n\nPreview \(first 2KB\):\n([\s\S]+)\n\.\.\.\n<\/persisted-output>$/.exec(payload);
+  if (!preview || !(0, import_node_path9.isAbsolute)(preview[1])) throw new Error("malformed native memory preview");
+  const retained = preview[2], header = decodeCcInjectionHeader(retained, identity);
+  if (!header) throw new Error("memory preview failed identity verification");
+  let full;
+  try {
+    full = (0, import_node_fs10.readFileSync)(preview[1], "utf8");
+  } catch (error3) {
+    if (error3.code !== "ENOENT") throw error3;
+  }
+  if (full !== void 0 && (!decodeCcInjection(full, identity) || !full.startsWith(retained)))
+    throw new Error("memory preview disagrees with its authenticated original");
+  return {
+    retained,
+    offset: HOOK_CONTEXT.length + payload.indexOf(PREVIEW_TITLE) + PREVIEW_TITLE.length,
+    key: JSON.stringify(header)
+  };
 }
-function estimateBlock(block2) {
+function estimateBlock(block2, model) {
   if (block2.type === "text" && typeof block2.text === "string") return tokens(block2.text);
+  if (block2.type === "image") return estimateCcImageTokens(block2, model);
   if (block2.type === "thinking" && typeof block2.thinking === "string") return tokens(block2.thinking);
   if (block2.type === "tool_use" && typeof block2.name === "string" && object7(block2.input)) return tokens(block2.name + JSON.stringify(block2.input));
   if (block2.type === "tool_result" && typeof block2.tool_use_id === "string") {
     const content = block2.content;
     if (typeof content === "string") return tokens(content);
-    if (Array.isArray(content) && content.every((part) => object7(part) && part.type === "text" && typeof part.text === "string"))
-      return content.reduce((sum, part) => sum + tokens(part.text), 0);
+    if (Array.isArray(content)) {
+      let total = 0;
+      for (const part of content) {
+        if (!object7(part) || part.type !== "text" && part.type !== "image") return null;
+        const amount = estimateBlock(part, model);
+        if (amount === null) return null;
+        total += amount;
+      }
+      return total;
+    }
   }
   return null;
 }
-function ccContextEvidence(records, binding, dbPath, snapshot2) {
+function ccContextEvidence(binding, dbPath, snapshot2) {
   if (!snapshot2) return unavailable("current Messages snapshot unavailable");
   if (snapshot2.session !== binding.nativeSessionId) return unavailable("native session changed");
   if (!Array.isArray(snapshot2.messages) || snapshot2.messages.length >= 4096) return unavailable("Messages snapshot incomplete");
-  let selected;
-  try {
-    selected = selectedCcVisibleRecords(records);
-  } catch (error3) {
-    return unavailable(error3 instanceof Error ? error3.message : String(error3));
-  }
-  if (!selected.length) {
-    const nodes = records.filter((record3) => typeof record3.uuid === "string" && record3.isSidechain !== true);
-    const seen = /* @__PURE__ */ new Set();
-    for (const node of nodes) {
-      if (seen.has(node.uuid)) return unavailable("ambiguous native attachment chain");
-      seen.add(node.uuid);
-    }
-    if (nodes.length && (nodes[0].parentUuid !== null || nodes.some((node, index) => index > 0 && node.parentUuid !== nodes[index - 1].uuid))) return unavailable("native attachment chain is not uniquely selected");
-    selected = nodes;
-  }
-  const byId = new Map(selected.filter((record3) => typeof record3.uuid === "string").map((record3) => [record3.uuid, record3]));
-  const carriers = /* @__PURE__ */ new Map();
-  const unverified = /* @__PURE__ */ new Set();
   const identity = { db: databaseIdentity(dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
-  for (const record3 of selected) {
-    const a = record3.attachment;
-    if (record3.type !== "attachment" || record3.isSidechain === true || !object7(a) || a.type !== "hook_additional_context" || a.hookEvent !== "SessionStart" || !Array.isArray(a.content) || !Array.isArray(record3.rendered)) continue;
-    if (a.content.length !== 1 || typeof a.content[0] !== "string" || record3.rendered.length !== 1 || !object7(record3.rendered[0]) || typeof record3.rendered[0].content !== "string") continue;
-    const rendered = record3.rendered[0].content;
-    if (rendered.includes("TRACE-MEMORY-CC/1 ")) unverified.add(rendered);
-    let parent = typeof record3.parentUuid === "string" ? byId.get(record3.parentUuid) : void 0;
-    while (parent && object7(parent.attachment) && parent.attachment.type === "hook_system_message" && parent.attachment.hookEvent === "SessionStart")
-      parent = typeof parent.parentUuid === "string" ? byId.get(parent.parentUuid) : void 0;
-    const p = parent?.attachment;
-    if (!parent || !object7(p) || p.type !== "hook_success" || p.hookEvent !== "SessionStart" || typeof p.stdout !== "string") continue;
-    let output;
-    try {
-      output = JSON.parse(p.stdout);
-    } catch {
-      continue;
-    }
-    const hook = object7(output) && object7(output.hookSpecificOutput) ? output.hookSpecificOutput : null;
-    const original = hook?.additionalContext;
-    if (typeof original !== "string" || !decodeCcInjection(original, identity)) continue;
-    if (carriers.has(rendered)) return unavailable("ambiguous repeated native carrier");
-    unverified.delete(rendered);
-    carriers.set(rendered, { original, preview: a.content[0] });
-  }
-  const memory = zero();
+  const memory = { knowledge: 0, facts: 0, raw: 0, unclassified: 0 };
   let estimatedMessagesTokens = 0;
   const matched = /* @__PURE__ */ new Set();
   for (const message of snapshot2.messages) {
@@ -41584,59 +41759,23 @@ function ccContextEvidence(records, binding, dbPath, snapshot2) {
       return unavailable("unsupported Messages content");
     for (const block2 of message.content) {
       if (!object7(block2)) return unavailable("unsupported Messages content");
-      const amount = estimateBlock(block2);
-      if (amount === null) return unavailable("unsupported Messages content");
+      const amount = estimateBlock(block2, snapshot2.model);
+      if (amount === null) return unavailable("unsupported Messages content or image dimensions/model");
       estimatedMessagesTokens += amount;
-      if (message.role !== "user" || block2.type !== "text" || typeof block2.text !== "string") continue;
-      const candidates = [block2.text, ...block2.text.endsWith("\n") ? [block2.text.slice(0, -1)] : []].filter((text) => carriers.has(text) || unverified.has(text));
-      if (candidates.length > 1) return unavailable("ambiguous normalized native carrier");
-      const recorded = candidates[0] ?? block2.text;
-      if (unverified.has(recorded)) return unavailable("native memory carrier could not be authenticated");
-      const carrier = carriers.get(recorded);
-      if (!carrier) {
-        if (block2.text.startsWith("<system-reminder>\nSessionStart hook additional context:") && block2.text.includes("TRACE-MEMORY-CC/1 ")) return unavailable("native memory carrier is missing from selected transcript");
-        continue;
+      if (message.role !== "user" || block2.type !== "text" || typeof block2.text !== "string" || !block2.text.startsWith(HOOK_CONTEXT) || !block2.text.includes(CC_INJECTION_HEADER)) continue;
+      let current;
+      try {
+        current = carrier(block2.text, identity);
+      } catch (error3) {
+        return unavailable(error3 instanceof Error ? error3.message : String(error3));
       }
-      if (matched.has(recorded)) return unavailable("ambiguous repeated Messages carrier");
-      matched.add(recorded);
-      const slice = originalSlice(block2.text, carrier.original, carrier.preview);
-      if (!slice) return unavailable("native carrier preview cannot be measured");
-      const parts = measureRetainedMemoryText(block2.text, carrier.original, slice.offset, slice.length);
+      if (matched.has(current.key)) return unavailable("ambiguous repeated Messages carrier");
+      matched.add(current.key);
+      const parts = measureRetainedMemoryText(block2.text, current.retained, current.offset, current.retained.length);
       for (const key of memoryKeys) memory[key] += parts[key];
     }
   }
   return { presence: "confirmed", estimatedMessagesTokens, memory };
-}
-
-// src/hosts/cc/menu-notices.ts
-var object8 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
-function ccLastCompactionNotice(snapshot2, binding) {
-  if (snapshot2.problem || snapshot2.incompleteBytes || !binding.clearedFrom?.compactionTurnId || !snapshot2.exists || snapshot2.path !== binding.transcriptPath) return null;
-  const selected = selectedNativePath(snapshot2.records);
-  if (selected.problem || selected.leafUuid !== binding.selectedLeafUuid) return null;
-  const records = selected.leafUuid ? selected.records : snapshot2.records;
-  const successes = records.filter((record3) => {
-    const hook2 = object8(record3.attachment);
-    return record3.type === "attachment" && record3.sessionId === binding.nativeSessionId && hook2?.type === "hook_success" && hook2.hookEvent === "SessionStart" && typeof hook2.command === "string" && hook2.command.includes('/dist/cc.cjs" hook --config ') && hook2.exitCode === 0;
-  });
-  if (!selected.leafUuid && successes.length !== 1) return null;
-  const success2 = successes.at(-1), hook = object8(success2?.attachment);
-  if (!success2 || !hook || typeof hook.stdout !== "string") return null;
-  let output;
-  try {
-    output = object8(JSON.parse(hook.stdout));
-  } catch {
-    return null;
-  }
-  if (object8(output?.hookSpecificOutput)?.hookEventName !== "SessionStart") return null;
-  const warning = output?.systemMessage;
-  if (warning === void 0) return null;
-  if (typeof warning !== "string" || !warning.startsWith("Trace Memory: compaction omitted ") || !warning.endsWith("; they remain pending for Noting and Consolidation.")) return null;
-  const shown = records.find((record3) => {
-    const attachment = object8(record3.attachment);
-    return record3.type === "attachment" && record3.sessionId === binding.nativeSessionId && record3.parentUuid === success2.uuid && attachment?.type === "hook_system_message" && attachment.content === warning && attachment.hookEvent === hook.hookEvent && attachment.hookName === hook.hookName && attachment.toolUseID === hook.toolUseID;
-  });
-  return shown ? warning : null;
 }
 
 // src/hosts/cc/menu.ts
@@ -41730,12 +41869,8 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
       ...!effective ? { closedSessionSource: "saved file; effective configuration unavailable" } : active.closedSessionScope !== config3.closedSessionScope ? { closedSessionSource: "saved file differs from running executor" } : {}
     };
     const runs = session ? runsFor(store, session.id, runLimit) : [];
-    const snapshot2 = readCompleteTranscript(binding.transcriptPath);
     const notices = [];
-    if (!snapshot2.problem && !snapshot2.incompleteBytes) {
-      const truncation = ccLastCompactionNotice(snapshot2, binding);
-      if (truncation) notices.push(truncation);
-    }
+    if (binding.lastCompactionNotice) notices.push(binding.lastCompactionNotice);
     if (session && !enabled2) for (const task of store.taskFailures(session.id).filter((value) => value.count >= 3))
       notices.push(`Automatic off: ${task.phase} failed ${task.count} times (R${task.lastRunId}: ${task.lastReason}). Turn on to resume.`);
     if (!effective) notices.push("Running executor configuration unavailable");
@@ -41767,10 +41902,7 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
       notices,
       actions: { enabled: enabled2, retryForkAvailable: false }
     };
-    const context = snapshot2.problem || snapshot2.incompleteBytes ? {
-      presence: "unavailable",
-      reason: snapshot2.problem ?? "incomplete native transcript"
-    } : ccContextEvidence(snapshot2.records, binding, config3.dbPath, current);
+    const context = ccContextEvidence(binding, config3.dbPath, current);
     return { menu: data, settings, context, runs };
   } finally {
     memory.store.close();
@@ -41778,8 +41910,8 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
 }
 
 // src/hosts/cc/menu-config.ts
-var import_node_fs10 = require("node:fs");
-var import_node_path9 = require("node:path");
+var import_node_fs11 = require("node:fs");
+var import_node_path10 = require("node:path");
 var import_node_crypto14 = require("node:crypto");
 var PHASE_KEYS = {
   "noting.model": "notingModel",
@@ -41908,25 +42040,25 @@ function editedCcConfig(text, id, value, capacity) {
 }
 function saveCcConfig(path, original, updated) {
   const next = resolveCcHostConfig(JSON.parse(updated));
-  if ((0, import_node_fs10.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
+  if ((0, import_node_fs11.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
   const temporary = `${path}.${process.pid}.${(0, import_node_crypto14.randomUUID)()}`;
   let fd;
   try {
-    fd = (0, import_node_fs10.openSync)(temporary, "wx", 384);
-    (0, import_node_fs10.writeFileSync)(fd, updated);
-    (0, import_node_fs10.fsyncSync)(fd);
-    (0, import_node_fs10.closeSync)(fd);
+    fd = (0, import_node_fs11.openSync)(temporary, "wx", 384);
+    (0, import_node_fs11.writeFileSync)(fd, updated);
+    (0, import_node_fs11.fsyncSync)(fd);
+    (0, import_node_fs11.closeSync)(fd);
     fd = void 0;
-    (0, import_node_fs10.renameSync)(temporary, path);
-    const dir = (0, import_node_fs10.openSync)((0, import_node_path9.dirname)(path), "r");
+    (0, import_node_fs11.renameSync)(temporary, path);
+    const dir = (0, import_node_fs11.openSync)((0, import_node_path10.dirname)(path), "r");
     try {
-      (0, import_node_fs10.fsyncSync)(dir);
+      (0, import_node_fs11.fsyncSync)(dir);
     } finally {
-      (0, import_node_fs10.closeSync)(dir);
+      (0, import_node_fs11.closeSync)(dir);
     }
   } catch (error3) {
-    if (fd !== void 0) (0, import_node_fs10.closeSync)(fd);
-    (0, import_node_fs10.rmSync)(temporary, { force: true });
+    if (fd !== void 0) (0, import_node_fs11.closeSync)(fd);
+    (0, import_node_fs11.rmSync)(temporary, { force: true });
     throw error3;
   }
   return next;
@@ -42029,13 +42161,13 @@ async function handleCcHook(configInput, input) {
 }
 async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID) {
   const config3 = resolveCcHostConfig(configInput), sessionId = validateNativeSessionId(nativeSessionId);
-  const runtimeDirectory = (0, import_node_path10.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path10.join)(runtimeDirectory, `${sessionId}.jsonl`);
-  (0, import_node_fs11.mkdirSync)(runtimeDirectory, { recursive: true });
+  const runtimeDirectory = (0, import_node_path11.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path11.join)(runtimeDirectory, `${sessionId}.jsonl`);
+  (0, import_node_fs12.mkdirSync)(runtimeDirectory, { recursive: true });
   const runtimeEvent = (event, details = {}) => {
     const value = { event, at: Date.now(), pid: process.pid, ...details };
     console.error(`Trace Memory CC: lifecycle ${JSON.stringify(value)}`);
     try {
-      (0, import_node_fs11.appendFileSync)(runtimePath, `${JSON.stringify(value)}
+      (0, import_node_fs12.appendFileSync)(runtimePath, `${JSON.stringify(value)}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -42045,7 +42177,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
   const coordinator = new CcCoordinator(config3, sessionId, (message) => {
     console.error(`Trace Memory CC: ${message}`);
     try {
-      (0, import_node_fs11.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
+      (0, import_node_fs12.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -42163,7 +42295,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
 }
 function readConfig(path) {
   if (!path.startsWith("/")) throw new Error("CC configuration path must be absolute");
-  return resolveCcHostConfig(JSON.parse((0, import_node_fs11.readFileSync)(path, "utf8")));
+  return resolveCcHostConfig(JSON.parse((0, import_node_fs12.readFileSync)(path, "utf8")));
 }
 async function readStdin() {
   let input = "";
@@ -42239,7 +42371,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
     } finally {
       store.close();
     }
-    const original = (0, import_node_fs11.readFileSync)(configPath, "utf8");
+    const original = (0, import_node_fs12.readFileSync)(configPath, "utf8");
     const updated = editedCcConfig(original, id, value, capacity);
     const prepared = resolveCcHostConfig(JSON.parse(updated));
     if (prepared.dbPath !== config3.dbPath || prepared.stateDir !== config3.stateDir) throw new Error("setting cannot change database or state directory");
@@ -42265,7 +42397,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify(result)}
 `);
 }
-var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path10.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
+var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path11.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
 if (direct) void runCcCommand().catch((error3) => {
   console.error(`Trace Memory CC: ${error3 instanceof Error ? error3.message : String(error3)}`);
   process.exitCode = 1;

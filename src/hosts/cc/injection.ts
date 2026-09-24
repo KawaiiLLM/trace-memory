@@ -7,7 +7,7 @@ import { CcProjection } from "./importer.ts";
 import { ccSourceBlocks, classifySourceRecord, nativeParentId, readCompleteTranscript, selectedNativePath, type CcNativeRecord } from "./transcript.ts";
 
 const BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
-const HEADER = "TRACE-MEMORY-CC/1 ";
+export const CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
 const END = "TRACE MEMORY KNOWLEDGE END";
 const digest = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 // Unlike Pi's path identity, dev:inode invalidates old envelopes after any file replacement,
@@ -39,16 +39,18 @@ const identityCount = (injection: Injection): number => injection.knowledgeCommi
 export function encodeCcInjection(binding: CcVisibleBinding, injection: Injection): string {
   const header: WireHeader = { d: binding.db, n: binding.nativeSession, s: binding.coreSession,
     k: injection.knowledgeCommitIds, r: (injection.knowledgeStates ?? []).map(knowledgeStateKey), h: digest(injection.text) };
-  const framing = `${BEGIN}\n${HEADER}${JSON.stringify(header)}\n\n${END}`;
+  const framing = `${BEGIN}\n${CC_INJECTION_HEADER}${JSON.stringify(header)}\n\n${END}`;
   const bound = 300 + 12 * identityCount(injection);
   if (framing.length > bound) throw new Error(`CC injection envelope exceeds its ${bound}-character host framing bound`);
-  return `${BEGIN}\n${HEADER}${JSON.stringify(header)}\n${injection.text}\n${END}`;
+  return `${BEGIN}\n${CC_INJECTION_HEADER}${JSON.stringify(header)}\n${injection.text}\n${END}`;
 }
 
-export function decodeCcInjection(content: unknown, binding: CcVisibleBinding): EnvelopeHeader | null {
+/** Identity-only decoding is shared with native previews whose original file no longer exists.
+ * It never claims body integrity; complete carriers must use decodeCcInjection below. */
+export function decodeCcInjectionHeader(content: unknown, binding: CcVisibleBinding): EnvelopeHeader | null {
   if (typeof content !== "string") return null;
-  const prefix = `${BEGIN}\n${HEADER}`, suffix = `\n${END}`;
-  if (!content.startsWith(prefix) || !content.endsWith(suffix)) return null;
+  const prefix = `${BEGIN}\n${CC_INJECTION_HEADER}`;
+  if (!content.startsWith(prefix)) return null;
   const headerEnd = content.indexOf("\n", prefix.length);
   if (headerEnd < 0) return null;
   let parsed: unknown;
@@ -63,9 +65,15 @@ export function decodeCcInjection(content: unknown, binding: CcVisibleBinding): 
   if (!states.every(state => positiveId(state.fromCommit) && state.toCommits.every(positiveId))) return null;
   if (parsed.d !== binding.db || parsed.n !== binding.nativeSession) return null;
   if (!(parsed.s === binding.coreSession || parsed.s === null && binding.coreSession !== null)) return null;
-  const body = content.slice(headerEnd + 1, -suffix.length);
-  if (digest(body) !== parsed.h) return null;
   return { db: parsed.d, native: parsed.n, core: parsed.s, commits: parsed.k as number[], states, sha256: parsed.h };
+}
+
+export function decodeCcInjection(content: unknown, binding: CcVisibleBinding): EnvelopeHeader | null {
+  const header = decodeCcInjectionHeader(content, binding), suffix = `\n${END}`;
+  if (!header || typeof content !== "string" || !content.endsWith(suffix)) return null;
+  const headerEnd = content.indexOf("\n", `${BEGIN}\n${CC_INJECTION_HEADER}`.length);
+  const body = content.slice(headerEnd + 1, -suffix.length);
+  return digest(body) === header.sha256 ? header : null;
 }
 
 const attachmentContents = (record: CcNativeRecord): unknown[] => {
@@ -269,6 +277,18 @@ async function lockedInjectionBinding(config: ResolvedCcHostConfig, nativeSessio
 /** Read-only Knowledge selection for one SessionStart occurrence. Binding/project enrollment are the
  * only durable writes; this facade starts no importer, scheduler, worker, or executor loop. */
 export async function ccSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<CcHookOutput | null> {
+  const output = await prepareSessionStartInjection(config, input);
+  // Publish a clean occurrence only after selection, encoding and Store close all succeed.
+  // Clear's warning is written with its child link; ordinary SessionStart emits no warning.
+  await updateBinding(config, input.session_id, current => {
+    if (!current || current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path)
+      throw new Error("CC binding changed while completing SessionStart");
+    return current.lastCompactionNotice == null ? current : { ...current, lastCompactionNotice: null };
+  });
+  return output;
+}
+
+async function prepareSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<CcHookOutput | null> {
   if (!input.source || !(["startup", "resume", "clear", "compact"] as const).includes(input.source))
     throw new Error("SessionStart source must be startup, resume, clear or compact");
   const initial = readBinding(config, input.session_id);

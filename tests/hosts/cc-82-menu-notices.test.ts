@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bindingPath, readBinding, recordSessionStart, updateBinding } from "../../src/hosts/cc/binding.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
+import { handleCcHook } from "../../src/hosts/cc/index.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { force: true, recursive: true }); });
@@ -27,6 +28,17 @@ test("old binding has no notice; exact warning bytes survive binding reads and c
   expect(JSON.parse(readFileSync(path, "utf8")).lastCompactionNotice).toBe(warning);
   await updateBinding(config, input.session_id, current => ({ ...current!, lastCompactionNotice: null }));
   expect(readBinding(config, input.session_id)!.lastCompactionNotice).toBeNull();
+});
+
+test.each([false, true])("a clean no-output startup/resume clears a previous warning (enabled=%s)", async enabled => {
+  const { config, input } = fixture();
+  await recordSessionStart(config, input, null);
+  for (const source of ["startup", "resume"] as const) {
+    await updateBinding(config, input.session_id, current => ({ ...current!,
+      enrollment: { ...current!.enrollment, choice: enabled }, lastCompactionNotice: "previous exact warning" }));
+    expect(await handleCcHook(config, { ...input, source })).toBeNull();
+    expect(readBinding(config, input.session_id)!.lastCompactionNotice).toBeNull();
+  }
 });
 
 test("malformed persisted notice fails explicitly, rather than displaying an invented warning", async () => {
