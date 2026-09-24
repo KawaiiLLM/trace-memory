@@ -45,6 +45,9 @@ try {
     sourcemap: false,
     legalComments: "none",
     plugins: [promptLoader],
+    // jsonc-parser's default UMD entry loads its own modules through a runtime `require`, which the
+    // bundle cannot follow; its ESM entry bundles whole.
+    alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },
     banner: { js: runtimeBoundary },
     define: { "import.meta.url": "__ccImportMetaUrl" },
   });
