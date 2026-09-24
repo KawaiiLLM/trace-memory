@@ -14,6 +14,7 @@ const breakdown: CcContextBreakdown = {
 describe("Claude Code local menu rendering", () => {
   it("splits confirmed retained carriers from SDK Messages and keeps the total", () => {
     const section = buildCcContextSection(breakdown, { knowledge: 200, facts: 100, raw: 50, unclassified: 0 }, 1000)!;
+    expect(section.headerLines).toContain("2.5k/10k tokens (25%, estimated)");
     expect(section.legend.find(row => row.label === "Knowledge")?.tokens).toBe(400);
     expect(section.legend.find(row => row.label === "Facts")?.tokens).toBe(200);
     expect(section.legend.find(row => row.label === "Raw")?.tokens).toBe(100);

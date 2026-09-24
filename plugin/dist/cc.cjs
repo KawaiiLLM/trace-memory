@@ -41590,14 +41590,17 @@ function ccContextEvidence(records, binding, dbPath, snapshot2) {
       if (amount === null) return unavailable("unsupported Messages content");
       estimatedMessagesTokens += amount;
       if (message.role !== "user" || block2.type !== "text" || typeof block2.text !== "string") continue;
-      if (unverified.has(block2.text)) return unavailable("native memory carrier could not be authenticated");
-      const carrier = carriers.get(block2.text);
+      const candidates = [block2.text, ...block2.text.endsWith("\n") ? [block2.text.slice(0, -1)] : []].filter((text) => carriers.has(text) || unverified.has(text));
+      if (candidates.length > 1) return unavailable("ambiguous normalized native carrier");
+      const recorded = candidates[0] ?? block2.text;
+      if (unverified.has(recorded)) return unavailable("native memory carrier could not be authenticated");
+      const carrier = carriers.get(recorded);
       if (!carrier) {
         if (block2.text.startsWith("<system-reminder>\nSessionStart hook additional context:") && block2.text.includes("TRACE-MEMORY-CC/1 ")) return unavailable("native memory carrier is missing from selected transcript");
         continue;
       }
-      if (matched.has(block2.text)) return unavailable("ambiguous repeated Messages carrier");
-      matched.add(block2.text);
+      if (matched.has(recorded)) return unavailable("ambiguous repeated Messages carrier");
+      matched.add(recorded);
       const slice = originalSlice(block2.text, carrier.original, carrier.preview);
       if (!slice) return unavailable("native carrier preview cannot be measured");
       const parts = measureRetainedMemoryText(block2.text, carrier.original, slice.offset, slice.length);

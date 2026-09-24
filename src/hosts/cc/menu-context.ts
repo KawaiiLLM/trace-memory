@@ -114,15 +114,22 @@ export function ccContextEvidence(records: readonly CcNativeRecord[], binding: C
       if (amount === null) return unavailable("unsupported Messages content");
       estimatedMessagesTokens += amount;
       if (message.role !== "user" || block.type !== "text" || typeof block.text !== "string") continue;
-      if (unverified.has(block.text)) return unavailable("native memory carrier could not be authenticated");
-      const carrier = carriers.get(block.text);
+      // Pinned CC's Messages normalization may append one newline to a recorded rendered block.
+      // Match only that observed transformation, not trim/substring/whitespace normalization; the
+      // actual API text (including the newline) remains the measured carrier and denominator.
+      const candidates = [block.text, ...(block.text.endsWith("\n") ? [block.text.slice(0, -1)] : [])]
+        .filter(text => carriers.has(text) || unverified.has(text));
+      if (candidates.length > 1) return unavailable("ambiguous normalized native carrier");
+      const recorded = candidates[0] ?? block.text;
+      if (unverified.has(recorded)) return unavailable("native memory carrier could not be authenticated");
+      const carrier = carriers.get(recorded);
       if (!carrier) {
         if (block.text.startsWith("<system-reminder>\nSessionStart hook additional context:") &&
           block.text.includes("TRACE-MEMORY-CC/1 ")) return unavailable("native memory carrier is missing from selected transcript");
         continue;
       }
-      if (matched.has(block.text)) return unavailable("ambiguous repeated Messages carrier");
-      matched.add(block.text);
+      if (matched.has(recorded)) return unavailable("ambiguous repeated Messages carrier");
+      matched.add(recorded);
       const slice = originalSlice(block.text, carrier.original, carrier.preview);
       if (!slice) return unavailable("native carrier preview cannot be measured");
       const parts = measureRetainedMemoryText(block.text, carrier.original, slice.offset, slice.length);

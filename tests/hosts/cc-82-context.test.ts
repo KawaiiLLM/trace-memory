@@ -48,6 +48,20 @@ test.each([[false, false], [true, true]])("authenticates retained %s preview wit
   if (!preview) { expect(result.memory!.facts).toBeGreaterThan(0); expect(result.memory!.raw).toBeGreaterThan(0); }
 });
 
+test.each([false, true])("native Messages may append one newline to a recorded carrier (preview=%s)", preview => {
+  const f = fixture(`<knowledge>\n${"真实记忆".repeat(100)}\n</knowledge>`, preview);
+  const baseline = ccContextEvidence(f.records, f.binding, f.db, f.snapshot);
+  const actual = `${f.rendered}\n`;
+  const snapshot: CcContextSnapshot = { session: "native-A", messages: [{ role: "user", content: [{ type: "text", text: actual }] }] };
+  const result = ccContextEvidence(f.records, f.binding, f.db, snapshot);
+  expect(result.presence).toBe("confirmed");
+  expect(result.memory!.knowledge).toBe(baseline.memory!.knowledge);
+  expect(result.estimatedMessagesTokens).toBe(tokens(actual));
+  expect(Object.values(result.memory!).reduce((a, b) => a + b, 0)).toBe(tokens(actual));
+  snapshot.messages[0]!.content[0]!.text = `${actual}\n`;
+  expect(ccContextEvidence(f.records, f.binding, f.db, snapshot).presence).toBe("unavailable");
+});
+
 test("ordinary conversation, tool input/results and thinking use existing text estimator; quoted lookalikes are not memory", () => {
   const f = fixture("<knowledge>\nactual\n</knowledge>");
   const quotation = `User quoted ${f.rendered}`;

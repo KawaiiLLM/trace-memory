@@ -337,7 +337,7 @@ function buildCcContextSection(breakdown2, memory, contextTokens) {
     };
   };
   const legend = displayCategories.map(row);
-  const totalLine = `${ccCompact(breakdown2.totalTokens)}/${ccCompact(breakdown2.maxTokens)} tokens (${breakdown2.percentage}%)`;
+  const totalLine = `${ccCompact(breakdown2.totalTokens)}/${ccCompact(breakdown2.maxTokens)} tokens (${breakdown2.percentage}%, estimated)`;
   const headerLines = breakdown2.displayName ? [breakdown2.displayName, breakdown2.model, totalLine] : [breakdown2.model, totalLine];
   const legendHeading = "Estimated usage by category";
   const memoryUnavailable = effectiveMemory ? void 0 : inconsistent || messagesCategory ? "Knowledge, Facts, Raw: unavailable" : void 0;

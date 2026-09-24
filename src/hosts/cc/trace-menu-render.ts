@@ -240,7 +240,7 @@ export function buildCcContextSection(breakdown: CcContextBreakdown | undefined,
   // Requirement 3: the legend opens with the model's display name, then the id, then the token total —
   // `displayName` is `undefined` on the pinned SDK version (see `CcContextBreakdown`'s doc), so this
   // falls back to two lines, not three.
-  const totalLine = `${ccCompact(breakdown.totalTokens)}/${ccCompact(breakdown.maxTokens)} tokens (${breakdown.percentage}%)`;
+  const totalLine = `${ccCompact(breakdown.totalTokens)}/${ccCompact(breakdown.maxTokens)} tokens (${breakdown.percentage}%, estimated)`;
   const headerLines = breakdown.displayName ? [breakdown.displayName, breakdown.model, totalLine] : [breakdown.model, totalLine];
 
   const legendHeading = "Estimated usage by category";
