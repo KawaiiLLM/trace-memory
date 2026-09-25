@@ -174,10 +174,15 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     const run = writer.bindDreamingRun({ kind: "dreaming", sessionId: a.session.id, branch: "main", claim,
       dreamingRangeId: range.id, executionId: writer.beginExecution({ sessionId: a.session.id, phase: "dreaming",
         head: range.anchor, origin: range.origin }), createdAt: at });
+    const commitComponents: Set<number>[][] = [];
     const maintain = (operation: Parameters<typeof writer.commitConsolidationRun>[0]["operations"][number]) => {
       const result = writer.commitConsolidationRun({ path: target, run, operations: [operation] });
       if (!result.ok) throw Error(result.problems.join("; "));
-      check();
+      const tracked = reader as unknown as { graphComponent: (input: unknown, ids: Set<number>) => unknown };
+      const original = tracked.graphComponent, inspected: Set<number>[] = [];
+      tracked.graphComponent = (input, ids) => { inspected.push(new Set(ids)); return original.call(reader, input, ids); };
+      try { check(); } finally { tracked.graphComponent = original; }
+      commitComponents.push(inspected);
       return result.committed;
     };
     const merged = maintain({ op: "merge", intoKnowledgeId: members[0]!.knowledgeId,
@@ -187,10 +192,19 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     const children = maintain({ op: "split", knowledgeId: merged.knowledgeId, baseCommit: merged.commit,
       children: [{ text: "left", category: "constraint", topics: [] }, { text: "right", category: "constraint", topics: [] }],
       supports: [a.facts[0]!.id], reason: "real split", createdAt: at });
-    maintain({ op: "merge", intoKnowledgeId: members[2]!.knowledgeId, intoBaseCommit: members[2]!.commit,
+    const transitive = maintain({ op: "merge", intoKnowledgeId: members[2]!.knowledgeId, intoBaseCommit: members[2]!.commit,
       absorb: [{ knowledgeId: children[0]!.knowledgeId, baseCommit: children[0]!.commit }],
       text: "transitive", category: "constraint", scope: "global", supports: [a.facts[0]!.id],
-      topics: [], reason: "transitive merge", createdAt: at });
+      topics: [], reason: "transitive merge", createdAt: at })[0]!;
+    // Actual resolver invocations, not a cache hit or an invalidation signal: each commit
+    // recomputes exactly the component it joined, without B's independent revision.
+    expect(commitComponents).toHaveLength(3);
+    expect(commitComponents.every(parts => parts.length === 1 && !parts[0]!.has(unrelated.commit))).toBe(true);
+    expect(commitComponents[0]![0]).toEqual(new Set([members[0]!.commit, members[1]!.commit, merged.commit]));
+    expect(commitComponents[1]![0]).toEqual(new Set([members[0]!.commit, members[1]!.commit, merged.commit,
+      ...children.map(child => child.commit)]));
+    expect(commitComponents[2]![0]).toEqual(new Set([members[0]!.commit, members[1]!.commit, merged.commit,
+      ...children.map(child => child.commit), members[2]!.commit, transitive.commit]));
     const inspected = reader as unknown as { graphComponent: (input: unknown, ids: Set<number>) => unknown;
       factOnCurrentPath: (...args: unknown[]) => unknown };
     const component = inspected.graphComponent, factOnPath = inspected.factOnCurrentPath;
