@@ -488,7 +488,17 @@ test("64b cursors: sibling lineages preserve whole-fact membership, visibility, 
       .not.toContain(sessionCommit.commit);
 
     const observer = new Store(dbPath);
+    const check88 = () => {
+      const path = { sessionId: owner.id, branch: "right", headTurnId: right.turn.id };
+      const fresh = observer.commitGraph(path, undefined, undefined, observer.commitGraphInput());
+      expect(observer.visibleKnowledgeVersions(path))
+        .toEqual(new Set(fresh.current.filter(revision => revision.op !== "archive").map(revision => revision.id)));
+      expect(observer.commitGraph(null, undefined, undefined, observer.commitGraphInput(undefined, owner.id)).applicable.has(mixedCommit))
+        .toBe(false); // no union of left's Turn with right's bound entry across two complete cursors
+    };
+    check88();
     store.setCurrentPath(owner.id, "left", root.turn.id, "native-left");
+    check88();
     expect(observer.currentKnowledge(null).map(value => value.revision.id)).toEqual([commits[0]!.commit, commits[2]!.commit]);
     store.closeSession(owner.id); store.close();
     const reopened = new Store(dbPath);
@@ -498,6 +508,7 @@ test("64b cursors: sibling lineages preserve whole-fact membership, visibility, 
           { lineage: "native-right", branch: "right", head_turn_id: right.turn.id }]);
       reopened.reopenSession(owner.id, "cursor-reopen");
       reopened.setCurrentPath(owner.id, "right", root.turn.id, "native-right");
+      check88();
       expect(observer.currentKnowledge(null).map(value => value.revision.id)).toEqual([commits[0]!.commit]);
     } finally { observer.close(); reopened.close(); }
     return;

@@ -27,6 +27,7 @@ test("88: neutral writes do not revisit existing knowledge revisions", () => {
         supports: [fact.id], topics: [], reason: "evidence", createdAt: at }] });
     if (!created.ok) throw Error(created.problems.join("; "));
     const revisionId = created.committed[0]!.commit;
+    store.setCurrentPath(session.id, "main", turn.id, "native");
     expect(store.visibleKnowledgeVersions(path)).toEqual(new Set([revisionId]));
     const original = store.db.prepare.bind(store.db);
     const monitored = store as unknown as { graphComponent: (...args: unknown[]) => unknown;
@@ -42,28 +43,47 @@ test("88: neutral writes do not revisit existing knowledge revisions", () => {
       if (/SELECT \* FROM knowledge_revisions ORDER BY id/.test(sql)) oldRevisionReads++;
       return original(sql);
     }) as typeof store.db.prepare;
+    const assertNeutral = (event: string) => {
+      expect(store.visibleKnowledgeVersions(path), event).toEqual(new Set([revisionId]));
+      expect({ oldRevisionReads, components, examinedRevisions, examinedFacts }, event)
+        .toEqual({ oldRevisionReads: 0, components: 0, examinedRevisions: 0, examinedFacts: 0 });
+    };
     const emptyFact = store.appendTurn({ sessionId: session.id, parentTurnId: turn.id, kind: "turn", userPrompt: "new", startedAt: at });
     const nextEntry = store.appendSourceEntry({ sessionId: session.id, turnId: emptyFact.id, nativeLineage: "native", nativeId: "next",
       role: "user", text: "next", raw: "next", calls: [] });
+    assertNeutral("append and source entry");
     const newFact = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: at },
       entryIds: [nextEntry.id], facts: [{ turnId: emptyFact.id, entryIds: [nextEntry.id],
         category: "observation", actor: "user", text: "uncited", source: [`T${emptyFact.id}#E1`], createdAt: at }] });
     if (!newFact.ok) throw Error(newFact.problems.join("; "));
+    assertNeutral("N processing and new uncited fact");
+    const marked = store.commitConsolidationRun({ path,
+      run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: at },
+      consolidated: [fact.id], operations: [] });
+    if (!marked.ok) throw Error(marked.problems.join("; "));
+    assertNeutral("C processing mark");
+    const claim = store.acquireClaim(path, "dreaming", "88-neutral")!;
+    const range = store.retainKnowledgePoolRange(path, `session:${session.id}`, claim);
+    const executionId = store.beginExecution({ sessionId: session.id, phase: "dreaming", head: range.anchor, origin: range.origin });
+    const dream = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main",
+      dreamingRangeId: range.id, executionId, claim, createdAt: at });
+    store.completeKnowledgePoolRange(dream, "success", range.eventIds);
+    store.releaseClaim(claim);
+    // Claim/range setup performs fresh writer validation; measure the committed reader only.
+    oldRevisionReads = components = examinedRevisions = examinedFacts = 0;
+    assertNeutral("D processing mark");
     store.setKnowledgeBudget("session", 1500);
-    expect(store.visibleKnowledgeVersions(path)).toEqual(new Set([revisionId]));
-    expect({ oldRevisionReads, components, examinedRevisions, examinedFacts })
-      .toEqual({ oldRevisionReads: 0, components: 0, examinedRevisions: 0, examinedFacts: 0 });
+    assertNeutral("budget edit");
     monitored.graphComponent = originalComponent;
     monitored.revisionApplies = originalRevision;
     monitored.factOnCurrentPath = originalFact;
-    store.setCurrentPath(session.id, "main", turn.id, "native");
-    expect(store.visibleKnowledgeVersions(path)).toEqual(new Set([revisionId]));
   } finally { store.close(); }
 });
 
 test("88: every external commit, foreground move and rollback agrees with a fresh graph", () => {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-88-"));
-  const reader = new Store(join(dir, "trace.db")), writer = new Store(join(dir, "trace.db"));
+  let reader = new Store(join(dir, "trace.db"));
+  const writer = new Store(join(dir, "trace.db"));
   try {
     const project = writer.createProject({ name: "88-shared", declaredBy: "mark" });
     const sessions = ["A", "B"].map(host => writer.createSession({ host, projectId: project.id,
@@ -95,6 +115,17 @@ test("88: every external commit, foreground move and rollback agrees with a fres
         expect(reader.visibleKnowledgeVersions(path)).toEqual(new Set(fresh.current.filter(r => r.op !== "archive").map(r => r.id)));
       }
     };
+    const measureRefresh = (sessionId: number) => {
+      const tracked = reader as unknown as { graphComponent: (input: unknown, ids: Set<number>) => unknown;
+        factOnCurrentPath: (...args: unknown[]) => unknown };
+      const originalPart = tracked.graphComponent, originalLiveness = tracked.factOnCurrentPath;
+      const parts: Set<number>[] = [], owners: number[] = [];
+      tracked.graphComponent = (input, ids) => { parts.push(new Set(ids)); return originalPart.call(reader, input, ids); };
+      tracked.factOnCurrentPath = (...args) => { owners.push(args[1] as number); return originalLiveness.apply(reader, args); };
+      try { reader.commitGraph(paths[0]!, undefined, undefined, reader.commitGraphInput(undefined, sessionId)); }
+      finally { tracked.graphComponent = originalPart; tracked.factOnCurrentPath = originalLiveness; }
+      return { parts, owners };
+    };
     const create = (owner: typeof nodes[number], support: number, scope: "global" | "session" | "project") => {
       const result = writer.commitConsolidationRun({ path: { sessionId: owner.session.id, branch: "main", headTurnId: owner.second.id },
         run: { kind: "manual", sessionId: owner.session.id, branch: "main", createdAt: at },
@@ -118,7 +149,7 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     };
     try { reader.commitGraph(paths[0]!, undefined, undefined, reader.commitGraphInput(undefined, a.session.id)); }
     finally { monitored.graphComponent = originalComponent; monitored.factOnCurrentPath = originalFact; }
-    expect(components).toBe(1); expect(aFacts).toBe(0); expect(bFacts).toBeGreaterThan(0);
+    expect(components).toBe(1); expect(aFacts).toBe(0); expect(bFacts).toBe(2); // B fact refresh + one resolver grounding
     check(); // first cursor ends the all-path compatibility, touching B's one component.
     writer.setCurrentPath(b.session.id, "main", b.second.id, "two"); check(); // second complete path restores B
     writer.setCurrentPath(a.session.id, "main", a.second.id, "one"); check();
@@ -127,6 +158,10 @@ test("88: every external commit, foreground move and rollback agrees with a fres
       operations: [{ op: "archive", knowledgeId: base.knowledgeId, baseCommit: base.commit,
         supports: [a.facts[1]!.id], reason: "new evidence", createdAt: at }] });
     if (!updated.ok) throw Error(updated.problems.join("; "));
+    const archiveRefresh = measureRefresh(a.session.id);
+    expect(archiveRefresh.parts).toEqual([new Set([base.commit, updated.committed[0]!.commit])]);
+    expect(archiveRefresh.owners.length).toBeGreaterThan(0); // newly cited support may need grounding
+    expect(new Set(archiveRefresh.owners)).toEqual(new Set([a.session.id]));
     check();
     // Global current selection includes the archive, but 92's body set must not deliver it
     // or fall back to the old body, even for the other reader.
@@ -140,19 +175,23 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     writer.setCurrentPath(a.session.id, "main", a.second.id, "one"); check();
     expect(reader.visibleKnowledgeVersions(paths[1]!).has(base.commit)).toBe(false);
     const other = writer.createProject({ name: "88-other", declaredBy: "mark" });
-    writer.mergeProject(project.id, other.id); check();
+    writer.mergeProject(project.id, other.id);
+    expect(measureRefresh(a.session.id)).toEqual({ parts: [], owners: [] });
+    check();
     const moved = writer.createProject({ name: "88-isolated", declaredBy: "mark" });
-    writer.declareProject(b.session.id, moved.name, "mark", { path: paths[1]!, atTrigger: () => false }); check();
+    writer.declareProject(b.session.id, moved.name, "mark", { path: paths[1]!, atTrigger: () => false });
+    expect(measureRefresh(a.session.id)).toEqual({ parts: [], owners: [] });
+    check();
     // An uncommitted savepoint must not escape into the committed read projection.
     writer.db.exec("SAVEPOINT probe88");
     writer.setKnowledgeBudget("session", 987);
     writer.db.exec("ROLLBACK TO probe88; RELEASE probe88"); check();
     create(a, a.facts[0]!.id, "session"); check();
     // Deterministic mixed operations; assert against the uncached resolver after every step.
-    let random = 0x8801;
+    let cursorSeed = 0x8801;
     for (let step = 0; step < 36; step++) {
-      random = (Math.imul(random, 1664525) + 1013904223) >>> 0;
-      switch (random % 6) {
+      cursorSeed = (Math.imul(cursorSeed, 1664525) + 1013904223) >>> 0;
+      switch (cursorSeed % 6) {
         case 0: create(a, a.facts[0]!.id, "global"); break;
         case 1: writer.setCurrentPath(a.session.id, "root", a.first.id, "one"); break;
         case 2: writer.setCurrentPath(a.session.id, "main", a.second.id, "one"); break;
@@ -229,20 +268,98 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     expect(touched.some(ids => [merged.commit, ...children.map(child => child.commit), members[2]!.commit]
       .every(id => ids.has(id)) && !ids.has(unrelated.commit))).toBe(true);
     expect(touched.every(ids => !ids.has(unrelated.commit))).toBe(true);
-    expect(ownerA).toBeGreaterThan(0);
+    expect(ownerA).toBe(6); // A's two cited facts plus grounding by the two affected components
     expect(ownerB).toBe(0);
     check();
-    let seed = 0x8802;
-    for (let step = 0; step < 24; step++) {
-      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-      switch (seed % 4) {
-        case 0: writer.setCurrentPath(a.session.id, "root", a.first.id, "one"); break;
-        case 1: writer.setCurrentPath(a.session.id, "main", a.second.id, "one"); break;
-        case 2: writer.setCurrentPath(b.session.id, "root", b.first.id, "two"); break;
-        default: writer.setCurrentPath(b.session.id, "main", b.second.id, "two"); break;
+    // Seeded mixed *operation* schedule (not just random cursor values). Each cycle shuffles
+    // legal operations, then selects live bases from the independent authoritative graph.
+    const operations = ["create", "update", "archive", "merge", "split", "rewind", "revisit",
+      "project", "projectMerge", "rollback", "outerRollback", "restart"] as const;
+    const schedule: string[] = [];
+    let seed = 0x8802, sequence = 0;
+    const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0);
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const shuffled = [...operations];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = random() % (i + 1);
+        [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
       }
-      check();
+      for (const op of shuffled) {
+        sequence++;
+        const active = () => writer.commitGraph(paths[0]!, undefined, undefined, writer.commitGraphInput())
+          .current.filter(r => r.scope === "global" && r.op !== "archive");
+        const runOp = (operation: Parameters<typeof writer.commitConsolidationRun>[0]["operations"][number]) => {
+          // An authorized Dreamer range can operate on existing global identities.
+          const result = writer.commitConsolidationRun({ path: target, run, operations: [operation] });
+          if (!result.ok) throw Error(`${op} step ${sequence}: ${result.problems.join('; ')}`);
+          return result.committed;
+        };
+        switch (op) {
+          case "create": create(a, a.facts[0]!.id, "global"); break;
+          case "update": {
+            const base = active().at(random() % active().length)!;
+            runOp({ op: "update", knowledgeId: base.knowledgeId, baseCommit: base.id, text: `updated ${sequence}`,
+              category: "constraint", scope: "global", supports: [a.facts[0]!.id], topics: [], reason: "random update", createdAt: at });
+            break;
+          }
+          case "archive": {
+            const base = active().at(random() % active().length)!;
+            runOp({ op: "archive", knowledgeId: base.knowledgeId, baseCommit: base.id,
+              supports: [a.facts[0]!.id], reason: "random archive", createdAt: at });
+            break;
+          }
+          case "merge": {
+            const choices = active();
+            const index = random() % choices.length;
+            const pair = [choices[index]!, choices[(index + 1) % choices.length]!].sort((x, y) => x.knowledgeId - y.knowledgeId);
+            const [left, right] = pair as [typeof choices[number], typeof choices[number]];
+            runOp({ op: "merge", intoKnowledgeId: left.knowledgeId, intoBaseCommit: left.id,
+              absorb: [{ knowledgeId: right.knowledgeId, baseCommit: right.id }], text: `merged ${sequence}`,
+              category: "constraint", scope: "global", supports: [a.facts[0]!.id], topics: [], reason: "random merge", createdAt: at });
+            break;
+          }
+          case "split": {
+            const base = active().at(random() % active().length)!;
+            runOp({ op: "split", knowledgeId: base.knowledgeId, baseCommit: base.id,
+              children: [{ text: `left ${sequence}`, category: "constraint", topics: [] },
+                { text: `right ${sequence}`, category: "constraint", topics: [] }],
+              supports: [a.facts[0]!.id], reason: "random split", createdAt: at });
+            break;
+          }
+          case "rewind": writer.setCurrentPath(a.session.id, "root", a.first.id, "one"); break;
+          case "revisit": writer.setCurrentPath(a.session.id, "main", a.second.id, "one"); break;
+          case "project": {
+            const p = writer.createProject({ name: `88-move-${sequence}`, declaredBy: "mark" });
+            writer.declareProject(b.session.id, p.name, "mark", { path: paths[1]!, atTrigger: () => false });
+            break;
+          }
+          case "projectMerge": {
+            const p = writer.createProject({ name: `88-join-${sequence}`, declaredBy: "mark" });
+            writer.mergeProject(writer.getSession(b.session.id)!.projectId, p.id);
+            break;
+          }
+          case "rollback":
+            writer.db.exec("SAVEPOINT random88");
+            writer.setCurrentPath(b.session.id, "root", b.first.id, "two");
+            writer.setKnowledgeBudget("session", 1800 + sequence);
+            writer.db.exec("ROLLBACK TO random88; RELEASE random88");
+            break;
+          case "outerRollback":
+            writer.db.exec("BEGIN IMMEDIATE");
+            writer.setCurrentPath(a.session.id, "root", a.first.id, "one");
+            writer.db.exec("ROLLBACK");
+            break;
+          case "restart": reader.close(); reader = new Store(join(dir, "trace.db")); break;
+        }
+        schedule.push(op);
+        check();
+        if (op === "restart") expect(reader.commitGraphInput(undefined, a.session.id).revisions.length).toBeGreaterThan(0);
+      }
     }
+    expect(schedule).toEqual([
+      "create", "project", "archive", "projectMerge", "update", "restart", "split", "rewind", "revisit", "outerRollback", "merge", "rollback",
+      "update", "create", "merge", "restart", "rewind", "outerRollback", "project", "rollback", "revisit", "projectMerge", "split", "archive",
+    ]);
     reader.close();
     const restarted = new Store(join(dir, "trace.db"));
     try {
