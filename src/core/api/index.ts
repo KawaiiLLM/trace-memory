@@ -732,23 +732,24 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // (never re-reading Raw) for an entry already seen. Pruned to exactly the still-pending set on every
   // read: an entry drops out the moment it is noted, instead of leaking for the life of the process.
   const notingViewCache = new Map<number, string>();
-  let lastPending: PathPending | undefined;
+  let lastPendingKey: string | undefined;
   type CountedPrefix = { count: JoinedTokens; offset: number; end: number; views: Map<number, { id: number; text: string }> };
-  const counted = new WeakMap<PathPending, CountedPrefix>();
+  const counted = new Map<string, CountedPrefix>();
   const pendingState = (target: TaskTarget): PathPending => {
     const pending = store.pendingEntryState(target.sessionId, target.branch, target.headTurnId);
-    if (pending !== lastPending) {
+    if (pending.key !== lastPendingKey) {
       const stillPending = new Set(pending);
       for (const id of notingViewCache.keys()) if (!stillPending.has(id)) notingViewCache.delete(id);
-      lastPending = pending;
+      if (lastPendingKey) counted.delete(lastPendingKey);
+      lastPendingKey = pending.key;
     }
     return pending;
   };
   const countPending = (pending: PathPending, limit: number): number => {
-    let prefix = counted.get(pending);
+    let prefix = counted.get(pending.key);
     if (!prefix) {
       prefix = { count: new JoinedTokens(), offset: pending.offset, end: pending.offset, views: new Map() };
-      counted.set(pending, prefix);
+      counted.set(pending.key, prefix);
     }
     if (pending.offset > prefix.offset) {
       const removedEnd = Math.min(pending.offset, prefix.end);

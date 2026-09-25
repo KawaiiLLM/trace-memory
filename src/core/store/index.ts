@@ -765,6 +765,7 @@ export class StaleSourcePathError extends Error {
 export interface SourcePathState { count: number; tailId: number | null; version: number }
 
 export interface PathPending extends Iterable<number> {
+  readonly key: string;
   readonly offset: number;
   readonly length: number;
   at(index: number): number | undefined;
@@ -772,9 +773,10 @@ export interface PathPending extends Iterable<number> {
   removePrefix(count: number): void;
 }
 
-function pathPending(ids: number[]): PathPending {
+function pathPending(ids: number[], key: string): PathPending {
   let first = 0;
   return {
+    key,
     get offset() { return first; },
     get length() { return ids.length - first; },
     at(index) { return ids[first + index]; },
@@ -825,6 +827,7 @@ interface PathView {
 export class Store {
   readonly db: DatabaseSync;
   private readonly pathViews = new Map<string, PathView>();
+  private pendingGeneration = 0;
   readonly migration64d: Migration64dReport;
   closed = false;
   private readonly dreamingAuthorities = new WeakMap<object, { rangeId: number; sessionId: number; token: string; executionId: string; runId: number }>();
@@ -4115,7 +4118,8 @@ export class Store {
     const ids = prepared?.entries ? [...prepared.entries.ids] : this.pathEntryIds(sessionId, branch, headTurnId, prepared);
     const noted = view?.noted ?? new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
       .all(JSON.stringify(ids)) as { entry_id: number }[]).map(row => row.entry_id));
-    const pending = pathPending(ids.filter(id => !noted.has(id)));
+    const pending = pathPending(ids.filter(id => !noted.has(id)),
+      JSON.stringify([sessionId, branch, view?.state.version, ++this.pendingGeneration]));
     if (view && !this.db.isTransaction) view.pending = { headTurnId, count: view.state.count, ids: pending,
       coversTail: (ids.at(-1) ?? null) === view.state.tailId };
     return pending;
