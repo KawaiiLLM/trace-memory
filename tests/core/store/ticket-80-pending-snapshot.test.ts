@@ -51,7 +51,8 @@ test("80: a lazy footer snapshot shares pending membership without crossing an e
     expect([...pending]).toEqual([first.id]);
     const refreshed = reader.pendingEntryState(session.id, "main", turn.id, () => reader.pathSnapshot(path));
     expect([...refreshed]).toEqual([secondId]);
-    expect(refreshed).not.toBe(pending);
+    expect(refreshed.key).toBe(pending.key);
+    expect([...pending]).toEqual([secondId]);
     expect(reader.pendingEntryState(session.id, "main", turn.id, () => { throw new Error("cache hit must not prepare"); }))
       .toBe(refreshed);
   } finally { reader.close(); writer.close(); rmSync(directory, { recursive: true, force: true }); }
@@ -74,8 +75,8 @@ test("80: pending refresh cannot combine pre-note membership with a post-note ap
     const original = reader.db.prepare.bind(reader.db);
     let raced = false, secondId = 0;
     reader.db.prepare = ((sql: string) => {
-      // The signal has already been read. A second connection commits both operations before
-      // the reader queries the path header: there was never a state with both entries pending.
+      // A deferred read transaction has not read yet: both commits precede the header SELECT.
+      // The coherent view must therefore reflect the new path and noted watermark.
       if (!raced && sql.startsWith("SELECT length, tail_entry_id, version FROM source_paths")) {
         raced = true;
         const noted = writer.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: at },
@@ -86,9 +87,32 @@ test("80: pending refresh cannot combine pre-note membership with a post-note ap
       }
       return original(sql);
     }) as typeof reader.db.prepare;
-    expect(reader.pendingEntryIds(session.id, "main", turn.id)).toEqual([first.id]);
+    expect(reader.pendingEntryIds(session.id, "main", turn.id)).toEqual([secondId]);
     expect(raced).toBe(true);
     reader.db.prepare = original;
     expect(reader.pendingEntryIds(session.id, "main", turn.id)).toEqual([secondId]);
+
+    // The header read itself establishes a snapshot. A writer committing after .get()
+    // but before suffix/noted reads must not leak its newer rows into that snapshot.
+    let afterHeader = false, thirdId = 0;
+    reader.db.prepare = ((sql: string) => {
+      const statement = original(sql);
+      if (afterHeader || !sql.startsWith("SELECT length, tail_entry_id, version FROM source_paths")) return statement;
+      return { ...statement, get: (...args: unknown[]) => {
+        const header = statement.get(...args as Parameters<typeof statement.get>);
+        afterHeader = true;
+        const noted = writer.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: at },
+          facts: [], entryIds: [secondId] });
+        if (!noted.ok) throw new Error(noted.problems.join("; "));
+        thirdId = append("third").id;
+        writer.appendSourcePath(session.id, "main", writer.sourcePathState(session.id, "main")!, [thirdId], turn.id, "native");
+        return header;
+      } };
+    }) as typeof reader.db.prepare;
+    try {
+      expect(reader.pendingEntryIds(session.id, "main", turn.id)).toEqual([secondId]);
+      expect(afterHeader).toBe(true);
+    } finally { reader.db.prepare = original; }
+    expect(reader.pendingEntryIds(session.id, "main", turn.id)).toEqual([thirdId]);
   } finally { reader.close(); writer.close(); rmSync(directory, { recursive: true, force: true }); }
 });

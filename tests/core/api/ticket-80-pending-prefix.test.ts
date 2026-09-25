@@ -247,7 +247,10 @@ test("80: another connection's empty Noting commit invalidates pending membershi
           entryIds: [first.entry.id], facts: [] });
         expect(done.ok).toBe(true);
       } finally { other.close(); }
-      expect(store.pendingEntryState(session.id, "main", target.headTurnId)).not.toBe(original);
+      const refreshed = store.pendingEntryState(session.id, "main", target.headTurnId);
+      expect([...refreshed]).toEqual([]);
+      expect(refreshed.offset).toBe(1);
+      expect(original.key).toBe(refreshed.key);
       expect(store.pendingEntryIds(session.id, "main", target.headTurnId)).toEqual([]);
       expect(memory.taskEligibility("noting", target).due).toBe(false);
       expect(memory.pendingTokens("noting", target).tokens).toBe(0);

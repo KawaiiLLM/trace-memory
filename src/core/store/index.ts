@@ -769,27 +769,37 @@ export interface PathPending extends Iterable<number> {
   readonly offset: number;
   readonly length: number;
   at(index: number): number | undefined;
+}
+
+interface MutablePathPending extends PathPending {
   append(id: number): void;
   removePrefix(count: number): void;
 }
 
-function pathPending(ids: number[], key: string): PathPending {
-  let first = 0;
+function pathPending(ids: number[], key: string): MutablePathPending {
+  let first = 0, base = 0;
   return {
     key,
     get offset() { return first; },
-    get length() { return ids.length - first; },
-    at(index) { return ids[first + index]; },
+    get length() { return ids.length - (first - base); },
+    at(index) { return ids[first - base + index]; },
     append(id) { ids.push(id); },
-    removePrefix(count) { first += count; },
-    *[Symbol.iterator]() { for (let i = first; i < ids.length; i++) yield ids[i]!; },
+    removePrefix(count) {
+      first += count;
+      if (first - base > 1024 && first - base > ids.length / 2) {
+        ids.splice(0, first - base);
+        base = first;
+      }
+    },
+    *[Symbol.iterator]() { for (let i = first - base; i < ids.length; i++) yield ids[i]!; },
   };
 }
 
 class FrozenPathSet extends Set<number> {
   private owned?: Set<number>;
   constructor(private readonly ordered: readonly number[], private readonly positions: ReadonlyMap<number, number>,
-    private readonly limit: number, private readonly include: (id: number) => boolean = () => true) { super(); }
+    private readonly limit: number, private readonly include: (id: number) => boolean = () => true,
+    private readonly reverse = false) { super(); }
   override has(id: number): boolean {
     if (this.owned) return this.owned.has(id);
     const index = this.positions.get(id);
@@ -798,7 +808,8 @@ class FrozenPathSet extends Set<number> {
   override get size(): number { if (this.owned) return this.owned.size; let size = 0; for (const _ of this) size++; return size; }
   override *values(): SetIterator<number> {
     if (this.owned) { yield* this.owned; return; }
-    for (let i = 0; i < this.limit; i++) if (this.include(this.ordered[i]!)) yield this.ordered[i]!;
+    for (let i = this.reverse ? this.limit - 1 : 0; this.reverse ? i >= 0 : i < this.limit; i += this.reverse ? -1 : 1)
+      if (this.include(this.ordered[i]!)) yield this.ordered[i]!;
   }
   override keys(): SetIterator<number> { return this.values(); }
   override *entries(): SetIterator<[number, number]> { for (const id of this) yield [id, id]; }
@@ -821,7 +832,7 @@ interface PathView {
   addresses: Map<number, string[]>;
   noted: Set<number>;
   notedRow: number;
-  pending?: { headTurnId: number; count: number; coversTail: boolean; ids: PathPending };
+  pending?: { headTurnId: number; count: number; coversTail: boolean; ids: MutablePathPending };
 }
 
 export class Store {
@@ -2692,7 +2703,7 @@ export class Store {
           for (const id of suffix) { positions.set(id, ids.length); ids.push(id); }
           view.head = head = { id: path.headTurnId, ids, positions };
         }
-        const turns = new FrozenPathSet(head.ids, head.positions, head.ids.length);
+        const turns = new FrozenPathSet(head.ids, head.positions, head.ids.length, () => true, true);
         const count = view.state.count;
         const selected = new FrozenPathSet(view.ids, view.positions, count, id => turns.has(view.turns.get(id)!));
         return { turns, entries: { ids: selected, addresses: turnId => {
@@ -3886,6 +3897,10 @@ export class Store {
       const noted = previous?.noted ?? new Set<number>();
       const decoded = rows.map(row => ({ ...row, addresses: JSON.parse(row.addresses) as string[] }));
       if (outside) this.db.exec("COMMIT");
+      if (same && !marked.length && outside) {
+        previous.notedRow = notedRow;
+        return previous;
+      }
       for (const row of marked) noted.add(row.entry_id);
       for (const row of decoded) {
         if (append) ids.push(row.entry_id);
@@ -3903,6 +3918,11 @@ export class Store {
         if (consumed.every((id, index) => view.pending!.ids.at(index) === id))
           view.pending.ids.removePrefix(consumed.length);
         else view.pending = undefined;
+      }
+      if (same && outside) {
+        previous.notedRow = notedRow;
+        previous.pending = view.pending;
+        return previous;
       }
       if (outside) this.pathViews.set(key, view);
       return view;
@@ -4101,7 +4121,7 @@ export class Store {
     if (cached) {
       const sameHead = cached.headTurnId === headTurnId;
       const turns = !sameHead || cached.count < view!.state.count
-        ? this.pathSnapshot({ sessionId, branch, headTurnId }).turns : undefined;
+        ? this.loadPathTurns({ sessionId, headTurnId }) : undefined;
       if (sameHead || cached.coversTail && turns!.has(cached.headTurnId)) {
         const suffix = view!.ids.slice(cached.count, view!.state.count);
         if (!suffix.length || cached.coversTail && suffix.every(id => turns!.has(view!.turns.get(id)!))) {
@@ -4111,11 +4131,14 @@ export class Store {
           return cached.ids;
         }
         // A reader still at the old head must not inherit new entries beyond that head.
-        if (sameHead && !suffix.some(id => turns!.has(view!.turns.get(id)!))) return cached.ids;
+        // The stored queue covered a shorter path; a historical head needs a new queue
+        // even when every appended entry is beyond that head.
       }
     }
     const prepared = prepare?.();
-    const ids = prepared?.entries ? [...prepared.entries.ids] : this.pathEntryIds(sessionId, branch, headTurnId, prepared);
+    const turns = prepared?.turns ?? this.loadPathTurns({ sessionId, headTurnId });
+    const ids = view ? view.ids.slice(0, view.state.count).filter(id => turns.has(view.turns.get(id)!))
+      : this.pathEntryIds(sessionId, branch, headTurnId, prepared);
     const noted = view?.noted ?? new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
       .all(JSON.stringify(ids)) as { entry_id: number }[]).map(row => row.entry_id));
     const pending = pathPending(ids.filter(id => !noted.has(id)),
