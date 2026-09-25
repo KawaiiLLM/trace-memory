@@ -51,7 +51,7 @@ export function encodeCcInjection(binding: CcVisibleBinding, injection: CcInject
     ...(injection.entryIds === undefined ? {} : { e: injection.entryIds }),
     ...(injection.slice === undefined ? {} : { p: injection.slice }) };
   const framing = `${BEGIN}\n${CC_INJECTION_HEADER}${JSON.stringify(header)}\n\n${END}`;
-  const bound = 300 + 12 * identityCount(injection);
+  const bound = 300 + (injection.slice ? 16 : 0) + 12 * identityCount(injection);
   if (framing.length > bound) throw new Error(`CC injection envelope exceeds its ${bound}-character host framing bound`);
   return `${BEGIN}\n${CC_INJECTION_HEADER}${JSON.stringify(header)}\n${injection.text}\n${END}`;
 }
@@ -304,6 +304,21 @@ async function lockedInjectionBinding(config: ResolvedCcHostConfig, nativeSessio
   });
 }
 
+export async function ccPrepareSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<void> {
+  const initial = readBinding(config, input.session_id);
+  if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); },
+    config.coreConfig, undefined, entry => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : undefined);
+  try {
+    const binding = await lockedInjectionBinding(config, initial.nativeSessionId, initial.transcriptPath, memory);
+    if (!enabled(binding, memory)) return;
+    const projection = new CcProjection(config, binding, memory);
+    const projected = await projection.synchronize();
+    if (projected.state === "not-ready")
+      throw new Error(projected.problems.join("; ") || "native source projection is not ready");
+  } finally { memory.store.close(); }
+}
+
 /** Read-only Knowledge selection for one SessionStart occurrence. Binding/project enrollment are the
  * only durable writes; this facade starts no importer, scheduler, worker, or executor loop. */
 export async function ccSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<CcHookOutput | null> {
@@ -318,7 +333,43 @@ export async function ccSessionStartInjection(config: ResolvedCcHostConfig, inpu
   return output;
 }
 
-async function prepareSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<CcHookOutput | null> {
+export async function ccPreparedSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput):
+  Promise<{ output: CcHookOutput | null; snapshot: object | null }> {
+  let snapshot: object | undefined;
+  const output = await prepareSessionStartInjection(config, input, true, (db, binding) => {
+    const watermarks = db.prepare(`SELECT
+      (SELECT IFNULL(MAX(id),0) FROM facts) f,
+      (SELECT IFNULL(MAX(rowid),0) FROM consolidated_facts) cf,
+      (SELECT IFNULL(MAX(rowid),0) FROM noted_entries) ne,
+      (SELECT IFNULL(MAX(id),0) FROM knowledge_revisions) kr,
+      (SELECT IFNULL(MAX(rowid),0) FROM knowledge_processed) kp,
+      (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) pa,
+      (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) pm,
+      (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id=1) bp,
+      (SELECT IFNULL(MAX(version),0) FROM session_lineage_cursors) cv,
+      (SELECT IFNULL(MAX(version),0) FROM source_paths) sv`).get();
+    const owner = binding.coreSessionId ? db.prepare(`SELECT project_id, enrollment_default, enrollment_choice
+      FROM sessions WHERE id=?`).get(binding.coreSessionId) : null;
+    const header = binding.coreSessionId && binding.branch ? db.prepare(`SELECT length, tail_entry_id, version, hwm_entry_id
+      FROM source_paths WHERE session_id=? AND branch=?`).get(binding.coreSessionId, binding.branch) : null;
+    const cursor = binding.coreSessionId ? db.prepare(`SELECT branch, head_turn_id, version FROM session_lineage_cursors
+      WHERE session_id=? AND lineage=?`).get(binding.coreSessionId, input.session_id) : null;
+    const own = { coreSessionId: binding.coreSessionId, projectId: binding.projectId,
+      enrollment: binding.enrollment, branch: binding.branch, selectedLeafUuid: binding.selectedLeafUuid,
+      nativeProcess: binding.nativeProcess, lastClose: binding.lastClose,
+      clearedFrom: binding.clearedFrom && { nativeSessionId: binding.clearedFrom.nativeSessionId,
+        compactionTurnId: binding.clearedFrom.compactionTurnId, at: binding.clearedFrom.at,
+        inheritedLength: binding.clearedFrom.inheritedEntryIds.length,
+        inheritedTail: binding.clearedFrom.inheritedEntryIds.at(-1) ?? null },
+      transcriptPath: binding.transcriptPath, dbPath: binding.dbPath, cwd: binding.cwd };
+    snapshot = { watermarks, owner, header, cursor, own };
+  });
+  if (!snapshot && output) throw new Error("prepared SessionStart did not capture its input snapshot");
+  return { output, snapshot: snapshot ?? null };
+}
+
+async function prepareSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput,
+  prepared = false, onSnapshot?: (db: import("node:sqlite").DatabaseSync, binding: CcSessionBinding) => void): Promise<CcHookOutput | null> {
   if (!input.source || !(["startup", "resume", "clear", "compact"] as const).includes(input.source))
     throw new Error("SessionStart source must be startup, resume, clear or compact");
   const initial = readBinding(config, input.session_id);
@@ -326,14 +377,23 @@ async function prepareSessionStartInjection(config: ResolvedCcHostConfig, input:
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); },
     config.coreConfig, undefined, entry => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : undefined);
   try {
-    let binding = await lockedInjectionBinding(config, initial.nativeSessionId, initial.transcriptPath, memory);
-    if (!enabled(binding, memory)) return null;
-    const projection = new CcProjection(config, binding, memory);
-    const projected = await projection.synchronize();
-    binding = projection.currentBinding();
-    if (projected.state === "disabled") return null;
-    if (projected.state === "not-ready")
-      throw new Error(projected.problems.join("; ") || "native source projection is not ready");
+    let binding = prepared ? initial : await lockedInjectionBinding(config, initial.nativeSessionId, initial.transcriptPath, memory);
+    if (prepared) {
+      memory.store.db.exec("BEGIN");
+      onSnapshot?.(memory.store.db, binding);
+    }
+    if (!enabled(binding, memory)) {
+      if (prepared) memory.store.db.exec("COMMIT");
+      return null;
+    }
+    if (!prepared) {
+      const projection = new CcProjection(config, binding, memory);
+      const projected = await projection.synchronize();
+      binding = projection.currentBinding();
+      if (projected.state === "disabled") return null;
+      if (projected.state === "not-ready")
+        throw new Error(projected.problems.join("; ") || "native source projection is not ready");
+    }
     const snapshot = readCompleteTranscript(binding.transcriptPath);
     if (snapshot.problem || snapshot.incompleteBytes)
       throw new Error(snapshot.problem ?? `native transcript has ${snapshot.incompleteBytes} incomplete trailing bytes`);
@@ -360,6 +420,7 @@ async function prepareSessionStartInjection(config: ResolvedCcHostConfig, input:
     const visibleBinding = { db: databaseIdentity(config.dbPath), nativeSession: binding.nativeSessionId, coreSession: core };
     const visible = input.source === "compact" ? noVisibility() : ccVisibleView(snapshot.records, visibleBinding);
     const injection = memory.injection(target, visible, true);
+    if (prepared) memory.store.db.exec("COMMIT");
     if (!injection.text) return null;
     const additionalContext = encodeCcInjection(visibleBinding, injection);
     return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext }, transportItems: injection.transportItems };

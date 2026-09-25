@@ -34,8 +34,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/hosts/cc/index.ts
-var import_node_fs12 = require("node:fs");
-var import_node_path11 = require("node:path");
+var import_node_fs13 = require("node:fs");
+var import_node_crypto15 = require("node:crypto");
+var import_node_path12 = require("node:path");
 var import_node_url = require("node:url");
 
 // src/hosts/cc/config.ts
@@ -66,8 +67,8 @@ function selector(value) {
   if (!value || /[\uD800-\uDFFF]/u.test(value) || callSelector(value) !== value) throw new Error("invalid content selector; quote opaque IDs containing delimiters as JSON strings");
   return { kind: "call", id: value };
 }
-function parseTurnAddress(address) {
-  const match = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(.*)$/su.exec(address);
+function parseTurnAddress(address2) {
+  const match = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(.*)$/su.exec(address2);
   if (!match) return null;
   const result = { turn: positive(match[2]), ...match[1] ? { session: positive(match[1]) } : {} };
   let rest = match[3];
@@ -90,21 +91,21 @@ function parseTurnAddress(address) {
     rest = end < 0 ? "" : rest.slice(end);
   }
   if (rest) {
-    if (!rest.startsWith("@")) throw new Error(`invalid trace address: ${address}`);
+    if (!rest.startsWith("@")) throw new Error(`invalid trace address: ${address2}`);
     result.selector = selector(rest.slice(1));
     if (result.entries && result.selector.kind === "facts") throw new Error("@F* selects Turn-owned facts, not entry facts");
   }
   return result;
 }
-function parseKnowledgeAddress(address) {
-  const match = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.(?:K([1-9]\d*)@)?([1-9]\d*))?|(\.\.))?$/.exec(address);
+function parseKnowledgeAddress(address2) {
+  const match = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.(?:K([1-9]\d*)@)?([1-9]\d*))?|(\.\.))?$/.exec(address2);
   if (!match) return null;
   try {
     const id = positive(match[1]);
     if (match[3] && positive(match[3]) !== id) throw new Error("different knowledge identities");
     return { id, ...match[2] ? { from: positive(match[2]) } : {}, ...match[4] ? { to: positive(match[4]) } : {}, history: !!match[5] };
   } catch {
-    throw new Error(`invalid trace address: ${address}`);
+    throw new Error(`invalid trace address: ${address2}`);
   }
 }
 function traceTargets(expression) {
@@ -172,21 +173,21 @@ var legacySources = (entry) => [
   ...entry.calls.map((call) => `T${entry.turnId}#t${call.ordinal}`)
 ];
 var sourceAddresses = (entry) => [...legacySources(entry), ...preciseSources(entry)];
-function sourceKey(address) {
+function sourceKey(address2) {
   let parsed2;
   try {
-    parsed2 = parseTurnAddress(address);
+    parsed2 = parseTurnAddress(address2);
   } catch {
-    return address;
+    return address2;
   }
-  if (!parsed2 || parsed2.session !== void 0 || parsed2.legacy || parsed2.entries?.length !== 1 || parsed2.entries[0].to !== void 0) return address;
+  if (!parsed2 || parsed2.session !== void 0 || parsed2.legacy || parsed2.entries?.length !== 1 || parsed2.entries[0].to !== void 0) return address2;
   const base = `T${parsed2.turn}#E${parsed2.entries[0].from}`, selector2 = parsed2.selector;
-  return selector2?.kind === "call" ? `${base}@${callSelector(selector2.id)}` : address;
+  return selector2?.kind === "call" ? `${base}@${callSelector(selector2.id)}` : address2;
 }
-function parseSourceAddress(address) {
+function parseSourceAddress(address2) {
   let parsed2;
   try {
-    parsed2 = parseTurnAddress(address);
+    parsed2 = parseTurnAddress(address2);
   } catch {
     return null;
   }
@@ -195,19 +196,19 @@ function parseSourceAddress(address) {
   if (!legacy && (selection?.length !== 1 || selection[0].to !== void 0)) return null;
   return parsed2;
 }
-function sourceAddressScope(address) {
-  const parsed2 = parseSourceAddress(address);
+function sourceAddressScope(address2) {
+  const parsed2 = parseSourceAddress(address2);
   return parsed2 ? { turn: parsed2.turn, ordinal: parsed2.legacy ? void 0 : parsed2.entries[0].from } : null;
 }
-function resolveSource(entries, address) {
-  const parsed2 = parseSourceAddress(address);
+function resolveSource(entries, address2) {
+  const parsed2 = parseSourceAddress(address2);
   if (!parsed2) return [];
   const { turn, legacy, selector: selector2, entries: selection } = parsed2;
   return entries.flatMap((entry) => {
     if (entry.turnId !== turn) return [];
     let blocks2 = sourceBlocks(entry).filter((block2) => block2.kind !== "marker");
     if (legacy) {
-      if (!legacySources(entry).includes(address)) return [];
+      if (!legacySources(entry).includes(address2)) return [];
       blocks2 = blocks2.filter((block2) => legacy === "user" || legacy === "assistant" ? block2.kind === "text" : (block2.kind === "call" || block2.kind === "result") && legacy === `t${block2.call.ordinal}`);
     } else {
       if (entry.entryOrdinal !== selection[0].from) return [];
@@ -219,8 +220,8 @@ function resolveSource(entries, address) {
     return blocks2.length ? [{ entry, blocks: blocks2 }] : [];
   });
 }
-function resolveFactSource(entries, address) {
-  return resolveSource(entries, address).flatMap((hit) => {
+function resolveFactSource(entries, address2) {
+  return resolveSource(entries, address2).flatMap((hit) => {
     const blocks2 = hit.blocks.filter((block2) => block2.kind !== "thinking");
     return blocks2.length ? [{ entry: hit.entry, blocks: blocks2 }] : [];
   });
@@ -1775,7 +1776,7 @@ var Store = class {
       const getBody = this.db.prepare(alreadySplit ? "SELECT r.content, r.blocks FROM source_entry_raw r WHERE r.entry_id = ?" : "SELECT content, blocks FROM source_entries WHERE id = ?");
       const getAddresses = this.db.prepare("SELECT addresses FROM source_entries WHERE id = ?");
       const setAddresses = this.db.prepare("UPDATE source_entries SET addresses = ? WHERE id = ?");
-      const legacyToolCalls = (addresses) => addresses.filter((address) => /#t\d+$/.test(address)).sort();
+      const legacyToolCalls = (addresses) => addresses.filter((address2) => /#t\d+$/.test(address2)).sort();
       const next = /* @__PURE__ */ new Map();
       for (const row of missing) {
         const ordinal = (next.get(row.turn_id) ?? maxOrdinal.get(row.turn_id) ?? 0) + 1;
@@ -1787,7 +1788,7 @@ var Store = class {
         const before = legacyToolCalls(JSON.parse(getAddresses.get(row.id).addresses));
         const after = sourceAddresses(entry);
         const afterToolCalls = legacyToolCalls(after);
-        if (before.length !== afterToolCalls.length || before.some((address, index) => address !== afterToolCalls[index]))
+        if (before.length !== afterToolCalls.length || before.some((address2, index) => address2 !== afterToolCalls[index]))
           throw new Error(`ordinal backfill: entry ${row.id}'s #tN addresses changed (${JSON.stringify(before)} -> ${JSON.stringify(afterToolCalls)})`);
         setAddresses.run(JSON.stringify(after), row.id);
       }
@@ -2836,7 +2837,7 @@ var Store = class {
           ownerRevisions.set(owner, revisions);
         }
       }
-      const join10 = (id, parent) => {
+      const join11 = (id, parent) => {
         const left = componentOf.get(id), right = componentOf.get(parent);
         if (right === void 0) throw Error(`knowledge lineage references missing commit ${parent}`);
         if (left === right) return;
@@ -2846,7 +2847,7 @@ var Store = class {
         }
         components.delete(right);
       };
-      for (const revision of input2.revisions) for (const parent of input2.parents.get(revision.id) ?? []) join10(revision.id, parent);
+      for (const revision of input2.revisions) for (const parent of input2.parents.get(revision.id) ?? []) join11(revision.id, parent);
       const results = new Map([...components].map(([id, revisions]) => [id, this.graphComponent(input2, revisions)]));
       const liveness = /* @__PURE__ */ new Map();
       for (const ids of owners2.values()) for (const id of ids) {
@@ -3196,7 +3197,7 @@ var Store = class {
       } catch {
         malformed(Number(row.session_id));
       }
-      if (!Array.isArray(parsed2) || parsed2.some((address) => typeof address !== "string")) malformed(Number(row.session_id));
+      if (!Array.isArray(parsed2) || parsed2.some((address2) => typeof address2 !== "string")) malformed(Number(row.session_id));
       for (const snapshot2 of snapshots.values()) if (snapshot2.owner === Number(row.session_id) && snapshot2.selected.has(Number(row.id))) {
         const turnId = Number(row.turn_id);
         let values = snapshot2.addresses.get(turnId);
@@ -3204,7 +3205,7 @@ var Store = class {
           values = /* @__PURE__ */ new Set();
           snapshot2.addresses.set(turnId, values);
         }
-        for (const address of parsed2) values.add(address);
+        for (const address2 of parsed2) values.add(address2);
       }
     }
     for (const [key, value] of snapshots) {
@@ -3375,7 +3376,7 @@ var Store = class {
           const addresses = /* @__PURE__ */ new Set();
           if (turns2.has(turnId)) {
             for (const id of view.entriesByTurn.get(turnId) ?? [])
-              if (view.positions.get(id) < count) for (const address of view.addresses.get(id)) addresses.add(address);
+              if (view.positions.get(id) < count) for (const address2 of view.addresses.get(id)) addresses.add(address2);
           }
           return addresses;
         } }, consolidatedRuns: /* @__PURE__ */ new Map() };
@@ -3437,9 +3438,9 @@ var Store = class {
       const run = Number(row.run_id);
       if (!sources.has(run)) sources.set(run, /* @__PURE__ */ new Map());
       const addresses = sources.get(run);
-      for (const address of JSON.parse(String(row.addresses))) {
-        if (!addresses.has(address)) addresses.set(address, /* @__PURE__ */ new Set());
-        addresses.get(address).add(Number(row.id));
+      for (const address2 of JSON.parse(String(row.addresses))) {
+        if (!addresses.has(address2)) addresses.set(address2, /* @__PURE__ */ new Set());
+        addresses.get(address2).add(Number(row.id));
       }
     }
     for (const fact of facts) {
@@ -5041,10 +5042,10 @@ function sourceParts(entry, resultText, choose, selector2) {
     const legacy = `T${entry.turnId}#${tool ? `t${block2.call.ordinal}` : entry.role === "user" ? "user" : "assistant"}`;
     const choice = choose(legacy);
     if (choice === "drop") continue;
-    const address = fragmentAddress(entry, block2);
+    const address2 = fragmentAddress(entry, block2);
     const role = ` ${entry.role}`;
     if ("text" in block2) {
-      const label = `[${address}]${role}`, body = block2.text;
+      const label = `[${address2}]${role}`, body = block2.text;
       sources.push({
         ordinal: null,
         choice,
@@ -5053,7 +5054,7 @@ function sourceParts(entry, resultText, choose, selector2) {
         part: () => textPart(label, body)
       });
     } else {
-      const call = block2.call, label = `[${address}] ${call.name}`;
+      const call = block2.call, label = `[${address2}] ${call.name}`;
       const result = () => selector2?.kind === "text" ? { text: blockText(block2) } : resultText(call.result ?? "");
       sources.push(block2.kind === "result" ? {
         ordinal: call.ordinal,
@@ -5127,8 +5128,8 @@ function renderTrace(turn, entries, profile, options = {}, resultText = rawResul
     options.full ? Infinity : profile.entryTokens
   ), receipts: [] };
   if (part && !entries.some((entry) => displayedAddresses(entry).includes(`T${turn.id}#${part}`))) throw new Error(`source T${turn.id}#${part} does not exist`);
-  const choose = (address) => {
-    const suffix = address.slice(address.indexOf("#") + 1);
+  const choose = (address2) => {
+    const suffix = address2.slice(address2.indexOf("#") + 1);
     if (part) return suffix === part ? "render" : "drop";
     return options.tool === void 0 || !/^t\d+$/.test(suffix) || suffix === `t${options.tool}` ? "render" : "floor";
   };
@@ -5144,7 +5145,7 @@ function renderTrace(turn, entries, profile, options = {}, resultText = rawResul
   }
   const receipts = omitted.size ? [
     `T${turn.id}: ${omitted.size} omitted calls (including partial calls)`,
-    ...[...omitted].map((address) => `expand: trace(${JSON.stringify({ address, itemBudget: null, toolCallBudget: null, toolResultBudget: null })})`)
+    ...[...omitted].map((address2) => `expand: trace(${JSON.stringify({ address: address2, itemBudget: null, toolCallBudget: null, toolResultBudget: null })})`)
   ] : [];
   return { content: lines.join("\n"), receipts };
 }
@@ -5580,10 +5581,10 @@ function prepareMemory(store, sessionId, raw, run, frozen, path = store.knowledg
       errors.push("expected fact array" + (nonempty ? "; supports must not be empty" : ""));
       return [];
     }
-    return raw2.map((address) => {
-      const id = typeof address === "string" && /^F[1-9]\d*$/.test(address) ? Number(address.slice(1)) : NaN;
-      if (!Number.isSafeInteger(id) || !store.getFact(id)) errors.push(`${address}: not an available fact`);
-      else if (eligibleSupport && !eligibleSupport(id)) errors.push(`${address}: fact evidence is after the exact triggering source prefix`);
+    return raw2.map((address2) => {
+      const id = typeof address2 === "string" && /^F[1-9]\d*$/.test(address2) ? Number(address2.slice(1)) : NaN;
+      if (!Number.isSafeInteger(id) || !store.getFact(id)) errors.push(`${address2}: not an available fact`);
+      else if (eligibleSupport && !eligibleSupport(id)) errors.push(`${address2}: fact evidence is after the exact triggering source prefix`);
       return id;
     });
   };
@@ -5626,17 +5627,17 @@ function prepareMemory(store, sessionId, raw, run, frozen, path = store.knowledg
     for (const key of Object.keys(value)) if (key === "because") errors.push(`because: removed field; supply "reason" (a string) and "supports" (the commit's evidence)`);
     else if (!keys.includes(key)) errors.push(key === "absorb" && run.kind === "consolidation" ? "absorb belongs to the Dreamer and is not available to the Consolidator" : `${key}: inapplicable field`);
     if (typeof value.reason !== "string" || !value.reason.trim()) errors.push("reason: expected a non-empty commit message");
-    const target = (address) => {
-      const match = typeof address === "string" ? /^K([1-9]\d*)(?:@([1-9]\d*))?$/.exec(address) : null;
+    const target = (address2) => {
+      const match = typeof address2 === "string" ? /^K([1-9]\d*)(?:@([1-9]\d*))?$/.exec(address2) : null;
       const id = Number(match?.[1]), commitId = match?.[2] === void 0 ? void 0 : Number(match[2]);
       const tips = knowledge.filter((k) => k.knowledge.id === id && (commitId === void 0 || k.revision.id === commitId));
       const current = Number.isSafeInteger(id) ? store.currentCommit(id, path) : [];
-      if (commitId === void 0) errors.push(`${address}: an exact read K@commit is required; current tips: ${current.map((r) => `K${id}@${r.id}`).join(", ") || "none (inapplicable)"}; read and resubmit`);
+      if (commitId === void 0) errors.push(`${address2}: an exact read K@commit is required; current tips: ${current.map((r) => `K${id}@${r.id}`).join(", ") || "none (inapplicable)"}; read and resubmit`);
       const applicableReads = tips.filter((k) => current.some((r) => r.id === k.revision.id));
       const read = applicableReads.length === 1 ? applicableReads[0] : tips.length === 1 ? tips[0] : void 0;
-      if (!Number.isSafeInteger(id) || !read) errors.push(`${address}: ${tips.length > 1 ? "several tips; specify a commit: " + tips.map((k) => `K${id}@${k.revision.id}`).join(", ") : "knowledge was not read as visible and active"}`);
+      if (!Number.isSafeInteger(id) || !read) errors.push(`${address2}: ${tips.length > 1 ? "several tips; specify a commit: " + tips.map((k) => `K${id}@${k.revision.id}`).join(", ") : "knowledge was not read as visible and active"}`);
       const base = read?.revision.id ?? 0;
-      if (touched.has(base)) errors.push(`${address}: duplicate operation target`);
+      if (touched.has(base)) errors.push(`${address2}: duplicate operation target`);
       touched.add(base);
       return { knowledgeId: id, baseCommit: base };
     };
@@ -5920,6 +5921,35 @@ ${RAW_TITLE}
   out.unclassified += tokens(rendered) - tokens(rendered.slice(0, cursor));
   return out;
 }
+function transportItemText(item) {
+  switch (item.kind) {
+    case "knowledge":
+      return `<knowledge>
+${KNOWLEDGE_RECENCY_NOTICE}
+<${item.category}>
+${item.text}
+</${item.category}>
+</knowledge>`;
+    case "state":
+      return `${KNOWLEDGE_STATUS_TITLE}
+${item.text}`;
+    case "fact":
+      return `<episodic>
+${FACTS_TITLE}
+
+${item.text}
+</episodic>`;
+    case "raw":
+      return `<episodic>
+${RAW_TITLE}
+
+${item.text}
+</episodic>`;
+    case "receipt":
+      return `Receipts:
+${item.text}`;
+  }
+}
 var FACTS_TITLE = "Recent facts (by Turn):";
 var RAW_TITLE = "Raw:";
 var RANGE_FACTS_TITLE = "Range facts:";
@@ -6101,7 +6131,7 @@ function knowledgeStatusNotes(store, current, visible, path, projectId) {
   return knowledgeStateNotes(store, current, visible, path, projectId).map((note) => note.text.replace(/(superseded by K\d+@\d+)$/, "$1 above"));
 }
 function readFacade(store, config3, prepare, resultText = rawResultText) {
-  const expand = (address, options) => prepare(address, options)();
+  const expand = (address2, options) => prepare(address2, options)();
   const CURSORS = 16;
   const cursors = /* @__PURE__ */ new Map();
   const page = (source, options = {}, footer = "", reads = [], origin = "trace") => {
@@ -6221,7 +6251,7 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
   const factGroups = (facts, relations = store.listFactRelationsOf(facts.map((fact) => fact.id))) => renderFactGroups(facts, (f) => factLine(f.id, relations.get(f.id) ?? []), store.factTurnTimes(facts));
   const knowledgeLine = (value) => renderKnowledge(value);
   const applicable = (projectId, sessionId = 0, headTurnId, branch) => store.listVisibleKnowledge(sessionId, projectId, headTurnId, branch);
-  const injection = (target, visible = noVisibility()) => {
+  const injection = (target, visible = noVisibility(), transport = false) => {
     const empty = () => ({ text: "", knowledgeCommitIds: [] });
     const budgets2 = store.knowledgeBudgets();
     const knowledgeCap = budgets2.injection + config3.compaction.sharedAllowanceTokens;
@@ -6276,7 +6306,16 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       if (!stateCount) return empty();
       const material2 = { knowledge: [], receipts: [] };
       const rendered2 = measuredMemory(buildStates(stateCount), material2);
-      return { ...rendered2, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map((state) => state.receipt) };
+      return {
+        ...rendered2,
+        knowledgeCommitIds: [],
+        knowledgeStates: states.slice(0, stateCount).map((state) => state.receipt),
+        ...transport ? { transportItems: states.slice(0, stateCount).map((state) => ({
+          kind: "state",
+          text: state.text,
+          receipt: state.receipt
+        })) } : {}
+      };
     }
     const selectedStates = states.slice(0, stateCount);
     const ordered = [...delta].sort((a, b) => b.revision.id - a.revision.id);
@@ -6295,6 +6334,17 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
     return {
       ...rendered,
       knowledgeCommitIds: selected.commits,
+      ...transport ? { transportItems: [
+        ...delta.filter((item) => selected.commits.includes(item.revision.id)).map((item) => ({
+          kind: "knowledge",
+          text: renderKnowledge(item),
+          category: item.revision.category,
+          commitId: item.revision.id,
+          address: `K${item.knowledge.id}@${item.revision.id}`
+        })),
+        ...selectedStates.map((state) => ({ kind: "state", text: state.text, receipt: state.receipt })),
+        ...material.receipts.map((text2) => ({ kind: "receipt", text: text2 }))
+      ] } : {},
       ...selectedStates.length ? { knowledgeStates: selectedStates.map((state) => state.receipt) } : {}
     };
   };
@@ -6312,19 +6362,19 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
     if (first > last) reject("endpoints ascend, as F81-F90");
     return { from: first, to: last };
   };
-  const traceRead = (address, options = {}) => {
+  const traceRead = (address2, options = {}) => {
     validateBudgets(options);
-    const cursor = /^cursor=([^,\s]+)$/.exec(address.trim());
+    const cursor = /^cursor=([^,\s]+)$/.exec(address2.trim());
     if (options.cursor || cursor) {
-      if (options.cursor && address.trim() && !cursor) {
-        const placeholders = traceTargets(address);
+      if (options.cursor && address2.trim() && !cursor) {
+        const placeholders = traceTargets(address2);
         if (placeholders.some((target) => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
         placeholders.forEach(factInterval);
       }
       return page([], { ...options, cursor: options.cursor ?? cursor[1] });
     }
     options = effectiveOptions(options);
-    const targets = traceTargets(address);
+    const targets = traceTargets(address2);
     if (targets.some((target) => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
     const historyFields = targets.some((target) => /^K[1-9]\d*\.\.$/.test(target) || options.versions !== "current" && /^K[1-9]\d*$/.test(target));
     options = { ...options, fields: [...options.fields ?? (historyFields ? TRACE_HISTORY_DEFAULT_FIELDS : TRACE_DEFAULT_FIELDS)] };
@@ -6471,7 +6521,7 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
     spend,
     spendSince,
     progress,
-    trace: (address, options) => traceRead(address, options).text,
+    trace: (address2, options) => traceRead(address2, options).text,
     traceRead,
     // 21b: a read organization projection over the same selected set the automatic material uses; it
     // changes no injection order, no scope and no applicability.
@@ -6498,7 +6548,7 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
     // (unconsolidated facts borrowing what Raw left, consolidated only within the facts base). Nothing
     // is required any more: every window truncates — newest kept, oldest omitted with a receipt —
     // rather than escalating to a native delegation. Omitted material stays pending in the store.
-    compact: (sessionId, branch = "main", headTurnId, retainedView = []) => {
+    compact: (sessionId, branch = "main", headTurnId, retainedView = [], transport = false) => {
       if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
       const snapshot2 = store.pathSnapshot(path);
@@ -6639,6 +6689,30 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       };
       return {
         ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
+        ...transport ? { transportItems: [
+          ...knowledge.filter((item) => active.commits.includes(item.revision.id)).map((item) => ({
+            kind: "knowledge",
+            text: renderKnowledge(item),
+            category: item.revision.category,
+            commitId: item.revision.id,
+            address: `K${item.knowledge.id}@${item.revision.id}`
+          })),
+          ...notes.map((text) => ({ kind: "receipt", text })),
+          ...factGroupLayout(finalFacts, factTurns).map(({ fact, header }) => ({
+            kind: "fact",
+            text: header + factLine(fact.id, factRelations.get(fact.id) ?? []),
+            factId: fact.id,
+            pending: pendingFactIds.has(fact.id)
+          })),
+          ...suppliedRaw.map((step) => ({
+            kind: "raw",
+            text: step.content,
+            entryId: step.entry.id,
+            address: `T${step.entry.turnId}#E${step.entry.entryOrdinal}`,
+            pending: pendingIds.has(step.entry.id)
+          })),
+          ...material.receipts.map((text) => ({ kind: "receipt", text }))
+        ] } : {},
         // 29a "Renderers return what they kept": exactly the identities this replacement carries.
         // What a budget left out is absent here (28a item 7) and stays pending in the store.
         supplied: {
@@ -6726,40 +6800,40 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
       const children = /* @__PURE__ */ new Map();
       for (const revision2 of graph?.revisions ?? []) for (const parent of graphInput.parents.get(revision2.id) ?? [])
         children.set(parent, [...children.get(parent) ?? [], revision2]);
-      const revision = (address) => byCommit.get(Number(address.split("@")[1]));
+      const revision = (address2) => byCommit.get(Number(address2.split("@")[1]));
       const fields2 = new Set(options.fields.filter((field) => field !== "reason" || (scope === "knowledge" || scope === "all") && options.versions !== "current"));
       const represented = found.map((list, index) => {
         const ranked = selection?.representatives(list.filter((a) => a.startsWith("K")).map(revision), (batched ?? [query2])[index], batched ? "score" : "id") ?? [];
         const selected = new Set(ranked.map((r) => r.id));
-        if (!batched) return list.filter((address) => !address.startsWith("K") || selected.has(revision(address).id));
-        return [...ranked.map((r) => `K${r.knowledgeId}@${r.id}`), ...list.filter((address) => !address.startsWith("K"))];
+        if (!batched) return list.filter((address2) => !address2.startsWith("K") || selected.has(revision(address2).id));
+        return [...ranked.map((r) => `K${r.knowledgeId}@${r.id}`), ...list.filter((address2) => !address2.startsWith("K"))];
       });
       const perQuery = input.cap ?? 1;
       if (batched && (!Number.isSafeInteger(perQuery) || perQuery < 1)) throw new Error("listing cap must be a positive integer");
-      const addresses = batched ? represented.flatMap((list, index) => list.slice(0, perQuery).map((address) => ({ address, query: batched[index] }))) : represented[0];
+      const addresses = batched ? represented.flatMap((list, index) => list.slice(0, perQuery).map((address2) => ({ address: address2, query: batched[index] }))) : represented[0];
       const items2 = [...addresses, ...batched ? batched.filter((_, index) => !represented[index].length).map((miss) => ({ miss })) : []];
       const capture = (deferred) => {
         const hits = deferred.filter((item) => typeof item === "string" || !("miss" in item));
         const queries = hits.map((item) => typeof item === "string" ? void 0 : item.query);
         const rest = hits.map((item) => typeof item === "string" ? item : item.address);
-        const record3 = (address) => Number(address.slice(1));
+        const record3 = (address2) => Number(address2.slice(1));
         const ids = (prefix, of) => rest.filter((a) => a.startsWith(prefix)).map(of);
         const entries = store.listSourceEntryIdsOf(ids("T", record3));
         return [
-          ...rest.map((address, index) => ({ ...address.startsWith("F") ? { address } : address.startsWith("T") ? { address, entryIds: entries.get(record3(address)), profile: { entryTokens: config3.render.entryTokens, toolInputTokens: config3.render.toolInputTokens, toolResultTokens: config3.render.toolResultTokens } } : { address }, ...queries[index] === void 0 ? {} : { query: queries[index] } })),
+          ...rest.map((address2, index) => ({ ...address2.startsWith("F") ? { address: address2 } : address2.startsWith("T") ? { address: address2, entryIds: entries.get(record3(address2)), profile: { entryTokens: config3.render.entryTokens, toolInputTokens: config3.render.toolInputTokens, toolResultTokens: config3.render.toolResultTokens } } : { address: address2 }, ...queries[index] === void 0 ? {} : { query: queries[index] } })),
           ...deferred.slice(hits.length)
         ];
       };
       const format2 = (hits) => hits.map((item) => {
         if (typeof item !== "string" && "miss" in item) return `no hit: ${JSON.stringify(item.miss)}`;
         const frozen = typeof item === "string" ? void 0 : item;
-        const address = frozen?.address ?? item;
+        const address2 = frozen?.address ?? item;
         const echo = frozen?.query === void 0 ? "" : `${JSON.stringify(frozen.query)}: `;
-        if (address.startsWith("F")) return echo + renderFactPreview(store.getFact(Number(address.slice(1))), fields2, options.itemBudget === null ? Infinity : options.itemBudget);
-        if (address.startsWith("T")) return echo + expand(address, frozen?.entryIds && { entryIds: frozen.entryIds, profile: frozen.profile });
-        const [id, commit] = address.slice(1).split("@").map(Number);
+        if (address2.startsWith("F")) return echo + renderFactPreview(store.getFact(Number(address2.slice(1))), fields2, options.itemBudget === null ? Infinity : options.itemBudget);
+        if (address2.startsWith("T")) return echo + expand(address2, frozen?.entryIds && { entryIds: frozen.entryIds, profile: frozen.profile });
+        const [id, commit] = address2.slice(1).split("@").map(Number);
         const knowledge = store.getKnowledge(id);
-        const hit = revision(address);
+        const hit = revision(address2);
         const status = selection.status(hit);
         const parents = (graphInput.parents.get(hit.id) ?? []).map((parent) => byCommit.get(parent)).filter(Boolean);
         return echo + renderKnowledgePreview(
@@ -7004,8 +7078,8 @@ function bindTools(store, read, supplied, metadata, consolidation, reads = /* @_
   if (context.kind === "manual") {
     if (store.getTurn(context.currentTurnId)?.sessionId !== session.id) throw new Error("current turn must belong to the calling session");
   } else if (context.kind === "noting") {
-    const parse6 = (address) => {
-      const m = /^S([1-9]\d*)\/T([1-9]\d*)$/.exec(address);
+    const parse6 = (address2) => {
+      const m = /^S([1-9]\d*)\/T([1-9]\d*)$/.exec(address2);
       if (!m || Number(m[1]) !== session.id) throw new Error("invalid frozen range");
       return Number(m[2]);
     };
@@ -7445,8 +7519,8 @@ function freezeNoting(store, input, config3, resultText = rawResultText, pending
 }
 function notingMaterial(frozen, config3, view, factLine, factTurns, history = Infinity, initial = { visible: noVisibility(), inheritedTokens: 0 }) {
   const { sessionId, entries, turns, knowledge, facts: applicable } = frozen;
-  const address = (id) => `S${sessionId}/T${id}`;
-  const range = { from: address(turns[0].turn.id), to: address(turns.at(-1).turn.id) };
+  const address2 = (id) => `S${sessionId}/T${id}`;
+  const range = { from: address2(turns[0].turn.id), to: address2(turns.at(-1).turn.id) };
   const readKnowledgeCommits = knowledge.map(({ knowledge: knowledge2, revision }) => ({ knowledgeId: knowledge2.id, commit: revision.id }));
   const supplied = entries.filter((entry) => !initial.visible.raw.has(entry.nativeId));
   const withheld = entries.length - supplied.length;
@@ -8230,9 +8304,9 @@ function TraceMemory(dbPath, runAgent, config3 = {}, resultText = rawResultText,
     }
     return owned;
   };
-  const prepareTrace = (address, display = {}, reads) => {
-    const target = address.trim(), flags = /^(?:S\d+\/)?T\d/.test(target) ? [] : target.split(/\s+/).slice(1);
-    const invalid = () => new Error(`invalid trace address: ${address}`);
+  const prepareTrace = (address2, display = {}, reads) => {
+    const target = address2.trim(), flags = /^(?:S\d+\/)?T\d/.test(target) ? [] : target.split(/\s+/).slice(1);
+    const invalid = () => new Error(`invalid trace address: ${address2}`);
     const itemCap = readProfile(display, display.profile ?? cfg.render).entryTokens;
     const knowledgeMatch = parseKnowledgeAddress(target);
     if (knowledgeMatch) {
@@ -8389,9 +8463,9 @@ relations retained by explicit Fact read; other endpoints not applicable on this
     if (selector2?.kind === "role") occurrences = occurrences.filter((entry) => entry.role === selector2.role);
     else if (selector2 && selector2.kind !== "facts") {
       const matches = (entry) => !!entry.blocks && sourceBlocks(entry).some((block2) => selector2.kind === "call" ? (block2.kind === "call" || block2.kind === "result") && block2.call.callId === selector2.id : selector2.kind === "text" ? block2.kind === "text" || block2.kind === "result" && resultHasText(entry) : block2.kind === "thinking");
-      if (parsed2.entries && occurrences.some((entry) => !matches(entry))) throw new Error(`content selector does not exist in every selected entry: ${address}`);
+      if (parsed2.entries && occurrences.some((entry) => !matches(entry))) throw new Error(`content selector does not exist in every selected entry: ${address2}`);
       occurrences = occurrences.filter(matches);
-      if (!occurrences.length && selector2.kind !== "text") throw new Error(`content selector does not exist: ${address}`);
+      if (!occurrences.length && selector2.kind !== "text") throw new Error(`content selector does not exist: ${address2}`);
     }
     const profile = readProfile(display, display.profile ?? cfg.render);
     const uncompressed = Object.values(profile).every((cap) => cap === Infinity);
@@ -12874,9 +12948,9 @@ var require_utils = __commonJS((exports2, module2) => {
       return { host, isIPV4: false };
     }
     const matches = host.match(IPV4_REG) || [];
-    const [address] = matches;
-    if (address) {
-      return { host: stripLeadingZeros(address, "."), isIPV4: true };
+    const [address2] = matches;
+    if (address2) {
+      return { host: stripLeadingZeros(address2, "."), isIPV4: true };
     } else {
       return { host, isIPV4: false };
     }
@@ -12899,7 +12973,7 @@ var require_utils = __commonJS((exports2, module2) => {
   function getIPV6(input) {
     let tokenCount = 0;
     const output = { error: false, address: "", zone: "" };
-    const address = [];
+    const address2 = [];
     const buffer = [];
     let isZone = false;
     let endipv6Encountered = false;
@@ -12909,7 +12983,7 @@ var require_utils = __commonJS((exports2, module2) => {
         if (isZone === false) {
           const hex3 = stringArrayToHexStripped(buffer);
           if (hex3 !== void 0) {
-            address.push(hex3);
+            address2.push(hex3);
           } else {
             output.error = true;
             return false;
@@ -12932,7 +13006,7 @@ var require_utils = __commonJS((exports2, module2) => {
           break;
         }
         tokenCount++;
-        address.push(":");
+        address2.push(":");
         if (tokenCount > 7) {
           output.error = true;
           break;
@@ -12955,12 +13029,12 @@ var require_utils = __commonJS((exports2, module2) => {
       if (isZone) {
         output.zone = buffer.join("");
       } else if (endIpv6) {
-        address.push(buffer.join(""));
+        address2.push(buffer.join(""));
       } else {
-        address.push(stringArrayToHexStripped(buffer));
+        address2.push(stringArrayToHexStripped(buffer));
       }
     }
-    output.address = address.join("");
+    output.address = address2.join("");
     return output;
   }
   function normalizeIPv6(host) {
@@ -23252,7 +23326,7 @@ var $ZodCIDRv6 = /* @__PURE__ */ $constructor("$ZodCIDRv6", (inst, def) => {
   def.pattern ?? (def.pattern = cidrv6);
   $ZodStringFormat.init(inst, def);
   inst._zod.check = (payload) => {
-    const [address, prefix] = payload.value.split("/");
+    const [address2, prefix] = payload.value.split("/");
     try {
       if (!prefix)
         throw new Error();
@@ -23261,7 +23335,7 @@ var $ZodCIDRv6 = /* @__PURE__ */ $constructor("$ZodCIDRv6", (inst, def) => {
         throw new Error();
       if (prefixNum < 0 || prefixNum > 128)
         throw new Error();
-      new URL(`http://[${address}]`);
+      new URL(`http://[${address2}]`);
     } catch {
       payload.issues.push({
         code: "invalid_format",
@@ -32609,7 +32683,7 @@ var $ZodCIDRv62 = /* @__PURE__ */ $constructor2("$ZodCIDRv6", (inst, def) => {
     try {
       if (parts.length !== 2)
         throw new Error();
-      const [address, prefix] = parts;
+      const [address2, prefix] = parts;
       if (!prefix)
         throw new Error();
       const prefixNum = Number(prefix);
@@ -32617,7 +32691,7 @@ var $ZodCIDRv62 = /* @__PURE__ */ $constructor2("$ZodCIDRv6", (inst, def) => {
         throw new Error();
       if (prefixNum < 0 || prefixNum > 128)
         throw new Error();
-      new URL(`http://[${address}]`);
+      new URL(`http://[${address2}]`);
     } catch {
       payload.issues.push({
         code: "invalid_format",
@@ -41505,7 +41579,7 @@ var databaseIdentity = (path) => {
 };
 var positiveId = (value) => Number.isSafeInteger(value) && Number(value) > 0;
 var object6 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
-var identityCount = (injection) => injection.knowledgeCommitIds.length + (injection.knowledgeStates ?? []).reduce((count, state) => count + 1 + state.toCommits.length, 0);
+var identityCount = (injection) => injection.knowledgeCommitIds.length + (injection.knowledgeStates ?? []).reduce((count, state) => count + 1 + state.toCommits.length, 0) + (injection.factIds?.length ?? 0) + (injection.entryIds?.length ?? 0);
 function encodeCcInjection(binding, injection) {
   const header = {
     d: binding.db,
@@ -41513,13 +41587,16 @@ function encodeCcInjection(binding, injection) {
     s: binding.coreSession,
     k: injection.knowledgeCommitIds,
     r: (injection.knowledgeStates ?? []).map(knowledgeStateKey),
-    h: digest(injection.text)
+    h: digest(injection.text),
+    ...injection.factIds === void 0 ? {} : { f: injection.factIds },
+    ...injection.entryIds === void 0 ? {} : { e: injection.entryIds },
+    ...injection.slice === void 0 ? {} : { p: injection.slice }
   };
   const framing = `${BEGIN}
 ${CC_INJECTION_HEADER}${JSON.stringify(header)}
 
 ${END}`;
-  const bound = 300 + 12 * identityCount(injection);
+  const bound = 300 + (injection.slice ? 16 : 0) + 12 * identityCount(injection);
   if (framing.length > bound) throw new Error(`CC injection envelope exceeds its ${bound}-character host framing bound`);
   return `${BEGIN}
 ${CC_INJECTION_HEADER}${JSON.stringify(header)}
@@ -41539,7 +41616,8 @@ ${CC_INJECTION_HEADER}`;
   } catch {
     return null;
   }
-  if (!object6(parsed2) || Object.keys(parsed2).sort().join(",") !== "d,h,k,n,r,s" || typeof parsed2.d !== "string" || typeof parsed2.n !== "string" || !(parsed2.s === null || positiveId(parsed2.s)) || typeof parsed2.h !== "string" || !/^[0-9a-f]{64}$/.test(parsed2.h) || !Array.isArray(parsed2.k) || !parsed2.k.every(positiveId) || new Set(parsed2.k).size !== parsed2.k.length || !Array.isArray(parsed2.r) || !parsed2.r.every((value) => typeof value === "string" && /^[1-9]\d*>[1-9]\d*(?:,[1-9]\d*)*$/.test(value))) return null;
+  const keys = object6(parsed2) ? Object.keys(parsed2).sort().join(",") : "";
+  if (!object6(parsed2) || keys !== "d,h,k,n,r,s" && keys !== "d,e,f,h,k,n,r,s" && keys !== "d,e,f,h,k,n,p,r,s" || typeof parsed2.d !== "string" || typeof parsed2.n !== "string" || !(parsed2.s === null || positiveId(parsed2.s)) || typeof parsed2.h !== "string" || !/^[0-9a-f]{64}$/.test(parsed2.h) || !Array.isArray(parsed2.k) || !parsed2.k.every(positiveId) || new Set(parsed2.k).size !== parsed2.k.length || keys !== "d,h,k,n,r,s" && (!Array.isArray(parsed2.f) || !parsed2.f.every(positiveId) || new Set(parsed2.f).size !== parsed2.f.length || !Array.isArray(parsed2.e) || !parsed2.e.every(positiveId) || new Set(parsed2.e).size !== parsed2.e.length) || keys === "d,e,f,h,k,n,p,r,s" && (!Array.isArray(parsed2.p) || parsed2.p.length !== 2 || !Number.isSafeInteger(parsed2.p[0]) || parsed2.p[0] < 0 || parsed2.p[0] >= parsed2.p[1] || parsed2.p[1] !== 24) || !Array.isArray(parsed2.r) || !parsed2.r.every((value) => typeof value === "string" && /^[1-9]\d*>[1-9]\d*(?:,[1-9]\d*)*$/.test(value))) return null;
   const states = parsed2.r.map((value) => {
     const [from, to] = value.split(">");
     return { fromCommit: Number(from), toCommits: to.split(",").map(Number) };
@@ -41547,7 +41625,17 @@ ${CC_INJECTION_HEADER}`;
   if (!states.every((state) => positiveId(state.fromCommit) && state.toCommits.every(positiveId))) return null;
   if (parsed2.d !== binding.db || parsed2.n !== binding.nativeSession) return null;
   if (!(parsed2.s === binding.coreSession || parsed2.s === null && binding.coreSession !== null)) return null;
-  return { db: parsed2.d, native: parsed2.n, core: parsed2.s, commits: parsed2.k, states, sha256: parsed2.h };
+  return {
+    db: parsed2.d,
+    native: parsed2.n,
+    core: parsed2.s,
+    commits: parsed2.k,
+    states,
+    factIds: keys !== "d,h,k,n,r,s" ? parsed2.f : [],
+    entryIds: keys !== "d,h,k,n,r,s" ? parsed2.e : [],
+    slice: keys === "d,e,f,h,k,n,p,r,s" ? parsed2.p : null,
+    sha256: parsed2.h
+  };
 }
 function decodeCcInjection(content, binding) {
   const header = decodeCcInjectionHeader(content, binding), suffix = `
@@ -41729,6 +41817,29 @@ async function lockedInjectionBinding(config3, nativeSessionId, transcriptPath, 
     return { ...current, projectId: project.id };
   });
 }
+async function ccPrepareSessionStartInjection(config3, input) {
+  const initial = readBinding(config3, input.session_id);
+  if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
+  const memory = TraceMemory(
+    config3.dbPath,
+    async () => {
+      throw new Error("CC injection Hook cannot run model work");
+    },
+    config3.coreConfig,
+    void 0,
+    (entry) => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : void 0
+  );
+  try {
+    const binding = await lockedInjectionBinding(config3, initial.nativeSessionId, initial.transcriptPath, memory);
+    if (!enabled(binding, memory)) return;
+    const projection = new CcProjection(config3, binding, memory);
+    const projected = await projection.synchronize();
+    if (projected.state === "not-ready")
+      throw new Error(projected.problems.join("; ") || "native source projection is not ready");
+  } finally {
+    memory.store.close();
+  }
+}
 async function ccSessionStartInjection(config3, input) {
   const output = await prepareSessionStartInjection(config3, input);
   await updateBinding(config3, input.session_id, (current) => {
@@ -41738,7 +41849,51 @@ async function ccSessionStartInjection(config3, input) {
   });
   return output;
 }
-async function prepareSessionStartInjection(config3, input) {
+async function ccPreparedSessionStartInjection(config3, input) {
+  let snapshot2;
+  const output = await prepareSessionStartInjection(config3, input, true, (db, binding) => {
+    const watermarks = db.prepare(`SELECT
+      (SELECT IFNULL(MAX(id),0) FROM facts) f,
+      (SELECT IFNULL(MAX(rowid),0) FROM consolidated_facts) cf,
+      (SELECT IFNULL(MAX(rowid),0) FROM noted_entries) ne,
+      (SELECT IFNULL(MAX(id),0) FROM knowledge_revisions) kr,
+      (SELECT IFNULL(MAX(rowid),0) FROM knowledge_processed) kp,
+      (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) pa,
+      (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) pm,
+      (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id=1) bp,
+      (SELECT IFNULL(MAX(version),0) FROM session_lineage_cursors) cv,
+      (SELECT IFNULL(MAX(version),0) FROM source_paths) sv`).get();
+    const owner = binding.coreSessionId ? db.prepare(`SELECT project_id, enrollment_default, enrollment_choice
+      FROM sessions WHERE id=?`).get(binding.coreSessionId) : null;
+    const header = binding.coreSessionId && binding.branch ? db.prepare(`SELECT length, tail_entry_id, version, hwm_entry_id
+      FROM source_paths WHERE session_id=? AND branch=?`).get(binding.coreSessionId, binding.branch) : null;
+    const cursor = binding.coreSessionId ? db.prepare(`SELECT branch, head_turn_id, version FROM session_lineage_cursors
+      WHERE session_id=? AND lineage=?`).get(binding.coreSessionId, input.session_id) : null;
+    const own = {
+      coreSessionId: binding.coreSessionId,
+      projectId: binding.projectId,
+      enrollment: binding.enrollment,
+      branch: binding.branch,
+      selectedLeafUuid: binding.selectedLeafUuid,
+      nativeProcess: binding.nativeProcess,
+      lastClose: binding.lastClose,
+      clearedFrom: binding.clearedFrom && {
+        nativeSessionId: binding.clearedFrom.nativeSessionId,
+        compactionTurnId: binding.clearedFrom.compactionTurnId,
+        at: binding.clearedFrom.at,
+        inheritedLength: binding.clearedFrom.inheritedEntryIds.length,
+        inheritedTail: binding.clearedFrom.inheritedEntryIds.at(-1) ?? null
+      },
+      transcriptPath: binding.transcriptPath,
+      dbPath: binding.dbPath,
+      cwd: binding.cwd
+    };
+    snapshot2 = { watermarks, owner, header, cursor, own };
+  });
+  if (!snapshot2 && output) throw new Error("prepared SessionStart did not capture its input snapshot");
+  return { output, snapshot: snapshot2 ?? null };
+}
+async function prepareSessionStartInjection(config3, input, prepared = false, onSnapshot) {
   if (!input.source || !["startup", "resume", "clear", "compact"].includes(input.source))
     throw new Error("SessionStart source must be startup, resume, clear or compact");
   const initial = readBinding(config3, input.session_id);
@@ -41753,14 +41908,23 @@ async function prepareSessionStartInjection(config3, input) {
     (entry) => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : void 0
   );
   try {
-    let binding = await lockedInjectionBinding(config3, initial.nativeSessionId, initial.transcriptPath, memory);
-    if (!enabled(binding, memory)) return null;
-    const projection = new CcProjection(config3, binding, memory);
-    const projected = await projection.synchronize();
-    binding = projection.currentBinding();
-    if (projected.state === "disabled") return null;
-    if (projected.state === "not-ready")
-      throw new Error(projected.problems.join("; ") || "native source projection is not ready");
+    let binding = prepared ? initial : await lockedInjectionBinding(config3, initial.nativeSessionId, initial.transcriptPath, memory);
+    if (prepared) {
+      memory.store.db.exec("BEGIN");
+      onSnapshot?.(memory.store.db, binding);
+    }
+    if (!enabled(binding, memory)) {
+      if (prepared) memory.store.db.exec("COMMIT");
+      return null;
+    }
+    if (!prepared) {
+      const projection = new CcProjection(config3, binding, memory);
+      const projected = await projection.synchronize();
+      binding = projection.currentBinding();
+      if (projected.state === "disabled") return null;
+      if (projected.state === "not-ready")
+        throw new Error(projected.problems.join("; ") || "native source projection is not ready");
+    }
     const snapshot2 = readCompleteTranscript(binding.transcriptPath);
     if (snapshot2.problem || snapshot2.incompleteBytes)
       throw new Error(snapshot2.problem ?? `native transcript has ${snapshot2.incompleteBytes} incomplete trailing bytes`);
@@ -41786,13 +41950,87 @@ async function prepareSessionStartInjection(config3, input) {
     }
     const visibleBinding = { db: databaseIdentity(config3.dbPath), nativeSession: binding.nativeSessionId, coreSession: core };
     const visible = input.source === "compact" ? noVisibility() : ccVisibleView(snapshot2.records, visibleBinding);
-    const injection = memory.injection(target, visible);
+    const injection = memory.injection(target, visible, true);
+    if (prepared) memory.store.db.exec("COMMIT");
     if (!injection.text) return null;
     const additionalContext = encodeCcInjection(visibleBinding, injection);
-    return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } };
+    return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext }, transportItems: injection.transportItems };
   } finally {
     memory.store.close();
   }
+}
+
+// src/hosts/cc/slices.ts
+var CC_SLICE_COUNT = 24;
+var CC_SLICE_LIMIT = 1e4;
+var address = (item) => item.kind === "knowledge" ? item.address : item.kind === "fact" ? `F${item.factId}` : item.kind === "raw" ? item.address : item.kind === "state" ? `K@${item.receipt.fromCommit}` : "";
+function sliceCcInjection(binding, items2, warning) {
+  const slots = Array.from({ length: CC_SLICE_COUNT }, () => ({ body: [], items: [] }));
+  const omitted = [];
+  let pendingRaw = 0, pendingFacts = 0, pendingFactTokens = 0;
+  const omit3 = (item) => {
+    omitted.push(address(item));
+    if (item.kind === "raw" && item.pending) pendingRaw++;
+    if (item.kind === "fact" && item.pending) {
+      pendingFacts++;
+      pendingFactTokens += tokens(item.text);
+    }
+  };
+  const rank = (item) => item.kind === "state" ? 0 : item.kind === "knowledge" ? 1 : item.kind === "raw" ? 2 : item.kind === "fact" ? 3 : 4;
+  const ordered = [...items2].sort((a, b) => rank(a) - rank(b) || (a.kind === "knowledge" && b.kind === "knowledge" ? b.commitId - a.commitId : 0));
+  const encode3 = (texts, members, index) => encodeCcInjection(binding, {
+    text: texts.join("\n\n"),
+    knowledgeCommitIds: members.flatMap((item) => item.kind === "knowledge" ? [item.commitId] : []),
+    knowledgeStates: members.flatMap((item) => item.kind === "state" ? [item.receipt] : []),
+    factIds: members.flatMap((item) => item.kind === "fact" ? [item.factId] : []),
+    entryIds: members.flatMap((item) => item.kind === "raw" ? [item.entryId] : []),
+    slice: [index, CC_SLICE_COUNT]
+  });
+  const tryPlace = (item) => {
+    const text = transportItemText(item);
+    for (let index = 0; index < slots.length; index++) {
+      const slot = slots[index];
+      const next = [...slot.body, text], members = [...slot.items, item];
+      if (encode3(next, members, index).length <= CC_SLICE_LIMIT) {
+        slot.body = next;
+        slot.items = members;
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const item of ordered.filter((item2) => item2.kind === "receipt")) {
+    if (tryPlace(item)) continue;
+    const count = item.text.match(/omitted (\d+)/)?.[1];
+    const expansion = item.text.split("expand: ")[1];
+    const addresses = expansion?.match(/(?:K\d+(?:@\d+)?|F\d+|T\d+#E\d+)/g) ?? [];
+    const compact = { kind: "receipt", text: `omitted ${count ?? "1"} ${count ? "items" : "receipt"}; expand: ${expandList(addresses)}` };
+    if (!addresses.length || !tryPlace(compact)) throw new Error("CC core omission receipt has no usable expansion address");
+  }
+  for (const item of ordered.filter((item2) => item2.kind !== "receipt")) if (!tryPlace(item)) omit3(item);
+  if (omitted.length) {
+    const receipt = { kind: "receipt", text: "" };
+    while (true) {
+      receipt.text = `omitted ${omitted.length} whole items at CC inline capacity; expand: ${expandList(omitted)}`;
+      if (tryPlace(receipt)) break;
+      const retained = [...ordered].reverse().find((item) => item.kind !== "receipt" && slots.some((slot2) => slot2.items.includes(item)));
+      if (!retained) throw new Error("CC inline envelope cannot carry its omission receipt");
+      const slot = slots.find((slot2) => slot2.items.includes(retained));
+      const position = slot.items.indexOf(retained);
+      slot.items.splice(position, 1);
+      slot.body.splice(position, 1);
+      omit3(retained);
+    }
+  }
+  const transportWarning = pendingRaw || pendingFacts ? `Trace Memory: inline transport omitted ${[
+    ...pendingRaw ? [`${pendingRaw} pending Raw ${pendingRaw === 1 ? "entry" : "entries"}`] : [],
+    ...pendingFacts ? [`${pendingFacts} unconsolidated ${pendingFacts === 1 ? "fact" : "facts"} (${pendingFactTokens} tokens)`] : []
+  ].join(" and ")}; they remain pending for Noting and Consolidation.` : "";
+  const notice = [warning, transportWarning].filter(Boolean).join(" ");
+  return slots.map((slot, index) => slot.body.length || index === 0 && notice ? {
+    hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: slot.body.length ? encode3(slot.body, slot.items, index) : "" },
+    ...index === 0 && notice ? { systemMessage: notice } : {}
+  } : null);
 }
 
 // src/hosts/cc/operator.ts
@@ -41847,6 +42085,8 @@ async function declareCcProject(config3, nativeSessionId, name) {
 }
 
 // src/hosts/cc/clear.ts
+var import_node_fs10 = require("node:fs");
+var import_node_path9 = require("node:path");
 async function ccHandleClear(config3, input) {
   const pid = parsePid(process.env.CLAUDE_PID);
   if (pid === null) return { handled: false };
@@ -41863,6 +42103,32 @@ async function ccHandleClear(config3, input) {
     await updateBinding(config3, childId, (current) => current && current.coreSessionId === null ? { ...current, projectId: parentBinding.projectId, enrollment: parentBinding.enrollment } : current);
     return { handled: true, output: await ccSessionStartInjection(config3, input) };
   }
+  return withCcBindingLock(config3, childId, (locked) => prepareBoundClear(
+    config3,
+    input,
+    parentBinding,
+    childId,
+    createdAt,
+    nativeProcess,
+    locked
+  ), 55e3);
+}
+async function prepareBoundClear(config3, input, parentBinding, childId, createdAt, nativeProcess, locked) {
+  const existing = locked.read();
+  const staged = (0, import_node_path9.join)(config3.stateDir, "session-start", `${childId}.clear.json`);
+  if (existing?.clearedFrom) {
+    let output;
+    try {
+      output = JSON.parse((0, import_node_fs10.readFileSync)(staged, "utf8"));
+    } catch {
+      throw new Error(`clear child ${childId} has no frozen compaction carrier`);
+    }
+    if (existing.dbPath !== config3.dbPath || existing.transcriptPath !== input.transcript_path)
+      throw new Error("clear child binding disagrees with configured database or transcript");
+    locked.update((current) => renewNativeBinding(current, nativeProcess));
+    return { handled: true, output };
+  }
+  if (existing) throw new Error(`clear child ${childId} is already bound without a frozen compaction`);
   const memory = TraceMemory(
     config3.dbPath,
     async () => {
@@ -41882,7 +42148,7 @@ async function ccHandleClear(config3, input) {
     const core = synced.coreSessionId;
     const at = (/* @__PURE__ */ new Date()).toISOString();
     const linkChild = async (clearedFrom, lastCompactionNotice) => {
-      await withCcBindingLock(config3, childId, (locked) => locked.update((current) => {
+      locked.update((current) => {
         if (current) {
           if (current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
             throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
@@ -41909,11 +42175,12 @@ async function ccHandleClear(config3, input) {
           clearedFrom,
           lastCompactionNotice
         };
-      }));
+      });
       await updateBinding(config3, synced.nativeSessionId, (current) => current && current.transcriptPath === synced.transcriptPath ? { ...current, clearedInto: { nativeSessionId: childId, at } } : current);
     };
     if (!memory.store.enabled(core)) {
       const inheritedEntryIds2 = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
+      publishFrozenClear(staged, null);
       await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: null, inheritedEntryIds: inheritedEntryIds2 }, null);
       return { handled: true, output: null };
     }
@@ -41922,9 +42189,15 @@ async function ccHandleClear(config3, input) {
     const nativeTurn = memory.store.findNativeTurn(core, synced.nativeSessionId, synced.selectedLeafUuid);
     const headTurnId = entry?.turnId ?? nativeTurn?.turnId;
     if (!headTurnId) throw new Error("parent Claude Code selected native source has no persisted core Turn");
-    const compacted = memory.compact(core, synced.branch, headTurnId);
+    const compacted = memory.compact(core, synced.branch, headTurnId, [], true);
     if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation unexpectedly: ${compacted.reason}`);
-    const injection = { text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, composition: compacted.composition };
+    const injection = {
+      text: compacted.text,
+      knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
+      factIds: compacted.supplied.factIds,
+      entryIds: compacted.supplied.entries.map((entry2) => entry2.id),
+      composition: compacted.composition
+    };
     const omitted = compacted.truncated;
     const systemMessage = omitted ? `Trace Memory: compaction omitted ${[
       ...omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : [],
@@ -41933,8 +42206,10 @@ async function ccHandleClear(config3, input) {
     const visibleBinding = { db: databaseIdentity(config3.dbPath), nativeSession: childId, coreSession: core };
     const output = injection.text ? {
       hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },
+      transportItems: compacted.transportItems,
       ...systemMessage ? { systemMessage } : {}
     } : systemMessage ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }, systemMessage } : null;
+    publishFrozenClear(staged, output);
     const turn = memory.store.appendTurn({
       sessionId: core,
       parentTurnId: headTurnId,
@@ -41950,10 +42225,28 @@ async function ccHandleClear(config3, input) {
     memory.store.close();
   }
 }
+function readPreparedClear(config3, input) {
+  const binding = readBinding(config3, validateNativeSessionId(input.session_id));
+  if (!binding?.clearedFrom || binding.dbPath !== config3.dbPath || binding.transcriptPath !== input.transcript_path)
+    throw new Error("prepared clear binding is unavailable or changed");
+  const staged = (0, import_node_path9.join)(config3.stateDir, "session-start", `${input.session_id}.clear.json`);
+  try {
+    return JSON.parse((0, import_node_fs10.readFileSync)(staged, "utf8"));
+  } catch {
+    throw new Error(`clear child ${input.session_id} has no frozen compaction carrier`);
+  }
+}
+function publishFrozenClear(path, output) {
+  if ((0, import_node_fs10.existsSync)(path)) throw new Error(`frozen clear carrier already exists at ${path}; refusing to repeat compaction`);
+  (0, import_node_fs10.mkdirSync)((0, import_node_path9.dirname)(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  (0, import_node_fs10.writeFileSync)(temporary, JSON.stringify(output), { flag: "wx", mode: 384 });
+  (0, import_node_fs10.renameSync)(temporary, path);
+}
 
 // src/hosts/cc/menu-context.ts
-var import_node_fs10 = require("node:fs");
-var import_node_path9 = require("node:path");
+var import_node_fs11 = require("node:fs");
+var import_node_path10 = require("node:path");
 
 // node_modules/@earendil-works/pi-tui/dist/terminal-image.js
 function getPngDimensions(base64Data) {
@@ -42140,12 +42433,12 @@ function carrier(text, identity) {
     return { retained: payload, offset: HOOK_CONTEXT.length };
   }
   const preview = /^<persisted-output>\n[^\n]*Full output saved to: ([^\n]+)\n\nPreview \(first 2KB\):\n([\s\S]+)\n\.\.\.\n<\/persisted-output>$/.exec(payload);
-  if (!preview || !(0, import_node_path9.isAbsolute)(preview[1])) throw new Error("malformed native memory preview");
+  if (!preview || !(0, import_node_path10.isAbsolute)(preview[1])) throw new Error("malformed native memory preview");
   const retained = preview[2], header = decodeCcInjectionHeader(retained, identity);
   if (!header) throw new Error("memory preview failed identity verification");
   let full;
   try {
-    full = (0, import_node_fs10.readFileSync)(preview[1], "utf8");
+    full = (0, import_node_fs11.readFileSync)(preview[1], "utf8");
   } catch (error3) {
     if (error3.code !== "ENOENT") throw error3;
   }
@@ -42339,8 +42632,8 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
 }
 
 // src/hosts/cc/menu-config.ts
-var import_node_fs11 = require("node:fs");
-var import_node_path10 = require("node:path");
+var import_node_fs12 = require("node:fs");
+var import_node_path11 = require("node:path");
 var import_node_crypto14 = require("node:crypto");
 
 // node_modules/jsonc-parser/lib/esm/impl/scanner.js
@@ -43718,25 +44011,25 @@ function editedCcConfig(text, id, value, capacity) {
 }
 function saveCcConfig(path, original, updated) {
   const next = resolveCcHostConfig(JSON.parse(updated));
-  if ((0, import_node_fs11.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
+  if ((0, import_node_fs12.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
   const temporary = `${path}.${process.pid}.${(0, import_node_crypto14.randomUUID)()}`;
   let fd;
   try {
-    fd = (0, import_node_fs11.openSync)(temporary, "wx", 384);
-    (0, import_node_fs11.writeFileSync)(fd, updated);
-    (0, import_node_fs11.fsyncSync)(fd);
-    (0, import_node_fs11.closeSync)(fd);
+    fd = (0, import_node_fs12.openSync)(temporary, "wx", 384);
+    (0, import_node_fs12.writeFileSync)(fd, updated);
+    (0, import_node_fs12.fsyncSync)(fd);
+    (0, import_node_fs12.closeSync)(fd);
     fd = void 0;
-    (0, import_node_fs11.renameSync)(temporary, path);
-    const dir = (0, import_node_fs11.openSync)((0, import_node_path10.dirname)(path), "r");
+    (0, import_node_fs12.renameSync)(temporary, path);
+    const dir = (0, import_node_fs12.openSync)((0, import_node_path11.dirname)(path), "r");
     try {
-      (0, import_node_fs11.fsyncSync)(dir);
+      (0, import_node_fs12.fsyncSync)(dir);
     } finally {
-      (0, import_node_fs11.closeSync)(dir);
+      (0, import_node_fs12.closeSync)(dir);
     }
   } catch (error3) {
-    if (fd !== void 0) (0, import_node_fs11.closeSync)(fd);
-    (0, import_node_fs11.rmSync)(temporary, { force: true });
+    if (fd !== void 0) (0, import_node_fs12.closeSync)(fd);
+    (0, import_node_fs12.rmSync)(temporary, { force: true });
     throw error3;
   }
   return next;
@@ -43809,7 +44102,7 @@ var TRACE_SETTINGS_FIXTURE_CC = {
 };
 
 // src/hosts/cc/index.ts
-async function handleCcHook(configInput, input) {
+async function handleCcHook(configInput, input, prepareOnly = false) {
   const config3 = resolveCcHostConfig(configInput);
   validateNativeSessionId(input.session_id);
   if (input.hook_event_name === "SessionStart") {
@@ -43830,6 +44123,10 @@ async function handleCcHook(configInput, input) {
     const snapshot2 = readCompleteTranscript(input.transcript_path);
     await recordSessionStart(config3, input, snapshot2.exists && !snapshot2.problem ? nativeCreatedAt(snapshot2.records) : null);
     publish();
+    if (prepareOnly) {
+      await ccPrepareSessionStartInjection(config3, input);
+      return null;
+    }
     return ccSessionStartInjection(config3, input);
   }
   if (input.hook_event_name !== "SessionEnd") throw new Error(`unsupported Claude Code Hook ${String(input.hook_event_name)}`);
@@ -43839,13 +44136,13 @@ async function handleCcHook(configInput, input) {
 }
 async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID) {
   const config3 = resolveCcHostConfig(configInput), sessionId = validateNativeSessionId(nativeSessionId);
-  const runtimeDirectory = (0, import_node_path11.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path11.join)(runtimeDirectory, `${sessionId}.jsonl`);
-  (0, import_node_fs12.mkdirSync)(runtimeDirectory, { recursive: true });
+  const runtimeDirectory = (0, import_node_path12.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path12.join)(runtimeDirectory, `${sessionId}.jsonl`);
+  (0, import_node_fs13.mkdirSync)(runtimeDirectory, { recursive: true });
   const runtimeEvent = (event, details = {}) => {
     const value = { event, at: Date.now(), pid: process.pid, ...details };
     console.error(`Trace Memory CC: lifecycle ${JSON.stringify(value)}`);
     try {
-      (0, import_node_fs12.appendFileSync)(runtimePath, `${JSON.stringify(value)}
+      (0, import_node_fs13.appendFileSync)(runtimePath, `${JSON.stringify(value)}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -43855,7 +44152,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
   const coordinator = new CcCoordinator(config3, sessionId, (message) => {
     console.error(`Trace Memory CC: ${message}`);
     try {
-      (0, import_node_fs12.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
+      (0, import_node_fs13.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -43973,7 +44270,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
 }
 function readConfig(path) {
   if (!path.startsWith("/")) throw new Error("CC configuration path must be absolute");
-  return resolveCcHostConfig(JSON.parse((0, import_node_fs12.readFileSync)(path, "utf8")));
+  return resolveCcHostConfig(JSON.parse((0, import_node_fs13.readFileSync)(path, "utf8")));
 }
 async function readStdin() {
   let input = "";
@@ -43983,16 +44280,49 @@ async function readStdin() {
 }
 async function runCcCommand(argv = process.argv.slice(2)) {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if (command !== "mcp" && command !== "hook" && command !== "cli" || configFlag !== "--config" || !configPath)
+  if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "cli" || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
   const config3 = readConfig(configPath);
   if (command === "mcp") {
     await runCcStdioMcp(config3);
     return;
   }
-  if (command === "hook") {
-    const output = await handleCcHook(config3, JSON.parse(await readStdin()));
-    if (output) process.stdout.write(`${JSON.stringify(output)}
+  if (command === "hook" || command === "hook-prepare" || command === "hook-slices") {
+    const input = JSON.parse(await readStdin());
+    const selected = command === "hook-slices" && !(input.source === "clear" && readBinding(config3, input.session_id)?.clearedFrom) ? await ccPreparedSessionStartInjection(config3, input) : null;
+    const output = command === "hook-slices" ? selected ? selected.output : readPreparedClear(config3, input) : await handleCcHook(config3, input, command === "hook-prepare");
+    if (command === "hook-prepare") return;
+    if (command === "hook") {
+      if (output) {
+        const { transportItems: _, ...native } = output;
+        process.stdout.write(`${JSON.stringify(native)}
+`);
+      }
+      return;
+    }
+    if (input.hook_event_name !== "SessionStart") throw new Error("hook-slices requires SessionStart");
+    if (output?.hookSpecificOutput.additionalContext && !output.transportItems)
+      throw new Error("CC SessionStart has no structured transport material");
+    const bound = readBinding(config3, input.session_id);
+    if (!bound) throw new Error("CC SessionStart has no binding after preparation");
+    const slices = sliceCcInjection({
+      db: databaseIdentity(config3.dbPath),
+      nativeSession: input.session_id,
+      coreSession: bound.coreSessionId
+    }, output?.transportItems ?? [], output?.systemMessage);
+    if (input.source !== "clear" && bound.lastCompactionNotice || input.source === "clear" && bound.clearedFrom && slices[0]?.systemMessage !== bound.lastCompactionNotice) {
+      await updateBinding(config3, input.session_id, (current) => {
+        if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
+          throw new Error("CC binding changed before transport warning was recorded");
+        return { ...current, lastCompactionNotice: input.source === "clear" ? slices[0]?.systemMessage ?? null : null };
+      });
+    }
+    const selection = (0, import_node_crypto15.createHash)("sha256").update(JSON.stringify({
+      material: output?.transportItems ?? [],
+      warning: output?.systemMessage ?? null,
+      frozenClear: input.source === "clear" && bound.clearedFrom ? bound.clearedFrom.compactionTurnId : null
+    })).digest("hex");
+    process.stdout.write(`${JSON.stringify({ selection, snapshot: selected?.snapshot ?? null, slices })}
 `);
     return;
   }
@@ -44047,7 +44377,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
     } finally {
       store.close();
     }
-    const original = (0, import_node_fs12.readFileSync)(configPath, "utf8");
+    const original = (0, import_node_fs13.readFileSync)(configPath, "utf8");
     const updated = editedCcConfig(original, id, value, capacity);
     const prepared = resolveCcHostConfig(JSON.parse(updated));
     if (prepared.dbPath !== config3.dbPath || prepared.stateDir !== config3.stateDir) throw new Error("setting cannot change database or state directory");
@@ -44073,7 +44403,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify(result)}
 `);
 }
-var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path11.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
+var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path12.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
 if (direct) void runCcCommand().catch((error3) => {
   console.error(`Trace Memory CC: ${error3 instanceof Error ? error3.message : String(error3)}`);
   process.exitCode = 1;

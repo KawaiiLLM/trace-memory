@@ -1,16 +1,17 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
-import { assertOperatorBinding, readBinding, recordSessionStart, validateNativeSessionId, type CcHookInput } from "./binding.ts";
+import { assertOperatorBinding, readBinding, recordSessionStart, updateBinding, validateNativeSessionId, type CcHookInput } from "./binding.ts";
 import { nativeCreatedAt, readCompleteTranscript } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
-import { ccSessionStartInjection, databaseIdentity, type CcHookOutput } from "./injection.ts";
+import { ccPrepareSessionStartInjection, ccPreparedSessionStartInjection, ccSessionStartInjection, databaseIdentity, type CcHookOutput } from "./injection.ts";
 import { sliceCcInjection } from "./slices.ts";
 import { declareCcProject, operateCcSession } from "./operator.ts";
 import { followNativeSession, processAncestors, publishNativeSession, type CcNativeSessionFollower } from "./native-session.ts";
-import { ccHandleClear } from "./clear.ts";
+import { ccHandleClear, readPreparedClear } from "./clear.ts";
 import { installCcNativeRejectionGuard } from "./native-rejection.ts";
 import { readCcMenu, readCcRuns } from "./menu.ts";
 import type { CcContextSnapshot } from "./menu-context.ts";
@@ -33,7 +34,8 @@ export * from "./operator.ts";
 export * from "./native-session.ts";
 export * from "./clear.ts";
 
-export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostConfig, input: CcHookInput): Promise<CcHookOutput | null> {
+export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostConfig, input: CcHookInput,
+  prepareOnly = false): Promise<CcHookOutput | null> {
   const config = resolveCcHostConfig(configInput);
   validateNativeSessionId(input.session_id);
   if (input.hook_event_name === "SessionStart") {
@@ -49,6 +51,7 @@ export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostCon
     const snapshot = readCompleteTranscript(input.transcript_path);
     await recordSessionStart(config, input, snapshot.exists && !snapshot.problem ? nativeCreatedAt(snapshot.records) : null);
     publish();
+    if (prepareOnly) { await ccPrepareSessionStartInjection(config, input); return null; }
     return ccSessionStartInjection(config, input);
   }
   if (input.hook_event_name !== "SessionEnd") throw new Error(`unsupported Claude Code Hook ${String(input.hook_event_name)}`);
@@ -176,13 +179,17 @@ async function readStdin(): Promise<string> {
 
 export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if ((command !== "mcp" && command !== "hook" && command !== "hook-slices" && command !== "cli") || configFlag !== "--config" || !configPath)
+  if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "cli") || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config); return; }
-  if (command === "hook" || command === "hook-slices") {
+  if (command === "hook" || command === "hook-prepare" || command === "hook-slices") {
     const input = JSON.parse(await readStdin()) as CcHookInput;
-    const output = await handleCcHook(config, input);
+    const selected = command === "hook-slices" && !(input.source === "clear" && readBinding(config, input.session_id)?.clearedFrom)
+      ? await ccPreparedSessionStartInjection(config, input) : null;
+    const output = command === "hook-slices" ? selected ? selected.output : readPreparedClear(config, input)
+      : await handleCcHook(config, input, command === "hook-prepare");
+    if (command === "hook-prepare") return;
     if (command === "hook") {
       if (output) { const { transportItems: _, ...native } = output; process.stdout.write(`${JSON.stringify(native)}\n`); }
       return;
@@ -194,7 +201,18 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
     if (!bound) throw new Error("CC SessionStart has no binding after preparation");
     const slices = sliceCcInjection({ db: databaseIdentity(config.dbPath), nativeSession: input.session_id,
       coreSession: bound.coreSessionId }, output?.transportItems ?? [], output?.systemMessage);
-    process.stdout.write(`${JSON.stringify(slices)}\n`);
+    if (input.source !== "clear" && bound.lastCompactionNotice || input.source === "clear" && bound.clearedFrom &&
+      slices[0]?.systemMessage !== bound.lastCompactionNotice) {
+      await updateBinding(config, input.session_id, current => {
+        if (!current || current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path)
+          throw new Error("CC binding changed before transport warning was recorded");
+        return { ...current, lastCompactionNotice: input.source === "clear" ? slices[0]?.systemMessage ?? null : null };
+      });
+    }
+    const selection = createHash("sha256").update(JSON.stringify({ material: output?.transportItems ?? [],
+      warning: output?.systemMessage ?? null, frozenClear: input.source === "clear" && bound.clearedFrom
+        ? bound.clearedFrom.compactionTurnId : null })).digest("hex");
+    process.stdout.write(`${JSON.stringify({ selection, snapshot: selected?.snapshot ?? null, slices })}\n`);
     return;
   }
   if (sessionFlag !== "--session" || !nativeSessionId || !verb)

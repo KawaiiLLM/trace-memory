@@ -143,6 +143,15 @@ async function prepareBoundClear(config: ResolvedCcHostConfig, input: CcHookInpu
   }
 }
 
+export function readPreparedClear(config: ResolvedCcHostConfig, input: CcHookInput): CcHookOutput | null {
+  const binding = readBinding(config, validateNativeSessionId(input.session_id));
+  if (!binding?.clearedFrom || binding.dbPath !== config.dbPath || binding.transcriptPath !== input.transcript_path)
+    throw new Error("prepared clear binding is unavailable or changed");
+  const staged = join(config.stateDir, "session-start", `${input.session_id}.clear.json`);
+  try { return JSON.parse(readFileSync(staged, "utf8")) as CcHookOutput | null; }
+  catch { throw new Error(`clear child ${input.session_id} has no frozen compaction carrier`); }
+}
+
 function publishFrozenClear(path: string, output: CcHookOutput | null): void {
   if (existsSync(path)) throw new Error(`frozen clear carrier already exists at ${path}; refusing to repeat compaction`);
   mkdirSync(dirname(path), { recursive: true });

@@ -23,11 +23,10 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     if (item.kind === "raw" && item.pending) pendingRaw++;
     if (item.kind === "fact" && item.pending) { pendingFacts++; pendingFactTokens += tokens(item.text); }
   };
-  const ordered = [...items].sort((a, b) => {
-    const rank = (item: TransportItem): number => item.kind === "state" ? 0 : item.kind === "knowledge" ? 1
-      : item.kind === "raw" ? 2 : item.kind === "fact" ? 3 : 4;
-    return rank(a) - rank(b) || (a.kind === "knowledge" && b.kind === "knowledge" ? b.commitId - a.commitId : 0);
-  });
+  const rank = (item: TransportItem): number => item.kind === "state" ? 0 : item.kind === "knowledge" ? 1
+    : item.kind === "raw" ? 2 : item.kind === "fact" ? 3 : 4;
+  const ordered = [...items].sort((a, b) => rank(a) - rank(b) ||
+    (a.kind === "knowledge" && b.kind === "knowledge" ? b.commitId - a.commitId : 0));
   const encode = (texts: string[], members: TransportItem[], index: number): string => encodeCcInjection(binding, {
     text: texts.join("\n\n"), knowledgeCommitIds: members.flatMap(item => item.kind === "knowledge" ? [item.commitId] : []),
     knowledgeStates: members.flatMap(item => item.kind === "state" ? [item.receipt] : []),
@@ -46,22 +45,30 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     }
     return false;
   };
-  for (const item of ordered) if (!tryPlace(item)) {
-    const id = address(item);
-    if (id) omit(item);
-    else if (item.kind === "receipt") throw new Error("CC transport cannot carry an existing omission receipt");
+  // Core's receipts are mandatory material. A legacy unbounded receipt must still name the
+  // actual omission rather than displace it with an unrelated transport-capacity failure.
+  for (const item of ordered.filter(item => item.kind === "receipt")) {
+    if (tryPlace(item)) continue;
+    const count = item.text.match(/omitted (\d+)/)?.[1];
+    const expansion = item.text.split("expand: ")[1];
+    const addresses = expansion?.match(/(?:K\d+(?:@\d+)?|F\d+|T\d+#E\d+)/g) ?? [];
+    const compact: TransportItem = { kind: "receipt", text: `omitted ${count ?? "1"} ${count ? "items" : "receipt"}; expand: ${expandList(addresses)}` };
+    if (!addresses.length || !tryPlace(compact)) throw new Error("CC core omission receipt has no usable expansion address");
   }
+  for (const item of ordered.filter(item => item.kind !== "receipt")) if (!tryPlace(item)) omit(item);
   if (omitted.length) {
-    const receipt: TransportItem = { kind: "receipt", text: `omitted ${omitted.length} whole items at CC inline capacity; expand: ${expandList(omitted)}` };
-    // The receipt also pays for its envelope. Evict the least valuable retained whole item if needed.
-    while (!tryPlace(receipt)) {
-      const slot = [...slots].reverse().find(entry => entry.items.some(item => item.kind !== "receipt"));
-      if (!slot) throw new Error("CC inline capacity cannot fit its omission receipt");
-      let position = slot.items.length - 1;
-      while (slot.items[position]?.kind === "receipt") position--;
-      const [item] = slot.items.splice(position, 1); slot.body.splice(position, 1);
-      omit(item!);
+    const receipt: TransportItem = { kind: "receipt", text: "" };
+    // Last in selection priority, not last in physical slot: first-fit may leave holes.
+    while (true) {
       receipt.text = `omitted ${omitted.length} whole items at CC inline capacity; expand: ${expandList(omitted)}`;
+      if (tryPlace(receipt)) break;
+      const retained = [...ordered].reverse().find(item => item.kind !== "receipt" &&
+        slots.some(slot => slot.items.includes(item)));
+      if (!retained) throw new Error("CC inline envelope cannot carry its omission receipt");
+      const slot = slots.find(slot => slot.items.includes(retained))!;
+      const position = slot.items.indexOf(retained);
+      slot.items.splice(position, 1); slot.body.splice(position, 1);
+      omit(retained);
     }
   }
   const transportWarning = pendingRaw || pendingFacts ? `Trace Memory: inline transport omitted ${[
