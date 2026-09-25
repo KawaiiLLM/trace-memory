@@ -12,7 +12,7 @@ export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
 import { factAddresses, renderKnowledge, renderKnowledgeChange, tokens } from "../render/index.ts";
-import { isKnowledgeCategory } from "../model/index.ts";
+import { isKnowledgeCategory, knowledgeCategoryGroup } from "../model/index.ts";
 import type {
   Actor,
   Knowledge,
@@ -3420,7 +3420,7 @@ export class Store {
       ? this.knowledgeRevision(Math.max(op.intoBaseCommit, op.absorb[0]!.baseCommit))!.text
       : op.text!;
     const commitId = insertRevision(knowledgeId, prior?.id ?? null, text,
-      op.op === "archive" ? prior!.category : op.category, op.op === "archive" ? prior!.topics : op.topics, op.op);
+      op.op === "archive" ? knowledgeCategoryGroup(prior!.category) : op.category, op.op === "archive" ? prior!.topics : op.topics, op.op);
     if (op.op === "merge") for (const parent of op.absorb) {
       this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)")
         .run(parent.knowledgeId, parent.baseCommit, knowledgeId, commitId);

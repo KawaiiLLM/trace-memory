@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { renderFact, renderFactPreview } from "../../../src/core/render/index.ts";
 import { toolDefinitions } from "../../../src/core/api/tools.ts";
+import { CcForegroundTools } from "../../../src/hosts/cc/tools.ts";
+import type { CcCoordinator } from "../../../src/hosts/cc/lifecycle.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -80,6 +82,37 @@ test("92: legacy knowledge is found as understanding in search and exact history
     expect(f.memory.trace(`K${knowledgeId}@${commit}`, options)).toContain("[understanding/session]");
     expect(f.memory.search("legacy mechanism needle", "knowledge", { ...options, category: "open" })).not.toContain(`[K${knowledgeId}@${commit}]`);
     expect(f.memory.store.getKnowledgeRevision(knowledgeId, commit)!.category).toBe("mechanism");
+    const tools = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" });
+    expect(tools.find(tool => tool.name === "trace")!.execute({ address: `K${knowledgeId}@${commit}` })).toContain("legacy mechanism needle");
+    const archived = JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ operations: [
+      { op: "archive", id: `K${knowledgeId}@${commit}`, supports: [`F${factId}`], reason: "Legacy item retired" }], skipped: [] }));
+    expect(archived.committed).toHaveLength(1);
+    expect(f.memory.store.getKnowledgeRevision(knowledgeId, archived.committed[0].commit)!.category).toBe("understanding");
+  } finally { f.memory.close(); }
+});
+
+test("92: CC adapter writes against the borrowed target and renders legacy category filters", async () => {
+  const f = fixture("pi:borrowed");
+  try {
+    const projection = { memory: f.memory, coreSessionId: f.session.id, branch: "main", headTurnId: f.turn.id,
+      triggerEntryId: f.entries.at(-1)!.id, entryIds: f.entries.map(entry => entry.id) };
+    const adapter = new CcForegroundTools({ waitForToolCall: async () => projection,
+      toolProjection: async () => ({ memory: f.memory, binding: projection }) } as unknown as CcCoordinator);
+    const meta = { "claudecode/toolUseId": "borrowed-call" };
+    expect((await adapter.call("note", { facts: [{ text: "wrong", source: [f.source[1]], actor: "agent" }] }, meta)).isError).toBe(true);
+    const written = await adapter.call("note", { facts: [{ text: "Pi agent explained the rule; the tool returned evidence", source: [f.source[1], f.source[3]] }] }, meta);
+    expect(written.isError).toBeUndefined();
+    const id = JSON.parse(written.content[0]!.text).factIds[0];
+    expect(f.memory.store.getFact(id)!.roles).toEqual([{ role: "assistant", harness: "Pi agent" }, { role: "observation" }]);
+    const runId = Number((f.memory.store.db.prepare("SELECT run_id FROM facts WHERE id=?").get(id) as { run_id: number }).run_id);
+    const knowledgeId = Number(f.memory.store.db.prepare("INSERT INTO knowledge (project_id,origin_session_id,author) VALUES (?,?,'legacy')")
+      .run(f.session.projectId, f.session.id).lastInsertRowid);
+    const commit = Number(f.memory.store.db.prepare(`INSERT INTO knowledge_revisions
+      (knowledge_id,parent_id,text,category,scope,supports,support_semantics,op,reason,topics,run_id,created_at,actor_role)
+      VALUES (?,NULL,'borrowed legacy reference','term','session',?,'change','create','legacy','[]',?,'now','manual')`)
+      .run(knowledgeId, JSON.stringify([id]), runId).lastInsertRowid);
+    const searched = await adapter.call("search", { query: "borrowed legacy reference", layer: "knowledge", category: "understanding" }, null);
+    expect(searched.content[0]!.text).toContain(`[K${knowledgeId}@${commit}] [understanding/session]`);
   } finally { f.memory.close(); }
 });
 

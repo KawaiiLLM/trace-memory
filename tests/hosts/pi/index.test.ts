@@ -31,6 +31,20 @@ test("the fixture borrows PI_CODING_AGENT_DIR: two live hosts nest, and a failed
   expect(process.env.PI_CODING_AGENT_DIR).toBe(before);
 });
 
+test("92 Pi registered tool rejects old fields and writes entry roles through the host adapter", async () => {
+  const h = host();
+  await h.prompt("Choose the newer policy"); await h.answer("Pi agent accepts the request");
+  const entries = h.memory.store.sourcePath(1, "main", 1);
+  const user = entries.find(entry => h.memory.store.getSourceEntry(entry.id)?.role === "user")!;
+  const source = `T1#E${user.entryOrdinal}`;
+  const note = h.tools.get("note")!;
+  await expect(note.execute("bad", { facts: [{ text: "invalid", source: [source], actor: "user" }] }, undefined, undefined, h.ctx))
+    .rejects.toThrow(/unexpected field/);
+  const accepted = await note.execute("good", { facts: [{ text: "User chose the newer policy", source: [source] }] }, undefined, undefined, h.ctx);
+  const result = JSON.parse(accepted.content[0].text);
+  expect(h.memory.store.getFact(result.factIds[0])!.roles).toEqual([{ role: "user" }]);
+});
+
 test("smoke: the default extension loads and registers the Pi hooks, tools, and read-only command", async () => {
   const h = host();
   expect([...h.tools.keys()]).toEqual(["trace", "search", "note", "memory"]);

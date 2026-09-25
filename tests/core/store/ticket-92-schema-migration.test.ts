@@ -64,6 +64,7 @@ test("92 schema upgrade retains legacy rows, source bindings, relation, indexes,
   downgrade(f.store.db);
   expect(sql(f.store.db, "facts")).toContain("actor TEXT NOT NULL");
   const originalSequence = Number((f.store.db.prepare("SELECT seq FROM sqlite_sequence WHERE name='facts'").get() as { seq: number }).seq);
+  f.store.db.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'facts'").run(originalSequence + 20);
   f.store.close();
   let store = new Store(f.path);
   try {
@@ -73,7 +74,11 @@ test("92 schema upgrade retains legacy rows, source bindings, relation, indexes,
     expect(store.factEntries(f.facts[0]!)).toEqual([f.entry.id]);
     expect(store.listFactRelationsOnPathOf(f.facts, { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id })).toEqual(relations);
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-    expect((store.db.prepare("SELECT seq FROM sqlite_sequence WHERE name='facts'").get() as { seq: number }).seq).toBe(originalSequence);
+    expect((store.db.prepare("SELECT seq FROM sqlite_sequence WHERE name='facts'").get() as { seq: number }).seq).toBe(originalSequence + 20);
+    const later = store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
+      facts: [{ turnId: f.turn.id, text: "after upgrade", source: [`T${f.turn.id}#E1`], entryIds: [f.entry.id], createdAt: "now" }] });
+    if (!later.ok) throw new Error(later.problems.join("; "));
+    expect(later.facts[0]!.id).toBe(originalSequence + 21);
     expect(store.db.prepare("SELECT name FROM sqlite_master WHERE name='legacy_fact_text'").get()).toEqual({ name: "legacy_fact_text" });
     expect(store.db.prepare("SELECT name FROM sqlite_master WHERE name='legacy_fact_keep'").get()).toEqual({ name: "legacy_fact_keep" });
     expect(store.db.prepare("SELECT category FROM knowledge_revisions").get()).toEqual({ category: "mechanism" });
@@ -89,6 +94,7 @@ test("92 schema upgrade retains legacy rows, source bindings, relation, indexes,
     const afterSql = sql(store.db, "facts"); store.close(); store = new Store(f.path);
     expect(sql(store.db, "facts")).toBe(afterSql);
     expect(f.facts.map(id => store.getFact(id))).toEqual(before);
+    expect(store.getFact(originalSequence + 21)).not.toBeNull();
   } finally { store.close(); }
 });
 
@@ -113,22 +119,56 @@ test("92: only five new knowledge categories write through Store; old revisions 
   } finally { f.store.close(); }
 });
 
+test("92 archive normalizes inherited legacy categories while explicit legacy writes stay forbidden", () => {
+  for (const [legacy, current] of [["mechanism", "understanding"], ["term", "understanding"], ["dispute", "open"]] as const) {
+    const f = fixture();
+    try {
+      const base = f.store.db.prepare("SELECT id,knowledge_id FROM knowledge_revisions").get() as { id: number; knowledge_id: number };
+      f.store.db.prepare("UPDATE knowledge_revisions SET category=? WHERE id=?").run(legacy, base.id);
+      const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
+      const invalidUpdate = f.store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId: f.session.id, createdAt: "now" },
+        operations: [{ op: "update", knowledgeId: base.knowledge_id, baseCommit: base.id, text: "invalid new revision",
+          category: legacy, scope: "session", supports: [f.facts[0]!], reason: "old category", topics: [], createdAt: "now" }] });
+      expect(invalidUpdate.ok).toBe(false);
+      const archive = f.store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
+        operations: [{ op: "archive", knowledgeId: base.knowledge_id, baseCommit: base.id,
+          supports: [f.facts[0]!], reason: "Retire legacy item", createdAt: "now" }] });
+      if (!archive.ok) throw new Error(archive.problems.join("; "));
+      expect(f.store.getKnowledgeRevision(base.knowledge_id, base.id)!.category).toBe(legacy);
+      expect(f.store.getKnowledgeRevision(base.knowledge_id, archive.committed[0]!.commit)!.category).toBe(current);
+      const rejected = f.store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
+        operations: [{ op: "create", handle: "$old", author: "manual", text: "invalid", category: legacy,
+          scope: "session", supports: [f.facts[0]!], reason: "invalid category", topics: [], createdAt: "now" }] });
+      expect(rejected.ok).toBe(false);
+    } finally { f.store.close(); }
+  }
+});
+
 test("92 schema rollback is all-or-nothing when the second table has an unknown CHECK shape", () => {
   const f = fixture(); downgrade(f.store.db);
   f.store.db.exec("CREATE TRIGGER legacy_fact_keep AFTER INSERT ON facts BEGIN SELECT 1; END");
-  // Leave the unknown knowledge shape visibly different: the migration must refuse it after rebuilding facts.
+  // A valid old database with a second-table CHECK variant: facts rebuild first, then the upgrade refuses it.
+  const oldKnowledge = sql(f.store.db, "knowledge_revisions");
+  const knowledgeObjects = f.store.db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='knowledge_revisions' AND type IN ('index','trigger') AND sql IS NOT NULL").all() as { sql: string }[];
   f.store.db.exec(`PRAGMA foreign_keys=OFF;
-    CREATE TABLE knowledge_revisions_unknown AS SELECT * FROM knowledge_revisions;
+    CREATE TABLE knowledge_revisions_backup AS SELECT * FROM knowledge_revisions;
     DROP TABLE knowledge_revisions;
-    ALTER TABLE knowledge_revisions_unknown RENAME TO knowledge_revisions;
+    ${oldKnowledge.replace("'constraint','open'", "'constraint','goal','open'")};
+    INSERT INTO knowledge_revisions SELECT * FROM knowledge_revisions_backup;
+    DROP TABLE knowledge_revisions_backup;
     PRAGMA foreign_keys=ON`);
-  const before = sql(f.store.db, "facts"), trigger = f.store.db.prepare("SELECT sql FROM sqlite_master WHERE name='legacy_fact_keep'").get();
+  for (const object of knowledgeObjects) f.store.db.exec(object.sql);
+  const db = f.store.db;
+  const names = ["facts", "fact_sources", "fact_relations", "knowledge", "knowledge_revisions", "sqlite_sequence"];
+  const rows = Object.fromEntries(names.map(name => [name, db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all()]));
+  const objects = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE type IN ('table','index','trigger') ORDER BY type,name").all();
+  expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   f.store.close();
   expect(() => new Store(f.path)).toThrow(/92 migration refused unknown knowledge_revisions schema/);
-  const db = new DatabaseSync(f.path);
+  const reopened = new DatabaseSync(f.path);
   try {
-    expect(sql(db, "facts")).toBe(before);
-    expect(db.prepare("SELECT sql FROM sqlite_master WHERE name='legacy_fact_keep'").get()).toEqual(trigger);
-    expect(db.prepare("SELECT category,actor,status,quote FROM facts ORDER BY id").all()).toHaveLength(2);
-  } finally { db.close(); }
+    expect(reopened.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE type IN ('table','index','trigger') ORDER BY type,name").all()).toEqual(objects);
+    for (const name of names) expect(reopened.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all()).toEqual(rows[name]);
+    expect(reopened.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { reopened.close(); }
 });
