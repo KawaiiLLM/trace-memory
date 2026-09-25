@@ -594,13 +594,23 @@ export interface ApplicabilityInput {
   facts: Map<number, { fact: Fact; sessionId: number; runId: number; entries: number[] }>;
 }
 
-/** The exact shape `commitGraphInput` returns, named so the ticket 80 graph memo (`Store.graphInputCache`)
- * does not force a self-referential `ReturnType<typeof commitGraphInput>` while that method is defined. */
+/** The exact shape of a graph input, including metadata consumed by historical readers. */
 export interface GraphInput {
   revisions: KnowledgeRevision[];
   parents: Map<number, number[]>;
   metadata: ApplicabilityInput;
 }
+
+type GraphResults = { applicable: KnowledgeRevision[]; applicableIds: Set<number>;
+  effective: Set<number>; resolved: KnowledgeRevision[] };
+type SelectiveGraph = {
+  input: GraphInput; maxRevision: number; cursorVersion: number; pathVersion: number;
+  projects: Map<number, number>; foreground: Map<number, string>; owners: Map<number, Set<number>>;
+  citations: Map<number, Set<number>>; ownerRevisions: Map<number, Set<number>>;
+  liveness: Map<number, boolean>; componentOf: Map<number, number>;
+  components: Map<number, Set<number>>; results: Map<number, GraphResults>;
+  visibility: Map<string, Set<number>>;
+};
 
 /** One path's membership, built once per operation (22a) and passed through every applicability check.
  * `entries` is null when the path has no selected native ancestry; `addresses` answers the address
@@ -2358,26 +2368,25 @@ export class Store {
     });
   }
 
-  /** One resolution of the commit DAG (22c): every revision, which of them apply to `path` (and to
-   * `projectId`, where a scope filter is asked for), which of those are current, and the descendants
-   * of any commit. A read resolves this once and answers every hit from it instead of rebuilding the
-   * graph per hit. Like the path snapshot it is a value that never outlives its read, so the next
-   * read sees another executor's commits; a page asked for later still reports its own query's.
+  /** One resolution of the commit DAG (22c): committed reads reuse component results, while
+   * seeded historical and transactional writer reads resolve freshly. Reader visibility is projected
+   * from globally current revisions at the requested node.
    *
    * An operation that has already built the path snapshot (22a) passes it: the footer's progress
    * values are one operation and share one membership, exactly as `consolidationBatch` does. */
   commitGraph(path: KnowledgePath | null, projectId?: number, prepared?: PathSnapshot, input = this.commitGraphInput()): CommitGraph {
     const { revisions, parents } = input;
-    // A caller's prepared snapshot belongs to this read, never to the memoized graph.
+    // A caller's prepared snapshot belongs to this read, never to the committed graph.
     const metadata = prepared ? { ...input.metadata, currentSnapshots: new Map(input.metadata.currentSnapshots) } : input.metadata;
     const foreground = path && metadata.currentPaths?.get(path.sessionId);
     if (prepared && path && Array.isArray(foreground)) {
       const match = foreground.find(value => value.branch === path.branch && value.headTurnId === path.headTurnId);
       if (match) metadata.currentSnapshots?.set(`${path.sessionId}:${match.lineage}`, prepared);
     }
+    const cached = this.graphResults.get(input);
     const facts = new Map<number, boolean>(), commits = new Map<number, boolean>();
-    const grounded = revisions.filter(revision => this.revisionApplies(revision, metadata, facts, commits));
-    const effective = this.effectiveRevisions(revisions, parents, grounded);
+    const grounded = cached ? cached.applicable : revisions.filter(revision => this.revisionApplies(revision, metadata, facts, commits));
+    const effective = cached ? cached.effective : this.effectiveRevisions(revisions, parents, grounded);
     const cursor = path && Array.isArray(foreground)
       ? foreground.find(value => value.branch === path.branch && value.headTurnId === path.headTurnId) : undefined;
     let readerSnapshot = prepared ?? (cursor ? metadata.currentSnapshots?.get(`${path!.sessionId}:${cursor.lineage}`) : undefined);
@@ -2385,38 +2394,254 @@ export class Store {
       if (revision.scope === "session") readerSnapshot ??= this.pathSnapshot(path);
       return this.visibleOnPath(revision, path, metadata, readerSnapshot);
     } : (revision: KnowledgeRevision) => this.collectionAdmits(revision, projectId, metadata);
+    if (cached) {
+      const key = path && !prepared ? JSON.stringify([path.sessionId, path.branch, path.headTurnId]) : null;
+      const views = this.graphVisibility.get(input);
+      let ids = key === null ? undefined : views?.get(key);
+      if (key !== null && !ids) {
+        ids = new Set(cached.resolved.filter(visible).map(revision => revision.id));
+        views?.set(key, ids);
+      }
+      return { revisions, effective, applicable: cached.applicableIds, resolved: cached.resolved,
+        current: ids ? cached.resolved.filter(revision => ids.has(revision.id)) : cached.resolved.filter(visible),
+        ancestors: id => this.graphAncestors(id, parents), descendants: id => this.graphDescendants(id, parents) };
+    }
     return this.projectCommitGraph(revisions, parents, grounded, effective, visible);
   }
 
-  /** One global graph input per Store, not a duplicate for each reader session. The graph's
-   * dependencies are global; reader-specific pool-state fields in progressSignal can cause extra
-   * misses but cannot change its contents. A named session opts into this read memo; seeded reads,
-   * unnamed reads and every read inside a transaction rebuild from their own snapshot. */
-  private graphInputCache: { signal: string; input: GraphInput } | undefined;
+  private graphAncestors(id: number, parents: Map<number, number[]>): Set<number> {
+    const seen = new Set<number>(), pending = [id];
+    while (pending.length) {
+      const current = pending.pop()!;
+      if (seen.has(current)) continue;
+      seen.add(current); pending.push(...(parents.get(current) ?? []));
+    }
+    return seen;
+  }
+  private graphDescendants(id: number, parents: Map<number, number[]>): Set<number> {
+    const children = new Map<number, number[]>();
+    for (const [child, up] of parents) for (const parent of up) {
+      const row = children.get(parent) ?? []; row.push(child); children.set(parent, row);
+    }
+    return this.graphAncestors(id, children);
+  }
+
+  /** Committed read projections only. Writer transactions always use their own fresh graph. */
+  private graphInputCache: SelectiveGraph | undefined;
+  private graphResults = new WeakMap<GraphInput, GraphResults>();
+  private graphVisibility = new WeakMap<GraphInput, Map<string, Set<number>>>();
   commitGraphInput(seed?: readonly KnowledgeRevision[], cacheSessionId?: number): GraphInput {
-    if (seed || cacheSessionId === undefined) return this.buildGraphInput(seed);
-    // A writer must see its own transaction, not a process memo. Never publish a graph that
-    // could have been built from work later rolled back, including nested savepoints.
-    if (this.db.isTransaction) return this.buildGraphInput();
-    // One read snapshot binds the signal and its graph: another connection cannot commit
-    // between the two reads and leave an old graph installed under a newer signal.
+    if (seed || cacheSessionId === undefined || this.db.isTransaction) return this.buildGraphInput(seed);
     this.db.exec("BEGIN");
     try {
-      const signal = this.progressSignal(cacheSessionId);
-      const cached = this.graphInputCache;
-      if (cached && cached.signal === signal) {
-        this.db.exec("COMMIT");
-        return cached.input;
-      }
-      const input = this.buildGraphInput();
+      const next = this.advanceGraph(this.graphInputCache);
       this.db.exec("COMMIT");
-      this.graphInputCache = { signal, input };
-      return input;
+      this.graphInputCache = next;
+      this.graphVisibility.set(next.input, next.visibility);
+      const applicable: KnowledgeRevision[] = [], effective = new Set<number>(), resolved: KnowledgeRevision[] = [];
+      for (const part of next.results.values()) {
+        applicable.push(...part.applicable); resolved.push(...part.resolved);
+        for (const id of part.effective) effective.add(id);
+      }
+      applicable.sort((a, b) => a.id - b.id); resolved.sort((a, b) => a.id - b.id);
+      this.graphResults.set(next.input, { applicable, applicableIds: new Set(applicable.map(r => r.id)), effective, resolved });
+      return next.input;
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
     }
   }
+  private graphComponent(input: GraphInput, ids: Set<number>): GraphResults {
+    const revisions = [...ids].map(id => input.metadata.revisions!.get(id)!).sort((a, b) => a.id - b.id);
+    const facts = new Map<number, boolean>(), commits = new Map<number, boolean>();
+    const applicable = revisions.filter(r => this.revisionApplies(r, input.metadata, facts, commits));
+    const effective = this.effectiveRevisions(revisions, input.parents, applicable);
+    // Reuse the authoritative DAG projection on just this linked component.
+    const resolved = this.projectCommitGraph(revisions, input.parents, applicable, effective, () => true).resolved;
+    return { applicable, applicableIds: new Set(applicable.map(r => r.id)), effective, resolved };
+  }
+
+  private graphFingerprint(sessionId: number): string {
+    return JSON.stringify({
+      cursors: this.db.prepare(`SELECT lineage, branch, head_turn_id, version FROM session_lineage_cursors
+        WHERE session_id = ? ORDER BY lineage`).all(sessionId),
+      paths: this.db.prepare(`SELECT branch, version FROM source_paths WHERE session_id = ? ORDER BY branch`).all(sessionId),
+    });
+  }
+
+  private advanceGraph(previous: SelectiveGraph | undefined): SelectiveGraph {
+    const water = this.db.prepare(`SELECT
+      (SELECT IFNULL(MAX(id), 0) FROM knowledge_revisions) AS revision,
+      (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cursor,
+      (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS path`).get() as
+      { revision: number; cursor: number; path: number };
+    const projects = new Map<number, number>(this.db.prepare("SELECT id, project_id FROM sessions").all()
+      .map(row => [Number(row.id), Number(row.project_id)]));
+    if (!previous) {
+      const input = this.buildGraphInput();
+      const owners = new Map<number, Set<number>>(), citations = new Map<number, Set<number>>(),
+        ownerRevisions = new Map<number, Set<number>>(), componentOf = new Map<number, number>();
+      const components = new Map<number, Set<number>>();
+      for (const revision of input.revisions) {
+        componentOf.set(revision.id, revision.id);
+        components.set(revision.id, new Set([revision.id]));
+        for (const factId of revision.supports) {
+          const owner = input.metadata.facts.get(factId)?.sessionId;
+          if (owner === undefined) throw Error(`knowledge commit ${revision.id} cites missing fact ${factId}`);
+          const ids = owners.get(owner) ?? new Set(); ids.add(factId); owners.set(owner, ids);
+          const refs = citations.get(factId) ?? new Set(); refs.add(revision.id); citations.set(factId, refs);
+          const revisions = ownerRevisions.get(owner) ?? new Set(); revisions.add(revision.id); ownerRevisions.set(owner, revisions);
+        }
+      }
+      const join = (id: number, parent: number) => {
+        const left = componentOf.get(id)!, right = componentOf.get(parent);
+        if (right === undefined) throw Error(`knowledge lineage references missing commit ${parent}`);
+        if (left === right) return;
+        for (const member of components.get(right)!) { components.get(left)!.add(member); componentOf.set(member, left); }
+        components.delete(right);
+      };
+      for (const revision of input.revisions) for (const parent of input.parents.get(revision.id) ?? []) join(revision.id, parent);
+      const results = new Map([...components].map(([id, revisions]) => [id, this.graphComponent(input, revisions)]));
+      const liveness = new Map<number, boolean>();
+      for (const ids of owners.values()) for (const id of ids) {
+        const projected = input.metadata.facts.get(id)!;
+        liveness.set(id, this.factOnCurrentPath(projected.fact, projected.sessionId, input.metadata));
+      }
+      const foreground = new Map([...owners.keys()].map(id => [id, this.graphFingerprint(id)]));
+      return { input, maxRevision: water.revision, cursorVersion: water.cursor, pathVersion: water.path,
+        projects, foreground, owners, citations, ownerRevisions, liveness, componentOf, components, results,
+        visibility: new Map() };
+    }
+    if (water.revision === previous.maxRevision && water.cursor === previous.cursorVersion &&
+      water.path === previous.pathVersion && projects.size === previous.projects.size &&
+      [...projects].every(([id, project]) => previous.projects.get(id) === project)) return previous;
+
+    // Clone before applying a read snapshot: failed reads and rolled-back transactions publish nothing.
+    const input: GraphInput = { revisions: [...previous.input.revisions], parents: new Map(previous.input.parents),
+      metadata: { ...previous.input.metadata, revisions: new Map(previous.input.metadata.revisions),
+        parents: new Map(previous.input.parents), runs: new Map(previous.input.metadata.runs), projects,
+        facts: new Map(previous.input.metadata.facts), currentPaths: new Map(previous.input.metadata.currentPaths),
+        currentSnapshots: new Map(previous.input.metadata.currentSnapshots),
+        validatedCurrentPaths: new Set(previous.input.metadata.validatedCurrentPaths) } };
+    input.metadata.parents = input.parents;
+    const next: SelectiveGraph = { input, maxRevision: water.revision, cursorVersion: water.cursor,
+      pathVersion: water.path, projects, foreground: new Map(previous.foreground),
+      owners: new Map([...previous.owners].map(([id, facts]) => [id, new Set(facts)])),
+      citations: new Map([...previous.citations].map(([id, revisions]) => [id, new Set(revisions)])),
+      ownerRevisions: new Map([...previous.ownerRevisions].map(([id, revisions]) => [id, new Set(revisions)])),
+      liveness: new Map(previous.liveness), componentOf: new Map(previous.componentOf),
+      components: new Map([...previous.components].map(([id, members]) => [id, new Set(members)])),
+      results: new Map(previous.results), visibility: new Map(previous.visibility) };
+    const dirty = new Set<number>();
+    const changedOwners = new Set<number>();
+    if (water.cursor !== previous.cursorVersion || water.path !== previous.pathVersion)
+      for (const id of next.owners.keys()) {
+        const fingerprint = this.graphFingerprint(id);
+        if (fingerprint !== next.foreground.get(id)) { changedOwners.add(id); next.foreground.set(id, fingerprint); }
+      }
+    if (water.revision !== previous.maxRevision) {
+      const added = this.db.prepare("SELECT * FROM knowledge_revisions WHERE id > ? ORDER BY id")
+        .all(previous.maxRevision).map(toKnowledgeRevision);
+      const additions = this.buildGraphInput(added);
+      for (const revision of added) {
+        input.revisions.push(revision); input.metadata.revisions!.set(revision.id, revision);
+        input.parents.set(revision.id, additions.parents.get(revision.id)!);
+        next.componentOf.set(revision.id, revision.id);
+        next.components.set(revision.id, new Set([revision.id])); dirty.add(revision.id);
+        for (const factId of revision.supports) {
+          const owner = additions.metadata.facts.get(factId)?.sessionId ?? input.metadata.facts.get(factId)?.sessionId;
+          if (owner === undefined) throw Error(`knowledge commit ${revision.id} cites missing fact ${factId}`);
+          const refs = next.citations.get(factId) ?? new Set(); refs.add(revision.id); next.citations.set(factId, refs);
+          const ownerRefs = next.ownerRevisions.get(owner) ?? new Set();
+          ownerRefs.add(revision.id); next.ownerRevisions.set(owner, ownerRefs);
+          const ids = next.owners.get(owner) ?? new Set();
+          if (!ids.has(factId)) {
+            ids.add(factId); next.owners.set(owner, ids);
+            if (!next.foreground.has(owner)) next.foreground.set(owner, this.graphFingerprint(owner));
+            // New citations are not an owner node switch. The seeded graph below contains their
+            // actual foreground; no reason to revisit the owner's previously cited facts.
+          }
+        }
+      }
+      for (const revision of added) for (const parent of input.parents.get(revision.id) ?? []) {
+        const root = next.componentOf.get(revision.id)!, other = next.componentOf.get(parent);
+        if (other === undefined) throw Error(`knowledge lineage references missing commit ${parent}`);
+        if (root === other) continue;
+        for (const member of next.components.get(other)!) {
+          next.components.get(root)!.add(member); next.componentOf.set(member, root);
+        }
+        next.components.delete(other); next.results.delete(other); dirty.add(root);
+      }
+      for (const [id, ownerFact] of additions.metadata.facts) {
+        input.metadata.facts.set(id, ownerFact);
+        if (!next.liveness.has(id)) next.liveness.set(id,
+          this.factOnCurrentPath(ownerFact.fact, ownerFact.sessionId, additions.metadata));
+      }
+      for (const [id, session] of additions.metadata.runs) input.metadata.runs.set(id, session);
+      for (const owner of additions.metadata.currentPaths?.keys() ?? []) {
+        input.metadata.currentPaths!.set(owner, additions.metadata.currentPaths!.get(owner)!);
+        for (const [key, snapshot] of additions.metadata.currentSnapshots ?? [])
+          if (key.startsWith(`${owner}:`)) input.metadata.currentSnapshots!.set(key, snapshot);
+      }
+    }
+    // Refresh only changed fact owners, and only invalidate components whose cited facts actually changed.
+    for (const owner of changedOwners) {
+      const ids = next.owners.get(owner)!;
+      const cited = [...next.ownerRevisions.get(owner) ?? []].map(id => input.metadata.revisions!.get(id)!);
+      if (!cited.length) continue;
+      const refreshed = this.buildGraphInput(cited);
+      input.metadata.currentPaths!.set(owner, refreshed.metadata.currentPaths!.get(owner)!);
+      for (const key of input.metadata.currentSnapshots!.keys()) if (key.startsWith(`${owner}:`)) input.metadata.currentSnapshots!.delete(key);
+      for (const [key, snapshot] of refreshed.metadata.currentSnapshots!)
+        if (key.startsWith(`${owner}:`)) input.metadata.currentSnapshots!.set(key, snapshot);
+      for (const [id, fact] of refreshed.metadata.facts) input.metadata.facts.set(id, fact);
+      for (const id of ids) {
+        const fact = input.metadata.facts.get(id)!;
+        const live = this.factOnCurrentPath(fact.fact, owner, input.metadata);
+        if (live !== next.liveness.get(id)) {
+          next.liveness.set(id, live);
+          for (const revisionId of next.citations.get(id) ?? []) dirty.add(next.componentOf.get(revisionId)!);
+        }
+      }
+    }
+    const affectedKnowledge = new Set<number>();
+    for (const root of dirty) if (next.components.has(root)) {
+      for (const revisionId of next.components.get(root)!) {
+        const oldRoot = previous.componentOf.get(revisionId);
+        if (oldRoot !== undefined) for (const old of previous.results.get(oldRoot)?.resolved ?? [])
+          affectedKnowledge.add(old.knowledgeId);
+        affectedKnowledge.add(input.metadata.revisions!.get(revisionId)!.knowledgeId);
+      }
+      next.results.set(root, this.graphComponent(input, next.components.get(root)!));
+    }
+    const affectedProjects = new Set<number>();
+    for (const [session, project] of projects) if (previous.projects.get(session) !== project) {
+      const old = previous.projects.get(session);
+      if (old !== undefined) affectedProjects.add(old);
+      affectedProjects.add(project);
+    }
+    const replacements = new Map<number, KnowledgeRevision>();
+    for (const root of dirty) if (next.components.has(root))
+      for (const revision of next.results.get(root)!.resolved) replacements.set(revision.knowledgeId, revision);
+    for (const [key, prior] of next.visibility) {
+      const [sessionId, branch, headTurnId] = JSON.parse(key) as [number, string, number];
+      if (changedOwners.has(sessionId) || affectedProjects.has(projects.get(sessionId)!)) {
+        next.visibility.delete(key); continue;
+      }
+      if (!affectedKnowledge.size) continue;
+      const ids = new Set(prior);
+      for (const revisionId of prior) if (affectedKnowledge.has(input.metadata.revisions!.get(revisionId)!.knowledgeId)) ids.delete(revisionId);
+      const path = { sessionId, branch, headTurnId };
+      let snapshot: PathSnapshot | undefined;
+      for (const revision of replacements.values()) {
+        if (revision.scope === "session") snapshot ??= this.pathSnapshot(path);
+        if (this.visibleOnPath(revision, path, input.metadata, snapshot)) ids.add(revision.id);
+      }
+      next.visibility.set(key, ids);
+    }
+    return next;
+  }
+
   private buildGraphInput(seed?: readonly KnowledgeRevision[]): GraphInput {
     const revisions = seed ? [...seed] : this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const byId = new Map(revisions.map(revision => [revision.id, revision]));
@@ -2913,13 +3138,18 @@ export class Store {
       .all(commit.id, commit.id).map(toKnowledgeRevision);
   }
 
+  /** Exact current versions, including archives, before any delivery-specific budget filtering. */
+  visibleKnowledgeVersions(path: KnowledgePath): Set<number> {
+    return new Set(this.commitGraph(path, undefined, undefined, this.commitGraphInput(undefined, path.sessionId))
+      .current.map(revision => revision.id));
+  }
+
   currentCommit(knowledgeId: number, path: KnowledgePath | null = null): KnowledgeRevision[] {
     return this.commitGraph(path).current.filter(revision => revision.knowledgeId === knowledgeId);
   }
 
-  /** Resolve the global current version before filtering visibility and active bodies. A
-   * session-scoped read shares the graph memo with injection and pool reads; write transactions
-   * always build their own graph. */
+  /** Resolve global current versions before filtering visibility and active bodies.
+   * Session reads share the committed projection; writers use their own fresh transaction. */
   currentKnowledge(path: KnowledgePath | null = null, filter: KnowledgeFilter = {}, snapshot?: PathSnapshot): KnowledgeWithRevision[] {
     return this.commitGraph(path, filter.projectId, snapshot,
       path ? this.commitGraphInput(undefined, path.sessionId) : this.commitGraphInput()).current

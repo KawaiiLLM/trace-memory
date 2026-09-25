@@ -40,14 +40,10 @@ function fixture(config: Record<string, unknown> = {}) {
   return { memory, session, turn, entries, facts: noted.facts, create, target, scenarios };
 }
 
-/** Ticket 80: forces the next `injection`/`knowledgePools` read to rebuild its per-session graph
- * memo, by bumping a session budget — an input `Store.progressSignal` covers. Left bumped (never
- * restored to the exact prior value): reverting it would round-trip the signal's budget component
- * back to its starting string, leaving the memo looking unchanged and defeating the poke. Only used
- * as the last action before a test's final assertion, so the bumped budget has no other effect here. */
-function pokeSignal(f: { memory: ReturnType<typeof TraceMemory> }) {
-  const before = f.memory.store.knowledgeBudgets();
-  f.memory.store.setKnowledgeBudget("session", before.session + 1);
+/** These tests directly rewrite otherwise immutable rows. Simulate a cold Store read after the
+ * unsupported out-of-band mutation; a budget edit must not invalidate knowledge selection (88). */
+function coldGraph(f: { memory: ReturnType<typeof TraceMemory> }) {
+  (f.memory.store as unknown as { graphInputCache?: unknown }).graphInputCache = undefined;
 }
 
 const view = (over: Partial<VisibleView> = {}): VisibleView => ({ ...noVisibility(), ...over });
@@ -95,11 +91,9 @@ test("34c evidence predicate uses complete Fact or proven complete original/boun
   expect(f.memory.injection(f.target, original).knowledgeCommitIds).toEqual([both.commit]); // partial support coverage
 
   // Losing one persisted binding makes Raw proof incomplete and restores eligibility. `fact_sources`
-  // is insert-only in production (never rewritten after a fact's creation), so ticket 80's per-session
-  // graph memo does not key on it; this raw edit needs an explicit poke (any input the signal does
-  // cover — a budget edit, harmless and reverted, is the least invasive) to force the next read fresh.
+  // is insert-only in production; cold-read after this unsupported mutation.
   f.memory.store.db.prepare("DELETE FROM fact_sources WHERE fact_id = ?").run(f.facts[0]!.id);
-  pokeSignal(f);
+  coldGraph(f);
   expect(f.memory.injection(f.target, original).knowledgeCommitIds).toEqual([first.commit, both.commit]);
 });
 
@@ -158,10 +152,9 @@ test("34c empty supports are never evidence-suppressed and only current-change s
   expect(f.memory.injection(f.target, coveredParentOnly).knowledgeCommitIds).toEqual([update[0]!.commit]);
 
   // A trusted empty-support maintenance row is represented directly to isolate delivery semantics.
-  // A revision's `supports` is immutable in production once committed, so this raw edit — like the
-  // one above — needs an explicit poke of an input the graph memo's signal does cover.
+  // A revision's `supports` is immutable in production; cold-read after this unsupported mutation.
   f.memory.store.db.prepare("UPDATE knowledge_revisions SET supports = '[]' WHERE id = ?").run(update[0]!.commit);
-  pokeSignal(f);
+  coldGraph(f);
   expect(f.memory.injection(f.target, view({ factIds: new Set(f.facts.map(fact => fact.id)) })).knowledgeCommitIds)
     .toEqual([update[0]!.commit]);
 });

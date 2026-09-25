@@ -1,8 +1,8 @@
 // Ticket 80 item 2 "The knowledge graph input, reused while nothing it depends on changed": memoizes
-// `commitGraphInput()`'s full (unseeded) build per Store, keyed on `Store.progressSignal` (72's own
-// pattern, completed by this ticket with every session's project assignment, ruled "B"). Pins: cache
-// reuse via one `db.prepare` statement capture, every listed signal input invalidating it through a
-// second connection, a pure Raw append reusing it, writers always rebuilding, and the cross-connection
+// `commitGraphInput()`'s cold (unseeded) build per Store. Ticket 88 replaces the broad signal
+// invalidation with incremental knowledge selection. Pins: cache reuse via one `db.prepare` statement,
+// neutral writes never rebuilding the cold input through a second connection, writers always rebuilding,
+// and the cross-connection
 // project-reassignment regression (also pinned for 72's footer/arming at the signal level in
 // tests/core/store/ticket-72-progress-signal.test.ts).
 import { afterEach, expect, test } from "vitest";
@@ -43,7 +43,7 @@ function seeded(store: Store) {
 const revisionsQuery = (sql: unknown) => /SELECT \* FROM knowledge_revisions ORDER BY id/.test(String(sql));
 
 test.each(["consolidation", "budget", "cursor-back", "branch-switch", "path-rewrite", "project-merge", "processing", "pool-state"] as const)(
-  "80: %s invalidates the reader memo through a second connection", kind => {
+  "88: %s updates the reader projection without a second cold build", kind => {
     const dir = mkdtempSync(join(tmpdir(), "trace-memory-80-input-")); dirs.push(dir);
     const file = join(dir, "trace.db"), writer = new Store(file); stores.push(writer);
     const context = seeded(writer), { sessionId, turnId, entry, factId, project } = context;
@@ -84,7 +84,7 @@ test.each(["consolidation", "budget", "cursor-back", "branch-switch", "path-rewr
     expect(builds).toBe(1);
     mutate();
     const actual = reader.currentKnowledge(path);
-    expect(builds).toBe(2);
+    expect(builds).toBe(1);
     expect(actual).toEqual(writer.currentKnowledge(path));
   });
 

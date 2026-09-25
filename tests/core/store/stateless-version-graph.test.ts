@@ -35,6 +35,15 @@ function effective(revisions: KnowledgeRevision[], parents: Map<number, number[]
   return resolver.call(Store.prototype, revisions, parents, grounded);
 }
 
+function compareCommittedGraph(store: Store, path: KnowledgePath) {
+  const cached = store.commitGraph(path, undefined, undefined, store.commitGraphInput(undefined, path.sessionId));
+  const fresh = store.commitGraph(path);
+  expect([...cached.applicable].sort()).toEqual([...fresh.applicable].sort());
+  expect([...cached.effective].sort()).toEqual([...fresh.effective].sort());
+  expect(cached.resolved.map(item => item.id)).toEqual(fresh.resolved.map(item => item.id));
+  expect(cached.current.map(item => item.id)).toEqual(fresh.current.map(item => item.id));
+}
+
 function create(store: Store, path: KnowledgePath, support: number, scope: "session" | "project" | "global", text: string) {
   const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
     operations: [{ op: "create", handle: "$new", author: "test", text, category: "constraint", scope,
@@ -115,9 +124,13 @@ test("64b stateless graph: genuine alternative split operations keep only the op
   };
 
   const first = await split(aPath, aFact.id, ["first A", "first B"]);
+  compareCommittedGraph(store, aPath);
   store.setCurrentPath(a.id, "rewind", a0.turn.id, "test-lineage");
+  compareCommittedGraph(store, bPath);
   const second = await split(bPath, bFact.id, ["second A", "second B"]);
+  compareCommittedGraph(store, bPath);
   store.setCurrentPath(a.id, "main", a1.turn.id, "test-lineage");
+  compareCommittedGraph(store, bPath);
   const graph = store.commitGraph(bPath);
   expect(first.every(id => graph.applicable.has(id) && !graph.effective.has(id))).toBe(true);
   expect(second.every(id => graph.effective.has(id) && graph.resolved.some(item => item.id === id))).toBe(true);
@@ -166,12 +179,19 @@ test("64b stateless graph: admitted deep branch defeats a restored sibling from 
   };
 
   const second = await update(aPath, base, aFact.id, "A branch second");
+  compareCommittedGraph(store, aPath);
   store.setCurrentPath(a.id, "rewind", a0.turn.id, "test-lineage");
+  compareCommittedGraph(store, bPath);
   const third = await update(bPath, base, bFact.id, "B sibling third");
+  compareCommittedGraph(store, bPath);
   store.setCurrentPath(b.id, "rewind", b0.turn.id, "test-lineage");
+  compareCommittedGraph(store, aPath);
   store.setCurrentPath(a.id, "main", a1.turn.id, "test-lineage");
+  compareCommittedGraph(store, aPath);
   const fourth = await update(aPath, second, aFact.id, "A branch fourth");
+  compareCommittedGraph(store, aPath);
   store.setCurrentPath(b.id, "main", b1.turn.id, "test-lineage");
+  compareCommittedGraph(store, bPath);
 
   const graph = store.commitGraph(bPath);
   expect(graph.applicable.has(third.commit)).toBe(true);
@@ -253,6 +273,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     return { outcome: "success", output: "scope changed", request };
   });
   expect(scopeChange.outcome).toBe("success");
+  compareCommittedGraph(store, bPath);
 
   const trigger = createDreamerTrigger(memory, aPath, aFact.id, 2, "global");
   const commit = vi.spyOn(store, "commitConsolidationRun");
@@ -287,8 +308,10 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
   });
   expect(result.outcome).toBe("success");
   expect(splitChildren).toHaveLength(2);
+  compareCommittedGraph(store, bPath);
 
   store.setCurrentPath(a.id, "rewind", a0.turn.id, "test-lineage");
+  compareCommittedGraph(store, bPath);
   const graph = store.commitGraph(bPath);
   for (const parent of [scopedParent.commit, survivor.commit, absorbed.commit, splitParent.commit])
     expect(graph.applicable.has(parent)).toBe(false);
