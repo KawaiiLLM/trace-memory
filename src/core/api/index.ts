@@ -32,7 +32,7 @@ export type { TriggerOrigin, TriggerOriginRelation } from "../model/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
 export type { NotingDiagnostic, NotingNearAudit, NotingUnansweredNearPair } from "../noting/review.ts";
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
-import { Store, type PendingEntries, type SourceInput, type SourceEntry, type SourceEntryMeta, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
+import { Store, type PathPending, type SourceInput, type SourceEntry, type SourceEntryMeta, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
 import { admitDreaming, freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
@@ -732,10 +732,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // (never re-reading Raw) for an entry already seen. Pruned to exactly the still-pending set on every
   // read: an entry drops out the moment it is noted, instead of leaking for the life of the process.
   const notingViewCache = new Map<number, string>();
-  let lastPending: PendingEntries | undefined;
+  let lastPending: PathPending | undefined;
   type CountedPrefix = { count: JoinedTokens; offset: number; end: number; views: Map<number, { id: number; text: string }> };
-  const counted = new WeakMap<PendingEntries, CountedPrefix>();
-  const pendingState = (target: TaskTarget): PendingEntries => {
+  const counted = new WeakMap<PathPending, CountedPrefix>();
+  const pendingState = (target: TaskTarget): PathPending => {
     const pending = store.pendingEntryState(target.sessionId, target.branch, target.headTurnId);
     if (pending !== lastPending) {
       const stillPending = new Set(pending);
@@ -744,7 +744,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }
     return pending;
   };
-  const countPending = (pending: PendingEntries, limit: number): number => {
+  const countPending = (pending: PathPending, limit: number): number => {
     let prefix = counted.get(pending);
     if (!prefix) {
       prefix = { count: new JoinedTokens(), offset: pending.offset, end: pending.offset, views: new Map() };

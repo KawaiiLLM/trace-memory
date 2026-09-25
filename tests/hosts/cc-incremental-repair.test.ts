@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { bindingPath, readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
+import { Store, StaleSourcePathError } from "../../src/core/store/index.ts";
 import { classifySourceRecord, selectedNativePath, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 
 const dirs: string[] = [];
@@ -200,20 +201,34 @@ test("a compaction-only extension advances its head without rebuilding the selec
   } finally { f.importer.close(); }
 });
 
-test("a same-length, same-tail rewrite invalidates the append header and rebuilds native selection", async () => {
+test("another connection's same-count, same-tail rewrite rejects stale append and reconciles native ancestry", async () => {
   const f = await setup(base(), "stale-prefix");
+  const other = new Store(f.config.dbPath);
   try {
     const first = await f.importer.reconcile(), store = f.importer.memory.store;
-    // The header's version catches a concurrent rewrite even when its count and tail are unchanged.
-    store.db.prepare("UPDATE source_paths SET version = version + 1 WHERE session_id = ? AND branch = ?")
-      .run(first.coreSessionId!, first.branch);
+    const originalState = store.sourcePathState(first.coreSessionId!, first.branch)!;
+    const replacement = other.appendSourceEntry({ sessionId: first.coreSessionId!,
+      turnId: store.getSourceEntry(first.selectedEntryIds[0]!)!.turnId, nativeLineage: "rewriter", nativeId: "replacement",
+      role: "user", text: "replacement", raw: "replacement", calls: [] });
+    other.selectSourcePath(first.coreSessionId!, first.branch, [replacement.id, first.selectedTailId!]);
+    const changed = other.sourcePathState(first.coreSessionId!, first.branch)!;
+    expect(changed).toMatchObject({ count: originalState.count, tailId: originalState.tailId });
+    expect(changed.version).toBeGreaterThan(originalState.version);
+    const append = store.appendSourcePath.bind(store);
+    let rejected = 0;
+    store.appendSourcePath = (...args: Parameters<typeof append>) => {
+      expect(args[2]).toEqual(originalState);
+      try { return append(...args); }
+      catch (error) { if (error instanceof StaleSourcePathError) rejected++; throw error; }
+    };
     appendFileSync(f.transcriptPath, line(prompt("stale-u", "a", 3)) +
       line(assistant("stale-a", "stale-u", 4, [{ type: "text", text: "stale" }])));
     const next = await f.importer.reconcile();
+    expect(rejected).toBe(1);
     expect(next.state).toBe("ready");
     expect(next.selectedEntryIds).toEqual(store.selectedSourceEntryIds(next.coreSessionId!, next.branch));
     expect(next.selectedEntryIds.slice(0, 2)).toEqual(first.selectedEntryIds);
-  } finally { f.importer.close(); }
+  } finally { other.close(); f.importer.close(); }
 });
 
 test("a projection failure keeps the suffix retryable after record commits", async () => {

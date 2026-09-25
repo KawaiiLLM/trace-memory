@@ -764,25 +764,67 @@ export class StaleSourcePathError extends Error {
 
 export interface SourcePathState { count: number; tailId: number | null; version: number }
 
-/** A pending queue with stable identity across appends and local prefix consumption. Positions are
- * monotonic, so removing a batch neither shifts nor copies the retained backlog. Store owns writes. */
-export class PendingEntries implements Iterable<number> {
-  private readonly entries = new Map<number, number>();
-  private first = 0;
-  private end = 0;
-  constructor(ids: Iterable<number>) { for (const id of ids) this.append(id); }
-  get offset(): number { return this.first; }
-  get length(): number { return this.end - this.first; }
-  at(index: number): number | undefined { return this.entries.get(this.first + index); }
-  append(id: number): void { this.entries.set(this.end++, id); }
-  removePrefix(count: number): void {
-    for (let i = 0; i < count; i++) this.entries.delete(this.first++);
+export interface PathPending extends Iterable<number> {
+  readonly offset: number;
+  readonly length: number;
+  at(index: number): number | undefined;
+  append(id: number): void;
+  removePrefix(count: number): void;
+}
+
+function pathPending(ids: number[]): PathPending {
+  let first = 0;
+  return {
+    get offset() { return first; },
+    get length() { return ids.length - first; },
+    at(index) { return ids[first + index]; },
+    append(id) { ids.push(id); },
+    removePrefix(count) { first += count; },
+    *[Symbol.iterator]() { for (let i = first; i < ids.length; i++) yield ids[i]!; },
+  };
+}
+
+class FrozenPathSet extends Set<number> {
+  private owned?: Set<number>;
+  constructor(private readonly ordered: readonly number[], private readonly positions: ReadonlyMap<number, number>,
+    private readonly limit: number, private readonly include: (id: number) => boolean = () => true) { super(); }
+  override has(id: number): boolean {
+    if (this.owned) return this.owned.has(id);
+    const index = this.positions.get(id);
+    return index !== undefined && index < this.limit && this.include(id);
   }
-  [Symbol.iterator](): IterableIterator<number> { return this.entries.values(); }
+  override get size(): number { if (this.owned) return this.owned.size; let size = 0; for (const _ of this) size++; return size; }
+  override *values(): SetIterator<number> {
+    if (this.owned) { yield* this.owned; return; }
+    for (let i = 0; i < this.limit; i++) if (this.include(this.ordered[i]!)) yield this.ordered[i]!;
+  }
+  override keys(): SetIterator<number> { return this.values(); }
+  override *entries(): SetIterator<[number, number]> { for (const id of this) yield [id, id]; }
+  override [Symbol.iterator](): SetIterator<number> { return this.values(); }
+  override forEach(callback: (value: number, value2: number, set: Set<number>) => void, thisArg?: unknown): void {
+    for (const id of this) callback.call(thisArg, id, id, this);
+  }
+  override add(id: number): this { this.owned ??= new Set(this); this.owned.add(id); return this; }
+  override delete(id: number): boolean { this.owned ??= new Set(this); return this.owned.delete(id); }
+  override clear(): void { this.owned = new Set(); }
+}
+
+interface PathView {
+  state: SourcePathState;
+  head?: { id: number; ids: number[]; positions: Map<number, number> };
+  ids: number[];
+  positions: Map<number, number>;
+  turns: Map<number, number>;
+  entriesByTurn: Map<number, number[]>;
+  addresses: Map<number, string[]>;
+  noted: Set<number>;
+  notedRow: number;
+  pending?: { headTurnId: number; count: number; coversTail: boolean; ids: PathPending };
 }
 
 export class Store {
   readonly db: DatabaseSync;
+  private readonly pathViews = new Map<string, PathView>();
   readonly migration64d: Migration64dReport;
   closed = false;
   private readonly dreamingAuthorities = new WeakMap<object, { rangeId: number; sessionId: number; token: string; executionId: string; runId: number }>();
@@ -797,28 +839,21 @@ export class Store {
   /** Capture once at admission. The ordered ids end at the exact native entry represented by this target. */
   triggerOrigin(path: KnowledgePath, triggerEntryId?: number): TriggerOrigin | null {
     if (!path.branch || path.headTurnId == null) return null;
-    const ids = this.selectedSourceEntryIds(path.sessionId, path.branch);
-    if (ids === null) return null;
-    const explicit = triggerEntryId === undefined ? undefined : ids.indexOf(triggerEntryId);
-    if (explicit !== undefined && explicit < 0) throw new Error("trigger origin does not contain the exact triggering entry");
-    const captured = explicit === undefined ? ids : ids.slice(0, explicit + 1);
-    if (captured.some(id => !Number.isInteger(id) || Number(id) <= 0) || new Set(captured).size !== captured.length)
-      throw new Error("trigger origin path is malformed");
-    if (!captured.length) return null;
-    // Whole-path metadata from the covering index (71): a foreign or missing id is simply absent.
-    const rows = this.db.prepare(`SELECT id, session_id, turn_id FROM source_entries
-      WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))`)
-      .all(path.sessionId, JSON.stringify(captured)) as { id: number; session_id: number; turn_id: number }[];
-    if (rows.length !== captured.length || rows.some(entry => entry.session_id !== path.sessionId)) throw new Error("trigger origin path contains a missing or foreign entry");
-    const byId = new Map(rows.map(entry => [entry.id, entry]));
-    const turns = this.pathTurns(path);
-    let trigger = explicit === undefined ? -1 : explicit;
-    if (triggerEntryId !== undefined && !turns.has(byId.get(triggerEntryId)!.turn_id))
+    const view = this.pathView(path.sessionId, path.branch);
+    if (!view) return null;
+    if (!view.state.count && triggerEntryId === undefined) return null;
+    const explicit = triggerEntryId === undefined ? undefined : view.positions.get(triggerEntryId);
+    if (triggerEntryId !== undefined && (explicit === undefined || explicit >= view.state.count))
       throw new Error("trigger origin does not contain the exact triggering entry");
-    if (explicit === undefined) for (let i = 0; i < captured.length; i++) if (turns.has(byId.get(Number(captured[i]))!.turn_id)) trigger = i;
+    const turns = this.pathSnapshot(path).turns;
+    let trigger = explicit ?? -1;
+    if (triggerEntryId !== undefined && !turns.has(view.turns.get(triggerEntryId)!))
+      throw new Error("trigger origin does not contain the exact triggering entry");
+    if (explicit === undefined) for (let i = 0; i < view.state.count; i++)
+      if (turns.has(view.turns.get(view.ids[i]!)!)) trigger = i;
     if (trigger < 0) throw new Error("trigger origin has no entry on the target ancestry");
-    const prefix = captured.slice(0, trigger + 1).map(Number);
-    if (prefix.some(id => !turns.has(byId.get(id)!.turn_id))) throw new Error("trigger origin is not an ordered native ancestry");
+    const prefix = view.ids.slice(0, trigger + 1);
+    if (prefix.some(id => !turns.has(view.turns.get(id)!))) throw new Error("trigger origin is not an ordered native ancestry");
     return { sessionId: path.sessionId, entryIds: prefix };
   }
 
@@ -1528,15 +1563,13 @@ export class Store {
     if (!branch) return "current path requires a non-empty branch";
     const turn = this.db.prepare("SELECT session_id FROM turns WHERE id = ?").get(headTurnId) as { session_id: number } | undefined;
     if (!turn || Number(turn.session_id) !== sessionId) return `current path head T${headTurnId} is not a Turn of session S${sessionId}`;
-    const ids = this.selectedSourceEntryIds(sessionId, branch);
-    if (ids === null) return `current path branch ${branch} is not a persisted source path of session S${sessionId}`;
-    const entryRows = ids.length ? this.db.prepare(`SELECT id, turn_id, session_id FROM source_entries
-      WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) : [];
-    const entries = new Map(entryRows.map(value => [Number(value.id), { turnId: Number(value.turn_id), sessionId: Number(value.session_id) }]));
-    const headAncestry = snapshot?.turns ?? this.pathTurns({ sessionId, headTurnId });
-    const tail = ids.length && entries.get(ids.at(-1)!);
-    const tailAncestry = tail && !headAncestry.has(tail.turnId) ? this.pathTurns({ sessionId, headTurnId: tail.turnId }) : undefined;
-    return this.pathCoherenceProblem(sessionId, branch, headTurnId, ids, entries, headAncestry, tailAncestry);
+    const view = this.pathView(sessionId, branch);
+    if (!view) return `current path branch ${branch} is not a persisted source path of session S${sessionId}`;
+    const headAncestry = snapshot?.turns ?? this.pathSnapshot({ sessionId, branch, headTurnId }).turns;
+    const tailTurn = view.state.tailId === null ? null : view.turns.get(view.state.tailId)!;
+    if (tailTurn === null || headAncestry.has(tailTurn) ||
+        this.pathSnapshot({ sessionId, branch, headTurnId: tailTurn }).turns.has(headTurnId)) return null;
+    return `current path head T${headTurnId} is not coherent with branch ${branch}`;
   }
 
   /** Publish the host's authoritative foreground. Knowledge resolution is stateless and observes
@@ -2092,22 +2125,11 @@ export class Store {
    * with outcome "failure" — the run record is always written, business writes are not.
    */
   commitNotingRun(input: CommitNotingRunInput): CommitNotingResult {
-    const ownsCommit = !this.db.isTransaction;
-    let publishPending: (() => void) | undefined;
     try {
       const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
         this.requireEnabled(sessionId);
         this.requireClaim(input.run);
-        const pending = this.pendingPath, consumed = input.entryIds ?? [];
-        // Validate reuse under the write lock. A second writer's commit, unpublished append, or
-        // non-prefix batch must rebuild. Nested callers cannot publish before their outer COMMIT.
-        const header = ownsCommit && pending?.path && pending.sessionId === sessionId
-          ? this.sourcePathState(sessionId, pending.branch) : null;
-        const retainPending = !!(header && pending?.path && pending.signal === this.progressSignal(sessionId) &&
-          header.version === pending.path.version && header.count === pending.path.count &&
-          header.tailId === pending.path.tailId && consumed.length <= pending.ids.length &&
-          consumed.every((id, index) => pending.ids.at(index) === id));
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const batchIds: number[] = [];
         for (const f of input.facts) {
@@ -2157,18 +2179,8 @@ export class Store {
           this.db.prepare("INSERT INTO noted_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
         }
         this.completeExecution(runId);
-        if (retainPending) {
-          const signal = this.progressSignal(sessionId);
-          publishPending = () => {
-            if (this.pendingPath !== pending) return;
-            pending!.ids.removePrefix(consumed.length);
-            pending!.signal = signal;
-          };
-        }
         return { runId, facts: batchIds.map((id) => this.getFact(id)!) };
       });
-      // Queue mutation follows the actual COMMIT, never the writes or a released SAVEPOINT.
-      publishPending?.();
       return { ok: true, runId: result.runId, facts: result.facts };
     } catch (err) {
       return { ok: false, ...this.recordFailure(input.run, err) };
@@ -2273,6 +2285,10 @@ export class Store {
    * decides: a missing Turn, a Turn of another session and a cycle remain an error, never a silently
    * shorter path. */
   pathTurns(path: KnowledgePath): Set<number> {
+    return path.branch && path.headTurnId != null ? this.pathSnapshot(path).turns : this.loadPathTurns(path);
+  }
+
+  private loadPathTurns(path: KnowledgePath): Set<number> {
     if (!this.getSession(path.sessionId)) throw new Error(`session S${path.sessionId} does not exist`);
     const parents = new Map((this.db.prepare(`WITH RECURSIVE lineage(id, parent_turn_id) AS (
       SELECT t.id, t.parent_turn_id FROM turns t WHERE t.id = ? AND t.session_id = ?
@@ -2280,24 +2296,6 @@ export class Store {
     ) SELECT id, parent_turn_id FROM lineage`).all(path.headTurnId, path.sessionId, path.sessionId) as { id: number; parent_turn_id: number | null }[])
       .map(r => [r.id, r.parent_turn_id]));
     return this.ancestryFromParents(parents, path.headTurnId!);
-  }
-
-  /** Compare against a previously validated head, visiting only newer Turns. Turn ids increase at
-   * insertion, so reaching an older id proves divergence without walking the retained ancestry. */
-  pathExtendsHead(path: KnowledgePath, previous: number): boolean {
-    const head = path.headTurnId;
-    if (head == null || head < previous) return false;
-    if (head === previous) return true;
-    const row = this.db.prepare("SELECT parent_turn_id FROM turns WHERE id = ? AND session_id = ?")
-      .get(head, path.sessionId) as { parent_turn_id: number | null } | undefined;
-    if (row?.parent_turn_id === previous) return true;
-    if (row?.parent_turn_id == null || row.parent_turn_id < previous) return false;
-    return !!this.db.prepare(`WITH RECURSIVE suffix(id, parent_turn_id) AS (
-      SELECT id, parent_turn_id FROM turns WHERE id = ? AND session_id = ?
-      UNION SELECT t.id, t.parent_turn_id FROM turns t JOIN suffix s ON t.id = s.parent_turn_id
-        WHERE s.id > ? AND t.session_id = ?)
-      SELECT 1 FROM suffix WHERE id = ? LIMIT 1`)
-      .get(row.parent_turn_id, path.sessionId, previous, path.sessionId, previous);
   }
 
   /** Compatibility for callers without a host head: use the branch's latest recorded or manual turn. */
@@ -2673,32 +2671,37 @@ export class Store {
    * identity comes from `turn_id` and, only where a fact was written without entry bindings, from
    * `json_extract` over that one Turn's entries. */
   pathSnapshot(path: KnowledgePath): PathSnapshot {
-    const turns = this.pathTurns(path);
-    return { turns, entries: this.pathEntries(path, turns), consolidatedRuns: new Map() };
-  }
-
-  /** The branch's selected native ancestry up to the head, as entry ids per Turn; null when the path
-   * names no branch or the branch has no selected ancestry (headless seams keep Turn semantics).
-   * `addresses` answers one Turn at a time and keeps the answer for the rest of the operation; only a
-   * fact written without entry bindings asks. */
-  private pathEntries(path: KnowledgePath, turns: Set<number>): PathSnapshot["entries"] {
-    if (!path.branch || !path.headTurnId) return null;
-    const header = this.sourcePathState(path.sessionId, path.branch);
-    if (!header) return null;
-    const rows = this.db.prepare(`SELECT j.position, j.entry_id, e.id AS owned_id, e.id, e.turn_id, e.addresses
-      FROM source_paths p JOIN source_path_entries j ON j.path_id = p.id
-      LEFT JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
-      WHERE p.session_id = ? AND p.branch = ? ORDER BY j.position`).all(path.sessionId, path.branch) as
-      { position: number; entry_id: number; owned_id: number | null; id: number; turn_id: number; addresses: string }[];
-    this.validatePathMembers(header, rows);
-    const ids = new Set<number>(), addresses = new Map<number, Set<string>>();
-    for (const { id, turn_id, addresses: raw } of rows) {
-      if (!turns.has(turn_id)) continue;
-      ids.add(id);
-      if (!addresses.has(turn_id)) addresses.set(turn_id, new Set());
-      for (const address of JSON.parse(raw) as string[]) addresses.get(turn_id)!.add(address);
+    if (path.branch && path.headTurnId != null) {
+      const view = this.pathView(path.sessionId, path.branch);
+      if (view) {
+        let head = view.head;
+        if (!head || head.id !== path.headTurnId) {
+          const ancestry = head && path.headTurnId >= head.id ? (this.db.prepare(`WITH RECURSIVE lineage(id, parent_turn_id) AS (
+            SELECT id, parent_turn_id FROM turns WHERE id = ? AND session_id = ?
+            UNION SELECT t.id, t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id
+              WHERE l.id != ? AND t.session_id = ?)
+            SELECT id FROM lineage`).all(path.headTurnId, path.sessionId, head.id, path.sessionId) as { id: number }[])
+            .map(row => row.id) : [];
+          const ancestor = head && ancestry.at(-1) === head.id ? head : undefined;
+          const ids = ancestor ? ancestor.ids : [];
+          const positions = ancestor ? ancestor.positions : new Map<number, number>();
+          const suffix = ancestor ? ancestry.reverse().slice(1) : [...this.loadPathTurns(path)].reverse();
+          for (const id of suffix) { positions.set(id, ids.length); ids.push(id); }
+          view.head = head = { id: path.headTurnId, ids, positions };
+        }
+        const turns = new FrozenPathSet(head.ids, head.positions, head.ids.length);
+        const count = view.state.count;
+        const selected = new FrozenPathSet(view.ids, view.positions, count, id => turns.has(view.turns.get(id)!));
+        return { turns, entries: { ids: selected, addresses: turnId => {
+          const addresses = new Set<string>();
+          if (turns.has(turnId)) for (const id of view.entriesByTurn.get(turnId) ?? [])
+            if (view.positions.get(id)! < count) for (const address of view.addresses.get(id)!) addresses.add(address);
+          return addresses;
+        } }, consolidatedRuns: new Map() };
+      }
     }
-    return { ids, addresses: (turnId: number) => addresses.get(turnId) ?? new Set() };
+    const turns = this.loadPathTurns(path);
+    return { turns, entries: null, consolidatedRuns: new Map() };
   }
 
   factEntries(factId: number): number[] {
@@ -3808,18 +3811,20 @@ export class Store {
    * payloads to decide membership. 79: returns metadata alone (item 1); a caller that renders any of
    * these occurrences hydrates the exact ids it kept through `hydrateSourceEntries`, once. */
   listSourceEntries(sessionId: number, turnId?: number, branch?: string): SourceEntryMeta[] {
-    const selected = branch === undefined ? [] : this.db.prepare(
-      `SELECT e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")} FROM source_paths p
-       JOIN source_path_entries j ON j.path_id = p.id JOIN source_entries e ON e.id = j.entry_id
-       WHERE p.session_id = ? AND p.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.position`)
-      .all(sessionId, branch, sessionId, turnId ?? null, turnId ?? null);
-    const hasPath = branch !== undefined && this.sourcePathState(sessionId, branch) !== null;
-    // 74/79: INDEXED BY pins the turn-ordinal index (67) outright — without it, the planner's stat-free
-    // cost estimate can prefer a session_id-prefixed plan instead, adding an unwanted sort.
-    const rows = hasPath ? selected
-      : (turnId === undefined
-        ? this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries WHERE session_id = ? ORDER BY id`).all(sessionId)
-        : this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries INDEXED BY idx_source_turn_ordinal WHERE turn_id = ? AND session_id = ? ORDER BY id`).all(turnId, sessionId));
+    const view = branch === undefined ? null : this.pathView(sessionId, branch);
+    if (view) {
+      const ids = turnId === undefined ? view.ids : view.entriesByTurn.get(turnId) ?? [];
+      if (!ids.length) return [];
+      const rows = this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries
+        WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))`).all(sessionId, JSON.stringify(ids));
+      if (rows.length !== ids.length) throw new Error("stored source path is malformed");
+      const byId = new Map(rows.map(row => [Number(row.id), toSourceEntryMeta(row)]));
+      return ids.map(id => byId.get(id)!);
+    }
+    // 74/79: INDEXED BY pins the turn-ordinal index (67) for an unbound Turn read.
+    const rows = turnId === undefined
+      ? this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries WHERE session_id = ? ORDER BY id`).all(sessionId)
+      : this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries INDEXED BY idx_source_turn_ordinal WHERE turn_id = ? AND session_id = ? ORDER BY id`).all(turnId, sessionId);
     return rows.map(toSourceEntryMeta);
   }
   /** 22c "complete snapshot": the source-entry identities of many Turns in one read, in the order an
@@ -3837,31 +3842,82 @@ export class Store {
       .get(sessionId, branch) as { length: number; tail_entry_id: number | null; version: number } | undefined;
     return row ? { count: row.length, tailId: row.tail_entry_id, version: row.version } : null;
   }
-  selectedSourceEntryIds(sessionId: number, branch: string): number[] | null {
-    const state = this.sourcePathState(sessionId, branch);
-    if (!state) return null;
-    // Return one ordered value rather than a JS row per member. Graph preparation batches the
-    // ownership check; trigger admission and path writers validate their own selected entries.
-    // The ordered subquery streams the primary-key order into the aggregate. Putting ORDER BY
-    // inside json_group_array instead builds a redundant temporary sorting tree on this runtime.
-    const row = this.db.prepare(`SELECT json_group_array(entry_id) AS ids, MAX(position) AS last_position
-      FROM (SELECT entry_id, position FROM source_path_entries
-        WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = ?)
-        ORDER BY position)`)
-      .get(sessionId, branch) as { ids: string; last_position: number | null };
-    const ids = JSON.parse(row.ids) as number[];
-    // Nonnegative, unique integer positions and this maximum also exclude a gap in the sequence.
-    if (ids.length !== state.count || (ids.at(-1) ?? null) !== state.tailId ||
-        row.last_position !== (ids.length ? ids.length - 1 : null))
-      throw new Error("stored source path is malformed");
-    return ids;
+  /** One committed path mirror per branch. Transactional writers never read or publish it. Header,
+   * suffix and processing watermarks are observed in one read transaction. A replacement allocates
+   * new arrays/maps; append-only arrays preserve earlier position-bounded snapshots. */
+  private pathView(sessionId: number, branch: string): PathView | null {
+    const outside = !this.db.isTransaction;
+    if (outside) this.db.exec("BEGIN");
+    try {
+      const state = this.sourcePathState(sessionId, branch);
+      const key = JSON.stringify([sessionId, branch]);
+      const previous = outside ? this.pathViews.get(key) : undefined;
+      if (!state) {
+        if (outside) { this.db.exec("COMMIT"); this.pathViews.delete(key); }
+        return null;
+      }
+      const append = previous && previous.state.version === state.version && state.count > previous.state.count;
+      const same = previous && previous.state.version === state.version && state.count === previous.state.count &&
+        state.tailId === previous.state.tailId;
+      const start = append ? previous.state.count : 0;
+      const rows = same ? [] : this.db.prepare(`SELECT j.position, j.entry_id, e.id AS owned_id, e.turn_id, e.addresses
+        FROM source_paths p JOIN source_path_entries j ON j.path_id = p.id
+        LEFT JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
+        WHERE p.session_id = ? AND p.branch = ? AND j.position >= ? ORDER BY j.position`)
+        .all(sessionId, branch, start) as { position: number; entry_id: number; owned_id: number | null; turn_id: number; addresses: string }[];
+      if (rows.length !== (same ? 0 : state.count - start) ||
+          rows.some((row, index) => row.position !== start + index || row.owned_id !== row.entry_id) ||
+          (!same && (rows.at(-1)?.entry_id ?? null) !== state.tailId))
+        throw new Error("stored source path is malformed");
+      const ids = same || append ? previous.ids : rows.map(row => row.entry_id);
+      const positions = same || append ? previous.positions : new Map<number, number>();
+      const turns = same || append ? previous.turns : new Map<number, number>();
+      const entriesByTurn = same || append ? previous.entriesByTurn : new Map<number, number[]>();
+      const addresses = same || append ? previous.addresses : new Map<number, string[]>();
+      // Do not publish mutations until the read transaction has committed. Reuse existing arrays
+      // only after a successful read; old snapshots are bounded by their captured lengths.
+      const notedRow = Number(this.db.prepare("SELECT IFNULL(MAX(rowid), 0) AS last FROM noted_entries").get()!.last);
+      const marked = this.db.prepare(`SELECT n.rowid AS position, n.entry_id FROM noted_entries n
+        JOIN source_entries e ON e.id = n.entry_id WHERE e.session_id = ? AND n.rowid > ? AND n.rowid <= ? ORDER BY n.rowid`)
+        .all(sessionId, previous?.notedRow ?? 0, notedRow) as { position: number; entry_id: number }[];
+      const noted = previous?.noted ?? new Set<number>();
+      const decoded = rows.map(row => ({ ...row, addresses: JSON.parse(row.addresses) as string[] }));
+      if (outside) this.db.exec("COMMIT");
+      for (const row of marked) noted.add(row.entry_id);
+      for (const row of decoded) {
+        if (append) ids.push(row.entry_id);
+        positions.set(row.entry_id, row.position);
+        turns.set(row.entry_id, row.turn_id);
+        if (!entriesByTurn.has(row.turn_id)) entriesByTurn.set(row.turn_id, []);
+        entriesByTurn.get(row.turn_id)!.push(row.entry_id);
+        addresses.set(row.entry_id, row.addresses);
+      }
+      const view: PathView = { state, ids, positions, turns, entriesByTurn, addresses, noted, notedRow,
+        head: same || append ? previous.head : undefined,
+        pending: same || append ? previous.pending : undefined };
+      if (view.pending && marked.length) {
+        const consumed = marked.map(row => row.entry_id).filter(id => (positions.get(id) ?? Infinity) < view.pending!.count);
+        if (consumed.every((id, index) => view.pending!.ids.at(index) === id))
+          view.pending.ids.removePrefix(consumed.length);
+        else view.pending = undefined;
+      }
+      if (outside) this.pathViews.set(key, view);
+      return view;
+    } catch (error) {
+      if (outside && this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
-  /** Full readers validate the rows they already need, not a second membership enumeration. */
-  private validatePathMembers(state: SourcePathState,
-    rows: { position: number; entry_id: number; owned_id: number | null }[]): void {
-    if (rows.length !== state.count || (rows.at(-1)?.entry_id ?? null) !== state.tailId ||
-        rows.some((row, index) => row.position !== index || row.owned_id !== row.entry_id))
-      throw new Error("stored source path is malformed");
+
+  selectedSourceEntryIds(sessionId: number, branch: string): number[] | null {
+    return this.selectedSourceEntrySnapshot(sessionId, branch)?.ids() ?? null;
+  }
+  /** Captures a stable prefix without copying it. Full ids are materialized only if requested. */
+  selectedSourceEntrySnapshot(sessionId: number, branch: string): { state: Readonly<SourcePathState>; count: number; tailId: number | null; ids: () => number[] } | null {
+    const view = this.pathView(sessionId, branch);
+    if (!view) return null;
+    const count = view.state.count;
+    return { state: view.state, count, tailId: view.state.tailId, ids: () => view.ids.slice(0, count) };
   }
   /** Resolve a persisted native ancestry without exposing source_paths storage to a host adapter.
    * A later extension of the same branch is eligible; a sibling that diverged before the prefix is not. */
@@ -4014,16 +4070,8 @@ export class Store {
   }
   /** The selected path's metadata in persisted branch order; no Raw payload is loaded. */
   private pathSourceMeta(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): SourceEntryMeta[] {
-    const turns = prepared?.turns ?? this.pathTurns({ sessionId, headTurnId });
-    const header = this.sourcePathState(sessionId, branch);
-    const rows = header ? this.db.prepare(`SELECT j.position, j.entry_id, e.id AS owned_id,
-        e.${SOURCE_ENTRY_META_COLUMNS.split(", ").join(", e.")}
-        FROM source_paths p JOIN source_path_entries j ON j.path_id = p.id
-        LEFT JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
-        WHERE p.session_id = ? AND p.branch = ? ORDER BY j.position`).all(sessionId, branch)
-      : this.db.prepare(`SELECT ${SOURCE_ENTRY_META_COLUMNS} FROM source_entries WHERE session_id = ? ORDER BY id`).all(sessionId);
-    if (header) this.validatePathMembers(header, rows as { position: number; entry_id: number; owned_id: number | null }[]);
-    return rows.filter((r: any) => turns.has(Number(r.turn_id))).map(toSourceEntryMeta);
+    const turns = prepared?.turns ?? this.pathSnapshot({ sessionId, branch, headTurnId }).turns;
+    return this.listSourceEntries(sessionId, undefined, branch).filter(entry => turns.has(entry.turnId));
   }
   private pathEntryIds(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number[] {
     return this.pathSourceMeta(sessionId, branch, headTurnId, prepared).map(e => e.id);
@@ -4041,91 +4089,36 @@ export class Store {
   entryNoted(id: number): boolean {
     return !!this.db.prepare("SELECT 1 FROM noted_entries WHERE entry_id = ? LIMIT 1").get(id);
   }
-  private pendingPath: { sessionId: number; branch: string; headTurnId: number;
-    signal: string; path: SourcePathState | null; ids: PendingEntries; coversTail: boolean } | undefined;
-
-  /** The queue is owned by Store and must not be mutated by callers. Its identity changes on a
-   * rebuild; an append or local Noting prefix consumption retains it and the API's counted prefix. */
+  /** Pending work shares the path view's append and noted-row watermarks. A historical head
+   * selects a new queue; full-path head advances retain the existing queue and counted prefix. */
   pendingEntryState(sessionId: number, branch: string, headTurnId: number,
-    prepare?: () => PathSnapshot): PendingEntries {
-    const ownSnapshot = !this.db.isTransaction;
-    const cached = ownSnapshot ? this.pendingPath : undefined;
-    if (ownSnapshot) this.db.exec("BEGIN");
-    try {
-      // Read the signal, header, suffix and processing marks from one SQLite snapshot. Otherwise
-      // an external note followed by an append can produce a pending set that never existed.
-      const read = (): (() => PendingEntries) => {
-        const signal = this.progressSignal(sessionId);
-        const path = this.sourcePathState(sessionId, branch);
-        // No header means session-occurrence fallback. Raw appends do not change the signal, so
-        // that fallback is always fresh rather than pretending an absent path is a stable prefix.
-        if (path && cached?.path && cached.sessionId === sessionId && cached.branch === branch && cached.signal === signal &&
-            cached.path.version === path.version) {
-          if (cached.path.count === path.count && cached.path.tailId === path.tailId &&
-              (cached.headTurnId === headTurnId || (cached.coversTail &&
-                this.pathExtendsHead({ sessionId, headTurnId }, cached.headTurnId)))) return () => {
-            cached.headTurnId = headTurnId;
-            return cached.ids;
-          };
-          // Every rewrite/restored entry bumps the version. The same version and a larger count
-          // allow an indexed suffix read; historical-head answers must first cover the old tail.
-          if (cached.coversTail && cached.path && path && path.count > cached.path.count) {
-            const rows = this.db.prepare(`SELECT j.position, j.entry_id, e.turn_id FROM source_paths p
-              JOIN source_path_entries j ON j.path_id = p.id
-              JOIN source_entries e ON e.id = j.entry_id AND e.session_id = p.session_id
-              WHERE p.session_id = ? AND p.branch = ? AND j.position >= ? ORDER BY j.position`)
-              .all(sessionId, branch, cached.path.count) as { position: number; entry_id: number; turn_id: number }[];
-            if (rows.length === path.count - cached.path.count && rows.at(-1)?.entry_id === path.tailId &&
-                rows.every((row, i) => row.position === cached.path!.count + i)) {
-              const direct = this.db.prepare("SELECT parent_turn_id, session_id FROM turns WHERE id = ?")
-                .get(headTurnId) as { parent_turn_id: number | null; session_id: number } | undefined;
-              const turns = direct?.session_id !== sessionId ? new Set<number>()
-                : cached.headTurnId === headTurnId ? new Set([headTurnId])
-                : direct.parent_turn_id === cached.headTurnId ? new Set([headTurnId, cached.headTurnId])
-                : new Set(this.db.prepare(`WITH RECURSIVE lineage(id,parent_turn_id) AS (
-                    SELECT id,parent_turn_id FROM turns WHERE id = ? AND session_id = ? UNION
-                    SELECT t.id,t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id
-                    WHERE l.id != ? AND t.session_id = ?)
-                    SELECT id FROM lineage`).all(headTurnId, sessionId, cached.headTurnId, sessionId).map(row => Number(row.id)));
-              // Full publication also permits general selections that filter out sibling Turns.
-              // Only extend this answer when every new entry actually belongs to the reader head.
-              if (turns.has(cached.headTurnId) && rows.every(row => turns.has(row.turn_id))) {
-                const newIds = rows.map(row => row.entry_id);
-                const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
-                  .all(JSON.stringify(newIds)) as { entry_id: number }[]).map(row => row.entry_id));
-                const added = newIds.filter(id => !noted.has(id));
-                return () => {
-                  for (const id of added) cached.ids.append(id);
-                  cached.path = path;
-                  cached.headTurnId = headTurnId;
-                  return cached.ids;
-                };
-              }
-            }
-          }
+    prepare?: () => PathSnapshot): PathPending {
+    const view = this.pathView(sessionId, branch);
+    const cached = view?.pending;
+    if (cached) {
+      const sameHead = cached.headTurnId === headTurnId;
+      const turns = !sameHead || cached.count < view!.state.count
+        ? this.pathSnapshot({ sessionId, branch, headTurnId }).turns : undefined;
+      if (sameHead || cached.coversTail && turns!.has(cached.headTurnId)) {
+        const suffix = view!.ids.slice(cached.count, view!.state.count);
+        if (!suffix.length || cached.coversTail && suffix.every(id => turns!.has(view!.turns.get(id)!))) {
+          for (const id of suffix) if (!view!.noted.has(id)) cached.ids.append(id);
+          cached.count = view!.state.count;
+          cached.headTurnId = headTurnId;
+          return cached.ids;
         }
-        // The factory runs only on a miss, inside this read snapshot. A footer can reuse these
-        // same validated members/ancestors for its other counts without passing a stale snapshot.
-        const prepared = prepare?.();
-        const ids = prepared?.entries ? [...prepared.entries.ids]
-          : this.pathEntryIds(sessionId, branch, headTurnId, prepared);
-        const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
-          .all(JSON.stringify(ids)) as { entry_id: number }[]).map(row => row.entry_id));
-        const pending = new PendingEntries(ids.filter(id => !noted.has(id)));
-        return () => {
-          if (ownSnapshot) this.pendingPath = { sessionId, branch, headTurnId, signal, path,
-            ids: pending, coversTail: !path || (ids.at(-1) ?? null) === path.tailId };
-          return pending;
-        };
-      };
-      const publish = read();
-      if (ownSnapshot) this.db.exec("COMMIT");
-      // Nothing derived from a failed transaction, including an extended array, escapes rollback.
-      return publish();
-    } catch (error) {
-      if (ownSnapshot && this.db.isTransaction) this.db.exec("ROLLBACK");
-      throw error;
+        // A reader still at the old head must not inherit new entries beyond that head.
+        if (sameHead && !suffix.some(id => turns!.has(view!.turns.get(id)!))) return cached.ids;
+      }
     }
+    const prepared = prepare?.();
+    const ids = prepared?.entries ? [...prepared.entries.ids] : this.pathEntryIds(sessionId, branch, headTurnId, prepared);
+    const noted = view?.noted ?? new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(ids)) as { entry_id: number }[]).map(row => row.entry_id));
+    const pending = pathPending(ids.filter(id => !noted.has(id)));
+    if (view && !this.db.isTransaction) view.pending = { headTurnId, count: view.state.count, ids: pending,
+      coversTail: (ids.at(-1) ?? null) === view.state.tailId };
+    return pending;
   }
   /** Return a defensive copy; consumers of the hot due path use pendingEntryState directly. */
   pendingEntryIds(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number[] {

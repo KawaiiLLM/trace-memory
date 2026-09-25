@@ -63,6 +63,9 @@ interface BootstrapSummary {
 const snapshotKey = (value: CcTranscriptSnapshot) => JSON.stringify([value.exists, value.device, value.inode, value.size, value.modifiedMs, value.changedMs]);
 export const CC_PLUGIN_NAME = "trace-memory";
 export const CC_MCP_SERVER_NAME = "traceMemory";
+// The exact Store-view base used for optimistic append; never serialized into the host result.
+const selectedSnapshot = Symbol("selected source path snapshot");
+type CapturedResult = CcReconcileResult & { [selectedSnapshot]?: NonNullable<ReturnType<Store["selectedSourceEntrySnapshot"]>> };
 
 export class CcProjection {
   readonly memory: TraceMemoryFacade;
@@ -74,8 +77,6 @@ export class CcProjection {
   private callsByTurn = new Map<number, Map<string, CallIdentity>>();
   private loadedCallTurns = new Set<number>();
   private lastResult: CcReconcileResult | null = null;
-  private selectedIds: number[] = [];
-  private selectedState: SourcePathState | null = null;
   private synchronized = false;
 
   constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, memory: TraceMemoryFacade) {
@@ -157,16 +158,20 @@ export class CcProjection {
   }
 
   private result(state: CcReconcileResult["state"], snapshot: CcTranscriptSnapshot, problems: string[] = [],
-    values: Partial<CcReconcileResult> = {}): CcReconcileResult {
+    values: Partial<CcReconcileResult> = {}, published = false): CcReconcileResult {
     const { selectedEntryIds, ...rest } = values;
-    const backing = selectedEntryIds ?? this.selectedIds;
-    const count = backing.length;
+    const sessionId = rest.coreSessionId ?? this.binding.coreSessionId;
+    const branch = rest.branch ?? this.binding.branch;
+    const observed = sessionId === null ? null : this.memory.store.selectedSourceEntrySnapshot(sessionId, branch);
+    const selected = published || !this.lastResult ? observed :
+      (this.lastResult as CapturedResult)[selectedSnapshot] ?? observed;
+    const count = selectedEntryIds?.length ?? selected?.count ?? 0;
     const result = { state, snapshot, coreSessionId: this.binding.coreSessionId, branch: this.binding.branch,
       headTurnId: this.lastResult?.headTurnId ?? null, appendedEntryIds: [], selectedAppendedEntryIds: [], problems,
-      selectedCount: count, selectedTailId: backing[count - 1] ?? null, ...rest } as CcReconcileResult;
-    // The append-only backing is shared; captured length makes older results immutable snapshots.
-    // A navigation replaces the backing, so it cannot change an earlier result either.
-    Object.defineProperty(result, "selectedEntryIds", { enumerable: true, get: () => backing.slice(0, count) });
+      selectedCount: count, selectedTailId: selectedEntryIds ? selectedEntryIds[count - 1] ?? null : selected?.tailId ?? null, ...rest } as CcReconcileResult;
+    // Captured Store prefix does not change after a later append or navigation.
+    Object.defineProperty(result, "selectedEntryIds", { enumerable: true, get: () => selectedEntryIds?.slice() ?? selected?.ids() ?? [] });
+    Object.defineProperty(result, selectedSnapshot, { value: selected });
     return result;
   }
 
@@ -204,8 +209,6 @@ export class CcProjection {
       this.callsByTurn.clear();
       this.loadedCallTurns.clear();
       this.lastResult = null;
-      this.selectedIds = [];
-      this.selectedState = null;
     }
 
     let summary: BootstrapSummary | null = null, bootstrapSnapshot: CcTranscriptSnapshot | null = null;
@@ -422,11 +425,11 @@ export class CcProjection {
           if (projectionReady) {
             headTurnId = [...selectedNodes].reverse().find(node => node.turnId !== undefined)?.turnId ?? this.lastResult?.headTurnId
               ?? this.binding.clearedFrom?.compactionTurnId ?? null;
-            if (continuous && headTurnId !== null && this.selectedState) {
+            const selectedState = continuous ? (this.lastResult as CapturedResult | null)?.[selectedSnapshot]?.state : undefined;
+            if (continuous && headTurnId !== null && selectedState) {
               try {
-                this.selectedState = this.memory.store.appendSourcePath(sessionId, branch, this.selectedState,
+                this.memory.store.appendSourcePath(sessionId, branch, selectedState,
                   selectedDelta, headTurnId, lineage);
-                for (const id of selectedDelta) this.selectedIds.push(id);
               } catch (error) {
                 if (!(error instanceof StaleSourcePathError)) throw error;
                 // A concurrent rewrite may preserve count and tail but change the middle. Rebuild
@@ -441,7 +444,7 @@ export class CcProjection {
                   }
                 }
               }
-            } else if (continuous) selectedEntryIds = [...this.selectedIds, ...selectedDelta];
+            } else if (continuous) selectedEntryIds = [...(this.memory.store.selectedSourceEntryIds(sessionId, branch) ?? []), ...selectedDelta];
             if (projectionReady && selectedEntryIds) {
               // 63: a cleared child's path begins with its parent's persisted ancestry.
               const inherited = this.binding.clearedFrom?.inheritedEntryIds ?? [];
@@ -450,8 +453,6 @@ export class CcProjection {
               if (headTurnId !== null)
                 this.memory.store.publishSourcePath(sessionId, branch, selectedEntryIds, headTurnId, lineage);
               else this.memory.selectEntries(sessionId, branch, selectedEntryIds);
-              this.selectedIds = selectedEntryIds;
-              this.selectedState = this.memory.store.sourcePathState(sessionId, branch);
             }
           }
         }
@@ -484,13 +485,11 @@ export class CcProjection {
       // Publication may have committed before the binding receipt failed. Do not append its
       // suffix twice on retry; reconstruct the authoritative selected path instead.
       this.lastResult = null;
-      this.selectedIds = [];
-      this.selectedState = null;
       throw error;
     }
     this.transcript.commit(completed, problems[0]);
     const state = problems.length ? "not-ready" : "ready";
-    const selectedMembership = selectedEntryIds === null ? null : new Set(this.selectedIds);
+    const selectedMembership = selectedEntryIds === null ? null : new Set(selectedEntryIds);
     const newlyImported = selectedEntryIds === null && appendedEntryIds.length ? new Set(appendedEntryIds) : null;
     const ready = this.result(state, problems.length ? { ...completed.snapshot, problem: problems[0] } : completed.snapshot, problems,
       { coreSessionId: sessionId, branch: projectionReady ? branch : this.binding.branch,
@@ -498,7 +497,7 @@ export class CcProjection {
         selectedAppendedEntryIds: projectionReady ? selectedEntryIds === null
           ? selectedDelta.filter(id => newlyImported?.has(id))
           : appendedEntryIds.filter(id => selectedMembership!.has(id)) : [],
-        appendedEntryIds, bootstrap: !this.synchronized });
+        appendedEntryIds, bootstrap: !this.synchronized }, projectionReady && (selectedEntryIds !== null || selectedDelta.length > 0));
     if (projectionReady) this.lastResult = ready;
     if (state === "ready") this.synchronized = true;
     return ready;

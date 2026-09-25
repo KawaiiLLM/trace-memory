@@ -579,7 +579,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const signal = store.progressSignal(sessionId);
     const cached = progressCache.get(key);
     const reusable = cached && cached.signal === signal && path.headTurnId != null &&
-      store.pathExtendsHead(path, cached.headTurnId);
+      store.pathSnapshot(path).turns.has(cached.headTurnId);
     // Both hit and miss share Noting's queue. A prepared fact snapshot must not cause a second,
     // independent scan of pending membership after every commit. No head means no imported Turn.
     let snapshot: PathSnapshot | undefined;

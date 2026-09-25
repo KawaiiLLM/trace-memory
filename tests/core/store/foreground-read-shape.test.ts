@@ -105,7 +105,8 @@ test("71/79: publishing, selecting, trigger origins and visible Raw read whole-p
       store.visibleSourceEntryIds(path, store.pathSnapshot(path), new Map([["child", "source"]]), new Map());
     });
     const sourceStatements = statements.filter(sql => sql.includes("source_entries") && sql.includes("json_each"));
-    expect(sourceStatements.length).toBeGreaterThanOrEqual(4);
+    // 87 removes the extra whole-path source query formerly made by triggerOrigin.
+    expect(sourceStatements).toHaveLength(3);
     for (const sql of sourceStatements) {
       expect(sql).not.toMatch(/\bcontent\b|\bblocks\b/);
       const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(sql.match(/\?/g)!.length === 2 ? [owner.id, JSON.stringify(ids)] : [JSON.stringify(ids)]))
