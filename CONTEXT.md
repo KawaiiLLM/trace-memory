@@ -71,6 +71,7 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 - **Worker log** — the child session's own JSONL, written by the host itself, named in the run record as `nativeLog`. On Pi it is by default a direct child of the agent's `sessions/trace-memory` directory — one level under Pi's session root, where external daily-cost readers look, and where Pi's all-session browser lists it. On CC it is the worker's native Claude Code session, one directory under Claude Code's own `projects` root, named for `worker.cwd` — where claude-powerline's daily cost counts it like any other session. Neither host moves logs written under an earlier layout.
 - **Completion level** — the prefix on an event fact: completed (result evidence visible), reported (claimed only), dispatched, attempted.
 - **Local handle** — `$n`, the n-th fact of the current noting batch, used for in-batch relations before ids exist; the writer resolves it.
+- **Commit durability** — the database trades some crash safety for a responsive event loop: an OS crash or power loss can roll back the most recently committed transactions (a few seconds of Raw, facts or knowledge); a process crash alone loses nothing already committed. Recovery needs no operator step: on restart, each host re-imports any Raw missing from the database out of its own native transcript or session, and Noting/Consolidation/Dreaming work whose commit was rolled back is pending again, exactly as if it had never run. A rolled-back run's spend record is lost with it.
 
 ## Languages
 

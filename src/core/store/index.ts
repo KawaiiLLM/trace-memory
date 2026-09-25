@@ -926,6 +926,17 @@ export class Store {
             "For a shared-database upgrade, verify that all executors were stopped and the backup/manual WAL conversion completed before restart.", { cause: error });
         }
         if (mode !== "wal") throw new Error(`Store requires WAL journal mode; SQLite returned ${String(mode)}`);
+        // 84: WAL `synchronous=NORMAL`, not the SQLite default `FULL`. NORMAL skips the fsync of every
+        // COMMIT and only syncs at WAL checkpoints, which is what made an unrelated busy filesystem stall
+        // this connection's COMMIT (and therefore the event loop) for hundreds of ms to over a second
+        // (ticket 84 diagnosis). Trade-off: a process crash alone loses nothing (already-committed writes
+        // stay in the WAL and replay on next open); an OS crash or power loss can roll back the most
+        // recently committed transactions that had not yet reached a checkpoint. Recovery is automatic on
+        // both hosts (no operator step): missing Raw is re-imported from the native transcript/session,
+        // and any Noting/Consolidation/Dreaming commit that was rolled back leaves its entries pending
+        // again, because every import and pending check re-derives from this database, never from a host
+        // file's cached progress. A rolled-back run's spend record is lost with it.
+        this.db.exec("PRAGMA synchronous = NORMAL;");
       }
       // One immediate transaction owns schema probes, upgrades and policy publication. Legacy
       // CHECK rebuilds require foreign keys off before BEGIN. A changed schema is checked once
