@@ -102,7 +102,7 @@ test("88: a mixed-owner global revision refreshes only the moved owner's members
           actor: "user", text: host, source: [`T${tail.id}#E1`], createdAt: at }] });
       if (!noted.ok) throw Error(noted.problems.join("; "));
       writer.setCurrentPath(session.id, "main", tail.id, "native");
-      return { session, first, tail, fact: noted.facts[0]! };
+      return { session, first, tail, entries, fact: noted.facts[0]! };
     });
     const [a, b] = nodes as [typeof nodes[number], typeof nodes[number]];
     const path = { sessionId: a.session.id, branch: "main", headTurnId: a.tail.id };
@@ -112,11 +112,12 @@ test("88: a mixed-owner global revision refreshes only the moved owner's members
     if (!result.ok) throw Error(result.problems.join("; "));
     expect(reader.visibleKnowledgeVersions(path)).toEqual(new Set([result.committed[0]!.commit]));
     const original = reader.selectedSourceEntryIds.bind(reader);
-    const selectedOwners: number[] = [], membershipOwners: number[][] = [];
+    const selectedOwners: number[] = [], membershipOwners: number[][] = [], sourceEntryRowInputs: number[][] = [];
     const tracked = reader as unknown as { prepareCurrentMembership: (input: { facts: Map<number, { sessionId: number }> }, paths: Map<string, unknown>) => void };
     const originalMembership = tracked.prepareCurrentMembership;
     tracked.prepareCurrentMembership = (input, paths) => {
       membershipOwners.push([...new Set([...input.facts.values()].map(fact => fact.sessionId))]);
+      sourceEntryRowInputs.push([...new Set([...paths.values()].flatMap(ids => ids as number[]))]);
       return originalMembership.call(reader, input, paths);
     };
     reader.selectedSourceEntryIds = ((sessionId: number, branch: string) => {
@@ -126,6 +127,7 @@ test("88: a mixed-owner global revision refreshes only the moved owner's members
     expect(reader.visibleKnowledgeVersions(path)).toEqual(new Set());
     expect(selectedOwners).toEqual([a.session.id]);
     expect(membershipOwners).toEqual([[a.session.id]]);
+    expect(sourceEntryRowInputs).toEqual([[a.entries[0]!.id]]);
     tracked.prepareCurrentMembership = originalMembership;
     const fresh = reader.commitGraph(path, undefined, undefined, reader.commitGraphInput());
     expect(fresh.resolved.map(r => r.id)).toEqual(reader.commitGraph(path, undefined, undefined,
