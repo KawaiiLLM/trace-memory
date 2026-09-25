@@ -3138,10 +3138,11 @@ export class Store {
       .all(commit.id, commit.id).map(toKnowledgeRevision);
   }
 
-  /** Exact current versions, including archives, before any delivery-specific budget filtering. */
+  /** Exact visible body versions before delivery-budget filtering. Archives still participate in
+   * global current selection, but are notices rather than deliverable bodies. */
   visibleKnowledgeVersions(path: KnowledgePath): Set<number> {
     return new Set(this.commitGraph(path, undefined, undefined, this.commitGraphInput(undefined, path.sessionId))
-      .current.map(revision => revision.id));
+      .current.filter(revision => revision.op !== "archive").map(revision => revision.id));
   }
 
   currentCommit(knowledgeId: number, path: KnowledgePath | null = null): KnowledgeRevision[] {

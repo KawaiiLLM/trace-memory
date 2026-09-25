@@ -3002,10 +3002,8 @@ var Store = class {
       affectedProjects.add(project);
     }
     const replacements = /* @__PURE__ */ new Map();
-    if (affectedKnowledge.size) {
-      for (const part of next.results.values()) for (const revision of part.resolved)
-        if (affectedKnowledge.has(revision.knowledgeId)) replacements.set(revision.knowledgeId, revision);
-    }
+    for (const root2 of dirty) if (next.components.has(root2))
+      for (const revision of next.results.get(root2).resolved) replacements.set(revision.knowledgeId, revision);
     for (const [key, prior] of next.visibility) {
       const [sessionId, branch, headTurnId] = JSON.parse(key);
       if (changedOwners.has(sessionId) || affectedProjects.has(projects.get(sessionId))) {
@@ -3529,9 +3527,10 @@ var Store = class {
     return this.db.prepare(`SELECT * FROM knowledge_revisions WHERE parent_id = ? OR id IN
       (SELECT to_commit FROM knowledge_links WHERE from_commit = ? AND kind IN ('merged_into','split_from')) ORDER BY id`).all(commit.id, commit.id).map(toKnowledgeRevision);
   }
-  /** Exact current versions, including archives, before any delivery-specific budget filtering. */
+  /** Exact visible body versions before delivery-budget filtering. Archives still participate in
+   * global current selection, but are notices rather than deliverable bodies. */
   visibleKnowledgeVersions(path) {
-    return new Set(this.commitGraph(path, void 0, void 0, this.commitGraphInput(void 0, path.sessionId)).current.map((revision) => revision.id));
+    return new Set(this.commitGraph(path, void 0, void 0, this.commitGraphInput(void 0, path.sessionId)).current.filter((revision) => revision.op !== "archive").map((revision) => revision.id));
   }
   currentCommit(knowledgeId2, path = null) {
     return this.commitGraph(path).current.filter((revision) => revision.knowledgeId === knowledgeId2);
