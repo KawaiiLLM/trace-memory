@@ -82,8 +82,17 @@ try {
     assert.equal(catchup.command, "catchup");
     assert.equal(catchup.control.state, "acknowledged");
     assert.equal(catchup.control.reply.verb, "catchup");
-    assert.equal(catchup.control.reply.catchup.state, "failed");
-    assert.match(catchup.control.reply.catchup.diagnostic, /not configured/);
+    // The executor acknowledges at once and starts in the background, where the unconfigured
+    // worker fails; the menu reads that outcome back from the executor.
+    assert.equal(catchup.control.reply.catchup.state, "starting");
+    let notices = [];
+    const settled = Date.now() + 5_000;
+    while (Date.now() < settled && !notices.some(notice => notice.startsWith("Catchup: failed"))) {
+      notices = JSON.parse(execFileSync(process.execPath, [entry, "cli", "--config", config, "--session", session, "menu", "--json"],
+        { encoding: "utf8", timeout: 5_000 })).menu.notices;
+      await new Promise(resolveWait => setTimeout(resolveWait, 50));
+    }
+    assert.ok(notices.some(notice => /^Catchup: failed — .*not configured/.test(notice)), JSON.stringify(notices));
   } finally {
     child.stdin.end();
     if (child.exitCode === null && child.signalCode === null) await new Promise((resolveExit, reject) => {
