@@ -6,11 +6,30 @@
       {
         "matcher": "startup|resume|clear|compact",
         "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/cc.cjs\" hook --config \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\"",
-            "timeout": 60
-          }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 0", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 1", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 2", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 3", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 4", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 5", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 6", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 7", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 8", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 9", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 10", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 11", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 12", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 13", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 14", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 15", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 16", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 17", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 18", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 19", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 20", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 21", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 22", "timeout": 60 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs\" \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\" 23", "timeout": 60 }
         ]
       }
     ],

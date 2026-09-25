@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { TraceMemory, knowledgeStateKey, noVisibility, type Injection, type KnowledgeStateReceipt, type VisibleView } from "../../core/api/index.ts";
+import type { TransportItem } from "../../core/render/material.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
 import { CcProjection } from "./importer.ts";
@@ -23,22 +24,32 @@ interface EnvelopeHeader {
   core: number | null;
   commits: number[];
   states: KnowledgeStateReceipt[];
+  factIds: number[];
+  entryIds: number[];
+  slice: readonly [number, number] | null;
   sha256: string;
 }
-interface WireHeader { d: string; n: string; s: number | null; k: number[]; r: string[]; h: string }
+interface WireHeader { d: string; n: string; s: number | null; k: number[]; r: string[]; h: string; f?: number[]; e?: number[]; p?: [number, number] }
+export interface CcInjectionPayload extends Injection { factIds?: number[]; entryIds?: number[]; slice?: [number, number] }
 export interface CcHookOutput { hookSpecificOutput: { hookEventName: "SessionStart"; additionalContext: string };
+  /** Internal structured material for the 66 inline-slice transport; never pass to native Hook JSON. */
+  transportItems?: TransportItem[];
   /** 73 "Truncation is announced in the foreground": Claude Code 2.1.280's hook runner turns this
    * top-level field into a user-visible `hook_system_message`, capped at 4,000 characters. Present
    * only when `/clear`'s compaction omitted unprocessed material. */
   systemMessage?: string }
 
-const identityCount = (injection: Injection): number => injection.knowledgeCommitIds.length +
-  (injection.knowledgeStates ?? []).reduce((count, state) => count + 1 + state.toCommits.length, 0);
+const identityCount = (injection: CcInjectionPayload): number => injection.knowledgeCommitIds.length +
+  (injection.knowledgeStates ?? []).reduce((count, state) => count + 1 + state.toCommits.length, 0) +
+  (injection.factIds?.length ?? 0) + (injection.entryIds?.length ?? 0);
 
 /** Encode exactly one core block. The host envelope is outside core's allowance but has its own bound. */
-export function encodeCcInjection(binding: CcVisibleBinding, injection: Injection): string {
+export function encodeCcInjection(binding: CcVisibleBinding, injection: CcInjectionPayload): string {
   const header: WireHeader = { d: binding.db, n: binding.nativeSession, s: binding.coreSession,
-    k: injection.knowledgeCommitIds, r: (injection.knowledgeStates ?? []).map(knowledgeStateKey), h: digest(injection.text) };
+    k: injection.knowledgeCommitIds, r: (injection.knowledgeStates ?? []).map(knowledgeStateKey), h: digest(injection.text),
+    ...(injection.factIds === undefined ? {} : { f: injection.factIds }),
+    ...(injection.entryIds === undefined ? {} : { e: injection.entryIds }),
+    ...(injection.slice === undefined ? {} : { p: injection.slice }) };
   const framing = `${BEGIN}\n${CC_INJECTION_HEADER}${JSON.stringify(header)}\n\n${END}`;
   const bound = 300 + 12 * identityCount(injection);
   if (framing.length > bound) throw new Error(`CC injection envelope exceeds its ${bound}-character host framing bound`);
@@ -55,17 +66,25 @@ export function decodeCcInjectionHeader(content: unknown, binding: CcVisibleBind
   if (headerEnd < 0) return null;
   let parsed: unknown;
   try { parsed = JSON.parse(content.slice(prefix.length, headerEnd)); } catch { return null; }
-  if (!object(parsed) || Object.keys(parsed).sort().join(",") !== "d,h,k,n,r,s" ||
+  const keys = object(parsed) ? Object.keys(parsed).sort().join(",") : "";
+  if (!object(parsed) || (keys !== "d,h,k,n,r,s" && keys !== "d,e,f,h,k,n,r,s" && keys !== "d,e,f,h,k,n,p,r,s") ||
       typeof parsed.d !== "string" || typeof parsed.n !== "string" ||
       !(parsed.s === null || positiveId(parsed.s)) || typeof parsed.h !== "string" || !/^[0-9a-f]{64}$/.test(parsed.h) ||
       !Array.isArray(parsed.k) || !parsed.k.every(positiveId) || new Set(parsed.k).size !== parsed.k.length ||
+      (keys !== "d,h,k,n,r,s" && (!Array.isArray(parsed.f) || !parsed.f.every(positiveId) || new Set(parsed.f).size !== parsed.f.length ||
+        !Array.isArray(parsed.e) || !parsed.e.every(positiveId) || new Set(parsed.e).size !== parsed.e.length)) ||
+      (keys === "d,e,f,h,k,n,p,r,s" && (!Array.isArray(parsed.p) || parsed.p.length !== 2 ||
+        !Number.isSafeInteger(parsed.p[0]) || parsed.p[0] < 0 || parsed.p[0] >= parsed.p[1] || parsed.p[1] !== 24)) ||
       !Array.isArray(parsed.r) || !parsed.r.every(value => typeof value === "string" && /^[1-9]\d*>[1-9]\d*(?:,[1-9]\d*)*$/.test(value))) return null;
   const states = (parsed.r as string[]).map(value => { const [from, to] = value.split(">");
     return { fromCommit: Number(from), toCommits: to!.split(",").map(Number) }; });
   if (!states.every(state => positiveId(state.fromCommit) && state.toCommits.every(positiveId))) return null;
   if (parsed.d !== binding.db || parsed.n !== binding.nativeSession) return null;
   if (!(parsed.s === binding.coreSession || parsed.s === null && binding.coreSession !== null)) return null;
-  return { db: parsed.d, native: parsed.n, core: parsed.s, commits: parsed.k as number[], states, sha256: parsed.h };
+  return { db: parsed.d, native: parsed.n, core: parsed.s, commits: parsed.k as number[], states,
+    factIds: keys !== "d,h,k,n,r,s" ? parsed.f as number[] : [],
+    entryIds: keys !== "d,h,k,n,r,s" ? parsed.e as number[] : [],
+    slice: keys === "d,e,f,h,k,n,p,r,s" ? parsed.p as [number, number] : null, sha256: parsed.h };
 }
 
 export function decodeCcInjection(content: unknown, binding: CcVisibleBinding): EnvelopeHeader | null {
@@ -340,10 +359,10 @@ async function prepareSessionStartInjection(config: ResolvedCcHostConfig, input:
     }
     const visibleBinding = { db: databaseIdentity(config.dbPath), nativeSession: binding.nativeSessionId, coreSession: core };
     const visible = input.source === "compact" ? noVisibility() : ccVisibleView(snapshot.records, visibleBinding);
-    const injection = memory.injection(target, visible);
+    const injection = memory.injection(target, visible, true);
     if (!injection.text) return null;
     const additionalContext = encodeCcInjection(visibleBinding, injection);
-    return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } };
+    return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext }, transportItems: injection.transportItems };
   } finally {
     // SessionStart owns no executor or claim. Closing its Store directly avoids invalidating work
     // owned by the concurrently running MCP process after projection-only synchronization.

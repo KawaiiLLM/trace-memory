@@ -463,7 +463,7 @@ export interface TraceMemory {
    * envelope, or the explicit ask that the host decline and let its native compaction run (20c).
    * `retainedView` describes actually retained Raw/fact/knowledge identities; legacy native-ID arrays
    * remain accepted for Raw-only callers. A host that keeps none passes none. */
-  compact(sessionId: number, branch?: string, headTurnId?: number, retainedView?: readonly string[] | VisibleView): CompactResult;
+  compact(sessionId: number, branch?: string, headTurnId?: number, retainedView?: readonly string[] | VisibleView, transportItems?: boolean): CompactResult;
   /** Ticket 21b: the path-selected applicable knowledge grouped by topic, as commit references; a
    * read projection only — it neither reorders injection nor changes what is applicable. */
   topicGroups(sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups;
@@ -473,7 +473,7 @@ export interface TraceMemory {
    * it persists. `inject` is this call read for its text alone. 31: `visible` is the reader's own
    * context, whose commits are subtracted and whose stale commits get a status line; the
    * default empty view is the whole applicable set, which is what a fresh context always got. */
-  injection(target: number | { projectId: number } | KnowledgePath, visible?: VisibleView): Injection;
+  injection(target: number | { projectId: number } | KnowledgePath, visible?: VisibleView, transportItems?: boolean): Injection;
   trace(address: string, options?: ListingOptions): string;
   search(query: string | readonly string[], scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
   declareProject(sessionId: number, name: string, source?: "marker" | "mark", path?: KnowledgePath): string;

@@ -41,7 +41,7 @@
 import { createHash } from "node:crypto";
 import type { Fact } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";
-import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, wholeKnowledge, xmlBlock,
+import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, KNOWLEDGE_RECENCY_NOTICE, tokens, wholeKnowledge, xmlBlock,
   type BudgetedKnowledge, type FactTurns } from "./index.ts";
 
 /** One knowledge category group as `budgetKnowledge` returns it: the category and its rendered lines. */
@@ -152,6 +152,25 @@ export interface ConsolidationMaterial extends SharedMaterial {
    * carries only what is current, so without these lines stale inherited text would read as current
    * knowledge. Charged inside the knowledge allowance like everything else in that block. */
   knowledgeNotes: string[];
+}
+
+export type TransportItem =
+  | { kind: "knowledge"; text: string; category: string; commitId: number; address: string }
+  | { kind: "state"; text: string; receipt: { fromCommit: number; toCommits: number[] } }
+  | { kind: "fact"; text: string; factId: number; pending: boolean }
+  | { kind: "raw"; text: string; entryId: number; address: string; pending: boolean }
+  | { kind: "receipt"; text: string };
+
+/** A whole selected domain item can be independently framed when its transport has several
+ * unordered carriers. The host only decides which complete framed items fit each carrier. */
+export function transportItemText(item: TransportItem): string {
+  switch (item.kind) {
+    case "knowledge": return `<knowledge>\n${KNOWLEDGE_RECENCY_NOTICE}\n<${item.category}>\n${item.text}\n</${item.category}>\n</knowledge>`;
+    case "state": return `${KNOWLEDGE_STATUS_TITLE}\n${item.text}`;
+    case "fact": return `<episodic>\n${FACTS_TITLE}\n\n${item.text}\n</episodic>`;
+    case "raw": return `<episodic>\n${RAW_TITLE}\n\n${item.text}\n</episodic>`;
+    case "receipt": return `Receipts:\n${item.text}`;
+  }
 }
 
 export const FACTS_TITLE = "Recent facts (by Turn):";

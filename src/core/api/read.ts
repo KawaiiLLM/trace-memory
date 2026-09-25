@@ -5,7 +5,7 @@ import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, PathSnapshot } from "../store/index.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
 import { budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
-import { injectionText, compactText, measuredMemory, type MemoryComposition, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
+import { injectionText, compactText, measuredMemory, type MemoryComposition, type TransportItem, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
@@ -81,7 +81,7 @@ export interface TopicGroups {
  * carries — every supplied entry, pending and refilled alike, plus the facts and knowledge commits
  * that survived budgeting. What a budget dropped is absent here. A native delegation supplies
  * nothing, so it has no `supplied` at all. */
-export type CompactResult = { text: string; supplied: SuppliedMaterial; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt }
+export type CompactResult = { text: string; supplied: SuppliedMaterial; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt }
   | { native: true; reason: string };
 
 /** 73 "Truncation is announced in the foreground": whenever compact omits unprocessed material —
@@ -98,7 +98,7 @@ export interface TruncationReceipt { raw?: { entries: number }; facts?: { count:
  * may never exceed. Nothing is required any more (73): every window is optional and truncates. */
 export interface ChargedWindows { knowledge: number; facts: number; raw: number; envelope: number }
 /** Foreground Knowledge delivery and the exact body/state identities its carrier may persist. */
-export interface Injection { text: string; knowledgeCommitIds: number[]; knowledgeStates?: KnowledgeStateReceipt[]; composition?: MemoryComposition }
+export interface Injection { text: string; knowledgeCommitIds: number[]; knowledgeStates?: KnowledgeStateReceipt[]; transportItems?: TransportItem[]; composition?: MemoryComposition }
 
 /** 22c "complete snapshot": one search hit whose formatting the query deferred to a later page.
  * Fact relations and Raw entry membership are mutable; the commit records, path and labels selected
@@ -336,7 +336,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * One path snapshot and one graph resolve applicability, visible historical bodies, current exact
    * results and state changes. Exact Fact bodies or proven complete source-entry bindings may suppress
    * a nonempty current support list; empty and partial evidence never do. */
-  const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility()): Injection => {
+  const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility(),
+    transport = false): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
     const budgets = store.knowledgeBudgets();
     const knowledgeCap = budgets.injection + config.compaction.sharedAllowanceTokens;
@@ -405,7 +406,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (!stateCount) return empty();
       const material = { knowledge: [], receipts: [] };
       const rendered = measuredMemory(buildStates(stateCount), material);
-      return { ...rendered, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt) };
+      return { ...rendered, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
+        ...(transport ? { transportItems: states.slice(0, stateCount).map(state => ({ kind: "state" as const,
+          text: state.text, receipt: state.receipt })) } : {}) };
     }
     const selectedStates = states.slice(0, stateCount);
     const ordered = [...delta].sort((a, b) => b.revision.id - a.revision.id);
@@ -422,6 +425,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     if (tokens(text) > remaining || (!selected.commits.length && !selectedStates.length)) return empty();
     const rendered = measuredMemory(text, material);
     return { ...rendered, knowledgeCommitIds: selected.commits,
+      ...(transport ? { transportItems: [
+        ...delta.filter(item => selected.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
+          text: renderKnowledge(item), category: item.revision.category, commitId: item.revision.id,
+          address: `K${item.knowledge.id}@${item.revision.id}` })),
+        ...selectedStates.map(state => ({ kind: "state" as const, text: state.text, receipt: state.receipt })),
+        ...material.receipts.map(text => ({ kind: "receipt" as const, text })),
+      ] } : {}),
       ...(selectedStates.length ? { knowledgeStates: selectedStates.map(state => state.receipt) } : {}) };
   };
   /** 25d "Trace address queries": one comma component read as an inclusive fact-id interval, `F81-F90`.
@@ -631,7 +641,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // (unconsolidated facts borrowing what Raw left, consolidated only within the facts base). Nothing
     // is required any more: every window truncates — newest kept, oldest omitted with a receipt —
     // rather than escalating to a native delegation. Omitted material stays pending in the store.
-    compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = []): CompactResult => {
+    compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = [],
+      transport = false): CompactResult => {
       if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
       const snapshot = store.pathSnapshot(path); // one membership for this operation, knowledge and facts alike
@@ -795,6 +806,18 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         entries: suppliedRaw.map(s => ({ id: s.entry.id, view: s.content })),
         receipts: [...suppliedRaw.flatMap(s => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...active.receipts, ...noteOmittedReceipt] };
       return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
+        ...(transport ? { transportItems: [
+          ...knowledge.filter(item => active.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
+            text: renderKnowledge(item), category: item.revision.category, commitId: item.revision.id,
+            address: `K${item.knowledge.id}@${item.revision.id}` })),
+          ...notes.map(text => ({ kind: "receipt" as const, text })),
+          ...factGroupLayout(finalFacts, factTurns).map(({ fact, header }) => ({ kind: "fact" as const,
+            text: header + factLine(fact.id, factRelations.get(fact.id) ?? []), factId: fact.id,
+            pending: pendingFactIds.has(fact.id) })),
+          ...suppliedRaw.map(step => ({ kind: "raw" as const, text: step.content, entryId: step.entry.id,
+            address: `T${step.entry.turnId}#E${step.entry.entryOrdinal}`, pending: pendingIds.has(step.entry.id) })),
+          ...material.receipts.map(text => ({ kind: "receipt" as const, text })),
+        ] } : {}),
         // 29a "Renderers return what they kept": exactly the identities this replacement carries.
         // What a budget left out is absent here (28a item 7) and stays pending in the store.
         supplied: { entries: suppliedRaw.map(s => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" as const })),

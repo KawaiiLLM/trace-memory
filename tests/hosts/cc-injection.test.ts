@@ -7,7 +7,7 @@ import { TraceMemory, noVisibility, type Injection } from "../../src/core/api/in
 import { Store } from "../../src/core/store/index.ts";
 import { bindingMutexPath, bindingPath, recordSessionStart, readBinding, updateBinding } from "../../src/hosts/cc/binding.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
-import { ccSessionStartInjection, ccVisibleView, encodeCcInjection, handleCcHook, readCompleteTranscript,
+import { ccSessionStartInjection, ccVisibleView, decodeCcInjection, encodeCcInjection, handleCcHook, readCompleteTranscript,
   selectedCcVisibleRecords } from "../../src/hosts/cc/index.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
@@ -179,6 +179,18 @@ test("43d repeated compactions replace rather than union retained pre-boundary b
   expect(commits).toEqual([20, 21]);
   expect(commits).not.toContain(10);
   expect(commits).not.toContain(11);
+});
+
+test("66 carries exact Fact and Raw membership while decoding legacy carriers", () => {
+  const binding = { db: "/d", nativeSession: "n", coreSession: 1 };
+  const body = { text: "whole item", knowledgeCommitIds: [8], factIds: [13], entryIds: [21] };
+  const encoded = encodeCcInjection(binding, body);
+  expect(decodeCcInjection(encoded, binding)).toMatchObject({ commits: [8], factIds: [13], entryIds: [21] });
+  const legacy = encodeCcInjection(binding, { text: "legacy", knowledgeCommitIds: [8] });
+  expect(decodeCcInjection(legacy, binding)).toMatchObject({ commits: [8], factIds: [], entryIds: [] });
+  expect(decodeCcInjection(encoded.replace('"f":[13]', '"f":[13,13]'), binding)).toBeNull();
+  expect(decodeCcInjection(encoded.replace('"e":[21]', '"e":[0]'), binding)).toBeNull();
+  expect(decodeCcInjection(encoded.replace("whole item", "altered item"), binding)).toBeNull();
 });
 
 test("43d host framing is bounded independently of the unmodified core block", () => {

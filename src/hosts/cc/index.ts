@@ -6,7 +6,8 @@ import { assertOperatorBinding, readBinding, recordSessionStart, validateNativeS
 import { nativeCreatedAt, readCompleteTranscript } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
-import { ccSessionStartInjection, type CcHookOutput } from "./injection.ts";
+import { ccSessionStartInjection, databaseIdentity, type CcHookOutput } from "./injection.ts";
+import { sliceCcInjection } from "./slices.ts";
 import { declareCcProject, operateCcSession } from "./operator.ts";
 import { followNativeSession, processAncestors, publishNativeSession, type CcNativeSessionFollower } from "./native-session.ts";
 import { ccHandleClear } from "./clear.ts";
@@ -175,13 +176,25 @@ async function readStdin(): Promise<string> {
 
 export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if ((command !== "mcp" && command !== "hook" && command !== "cli") || configFlag !== "--config" || !configPath)
+  if ((command !== "mcp" && command !== "hook" && command !== "hook-slices" && command !== "cli") || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config); return; }
-  if (command === "hook") {
-    const output = await handleCcHook(config, JSON.parse(await readStdin()));
-    if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
+  if (command === "hook" || command === "hook-slices") {
+    const input = JSON.parse(await readStdin()) as CcHookInput;
+    const output = await handleCcHook(config, input);
+    if (command === "hook") {
+      if (output) { const { transportItems: _, ...native } = output; process.stdout.write(`${JSON.stringify(native)}\n`); }
+      return;
+    }
+    if (input.hook_event_name !== "SessionStart") throw new Error("hook-slices requires SessionStart");
+    if (output?.hookSpecificOutput.additionalContext && !output.transportItems)
+      throw new Error("CC SessionStart has no structured transport material");
+    const bound = readBinding(config, input.session_id);
+    if (!bound) throw new Error("CC SessionStart has no binding after preparation");
+    const slices = sliceCcInjection({ db: databaseIdentity(config.dbPath), nativeSession: input.session_id,
+      coreSession: bound.coreSessionId }, output?.transportItems ?? [], output?.systemMessage);
+    process.stdout.write(`${JSON.stringify(slices)}\n`);
     return;
   }
   if (sessionFlag !== "--session" || !nativeSessionId || !verb)

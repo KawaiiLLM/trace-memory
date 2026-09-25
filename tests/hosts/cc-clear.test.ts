@@ -87,9 +87,27 @@ test("SessionStart clear with a bound parent links the same core session and inj
     expect(store.selectedSourceEntryIds(parent.coreSessionId!, parent.branch)).toEqual(child.clearedFrom!.inheritedEntryIds);
     const header = envelopeHeader(output!.hookSpecificOutput.additionalContext);
     expect(header).toMatchObject({ n: f.childId, s: parent.coreSessionId });
+    expect(header.e).toEqual(child.clearedFrom!.inheritedEntryIds);
+    expect(output!.transportItems?.filter(item => item.kind === "raw").map(item => item.entryId)).toEqual(header.e);
     // The injected text is exactly the compaction Turn's stored material (29a: content and receipt are one carrier).
     expect(output!.hookSpecificOutput.additionalContext).toContain(turn.assistantText!);
   } finally { store.close(); }
+});
+
+test("66 parallel clear slots retain one frozen compaction and fail when its frozen carrier is missing", async () => {
+  const f = fixture("parallel66");
+  const parent = await startParent(f);
+  const outputs = await Promise.all(Array.from({ length: 8 }, () => clearInto(f)));
+  const child = readBinding(f.config, f.childId)!;
+  expect(outputs.every(output => JSON.stringify(output) === JSON.stringify(outputs[0]))).toBe(true);
+  const store = new Store(f.config.dbPath);
+  try {
+    const compactions = store.listTurns(parent.coreSessionId!).filter(turn => turn.kind === "compaction");
+    expect(compactions).toHaveLength(1);
+    expect(compactions[0]!.id).toBe(child.clearedFrom!.compactionTurnId);
+  } finally { store.close(); }
+  rmSync(join(f.config.stateDir, "session-start", `${f.childId}.clear.json`));
+  await expect(clearInto(f)).rejects.toThrow("no frozen compaction carrier");
 });
 
 test("82: real clear output is measured only under the child identity, before and after its first source", async () => {
