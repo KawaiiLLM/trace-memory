@@ -115,14 +115,13 @@ test("80: whole-path membership is one ordered array with header and position ch
     store.selectSourcePath(owner.id, "main", ids);
     const reads = vi.spyOn(store.db, "prepare");
     expect(store.selectedSourceEntryIds(owner.id, "main")).toEqual(ids);
-    expect(reads.mock.calls).toHaveLength(2);
     const sql = reads.mock.calls.map(([statement]) => statement).join("\n");
-    expect(sql).toContain("json_group_array(entry_id)");
-    expect(sql).toContain("ORDER BY position");
-    expect(sql).not.toContain("JOIN source_entries");
-    const membershipSql = reads.mock.calls.find(([statement]) => statement.includes("json_group_array"))![0];
+    expect(sql).toContain("ORDER BY j.position");
+    expect(sql).toContain("JOIN source_entries"); // ownership checked without loading Raw
+    expect(sql).not.toContain("source_entry_raw");
+    const membershipSql = reads.mock.calls.find(([statement]) => statement.includes("ORDER BY j.position"))![0];
     reads.mockRestore();
-    const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${membershipSql}`).all(owner.id, "main");
+    const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${membershipSql}`).all(owner.id, "main", 0);
     expect(plan.some(row => /TEMP B-TREE/.test(String(row.detail)))).toBe(false);
     store.db.exec("PRAGMA reverse_unordered_selects = ON");
     expect(store.selectedSourceEntryIds(owner.id, "main")).toEqual(ids);
@@ -133,6 +132,8 @@ test("80: whole-path membership is one ordered array with header and position ch
     store.db.prepare("UPDATE source_paths SET tail_entry_id = ? WHERE session_id = ?").run(b.entry.id, owner.id);
     store.db.prepare("UPDATE source_path_entries SET position = 5 WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ?) AND position = 2")
       .run(owner.id);
+    // Direct SQL corruption bypasses the write protocol; changing the version forces a full check.
+    store.db.prepare("UPDATE source_paths SET version = version + 1 WHERE session_id = ?").run(owner.id);
     expect(() => store.selectedSourceEntryIds(owner.id, "main")).toThrow("stored source path is malformed");
     store.selectSourcePath(owner.id, "empty", []);
     expect(store.selectedSourceEntryIds(owner.id, "empty")).toEqual([]);

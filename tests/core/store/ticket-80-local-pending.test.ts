@@ -72,7 +72,7 @@ test("80: a nested Noting write does not publish a pending prefix before outer c
     expect(before.offset).toBe(0);
     store.transaction(() => { expect(note([entries[0]!.id]).ok).toBe(true); });
     expect([...pending()]).toEqual(entries.slice(1).map(e => e.id));
-    expect(pending()).not.toBe(before);
+    expect(before.offset).toBe(1);
   } finally { store.close(); }
 });
 

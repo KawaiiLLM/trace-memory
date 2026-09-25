@@ -63,9 +63,6 @@ interface BootstrapSummary {
 const snapshotKey = (value: CcTranscriptSnapshot) => JSON.stringify([value.exists, value.device, value.inode, value.size, value.modifiedMs, value.changedMs]);
 export const CC_PLUGIN_NAME = "trace-memory";
 export const CC_MCP_SERVER_NAME = "traceMemory";
-// The exact Store-view base used for optimistic append; never serialized into the host result.
-const selectedSnapshot = Symbol("selected source path snapshot");
-type CapturedResult = CcReconcileResult & { [selectedSnapshot]?: NonNullable<ReturnType<Store["selectedSourceEntrySnapshot"]>> };
 
 export class CcProjection {
   readonly memory: TraceMemoryFacade;
@@ -77,6 +74,7 @@ export class CcProjection {
   private callsByTurn = new Map<number, Map<string, CallIdentity>>();
   private loadedCallTurns = new Set<number>();
   private lastResult: CcReconcileResult | null = null;
+  private expectedPath: SourcePathState | null = null;
   private synchronized = false;
 
   constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, memory: TraceMemoryFacade) {
@@ -162,16 +160,15 @@ export class CcProjection {
     const { selectedEntryIds, ...rest } = values;
     const sessionId = rest.coreSessionId ?? this.binding.coreSessionId;
     const branch = rest.branch ?? this.binding.branch;
-    const observed = sessionId === null ? null : this.memory.store.selectedSourceEntrySnapshot(sessionId, branch);
-    const selected = published || !this.lastResult ? observed :
-      (this.lastResult as CapturedResult)[selectedSnapshot] ?? observed;
-    const count = selectedEntryIds?.length ?? selected?.count ?? 0;
+    const selected = sessionId === null || (!published && this.lastResult) ? null
+      : this.memory.store.selectedSourceEntrySnapshot(sessionId, branch);
+    const previous = selected ? null : this.lastResult;
+    const count = selectedEntryIds?.length ?? selected?.count ?? previous?.selectedCount ?? 0;
     const result = { state, snapshot, coreSessionId: this.binding.coreSessionId, branch: this.binding.branch,
       headTurnId: this.lastResult?.headTurnId ?? null, appendedEntryIds: [], selectedAppendedEntryIds: [], problems,
-      selectedCount: count, selectedTailId: selectedEntryIds ? selectedEntryIds[count - 1] ?? null : selected?.tailId ?? null, ...rest } as CcReconcileResult;
+      selectedCount: count, selectedTailId: selectedEntryIds ? selectedEntryIds[count - 1] ?? null : selected?.tailId ?? previous?.selectedTailId ?? null, ...rest } as CcReconcileResult;
     // Captured Store prefix does not change after a later append or navigation.
-    Object.defineProperty(result, "selectedEntryIds", { enumerable: true, get: () => selectedEntryIds?.slice() ?? selected?.ids() ?? [] });
-    Object.defineProperty(result, selectedSnapshot, { value: selected });
+    Object.defineProperty(result, "selectedEntryIds", { enumerable: true, get: () => selectedEntryIds?.slice() ?? selected?.ids() ?? previous?.selectedEntryIds ?? [] });
     return result;
   }
 
@@ -209,6 +206,7 @@ export class CcProjection {
       this.callsByTurn.clear();
       this.loadedCallTurns.clear();
       this.lastResult = null;
+      this.expectedPath = null;
     }
 
     let summary: BootstrapSummary | null = null, bootstrapSnapshot: CcTranscriptSnapshot | null = null;
@@ -425,7 +423,7 @@ export class CcProjection {
           if (projectionReady) {
             headTurnId = [...selectedNodes].reverse().find(node => node.turnId !== undefined)?.turnId ?? this.lastResult?.headTurnId
               ?? this.binding.clearedFrom?.compactionTurnId ?? null;
-            const selectedState = continuous ? (this.lastResult as CapturedResult | null)?.[selectedSnapshot]?.state : undefined;
+            const selectedState = continuous ? this.expectedPath : null;
             if (continuous && headTurnId !== null && selectedState) {
               try {
                 this.memory.store.appendSourcePath(sessionId, branch, selectedState,
@@ -485,6 +483,7 @@ export class CcProjection {
       // Publication may have committed before the binding receipt failed. Do not append its
       // suffix twice on retry; reconstruct the authoritative selected path instead.
       this.lastResult = null;
+      this.expectedPath = null;
       throw error;
     }
     this.transcript.commit(completed, problems[0]);
@@ -498,7 +497,10 @@ export class CcProjection {
           ? selectedDelta.filter(id => newlyImported?.has(id))
           : appendedEntryIds.filter(id => selectedMembership!.has(id)) : [],
         appendedEntryIds, bootstrap: !this.synchronized }, projectionReady && (selectedEntryIds !== null || selectedDelta.length > 0));
-    if (projectionReady) this.lastResult = ready;
+    if (projectionReady) {
+      this.lastResult = ready;
+      this.expectedPath = this.memory.store.selectedSourceEntrySnapshot(sessionId, branch)?.state ?? null;
+    }
     if (state === "ready") this.synchronized = true;
     return ready;
   }

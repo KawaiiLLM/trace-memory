@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
-import { compareTriggerOrigins } from "../../../src/core/model/index.ts";
 import { Store, type KnowledgeOperationInput, type KnowledgePath, type SourceInput } from "../../../src/core/store/index.ts";
+import { renderRun } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const stores: Store[] = [], dirs: string[] = [];
@@ -302,17 +302,25 @@ test("34a: bound origin freezes the ordered native path through the exact same-T
     topics: [], supports: [`F${facts.facts[0]!.id}`], reason: "initial" }], skipped: [] });
   expect(result).not.toContain("rejected:");
   const frozen = store.listRuns(session.id).at(-1)!.origin;
-  expect(frozen).toEqual({ sessionId: session.id, entryIds: [first.id, trigger.id] });
-  expect(compareTriggerOrigins(frozen, { sessionId: session.id, entryIds: [first.id, trigger.id, later.id] })).toBe("ancestor");
-  expect(compareTriggerOrigins(frozen, { sessionId: session.id, entryIds: [first.id, later.id] })).toBe("divergent");
-  expect(compareTriggerOrigins(frozen, { sessionId: session.id + 1, entryIds: [first.id, trigger.id] })).toBe("independent");
-  expect(compareTriggerOrigins(frozen, null)).toBe("unknown");
+  expect(frozen).toEqual({ sessionId: session.id, entryIds: [trigger.id] });
+  expect(store.triggerOrigin({ sessionId: session.id, branch: "main", headTurnId: turn.id })).toEqual({
+    sessionId: session.id, entryIds: [later.id],
+  });
+  const run = store.listRuns(session.id).at(-1)!;
+  const legacy = JSON.stringify([first.id, trigger.id]);
+  store.db.prepare("UPDATE run_bodies SET origin_entry_ids = ? WHERE run_id = ?").run(legacy, run.id);
+  const restored = store.getRun(run.id)!;
+  expect(restored.origin).toEqual({ sessionId: session.id, entryIds: [first.id, trigger.id] });
+  expect(renderRun(restored, [], [])).toContain(`trigger origin: S${session.id}/E${trigger.id}`);
+  expect(store.db.prepare("SELECT origin_entry_ids FROM run_bodies WHERE run_id = ?").get(run.id)!.origin_entry_ids).toBe(legacy);
 
-  // Simulate a damaged native prefix in the normalized storage. Its header still agrees on
-  // count/tail, so the read must reject the missing source rather than silently shorten origin.
+  // Direct SQL corruption bypasses the versioned write protocol. A transaction's fresh read
+  // still rejects it; a cached read detects it once the path version changes.
   store.db.exec("PRAGMA foreign_keys = OFF");
   try {
     store.db.prepare("UPDATE source_path_entries SET entry_id = 999 WHERE path_id = (SELECT id FROM source_paths WHERE session_id = ? AND branch = 'main') AND position = 0").run(session.id);
   } finally { store.db.exec("PRAGMA foreign_keys = ON"); }
+  expect(() => store.transaction(() => store.selectedSourceEntryIds(session.id, "main"))).toThrow(/source path/i);
+  store.db.prepare("UPDATE source_paths SET version = version + 1 WHERE session_id = ? AND branch = 'main'").run(session.id);
   expect(() => memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id })).toThrow(/source path|trigger origin/i);
 });

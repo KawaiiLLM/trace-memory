@@ -150,16 +150,8 @@ export interface KnowledgeLink {
   toCommit: number;
 }
 
+// New origins have one id; stored historical arrays remain intact for retry and audit.
 export interface TriggerOrigin { readonly sessionId: number; readonly entryIds: readonly number[] }
-export type TriggerOriginRelation = "same" | "ancestor" | "descendant" | "divergent" | "independent" | "unknown";
-/** Pure 34a handoff contract. Ticket 34b decides what, if anything, each relation refuses. */
-export function compareTriggerOrigins(left: TriggerOrigin | null, right: TriggerOrigin | null): TriggerOriginRelation {
-  if (!left || !right) return "unknown";
-  if (left.sessionId !== right.sessionId) return "independent";
-  const common = Math.min(left.entryIds.length, right.entryIds.length);
-  for (let i = 0; i < common; i++) if (left.entryIds[i] !== right.entryIds[i]) return "divergent";
-  return left.entryIds.length === right.entryIds.length ? "same" : left.entryIds.length < right.entryIds.length ? "ancestor" : "descendant";
-}
 
 export interface Run {
   id: number;
@@ -173,7 +165,7 @@ export interface Run {
   mode: string | null;
   request: string | null;
   response: string | null;
-  /** Frozen native trigger ancestry. Null is preserved for historical/headless runs with no native proof. */
+  /** Frozen native triggering entry. Historical origin arrays remain intact; their last id is the trigger. */
   origin: TriggerOrigin | null;
   outcome: RunOutcome;
   createdAt: string;

@@ -283,17 +283,19 @@ test("an enabled refresh uses one path snapshot and one bounded processed-versio
   expect(created.ok).toBe(true);
   const reads = countSourceReads(), builds = countPathBuilds(), bodies = countRunBodies();
   const rendered = vi.spyOn(rendering, "renderKnowledge"), processed = vi.spyOn(Store.prototype, "processedCurrentVersions");
+  const snapshot = vi.spyOn(h.memory.store, "pathSnapshot");
   try {
     reads.reset(); builds.reset(); bodies.reset();
     await refresh(h);
     expect(reads.reads()).toBe(0);
-    expect(builds.builds()).toBe(1);
+    expect(snapshot.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(builds.builds()).toBe(0); // cached ancestry, no full path walk
     expect(bodies.chars()).toBe(0);
     expect(rendered).not.toHaveBeenCalled();
     expect(processed).toHaveBeenCalledTimes(1);
     expect(processed.mock.calls[0]![0]).toHaveLength(6);
   } finally {
-    reads.restore(); builds.restore(); bodies.restore(); rendered.mockRestore(); processed.mockRestore();
+    reads.restore(); builds.restore(); bodies.restore(); rendered.mockRestore(); processed.mockRestore(); snapshot.mockRestore();
   }
   expect(footer(h)).toMatchObject(enumerated(h));
 });

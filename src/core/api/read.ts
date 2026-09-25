@@ -636,8 +636,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const path = store.knowledgePath(sessionId, branch, headTurnId);
       const snapshot = store.pathSnapshot(path); // one membership for this operation, knowledge and facts alike
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
-      const sourced = head === undefined ? [] : store.sourcePath(sessionId, branch, head);
-      const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head);
+      const sourceSnapshot = head === path.headTurnId ? snapshot : head === undefined ? undefined
+        : store.pathSnapshot({ sessionId, branch, headTurnId: head });
+      const sourced = head === undefined ? [] : store.sourcePath(sessionId, branch, head, sourceSnapshot);
+      const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head, sourceSnapshot);
       const pendingIds = new Set(pending.map(e => e.id));
       const knowledge = store.currentKnowledge(path, {}, snapshot);
       const visible = Array.isArray(retainedView) ? noVisibility() : retainedView as VisibleView;

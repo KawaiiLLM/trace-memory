@@ -167,8 +167,10 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   }
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
     !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
+  const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
+  let snapshot = pendingAll ? undefined : store.pathSnapshot(path);
   const { exact, pending } = notingPending(store, { ...input, sessionId: session.id },
-    pendingAll ?? store.pendingEntries(session.id, input.branch, input.headTurnId));
+    pendingAll ?? store.pendingEntries(session.id, input.branch, input.headTurnId, snapshot));
   if (exact && pending.length !== exact.length)
     throw new Error(`${NOTING_MEMBERSHIP}entries ${exact.filter((id: number) => !pending.some(e => e.id === id)).join(", ")} of the frozen batch ${exact.join(", ")} are no longer pending; nothing was re-processed`);
   const mode = input.mode ?? (config.noting.forkModeDefault ? "fork" : "subagent");
@@ -195,8 +197,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     throw new Error(`${NOTING_CAPACITY}the frozen batch of ${pending.length} entries exceeds noting.batchTokens (${config.noting.batchTokens}); left pending`);
   // 25a: neither Noter mode receives a knowledge block, but a run still records which commits its
   // path made current, so an explicit `trace K…` inside the run is judged against a frozen base.
-  const path = store.knowledgePath(session.id, input.branch, input.headTurnId); // entry-aware (review 2026-09-08)
-  const snapshot = store.pathSnapshot(path); // one membership for this freeze, knowledge and facts alike
+  snapshot ??= store.pathSnapshot(path); // one membership for this freeze, knowledge and facts alike
   const headEntryId = store.sourceHeadEntryId(session.id, input.branch, input.headTurnId, snapshot);
   const knowledge = store.currentKnowledge(path, {}, snapshot);
   // 26 amendment 2: the history block carries the facts applicable on this freeze's path, never the

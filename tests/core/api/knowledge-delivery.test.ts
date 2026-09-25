@@ -381,14 +381,20 @@ test("34c split notice names both children while partial budgeting grants body v
 });
 
 test("34c delivery check keeps graph/source work bounded as candidate count grows", () => {
+  let previous: [number, number] | undefined;
   for (const count of [1, 40]) {
     const f = fixture();
     for (let index = 0; index < count; index++) f.create(`knowledge ${index}`, [f.facts[index % 2]!.id]);
     const spy = vi.spyOn(f.memory.store.db, "prepare");
     f.memory.injection(f.target, view({ raw: new Map([["first", "source"], ["second", "source"]]) }));
-    const sourceQueries = spy.mock.calls.filter(([sql]) => /source_entries|fact_sources|noted_entries/.test(String(sql))).length;
-    process.stdout.write(`34c delivery source queries: ${count} candidates => ${sourceQueries}\n`);
+    const statements = spy.mock.calls.map(([sql]) => String(sql));
+    const sourceQueries = statements.filter(sql => !/noted_entries/.test(sql) && /source_entries|fact_sources/.test(sql)).length;
+    const watermarkQueries = statements.filter(sql => /noted_entries/.test(sql)).length;
+    expect(statements.some(sql => /source_entry_raw/.test(sql))).toBe(false);
     expect(sourceQueries).toBeLessThanOrEqual(5);
+    expect(watermarkQueries).toBeLessThanOrEqual(4);
+    if (previous) expect([sourceQueries, watermarkQueries]).toEqual(previous);
+    previous = [sourceQueries, watermarkQueries];
     spy.mockRestore();
   }
 });

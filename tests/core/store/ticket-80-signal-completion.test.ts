@@ -84,7 +84,7 @@ test("a prepared snapshot supplied by one reader never replaces the memo's foreg
   const first = writer.currentKnowledge(path).map(value => value.revision.id);
   expect(first).toEqual([created.committed[0]!.commit]);
   const supplied = writer.pathSnapshot(path);
-  supplied.turns.clear();
+  supplied.turns = new Set();
   writer.commitGraph(path, undefined, supplied, writer.commitGraphInput(undefined, sessionId));
   expect(writer.currentKnowledge(path).map(value => value.revision.id)).toEqual(first);
 });

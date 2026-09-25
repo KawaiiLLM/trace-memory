@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,6 +63,110 @@ test("87: view snapshots freeze membership and pending while another connection 
     expect(own.ok).toBe(true);
     expect(reader.pendingEntryIds(sessionId, "main", next.turn.id)).toEqual([]);
   } finally { writer.close(); reader.close(); }
+});
+
+test("87: membership-only reads defer noted hydration without losing later marks", () => {
+  const { writer, reader, sessionId, append } = fixture();
+  try {
+    const first = append("main"), path = { sessionId, branch: "main", headTurnId: first.turn.id };
+    const sql = vi.spyOn(reader.db, "prepare");
+    reader.pathSnapshot(path);
+    reader.selectedSourceEntryIds(sessionId, "main");
+    expect(sql.mock.calls.filter(([query]) => /noted_entries/.test(query))).toHaveLength(0);
+    const note = (entryIds: number[]) => writer.commitNotingRun({ run: { kind: "noting", sessionId, createdAt: time }, entryIds, facts: [] });
+    expect(note([first.entry.id]).ok).toBe(true);
+    expect(reader.pendingEntryIds(sessionId, "main", first.turn.id)).toEqual([]);
+    const notedReads = sql.mock.calls.filter(([query]) => /noted_entries/.test(query) && !query.startsWith("EXPLAIN"));
+    expect(notedReads).toHaveLength(2); // one watermark and one bounded rowid read
+    const markedSql = notedReads.find(([query]) => query.includes("FROM noted_entries n NOT INDEXED"))![0];
+    const plan = reader.db.prepare(`EXPLAIN QUERY PLAN ${markedSql}`).all(sessionId, 0, 1);
+    expect(plan.some(row => /SEARCH n USING INTEGER PRIMARY KEY \(rowid>\? AND rowid<\?\)/.test(String(row.detail)))).toBe(true);
+    const next = append("main", writer.sourcePathState(sessionId, "main")!);
+    reader.pathSnapshot({ ...path, headTurnId: next.turn.id });
+    reader.selectedSourceEntryIds(sessionId, "main");
+    expect(sql.mock.calls.filter(([query]) => /noted_entries/.test(query) && !query.startsWith("EXPLAIN"))).toHaveLength(2);
+    expect(note([next.entry.id]).ok).toBe(true);
+    expect(reader.pendingEntryIds(sessionId, "main", next.turn.id)).toEqual([]);
+    expect(sql.mock.calls.filter(([query]) => /noted_entries/.test(query) && !query.startsWith("EXPLAIN"))).toHaveLength(4);
+    const pending = reader.pendingEntryState(sessionId, "main", next.turn.id);
+    expect(note([]).ok).toBe(true);
+    expect(reader.pendingEntryState(sessionId, "main", next.turn.id)).toBe(pending);
+    sql.mockRestore();
+  } finally { writer.close(); reader.close(); }
+});
+
+test("87: an origin records one exact trigger and a rewind selects the last on-ancestry entry", () => {
+  const { writer, reader, sessionId, append } = fixture();
+  try {
+    const root = append("main");
+    const sameTurn = writer.appendSourceEntry({ sessionId, turnId: root.turn.id, nativeLineage: "test", nativeId: "same-turn",
+      role: "assistant", text: "same-turn", raw: "same-turn", calls: [] });
+    writer.appendSourcePath(sessionId, "main", writer.sourcePathState(sessionId, "main")!, [sameTurn.id], root.turn.id, "L");
+    const next = append("main", writer.sourcePathState(sessionId, "main")!);
+    const historical = { sessionId, branch: "main", headTurnId: root.turn.id };
+    expect(reader.triggerOrigin(historical)).toEqual({ sessionId, entryIds: [sameTurn.id] });
+    const explicit = reader.triggerOrigin(historical, root.entry.id);
+    expect(explicit).toEqual({ sessionId, entryIds: [root.entry.id] });
+    const execution = reader.beginExecution({ sessionId, phase: "noting", head: root.entry.id, origin: explicit });
+    expect(() => reader.triggerOrigin(historical, next.entry.id)).toThrow("exact triggering entry");
+    expect(reader.triggerOrigin({ ...historical, headTurnId: next.turn.id })).toEqual({ sessionId, entryIds: [next.entry.id] });
+    expect(reader.executionOrigin(execution)).toEqual(explicit); // retry keeps the admitted trigger
+    writer.selectSourcePath(sessionId, "main", [root.entry.id]);
+    expect(reader.triggerOrigin(historical)).toEqual({ sessionId, entryIds: [root.entry.id] });
+  } finally { writer.close(); reader.close(); }
+});
+
+test("87: noted watermark reads only new rows, including other-session marks", () => {
+  const { writer, reader, sessionId, append } = fixture();
+  try {
+    const first = append("main");
+    const initial = reader.pendingEntryState(sessionId, "main", first.turn.id);
+    expect(reader.pendingEntryState(sessionId, "main", first.turn.id)).toBe(initial);
+    const other = writer.createSession({ host: "other", projectId: writer.getSession(sessionId)!.projectId,
+      enrollmentChoice: true, startedAt: time, firstReplyAt: time });
+    const turn = writer.appendTurn({ sessionId: other.id, kind: "turn", userPrompt: "other", startedAt: time });
+    const entry = writer.appendSourceEntry({ sessionId: other.id, turnId: turn.id, nativeLineage: "other", nativeId: "other",
+      role: "user", text: "other", raw: "other", calls: [] });
+    expect(writer.commitNotingRun({ run: { kind: "noting", sessionId: other.id, createdAt: time },
+      entryIds: [entry.id], facts: [] }).ok).toBe(true);
+    expect(reader.pendingEntryState(sessionId, "main", first.turn.id)).toBe(initial);
+    const next = append("main", writer.sourcePathState(sessionId, "main")!);
+    expect(reader.pendingEntryIds(sessionId, "main", next.turn.id)).toEqual([first.entry.id, next.entry.id]);
+    expect(writer.commitNotingRun({ run: { kind: "noting", sessionId, createdAt: time },
+      entryIds: [first.entry.id], facts: [] }).ok).toBe(true);
+    expect(reader.pendingEntryIds(sessionId, "main", next.turn.id)).toEqual([next.entry.id]);
+    expect(reader.pendingEntryState(sessionId, "main", next.turn.id)).toBe(reader.pendingEntryState(sessionId, "main", next.turn.id));
+  } finally { writer.close(); reader.close(); }
+});
+
+test("87: rewound borrowed cursors reuse both head and tail ancestry across lineages", () => {
+  const { writer, reader, sessionId, append } = fixture();
+  try {
+    const root = append("main");
+    const next = append("main", writer.sourcePathState(sessionId, "main")!);
+    writer.selectSourcePath(sessionId, "other", [root.entry.id, next.entry.id]);
+    writer.setCurrentPath(sessionId, "main", root.turn.id, "L");
+    writer.setCurrentPath(sessionId, "other", root.turn.id, "other-lineage");
+    const load = vi.spyOn(reader as unknown as { loadPathTurns(path: { sessionId: number; headTurnId: number }): Set<number> }, "loadPathTurns");
+    const targets = () => (reader as unknown as { borrowedCursorTargets(id: number): { branch: string; headTurnId: number }[] })
+      .borrowedCursorTargets(sessionId);
+    const expected = [{ branch: "main", headTurnId: root.turn.id }, { branch: "other", headTurnId: root.turn.id }];
+    expect(targets()).toEqual(expected);
+    const warmed = load.mock.calls.length;
+    for (let i = 0; i < 8; i++) {
+      expect(targets()).toEqual(expected);
+      for (const target of expected) expect(reader.borrowedTargetActive({ sessionId, ...target })).toBe(true);
+    }
+    expect(load.mock.calls).toHaveLength(warmed);
+    const sibling = writer.appendTurn({ sessionId, parentTurnId: root.turn.id, kind: "turn", userPrompt: "sibling", startedAt: time });
+    expect(() => writer.setCurrentPath(sessionId, "main", sibling.id, "L")).toThrow("not coherent");
+    const more = append("main", writer.sourcePathState(sessionId, "main")!);
+    writer.setCurrentPath(sessionId, "main", root.turn.id, "L");
+    expect(targets()).toEqual(expected);
+    writer.selectSourcePath(sessionId, "other", [root.entry.id]);
+    expect(targets()).toEqual(expected);
+    expect(reader.pathSnapshot({ sessionId, branch: "main", headTurnId: more.turn.id }).entries!.ids.has(more.entry.id)).toBe(true);
+  } finally { writer.close(); reader.close(); vi.restoreAllMocks(); }
 });
 
 test("87: a rollback and a non-append rewrite cannot leak into a frozen view", () => {

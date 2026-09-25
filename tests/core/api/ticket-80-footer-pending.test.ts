@@ -35,19 +35,18 @@ test("80: Noting and a footer miss share one pending rebuild after invalidation"
   const { memory, store, session, turn, entry } = fixture();
   try {
     memory.progress(session.id, "main", turn.id);
-    // An uncovered, non-prefix mutation requires the pending set to be rebuilt once.
+    // An uncovered, non-prefix mutation must invalidate pending without walking the full path.
     const second = store.appendSourceEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "n", nativeId: "second",
       role: "user", text: "second", raw: "second", calls: [] });
     store.appendSourcePath(session.id, "main", store.sourcePathState(session.id, "main")!, [second.id], turn.id, "n");
     expect(store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
       facts: [], entryIds: [second.id] }).ok).toBe(true);
-    const cold = vi.spyOn(store as any, "pathSourceMeta");
+    const fullWalk = vi.spyOn(store as any, "loadPathTurns");
     const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     memory.taskEligibility("noting", target);
-    expect(cold).toHaveBeenCalledTimes(1);
-    expect(memory.progress(session.id, "main", turn.id).entries).toBe(1);
-    expect(cold).toHaveBeenCalledTimes(1);
     expect(store.pendingEntryIds(session.id, "main", turn.id)).toEqual([entry.id]);
+    expect(memory.progress(session.id, "main", turn.id).entries).toBe(1);
+    expect(fullWalk).not.toHaveBeenCalled();
   } finally { memory.close(); }
 });
 

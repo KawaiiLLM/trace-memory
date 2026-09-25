@@ -466,7 +466,7 @@ export function renderRun(run: { id: number; kind: string; outcome: string; sess
   if (!problems.length && run.outcome !== "success") problems.push(`no problem text recorded; response: ${cut(run.response ?? "", 40, 0)}`);
   const lines = [`R${run.id} ${run.kind} ${run.outcome} ${run.createdAt}`,
     `  S${run.sessionId ?? "?"} / branch ${run.branch ?? "?"}  ${run.rangeFrom ?? "?"}..${run.rangeTo ?? "?"}`,
-    `  trigger origin: ${run.origin ? `S${run.origin.sessionId}/E[${run.origin.entryIds.join(",")}]` : "unknown"}`,
+    `  trigger origin: ${run.origin ? `S${run.origin.sessionId}/E${run.origin.entryIds.at(-1)}` : "unknown"}`,
     `  model ${run.model ?? "?"}  mode ${runMode(run.mode)}`,
     `  created: ${[...factIds.map((id) => `F${id}`), ...commits.map((c) => `K${c.knowledgeId}@${c.id} (${c.op}: ${c.reason})`)].join(", ") || "nothing"}`,
     response.usageStatus === "unknown" ? "  usage: unknown  cost unknown"
