@@ -41,7 +41,9 @@ try {
     assert.ok(readFileSync(join(plugin, "dist/cc.cjs"), "utf8").includes(phrase), `missing bundled prompt: ${phrase}`);
   const hooks = JSON.parse(readFileSync(join(plugin, "hooks/hooks.json"), "utf8"));
   assert.deepEqual(hooks.modules, ["./menu.tsx"]);
-  assert.equal(hooks.hooks.SessionStart[0].hooks.length, 1);
+  // 66: SessionStart is 24 slice readers, one per slot; only an elected producer launches cc.cjs.
+  assert.deepEqual(hooks.hooks.SessionStart.flatMap(group => group.hooks.map(hook => hook.command)),
+    Array.from({ length: 24 }, (_, slot) => `node "\${CLAUDE_PLUGIN_ROOT}/hooks/slice.mjs" "\${CLAUDE_PLUGIN_ROOT}/cc.config.json" ${slot}`));
   assert.equal(hooks.hooks.SessionEnd[0].hooks.length, 1);
   const session = "packed-smoke", transcript = join(temporary, "transcript.jsonl"), database = join(temporary, "memory.sqlite");
   mkdirSync(join(temporary, "worker-cwd"));
@@ -55,7 +57,7 @@ try {
   const entry = join(plugin, "dist/cc.cjs"), config = join(plugin, "cc.config.json");
   const hookInput = JSON.stringify({ hook_event_name: "SessionStart", source: "startup", session_id: session, transcript_path: transcript });
   const hookStarted = performance.now();
-  execFileSync(process.execPath, [entry, "hook", "--config", config], { input: hookInput, env: { CLAUDE_PLUGIN_ROOT: plugin }, timeout: 10_000 });
+  execFileSync(process.execPath, [join(plugin, "hooks/slice.mjs"), config, "0"], { input: hookInput, env: { CLAUDE_PLUGIN_ROOT: plugin }, timeout: 10_000 });
   const hookLatencyMs = performance.now() - hookStarted;
   assert.match(execFileSync(process.execPath, [entry, "cli", "--config", config, "--session", session, "on"], { encoding: "utf8" }), /"enrollment":"enabled"/);
   const mcpStarted = performance.now();
