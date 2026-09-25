@@ -47,29 +47,25 @@ export function sourceKey(address: string): string {
   return selector?.kind === "call" ? `${base}@${callSelector(selector.id)}` : address;
 }
 export interface SourceResolution { entry: SourceEntry; blocks: SourceBlock[] }
-/** The guard `resolveSource` applies before any block-level check: an address must name exactly one
- * turn, unqualified by session, and — unless it is a legacy alias — exactly one entry ordinal (no
- * range, no list). Both are metadata fields (`SourceEntryMeta.turnId`/`entryOrdinal`), so 79 item 2
- * reuses this same guard, via `sourceAddressScope` below, to narrow candidates before any body is
- * read; `resolveSource` keeps using it to decide whether to look further into the body at all. One
- * parse, one guard, so the two can never drift apart. */
-function parseSourceAddress(address: string): (TurnAddress & { turn: number }) | null {
+/** Historical reads still accept one legacy role/call alias, while new fact writes require one
+ * exact entry. Both forms name one Turn; only the entry-only form exposes an ordinal for metadata
+ * narrowing before any Raw body is read. */
+function parseSourceAddress(address: string, entryOnly = false): (TurnAddress & { turn: number }) | null {
   let parsed: TurnAddress | null;
   try { parsed = parseTurnAddress(address); } catch { return null; }
   if (!parsed || parsed.session !== undefined) return null;
   const { legacy, entries: selection } = parsed;
-  if (!legacy && (selection?.length !== 1 || selection[0]!.to !== undefined)) return null;
+  if ((entryOnly && legacy) || (!legacy && (selection?.length !== 1 || selection[0]!.to !== undefined))) return null;
   return parsed as TurnAddress & { turn: number };
 }
-/** 79 item 2: which turn (and, for a precise single-ordinal address, which ordinal) a source address
- * could possibly resolve against — decidable from metadata alone, before any body is read. `null`
- * means the address cannot resolve to anything, matching `resolveSource`'s own early return. */
+/** New fact-write scope: one exact entry address. Legacy aliases remain readable through
+ * `resolveSource`, but cannot enter the fact-write candidate set. */
 export function sourceAddressScope(address: string): { turn: number; ordinal?: number } | null {
-  const parsed = parseSourceAddress(address);
-  return parsed ? { turn: parsed.turn, ordinal: parsed.legacy ? undefined : parsed.entries![0]!.from } : null;
+  const parsed = parseSourceAddress(address, true);
+  return parsed ? { turn: parsed.turn, ordinal: parsed.entries![0]!.from } : null;
 }
-/** Resolve once against a writer's path. The returned blocks serve eligibility, immutable binding
- * and completion checks alike. Legacy role aliases select text, not their entry's dispatches. */
+/** Historical resolver. Legacy role aliases select text, not their entry's dispatches; new fact
+ * writes additionally require the entry-only guard in `resolveFactSource`. */
 export function resolveSource(entries: readonly SourceEntry[], address: string): SourceResolution[] {
   const parsed = parseSourceAddress(address);
   if (!parsed) return [];
@@ -97,6 +93,7 @@ export function resolveSource(entries: readonly SourceEntry[], address: string):
 /** New facts use only public text/call/result evidence. Whole mixed entries exclude thinking;
  * explicit thinking and thinking-only entries resolve to no factual evidence. Reads are unchanged. */
 export function resolveFactSource(entries: readonly SourceEntry[], address: string): SourceResolution[] {
+  if (!parseSourceAddress(address, true)) return [];
   return resolveSource(entries, address).flatMap(hit => {
     const blocks = hit.blocks.filter(block => block.kind !== "thinking");
     return blocks.length ? [{ entry: hit.entry, blocks }] : [];

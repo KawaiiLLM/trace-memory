@@ -5,13 +5,14 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
+import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
+import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
 import { factAddresses, renderKnowledge, renderKnowledgeChange, tokens } from "../render/index.ts";
-import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
+import { isKnowledgeCategory } from "../model/index.ts";
 import type {
   Actor,
   Knowledge,
@@ -152,14 +153,15 @@ CREATE TABLE IF NOT EXISTS facts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id INTEGER NOT NULL REFERENCES runs(id),
   turn_id INTEGER NOT NULL REFERENCES turns(id),
-  category TEXT NOT NULL CHECK (category IN ('question','proposal','decision','observation','interpretation','event')),
-  actor TEXT NOT NULL CHECK (actor IN ('user','agent')),
+  category TEXT CHECK (category IS NULL OR category IN ('question','proposal','decision','observation','interpretation','event')),
+  actor TEXT CHECK (actor IS NULL OR actor IN ('user','agent')),
   text TEXT NOT NULL,
   quote TEXT,
   status TEXT CHECK (status IN ('completed','reported','dispatched','attempted')),
   source TEXT NOT NULL,
   source_time TEXT NOT NULL,
-  CHECK ((status IS NOT NULL) = (category = 'event'))
+  source_roles TEXT,
+  CHECK (category IS NULL AND status IS NULL OR category IS NOT NULL AND ((status IS NOT NULL) = (category = 'event')))
 );
 
 -- Which source entries a fact's citations resolved to when it was written. Addresses like T1#assistant
@@ -190,7 +192,7 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
   knowledge_id INTEGER NOT NULL REFERENCES knowledge(id),
   parent_id INTEGER REFERENCES knowledge_revisions(id),
   text TEXT NOT NULL,
-  category TEXT NOT NULL CHECK (category IN ('constraint','open','dispute','goal','mechanism','term','reference')),
+  category TEXT NOT NULL CHECK (category IN ('constraint','understanding','open','dispute','goal','mechanism','term','reference')),
   scope TEXT NOT NULL CHECK (scope IN ('session','project','global')),
   supports TEXT NOT NULL,
   support_semantics TEXT NOT NULL DEFAULT 'complete_result' CHECK (support_semantics IN ('complete_result','change')),
@@ -199,7 +201,7 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
   topics TEXT NOT NULL DEFAULT '[]',
   run_id INTEGER REFERENCES runs(id),
   created_at TEXT NOT NULL,
-  actor_role TEXT CHECK(actor_role IS NULL OR actor_role IN ('consolidation','dreaming','manual')),
+  actor_role TEXT CHECK(actor_role IS NULL OR actor_role IN ('noting','consolidation','dreaming','manual')),
   UNIQUE (knowledge_id, id)
 );
 
@@ -476,8 +478,8 @@ export interface NotingRelationTarget {
 
 export interface FactCommitInput {
   turnId: number;
-  category: FactCategory;
-  actor: Actor;
+  category?: FactCategory | null;
+  actor?: Actor | null;
   text: string;
   quote?: string | null;
   status?: EventStatus | null;
@@ -696,6 +698,7 @@ function toFact(row: any): Fact {
     quote: row.quote,
     status: row.status ?? null,
     source: JSON.parse(row.source),
+    ...(row.source_roles ? { roles: JSON.parse(row.source_roles) } : {}),
     createdAt: row.source_time,
   };
 }
@@ -1172,6 +1175,7 @@ export class Store {
       if (Number(this.db.prepare("PRAGMA user_version").get()!.user_version) === 0)
         this.db.exec("DELETE FROM task_failures WHERE phase = 'dreaming'; PRAGMA user_version = 1");
       migrateKnowledgeLineage(this.db, true);
+      migrateFactAndKnowledge92(this.db);
       // The policy is part of the same schema transaction. Concurrent openers serialize at BEGIN;
       // INSERT OR IGNORE preserves an edited existing row and initializes an absent row once.
       this.transaction(() => {
@@ -2165,7 +2169,27 @@ export class Store {
           if (!turn || turn.sessionId !== sessionId) {
             throw new Error(`turn T${f.turnId} does not belong to session S${sessionId}`);
           }
-          const info = this.db.prepare("INSERT INTO facts (run_id, turn_id, category, actor, text, quote, status, source, source_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(runId, f.turnId, f.category, f.actor, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt);
+          const citedEntries: number[] = [];
+          const roles: NonNullable<Fact["roles"]> | null = f.category === undefined || f.category === null
+            ? f.source.map(address => {
+              const scope = sourceAddressScope(address);
+              const row = scope && this.db.prepare("SELECT id FROM source_entries WHERE turn_id=? AND entry_ordinal=?")
+                .get(scope.turn, scope.ordinal!) as { id: number } | undefined;
+              if (!row || !f.entryIds?.includes(row.id)) throw new Error(`invalid bound source ${address}`);
+              const entry = this.getSourceEntry(row.id)!;
+              if (resolveFactSource([entry], address).length !== 1) throw new Error(`inadmissible source ${address}`);
+              citedEntries.push(entry.id);
+              if (entry.role === "user") return { role: "user" as const };
+              if (entry.role === "toolResult") return { role: "observation" as const };
+              if (entry.role !== "assistant") throw new Error(`invalid source entry role ${entry.role}`);
+              const harness = this.getSession(sessionId)!.host;
+              if (!harness.startsWith("pi:") && !harness.startsWith("cc:")) throw new Error(`unknown source harness ${harness}`);
+              return { role: "assistant" as const, harness: harness.startsWith("pi:") ? "Pi agent" as const : "Claude Code" as const };
+            }) : null;
+          if (roles && (roles.length !== f.source.length ||
+              new Set(citedEntries).size !== new Set(f.entryIds).size ||
+              citedEntries.some(id => !f.entryIds!.includes(id)))) throw new Error("fact source bindings must match every cited entry exactly");
+          const info = this.db.prepare("INSERT INTO facts (run_id, turn_id, category, actor, text, quote, status, source, source_time, source_roles) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(runId, f.turnId, f.category ?? null, f.actor ?? null, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt, roles ? JSON.stringify(roles) : null);
           const factId = Number(info.lastInsertRowid);
           batchIds.push(factId);
           for (const entryId of new Set(f.entryIds ?? [])) {
@@ -3365,6 +3389,7 @@ export class Store {
     const bad = this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId));
     if (bad) return { ok: false, reason: bad };
     const insertRevision = (knowledgeId: number, parentId: number | null, text: string, category: KnowledgeCategory, topics: string[], revisionOp: KnowledgeOp) => {
+      if (!isKnowledgeCategory(category)) throw new Error(`invalid new knowledge category ${category}`);
       if (role !== "manual") this.requireWorkerItemSize(text, "Knowledge item");
       const info = this.db.prepare(`INSERT INTO knowledge_revisions
         (knowledge_id, parent_id, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role)
@@ -3374,7 +3399,7 @@ export class Store {
     };
     if (op.op === "split") {
       if (op.children.length !== 2) return { ok: false, reason: "split requires exactly two complete children" };
-      if (op.children.some(child => !child.text.trim() || !KNOWLEDGE_CATEGORIES.includes(child.category) ||
+      if (op.children.some(child => !child.text.trim() || !isKnowledgeCategory(child.category) ||
           !Array.isArray(child.topics) || child.topics.some(topic => typeof topic !== "string" || !topic.trim())))
         return { ok: false, reason: "split requires exactly two complete children with text, category and topics" };
       const author = this.getKnowledge(op.knowledgeId)!.author;

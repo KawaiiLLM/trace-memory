@@ -1,6 +1,6 @@
 import type { Store, KnowledgeWithRevision, ApplicabilityInput } from "./index.ts";
 import { renderKnowledge, renderKnowledgeBlock } from "../render/index.ts";
-import { KNOWLEDGE_CATEGORIES, type TriggerOrigin } from "../model/index.ts";
+import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup, type TriggerOrigin } from "../model/index.ts";
 
 export type KnowledgeBudgetField = "global" | "project" | "session";
 export interface KnowledgeBudgetValues { global: number; project: number; session: number }
@@ -82,7 +82,7 @@ export interface DreamingRange {
 /** Full block, never a truncated budget selection. Shared by budget reporting and Dreamer input. */
 export function processedBlock(values: KnowledgeWithRevision[], render = renderKnowledge): string {
   return renderKnowledgeBlock(KNOWLEDGE_CATEGORIES.flatMap(category => {
-    const members = values.filter(v => v.revision.category === category).sort((a, b) => a.revision.id - b.revision.id);
+    const members = values.filter(v => knowledgeCategoryGroup(v.revision.category) === category).sort((a, b) => a.revision.id - b.revision.id);
     return members.length ? [{ category, text: members.map(v => render(v)).join("\n") }] : [];
   }));
 }

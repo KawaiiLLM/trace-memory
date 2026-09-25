@@ -1,4 +1,4 @@
-import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
+import { isKnowledgeCategory, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
 import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath, KnowledgeWithRevision } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
 import type { freezeConsolidation } from "./index.ts";
@@ -84,14 +84,14 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       const child = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as NonNullable<typeof value.children>[number];
       if (Object.keys(child).some(key => !["text", "category", "topics"].includes(key))) errors.push(`child ${childIndex + 1}: inapplicable field`);
       if (typeof child.text !== "string" || !child.text.length || /\b[FK]\d+\b/.test(child.text)) errors.push(`child ${childIndex + 1}: expected non-empty text without fact or knowledge ids`);
-      if (!KNOWLEDGE_CATEGORIES.includes(child.category!)) errors.push(`child ${childIndex + 1}: invalid category`);
+      if (!isKnowledgeCategory(child.category)) errors.push(`child ${childIndex + 1}: invalid category`);
       return { text: child.text!, category: child.category!, topics: labels(child.topics, errors) };
     }) : op === "split" ? (errors.push("split requires exactly two complete children"), []) : [];
     if (op !== "archive" && op !== "split") {
       if (!(op === "merge" && value.text === undefined)
           && (typeof value.text !== "string" || !value.text.length || /\b[FK]\d+\b/.test(value.text)))
         errors.push("text: expected non-empty text without fact or knowledge ids");
-      if (!KNOWLEDGE_CATEGORIES.includes(value.category!)) errors.push("invalid category");
+      if (!isKnowledgeCategory(value.category)) errors.push("invalid category");
       if (!KNOWLEDGE_SCOPES.includes(value.scope!)) errors.push("invalid scope");
     }
     const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: facts(value.supports, errors, !dreaming), reason: value.reason!,

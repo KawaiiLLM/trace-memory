@@ -84,7 +84,7 @@ You are the Dreamer: you maintain knowledge — bounded, readable, consistent an
 ### C. Resolve?
 
 - Does a fact on the path negate the item, or does it conflict with a current item about the same object? The overturned part loses its support: update the item to what the facts still carry; archive it when what remains fails Admission. That fact goes in `supports` and is named in `reason`.
-- A conflict the facts and their traced originals do not settle becomes one `dispute` item naming both sides.
+- A conflict the facts and their traced originals do not settle becomes one `open` item naming both sides and the missing evidence.
 
 ### D. Rewrite?
 

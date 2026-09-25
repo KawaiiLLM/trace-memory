@@ -1,5 +1,5 @@
 import type { Store } from "../store/index.ts";
-import type { KnowledgeRevision } from "../model/index.ts";
+import { knowledgeCategoryGroup, type KnowledgeRevision } from "../model/index.ts";
 import { similarity } from "../consolidation/similarity.ts";
 import type { ListingOptions } from "./read.ts";
 
@@ -21,7 +21,7 @@ export function knowledgeReadSelection(store: Store, options: ListingOptions, na
   const current = new Set(graph.current.map(r => r.id));
   const byCommit = input.metadata.revisions!;
   const matches = (r: KnowledgeRevision) => {
-    if (options.category && r.category !== options.category || options.scope && r.scope !== options.scope) return false;
+    if (options.category && knowledgeCategoryGroup(r.category) !== options.category || options.scope && r.scope !== options.scope) return false;
     const owner = r.runId === null ? undefined : input.metadata.runs.get(r.runId);
     if (r.scope === "global") return true;
     if (r.scope === "session") return sessionId === undefined ? projectId === undefined : owner === sessionId;

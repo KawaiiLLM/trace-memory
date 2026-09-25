@@ -11,6 +11,40 @@ export interface Migration64dReport {
   seeded: { global: number; project: number; session: number };
 }
 
+/** Relax only the two historical CHECK-bearing tables. Store opens with foreign keys disabled
+ * inside one immediate schema transaction and performs its complete FK check before COMMIT. */
+export function migrateFactAndKnowledge92(db: DatabaseSync): void {
+  if (!db.isTransaction) throw new Error("92 migration requires Store's schema transaction");
+  const changes = [
+    { table: "facts", update: (sql: string) => sql
+      .replace(/category TEXT NOT NULL CHECK \(category IN /, "category TEXT CHECK (category IS NULL OR category IN ")
+      .replace(/actor TEXT NOT NULL CHECK \(actor IN /, "actor TEXT CHECK (actor IS NULL OR actor IN ")
+      .replace("CHECK ((status IS NOT NULL) = (category = 'event'))",
+        "CHECK (category IS NULL AND status IS NULL OR category IS NOT NULL AND ((status IS NOT NULL) = (category = 'event')))"),
+      target: "category IS NULL AND status IS NULL" },
+    { table: "knowledge_revisions", update: (sql: string) => sql
+      .replace("'constraint','open'", "'constraint','understanding','open'")
+      .replace("'consolidation','dreaming','manual'", "'noting','consolidation','dreaming','manual'"),
+      target: "'understanding'" },
+  ];
+  for (const { table, update, target } of changes) {
+    const sql = String((db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as { sql: string }).sql);
+    if (sql.includes(target)) continue;
+    const next = update(sql);
+    if (next === sql || !next.includes(target)) throw new Error(`92 migration refused unknown ${table} schema`);
+    const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY name")
+      .all(table) as { sql: string }[];
+    const sequence = db.prepare("SELECT seq FROM sqlite_sequence WHERE name=?").get(table) as { seq: number } | undefined;
+    const temporary = `${table}_92`;
+    db.exec(next.replace(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?"?${table}"?`, "i"), `CREATE TABLE ${temporary}`));
+    db.exec(`INSERT INTO ${temporary} SELECT * FROM ${table}; DROP TABLE ${table}; ALTER TABLE ${temporary} RENAME TO ${table}`);
+    if (sequence) db.prepare("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name=?").run(sequence.seq, table);
+    for (const object of objects) db.exec(object.sql);
+  }
+  if (!db.prepare("PRAGMA table_info(facts)").all().some(row => row.name === "source_roles"))
+    db.exec("ALTER TABLE facts ADD COLUMN source_roles TEXT");
+}
+
 const RETIRED_64D_TABLES = [
   "settled_knowledge_events", "processed_knowledge_versions", "dreaming_completions",
   "dreaming_range_versions", "knowledge_weights", "knowledge_marks",

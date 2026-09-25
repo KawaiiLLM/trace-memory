@@ -14,16 +14,12 @@ export const FACT_CATEGORIES = [
 ] as const;
 export type FactCategory = (typeof FACT_CATEGORIES)[number];
 
-export const KNOWLEDGE_CATEGORIES = [
-  "constraint",
-  "open",
-  "dispute",
-  "goal",
-  "mechanism",
-  "term",
-  "reference",
-] as const;
-export type KnowledgeCategory = (typeof KNOWLEDGE_CATEGORIES)[number];
+export const KNOWLEDGE_CATEGORIES = ["constraint", "understanding", "goal", "open", "reference"] as const;
+export type KnowledgeCategory = (typeof KNOWLEDGE_CATEGORIES)[number] | "mechanism" | "term" | "dispute";
+export const isKnowledgeCategory = (category: unknown): category is (typeof KNOWLEDGE_CATEGORIES)[number] =>
+  typeof category === "string" && (KNOWLEDGE_CATEGORIES as readonly string[]).includes(category);
+export const knowledgeCategoryGroup = (category: KnowledgeCategory): (typeof KNOWLEDGE_CATEGORIES)[number] =>
+  category === "mechanism" || category === "term" ? "understanding" : category === "dispute" ? "open" : category;
 
 export const ACTORS = ["user", "agent"] as const;
 export type Actor = (typeof ACTORS)[number];
@@ -98,10 +94,12 @@ export interface ToolCall {
 export interface Fact {
   id: number;
   turnId: number;
-  category: FactCategory;
-  actor: Actor;
+  category: FactCategory | null;
+  actor: Actor | null;
   text: string;
   quote: string | null;
+  /** One derived attribution per cited entry, in source order. Legacy rows omit this. */
+  roles?: { role: "user" | "assistant" | "observation"; harness?: "Pi agent" | "Claude Code" }[];
   status?: EventStatus | null;
   source: string[];
   createdAt: string;
@@ -123,7 +121,7 @@ export interface Knowledge {
 
 export interface KnowledgeRevision {
   /** Immutable submitting role. Absence denotes a legacy revision whose role was not recorded. */
-  actorRole?: "consolidation" | "dreaming" | "manual" | null;
+  actorRole?: "noting" | "consolidation" | "dreaming" | "manual" | null;
   id: number;
   knowledgeId: number;
   parentId: number | null;
@@ -194,12 +192,8 @@ export interface NotingRelationInput {
 }
 
 export interface NotingFactInput {
-  category: FactCategory;
-  actor: Actor;
   text: string;
-  quote?: string;
-  status?: EventStatus;
-  source: string[]; // raw addresses, e.g. "T812#user", "T812#t3"
+  source: string[]; // each address names one entry, e.g. "T812#E2@text"
   support?: NotingRelationInput[];
   negate?: NotingRelationInput[];
 }
@@ -240,43 +234,24 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
   }
   const f = raw as Record<string, unknown>;
 
-  if (!FACT_CATEGORIES.includes(f.category as FactCategory)) {
-    problems.push(`${path}.category: expected one of ${FACT_CATEGORIES.join("|")}, got ${JSON.stringify(f.category)}`);
-  }
-  if (!ACTORS.includes(f.actor as Actor)) {
-    problems.push(`${path}.actor: expected "user" or "agent", got ${JSON.stringify(f.actor)}`);
-  }
   if (!isNonEmptyString(f.text)) {
     problems.push(`${path}.text: expected a non-empty string`);
   } else {
     if (EMBEDDED_ID_RE.test(f.text)) {
-      problems.push(`${path}.text: must not embed a fact or knowledge id; move the verbatim span to quote, which this check does not cover, and keep the rest of the fact; ids live only in relation fields`);
-    }
-    if (EVENT_PREFIXES.some((p) => (f.text as string).startsWith(p))) {
-      problems.push(`${path}.text: completion prefix belongs in status`);
+      problems.push(`${path}.text: must not embed a fact or knowledge id; ids live in structured relation/support fields`);
     }
   }
   for (const key of Object.keys(f)) {
-    if (!["category", "actor", "text", "quote", "source", "support", "negate", "status"].includes(key)) problems.push(`${path}.${key}: unexpected field`);
-  }
-  if (f.category === "event" ? !EVENT_STATUSES.includes(f.status as EventStatus) : f.status !== undefined) {
-    problems.push(`${path}.status: required for event, forbidden otherwise; expected ${EVENT_STATUSES.join("|")}`);
+    if (!["text", "source", "support", "negate"].includes(key)) problems.push(`${path}.${key}: unexpected field`);
   }
   if (!isStringArray(f.source) || f.source.length === 0) {
     problems.push(`${path}.source: expected a non-empty array of address strings`);
-  }
-  if (f.quote !== undefined && typeof f.quote !== "string") {
-    problems.push(`${path}.quote: expected a string when present`);
   }
   const support = validateRelationList(`${path}.support`, f.support, problems);
   const negate = validateRelationList(`${path}.negate`, f.negate, problems);
 
   return {
-    category: f.category as FactCategory,
-    actor: f.actor as Actor,
     text: f.text as string,
-    quote: f.quote as string | undefined,
-    status: f.status as EventStatus | undefined,
     source: (f.source as string[]) ?? [],
     support,
     negate,

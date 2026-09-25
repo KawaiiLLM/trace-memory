@@ -3,7 +3,7 @@ import { knowledgeReadSelection, KNOWLEDGE_REPRESENTATIVE_RECEIPT } from "./know
 import { traceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, PathSnapshot } from "../store/index.ts";
-import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
+import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, knowledgeCategoryGroup, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
 import { budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { injectionText, compactText, measuredMemory, type MemoryComposition, type TransportItem, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
@@ -39,7 +39,7 @@ export function validateBudgets(options: ListingOptions): void {
   if (options.tool !== undefined && (!Number.isSafeInteger(options.tool) || options.tool < 1)) throw new Error("tool must be a positive ordinal");
   if ("where" in options) throw new Error("where is removed; use scope");
   if (options.versions !== undefined && !READ_VERSIONS.includes(options.versions)) throw new Error("versions must be current, history or all");
-  if (options.category !== undefined && !KNOWLEDGE_CATEGORIES.includes(options.category)) throw new Error("invalid knowledge category filter");
+  if (options.category !== undefined && !(KNOWLEDGE_CATEGORIES as readonly string[]).includes(options.category)) throw new Error("invalid knowledge category filter");
   if (options.scope !== undefined && !KNOWLEDGE_SCOPES.includes(options.scope)) throw new Error("invalid knowledge scope filter");
   if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1 || options.maxTokens > MAX_PUBLIC_READ_TOKENS))
     throw new Error(`maxTokens must be a positive safe integer at most ${MAX_PUBLIC_READ_TOKENS}`);
@@ -427,7 +427,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     return { ...rendered, knowledgeCommitIds: selected.commits,
       ...(transport ? { transportItems: [
         ...delta.filter(item => selected.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
-          text: renderKnowledge(item), category: item.revision.category, commitId: item.revision.id,
+          text: renderKnowledge(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
           address: `K${item.knowledge.id}@${item.revision.id}` })),
         ...selectedStates.map(state => ({ kind: "state" as const, text: state.text, receipt: state.receipt })),
         ...material.receipts.map(text => ({ kind: "receipt" as const, text })),
@@ -808,7 +808,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
         ...(transport ? { transportItems: [
           ...knowledge.filter(item => active.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
-            text: renderKnowledge(item), category: item.revision.category, commitId: item.revision.id,
+            text: renderKnowledge(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
             address: `K${item.knowledge.id}@${item.revision.id}` })),
           ...notes.map(text => ({ kind: "receipt" as const, text })),
           ...factGroupLayout(finalFacts, factTurns).map(({ fact, header }) => ({ kind: "fact" as const,

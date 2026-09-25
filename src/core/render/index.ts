@@ -1,5 +1,5 @@
 import { diffArrays } from "diff";
-import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
+import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup } from "../model/index.ts";
 import type { KnowledgeCategory, KnowledgeRevision, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import { sourceAddresses } from "../store/index.ts";
 import { entryAddress, fragmentAddress, sourceBlocks, blockText } from "../model/source.ts";
@@ -501,9 +501,14 @@ export function renderSemantic(prefix: string, body: string, suffix: string, cap
 export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity, frame: (text: string) => string = text => text): string {
   const edges = relations.map((r) => r.fromFact === fact.id
     ? `${r.kind} F${r.toFact} ${r.strength}` : `inbound ${r.kind} F${r.fromFact} ${r.strength}`);
-  return renderSemantic(`[F${fact.id}] ${fact.createdAt} [${fact.category}/${fact.actor}] ${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`, fact.text,
+  const legacy = fact.category && fact.actor ? `[${fact.category}/${fact.actor}] ` : "";
+  const sources = fact.source.map((source, index) => {
+    const attribution = fact.roles?.[index];
+    return attribution ? `${source} (${attribution.role === "assistant" ? attribution.harness : attribution.role})` : source;
+  });
+  return renderSemantic(`[F${fact.id}] ${fact.createdAt} ${legacy}${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`, fact.text,
     `${edges.length ? ` · ${edges.join(" · ")}` : ""}\n` + [...(fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`]),
-      `  source: ${fact.source.join(", ")}`].join("\n"), cap, frame);
+      `  source: ${sources.join(", ")}`].join("\n"), cap, frame);
 }
 
 /** Search previews keep identity outside the optional field set. Unlike complete semantic records,
@@ -525,7 +530,7 @@ function renderPreview(prefix: string, body: string, suffix: string, cap: number
     : inline(`${prefix.trimEnd()} ${truncated(cut.characters)}${suffix}`);
 }
 export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80): string {
-  const prefix = `[F${fact.id}] [${fact.category}/${fact.actor}] ${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`;
+  const prefix = `[F${fact.id}] ${fact.category && fact.actor ? `[${fact.category}/${fact.actor}] ` : ""}${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`;
   return renderPreview(prefix, fact.text, "", cap, fields.has("text"));
 }
 
@@ -536,7 +541,7 @@ const topicList = (topics: string[]): string => topics.length ? ` · topics: ${J
 
 export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision): string {
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
-  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  return `[K${knowledge.id}@${r.id}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
 export const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
@@ -563,7 +568,7 @@ export function renderKnowledgePreview(value: KnowledgeWithRevision, status: str
     ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
     ...(fields.has("links") ? [`parents: ${parents.map(parent => `K${parent.knowledgeId}@${parent.id}`).join(", ") || "none"}`, `children: ${children.map(child => `K${child.knowledgeId}@${child.id}`).join(", ") || "none"}`] : []),
   ];
-  return renderPreview(`[K${value.knowledge.id}@${r.id}] [${r.category}/${r.scope}] `, r.text,
+  return renderPreview(`[K${value.knowledge.id}@${r.id}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] `, r.text,
     suffix.length ? ` · ${suffix.join(" · ")}` : "", cap, fields.has("text"));
 }
 
@@ -576,10 +581,10 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
       ...(value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : []),
       ...(value.revision.supportSemantics === "change" ? [`  inherited lineage supports: ${factAddresses(inherited)}`] : []),
       `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
-    const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${value.revision.category}/${value.revision.scope}] `;
+    const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] `;
     return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
   }
-  const r = value.revision, prefix = `[K${value.knowledge.id}@${r.id}] [${r.category}/${r.scope}] `;
+  const r = value.revision, prefix = `[K${value.knowledge.id}@${r.id}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] `;
   const suffix = [
     ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}${fields.has("topics") ? topicList(r.topics) : ""}`,
       ...(r.supportSemantics === "change" ? [`\n  inherited lineage supports: ${factAddresses(inherited)}`] : [])] : []),
@@ -652,16 +657,16 @@ export function wordLevelDiff(before: string, after: string): WordDiff {
  * `K@commit` address itself is never part of the comparison. */
 export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRevision, current: KnowledgeRevision): { text: string; addedTokens: number; removedTokens: number } {
   const body = wordLevelDiff(baseline.text, current.text);
-  const categoryChanged = baseline.category !== current.category, scopeChanged = baseline.scope !== current.scope;
+  const categoryChanged = knowledgeCategoryGroup(baseline.category) !== knowledgeCategoryGroup(current.category), scopeChanged = baseline.scope !== current.scope;
   const supportsAdded = current.supports.filter(id => !baseline.supports.includes(id));
   const supportsRemoved = baseline.supports.filter(id => !current.supports.includes(id));
   const topicsAdded = current.topics.filter(t => !baseline.topics.includes(t));
   const topicsRemoved = baseline.topics.filter(t => !current.topics.includes(t));
   const supportLabel = current.supportSemantics === "change" ? "change supports" : "supports";
   const lines = [
-    `[K${knowledgeId}@${current.id}] [${current.category}/${current.scope}] ${body.text}`,
+    `[K${knowledgeId}@${current.id}] [${knowledgeCategoryGroup(current.category)}/${current.scope}] ${body.text}`,
     `  ${supportLabel} added: ${factAddresses(supportsAdded)} removed: ${factAddresses(supportsRemoved)}`,
-    ...(categoryChanged ? [`  category: ${baseline.category} -> ${current.category}`] : []),
+    ...(categoryChanged ? [`  category: ${knowledgeCategoryGroup(baseline.category)} -> ${knowledgeCategoryGroup(current.category)}`] : []),
     ...(scopeChanged ? [`  scope: ${baseline.scope} -> ${current.scope}`] : []),
     ...(topicsAdded.length || topicsRemoved.length ? [`  topics added: ${topicsAdded.join(", ") || "none"} removed: ${topicsRemoved.join(", ") || "none"}`] : []),
     // 76 review: the diff above shows only what changed, so an unchanged full list (e.g. topics that
@@ -686,7 +691,7 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
     const lines = [
       ...(fields.has("supports") ? [`  change supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
         `  change supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`] : []),
-      ...(fields.has("status") && a.category !== b.category ? [`  category: ${a.category} -> ${b.category}`] : []),
+      ...(fields.has("status") && knowledgeCategoryGroup(a.category) !== knowledgeCategoryGroup(b.category) ? [`  category: ${knowledgeCategoryGroup(a.category)} -> ${knowledgeCategoryGroup(b.category)}`] : []),
       ...(fields.has("status") && a.scope !== b.scope ? [`  scope: ${a.scope} -> ${b.scope}`] : []),
       ...(fields.has("reason") && a.reason !== b.reason ? [`  reason: ${a.reason} -> ${b.reason}`] : []),
       ...(fields.has("topics") && JSON.stringify(a.topics) !== JSON.stringify(b.topics) ? [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`] : []),
@@ -700,7 +705,7 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
   const whole = [prefix + text,
     `  change supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
     `  change supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
-    ...(a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`]),
+    ...(knowledgeCategoryGroup(a.category) === knowledgeCategoryGroup(b.category) ? [] : [`  category: ${knowledgeCategoryGroup(a.category)} -> ${knowledgeCategoryGroup(b.category)}`]),
     ...(a.scope === b.scope ? [] : [`  scope: ${a.scope} -> ${b.scope}`]),
     ...(a.reason === b.reason ? [] : [`  reason: ${a.reason} -> ${b.reason}`]),
     ...(JSON.stringify(a.topics) === JSON.stringify(b.topics) ? [] : [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`]),
@@ -730,7 +735,7 @@ export const KNOWLEDGE_RECENCY_NOTICE = "Larger @commit numbers are newer. For c
 
 export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision[]): string[] =>
   KNOWLEDGE_CATEGORIES.flatMap(category => {
-    const members = omitted.filter(value => value.revision.category === category);
+    const members = omitted.filter(value => knowledgeCategoryGroup(value.revision.category) === category);
     return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map(value => `K${value.knowledge.id}`))}`] : [];
   });
 
@@ -743,10 +748,10 @@ export interface BudgetedKnowledge {
 }
 
 const orderedKnowledge = (knowledge: KnowledgeWithRevision[], line: (knowledge: KnowledgeWithRevision) => string): RenderedKnowledgeItem[] =>
-  [...knowledge].sort((a, b) => KNOWLEDGE_CATEGORIES.indexOf(a.revision.category) - KNOWLEDGE_CATEGORIES.indexOf(b.revision.category)
+  [...knowledge].sort((a, b) => KNOWLEDGE_CATEGORIES.indexOf(knowledgeCategoryGroup(a.revision.category)) - KNOWLEDGE_CATEGORIES.indexOf(knowledgeCategoryGroup(b.revision.category))
     || a.revision.id - b.revision.id)
     .map(value => { const text = line(value); return {
-      category: value.revision.category, text, id: value.knowledge.id, commit: value.revision.id, size: tokens(text) + 1,
+      category: knowledgeCategoryGroup(value.revision.category), text, id: value.knowledge.id, commit: value.revision.id, size: tokens(text) + 1,
     }; });
 
 const knowledgeBody = (items: RenderedKnowledgeItem[]): Omit<BudgetedKnowledge, "receipts"> => ({
@@ -782,7 +787,7 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   const receipts = (kept: number) => renderKnowledgeOmissions(optional.slice(kept).map(item => byCommit.get(item.commit)!));
   // Prefix trials need only scalar costs; build grouped text and commit lists after selection.
   const outerCost = tokens(xmlBlock("knowledge", KNOWLEDGE_RECENCY_NOTICE));
-  const categoryCosts = new Map(KNOWLEDGE_CATEGORIES.map(category => [category, charge([xmlBlock(category, "")])]));
+  const categoryCosts = new Map<string, number>(KNOWLEDGE_CATEGORIES.map(category => [category, charge([xmlBlock(category, "")])]));
   const bodyCost = (kept: number) => {
     const items = selected(kept);
     return items.length ? outerCost + items.reduce((sum, item) => sum + item.size, 0)
