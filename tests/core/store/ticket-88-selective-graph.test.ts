@@ -38,15 +38,18 @@ test("88: neutral writes do not revisit existing knowledge revisions", () => {
     monitored.graphComponent = (...args) => { components++; return originalComponent.apply(store, args); };
     monitored.revisionApplies = (...args) => { examinedRevisions++; return originalRevision.apply(store, args); };
     monitored.factOnCurrentPath = (...args) => { examinedFacts++; return originalFact.apply(store, args); };
-    let oldRevisionReads = 0;
+    let oldRevisionReads = 0, aggregates = 0;
+    const results = store as unknown as { graphResults: WeakMap<object, unknown> };
+    const originalSet = results.graphResults.set.bind(results.graphResults);
+    results.graphResults.set = ((key: object, value: unknown) => { aggregates++; return originalSet(key, value); }) as typeof results.graphResults.set;
     store.db.prepare = ((sql: string) => {
       if (/SELECT \* FROM knowledge_revisions ORDER BY id/.test(sql)) oldRevisionReads++;
       return original(sql);
     }) as typeof store.db.prepare;
     const assertNeutral = (event: string) => {
       expect(store.visibleKnowledgeVersions(path), event).toEqual(new Set([revisionId]));
-      expect({ oldRevisionReads, components, examinedRevisions, examinedFacts }, event)
-        .toEqual({ oldRevisionReads: 0, components: 0, examinedRevisions: 0, examinedFacts: 0 });
+      expect({ oldRevisionReads, components, examinedRevisions, examinedFacts, aggregates }, event)
+        .toEqual({ oldRevisionReads: 0, components: 0, examinedRevisions: 0, examinedFacts: 0, aggregates: 0 });
     };
     const emptyFact = store.appendTurn({ sessionId: session.id, parentTurnId: turn.id, kind: "turn", userPrompt: "new", startedAt: at });
     const nextEntry = store.appendSourceEntry({ sessionId: session.id, turnId: emptyFact.id, nativeLineage: "native", nativeId: "next",
@@ -77,6 +80,82 @@ test("88: neutral writes do not revisit existing knowledge revisions", () => {
     monitored.graphComponent = originalComponent;
     monitored.revisionApplies = originalRevision;
     monitored.factOnCurrentPath = originalFact;
+    results.graphResults.set = originalSet;
+  } finally { store.close(); }
+});
+
+test("88: a mixed-owner global revision refreshes only the moved owner's membership", () => {
+  const dir = mkdtempSync(join(tmpdir(), "trace-memory-88-owners-"));
+  const writer = new Store(join(dir, "trace.db")), reader = new Store(join(dir, "trace.db"));
+  try {
+    const project = writer.createProject({ name: "owners", declaredBy: "mark" });
+    const nodes = ["A", "B"].map(host => {
+      const session = writer.createSession({ host, projectId: project.id, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
+      const first = writer.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "first", startedAt: at });
+      const tail = writer.appendTurn({ sessionId: session.id, parentTurnId: first.id, kind: "turn", userPrompt: "tail", startedAt: at });
+      const entries = [first, tail].map((turn, i) => writer.appendSourceEntry({ sessionId: session.id, turnId: turn.id,
+        nativeLineage: "native", nativeId: `${host}-${i}`, role: "user", text: host, raw: host, calls: [] }));
+      writer.selectSourcePath(session.id, "main", entries.map(e => e.id));
+      writer.selectSourcePath(session.id, "root", [entries[0]!.id]);
+      const noted = writer.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: at },
+        entryIds: [entries[1]!.id], facts: [{ turnId: tail.id, entryIds: [entries[1]!.id], category: "decision",
+          actor: "user", text: host, source: [`T${tail.id}#E1`], createdAt: at }] });
+      if (!noted.ok) throw Error(noted.problems.join("; "));
+      writer.setCurrentPath(session.id, "main", tail.id, "native");
+      return { session, first, tail, fact: noted.facts[0]! };
+    });
+    const [a, b] = nodes as [typeof nodes[number], typeof nodes[number]];
+    const path = { sessionId: a.session.id, branch: "main", headTurnId: a.tail.id };
+    const result = writer.commitConsolidationRun({ path, run: { kind: "manual", sessionId: a.session.id, branch: "main", createdAt: at },
+      operations: [{ op: "create", handle: "$mixed", author: "test", text: "both", category: "constraint", scope: "global",
+        supports: [a.fact.id, b.fact.id], topics: [], reason: "both owners", createdAt: at }] });
+    if (!result.ok) throw Error(result.problems.join("; "));
+    expect(reader.visibleKnowledgeVersions(path)).toEqual(new Set([result.committed[0]!.commit]));
+    const original = reader.selectedSourceEntryIds.bind(reader);
+    const selectedOwners: number[] = [], membershipOwners: number[][] = [];
+    const tracked = reader as unknown as { prepareCurrentMembership: (input: { facts: Map<number, { sessionId: number }> }, paths: Map<string, unknown>) => void };
+    const originalMembership = tracked.prepareCurrentMembership;
+    tracked.prepareCurrentMembership = (input, paths) => {
+      membershipOwners.push([...new Set([...input.facts.values()].map(fact => fact.sessionId))]);
+      return originalMembership.call(reader, input, paths);
+    };
+    reader.selectedSourceEntryIds = ((sessionId: number, branch: string) => {
+      selectedOwners.push(sessionId); return original(sessionId, branch);
+    }) as typeof reader.selectedSourceEntryIds;
+    writer.setCurrentPath(a.session.id, "root", a.first.id, "native");
+    expect(reader.visibleKnowledgeVersions(path)).toEqual(new Set());
+    expect(selectedOwners).toEqual([a.session.id]);
+    expect(membershipOwners).toEqual([[a.session.id]]);
+    tracked.prepareCurrentMembership = originalMembership;
+    const fresh = reader.commitGraph(path, undefined, undefined, reader.commitGraphInput());
+    expect(fresh.resolved.map(r => r.id)).toEqual(reader.commitGraph(path, undefined, undefined,
+      reader.commitGraphInput(undefined, a.session.id)).resolved.map(r => r.id));
+    // Another commit reusing previously cited B evidence must not reread B's path either.
+    selectedOwners.length = 0;
+    writer.setCurrentPath(a.session.id, "main", a.tail.id, "native");
+    const added = writer.commitConsolidationRun({ path, run: { kind: "manual", sessionId: a.session.id, branch: "main", createdAt: at },
+      operations: [{ op: "create", handle: "$second", author: "test", text: "second claim", category: "constraint",
+        scope: "global", supports: [a.fact.id, b.fact.id], topics: [], reason: "same evidence", createdAt: at }] });
+    if (!added.ok) throw Error(added.problems.join("; "));
+    expect(reader.visibleKnowledgeVersions(path)).toEqual(new Set([result.committed[0]!.commit, added.committed[0]!.commit]));
+    expect(selectedOwners).toEqual([a.session.id]);
+  } finally { reader.close(); writer.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("88: unchanged committed input reuses the aggregate, not just component results", () => {
+  const store = new Store(":memory:");
+  try {
+    const session = store.createSession({ host: "88", projectId: store.createProject({ name: "aggregate", declaredBy: "mark" }).id,
+      enrollmentChoice: true, startedAt: at, firstReplyAt: at });
+    store.commitGraphInput(undefined, session.id);
+    const results = store as unknown as { graphResults: WeakMap<object, unknown> };
+    const original = results.graphResults.set.bind(results.graphResults);
+    let aggregates = 0;
+    results.graphResults.set = ((key: object, value: unknown) => { aggregates++; return original(key, value); }) as typeof results.graphResults.set;
+    try {
+      for (let i = 0; i < 3; i++) store.commitGraphInput(undefined, session.id);
+      expect(aggregates).toBe(0);
+    } finally { results.graphResults.set = original; }
   } finally { store.close(); }
 });
 

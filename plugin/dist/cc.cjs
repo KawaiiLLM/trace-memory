@@ -2777,6 +2777,7 @@ var Store = class {
       const next = this.advanceGraph(this.graphInputCache);
       this.db.exec("COMMIT");
       this.graphInputCache = next;
+      if (this.graphResults.has(next.input)) return next.input;
       this.graphVisibility.set(next.input, next.visibility);
       const applicable = [], effective = /* @__PURE__ */ new Set(), resolved = [];
       for (const part of next.results.values()) {
@@ -2915,7 +2916,8 @@ var Store = class {
       }
     if (water.revision !== previous.maxRevision) {
       const added = this.db.prepare("SELECT * FROM knowledge_revisions WHERE id > ? ORDER BY id").all(previous.maxRevision).map(toKnowledgeRevision);
-      const additions = this.buildGraphInput(added);
+      const uncachedFacts = new Set(added.flatMap((revision) => revision.supports).filter((id) => !input.metadata.facts.has(id)));
+      const additions = this.buildGraphInput(added, { ids: uncachedFacts });
       for (const revision of added) {
         input.revisions.push(revision);
         input.metadata.revisions.set(revision.id, revision);
@@ -2968,9 +2970,7 @@ var Store = class {
     }
     for (const owner of changedOwners) {
       const ids = next.owners.get(owner);
-      const cited = [...next.ownerRevisions.get(owner) ?? []].map((id) => input.metadata.revisions.get(id));
-      if (!cited.length) continue;
-      const refreshed = this.buildGraphInput(cited);
+      const refreshed = this.buildGraphInput([], { owner, ids });
       input.metadata.currentPaths.set(owner, refreshed.metadata.currentPaths.get(owner));
       for (const key of input.metadata.currentSnapshots.keys()) if (key.startsWith(`${owner}:`)) input.metadata.currentSnapshots.delete(key);
       for (const [key, snapshot2] of refreshed.metadata.currentSnapshots)
@@ -3023,7 +3023,7 @@ var Store = class {
     }
     return next;
   }
-  buildGraphInput(seed) {
+  buildGraphInput(seed, selectedFacts) {
     const revisions = seed ? [...seed] : this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const byId = new Map(revisions.map((revision) => [revision.id, revision]));
     if (seed) {
@@ -3051,8 +3051,13 @@ var Store = class {
       if (!direct2.includes(link.from_commit)) direct2.push(link.from_commit);
     }
     const runIds = JSON.stringify([...new Set(revisions.flatMap((r) => r.runId === null ? [] : [r.runId]))]);
-    const factIds = JSON.stringify([...new Set(revisions.flatMap((r) => r.supports))]);
-    const facts = new Map(this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id WHERE f.id IN (SELECT value FROM json_each(?))`).all(factIds).map((r) => [Number(r.id), { fact: toFact(r), sessionId: Number(r.session_id), runId: Number(r.run_id), entries: [] }]));
+    const factIds = JSON.stringify(selectedFacts ? [...selectedFacts.ids] : [...new Set(revisions.flatMap((r) => r.supports))]);
+    const facts = new Map(this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id
+      WHERE f.id IN (SELECT value FROM json_each(?))${selectedFacts?.owner === void 0 ? "" : " AND t.session_id = ?"}`).all(...selectedFacts?.owner === void 0 ? [factIds] : [factIds, selectedFacts.owner]).map((r) => [Number(r.id), { fact: toFact(r), sessionId: Number(r.session_id), runId: Number(r.run_id), entries: [] }]));
+    if (selectedFacts) {
+      for (const id of selectedFacts.ids) if (!facts.has(id))
+        throw new Error(`knowledge cites missing fact ${id}${selectedFacts.owner === void 0 ? "" : ` in session S${selectedFacts.owner}`}`);
+    }
     const sessions = [...new Set([...facts.values()].map((value) => value.sessionId))];
     const cursorRows = this.db.prepare(`SELECT c.session_id, c.lineage, c.branch, c.head_turn_id,
       p.session_id IS NOT NULL AS branch_exists,
