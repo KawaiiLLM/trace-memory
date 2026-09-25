@@ -169,6 +169,71 @@ test("87: rewound borrowed cursors reuse both head and tail ancestry across line
   } finally { writer.close(); reader.close(); vi.restoreAllMocks(); }
 });
 
+test("87: managed write transaction reuses its own view, invalidates on header and mark changes", () => {
+  const { writer, reader, sessionId, append } = fixture();
+  try {
+    const first = append("main");
+    const sql = vi.spyOn(writer.db, "prepare");
+    const scans = () => sql.mock.calls.filter(([query]) => String(query).includes("FROM source_paths p JOIN source_path_entries j")).length;
+    writer.transaction(() => {
+      const frozen = writer.selectedSourceEntrySnapshot(sessionId, "main")!;
+      const start = scans();
+      for (let i = 0; i < 8; i++) expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([first.entry.id]);
+      expect(scans()).toBe(start);
+      expect(writer.pendingEntryIds(sessionId, "main", first.turn.id)).toEqual([first.entry.id]);
+      expect(writer.commitNotingRun({ run: { kind: "noting", sessionId, createdAt: time },
+        entryIds: [first.entry.id], facts: [] }).ok).toBe(true);
+      expect(writer.pendingEntryIds(sessionId, "main", first.turn.id)).toEqual([]);
+      const second = append("main", writer.sourcePathState(sessionId, "main")!);
+      expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([first.entry.id, second.entry.id]);
+      expect(frozen.ids()).toEqual([first.entry.id]);
+      writer.selectSourcePath(sessionId, "main", [first.entry.id]);
+      expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([first.entry.id]);
+    });
+    expect(reader.selectedSourceEntryIds(sessionId, "main")).toEqual([first.entry.id]);
+    const after = scans();
+    writer.transaction(() => { expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([first.entry.id]); });
+    expect(scans()).toBeGreaterThan(after);
+    sql.mockRestore();
+  } finally { writer.close(); reader.close(); vi.restoreAllMocks(); }
+});
+
+test("87: savepoint rollback drops shared path and mark state; unmanaged BEGIN is never cached", () => {
+  const { writer, sessionId, append } = fixture();
+  try {
+    const first = append("main");
+    writer.transaction(() => {
+      const frozen = writer.selectedSourceEntrySnapshot(sessionId, "main")!;
+      expect(() => writer.transaction(() => {
+        const second = append("main", writer.sourcePathState(sessionId, "main")!);
+        expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([first.entry.id, second.entry.id]);
+        expect(writer.commitNotingRun({ run: { kind: "noting", sessionId, createdAt: time },
+          entryIds: [first.entry.id], facts: [] }).ok).toBe(true);
+        expect(writer.pendingEntryIds(sessionId, "main", second.turn.id)).toEqual([second.entry.id]);
+        throw new Error("nested rollback");
+      })).toThrow("nested rollback");
+      expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([first.entry.id]);
+      expect(writer.pendingEntryIds(sessionId, "main", first.turn.id)).toEqual([first.entry.id]);
+      expect(frozen.ids()).toEqual([first.entry.id]);
+      writer.transaction(() => expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([first.entry.id]));
+    });
+    expect(() => writer.transaction(() => {
+      writer.selectSourcePath(sessionId, "main", []);
+      expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([]);
+      throw new Error("outer rollback");
+    })).toThrow("outer rollback");
+    writer.transaction(() => expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([first.entry.id]));
+    writer.db.exec("BEGIN IMMEDIATE");
+    try {
+      expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([first.entry.id]);
+      writer.selectSourcePath(sessionId, "main", []);
+      expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([]);
+      writer.db.exec("ROLLBACK");
+    } finally { if (writer.db.isTransaction) writer.db.exec("ROLLBACK"); }
+    writer.transaction(() => expect(writer.selectedSourceEntryIds(sessionId, "main")).toEqual([first.entry.id]));
+  } finally { writer.close(); }
+});
+
 test("87: a rollback and a non-append rewrite cannot leak into a frozen view", () => {
   const { writer, reader, sessionId, append } = fixture();
   try {

@@ -1421,6 +1421,7 @@ function pathMembership(ordered, positions, limit, include = () => true, reverse
 var Store = class {
   db;
   pathViews = /* @__PURE__ */ new Map();
+  transactionPaths = null;
   pendingGeneration = 0;
   migration64d;
   closed = false;
@@ -1866,11 +1867,17 @@ var Store = class {
     const nested = this.db.isTransaction;
     const priorCache = nested ? this.enrolledCache ? new Map(this.enrolledCache) : null : null;
     this.db.exec(nested ? "SAVEPOINT trace_memory_transaction" : "BEGIN IMMEDIATE");
-    if (!nested) this.enrolledCache = /* @__PURE__ */ new Map();
+    if (!nested) {
+      this.enrolledCache = /* @__PURE__ */ new Map();
+      this.transactionPaths = /* @__PURE__ */ new Map();
+    }
     try {
       const result = fn();
       this.db.exec(nested ? "RELEASE trace_memory_transaction" : "COMMIT");
-      if (!nested) this.enrolledCache = null;
+      if (!nested) {
+        this.enrolledCache = null;
+        this.transactionPaths = null;
+      }
       return result;
     } catch (error3) {
       try {
@@ -1878,6 +1885,8 @@ var Store = class {
       } catch {
       }
       this.enrolledCache = nested ? priorCache : null;
+      this.transactionPaths?.clear();
+      if (!nested) this.transactionPaths = null;
       throw error3;
     }
   }
@@ -4119,8 +4128,9 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     const row = this.db.prepare("SELECT length, tail_entry_id, version FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
     return row ? { count: row.length, tailId: row.tail_entry_id, version: row.version } : null;
   }
-  /** One committed path mirror per branch. Transactional writers never read or publish it. Header,
-   * suffix and processing watermarks are observed in one read transaction. A replacement allocates
+  /** One committed path mirror per branch. Managed writers use their own disposable transaction
+   * view; an externally opened transaction always reads fresh. Header, suffix and processing
+   * watermarks are observed in one database transaction. A replacement allocates
    * new arrays/maps; append-only arrays preserve earlier position-bounded snapshots. */
   pathView(sessionId, branch, includeNoted = false) {
     const outside = !this.db.isTransaction;
@@ -4128,12 +4138,11 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     try {
       const state = this.sourcePathState(sessionId, branch);
       const key = JSON.stringify([sessionId, branch]);
-      const previous = outside ? this.pathViews.get(key) : void 0;
+      const cache = outside ? this.pathViews : this.transactionPaths;
+      const previous = cache?.get(key);
       if (!state) {
-        if (outside) {
-          this.db.exec("COMMIT");
-          this.pathViews.delete(key);
-        }
+        if (outside) this.db.exec("COMMIT");
+        cache?.delete(key);
         return null;
       }
       const append = previous && previous.state.version === state.version && state.count > previous.state.count;
@@ -4156,7 +4165,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       const noted = previous?.noted ?? /* @__PURE__ */ new Set();
       const decoded = rows.map((row) => ({ ...row, addresses: JSON.parse(row.addresses) }));
       if (outside) this.db.exec("COMMIT");
-      if (same && !marked.length && outside) {
+      if (same && !marked.length && previous) {
         previous.notedRow = notedRow;
         return previous;
       }
@@ -4190,12 +4199,12 @@ ${archivedBody}${evidenceLine}${diffLine}`;
           view.pending.ids.removePrefix(consumed.length);
         else view.pending = void 0;
       }
-      if (same && outside) {
+      if (same && previous) {
         previous.notedRow = notedRow;
         previous.pending = view.pending;
         return previous;
       }
-      if (outside) this.pathViews.set(key, view);
+      cache?.set(key, view);
       return view;
     } catch (error3) {
       if (outside && this.db.isTransaction) this.db.exec("ROLLBACK");

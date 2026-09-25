@@ -825,6 +825,7 @@ interface PathView {
 export class Store {
   readonly db: DatabaseSync;
   private readonly pathViews = new Map<string, PathView>();
+  private transactionPaths: Map<string, PathView> | null = null;
   private pendingGeneration = 0;
   readonly migration64d: Migration64dReport;
   closed = false;
@@ -1407,11 +1408,17 @@ export class Store {
     // before the memo is touched: a failed BEGIN never installs or mutates it.
     const priorCache = nested ? (this.enrolledCache ? new Map(this.enrolledCache) : null) : null;
     this.db.exec(nested ? "SAVEPOINT trace_memory_transaction" : "BEGIN IMMEDIATE");
-    if (!nested) this.enrolledCache = new Map();
+    if (!nested) {
+      this.enrolledCache = new Map();
+      this.transactionPaths = new Map();
+    }
     try {
       const result = fn();
       this.db.exec(nested ? "RELEASE trace_memory_transaction" : "COMMIT");
-      if (!nested) this.enrolledCache = null;
+      if (!nested) {
+        this.enrolledCache = null;
+        this.transactionPaths = null;
+      }
       return result;
     } catch (error) {
       try {
@@ -1422,6 +1429,10 @@ export class Store {
       // A rolled-back savepoint discards whatever it memoized, in step with the database; a
       // rolled-back top-level transaction clears the memo entirely, as before.
       this.enrolledCache = nested ? priorCache : null;
+      // A savepoint may have mutated a shared path view; rebuild on the next read rather than
+      // allowing rolled-back path rows or processing marks into the enclosing transaction.
+      this.transactionPaths?.clear();
+      if (!nested) this.transactionPaths = null;
       throw error;
     }
   }
@@ -3852,8 +3863,9 @@ export class Store {
       .get(sessionId, branch) as { length: number; tail_entry_id: number | null; version: number } | undefined;
     return row ? { count: row.length, tailId: row.tail_entry_id, version: row.version } : null;
   }
-  /** One committed path mirror per branch. Transactional writers never read or publish it. Header,
-   * suffix and processing watermarks are observed in one read transaction. A replacement allocates
+  /** One committed path mirror per branch. Managed writers use their own disposable transaction
+   * view; an externally opened transaction always reads fresh. Header, suffix and processing
+   * watermarks are observed in one database transaction. A replacement allocates
    * new arrays/maps; append-only arrays preserve earlier position-bounded snapshots. */
   private pathView(sessionId: number, branch: string, includeNoted = false): PathView | null {
     const outside = !this.db.isTransaction;
@@ -3861,9 +3873,11 @@ export class Store {
     try {
       const state = this.sourcePathState(sessionId, branch);
       const key = JSON.stringify([sessionId, branch]);
-      const previous = outside ? this.pathViews.get(key) : undefined;
+      const cache = outside ? this.pathViews : this.transactionPaths;
+      const previous = cache?.get(key);
       if (!state) {
-        if (outside) { this.db.exec("COMMIT"); this.pathViews.delete(key); }
+        if (outside) this.db.exec("COMMIT");
+        cache?.delete(key);
         return null;
       }
       const append = previous && previous.state.version === state.version && state.count > previous.state.count;
@@ -3896,7 +3910,7 @@ export class Store {
       const noted = previous?.noted ?? new Set<number>();
       const decoded = rows.map(row => ({ ...row, addresses: JSON.parse(row.addresses) as string[] }));
       if (outside) this.db.exec("COMMIT");
-      if (same && !marked.length && outside) {
+      if (same && !marked.length && previous) {
         previous.notedRow = notedRow;
         return previous;
       }
@@ -3921,12 +3935,12 @@ export class Store {
           view.pending.ids.removePrefix(consumed.length);
         else view.pending = undefined;
       }
-      if (same && outside) {
+      if (same && previous) {
         previous.notedRow = notedRow;
         previous.pending = view.pending;
         return previous;
       }
-      if (outside) this.pathViews.set(key, view);
+      cache?.set(key, view);
       return view;
     } catch (error) {
       if (outside && this.db.isTransaction) this.db.exec("ROLLBACK");
