@@ -137,6 +137,23 @@ export function readBinding(config: ResolvedCcHostConfig, nativeSessionId: strin
   }
 }
 
+/** 84 edge case: `synchronous=NORMAL`'s accepted rollback window can reach back before this native
+ * session's own core session was created — the binding still names a session id the rollback
+ * erased (the row is simply gone; a session that exists under the wrong host is a different,
+ * unrelated corruption and still throws downstream). Drop the lost identity and continue exactly
+ * like a not-yet-registered (provisional) binding: the enrollment mirror is left as-is (it already
+ * carries the user's last choice forward as the provisional one), the project stays only if its own
+ * row also survived, and everything else that only made sense for the lost core session — its
+ * lineage host, its selected branch/leaf, and the `/clear` lineage fields tied to it — is dropped so
+ * the ordinary first-start path allocates a fresh core session for this native identity. */
+export function dropLostCoreSession(binding: CcSessionBinding, store: Pick<Store, "getSession" | "getProject">): CcSessionBinding {
+  if (binding.coreSessionId === null || store.getSession(binding.coreSessionId)) return binding;
+  const { coreSessionId: _coreSessionId, coreHost: _coreHost, clearedFrom: _clearedFrom, clearedInto: _clearedInto,
+    selectedLeafUuid: _selectedLeafUuid, branch: _branch, projectId, ...rest } = binding;
+  return { ...rest, coreSessionId: null, branch: "main", selectedLeafUuid: null,
+    projectId: projectId !== null && store.getProject(projectId) ? projectId : null };
+}
+
 /** Validate the complete operator target before any database write or control message. */
 export function assertOperatorBinding(config: ResolvedCcHostConfig, binding: CcSessionBinding, store: Store): void {
   if (binding.dbPath !== config.dbPath) throw new Error("Claude Code binding disagrees with the configured database");

@@ -2,7 +2,7 @@ import { TraceMemory, directoryAllocation, sourceDigest, type TraceMemory as Tra
 import { StaleSourcePathError, type SourceEntry, type SourcePathState, type Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
-import { coreHostOf, implicitCcProject, readBinding, withCcBindingLock, type CcBindingLock, type CcSessionBinding } from "./binding.ts";
+import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, withCcBindingLock, type CcBindingLock, type CcSessionBinding } from "./binding.ts";
 import { CcTranscriptCursor, CcTranscriptScan, CcTranscriptScanFailure, ccSourceBlocks, classifySourceRecord,
   nativeParentId, readTranscriptBootstrap, readTranscriptMetadata, type CcNativeRecord, type CcSourceRecord,
   type CcTranscriptSnapshot } from "./transcript.ts";
@@ -201,6 +201,19 @@ export class CcProjection {
       current.selectedLeafUuid !== this.binding.selectedLeafUuid;
     this.binding = current;
     if (staleProjection) {
+      this.transcript = new CcTranscriptCursor();
+      this.bootstrap = null;
+      this.callsByTurn.clear();
+      this.loadedCallTurns.clear();
+      this.lastResult = null;
+      this.expectedPath = null;
+    }
+    // 84 edge case: a rollback that reaches back before this native session's own core session was
+    // created still leaves the binding naming it. Drop it and fall through to the ordinary
+    // provisional path below exactly as a not-yet-registered binding does — it re-allocates a fresh
+    // core session for this native identity and re-imports Raw from the transcript.
+    if (this.binding.coreSessionId !== null && !this.memory.store.getSession(this.binding.coreSessionId)) {
+      this.persist(binding => dropLostCoreSession(binding, this.memory.store));
       this.transcript = new CcTranscriptCursor();
       this.bootstrap = null;
       this.callsByTurn.clear();

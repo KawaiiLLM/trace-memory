@@ -82,3 +82,55 @@ test("84: restoring an earlier database copy while the native session stays late
     } finally { await restarted.dispose(); }
   } finally { await f.dispose(); }
 });
+
+test("84 edge case: restoring a database copy from before this session's own creation reallocates a fresh core session, automatically", async () => {
+  const quiet = { "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000 };
+  const f = await fixture(quiet);
+  try {
+    // The restore point: the database exactly as it stood before this Pi session's core session
+    // ever existed -- captured right after the fixture's own observer opened it (and created the
+    // schema), before this session's very first restore.
+    const dbPath = f.h.dbPath, presessionSnapshot = `${dbPath}.presession`;
+    copyDbFiles(dbPath, presessionSnapshot);
+
+    // An explicit choice, made while still provisional (before any turn) -- not merely the default
+    // -- this is the "user's persisted enrollment choice" recovery must carry forward.
+    await f.h.commands.get("trace")!.handler("on", f.h.ctx);
+
+    f.script(() => say("answer"));
+    // Turn 1: creates the core session and imports Raw. All of this is the work an OS crash or
+    // power loss reaching back to before this session's own creation would roll back.
+    await f.turn("FIRST");
+    const store = f.h.memory.store;
+    const turn1Entries = store.listSourceEntries(1);
+    expect(store.hydrateSourceEntries(turn1Entries.map(e => e.id)).map(e => e.text)).toEqual(["FIRST", "answer"]);
+    const sessionFile = f.manager().getSessionFile()!;
+
+    // The crash: the database rolls back to before this session ever existed. Pi's own session
+    // file (and this extension's own state entry inside it) stay at their latest state, exactly as
+    // production files would after a power loss or OS crash.
+    await f.h.emit("session_shutdown", { reason: "quit" });
+    copyDbFiles(presessionSnapshot, dbPath);
+
+    // Restart: a fresh host and a freshly reopened session manager, no operator step, reading the
+    // same (unrolled-back) session file against the rolled-back database.
+    const manager = SessionManager.open(sessionFile);
+    const restarted = host({ ...quiet, dbPath }, { native: () => manager, fetch: false });
+    try {
+      await restarted.emit("session_start");
+      const restartedStore = restarted.memory.store;
+      // The old core session is gone -- rolled back along with everything else in the presession
+      // snapshot -- and a fresh one exists for the same host identity (a fresh database's
+      // AUTOINCREMENT can coincidentally reuse the same numeric id; the host identity is what matters).
+      const session = restartedStore.findSessionByHost(`pi:${f.original.id}`);
+      expect(session).not.toBeNull();
+      // Missing Raw (turn 1, rolled back with the snapshot and the session that owned it) is
+      // re-imported from the session alone.
+      const sources = restartedStore.listSourceEntries(session!.id);
+      expect(restartedStore.hydrateSourceEntries(sources.map(e => e.id)).map(e => e.text)).toEqual(["FIRST", "answer"]);
+      // The explicit enrollment choice made before the crash survives as the provisional choice,
+      // and is what the freshly allocated session was created with.
+      expect(restartedStore.enrollment(session!.id).choice).toBe(true);
+    } finally { await restarted.dispose(); }
+  } finally { await f.dispose(); }
+});

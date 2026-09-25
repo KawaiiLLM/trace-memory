@@ -637,6 +637,22 @@ export default function (pi: ExtensionAPI) {
       state.originPiId = latest.originPiId;
       state.branch = randomUUID();
     }
+    // 84 edge case: `synchronous=NORMAL`'s accepted rollback window can reach back before this
+    // session's own creation — this custom entry still names a core session id the rollback erased
+    // (the row is simply gone; a session that exists under the wrong host is a different, unrelated
+    // corruption and still throws below). Drop the lost identity and continue exactly like a
+    // not-yet-registered (provisional) session: `walk()` below allocates a fresh core session
+    // through the ordinary first-start path and re-imports Raw from the native session. The
+    // enrollment fallback right below already carries the user's last choice forward from
+    // `latest`/`saved` as the provisional one, so it is left untouched; `projectId` self-heals the
+    // same way, through `allocate()`'s own `directoryAllocation` call.
+    if (state.sessionId && !memory.store.getSession(state.sessionId)) {
+      state.sessionId = undefined;
+      state.originPiId = undefined;
+      state.shared = false;
+      state.branch = "main";
+      state.project = undefined;
+    }
     state.enrollment = state.sessionId ? memory.store.enrollment(state.sessionId)
       : provisional() ?? latest?.enrollment ?? saved?.enrollment ?? { defaultEnabled: enrollmentDefault(ctx.sessionManager.getHeader()?.timestamp, baseline), choice: null };
     if (!state.sessionId) { persistProvisional(state.enrollment); state.enrollment = provisional()!; }

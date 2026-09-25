@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { TraceMemory, knowledgeStateKey, noVisibility, type Injection, type KnowledgeStateReceipt, type VisibleView } from "../../core/api/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { coreHostOf, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
+import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
 import { CcProjection } from "./importer.ts";
 import { ccSourceBlocks, classifySourceRecord, nativeParentId, readCompleteTranscript, selectedNativePath, type CcNativeRecord } from "./transcript.ts";
 
@@ -264,6 +264,11 @@ async function lockedInjectionBinding(config: ResolvedCcHostConfig, nativeSessio
   return updateBinding(config, nativeSessionId, current => {
     if (!current || current.dbPath !== config.dbPath || current.transcriptPath !== transcriptPath)
       throw new Error("CC binding changed while preparing injection");
+    // 84 edge case: a rollback that reaches back before this native session's own core session was
+    // created still leaves the binding naming it; drop it and fall through below exactly as a
+    // not-yet-registered binding — `CcProjection.synchronize()` (called right after this returns)
+    // then re-allocates a fresh core session for this native identity and re-imports Raw.
+    current = dropLostCoreSession(current, memory.store);
     if (!enabled(current, memory)) return current;
     if (current.coreSessionId !== null) {
       const session = memory.store.getSession(current.coreSessionId);

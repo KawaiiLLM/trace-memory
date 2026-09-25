@@ -8774,6 +8774,26 @@ function readBinding(config3, nativeSessionId) {
     throw error3;
   }
 }
+function dropLostCoreSession(binding, store) {
+  if (binding.coreSessionId === null || store.getSession(binding.coreSessionId)) return binding;
+  const {
+    coreSessionId: _coreSessionId,
+    coreHost: _coreHost,
+    clearedFrom: _clearedFrom,
+    clearedInto: _clearedInto,
+    selectedLeafUuid: _selectedLeafUuid,
+    branch: _branch,
+    projectId,
+    ...rest
+  } = binding;
+  return {
+    ...rest,
+    coreSessionId: null,
+    branch: "main",
+    selectedLeafUuid: null,
+    projectId: projectId !== null && store.getProject(projectId) ? projectId : null
+  };
+}
 function assertOperatorBinding(config3, binding, store) {
   if (binding.dbPath !== config3.dbPath) throw new Error("Claude Code binding disagrees with the configured database");
   if (binding.coreSessionId === null) {
@@ -39430,6 +39450,15 @@ var CcProjection = class {
       this.lastResult = null;
       this.expectedPath = null;
     }
+    if (this.binding.coreSessionId !== null && !this.memory.store.getSession(this.binding.coreSessionId)) {
+      this.persist((binding) => dropLostCoreSession(binding, this.memory.store));
+      this.transcript = new CcTranscriptCursor();
+      this.bootstrap = null;
+      this.callsByTurn.clear();
+      this.loadedCallTurns.clear();
+      this.lastResult = null;
+      this.expectedPath = null;
+    }
     let summary = null, bootstrapSnapshot = null;
     if (this.binding.nativeCreatedAt === null || this.binding.coreSessionId === null) {
       ({ summary, snapshot: bootstrapSnapshot } = this.bootstrapSummary());
@@ -41407,6 +41436,7 @@ async function lockedInjectionBinding(config3, nativeSessionId, transcriptPath, 
   return updateBinding(config3, nativeSessionId, (current) => {
     if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== transcriptPath)
       throw new Error("CC binding changed while preparing injection");
+    current = dropLostCoreSession(current, memory.store);
     if (!enabled(current, memory)) return current;
     if (current.coreSessionId !== null) {
       const session = memory.store.getSession(current.coreSessionId);
