@@ -2,6 +2,8 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { decodeCcInjection, databaseIdentity } from '../../src/hosts/cc/injection.ts';
+import { readCcMenu } from '../../src/hosts/cc/menu.ts';
+import { resolveCcHostConfig } from '../../src/hosts/cc/config.ts';
 const run = process.argv[2];
 if (!run?.startsWith('/private/tmp/tm-66-implementation.lyQREJ/native-transport/run-')) throw new Error('task-owned run required');
 const config = JSON.parse(readFileSync(join(run, 'plugin/cc.config.json'), 'utf8'));
@@ -32,6 +34,8 @@ for (const project of readdirSync(projectDir)) for (const file of readdirSync(jo
     }
     if (line.attachment?.type !== 'hook_additional_context') continue;
     const context = line.attachment.content as string[];
+    if (successes.length !== 24 || successes.some(success => success.toolUseID !== lastDispatch ||
+        success.exitCode !== 0 || !success.command.includes('/hooks/slice.mjs'))) throw new Error('native hook success grouping failed');
     const sourceKinds = [...new Set(successes.map(success => success.hookName))];
     const decoded = context.map(text => decodeCcInjection(text, visible));
     const all = { knowledge: decoded.flatMap(entry => entry?.commits ?? []),
@@ -48,12 +52,26 @@ for (const project of readdirSync(projectDir)) for (const file of readdirSync(jo
       prepared.factIds.length === new Set(all.facts).size && prepared.entryIds.length === new Set(all.raw).size &&
       prepared.commits.every(id => all.knowledge.includes(id)) &&
       prepared.factIds.every(id => all.facts.includes(id)) && prepared.entryIds.every(id => all.raw.includes(id));
+    const warnings = lines.filter(line => line.attachment?.type === 'hook_system_message' &&
+      line.attachment.toolUseID === lastDispatch && line.attachment.hookName === 'SessionStart:clear');
+    if (sourceKinds.includes('SessionStart:clear')) {
+      if (prepared?.factIds.length !== 2 || frozen.transportItems.filter((item: any) => item.kind === 'fact').length !== 2 ||
+          !frozen.transportItems.every((item: any) => frozen.hookSpecificOutput.additionalContext.includes(item.text)) ||
+          all.facts.length !== 1 ||
+          !prepared.factIds.includes(all.facts[0]) ||
+          !prepared.factIds.some(id => !all.facts.includes(id)) ||
+          warnings.length !== 1 || !warnings[0].attachment.content.includes('1 unconsolidated fact') ||
+          !successes.some(success => success.command.endsWith(' 0') && success.toolUseID === warnings[0].attachment.toolUseID) ||
+          readCcMenu(resolveCcHostConfig(config), native).menu.notices.includes(warnings[0].attachment.content) === false ||
+          !context.join('\n').includes('expand: F'))
+        throw new Error('native clear fact omission/foreground/menu audit failed');
+    }
     const record = { native, sourceKinds, successes: successes.length, dispatchItems: context.length,
       inlineLengths: context.map(text => text.length), persisted: context.some(text => text.includes('<persisted-output>')),
       completeDigest: decoded.every(Boolean), membership: all, unique, duplicates: Object.fromEntries(Object.entries(all)
         .map(([kind, ids]) => [kind, ids.length - new Set(ids).size])), matchesStagedOutput: matched,
       ...(prepared ? { prepared: { knowledge: prepared.commits, facts: prepared.factIds, raw: prepared.entryIds },
-        matchesPrepared } : {}),
+        matchesPrepared, foregroundWarnings: warnings.map(line => line.attachment.content) } : {}),
       clearChild: Boolean(binding.clearedFrom), compactionTurnId: binding.clearedFrom?.compactionTurnId ?? null };
     result.push(record); successes = []; lastDispatch = null;
   }
@@ -67,7 +85,8 @@ for (const source of ['SessionStart:startup', 'SessionStart:compact', 'SessionSt
   const event = result.find(entry => entry.sourceKinds.includes(source));
   if (!event || event.successes !== 24 || !event.completeDigest || !event.matchesStagedOutput || event.persisted ||
       source === 'SessionStart:compact' && !event.membership.knowledge.length ||
-      source === 'SessionStart:clear' && (!event.clearChild || !('matchesPrepared' in event && event.matchesPrepared) || !event.membership.raw.length ||
+      event.inlineLengths.some(length => length > 10_000) ||
+      source === 'SessionStart:clear' && (!event.clearChild || !event.membership.raw.length ||
         Object.values(event.duplicates).some(count => count)))
     throw new Error(`${source}: native delivery contract not met; inspect preserved transcript`);
 }

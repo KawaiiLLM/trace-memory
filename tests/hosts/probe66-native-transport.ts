@@ -8,6 +8,8 @@ import { TraceMemory } from '../../src/core/api/index.ts';
 import { resolveCcHostConfig } from '../../src/hosts/cc/config.ts';
 import { bindingPath } from '../../src/hosts/cc/binding.ts';
 import { operateCcSession } from '../../src/hosts/cc/operator.ts';
+import { CcImporter } from '../../src/hosts/cc/importer.ts';
+import { readBinding } from '../../src/hosts/cc/binding.ts';
 
 const root = '/private/tmp/tm-66-implementation.lyQREJ/native-transport';
 mkdirSync(root, { recursive: true });
@@ -63,7 +65,7 @@ try {
   writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ matcher: 'startup|clear|compact', hooks: Array.from({ length: 24 }, (_, slot) => ({ type: 'command', command: `node "${hook}" "${config}" ${slot}`, timeout: 60 })) }] } }));
   const input = new Turns(); input.push('hello');
   const turns = [...Array(6).fill('please retain this context. '.repeat(160)), '/compact', '/clear', 'hello after clear'];
-  let session = '', compact = false, clear = false, enabled = false;
+  let session = '', compact = false, clear = false, enabled = false, seededFact = 0;
   const env = { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: configDir,
     ANTHROPIC_BASE_URL: api.url, ANTHROPIC_API_KEY: 'sk-ant-fake-stat-key', CLAUDE_CODE_MAX_RETRIES: '0',
     DISABLE_AUTOUPDATER: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1',
@@ -78,6 +80,25 @@ try {
     if (m.type === 'result') {
       if (!enabled) { await operateCcSession(resolveCcHostConfig({ dbPath, stateDir,
         baseline: '2025-01-01T00:00:00.000Z' }), session, 'on'); enabled = true; }
+      if (turns[0] === '/clear' && !seededFact) {
+        const parent = readBinding(resolveCcHostConfig({ dbPath, stateDir, baseline: '2025-01-01T00:00:00.000Z' }), session);
+        if (!parent) throw new Error('native parent binding missing before clear');
+        const importer = new CcImporter(resolveCcHostConfig({ dbPath, stateDir, baseline: '2025-01-01T00:00:00.000Z' }), parent);
+        try {
+          const projected = await importer.reconcile();
+          if (projected.state !== 'ready' || !projected.coreSessionId || !projected.headTurnId) throw new Error('native parent has no ready path');
+          const entries = importer.memory.store.listSourceEntries(projected.coreSessionId);
+          const source = entries.find(entry => entry.turnId && entry.id);
+          if (!source) throw new Error('native parent has no source entry');
+          const fact = importer.memory.store.commitNotingRun({ run: { kind: 'manual', sessionId: projected.coreSessionId,
+            branch: projected.branch, createdAt: new Date().toISOString() }, facts: [{ turnId: source.turnId,
+            actor: 'user', category: 'decision', text: 'native retained fact: keep the fixture choice', source: [],
+            createdAt: new Date().toISOString() }, { turnId: source.turnId, actor: 'user', category: 'decision',
+            text: 'legacy oversized pending fact ' + 'x'.repeat(12_000), source: [], createdAt: new Date().toISOString() }] });
+          if (!fact.ok) throw new Error(fact.problems.join('; '));
+          seededFact = fact.facts[0]!.id;
+        } finally { importer.close(); }
+      }
       if (turns.length) input.push(turns.shift()!, session); else input.close();
     }
   }
@@ -103,7 +124,7 @@ try {
     .map(line => JSON.parse(line)).filter(row => row.attachment?.type === 'hook_additional_context')
     .map(row => ({ source: row.attachment.hookName, content: row.attachment.content.map((item: string) => ({
       length: item.length, persisted: item.includes('<persisted-output>'), marker: item.includes('TRACE-MEMORY-CC/1') })) })));
-  writeFileSync(join(run, 'report.json'), JSON.stringify({ dispatches, clear, compact }, null, 2));
+  writeFileSync(join(run, 'report.json'), JSON.stringify({ dispatches, clear, compact, seededFact }, null, 2));
   const review = spawnSync(process.execPath, [join(worktree, '../tests/hosts/probe66-review-transport.ts'), run],
     { encoding: 'utf8', timeout: 20_000 });
   if (review.status !== 0 || review.error) throw new Error(`native Hook audit failed: ${review.error?.message ?? review.stderr}`);
