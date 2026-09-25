@@ -58,7 +58,7 @@ for (const project of readdirSync(projectDir)) for (const file of readdirSync(jo
       if (prepared?.factIds.length !== 2 || frozen.transportItems.filter((item: any) => item.kind === 'fact').length !== 2 ||
           !frozen.transportItems.every((item: any) => frozen.hookSpecificOutput.additionalContext.includes(item.text)) ||
           all.facts.length !== 1 ||
-          !prepared.factIds.includes(all.facts[0]) ||
+          !prepared.factIds.includes(all.facts[0]!) ||
           !prepared.factIds.some(id => !all.facts.includes(id)) ||
           warnings.length !== 1 || !warnings[0].attachment.content.includes('1 unconsolidated fact') ||
           !successes.some(success => success.command.endsWith(' 0') && success.toolUseID === warnings[0].attachment.toolUseID) ||
