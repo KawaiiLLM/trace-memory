@@ -1,4 +1,5 @@
 import { readHandle } from "../../read-handle-fixture.ts";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 import { knowledgeStatusNotes } from "../../../src/core/api/read.ts";
 import { compacted, recorded } from "../../source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
@@ -43,8 +44,7 @@ const commitOf = (item: { knowledgeId: number; version: string }): number => {
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-rulings-"));
   calls = [];
-  // 26a: a Noting batch is completed only by a submission, so the default run submits the explicit
-  // empty batch a Noter with nothing to record must send.
+  // 26a/92: a successful Noter script explicitly submits both empty layers.
   const fallback = async (raw: unknown) => { const input = raw as NotingAgentInput; calls.push(input);
     if (input.kind === "noting") {
       input.tools.find(t => t.name === "note")!.execute({ facts: [] });
@@ -465,25 +465,24 @@ test("2026-09-07: supports replaces, history keeps the old set", async () => {
 
 test("2026-09-07: merge atomic", async () => {
   const { create, write, path } = memoryWriter();
-  const created: Array<{ knowledgeId: number; commit: number }> = write(
-    [create, { ...create, text: "Avoid npm", supports: ["F2"] }],
-  ).committed;
+  const created = (write([create, { ...create, text: "Avoid npm", supports: ["F2"] }]).committed as Array<{ knowledgeId: number; version: string }>)
+    .map(item => ({ ...item, commit: commitOf(item) }));
   const first = created[0], second = created[1];
   if (!first || !second) throw new Error(`merge fixture needs two identities: ${JSON.stringify(created)}`);
   const trigger = createDreamerTrigger(memory, path, 2, 1);
   const request = { fixture: "merge atomic" };
-  let merged: { results: string[]; committed: Array<{ knowledgeId: number; commit: number }> } | undefined;
+  let merged: { results: string[]; committed: Array<{ knowledgeId: number; version: string }> } | undefined;
   const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request); const trace = input.tools[0]!, writeTool = input.tools[3]!;
-    for (const item of [first, second]) completeToolRead(trace, `K${item.knowledgeId}@${item.commit}`);
+    input.reportRequest(request); const trace = input.tools[0]!, writeTool = input.tools.find(tool => tool.name === "memory")!;
+    for (const item of [first, second]) completeToolRead(trace, item.version);
     const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the survivor.",
-      id: `K${first.knowledgeId}@${first.commit}`, absorb: [`K${second.knowledgeId}@${second.commit}`], supports: ["F1", "F2"] };
+      id: tagged(first.knowledgeId, first.commit), absorb: [tagged(second.knowledgeId, second.commit)], supports: ["F1", "F2"] };
     expect(JSON.parse(writeTool.execute({ operations: [merge, { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.",
       id: "K999", supports: [] }], skipped: [] })).results[1]).toContain("rejected:");
     expect(memory.store.currentCommit(first.knowledgeId)[0]?.id).toBe(first.commit);
     expect(memory.store.currentCommit(second.knowledgeId)[0]?.op).toBe("create");
     expect(memory.store.listKnowledgeLinks(second.knowledgeId)).toEqual([]);
-    const triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`;
+    const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
     completeToolRead(trace, triggerAddress);
     merged = JSON.parse(writeTool.execute({ operations: [merge, { op: "archive", id: triggerAddress, supports: ["F2"],
       reason: "Retire the explicit fixture trigger." }], skipped: [] }));
@@ -494,7 +493,7 @@ test("2026-09-07: merge atomic", async () => {
   expect(merged.results).toEqual(["ok", "ok"]);
   const mergedIdentity = merged.committed[0];
   if (!mergedIdentity) throw new Error(`merge fixture committed nothing: ${JSON.stringify(merged)}`);
-  const mergeCommit = mergedIdentity.commit;
+  const mergeCommit = commitOf(mergedIdentity);
   expect(memory.store.currentCommit(second.knowledgeId)).toEqual([]);
   expect(memory.store.getKnowledge(second.knowledgeId)).toMatchObject({ id: second.knowledgeId });
   expect(memory.store.listKnowledgeLinks(second.knowledgeId)).toEqual([{ fromKnowledge: second.knowledgeId,
@@ -628,7 +627,12 @@ function commitPaths() {
     const fact = `F${receipt.factIds[0]}`;
     return { sessionId, headTurnId, branch, triggerEntryId, fact, tools,
       read: (address = "K1") => readHandle(tools, address),
-      write: (operations: any[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] })) };
+      write: (operations: any[]) => {
+        const receipt = JSON.parse(tools[3]!.execute({ operations, skipped: [] }));
+        // The scenario's internal graph assertions use global database keys, not public addresses.
+        if (receipt.committed) receipt.committed = receipt.committed.map((item: { knowledgeId: number; version: string }) => ({ ...item, commit: commitOf(item) }));
+        return receipt;
+      } };
   };
   const root = writer(s.id, t.id, "main", selectNativeAncestry(s.id, t.id, "main"));
   const publish = (who: typeof root) => memory.store.setCurrentPath(who.sessionId, who.branch, who.headTurnId, "test-lineage");
@@ -674,7 +678,7 @@ async function admittedWrite(
     return { outcome: "success", output: "maintenance complete", request };
   });
   if (result.outcome !== "success" || !receipt?.committed) throw new Error(JSON.stringify({ result, receipt }));
-  return receipt;
+  return { ...receipt, committed: receipt.committed.map((item: { knowledgeId: number; version: string }) => ({ ...item, commit: commitOf(item) })) };
 }
 
 test("2026-09-07 A: sibling-branch facts are readable but supports requires an adoption fact on this path", () => {
@@ -685,7 +689,7 @@ test("2026-09-07 A: sibling-branch facts are readable but supports requires an a
     expect(rejected.results[0]).toContain("record an adoption fact on this path first");
     expect(memory.store.getKnowledge(2)).toBeNull();
   }
-  const adopted = JSON.parse(c.tools[2]!.execute({ facts: [{ text: `Adopt the other branch's rule ${d.fact}`, source: [`T${c.headTurnId}#E1`] }] }));
+  const adopted = JSON.parse(c.tools[2]!.execute({ facts: [{ text: `Adopt the other branch's rule 「${d.fact}」`, source: [`T${c.headTurnId}#E1`] }] }));
   expect(c.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(`F${adopted.factIds[0]}`) }]).committed).toHaveLength(1);
 });
 
@@ -740,7 +744,7 @@ test("2026-09-07 B: store rechecks every base inside the transaction and rolls b
   ] });
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("stale batch committed");
-  expect(result.problems.join(" ")).toContain(history(1, successor));
+  expect(result.problems.join(" ")).toContain(`K1@${successor}`);
   expect(memory.store.getKnowledge(trigger.knowledgeId + 1)).toBeNull();
   expect(memory.store.listKnowledgeRevisions(1)).toHaveLength(2);
 });
@@ -755,16 +759,16 @@ test("2026-09-07 B: reading a historical commit never refreshes the base to an u
     input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!;
     const memoryTool = input.tools.find(tool => tool.name === "memory")!;
-    expect(completeToolRead(trace, "K1@1")).not.toContain("Unread successor");
-    const first = JSON.parse(memoryTool.execute({ operations: [{ op: "update", id: "K1@1", topics: [],
+    expect(completeToolRead(trace, "K1@v1")).not.toContain("Unread successor");
+    const first = JSON.parse(memoryTool.execute({ operations: [{ op: "update", id: tagged(1, 1), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(root.fact, "Unread successor") }], skipped: [] }));
-    const successor = first.committed[0] as { knowledgeId: number; commit: number };
-    expect(memoryTool.execute({ operations: [{ op: "update", id: "K1@1", topics: [],
-      reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }], skipped: [] })).toContain(`current: K1@${successor.commit}`);
-    expect(completeToolRead(trace, `K1@${successor.commit}`)).toContain("Unread successor");
-    const corrected = JSON.parse(memoryTool.execute({ operations: [{ op: "update", id: `K1@${successor.commit}`, topics: [],
+    const successor = first.committed[0];
+    expect(memoryTool.execute({ operations: [{ op: "update", id: tagged(1, 1), topics: [],
+      reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }], skipped: [] })).toContain(`current: ${successor.version}`);
+    expect(completeToolRead(trace, successor.version)).toContain("Unread successor");
+    const corrected = JSON.parse(memoryTool.execute({ operations: [{ op: "update", id: tagged(1, commitOf(successor)), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }, { op: "archive",
-      id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [other.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
+      id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     expect(corrected.committed[0].knowledgeId).toBe(1);
     return { outcome: "success", output: "scenario complete", request };
   });
@@ -773,70 +777,74 @@ test("2026-09-07 B: reading a historical commit never refreshes the base to an u
   expect(memory.store.listKnowledgeRevisions(1).at(-1)!.text).toBe("Use blue tiles");
 });
 
-test("search previews and cursor fragments never refresh a knowledge write base", async () => {
+test("92: search previews and cursor fragments conceal tags and cannot make a stale base current", async () => {
   const { root, peer, content } = commitPaths();
   const other = peer(), path = { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId };
   const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), 1);
-  const request = { fixture: "search and cursor read ledger" };
+  const request = { fixture: "search previews and tagged bases" };
   const result = await admittedScenarios.run(memory, path, input => {
     input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!, search = input.tools.find(tool => tool.name === "search")!;
     const write = input.tools.find(tool => tool.name === "memory")!;
-    completeToolRead(trace, "K1@1");
-    const first = JSON.parse(write.execute({ operations: [{ op: "update", id: "K1@1", topics: [], reason: "A substantive correction.",
+    completeToolRead(trace, "K1@v1");
+    const first = JSON.parse(write.execute({ operations: [{ op: "update", id: tagged(1, 1), topics: [], reason: "A substantive correction.",
       ...content(root.fact, `Unread successor ${"中文😀".repeat(350)}`) }], skipped: [] }));
-    const successor = first.committed[0] as { commit: number };
-    const edit = (id = "K1@1") => JSON.parse(write.execute({ operations: [{ op: "update", topics: [], reason: "A substantive correction.", id,
+    const successor = first.committed[0];
+    const successorTag = tagged(1, commitOf(successor));
+    const edit = (id = tagged(1, 1)) => JSON.parse(write.execute({ operations: [{ op: "update", topics: [], reason: "A substantive correction.", id,
       ...content(other.fact) }], skipped: [] }));
     let page = search.execute({ query: "Unread successor", layer: "knowledge", maxTokens: 256 });
-    expect(page).not.toContain("rejected:"); expect(edit().results[0]).toContain(`current: K1@${successor.commit}`);
+    expect(page).not.toContain("rejected:"); expect(page).not.toMatch(/K\d+#[a-z]+/);
+    expect(edit().results[0]).toContain(`current: ${successor.version}`);
     let count = 0;
     for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
-      page = trace.execute({ address: "K1", cursor }); expect(page).not.toContain("rejected:"); expect(++count).toBeLessThan(100);
+      page = trace.execute({ address: "K1", cursor }); expect(page).not.toContain("rejected:");
+      expect(page).not.toMatch(/K\d+#[a-z]+/); expect(++count).toBeLessThan(100);
     }
-    expect(edit().results[0]).toContain(`current: K1@${successor.commit}`);
-    expect(edit(`K1@${successor.commit}`).results[0]).toContain("knowledge was not read");
+    expect(edit().results[0]).toContain(`current: ${successor.version}`);
+    expect(page).not.toMatch(/K\d+#[a-z]+/);
     page = trace.execute({ address: "K1", full: true, pageBudget: 256 });
     expect(page).toContain("cursor=");
     for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
-      expect(tokens(page)).toBeLessThanOrEqual(256); expect(edit(`K1@${successor.commit}`).results[0]).toContain("knowledge was not read");
+      expect(tokens(page)).toBeLessThanOrEqual(256); expect(page).not.toContain(successorTag);
+      expect(edit().results[0]).toContain(`current: ${successor.version}`);
       page = trace.execute({ address: `cursor=${cursor}` });
     }
     expect(tokens(page)).toBeLessThanOrEqual(256);
-    const done = edit(`K1@${successor.commit}`); expect(done.committed[0].knowledgeId).toBe(1);
-    completeToolRead(trace, `K${trigger.knowledgeId}@${trigger.commit}`);
-    expect(JSON.parse(write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`,
+    expect(page).toContain(successorTag);
+    const done = edit(successorTag); expect(done.committed[0].knowledgeId).toBe(1);
+    completeToolRead(trace, history(trigger.knowledgeId, trigger.commit));
+    expect(JSON.parse(write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit),
       supports: [other.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] })).committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request };
   });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
 });
 
-test("trace K1 cap=1 replaces stale read bases only on the final page", async () => {
+test("92: trace K1 cap=1 exposes the complete body's tag without refreshing a stale base", async () => {
   const { root, peer, content } = commitPaths();
   const other = peer(), path = { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId };
-  const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), 1), request = { fixture: "trace cap stale ledger" };
+  const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), 1), request = { fixture: "trace cap tagged base" };
   const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools[3]!;
-    completeToolRead(trace, "K1@1");
-    const successor = JSON.parse(write.execute({ operations: [{ op: "update", topics: [], reason: "New version.", id: "K1@1",
-      ...content(root.fact) }], skipped: [] })).committed[0] as { commit: number };
-    const edit = (id = "K1@1") => JSON.parse(write.execute({ operations: [{ op: "update", topics: [], reason: "Correct rule.", id,
+    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools.find(tool => tool.name === "memory")!;
+    const successor = JSON.parse(write.execute({ operations: [{ op: "update", topics: [], reason: "New version.", id: tagged(1, 1),
+      ...content(root.fact) }], skipped: [] })).committed[0];
+    const edit = (id: string) => JSON.parse(write.execute({ operations: [{ op: "update", topics: [], reason: "Correct rule.", id,
       ...content(other.fact) }], skipped: [] }));
-    let page = trace.execute({ address: "K1", cap: 1 }), count = 0; expect(page).toContain("cursor=");
+    let page = trace.execute({ address: "K1", cap: 1 }), count = 0;
+    const pages = [page]; expect(page).toContain("cursor=");
     for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
-      expect(edit().results[0]).toContain(`current: K1@${successor.commit}`);
-      expect(edit(`K1@${successor.commit}`).results[0]).toContain("knowledge was not read");
-      page = trace.execute({ address: `cursor=${cursor}` }); expect(page).not.toContain("rejected:"); expect(++count).toBeLessThan(100);
+      expect(edit(tagged(1, 1)).results[0]).toContain(`current: ${successor.version}`);
+      page = trace.execute({ address: `cursor=${cursor}` }); expect(page).not.toContain("rejected:"); expect(++count).toBeLessThan(100); pages.push(page);
     }
-    expect(edit().results[0]).toContain("knowledge was not read");
-    const corrected = edit(`K1@${successor.commit}`); expect(corrected.committed[0].knowledgeId).toBe(1);
-    completeToolRead(trace, `K${trigger.knowledgeId}@${trigger.commit}`);
-    write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [other.fact],
-      reason: "Retire the explicit fixture trigger." }], skipped: [] });
+    expect(pages.join("\n")).toContain(tagged(1, commitOf(successor)));
+    expect(edit(tagged(1, 1)).results[0]).toContain(`current: ${successor.version}`);
+    expect(edit(tagged(1, commitOf(successor))).committed[0].knowledgeId).toBe(1);
+    expect(JSON.parse(write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
+      reason: "Retire the explicit fixture trigger." }], skipped: [] })).committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request };
   });
-  expect(result.outcome).toBe("success");
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
 });
 
 test.each([false, true])("trace cap=1 completes the frozen K read through actual cursors (address form=%s)", async addressForm => {
@@ -846,66 +854,63 @@ test.each([false, true])("trace cap=1 completes the frozen K read through actual
   const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), Number(addressForm) + 1);
   const request = { fixture: "trace cursor completion", addressForm };
   const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools[3]!;
+    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools.find(tool => tool.name === "memory")!;
+    const exact = tagged(created.knowledgeId, created.commit);
     const edit = () => JSON.parse(write.execute({ operations: [{ op: "update", topics: [], reason: "Correct rule.",
-      id: `K${created.knowledgeId}@${created.commit}`, ...content(other.fact) }], skipped: [] }));
+      id: exact, ...content(other.fact) }], skipped: [] }));
     let page = trace.execute({ address: `K${created.knowledgeId}`, cap: 1 }), count = 0, committed = false;
     while (true) {
       expect(page).not.toContain("rejected:"); const cursor = /cursor=(\S+)/.exec(page)?.[1]; if (!cursor) break;
-      if (!committed) {
+      if (!committed && page.includes(exact)) {
         const attempt = edit();
-        if (attempt.committed) { committed = true; expect(attempt.committed[0].knowledgeId).toBe(created.knowledgeId); }
-        else expect(attempt.results[0]).toContain("knowledge was not read");
+        expect(attempt.committed[0].knowledgeId).toBe(created.knowledgeId); committed = true;
       }
       page = trace.execute(addressForm ? { address: `cursor=${cursor}` } : { address: "K1", cursor }); expect(++count).toBeLessThan(100);
     }
     expect(count).toBeGreaterThan(1);
-    if (!committed) expect(edit().committed[0].knowledgeId).toBe(created.knowledgeId);
-    completeToolRead(trace, `K${trigger.knowledgeId}@${trigger.commit}`);
-    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [other.fact],
-      reason: "Retire the explicit fixture trigger." }], skipped: [{ knowledge: "K1@1", because: "Unrelated fixture base needs no maintenance." }] }));
+    if (!committed) { expect(page).toContain(exact); expect(edit().committed[0].knowledgeId).toBe(created.knowledgeId); }
+    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
+      reason: "Retire the explicit fixture trigger." }], skipped: [{ knowledge: "K1@v1", because: "Unrelated fixture base needs no maintenance." }] }));
     expect(retired.committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request };
   });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
 });
 
-test("a mixed multi-K read authorizes only its completed identities; abandoned cursors authorize nothing", async () => {
+test("92: a mixed multi-K read exposes exact body tags; abandoned cursors expire without affecting write authority", async () => {
   const { root, peer, content } = commitPaths(); const other = peer();
   const created = root.write([2, 3].map(id => ({ op: "create", topics: [], reason: "New rule.", ...content(root.fact, `Rule ${id}`) }))).committed;
   const path = { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId };
-  const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), 1), request = { fixture: "mixed read ledger" };
+  const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), 1), request = { fixture: "mixed paged tags" };
   const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools[3]!;
-    completeToolRead(trace, "K1@1");
-    const successor = JSON.parse(write.execute({ operations: [{ op: "update", topics: [], reason: "Unrelated new rule", id: "K1@1",
-      ...content(root.fact, "Unrelated new rule") }], skipped: [] })).committed[0] as { commit: number };
+    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools.find(tool => tool.name === "memory")!;
+    const successor = JSON.parse(write.execute({ operations: [{ op: "update", topics: [], reason: "Unrelated new rule", id: tagged(1, 1),
+      ...content(root.fact, "Unrelated new rule") }], skipped: [] })).committed[0];
     const operation = (id: string) => ({ op: "update", topics: [], reason: "Correct rule.", id, ...content(other.fact) });
     const submit = (operations: unknown[]) => JSON.parse(write.execute({ operations, skipped: [] }));
     const abandoned = trace.execute({ address: "K1", cap: 1 }), abandonedCursor = /cursor=(\S+)/.exec(abandoned)![1];
     for (let i = 0; i < 16; i++) trace.execute({ address: `K${created[0].knowledgeId}`, cap: 1 });
     expect(trace.execute({ address: `cursor=${abandonedCursor}` })).toContain("unknown or expired cursor");
-    let page = trace.execute({ address: `K${created[0].knowledgeId},F1-F2,K${created[1].knowledgeId}@${created[1].commit}`, cap: 1 }), count = 0;
+    let page = trace.execute({ address: `K${created[0].knowledgeId},F1-F2,${created[1].version}`, cap: 1 }), count = 0;
     expect(page).toContain("cursor=");
     const maintained = new Set<number>();
     for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
       expect(++count).toBeLessThan(100);
-      for (const item of created) if (!maintained.has(item.knowledgeId)) {
-        const attempt = submit([operation(`K${item.knowledgeId}@${item.commit}`)]);
-        if (attempt.committed) maintained.add(item.knowledgeId);
-        else expect(attempt.results[0]).toContain("knowledge was not read");
+      for (const item of created) if (!maintained.has(item.knowledgeId) && page.includes(tagged(item.knowledgeId, item.commit))) {
+        expect(submit([operation(tagged(item.knowledgeId, item.commit))]).committed).toHaveLength(1);
+        maintained.add(item.knowledgeId);
       }
       page = trace.execute({ address: "K1", cursor }); expect(page).not.toContain("rejected:");
     }
-    expect(submit([operation("K1@1")]).results[0]).toContain(`current: K1@${successor.commit}`);
+    expect(submit([operation(tagged(1, 1))]).results[0]).toContain(`current: ${successor.version}`);
     const remaining = created.filter((item: { knowledgeId: number }) => !maintained.has(item.knowledgeId));
     if (remaining.length) {
-      const receipt = submit(remaining.map((item: { knowledgeId: number; commit: number }) => operation(`K${item.knowledgeId}@${item.commit}`)));
+      for (const item of remaining) expect(page).toContain(tagged(item.knowledgeId, item.commit));
+      const receipt = submit(remaining.map((item: { knowledgeId: number; commit: number }) => operation(tagged(item.knowledgeId, item.commit))));
       expect(receipt.committed).toHaveLength(remaining.length); for (const item of remaining) maintained.add(item.knowledgeId);
     }
     expect(maintained.size).toBe(2);
-    completeToolRead(trace, `K${trigger.knowledgeId}@${trigger.commit}`);
-    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [other.fact],
+    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
       reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     expect(retired.committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request };
@@ -913,17 +918,19 @@ test("a mixed multi-K read authorizes only its completed identities; abandoned c
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
 });
 
-test.each(["K2", "K2@2", "K2,F1-F2,K1", "F1-F2,K2@2,K1,K2"])("paged %s records the delivered old version, never the later successor", async address => {
+test.each(["K2", "K2@v1", "K2,F1-F2,K1", "F1-F2,K2@v1,K1,K2"])("paged %s exposes the frozen old tag, never the later successor", async address => {
   const { root, peer, content } = commitPaths(); const other = peer();
   const created = root.write([{ op: "create", topics: [], reason: "New rule.", ...content(root.fact, "FROZEN-SECOND") }]).committed[0];
   const path = { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId };
   const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), 1), request = { fixture: "frozen paged read", address };
   const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools[3]!;
+    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools.find(tool => tool.name === "memory")!;
     const submit = (id: string, text = "Use blue tiles") => JSON.parse(write.execute({ operations: [{ op: "update", topics: [],
       reason: "Correct rule.", id, ...content(other.fact, text) }], skipped: [] }));
     let page = trace.execute({ address, cap: 1 }); expect(page).toContain("cursor=");
-    const latest = submit(`K${created.knowledgeId}@${created.commit}`, "UNREAD-LATEST").committed[0] as { commit: number };
+    const oldTag = tagged(created.knowledgeId, created.commit);
+    const latest = submit(oldTag, "UNREAD-LATEST").committed[0];
+    const latestTag = tagged(created.knowledgeId, commitOf(latest));
     const pages = [page];
     for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
       page = trace.execute({ address: `cursor=${cursor}` }); expect(page).not.toContain("rejected:");
@@ -931,14 +938,14 @@ test.each(["K2", "K2@2", "K2,F1-F2,K1", "F1-F2,K2@2,K1,K2"])("paged %s records t
     }
     expect(pages.length).toBeGreaterThan(2); expect(pages.join("\n")).toContain("FROZEN-SECOND");
     expect(pages.join("\n")).not.toContain("UNREAD-LATEST");
-    expect(submit(`K${created.knowledgeId}@${created.commit}`).results[0]).toContain(`current: K${created.knowledgeId}@${latest.commit}`);
-    expect(submit(`K${created.knowledgeId}`).results[0]).toContain(`exact read K@commit is required; current tips: K${created.knowledgeId}@${latest.commit}`);
-    trace.execute({ address: `K${created.knowledgeId}` });
-    expect(submit(`K${created.knowledgeId}@${latest.commit}`).committed[0].knowledgeId).toBe(created.knowledgeId);
-    completeToolRead(trace, `K${trigger.knowledgeId}@${trigger.commit}`);
-    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`,
+    expect(pages.join("\n")).toContain(oldTag); expect(pages.join("\n")).not.toContain(latestTag);
+    expect(submit(oldTag).results[0]).toContain(`current: ${latest.version}`);
+    expect(submit(`K${created.knowledgeId}`).results[0]).toContain("supply an exact K#tag version");
+    // The known exact tag works without another read; pagination holds no grant ledger.
+    expect(submit(latestTag).committed[0].knowledgeId).toBe(created.knowledgeId);
+    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit),
       supports: [other.fact], reason: "Retire the explicit fixture trigger." }],
-      skipped: [{ knowledge: "K1@1", because: "Unrelated fixture base needs no maintenance." }] }));
+      skipped: [{ knowledge: "K1@v1", because: "Unrelated fixture base needs no maintenance." }] }));
     expect(retired.committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request };
   });
@@ -982,10 +989,10 @@ test("41a: category and unified scope filter candidates and cursor options are f
   expect(facts).toContain(`[F${sameProject.fact.slice(1)}]`);
   expect(facts).not.toContain(`[F${foreign.fact.slice(1)}]`);
   expect(search.execute({ query: "main", layer: "facts", scope: "global" })).toContain(`[F${foreign.fact.slice(1)}]`);
-  expect(search.execute({ query: "41A", category: "open" })).toContain(`[K${shared.knowledgeId}@${shared.commit}]`);
-  expect(search.execute({ query: "41A", category: "open" })).not.toContain(`[K${global.knowledgeId}@${global.commit}]`);
-  expect(search.execute({ query: "FOREIGN-GLOBAL", layer: "knowledge" })).toContain(`[K${global.knowledgeId}@${global.commit}]`);
-  expect(search.execute({ query: "FOREIGN-GLOBAL", layer: "knowledge", scope: "session" })).not.toContain(`[K${global.knowledgeId}@${global.commit}]`);
+  expect(search.execute({ query: "41A", category: "open" })).toContain(`[${shared.version}]`);
+  expect(search.execute({ query: "41A", category: "open" })).not.toContain(`[${global.version}]`);
+  expect(search.execute({ query: "FOREIGN-GLOBAL", layer: "knowledge" })).toContain(`[${global.version}]`);
+  expect(search.execute({ query: "FOREIGN-GLOBAL", layer: "knowledge", scope: "session" })).not.toContain(`[${global.version}]`);
   expect(search.execute({ query: "41A", layer: "facts", category: "open" })).toContain("rejected: category filter requires layer knowledge");
   let page = search.execute({ query: "", layer: "knowledge", versions: "all", cap: 1 });
   const cursor = /cursor=(\S+)/.exec(page)![1]!;
@@ -1039,48 +1046,49 @@ test("41 review: fact and knowledge previews are one physical line with head-onl
   expect(fullKnowledge).not.toContain("\n"); expect(fullKnowledge).toContain(" ⏎ KNOWLEDGE-LONG-TAIL");
   expect(fullKnowledge).toContain('topics: ["metadata\\nline"]'); expect(fullKnowledge).toContain("reason: reason ⏎ line");
   expect(hit(search.execute({ query: "FACT-LONG-41", layer: "facts", itemBudget: 1 }))).toMatch(/^\[F\d+\] \[observation\/user\] \[\.\.\. \d+ characters truncated\]$/);
-  expect(hit(search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge", itemBudget: 1 }))).toMatch(/^\[K\d+@\d+\] \[reference\/project\] \[\.\.\. \d+ characters truncated\]$/);
+  expect(hit(search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge", itemBudget: 1 }))).toMatch(/^\[K\d+@v\d+\] \[reference\/project\] \[\.\.\. \d+ characters truncated\]$/);
 
   expect(memory.trace(`F${factId}`, { itemBudget: null, pageBudget: null })).toContain(longFactText);
   expect(memory.trace(`K${created.knowledgeId}@${created.commit}`, { itemBudget: null, pageBudget: null })).toContain(longKnowledgeText);
 });
 
-test("41b: fields control knowledge trace and only actual complete text delivery grants a handle", async () => {
+test("41b/92: fields control tag display, while a known exact tag needs no read ledger", async () => {
   const { root, peer, content } = commitPaths(); const other = peer();
   const path = { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId };
-  const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), 1), request = { fixture: "fields grant handles" };
+  const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), 1), request = { fixture: "fields select tag display" };
   const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request); const trace = input.tools[0]!, search = input.tools[1]!, write = input.tools[3]!;
+    input.reportRequest(request); const trace = input.tools[0]!, search = input.tools[1]!, write = input.tools.find(tool => tool.name === "memory")!;
     const update = (id: string, text: string) => JSON.parse(write.execute({ operations: [{ op: "update", id,
       ...content(other.fact, text), topics: [], reason: "41b update" }], skipped: [] }));
-    const successor = update("K1@1", "BASE-SUCCESSOR").committed[0] as { commit: number };
-    const exact = `K1@${successor.commit}`;
+    const successor = update(tagged(1, 1), "BASE-SUCCESSOR").committed[0];
+    const exact = tagged(1, commitOf(successor));
     const noText = trace.execute({ address: exact, fields: ["supports", "reason"] });
     expect(noText).toContain("change supports"); expect(noText).not.toContain("BASE-SUCCESSOR"); expect(noText).not.toContain("reason:");
-    expect(update(exact, "NO-TEXT-FAIL").results[0]).toContain("knowledge was not read");
-    search.execute({ query: "BASE-SUCCESSOR", layer: "knowledge", itemBudget: null, fields: ["text", "supports"] });
-    expect(update(exact, "SEARCH-FAIL").results[0]).toContain("knowledge was not read");
-    trace.execute({ address: exact }); const finite = update(exact, "FINITE-COMPLETE").committed[0] as { commit: number };
-    trace.execute({ address: `K1@${finite.commit}`, full: true });
-    expect(update(`K1@${finite.commit}`, "FULL-COMPLETE").committed[0].knowledgeId).toBe(1);
-    completeToolRead(trace, `K${trigger.knowledgeId}@${trigger.commit}`);
-    write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [other.fact],
+    expect(noText).not.toMatch(/K\d+#[a-z]+/);
+    const preview = search.execute({ query: "BASE-SUCCESSOR", layer: "knowledge", itemBudget: null, fields: ["text", "supports"] });
+    expect(preview).toContain("BASE-SUCCESSOR"); expect(preview).not.toMatch(/K\d+#[a-z]+/);
+    // The receipt is tagless, but scope and the exact tag, not read history, authorize this write.
+    const finite = update(exact, "FINITE-COMPLETE").committed[0];
+    const finiteTag = tagged(1, commitOf(finite));
+    expect(trace.execute({ address: finite.version, full: true })).toContain(finiteTag);
+    expect(update(finiteTag, "FULL-COMPLETE").committed[0].knowledgeId).toBe(1);
+    write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
       reason: "Retire the explicit fixture trigger." }], skipped: [] });
     return { outcome: "success", output: "scenario complete", request };
   });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-  expect(root.tools[0]!.execute({ address: "K1@1", versions: "all", fields: ["reason"] })).not.toContain("reason:");
+  expect(root.tools[0]!.execute({ address: "K1@v1", versions: "all", fields: ["reason"] })).not.toContain("reason:");
   expect(root.tools[0]!.execute({ address: "K1", versions: "history", fields: ["reason"] })).toContain("reason:");
 });
 
 test("41 review: search history defaults show existing statuses while current and explicit fields stay compact", async () => {
   const { c, d, publish } = commitPaths();
   publish(c);
-  const cReceipt = await admittedWrite(c, createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1), [{ op: "update", id: "K1@1",
+  const cReceipt = await admittedWrite(c, createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1), [{ op: "update", id: tagged(1, 1),
     text: "SEARCH-STATUS-C", category: "constraint", scope: "project", supports: [c.fact], topics: [], reason: "Search status C." }]);
   const cRevision = cReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
   publish(d);
-  const dReceipt = await admittedWrite(d, createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2), [{ op: "update", id: "K1@1",
+  const dReceipt = await admittedWrite(d, createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2), [{ op: "update", id: tagged(1, 1),
     text: "SEARCH-STATUS-D", category: "constraint", scope: "project", supports: [d.fact], topics: [], reason: "Search status D." }]);
   const dRevision = dReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
   publish(c);
@@ -1122,8 +1130,8 @@ test("41 review: search history defaults show existing statuses while current an
   const archived = c.write([{ op: "create", text: "ARCHIVE-STATUS", category: "constraint", scope: "project",
     supports: [c.fact], topics: [], reason: "Archive status fixture." }]).committed[0];
   await admittedWrite(c, createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 3), [{ op: "archive",
-    id: `K${archived.knowledgeId}@${archived.commit}`, supports: [c.fact], reason: "Archive status fixture." }],
-    [`K${secondStatus.knowledgeId}@${secondStatus.commit}`]);
+    id: tagged(archived.knowledgeId, archived.commit), supports: [c.fact], reason: "Archive status fixture." }],
+    [secondStatus.version]);
   expect(memory.search("ARCHIVE-STATUS", "knowledge", { ...path, versions: "history" })).toContain("status: archived on this path");
 
   const searchFields = (toolDefinitions.find(tool => tool.name === "search")!.parameters.properties as Record<string, any>).fields;
@@ -1234,21 +1242,21 @@ test("64b/34a: global current scope hides the identity without visible fallback"
     const current = memory.store.currentCommit(1, root)[0]!;
     const trigger = createDreamerTrigger(memory, root, Number(root.fact.slice(1)), sequence, current.scope);
     const receipt = await admittedWrite(root, trigger, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
-      id: `K1@${current.id}`, ...content(root.fact, text), scope }]);
+      id: tagged(1, current.id), ...content(root.fact, text), scope }]);
     return receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1).commit as number;
   };
   await maintain("Shared globally", "global", 1);
   const outsideProject = memory.store.createProject({ name: "outside", declaredBy: "mark" });
   const outside = peer(outsideProject.id);
   const projectCommit = await maintain("Project only", "project", 2);
-  expect(memory.inject({ projectId: outsideProject.id })).not.toContain("K1@");
+  expect(memory.inject({ projectId: outsideProject.id })).not.toMatch(/K1[#@]/);
   expect(memory.trace("K1", outside).split("\n")[0]).toBe("K1 path current: none");
   const sessionCommit = await maintain("Session only", "session", 3);
   const ownProject = memory.store.getSession(root.sessionId)!.projectId;
-  expect(memory.inject({ projectId: ownProject })).not.toContain(`K1@${projectCommit}`);
-  expect(memory.inject({ projectId: ownProject })).not.toContain(`K1@${sessionCommit}`);
-  expect(memory.inject({ projectId: outsideProject.id })).not.toContain("K1@");
-  expect(memory.inject(root)).toContain(`K1@${sessionCommit}`);
+  expect(memory.inject({ projectId: ownProject })).not.toContain(tagged(1, projectCommit));
+  expect(memory.inject({ projectId: ownProject })).not.toContain(tagged(1, sessionCommit));
+  expect(memory.inject({ projectId: outsideProject.id })).not.toMatch(/K1[#@]/);
+  expect(memory.inject(root)).toContain(tagged(1, sessionCommit));
 });
 
 test("2026-09-07: commit schema removes mutable heads and binds parents and links to global ids", () => {
@@ -1268,30 +1276,30 @@ test("2026-09-07: commit schema removes mutable heads and binds parents and link
 test("64b: stale absorbed bases name the surviving current commit across merge links", async () => {
   const { root, peer, content, publish } = commitPaths();
   const second = root.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }]).committed[0];
-  const other = peer(); other.read(`K${second.knowledgeId}@${second.commit}`);
+  const other = peer(); other.read(second.version);
   publish(root);
   const mergeTrigger = createDreamerTrigger(memory, root, Number(root.fact.slice(1)), 1);
   const mergedReceipt = await admittedWrite(root, mergeTrigger, [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.",
-    id: "K1@1", absorb: [`K${second.knowledgeId}@${second.commit}`], ...content(root.fact) }]);
+    id: tagged(1, 1), absorb: [tagged(second.knowledgeId, second.commit)], ...content(root.fact) }]);
   const merged = mergedReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
   const updateTrigger = createDreamerTrigger(memory, root, Number(root.fact.slice(1)), 2);
   const updatedReceipt = await admittedWrite(root, updateTrigger, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
-    id: `K1@${merged.commit}`, ...content(root.fact, "Surviving current conclusion") }]);
+    id: tagged(1, merged.commit), ...content(root.fact, "Surviving current conclusion") }]);
   const survivor = updatedReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
   publish(other);
   const staleTrigger = createDreamerTrigger(memory, other, Number(other.fact.slice(1)), 3);
   const request = { fixture: "absorbed stale handle" }; let rejected = "";
   const result = await admittedScenarios.run(memory, other, input => {
-    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools[3]!;
-    completeToolRead(trace, `K${second.knowledgeId}@${second.commit}`);
-    completeToolRead(trace, `K${staleTrigger.knowledgeId}@${staleTrigger.commit}`);
-    rejected = write.execute({ operations: [{ op: "update", id: `K${second.knowledgeId}@${second.commit}`, topics: [],
+    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools.find(tool => tool.name === "memory")!;
+    completeToolRead(trace, second.version);
+    completeToolRead(trace, history(staleTrigger.knowledgeId, staleTrigger.commit));
+    rejected = write.execute({ operations: [{ op: "update", id: tagged(second.knowledgeId, second.commit), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(other.fact, "Invalid absorbed edit") }], skipped: [] });
-    expect(rejected).toContain(`current: K1@${survivor.commit}`);
-    const supplied = [...new Set(input.material.changed.match(/K\d+@\d+/g) ?? [])]
-      .filter((knowledge: string) => knowledge !== `K${staleTrigger.knowledgeId}@${staleTrigger.commit}`)
+    expect(rejected).toContain(`current: ${survivor.version}`);
+    const supplied = suppliedHandles(input.material.changed)
+      .filter((knowledge: string) => knowledge !== history(staleTrigger.knowledgeId, staleTrigger.commit))
       .map((knowledge: string) => ({ knowledge, because: "The stale absorbed edit was correctly refused." }));
-    write.execute({ operations: [{ op: "archive", id: `K${staleTrigger.knowledgeId}@${staleTrigger.commit}`, supports: [other.fact],
+    write.execute({ operations: [{ op: "archive", id: tagged(staleTrigger.knowledgeId, staleTrigger.commit), supports: [other.fact],
       reason: "Retire explicit trigger." }], skipped: supplied });
     return { outcome: "success", output: "stale absorbed handle checked", request };
   });
@@ -1326,7 +1334,7 @@ test("16b: commit addresses are global, full diffs allow siblings and reverse or
   const dCommit = (await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
   expect(memory.trace(`K1@${cCommit}..K1@${dCommit}`)).toContain("[-C-]{+D+} version");
   expect(memory.trace(`K1@${dCommit}..K1@${cCommit}`)).toContain("[-D-]{+C+} version");
-  expect(memory.trace(`K1@${cCommit}..K1@${cCommit}`)).toContain("Commits: none");
+  expect(memory.trace(`K1@${cCommit}..K1@${cCommit}`)).toContain("History: none");
   expect(memory.trace(`K1@${cCommit}..${dCommit}`)).toBe(memory.trace(`K1@${cCommit}..K1@${dCommit}`));
   expect(memory.trace(`K1@${dCommit}..${cCommit}`)).toBe(memory.trace(`K1@${dCommit}..K1@${cCommit}`));
   for (const address of [`K1@${cCommit}..K2@${dCommit}`, `K1@${cCommit}..`, `K1@${cCommit}..K1@9007199254740992`]) {
@@ -1335,9 +1343,12 @@ test("16b: commit addresses are global, full diffs allow siblings and reverse or
   }
   for (const address of ["K1@57", `K1@${cCommit}..K1@57`]) {
     expect(() => memory.trace(address)).toThrow("does not exist");
-    expect(c.tools[0]!.execute({ address })).toContain("does not exist");
+    expect(c.tools[0]!.execute({ address })).toContain("invalid trace address");
   }
-  expect(c.tools[0]!.execute({ address: `K1@${dCommit}` })).toContain("D version");
+  // Public history is per identity; a well-formed missing version still fails as missing.
+  for (const address of ["K1@v57", `${history(1, cCommit)}..v57`])
+    expect(c.tools[0]!.execute({ address })).toContain("does not exist");
+  expect(c.tools[0]!.execute({ address: history(1, dCommit) })).toContain("D version");
   expect(c.tools[0]!.execute({ address: "K1.." })).toContain("D version");
 });
 
@@ -1354,7 +1365,7 @@ test("16b: search notes describe the supplied path, including archives and unres
   expect(c.tools[0]!.execute({ address: "K1" })).toContain("C version");
   const archiveTrigger = createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 3);
   const archived = await admittedWrite(c, archiveTrigger, [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.",
-    id: `K1@${cCommit}`, supports: [c.fact] }]);
+    id: tagged(1, cCommit), supports: [c.fact] }]);
   expect(archived.committed[0].knowledgeId).toBe(1);
   expect(memory.search("C version", "knowledge", { ...c, versions: "history", fields: ["text", "status"] })).toContain("archived on this path");
   expect(memory.search("D version", "knowledge", { ...d, fields: ["text", "status"] })).not.toContain("current on this path");
@@ -1368,10 +1379,10 @@ test("64b: compaction follows the owner's published foreground across a branch s
   const dCommit = (await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
   publish(c);
   const onC = compacted(memory.compact(c.sessionId, c.branch, c.headTurnId));
-  expect(onC).toContain(`[K1@${cCommit}]`); expect(onC).not.toContain(`[K1@${dCommit}]`);
+  expect(onC).toContain(`[${tagged(1, cCommit)}]`); expect(onC).not.toContain(`[${tagged(1, dCommit)}]`);
   publish(d);
   const afterSwitch = compacted(memory.compact(c.sessionId, c.branch, c.headTurnId));
-  expect(afterSwitch).toContain(`[K1@${dCommit}]`); expect(afterSwitch).not.toContain(`[K1@${cCommit}]`);
+  expect(afterSwitch).toContain(`[${tagged(1, dCommit)}]`); expect(afterSwitch).not.toContain(`[${tagged(1, cCommit)}]`);
 });
 
 test("16b: branch carry fixture uses evidence ancestry, includes commits and raw; tags delimit and lines stay byte for byte", async () => {
@@ -1386,8 +1397,8 @@ test("16b: branch carry fixture uses evidence ancestry, includes commits and raw
   expect(carry.match(/<branch_carry>/g)).toHaveLength(1);
   expect(carry.match(/<\/branch_carry>/g)).toHaveLength(1);
   expect(carry).toContain("Unrecorded <work> & more"); // never escaped (ruling 15:14)
-  expect(carry).not.toContain(`[K1@${dCommit}]`);
-  expect(carry).toContain("[K1@1]"); expect(carry).toContain(`[K1@${cCommit}]`);
+  expect(carry).not.toContain(`[${tagged(1, dCommit)}]`);
+  expect(carry).toContain(`[${tagged(1, 1)}]`); expect(carry).toContain(`[${tagged(1, cCommit)}]`);
 });
 
 test("16b: a fact whose only source is an injected compaction message lacks a raw source", () => {
@@ -1395,12 +1406,13 @@ test("16b: a fact whose only source is an injected compaction message lacks a ra
   const injected = memory.store.appendTurn({ sessionId: c.sessionId, parentTurnId: c.headTurnId, kind: "compaction", assistantText: "<knowledge>Only injected: violet tiles</knowledge>", startedAt: time });
   const tools = memory.tools({ kind: "manual", sessionId: c.sessionId, branch: c.branch, currentTurnId: injected.id });
   const before = memory.store.listSessionFacts(c.sessionId);
-  const fact = { category: "observation", actor: "agent", text: "Only injected: violet tiles", source: [`T${injected.id}#assistant`] };
-  expect(tools[2]!.execute({ facts: [fact] })).toContain("expected a raw source on the current branch");
+  const fact = { text: "Only injected: violet tiles", source: [`T${injected.id}#E1`] };
+  expect(memory.store.listSourceEntries(c.sessionId, injected.id)).toEqual([]);
+  expect(tools[2]!.execute({ facts: [fact] })).toContain(`invalid source T${injected.id}#E1; expected admissible Raw in the eligible entry set`);
   expect(tools[2]!.execute({ facts: [{ ...fact, source: [] }] })).toContain("rejected:");
-  expect(tools[2]!.execute({ facts: [{ ...fact, source: [`T${d.headTurnId}#user`] }] })).toContain("expected a raw source on the current branch");
+  expect(tools[2]!.execute({ facts: [{ ...fact, source: [`T${d.headTurnId}#E1`] }] })).toContain(`invalid source T${d.headTurnId}#E1; expected admissible Raw in the eligible entry set`);
   expect(memory.store.listSessionFacts(c.sessionId)).toEqual(before);
-  expect(tools[2]!.execute({ facts: [{ ...fact, text: "User required pnpm", source: [`T${root.headTurnId}#user`] }] })).toContain("ok: F");
+  expect(tools[2]!.execute({ facts: [{ ...fact, text: "User required pnpm", source: [`T${root.headTurnId}#E1`] }] })).toContain("ok: F");
 });
 
 test("64b/16b: every raw source of a multi-source fact constrains carry, current and citations", async () => {
@@ -1411,23 +1423,23 @@ test("64b/16b: every raw source of a multi-source fact constrains carry, current
   memory.selectEntries(c.sessionId, c.branch, entries.map(entry => entry.id));
   const tools = memory.tools({ kind: "manual", sessionId: c.sessionId, branch: c.branch,
     currentTurnId: c.headTurnId, triggerEntryId: entries.at(-1)!.id });
-  const fact = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "agent", text: "Use violet tiles",
-    source: [`T${root.headTurnId}#user`, `T${c.headTurnId}#assistant`] }] })).factIds[0] as number;
+  const fact = JSON.parse(tools[2]!.execute({ facts: [{ text: "Use violet tiles",
+    source: [`T${root.headTurnId}#E1`, `T${c.headTurnId}#E2`] }] })).factIds[0] as number;
   publish(c);
   const trigger = createDreamerTrigger(memory, c, fact, 1);
   const updated = await admittedWrite(c, trigger, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
-    id: "K1@1", ...content(`F${fact}`, "Use violet tiles") }]);
+    id: tagged(1, 1), ...content(`F${fact}`, "Use violet tiles") }]);
   const commit = updated.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1).commit;
   for (const path of [root, d]) {
     publish(path);
     expect(memory.branchSummary(path.sessionId, path.branch, path.headTurnId)).not.toContain(`[F${fact}]`);
-    expect(memory.inject(path)).toContain("[K1@1]"); expect(memory.inject(path)).not.toContain(`[K1@${commit}]`);
+    expect(memory.inject(path)).toContain(`[${tagged(1, 1)}]`); expect(memory.inject(path)).not.toContain(`[${tagged(1, commit)}]`);
     expect(path.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(`F${fact}`) }]).results[0])
       .toContain("record an adoption fact on this path first");
   }
   publish(c);
   expect(memory.branchSummary(c.sessionId, c.branch, c.headTurnId)).toContain(`[F${fact}]`);
-  expect(memory.inject(c)).toContain(`[K1@${commit}]`);
+  expect(memory.inject(c)).toContain(`[${tagged(1, commit)}]`);
 });
 
 test("2026-09-07: R<n> renders a run as a summary, full adds tool rounds and raw previews, a missing run is rejected", async () => {
@@ -1447,7 +1459,7 @@ test("2026-09-07: R<n> renders a run as a summary, full adds tool rounds and raw
 test("2026-09-07: R<n> shows the rejection reason of a manual write instead of claiming no problems", () => {
   const { s, t } = session();
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "bad source", source: ["T999#user"] }] });
+  tools[2]!.execute({ facts: [{ text: "bad source", source: ["T999#E1"] }] });
   const run = memory.store.listRuns(s.id).at(-1)!;
   expect(run.outcome).toBe("bounced");
   const summary = memory.trace(`R${run.id}`);
@@ -1511,7 +1523,7 @@ test("73: three windows plus the shared allowance — pending material first, tr
   // Pending facts and pending Raw of one path, plus one consolidated fact and one extracted entry.
   const write = (text: string, turnId = t.id) => {
     const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: turnId, branch: "main" });
-    return JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${turnId}#user`] }] })).factIds[0] as number;
+    return JSON.parse(tools[2]!.execute({ facts: [{ text, source: [`T${turnId}#E1`] }] })).factIds[0] as number;
   };
   // Padding gives the two items the tight-window case below must drop a size it can reliably
   // exclude, while the substrings the assertions look for stay intact.
@@ -1564,7 +1576,7 @@ test("73: three windows plus the shared allowance — pending material first, tr
 test("45: Consolidator capacity is the frozen database policy and the retired config key is rejected", () => {
   const { s, t } = session();
   const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: t.id, branch: "main" });
-  expect(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Evidence", source: [`T${t.id}#user`] }] })).toContain("ok: F1");
+  expect(tools[2]!.execute({ facts: [{ text: "Evidence", source: [`T${t.id}#E1`] }] })).toContain("ok: F1");
   for (let i = 0; i < 12; i++) expect(tools[3]!.execute({ operations: [{ op: "create", topics: [],
     reason: "Durable rule", text: `Rule ${i}: ` + "word ".repeat(1_500), category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain("committed");
   for (const override of [{ render: { knowledgeBlockTokens: 10_000 } }, { consolidation: { knowledgeTokens: 10_000 } }])
@@ -1752,7 +1764,8 @@ test("30/73: 23's tier-2 profile is superseded; compaction has one bounded view 
 // profile to demand a richer replacement. Unmarked material still counts for nothing.
 test("30: a marked compressed view is visible Raw; a budget change adds no richness gate", () => {
   const binding = { db: "db", session: 7, pi: "pi-1" };
-  const carrier = (entries: unknown[]) => ({ id: "c", type: "compaction",
+  const carrier = (entries: { id?: number; nativeId?: string; view?: string; tier?: number }[]) => ({ id: "c", type: "compaction",
+    summary: "Raw:\n" + entries.map(entry => `[T1#E${entry.id}@text] user: bounded view ${entry.nativeId}`).join("\n"),
     details: { traceMemory: { ...binding, supplied: { entries, factIds: [], knowledgeCommitIds: [] } } } });
   // The one representation new writers emit, and both legacy tiers, are all visible Raw.
   const view = visibleView([carrier([
@@ -1786,7 +1799,7 @@ test("20b 2026-09-08: 17b's fifty-fact Consolidation trigger and unbounded batch
   expect("triggerUnconsolidatedFacts" in DEFAULT_CONFIG.consolidation).toBe(false);
   const { s, t } = session();
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: Array.from({ length: 60 }, (_, i) => ({ category: "observation", actor: "user", text: `claim ${i}`, source: [`T${t.id}#user`] })) });
+    .execute({ facts: Array.from({ length: 60 }, (_, i) => ({ text: `claim ${i}`, source: [`T${t.id}#E1`] })) });
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   expect(memory.store.consolidationBatch(s.id, "main", t.id).length).toBeGreaterThan(50); // a count would be due
   expect(tokens(memory.store.consolidationBatch(s.id, "main", t.id).map(f => memory.trace(`F${f.id}`)).join("\n"))).toBeLessThan(5_000);
@@ -1799,7 +1812,7 @@ test("20b 2026-09-08: 17b's fifty-fact Consolidation trigger and unbounded batch
 test("64c: the knowledge cap remains hard and recency, not category, selects whole items", () => {
   const { s, t } = session();
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] }] })).toContain("ok: F1");
+  expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: [`T${t.id}#E1`] }] })).toContain("ok: F1");
   const write = (category: string, text: string) => expect(tools.find(tool => tool.name === "memory")!
     .execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text, category, scope: "project", supports: ["F1"] }], skipped: [] })).toContain('"committed"');
   for (let i = 0; i < 6; i++) write("constraint", `constraint ${i} ` + "word ".repeat(1_000));
@@ -1807,7 +1820,7 @@ test("64c: the knowledge cap remains hard and recency, not category, selects who
   const cap = 5_000;
   setKnowledgeCapacity(memory, cap);
   const injected = memory.inject(s.id);
-  expect(injected).toContain("<constraint>"); // newer constraints fit beside the latest reference
+  expect(injected).toContain("[constraint/project]"); // newer constraints fit beside the latest reference
   expect(injected).toContain("reference tail");
   expect(tokens(injected)).toBeLessThanOrEqual(cap); // the exemption is gone: no category bypasses it
   expect(injected).toContain("Receipts:");
@@ -1864,10 +1877,10 @@ test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added 
 
   // Same guarantee for Consolidation's frozen fact-id set.
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [
-    { category: "observation", actor: "user", text: "Frozen fact", source: [`T${t.id}#user`] } ] });
+    { text: "Frozen fact", source: [`T${t.id}#E5`] } ] });
   const frozenFacts = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [
-    { category: "observation", actor: "user", text: "Later fact", source: [`T${t.id}#user`] } ] });
+    { text: "Later fact", source: [`T${t.id}#E5`] } ] });
   const cresult = await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent", boundary: { allowedFactIds: frozenFacts } });
   expect(cresult.outcome).toBe("success");
   if (cresult.outcome === "success") expect(cresult.range.facts.map(f => f.id)).toEqual(frozenFacts);
@@ -1953,7 +1966,7 @@ test("25b/29e: the retired inverse Consolidation mode key is refused by name at 
 test("29: Consolidation may fork; borrowed work, manual catchup and recovery workers stay subagent", async () => {
   const { s, t } = session();
   const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${t.id}#user`] }] });
+    .execute({ facts: [{ text, source: [`T${t.id}#E1`] }] });
   note("Keep pnpm");
   // 29e (parent 29 "Restore Consolidator fork without weakening review", superseding 25b): the mode
   // exists again, so an explicit request runs — neither refused by name nor normalized behind the
@@ -1978,7 +1991,7 @@ test("29: Consolidation may fork; borrowed work, manual catchup and recovery wor
   const tail = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: memory.store.getSession(s.id)!.projectId });
   const tailTurn = memory.store.appendTurn({ sessionId: tail.id, kind: "turn", userPrompt: "closed tail", assistantText: "ok", startedAt: time });
   memory.tools({ kind: "manual", sessionId: tail.id, branch: "main", currentTurnId: tailTurn.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep esbuild", source: [`T${tailTurn.id}#user`] }] });
+    .execute({ facts: [{ text: "Keep esbuild", source: [`T${tailTurn.id}#E1`] }] });
   memory.store.closeSession(tail.id);
   expect((await memory.consolidate({ sessionId: tail.id, branch: "main", headTurnId: tailTurn.id, borrowed: true, executorSessionId: s.id })).outcome).toBe("success");
   expect(calls.at(-1)!.mode).toBe("subagent");
@@ -2000,7 +2013,7 @@ test("25 amendment 2 2026-09-09: a stored fork-mode Consolidation run keeps its 
   expect(memory.trace(`R${historical}`)).toContain("mode fork"); // read back as what it was, not relabelled
   // New work in the same database records the one mode and leaves the old row alone.
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
+    .execute({ facts: [{ text: "Keep pnpm", source: [`T${t.id}#E1`] }] });
   expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
   expect(memory.store.getRun(historical)!.mode).toBe("fork");
   expect(memory.store.listRuns(s.id).filter(r => r.kind === "consolidation").map(r => r.mode)).toEqual(["fork", "subagent"]);
@@ -2030,7 +2043,8 @@ test("19c 2026-09-08: a stored branch-mode run reads as legacy request-copy exec
   const legacy = before.store.listRuns(s.id).at(-1)!.id;
   before.close();
   const after = sourceSeededMemory(path, async raw => { const input = raw as NotingAgentInput; calls.push(input);
-    input.tools.find(tool => tool.name === "note")!.execute({ facts: [] }); return ok([]); });
+    input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] }); return ok([]); });
   try {
     expect(after.store.getRun(legacy)!.mode).toBe("branch");   // reopening the database migrates nothing
     expect(after.trace(`R${legacy}`)).toContain("mode legacy request-copy execution (branch)");
@@ -2068,7 +2082,7 @@ test("21a 2026-09-08: the two-array write shape and the empty-supports archive a
   expect(write([create]).committed).toHaveLength(1);
   const trigger = createDreamerTrigger(memory, path, 1, 1);
   const archived = await admittedWrite({ ...path, fact: "F1" }, trigger,
-    [{ op: "archive", id: "K1@1", supports: ["F1"], reason: "Withdrawn by the user." }]);
+    [{ op: "archive", id: tagged(1, 1), supports: ["F1"], reason: "Withdrawn by the user." }]);
   const archiveCommit = archived.committed[0].commit as number;
   expect(memory.store.getKnowledgeRevision(1, archiveCommit)?.supports).toEqual([1]); // no longer cleared
 });
@@ -2081,23 +2095,23 @@ test("64b/21a: an archive's supports face the same session/project/global table 
   for (const scope of ["session", "project", "global"] as const) for (const origin of [c, same, outside]) {
     publish(c);
     const created = c.write([{ op: "create", topics: [], ...content(c.fact), scope, reason: "Admitted for the archive scope check." }]).committed[0];
-    const address = `K${created.knowledgeId}@${created.commit}`;
+    const address = tagged(created.knowledgeId, created.commit);
     const trigger = createDreamerTrigger(memory, c, Number(c.fact.slice(1)), ++sequence, scope);
     const allowed = origin === c || scope === "global" || (scope === "project" && origin === same);
     const request = { fixture: "archive scope table", scope, origin: origin.sessionId }; let first = "";
     const result = await admittedScenarios.run(memory, c, input => {
-      input.reportRequest(request); const trace = input.tools[0]!, write = input.tools[3]!;
-      const triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`;
+      input.reportRequest(request); const trace = input.tools[0]!, write = input.tools.find(tool => tool.name === "memory")!;
+      const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
       completeToolRead(trace, address); completeToolRead(trace, triggerAddress);
-      const otherSupplied = [...new Set(input.material.changed.match(/K\d+@\d+/g) ?? [])]
-        .filter((knowledge: string) => knowledge !== address && knowledge !== triggerAddress)
+      const otherSupplied = suppliedHandles(input.material.changed)
+        .filter((knowledge: string) => knowledge !== created.version && knowledge !== history(trigger.knowledgeId, trigger.commit))
         .map((knowledge: string) => ({ knowledge, because: "Unrelated current knowledge is unchanged by the archive scope check." }));
       first = write.execute({ operations: [{ op: "archive", id: address, supports: [origin.fact], reason: `Retired on ${origin.branch} evidence.` },
         { op: "archive", id: triggerAddress, supports: [c.fact], reason: "Retire explicit trigger." }], skipped: otherSupplied });
       if (allowed) return { outcome: "success", output: "archived", request };
       expect(first).toContain("rejected:");
       const corrected = write.execute({ operations: [{ op: "archive", id: triggerAddress,
-        supports: [c.fact], reason: "Retire explicit trigger." }], skipped: [{ knowledge: address, because: "Foreign support is outside this archive's scope." }, ...otherSupplied] });
+        supports: [c.fact], reason: "Retire explicit trigger." }], skipped: [{ knowledge: created.version, because: "Foreign support is outside this archive's scope." }, ...otherSupplied] });
       expect(corrected).toContain('"committed"');
       return { outcome: "success", output: "scope refusal checked", request };
     });
@@ -2108,17 +2122,17 @@ test("64b/21a: an archive's supports face the same session/project/global table 
   const trigger = createDreamerTrigger(memory, c, Number(c.fact.slice(1)), ++sequence, "session");
   const request = { fixture: "archive reason is not adoption" }; let rejected = "";
   const result = await admittedScenarios.run(memory, c, input => {
-    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools[3]!;
-    const address = `K${created.knowledgeId}@${created.commit}`, triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`;
+    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools.find(tool => tool.name === "memory")!;
+    const address = tagged(created.knowledgeId, created.commit), triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
     completeToolRead(trace, address); completeToolRead(trace, triggerAddress);
-    const otherSupplied = [...new Set(input.material.changed.match(/K\d+@\d+/g) ?? [])]
-      .filter((knowledge: string) => knowledge !== address && knowledge !== triggerAddress)
+    const otherSupplied = suppliedHandles(input.material.changed)
+      .filter((knowledge: string) => knowledge !== created.version && knowledge !== history(trigger.knowledgeId, trigger.commit))
       .map((knowledge: string) => ({ knowledge, because: "Unrelated current knowledge is unchanged by the reason-bypass check." }));
     rejected = write.execute({ operations: [{ op: "archive", id: address, supports: [outside.fact],
       reason: `The user adopted ${outside.fact} on this path.` }], skipped: [] });
     expect(rejected).toContain("rejected:");
     write.execute({ operations: [{ op: "archive", id: triggerAddress, supports: [c.fact], reason: "Retire explicit trigger." }],
-      skipped: [{ knowledge: address, because: "Reason prose cannot adopt a foreign fact." }, ...otherSupplied] });
+      skipped: [{ knowledge: created.version, because: "Reason prose cannot adopt a foreign fact." }, ...otherSupplied] });
     return { outcome: "success", output: "reason refusal checked", request };
   });
   expect(result.outcome).toBe("success");
@@ -2133,7 +2147,7 @@ test("64b/21b: a shared label changes no applicability and follows the owner's p
   const label = (who: typeof c, text: string, trigger: { knowledgeId: number; commit: number }) => {
     publish(who);
     return admittedWrite(who, trigger,
-      [{ op: "update", id: "K1@1", topics: ["tiling"], reason: "Substantive correction, filed under its subject.", ...content(who.fact, text) }]);
+      [{ op: "update", id: tagged(1, 1), topics: ["tiling"], reason: "Substantive correction, filed under its subject.", ...content(who.fact, text) }]);
   };
   const cCommit = (await label(c, "C version", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1))).committed[0].commit as number;
   const dCommit = (await label(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
@@ -2145,14 +2159,14 @@ test("64b/21b: a shared label changes no applicability and follows the owner's p
   expect(groups(third).topics).toEqual([{ topic: "tiling", commits: [{ knowledgeId: 1, commit: cCommit }] }]);
   // An archive inherits the label; explicit search keeps its history labels, automatic material drops it.
   const archiveTrigger = createDreamerTrigger(memory, third, Number(third.fact.slice(1)), 3);
-  const request = { fixture: "topic archive read ledger" }; let archiveCommit = 0, topicReceipt: any;
+  const request = { fixture: "topic archive tagged base" }; let archiveCommit = 0, topicReceipt: any;
   const archiveRun = await admittedScenarios.run(memory, third, input => {
-    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools[3]!;
-    const op = { op: "archive", id: `K1@${cCommit}`, supports: [third.fact], reason: "Retired on this path." };
+    input.reportRequest(request); const trace = input.tools[0]!, write = input.tools.find(tool => tool.name === "memory")!;
+    const op = { op: "archive", id: tagged(1, cCommit), supports: [third.fact], reason: "Retired on this path." };
     // Read the globally selected base; labels do not grant write authority.
-    completeToolRead(trace, `K1@${cCommit}`);
-    completeToolRead(trace, `K${archiveTrigger.knowledgeId}@${archiveTrigger.commit}`);
-    const receipt = topicReceipt = JSON.parse(write.execute({ operations: [op, { op: "archive", id: `K${archiveTrigger.knowledgeId}@${archiveTrigger.commit}`,
+    completeToolRead(trace, history(1, cCommit));
+    completeToolRead(trace, history(archiveTrigger.knowledgeId, archiveTrigger.commit));
+    const receipt = topicReceipt = JSON.parse(write.execute({ operations: [op, { op: "archive", id: tagged(archiveTrigger.knowledgeId, archiveTrigger.commit),
       supports: [third.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     const archived = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1);
     if (!archived) throw new Error(`topic archive did not commit: ${JSON.stringify(receipt)}`);
@@ -2179,8 +2193,8 @@ test("64b/21b: a shared label changes no applicability and follows the owner's p
   expect(dHistory).not.toContain("superseded by none");
   expect(groups(third).topics).toEqual([]);
   expect(groups(c).topics).toEqual(groups(third).topics);
-  expect(memory.inject(third)).not.toContain(`[K1@${dCommit}]`);
-  expect(memory.inject(third)).not.toContain(`[K1@${archiveCommit}]`);
+  expect(memory.inject(third)).not.toContain(`[${tagged(1, dCommit)}]`);
+  expect(memory.inject(third)).not.toContain(`[${tagged(1, archiveCommit)}]`);
   // The label is metadata beside the conclusion, never new factual prose inside it.
   expect(memory.store.getKnowledgeRevision(1, dCommit)!.text).toBe("D version");
 });
@@ -2192,7 +2206,7 @@ test("21b 2026-09-08: topics are revision metadata only — no fact or note fiel
   expect(tools.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
   const factSchema = (toolDefinitions.find(t => t.name === "note")!.parameters.properties as Record<string, any>).facts.items;
   expect(factSchema.properties).not.toHaveProperty("topics");
-  expect(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Labelled fact", source: ["T1#user"], topics: ["packaging"] }] })).toContain("rejected:");
+  expect(tools[2]!.execute({ facts: [{ text: "Labelled fact", source: ["T1#E1"], topics: ["packaging"] }] })).toContain("rejected:");
   const schema = (toolDefinitions.find(t => t.name === "memory")!.parameters.properties as Record<string, any>).operations.items;
   expect(schema.properties.topics).toEqual({ type: "array", items: { type: "string", minLength: 1 } });
   // Required for the content operations, rejected on archive, through the one existing branch.
@@ -2209,12 +2223,13 @@ test("21b 2026-09-08: topics are revision metadata only — no fact or note fiel
   expect(calls).toEqual([]); // storing a label calls no model
 });
 
-test("26 amendment 5 (26a) 2026-09-09: a Noter completes a batch only by calling note; ending without a submission is incomplete, never zero-fact success", async () => {
+test("26a/92: a Noter completes only with explicit note and memory; missing either is not zero-fact success", async () => {
   const { s, t } = session(); memory.close();
-  let submit = false;
+  let submit = false, submitKnowledge = false;
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
     if (submit) input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    if (submitKnowledge) input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "I answered a question and wrote nothing.", request: { fake: true }, usage: { tokens: 3 } };
   });
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
@@ -2226,8 +2241,11 @@ test("26 amendment 5 (26a) 2026-09-09: a Noter completes a batch only by calling
   const prompt = loadPrompt("noting.md");
   expect(prompt).toContain("note({facts: []})");
   expect(prompt).not.toContain("Stopping without submitting is a normal zero-fact success");
-  // An explicit empty submission is the completion, and (29d) it writes no delivery intent — as no commit does.
+  // One tool is insufficient; both explicit empty submissions complete without a delivery intent.
   submit = true;
+  expect(await memory.noting(target)).toMatchObject({ outcome: "failure" });
+  expect(hydrate(memory.store.listSourceEntries(s.id), memory.store).some(e => memory.store.entryNoted(e.id))).toBe(false);
+  submitKnowledge = true;
   expect(await memory.noting(target)).toMatchObject({ outcome: "success", facts: [] });
   expect(hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
@@ -2240,7 +2258,7 @@ function pathFacts() {
   const { s, t } = session();
   const write = (headTurnId: number, branch: string, text: string): number => {
     const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: headTurnId, branch });
-    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${headTurnId}#user`] }] }));
+    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ text, source: [`T${headTurnId}#E1`] }] }));
     expect(receipt.results[0]).toMatch(/^ok:/);
     return receipt.factIds[0] as number;
   };
@@ -2333,6 +2351,7 @@ test("27 review: each attempt is its own run record", async () => {
       request: { fork: true }, usage: { input: 1234, output: 7 }, retries: [{ attempt: 1, error: "overloaded" }],
       nativeLog: "/tmp/fork-attempt.jsonl", refused: { reason: "context overflow: prompt is too long" } };
     input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "done", mode: "subagent", request: { fresh: true }, usage: { input: 5, output: 1 }, fallbackReason: input.fallbackReason };
   });
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
@@ -2416,7 +2435,7 @@ test("27 amendment 6: frozen membership survives fallback or the task stays pend
 test("29: one material builder — filter visible, then budget", async () => {
   const { s, t } = session();
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ category: "observation", actor: "user", text: "Recorded earlier", source: [`T${t.id}#user`] }] });
+    .execute({ facts: [{ text: "Recorded earlier", source: [`T${t.id}#E1`] }] });
   const entries = hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store);
   // A failing probe leaves the same evidence pending, so every view below freezes the same task.
   const probe = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
@@ -2466,6 +2485,7 @@ test("27: cancellation between refusal and re-admission launches no fallback", a
     generations.push(input.cancellation);
     if (generations.length === 1) return { outcome: "failure", output: "context overflow", request: null, refused: { reason: "context overflow" } };
     input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return ok([]);
   });
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
@@ -2501,7 +2521,7 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
     if (input.kind !== "noting") return ok([]); // the Consolidation below commits through its own tool
     await held; // still in flight when the signal fires
     submissions.push(input.tools.find(tool => tool.name === "note")!.execute({ facts: [
-      { category: "observation", actor: "user", text: "a fact this cancelled run tries to commit", source: [`T${t.id}#user`] }] }));
+      { text: "a fact this cancelled run tries to commit", source: [`T${t.id}#E1`] }] }));
     return ok([]);
   });
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" as const };
@@ -2509,7 +2529,7 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
   const cancelled = memory.noting({ ...target, signal: controller.signal });
   // A second task, of the other phase, running under no signal of its own: the one this must not touch.
   const others = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "the durable claim of the untouched task", source: [`T${t.id}#user`] }] });
+    .find(tool => tool.name === "note")!.execute({ facts: [{ text: "the durable claim of the untouched task", source: [`T${t.id}#E1`] }] });
   expect(String(others)).not.toContain("rejected");
   const untouched = memory.consolidate(target);
 
@@ -2547,7 +2567,7 @@ test("29e (parent 27 amendment 6, case 19): a Consolidation fork's exact fact ta
   // pending rather than consolidating a subset and marking the rest processed.
   const { s, t } = session();
   const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${t.id}#user`] }] });
+    .find(tool => tool.name === "note")!.execute({ facts: [{ text, source: [`T${t.id}#E1`] }] });
   note("The first durable claim of this batch");
   note("The second durable claim of this batch");
   const [f1, f2] = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
@@ -2590,7 +2610,7 @@ test("29e (27d repair 4, case 20): a Consolidation task cancelled between refusa
   // admitted under, `cancelTasks()` advances it, and the re-admission drops without launching.
   const { s, t } = session();
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
+    .execute({ facts: [{ text: "Keep pnpm", source: [`T${t.id}#E1`] }] });
   memory.close();
   const generations: unknown[] = [];
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
@@ -2627,7 +2647,7 @@ test("64b/29/31: archived divergent history follows the owner's shared foregroun
   const dCommit = (await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
   publish(c);
   const archived = await admittedWrite(c, createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 3),
-    [{ op: "archive", id: `K1@${cCommit}`, reason: "Withdraw C only.", supports: [c.fact] }]);
+    [{ op: "archive", id: tagged(1, cCommit), reason: "Withdraw C only.", supports: [c.fact] }]);
   expect(archived.committed[0].knowledgeId).toBe(1);
   publish(d);
   const selected = peer();
@@ -2639,7 +2659,9 @@ test("64b/29/31: archived divergent history follows the owner's shared foregroun
   ]);
   const seen = { raw: new Map<string, "source" | "view">(), factIds: new Set<number>(),
     knowledgeCommitIds: new Set([cCommit]), injection: true, suppliedGeneration: 0 };
-  expect(memory.injection(selected, seen).text).toContain(`K1@${cCommit} no longer applies`);
+  const injected = memory.injection(selected, seen).text;
+  expect(injected).toContain(`${history(1, cCommit)} no longer applies`);
+  expect(injected).not.toContain(tagged(1, cCommit));
 });
 
 test("64b/29/31: an identity disappearance is noticed again after restore and rewind", () => {
@@ -2737,13 +2759,16 @@ test("61: definitions are shared and hold definitions only; the principles are t
   expect(principles[0]).toContain("What does not enter knowledge is information that carries no surprise given the resident knowledge — what one step of reasoning from it yields; this includes but is not limited to:");
   expect(principles[1]).toContain("`scope` defaults to `project`.");
   expect(principles[1]).toContain("different independent claims are maintained apart");
-  expect(block("knowledge")).toContain("has one `reference` whose body is its current state. A new state belongs to that item, never to a second identity.");
+  expect(block("knowledge")).toContain("one independently changeable claim or state, one identity");
+  expect(block("knowledge")).toContain("Identity is the claim or state itself, not a label, a category or a current value");
+  expect(block("knowledge")).toContain("belongs to that identity: update the exact continuing version");
   expect(principles[2]).toContain("Its body names the strength of its evidence: whether it comes from the user, the assistant or an observation, and whether it is a decision, a proposal, a question, an event or the like.");
   expect(loadPrompt("dreaming.md")).toContain("- Split an item that fails Atomicity.");
   expect(loadPrompt("dreaming.md")).toContain("When over budget, remove first:");
-  expect(principles[3]).toContain("Reliability of fact evidence: by source, user > observation > assistant; by category, decision > interpretation > proposal > question.");
+  expect(principles[3]).toContain("Reliability of fact evidence: by source, user > observation > assistant.");
+  expect(principles[3]).not.toContain("by category");
   expect(principles[3]).toContain("A matter worth tracking that still awaits an answer, adoption, verification or completion belongs to `open`");
-  expect(principles[3]).toContain("Knowledge without reliable evidence stays in `open`, not `dispute`.");
+  expect(principles[3]).toContain("Incompatible claims about one object under the same conditions, with evidence insufficient to explain or decide, remain in `open` with both accounts and missing evidence named.");
   expect(principles[4]).toContain("never pad them for coverage");
   for (const file of ["consolidation.md", "dreaming.md"] as const) {
     const composed = loadPrompt(file);
@@ -2825,15 +2850,14 @@ test("61: sentences are short, paragraphs are not walls, and no internal referen
 test("61: every backticked category, kind or field word used in a stage file is defined in the shared blocks", () => {
   const shared = ["model", "facts", "knowledge", "admission", "atomicity", "completeness", "pending", "citations", "formats", "live"]
     .map(name => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8")).join("\n");
-  const defined = new Set(["goal", "constraint", "mechanism", "term", "reference", "open", "dispute", "question", "proposal", "decision",
-    "observation", "interpretation", "event", "completed", "reported", "dispatched", "attempted", "user", "agent", "session", "project", "global",
-    "trace", "search", "quote", "source", "status", "supports", "reason", "topics", "text", "category", "scope", "actor", "inbound", "support", "negate", "strong", "weak"]);
+  const defined = new Set(["goal", "constraint", "understanding", "reference", "open", "observation", "user", "assistant", "role",
+    "session", "project", "global", "trace", "search", "supports", "reason", "topics", "text", "category", "scope", "inbound", "support", "negate", "strong", "weak"]);
   for (const word of defined) expect(shared, `shared blocks define ${word}`).toMatch(new RegExp("`" + word + "`|\\*\\*" + word + "\\*\\*"));
   for (const file of STAGE_PROMPTS) {
     const raw = readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8").replace(/```[\s\S]*?```/g, "");
     for (const match of raw.matchAll(/`([a-z]+)`/g)) {
       const word = match[1]!;
-      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skipped", "operations", "queries", "layer", "versions", "cap", "history", "full", "ok", "absorb"].includes(word)) continue; // stage tools and operation fields, defined in the stage's Contract
+      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skipped", "operations", "queries", "layer", "versions", "cap", "history", "full", "ok", "absorb", "source", "slot", "drop"].includes(word)) continue; // stage tools and operation fields, defined in the stage's Contract
       expect(defined.has(word), `${file}: \`${word}\` is not a defined term`).toBe(true);
     }
   }
