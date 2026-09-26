@@ -473,7 +473,7 @@ export const register = (on) => {
       return next(e);
     }
     const result = await next(e);
-    if (result.skip || e.trigger === "precompute" || e.agentId || next.signal.aborted) return result;
+    if (result.skip || e.trigger === "precompute" || e.trigger === "plugin" || e.agentId || next.signal.aborted) return result;
     try {
       if (session !== await $.session.id()) throw new Error("native session changed during compact");
       const process = await $.process.run(
@@ -488,7 +488,7 @@ export const register = (on) => {
       if (!Array.isArray(slices) || slices.length !== 24) throw new Error("compact delta returned invalid slices");
       const added = slices.filter(Boolean).map((slice) => slice.hookSpecificOutput?.additionalContext);
       if (added.some((text) => typeof text !== "string" || !text)) throw new Error("compact delta has invalid carrier");
-      if (next.signal.aborted || session !== await $.session.id()) return result;
+      if (session !== await $.session.id() || next.signal.aborted) return result;
       return added.length ? { ...result, messages: [
         ...result.messages,
         ...added.map((text) => ({ role: "user", text, toolUses: [] }))
