@@ -50,6 +50,21 @@ test("04: nine facts, only rejected ninth corrected; two layers stay private unt
   expect(f.entries.every(entry => f.memory.store.entryNoted(entry.id))).toBe(true);
 });
 
+test.each([false, true])("92: block-source replacement cannot publish; whole-entry correction recovers (%s)", async recover => {
+  const f = fixture(task => {
+    call(task, "note", { facts: [fact()] });
+    expect(call(task, "note", { facts: [{ slot: "$1", ...fact("selected block", "T1#E2@text") }] })).toContain("rejected:");
+    call(task, "note", { facts: [] });
+    if (recover) expect(call(task, "note", { facts: [{ slot: "$1", ...fact("Pi agent corrected it", "T1#E2") }] })).toContain("held: $1");
+    emptyMemory(task);
+  });
+  expect((await f.run()).outcome).toBe(recover ? "success" : "bounced");
+  const facts = f.memory.store.listSessionFacts(f.session.id);
+  expect(facts).toHaveLength(recover ? 1 : 0);
+  if (recover) expect(facts[0]!.roles).toEqual([{ role: "assistant", harness: "Pi agent" }]);
+  expect(f.entries.every(entry => f.memory.store.entryNoted(entry.id))).toBe(recover);
+});
+
 test("04: another connection allocates the next F ID while drafts exist; final mapping uses actual IDs", async () => {
   const f = fixture(task => {
     call(task, "note", { facts: [fact("held fact")] });

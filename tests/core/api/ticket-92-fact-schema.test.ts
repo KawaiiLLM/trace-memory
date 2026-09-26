@@ -54,13 +54,14 @@ test("92: entry-only citations reject legacy, whole-Turn and multi-entry selecto
   const f = fixture("cc:fixture");
   try {
     for (const source of [`T${f.turn.id}`, `T${f.turn.id}@assistant`, `T${f.turn.id}#assistant`,
-      `T${f.turn.id}#E1..E2`, `T${f.turn.id}#E1,E2`, `T${f.turn.id}#E1@thinking`]) {
+      `T${f.turn.id}#E1..E2`, `T${f.turn.id}#E1,E2`, `T${f.turn.id}#E1@thinking`,
+      `${f.source[1]}@text`, `${f.source[2]}@call-1`]) {
       const receipt = f.note.execute({ facts: [{ text: "wrong source", source: [source] }] });
       expect(receipt).toContain("rejected:");
     }
     expect(f.memory.store.listTurnFacts(f.turn.id)).toEqual([]);
     expect(f.note.execute({ facts: [{ text: "wrong actor", actor: "user", source: [f.source[1]] }] })).toContain("unexpected field");
-    const accepted = JSON.parse(f.note.execute({ facts: [{ text: "Claude Code stated B", source: [`${f.source[1]}@text`] }] }));
+    const accepted = JSON.parse(f.note.execute({ facts: [{ text: "Claude Code stated B", source: [f.source[1]] }] }));
     const fact = f.memory.store.getFact(accepted.factIds[0])!;
     expect(fact.roles).toEqual([{ role: "assistant", harness: "Claude Code" }]);
     expect(renderFact(fact, [])).toContain("(Claude Code)");
@@ -187,6 +188,10 @@ test("92: Store recalculates source roles; caller cannot supply borrowed or reor
   const f = fixture();
   try {
     const run = { kind: "manual" as const, sessionId: f.session.id, createdAt: "now" };
+    const selected = f.memory.store.commitNotingRun({ run, facts: [{ turnId: f.turn.id, text: "block source", source: [`${f.source[0]}@text`], entryIds: [f.entries[0]!.id], createdAt: "now" }] });
+    expect(selected.ok).toBe(false);
+    expect(f.memory.store.listTurnFacts(f.turn.id)).toEqual([]);
+    expect(f.memory.trace(`${f.source[0]}@text`)).toContain("User proposed A");
     const malformed = f.memory.store.commitNotingRun({ run, facts: [{ turnId: f.turn.id, text: "not bound to citation", source: [f.source[1]!], entryIds: [f.entries[0]!.id], createdAt: "now" }] });
     expect(malformed.ok).toBe(false);
     const valid = f.memory.store.commitNotingRun({ run, facts: [{ turnId: f.turn.id, text: "actual user", source: [f.source[0]!], entryIds: [f.entries[0]!.id], createdAt: "now" }] });

@@ -7,7 +7,7 @@ import { renderEntryIndex } from "../../../src/core/render/index.ts";
 function fixture() {
   const m = TraceMemory(":memory:", async () => { throw Error("offline only"); }, {}, undefined, piSourceBlocks);
   const projectId = m.store.createProject({ name: "thinking", declaredBy: "mark" }).id;
-  const sessionId = m.store.createSession({ projectId, host: "test", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true }).id;
+  const sessionId = m.store.createSession({ projectId, host: "pi:test", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true }).id;
   const turnId = m.store.appendTurn({ sessionId, kind: "turn", startedAt: "now" }).id;
   const thinking = { type: "thinking", thinking: "Private inference is not factual evidence" };
   const call = { callId: "check", ordinal: 1, name: "bash", input: "{}", status: "attempted" };
@@ -23,9 +23,9 @@ for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} reject
     const tools = f.m.tools(kind === "manual" ? { kind, sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }
       : { kind, sessionId: f.sessionId, branch: "main", entryIds: f.entries.map(e => e.id), range: { from: "S1/T1", to: "S1/T1" } });
     const note = tools.find(t => t.name === "note")!, trace = tools.find(t => t.name === "trace")!;
-    const fact = (source: string[]) => ({ category: "observation", actor: "agent", text: "An observation", source });
+    const fact = (source: string[]) => ({ text: "An observation", source });
     for (const source of ["T1#E1", "T1#E1@thinking", "T1#E2@thinking"]) {
-      expect(note.execute({ facts: [fact(["T1#E2@text"]), fact([source])] })).toContain("thinking are not fact sources");
+      expect(note.execute({ facts: [fact(["T1#E2"]), fact([source])] })).toContain("invalid source");
       expect(f.m.store.listTurnFacts(1)).toHaveLength(0);
       expect(f.m.store.entryNoted(f.pure.id)).toBe(false);
     }
@@ -38,8 +38,7 @@ for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} reject
     expect(renderEntryIndex(f.pure)).toContain("[T1#E1]");
     expect(renderEntryIndex(f.mixed)).not.toContain("thinking");
     expect(resolveFactSource(f.entries, "T1#E2")[0]!.blocks.map(b => b.kind)).toEqual(["text", "call"]);
-    expect(note.execute({ facts: [fact(["T1#E2"]), fact(["T1#E2@text"]), fact(["T1#E2@check"]), fact(["T1#E3@check"]),
-      { ...fact(["T1#E2", "T1#E3"]), category: "event", status: "completed" }] })).not.toContain("rejected:");
+    expect(note.execute({ facts: [fact(["T1#E2"]), fact(["T1#E3"]), fact(["T1#E2", "T1#E3"])] })).not.toContain("rejected:");
   } finally { f.m.close(); }
 });
 
@@ -50,7 +49,7 @@ test.each([true, false])("thinking: historical facts and knowledge remain visibl
     const sources = ["T1#E1@thinking", "T1#E1"];
     const legacy = f.m.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "now" }, entryIds: [f.pure.id], facts: sources.map(source => ({ turnId: 1, category: "observation" as const, actor: "agent" as const, text: "Historical inference", source: [source], ...(bound ? { entryIds: [f.pure.id] } : {}), createdAt: "now" })) });
     if (!legacy.ok) throw Error(legacy.problems.join());
-    const knowledge = f.m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", text: "Historical knowledge", category: "mechanism", scope: "project", supports: legacy.facts.map(fact => fact.id), reason: "Historical support", topics: [], createdAt: "now" }] });
+    const knowledge = f.m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", text: "Historical knowledge", category: "understanding", scope: "project", supports: legacy.facts.map(fact => fact.id), reason: "Historical support", topics: [], createdAt: "now" }] });
     expect(knowledge.ok).toBe(true);
     expect(sourceAddresses(f.pure)).toEqual(expect.arrayContaining(sources));
     const raw = f.m.store.getSourceEntry(f.pure.id)!.raw;

@@ -48,14 +48,14 @@ export function sourceKey(address: string): string {
 }
 export interface SourceResolution { entry: SourceEntry; blocks: SourceBlock[] }
 /** Historical reads still accept one legacy role/call alias, while new fact writes require one
- * exact entry. Both forms name one Turn; only the entry-only form exposes an ordinal for metadata
+ * whole entry, without a block selector. Both forms name one Turn; only the entry-only form exposes an ordinal for metadata
  * narrowing before any Raw body is read. */
 function parseSourceAddress(address: string, entryOnly = false): (TurnAddress & { turn: number }) | null {
   let parsed: TurnAddress | null;
   try { parsed = parseTurnAddress(address); } catch { return null; }
   if (!parsed || parsed.session !== undefined) return null;
   const { legacy, entries: selection } = parsed;
-  if ((entryOnly && legacy) || (!legacy && (selection?.length !== 1 || selection[0]!.to !== undefined))) return null;
+  if ((entryOnly && (legacy || parsed.selector)) || (!legacy && (selection?.length !== 1 || selection[0]!.to !== undefined))) return null;
   return parsed as TurnAddress & { turn: number };
 }
 /** New fact-write scope: one exact entry address. Legacy aliases remain readable through

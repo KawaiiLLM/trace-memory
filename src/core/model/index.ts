@@ -193,7 +193,7 @@ export interface NotingRelationInput {
 
 export interface NotingFactInput {
   text: string;
-  source: string[]; // each address names one entry, e.g. "T812#E2@text"
+  source: string[]; // each address names one whole entry, e.g. "T812#E2"
   support?: NotingRelationInput[];
   negate?: NotingRelationInput[];
 }
