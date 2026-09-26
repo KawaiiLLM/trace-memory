@@ -13,6 +13,7 @@ import { KNOWLEDGE_RECENCY_NOTICE, budgetFacts, budgetKnowledge, charge, finish,
 import { budgetMaterial, injectionText, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: (NotingAgentInput | ConsolidationAgentInput)[], scenarios: AdmittedDreamerScenarios;
 const time = "2026-09-08T00:00:00Z";
@@ -66,9 +67,11 @@ async function maintain(path: { sessionId: number; branch: string; headTurnId: n
     const request = { fixture: "material maintenance" }; input.reportRequest(request);
     fullRead(input.tools.find(tool => tool.name === "trace")!, address);
     const triggerAddress = tag(trigger.knowledgeId, trigger.commit);
-    const supplied = new Set(input.material.changed.match(/K\d+@v\d+/g) ?? []);
-    const operatedId = Number(/^K(\d+)/.exec(address)![1]);
-    for (const version of supplied) if (version.startsWith(`K${operatedId}@`) || version.startsWith(`K${trigger.knowledgeId}@`)) supplied.delete(version);
+    const supplied = new Set(suppliedHandles(input.material.changed));
+    const operated = /^K(\d+)#([a-z]+)$/.exec(address)!;
+    const operatedId = Number(operated[1]), operatedCommit = memory.store.resolveVersionTag(operatedId, operated[2]!);
+    supplied.delete(`K${operatedId}@v${memory.store.versionOrdinal(operatedId, operatedCommit)}`);
+    supplied.delete(`K${trigger.knowledgeId}@v${memory.store.versionOrdinal(trigger.knowledgeId, trigger.commit)}`);
     const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [operation,
       { op: "archive", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit material trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied material item." })) }));

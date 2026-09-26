@@ -3,6 +3,7 @@ import { TraceMemory } from "../../../src/core/api/index.ts";
 import { type KnowledgeRevision } from "../../../src/core/model/index.ts";
 import { type KnowledgePath, Store } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 
 const at = "2026-09-21T12:00:00.000Z";
 const tag = (store: Store, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`;
@@ -243,8 +244,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
       trace.execute({ address: tag(store, item), itemBudget: null, pageBudget: 8000 });
     const operated = new Set([absorbed, splitParent, siblingTrigger]
       .map(item => history(store, item)));
-    const unchangedSupplied = [...new Set(input.material.changed.match(/K\d+@v\d+/g) ?? [])]
-      .filter(knowledge => !operated.has(knowledge));
+    const unchangedSupplied = suppliedHandles(input.material.changed).filter(knowledge => !operated.has(knowledge));
     const receipt = JSON.parse(write.execute({ operations: [
       { op: "update", id: tag(store, absorbed), text: "restorable absorbed sibling",
         category: "constraint", scope: "global", supports: [`F${cFact.id}`], reason: "Create competing merge sibling.", topics: [] },
