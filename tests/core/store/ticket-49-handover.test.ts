@@ -144,14 +144,14 @@ test("86: moved current revision becomes pending, while another writer's process
   expect(pending[0]!.material).toContain(`(from K${original.knowledgeId}@v1)`); // Existing 76 differential weighting still applies.
 });
 
-test("86: oldest pending Knowledge with complete framing exceeding its pool budget is retained first", () => {
+test("92: a tiny pool budget triggers but does not cap the 10k oldest-first range", () => {
   const store = new Store(":memory:"); stores.push(store);
   const project = store.createProject({ name: "tiny", declaredBy: "mark" }), author = session(store, project.id);
   const oldest = create(store, author, "oldest whole knowledge"), later = create(store, author, "later whole knowledge");
   store.setKnowledgeBudget("project", 1);
   const claim = store.acquireClaim(author.path, "dreaming", "worker")!;
   const range = store.retainKnowledgePoolRange(author.path, `project:${project.id}`, claim);
-  expect(range.eventIds).toEqual([oldest.commit]);
+  expect(range.eventIds).toEqual([oldest.commit, later.commit]);
   expect(store.pendingVersions(`project:${project.id}`, author.path).map(value => value.revisionId)).toEqual([oldest.commit, later.commit]);
 });
 

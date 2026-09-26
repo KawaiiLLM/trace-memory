@@ -266,11 +266,10 @@ test("85: pending residual eligibility survives reopen without pool suppression 
   const directory = mkdtempSync(join(tmpdir(), "tm-64c-residual-")), path = join(directory, "trace.db");
   try {
     const f = setup(new Store(path));
-    f.create("project", "words ".repeat(250));
-    f.create("project", "words ".repeat(250));
-    f.create("project", "words ".repeat(250));
-    const pool = `project:${f.project.id}`, weights = f.store.pendingVersions(pool, f.target).map(value => value.tokens);
-    f.store.setKnowledgeBudget("project", Math.floor(Math.max(...weights) * 2.5));
+    for (let i = 0; i < 14; i++) f.create("project", `rule ${i} ` + "words ".repeat(800));
+    const pool = `project:${f.project.id}`;
+    expect(tokens(["Pending current knowledge:", ...f.store.pendingVersions(pool, f.target).map(value => value.material)].join("\n"))).toBeGreaterThan(10_000);
+    f.store.setKnowledgeBudget("project", 30_000);
     consume(f, pool);
     expect(f.store.pendingPoolWeight(pool, f.target)).toBeGreaterThan(0);
     expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
@@ -343,12 +342,12 @@ test("67: create batches skip writer graphs while consuming operations recheck a
     const operations = Array.from({ length: 30 }, (_, i) => ({ op: "create" as const, handle: `$${i}`, author: "test",
       text: `body ${i}`, category: "constraint" as const, scope: "global" as const, supports: [f.fact.id], topics: [], reason: "test", createdAt: "now" }));
     const created = f.store.commitConsolidationRun({ path: f.target,
-      run: { kind: "consolidation", sessionId: f.session.id, branch: "main", createdAt: "now" }, operations });
+      run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" }, operations });
     expect(created.ok).toBe(true);
     expect(graph).not.toHaveBeenCalled();
     const before = f.store.listKnowledgeRevisions();
     const bad = f.store.commitConsolidationRun({ path: f.target,
-      run: { kind: "consolidation", sessionId: f.session.id, branch: "main", createdAt: "now" },
+      run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" },
       operations: [operations[0]!, { ...operations[1]!, supports: [999_999] }] });
     expect(bad.ok).toBe(false);
     expect(f.store.listKnowledgeRevisions()).toEqual(before);

@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { tokens } from "../../../src/core/render/index.ts";
 import { Store, type KnowledgeOperationInput } from "../../../src/core/store/index.ts";
+import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
 
 const stores: Store[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); });
@@ -46,21 +47,55 @@ test("86: N fact write accepts 1000, rejects 1001 and rolls back the entire batc
   expect(f.fact(over, "manual").ok).toBe(true);
 });
 
-test("86: C create/update check each resulting text, without limiting manual memory", () => {
-  const f = fixture(), exact = sized(1000), over = sized(1001);
-  expect(f.write([f.create(exact)]).ok).toBe(true);
-  const base = f.write([f.create("initial")]);
-  if (!base.ok) throw Error(base.problems.join("; "));
-  const item = base.committed[0]!;
-  const change = (text: string): KnowledgeOperationInput => ({ op: "update", knowledgeId: item.knowledgeId,
-    baseCommit: item.commit, text, category: "constraint", scope: "project", topics: [], supports: [f.evidence.id], reason: "new evidence", createdAt: "now" });
-  const before = f.store.listKnowledgeRevisions().length;
-  for (const op of [f.create(over), change(over)]) {
-    const result = f.write([f.create("would roll back"), op]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.problems.join(" ")).toMatch(/Knowledge item.*1000-token limit: 1001 tokens/);
-    expect(f.store.listKnowledgeRevisions()).toHaveLength(before);
-  }
-  expect(f.write([change(exact)]).ok).toBe(true);
-  expect(f.write([f.create(over)], "manual").ok).toBe(true);
+test("92: held N create/update cap resulting text at 1000; manual memory remains unrestricted", async () => {
+  const exact = sized(1000), over = sized(1001);
+  let script!: (task: NotingAgentInput) => void;
+  const memory = sourceSeededMemory(":memory:", async raw => {
+    const task = raw as NotingAgentInput;
+    script(task);
+    return { outcome: "success", output: "done", request: { exact: "size test" } };
+  });
+  try {
+    const store = memory.store;
+    const project = store.createProject({ name: "size", declaredBy: "mark" });
+    const session = store.createSession({ host: "pi:size", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+    const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "User gave evidence", startedAt: "now" });
+    const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+    const call = (task: NotingAgentInput, name: "note" | "memory", payload: unknown) => task.tools.find(tool => tool.name === name)!.execute(payload);
+    const operation = (text: string, id?: string) => ({ op: id ? "update" : "create", ...(id ? { id } : {}),
+      text, category: "constraint", scope: "project", supports: ["$1"], topics: [], reason: "User evidence" });
+    script = task => {
+      expect(call(task, "note", { facts: [{ text: "User gave evidence", source: [`T${turn.id}#E1`] }] })).toContain("held: $1");
+      expect(call(task, "memory", { operations: [operation("would roll back"), operation(over)], skipped: [] }))
+        .toMatch(/Knowledge item.*1000-token limit: 1001 tokens/);
+    };
+    expect((await memory.noting(path)).outcome).not.toBe("success");
+    expect(store.listKnowledgeRevisions()).toHaveLength(0);
+    script = task => {
+      expect(call(task, "note", { facts: [{ text: "User gave evidence", source: [`T${turn.id}#E1`] }] })).toContain("held: $1");
+      expect(call(task, "memory", { operations: [operation("initial")], skipped: [] })).toContain("held: M1");
+    };
+    expect((await memory.noting(path)).outcome).toBe("success");
+    const base = store.currentKnowledge(path)[0]!;
+    const next = store.appendTurn({ sessionId: session.id, parentTurnId: turn.id, kind: "turn", userPrompt: "User revised evidence", startedAt: "later" });
+    const nextPath = { ...path, headTurnId: next.id };
+    const tag = `K${base.knowledge.id}#${store.versionTag(base.knowledge.id, base.revision.id)}`;
+    script = task => {
+      expect(call(task, "note", { facts: [{ text: "User revised evidence", source: [`T${next.id}#E1`] }] })).toContain("held: $1");
+      expect(call(task, "memory", { operations: [operation(over, tag)], skipped: [] }))
+        .toMatch(/Knowledge item.*1000-token limit: 1001 tokens/);
+    };
+    expect((await memory.noting(nextPath)).outcome).not.toBe("success");
+    expect(store.currentKnowledge(nextPath)[0]!.revision.id).toBe(base.revision.id);
+    script = task => {
+      expect(call(task, "note", { facts: [{ text: "User revised evidence", source: [`T${next.id}#E1`] }] })).toContain("held: $1");
+      expect(call(task, "memory", { operations: [operation(exact, tag)], skipped: [] })).toContain("held: M1");
+    };
+    expect((await memory.noting(nextPath)).outcome).toBe("success");
+    expect(tokens(store.currentKnowledge(nextPath)[0]!.revision.text)).toBe(1000);
+    const manual = store.commitConsolidationRun({ path: nextPath, run: { kind: "manual", sessionId: session.id, createdAt: "now" },
+      operations: [{ op: "create", handle: "$manual", author: "test", text: over, category: "constraint", scope: "project",
+        supports: [store.listTurnFacts(turn.id)[0]!.id], topics: [], reason: "manual exception", createdAt: "now" }] });
+    expect(manual.ok).toBe(true);
+  } finally { memory.close(); }
 });

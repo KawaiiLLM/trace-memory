@@ -242,11 +242,10 @@ test("68 untouched residual stays due before and after an older version becomes 
     handle: "$old", author: "test", text: "old q item", category: "constraint", scope: "project", supports: [qn.facts[0]!.id], topics: [], reason: "old", createdAt: "now" }] });
   if (!old.ok) throw new Error(old.problems.join("; "));
 
-  f.create("project", "words ".repeat(250));
-  f.create("project", "words ".repeat(250));
-  f.create("project", "words ".repeat(250));
-  const pool = `project:${f.project.id}`, weights = f.store.pendingVersions(pool, f.target).map(value => value.tokens);
-  f.store.setKnowledgeBudget("project", Math.floor(Math.max(...weights) * 2.5));
+  for (let i = 0; i < 14; i++) f.create("project", `rule ${i} ` + "words ".repeat(800));
+  const pool = `project:${f.project.id}`;
+  f.store.setKnowledgeBudget("project", 30_000);
+  expect(tokens(["Pending current knowledge:", ...f.store.pendingVersions(pool, f.target).map(value => value.material)].join("\n"))).toBeGreaterThan(10_000);
   expect((await f.memory.dream(f.target)).outcome).toBe("success");
   const remaining = f.store.pendingPoolWeight(pool, f.target);
   expect(remaining).toBeGreaterThan(0);
@@ -260,9 +259,7 @@ test("68 untouched residual stays due before and after an older version becomes 
 
 test("85: an untouched residual above the pending threshold remains due", async () => {
   const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
-  f.create("project", "large ".repeat(400));
-  f.create("project", "small ".repeat(250));
-  f.create("project", "small ".repeat(250));
+  for (let i = 0; i < 14; i++) f.create("project", `rule ${i} ` + "words ".repeat(800));
   const pool = `project:${f.project.id}`, pending = f.store.pendingVersions(pool, f.target);
   const one = tokens(["Pending current knowledge:", pending[0]!.material].join("\n"));
   expect(tokens(["Pending current knowledge:", pending[0]!.material, pending[1]!.material].join("\n"))).toBeGreaterThan(one);

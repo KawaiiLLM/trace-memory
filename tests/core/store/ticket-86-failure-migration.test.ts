@@ -48,7 +48,7 @@ function legacyDatabase() {
     const failed = reserve(store, path, pool, "legacy-failure");
     expect(failed.range.id).toBe(second!.commit);
     expect(failed.range.anchor).toBe(first!.commit);
-    expect(failed.range.eventIds).toEqual([first!.commit]);
+    expect(failed.range.eventIds).toEqual([first!.commit, second!.commit]);
     const oldExecution = store.beginExecution({ sessionId: session.id, phase: "dreaming", head: failed.range.id });
     const oldRun = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", createdAt: "now",
       executionId: oldExecution, dreamingRangeId: failed.range.id, claim: failed.claim });
@@ -59,7 +59,8 @@ function legacyDatabase() {
     const successExecution = store.beginExecution({ sessionId: session.id, phase: "dreaming", head: processed.range.id });
     const successRun = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", createdAt: "now",
       executionId: successExecution, dreamingRangeId: processed.range.id, claim: processed.claim });
-    store.completeKnowledgePoolRange(successRun, "success", processed.range.eventIds);
+    // Historical run explicitly skipped only the first frozen item; the second is untouched.
+    store.completeKnowledgePoolRange(successRun, "success", [first!.commit]);
     store.settleExecution(successExecution, "success", store.dreamingRunId(successRun)!);
     store.releaseClaim(processed.claim);
     const executionId = store.beginExecution({ sessionId: session.id, phase: "noting", head: entry.id });

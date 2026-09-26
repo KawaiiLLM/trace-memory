@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -97,6 +98,29 @@ test("64c zero changed-pool cap still dispatches the oldest pending revision; fa
   expect(f.memory.store.getClaim(f.session.id, "dreaming")).toBeNull();
 });
 
+test("92: no Knowledge window explicitly rejects a mandatory pending header and leaves it pending", async () => {
+  const f = fixture();
+  const item = f.create("mandatory pending rule");
+  zeroBase(f.memory);
+  f.memory.config.compaction.sharedAllowanceTokens = 0;
+  const pool = `project:${f.memory.store.getSession(f.session.id)!.projectId}`;
+  const pending = f.memory.store.pendingVersions(pool, f.target);
+  const changedCost = tokens(["Pending current knowledge:", ...pending.map(value => value.material)].join("\n"));
+  const knowledgeWindow = f.memory.knowledgeBudgets().injection + f.memory.config.compaction.sharedAllowanceTokens;
+  expect(knowledgeWindow).toBe(0);
+  expect(changedCost).toBe(35);
+  expect(tokens("Current pool knowledge outside this range:\n")).toBe(8);
+  expect(changedCost + 1 + 8).toBe(44);
+  const failure = await f.memory.dream(f.target).then(() => "resolved", error => String(error));
+  expect(f.captured).toEqual([]);
+  expect(f.memory.store.openDreamingRange(f.session.id, "main")).toBeNull();
+  expect(f.memory.store.getClaim(f.session.id, "dreaming")).toBeNull();
+  expect(f.memory.store.db.prepare("SELECT * FROM dreaming_ranges").all()).toEqual([]);
+  expect(f.memory.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
+  expect(f.memory.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([item.commit]);
+  expect(failure).toMatch(/Dreaming capacity: pending Knowledge and required framing cannot fit/);
+});
+
 test("73: an unsafe combined envelope refuses instead of wrapping, not a trigger sum any more", () => {
   const f = fixture();
   f.create("changed");
@@ -126,6 +150,8 @@ test("73: real facade freezes D references to base plus the configured shared al
     admitted.push(budgets.dreamingProcessedInput + f.memory.config.compaction.sharedAllowanceTokens
       - tokens(task.material.changed) - 1);
     if (admitted.length === 1) {
+      expect(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: suppliedHandles(task.material.changed)
+        .map(knowledge => ({ knowledge, because: "reviewed unchanged" })) })).toContain("committed");
       const frozen = task.admittedProcessedInputCap;
       f.memory.setKnowledgeBudget("global", 5_000);
       f.memory.config.compaction.sharedAllowanceTokens = 6_000;
@@ -134,12 +160,12 @@ test("73: real facade freezes D references to base plus the configured shared al
     return { outcome: "failure", output: "capture only", request: {} };
   });
   f.memory.setKnowledgeBudget("project", 30_000);
-  f.create("一".repeat(25_000), "project");
+  f.create("一".repeat(8_000), "project");
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   const first = f.captured[0]!;
   expect(first.admittedProcessedInputCap).toBe(admitted[0]);
 
-  f.create("二".repeat(15_000), "project");
+  f.create("二".repeat(8_000), "project");
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   const second = f.captured[1]!;
   const secondBudgets = f.memory.knowledgeBudgets();

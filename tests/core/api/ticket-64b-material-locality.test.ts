@@ -4,6 +4,7 @@ import { skipRest } from "../../dreaming-skips.ts";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { drainTrace } from "../../trace-pages.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 
 const at = "2026-09-20T12:00:00Z";
 
@@ -40,7 +41,18 @@ function fixture(baseText = "divergent base") {
     run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: at }, operations: [{ op: "create", handle: "$base", author: "test",
       text: baseText, category: "constraint", scope: "project", supports: [fact], topics: [], reason: "Initial rule.", createdAt: at }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
-  return { memory, scenarios, session, turn, fact, branchFacts, left, right, joined, base: created.committed[0]! };
+  const historical = created.committed[0]!;
+  // Historical manual body remains readable, but the current pending predecessor fits D's 10k slice.
+  const base = baseText.length > 10_000
+    ? (() => {
+      const revised = commitNoterKnowledge(memory.store, { path: { sessionId: session.id, branch: "root", headTurnId: turn.id },
+        run: { sessionId: session.id, branch: "root", createdAt: at }, operations: [{ op: "update",
+          knowledgeId: historical.knowledgeId, baseCommit: historical.commit, text: "current concise parent",
+          category: "constraint", scope: "project", supports: [fact], topics: [], reason: "Historical body superseded", createdAt: at }] });
+      if (!revised.ok) throw new Error(revised.problems.join("; "));
+      return revised.committed[0]!;
+    })() : historical;
+  return { memory, scenarios, session, turn, fact, branchFacts, left, right, joined, historical, base };
 }
 
 type Fixture = ReturnType<typeof fixture>;
@@ -73,7 +85,7 @@ async function diverge(f: Fixture, branch: "left" | "right", triggerEntryId: num
       { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire trigger." },
     ], skipped: [] });
     expect(receipt).toContain('"committed"');
-    skipRest(input, [`K${f.base.knowledgeId}@v1`, `K${trigger.knowledgeId}@v1`]);
+    skipRest(input, [`K${f.base.knowledgeId}@v${f.memory.store.versionOrdinal(f.base.knowledgeId, f.base.commit)}`, `K${trigger.knowledgeId}@v1`]);
     return { outcome: "success", output: "maintained", request };
   });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
@@ -89,7 +101,7 @@ test("64b F1: oversized unrelated history does not pin a fitting pending identit
   const left = await diverge(f, "left", f.left.id, `left ${"large ".repeat(900)}`);
   const right = await diverge(f, "right", f.right.id, `right ${"large ".repeat(900)}`);
   const identity = f.memory.store.getKnowledge(f.base.knowledgeId)!;
-  const historical = f.memory.store.getKnowledgeRevision(f.base.knowledgeId, f.base.commit)!;
+  const historical = f.memory.store.getKnowledgeRevision(f.historical.knowledgeId, f.historical.commit)!;
   expect(tokens([historical, left, right].map(revision => renderKnowledge({ knowledge: identity, revision })).join("\n")))
     .toBeGreaterThan(10000);
 
@@ -111,7 +123,7 @@ test("64b F1: oversized unrelated history does not pin a fitting pending identit
     });
   expect(result.outcome).toBe("success");
   expect(changed).toContain(`New K${pending.knowledgeId}@v1`);
-  expect(changed).not.toContain(`K${f.base.knowledgeId}@v2`);
   expect(changed).not.toContain(`K${f.base.knowledgeId}@v3`);
+  expect(changed).not.toContain(`K${f.base.knowledgeId}@v4`);
   expect(tokens(changed)).toBeLessThanOrEqual(15000);
 });

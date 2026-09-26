@@ -50,7 +50,7 @@ test.each([
   expect(own()).toMatchObject({ trigger: weight - 1 });
 });
 
-test("86: Dreamer executes the oldest pending revision even when its framing exceeds its pool budget", async () => {
+test("92: the pool budget determines due, not the frozen 10k slice; only skipped items are processed", async () => {
   let seen: string[] = [];
   const f = setup(async task => {
     seen = handles(task);
@@ -62,7 +62,9 @@ test("86: Dreamer executes the oldest pending revision even when its framing exc
   f.memory.setKnowledgeBudget("project", 1);
   const result = await f.memory.dream(f.target);
   expect(result.outcome, JSON.stringify(result)).toBe("success");
-  expect(seen).toEqual([`K${first.knowledgeId}@v1`]);
+  expect(seen).toEqual([`K${first.knowledgeId}@v1`, `K${second.knowledgeId}@v1`]);
+  expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ?").all(f.pool))
+    .toEqual([{ revision_id: first.commit }]);
   expect(f.store.pendingVersions(f.pool, f.target).map(value => value.revisionId)).toEqual([second.commit]);
 });
 

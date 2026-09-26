@@ -219,16 +219,19 @@ test.each([
 
 test("64c reference material is genuinely non-empty, capped and receipted when current out-of-range knowledge is oversized", async () => {
   const f = fixture();
-  const references = Array.from({ length: 4 }, (_, index) => f.create(`reference-${index} ${"reference ".repeat(6_000)}`));
+  const references = Array.from({ length: 8 }, (_, index) => f.create(`reference-${index} ${"reference ".repeat(2_000)}`));
   const pool = `project:${f.project.id}`, pendingWeight = f.store.pendingPoolWeight(pool, f.target);
   f.store.setKnowledgeBudget("project", pendingWeight * 2);
-  const settled = await f.scenarios.run(f.memory, f.target, task => {
-    const handles = suppliedHandles(task.material.changed);
-    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
-      skipped: handles.map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
-    return success;
-  });
-  expect(settled.outcome).toBe("success");
+  while (f.store.pendingVersions(pool, f.target).length) {
+    const settled = await f.scenarios.run(f.memory, f.target, task => {
+      const handles = suppliedHandles(task.material.changed);
+      expect(handles.length).toBeGreaterThan(0);
+      task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+        skipped: handles.map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
+      return success;
+    });
+    expect(settled.outcome).toBe("success");
+  }
   expect(f.store.pendingVersions(pool, f.target)).toEqual([]);
   f.store.setKnowledgeBudget("project", 15_000);
   const { result } = await admitted(f, task => {
