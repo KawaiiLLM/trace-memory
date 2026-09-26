@@ -3581,17 +3581,35 @@ export class Store {
     const history = this.db.prepare(`SELECT p.pool, p.revision_id FROM knowledge_processed p
       WHERE p.pool IN (SELECT value FROM json_each(?))`).all(JSON.stringify(pools.map(([pool]) => pool)));
     const processed = new Set(history.map(row => `${row.pool}:${row.revision_id}`));
+    // Resolve only this projection's current, archived-body and processed-baseline addresses.
+    // Version metadata is immutable, but this operation-local batch must not become a stale cache.
+    const referenced = new Set<number>(), baselines = new Map<number, KnowledgeRevision>();
+    for (const [pool] of pools) for (const { revision } of [...versions.get(pool)!, ...archivedVersions.get(pool)!]) {
+      referenced.add(revision.id);
+      if (revision.op === "archive" && revision.parentId !== null) referenced.add(revision.parentId);
+      if (processed.has(`${pool}:${revision.id}`)) continue;
+      const baselineId = this.nearestProcessedAncestor(revision.id, pool, input.parents, processed);
+      const baseline = baselineId === undefined ? undefined : input.metadata.revisions!.get(baselineId);
+      if (baseline) { baselines.set(revision.id, baseline); referenced.add(baseline.id); }
+    }
+    const versionMetadata = new Map(this.db.prepare(`SELECT knowledge_id, commit_id, tag, ordinal FROM knowledge_version_tags
+      WHERE commit_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify([...referenced]))
+      .map(row => [Number(row.commit_id), { knowledgeId: Number(row.knowledge_id), tag: String(row.tag), ordinal: Number(row.ordinal) }]));
+    const version = (revision: KnowledgeRevision) => {
+      const value = versionMetadata.get(revision.id);
+      if (!value || value.knowledgeId !== revision.knowledgeId) throw new Error(`unknown knowledge version K${revision.knowledgeId}`);
+      return value;
+    };
+    const address = (revision: KnowledgeRevision) => `K${revision.knowledgeId}@v${version(revision).ordinal}`;
+    const tagged = (revision: KnowledgeRevision) => `K${revision.knowledgeId}#${version(revision).tag}`;
     return pools.map(([pool, budget]) => {
       const values = versions.get(pool)!;
-      const address = (revision: KnowledgeRevision) => `K${revision.knowledgeId}@v${this.versionOrdinal(revision.knowledgeId, revision.id)}`;
-      const tagged = (revision: KnowledgeRevision) => `K${revision.knowledgeId}#${this.versionTag(revision.knowledgeId, revision.id)}`;
       const rendered = new Map(values.map(value => [value.revision.id, renderKnowledge(value, tagged(value.revision))]));
       const size = tokens(processedBlock(values, value => rendered.get(value.revision.id)!));
       // 76: baseline lookup, segmentation and diff run only for a pending version that has a
       // processed ancestor in this pool; a version with none is shown and weighed whole ("New").
       const pendingUpdates = values.filter(value => !processed.has(`${pool}:${value.revision.id}`)).map(value => {
-        const baselineId = this.nearestProcessedAncestor(value.revision.id, pool, input.parents, processed);
-        const baseline = baselineId === undefined ? undefined : input.metadata.revisions!.get(baselineId);
+        const baseline = baselines.get(value.revision.id);
         if (!baseline) {
           const material = `New ${address(value.revision)}:\n${rendered.get(value.revision.id)!}`;
           return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material };
@@ -3608,8 +3626,7 @@ export class Store {
         const parent = value.revision.parentId === null ? undefined : input.metadata.revisions!.get(value.revision.parentId);
         if (!parent) throw new Error(`K${value.revision.knowledgeId}@${value.revision.id}: archive has no archived body`);
         const archivedBody = renderKnowledge({ knowledge: value.knowledge, revision: parent }, tagged(parent));
-        const baselineId = this.nearestProcessedAncestor(value.revision.id, pool, input.parents, processed);
-        const baseline = baselineId === undefined ? undefined : input.metadata.revisions!.get(baselineId);
+        const baseline = baselines.get(value.revision.id);
         const diffLine = baseline && baseline.id !== parent.id ? `\n${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent, address(parent)).text}` : "";
         // 76 review: the archive revision's own supports are the evidence that caused the archive
         // (e.g. F3), distinct from the archived body's own supports already inside `archivedBody`.
