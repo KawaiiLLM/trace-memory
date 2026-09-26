@@ -6,16 +6,17 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, visibleTarget, type ConfigOverride, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
+import { DEFAULT_CONFIG, NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, visibleTarget, type ConfigOverride, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
-import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
+import { freezeNoting } from "../../../src/core/noting/index.ts";
+import { noVisibility } from "../../../src/core/api/visible.ts";
 import { KNOWLEDGE_RECENCY_NOTICE, budgetFacts, budgetKnowledge, charge, finish, renderFact, renderKnowledge, renderKnowledgeBlock, wholeKnowledge } from "../../../src/core/render/index.ts";
-import { budgetMaterial, injectionText, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
+import { budgetMaterial, compactText, rawWindowTokens, injectionText, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { suppliedHandles } from "../../dreaming-skips.ts";
 
-let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: (NotingAgentInput | ConsolidationAgentInput)[], scenarios: AdmittedDreamerScenarios;
+let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: NotingAgentInput[], scenarios: AdmittedDreamerScenarios;
 const time = "2026-09-08T00:00:00Z";
 const tag = (knowledgeId: number, commit: number) => `K${knowledgeId}#${memory.store.versionTag(knowledgeId, commit)}`;
 
@@ -44,13 +45,6 @@ function seeded() {
   expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain('"committed"');
   knowledgeBlock = `<knowledge>\n${KNOWLEDGE_RECENCY_NOTICE}\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] The project uses pnpm\n  change supports: F1\n</knowledge>`;
   return { s, t, read: (address: string) => tools.find(tool => tool.name === "trace")!.execute({ address, cap: Number.MAX_SAFE_INTEGER }) };
-}
-/** The same session after one Consolidation run: F1 is history, F2 is this task's pending fact. */
-function consolidated() {
-  const { s, t } = seeded();
-  const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [{ text, source: [`T${t.id}#E1`] }] });
-  return { s, t, first: memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" }).then(() => note("Keep pnpm")) };
 }
 let knowledgeBlock: string;
 const views = (sessionId: number, head: number) =>
@@ -86,32 +80,26 @@ async function maintain(path: { sessionId: number; branch: string; headTurnId: n
   return committed;
 }
 
-test("25a 2026-09-09: the Noter's fresh order is historical facts, range, the selected Raw, then receipts — and no knowledge block", async () => {
+test("92: fresh N names its target and range, then shares compact Knowledge, facts and Raw layout", async () => {
   const { s, t } = seeded();
   const raw = views(s.id, t.id);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const input = calls[0]! as NotingAgentInput;
-  expect(input.text).toBe(["Recent facts (by Turn):", `[T1] ${time} (selected facts)\n${memory.trace("F1")}`,
-    `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`, "Raw:", raw].join("\n\n"));
-  // 25a supersedes ticket 20's leading knowledge block for this consumer, in both modes. The
-  // knowledge itself is untouched — the injection still carries it, and the run still froze it.
-  expect(input.text).not.toContain("<knowledge>");
-  expect(input.text).not.toContain("The project uses pnpm");
+  expect(input.text).toBe(["Target session agent: fake", `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`, knowledgeBlock,
+    `<episodic>\nRecent facts (by Turn):\n\n[T1] ${time} (selected facts)\n${memory.trace("F1")}\n\nRaw:\n\n${raw}\n</episodic>`].join("\n\n"));
+  expect(knowledgeBlockOf(input.material)).toBe(knowledgeBlock);
+  expect(input.supplied.knowledgeCommitIds).toEqual([1]);
   expect(memory.inject(s.id)).toBe(knowledgeBlock);
   expect(input).not.toHaveProperty("readKnowledgeCommits");
 });
 
-/** 29b (case 12) supersedes 20a's fixed inherited layout and 25a's "a Noter fork never adds
- * historical facts": the same builder produces this text, and the only reason it has no Raw block is
- * that the view proves every target entry visible. The optional history is still supplied, because
- * nothing proves the child can see F1 — a receipt in prose is not coverage. */
+/** 92: a fork inherits its published parent, with no extra facts or Knowledge supplement. */
 test("29b 2026-09-10: a fork whose whole target is visible injects no Raw and keeps the range, head reply and source index", async () => {
   const { s, t } = seeded();
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
     visible: visibleTarget(memory, s.id, "main", t.id) });
   const input = calls[0]! as NotingAgentInput;
-  expect(input.text).toBe(["Recent facts (by Turn):", `[T1] ${time} (selected facts)\n${memory.trace("F1")}`,
-    `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`,
+  expect(input.text).toBe(["Target session agent: fake", `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`,
     `Sources:\n[T${t.id}#E1] user: T${t.id}#E1@text\n[T${t.id}#E2] assistant: T${t.id}#E2@text\n[T${t.id}#E3] assistant: T${t.id}#E3@call-1\n[T${t.id}#E4] toolResult: T${t.id}#E4@call-1`].join("\n\n"));
   expect(input.material.head).toBeNull(); // This synthetic sequence ends with a result, not E2.
   // The raw turns and the injected knowledge are already in that conversation.
@@ -120,35 +108,12 @@ test("29b 2026-09-10: a fork whose whole target is visible injects no Raw and ke
   expect(input.material.entries).toEqual([]); // nothing newly supplied, and the whole target still frozen
   expect(input.entryIds.length).toBeGreaterThan(0);
   expect(input.supplied.entries).toEqual([]);
-  expect(input.supplied.factIds).toEqual([1]);
+  expect(input.supplied.factIds).toEqual([]);
+  expect(input.supplied.knowledgeCommitIds).toEqual([]);
 });
 
-test("the Consolidator's fresh order is knowledge, range and pending facts, then receipts — with no review cues or already-consolidated block", async () => {
-  const { s, first } = consolidated();
-  await first;
-  await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
-  const input = calls[1]! as ConsolidationAgentInput;
-  expect(input.text).toBe([knowledgeBlock,
-    "Range: F2..F2", "Range facts:", `[T1] ${time} (selected facts)\n${memory.trace("F2")}`].join("\n\n"));
-  // F1 was consolidated before this task was frozen and is exactly what the removed history block
-  // used to carry; it is still stored, still readable, and no longer supplied.
-  expect(memory.store.listConsolidatedProjectFacts(memory.store.getSession(s.id)!.projectId).map(f => f.id)).toContain(1);
-  expect("facts" in input.material).toBe(false);
-  expect(input.text).not.toContain("Already-consolidated");
-  expect(input.text).not.toContain(memory.trace("F1"));
-});
-
-test("20a for ruling 08:53, as 25b and 29b left it: the Consolidator prepares one text, and it carries the range facts", async () => {
-  const { s, first } = consolidated();
-  await first;
-  await memory.consolidate({ sessionId: s.id, branch: "main" });
-  // 29b: one prepared text per task in both phases; with an empty initial view it is the whole material.
-  const input = calls[1]! as ConsolidationAgentInput;
-  expect(typeof input.text).toBe("string");
-  expect(input.text).toContain("Range: F2..F2");
-  expect(input.text).toContain("Range facts:");
-  expect(input.material.factAddresses).toEqual(["F2"]); // the exact membership stays available to the host
-});
+// 92 “C删掉” retires the C-only fresh Range-facts layout and C factAddresses tests.
+// Shared text layout remains pinned above; exact N membership remains in case 12 below.
 
 test("20a 2026-09-08: the main agent's initial injection is knowledge and receipts only, and compact is knowledge, historical facts, pending Raw, receipts", async () => {
   const { s, t } = seeded();
@@ -157,48 +122,41 @@ test("20a 2026-09-08: the main agent's initial injection is knowledge and receip
     `<episodic>\nRecent facts (by Turn):\n\n[T1] ${time} (selected facts)\n${memory.trace("F1")}\n\nRaw:\n\n${views(s.id, t.id)}\n</episodic>`].join("\n\n"));
 });
 
-test("20a 2026-09-08 scenario 2, retargeted by 25a: two Consolidator tasks with the same knowledge and different pending facts are byte-identical through the knowledge block", async () => {
-  const { s, t, first } = consolidated();
-  await first;
-  await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" }); // F2
+test("20a/92: N tasks with different Raw and facts retain byte-identical Knowledge blocks", () => {
+  const { s, t } = seeded();
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" as const };
+  const earlier = freezeNoting(memory.store, target, memory.config);
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
     .find(tool => tool.name === "note")!.execute({ facts: [{ text: "Still pnpm", source: [`T${t.id}#E1`] }] });
-  await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" }); // F3
-  const [, earlier, later] = calls as ConsolidationAgentInput[];
-  // A byte-layout test, not a provider-cache test: identical selected knowledge renders identically
-  // when only the range and the pending facts change. The Noter is no longer a consumer of this
-  // block at all (25a), so the pin moved to the phase that still leads with one.
-  expect(earlier!.text.startsWith(knowledgeBlock)).toBe(true);
-  expect(later!.text.startsWith(knowledgeBlock)).toBe(true);
-  expect(later!.range.facts.map(f => f.id)).not.toEqual(earlier!.range.facts.map(f => f.id));
-  // The range precedes this task's own facts, with no review-cue block.
-  const order = ["Range: ", "Range facts:"].map(part => later!.text.indexOf(part));
-  expect(order).toEqual([...order].sort((a, b) => a - b));
-  expect(later!.text).not.toContain("Negated-evidence reminder");
-  expect(order[0]).toBeGreaterThan(knowledgeBlock.length - 1);
-  // Nothing task-specific is inside the leading block.
+  memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeLineage: "next", nativeId: "next", role: "user", text: "Next task", raw: "", calls: [] });
+  const later = freezeNoting(memory.store, target, memory.config);
+  expect(earlier.entries.map(entry => entry.id)).not.toEqual(later.entries.map(entry => entry.id));
+  expect(earlier.prepared!.supplied.factIds).not.toEqual(later.prepared!.supplied.factIds);
+  expect(knowledgeBlockOf(earlier.prepared!.material)).toBe(knowledgeBlock);
+  expect(knowledgeBlockOf(later.prepared!.material)).toBe(knowledgeBlock);
+  const text = later.prepared!.text;
+  expect(text.indexOf("Range: ")).toBeLessThan(text.indexOf("<knowledge>"));
+  expect(text.indexOf("</knowledge>")).toBeLessThan(text.indexOf(FACTS_TITLE));
+  expect(text.indexOf(FACTS_TITLE)).toBeLessThan(text.indexOf(RAW_TITLE));
   expect(knowledgeBlock).not.toContain("Range: ");
-  for (const address of later!.material.factAddresses) expect(knowledgeBlock).not.toContain(address);
+  expect(knowledgeBlock).not.toContain("Still pnpm");
+  expect(text).not.toContain("Negated-evidence reminder");
 });
 
-test("20a 2026-09-08 scenario 2: budget receipts follow the dynamic material in both phases", async () => {
+test("20a/92: N facts and Knowledge budget receipts follow the dynamic material", async () => {
   const { s, t } = seeded();
   const raw = views(s.id, t.id);
-  // The Noter has no knowledge block to receipt since 25a, so its budgeted optional material is the
-  // historical facts: a history allowance that holds the bounded omission receipt but not the one
-  // fact. (Receipts never come from an episodic overage — since the review of 2026-09-08 a budget
-  // the mandatory material cannot fit reduces or holds the task instead.)
+  // Facts have an independent window; its omission receipt follows the complete Raw block.
   const factReceipt = "omitted 1 older facts; expand: F1";
-  memory.config.render.episodicBlockTokens = memory.config.noting.batchTokens + charge([factReceipt]) + charge(["Receipts:"]);
+  memory.config.compaction.factsTokens = tokens(compactText({ facts: [], receipts: [factReceipt] }));
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const noting = calls[0]! as NotingAgentInput;
-  expect(noting.material.knowledge).toBeUndefined();
+  expect(knowledgeBlockOf(noting.material)).toBe(knowledgeBlock);
   expect(noting.material.facts).toEqual([]);
   expect(noting.material.receipts).toEqual([factReceipt]);
-  expect(noting.text.endsWith(`Raw:\n\n${raw}\n\nReceipts:\n${factReceipt}`)).toBe(true);
-  memory.config.render.episodicBlockTokens = 20_000;
-  // The Consolidator still leads with knowledge, so its receipt is still the knowledge one. Ticket
-  // 45 retired its tiny synthetic cap; use the minimum database-derived capacity and an oversized item.
+  expect(noting.text.endsWith(`Raw:\n\n${raw}\n</episodic>\n\nReceipts:\n${factReceipt}`)).toBe(true);
+  memory.config.compaction.factsTokens = 10_000;
+  // A legal oversized manual item pressures the same Knowledge selector used by N.
   const receipt = "omitted 2 constraint knowledge; expand: K2, K1";
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [],
@@ -206,11 +164,11 @@ test("20a 2026-09-08 scenario 2: budget receipts follow the dynamic material in 
     category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
   setKnowledgeCapacity(memory, 5_000);
   tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Keep pnpm", source: [`T${t.id}#E1`] }] });
-  await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
-  const consolidation = calls.at(-1)! as ConsolidationAgentInput;
-  expect(consolidation.material.receipts).toEqual([receipt]);
-  expect(consolidation.text.endsWith(`Receipts:\n${receipt}`)).toBe(true);
-  expect(consolidation.text).not.toContain("Negated-evidence reminder");
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const next = calls.at(-1)!;
+  expect(next.material.receipts).toEqual([receipt]);
+  expect(next.text.endsWith(`Receipts:\n${receipt}`)).toBe(true);
+  expect(next.text).not.toContain("Negated-evidence reminder");
 });
 
 // ---------------------------------------------------------------- 20b: the shared material budgets
@@ -278,46 +236,44 @@ function overloaded() {
   return { s, t };
 }
 
-test("25a 2026-09-09: at the default limits the Noter sends history within 10,000 and Raw within 10,000, with no knowledge block at all", async () => {
+test("25a/92: default N material has independent 10k facts and Raw windows plus Knowledge within K", async () => {
   const { s, t } = overloaded();
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const material = calls.at(-1)!.material as NotingAgentInput["material"];
   const factReceipts = material.receipts.filter(r => r.includes(" older facts; expand: "));
   expect(factReceipts).toHaveLength(1); // the history cap really binds
-  expect(material.receipts.some(r => r.includes(" knowledge; expand: "))).toBe(false); // nothing knowledge is budgeted here
-  expect(knowledgeBlockOf(material)).toBe("");
-  expect(calls.at(-1)!.text).not.toContain("<knowledge>");
-  const historyCap = memory.config.render.episodicBlockTokens - memory.config.noting.batchTokens;
+  expect(material.receipts.some(r => r.includes(" knowledge; expand: "))).toBe(false); // the default K fits this fixture
+  expect(knowledgeBlockOf(material)).toContain("<knowledge>");
+  expect(tokens(knowledgeBlockOf(material))).toBeLessThanOrEqual(memory.knowledgeBudgets().injection + memory.config.compaction.sharedAllowanceTokens);
+  const historyCap = memory.config.compaction.factsTokens;
   expect(historyCap).toBe(10_000);
-  expect(charge([FACTS_TITLE, ...material.facts, ...factReceipts])).toBeLessThanOrEqual(historyCap);
-  expect(tokens(material.entries.map(e => e.view).join(BLOCK))).toBeLessThanOrEqual(memory.config.noting.batchTokens);
-  expect(charge([FACTS_TITLE, RAW_TITLE, `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`, ...material.facts, ...factReceipts])
-    + tokens(material.entries.map(e => e.view).join(BLOCK))).toBeLessThanOrEqual(memory.config.render.episodicBlockTokens);
-  expect(tokens(calls.at(-1)!.text)).toBeLessThanOrEqual(20_000);
+  expect(tokens(compactText({ facts: material.facts, receipts: factReceipts }))).toBeLessThanOrEqual(historyCap);
+  const rawReceipts = material.receipts.filter(receipt => !factReceipts.includes(receipt));
+  expect(rawWindowTokens(material.entries.map(e => e.view), rawReceipts)).toBeLessThanOrEqual(memory.config.noting.batchTokens);
+  expect(material.entries.map(entry => entry.id)).toEqual(calls.at(-1)!.entryIds);
 });
 
-test("25a/45: the Consolidator sends knowledge within the database-derived capacity and facts within 10,000", async () => {
+test("45/92: N sends Knowledge within the database-derived cap without borrowing from facts or Raw", async () => {
   const { s, t } = overloaded();
   setKnowledgeCapacity(memory, 10_000);
-  await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
-  const input = calls.at(-1)! as ConsolidationAgentInput;
+  const pending = memory.store.pendingEntryIds(s.id, "main", t.id);
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const input = calls.at(-1)!;
   const material = input.material;
   const knowledgeReceipts = material.receipts.filter(r => r.includes(" knowledge; expand: "));
   expect(knowledgeReceipts.length).toBeGreaterThan(0); // the knowledge cap really binds
   expect(tokens(knowledgeBlockOf(material)) + charge(knowledgeReceipts)).toBeLessThanOrEqual(10_000);
-  // The pending facts and their framing share one allowance; there is no review-cue or
-  // historical-fact block inside it.
-  const rangeText = [`Range: ${input.range.from}..${input.range.to}`, "Range facts:", material.rangeFacts.join("\n")].join(BLOCK);
-  expect(input.text).toContain(rangeText);
-  expect(tokens(rangeText)).toBeLessThanOrEqual(memory.config.consolidation.batchTokens);
-  expect(material.receipts.some(r => r.includes(" older facts; expand: "))).toBe(false);
+  const factReceipts = material.receipts.filter(receipt => receipt.includes(" older facts; expand: "));
+  expect(factReceipts.length).toBeGreaterThan(0);
+  expect(tokens(compactText({ facts: material.facts, receipts: factReceipts }))).toBeLessThanOrEqual(10_000);
   expect(input.text).not.toContain("Already-consolidated");
-  expect(memory.store.consolidationBatch(s.id, "main", t.id).length).toBeGreaterThan(0); // the rest stays pending
+  expect(input.entryIds.length).toBeLessThan(pending.length);
+  expect(memory.store.pendingEntryIds(s.id, "main", t.id)).toEqual(pending); // capture-only run publishes neither layer
 });
 
 // ---- 21b 2026-09-08: the labels ride the one shared knowledge renderer, inside ticket 20's cap ----
 
-test("21b 2026-09-08, narrowed by 25a: the three knowledge consumers render topics through the one renderer, and a multi-topic item appears once", async () => {
+test("21b/92: foreground, compact and N render topics through one renderer, with a multi-topic item once", async () => {
   const { s, t, read } = seeded();
   read("K1@v1");
   const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: tag(1, 1),
@@ -326,16 +282,12 @@ test("21b 2026-09-08, narrowed by 25a: the three knowledge consumers render topi
   const labelled = `<knowledge>\n${KNOWLEDGE_RECENCY_NOTICE}\n[${tag(1, changed.commit)}] [constraint/project] The project uses pnpm\n  change supports: F1 · topics: ["packaging","storage"]\n</knowledge>`;
   expect(memory.inject(s.id)).toBe(labelled);
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(labelled)).toBe(true);
-  // The Noter is the fourth consumer no longer: 25a gives it no knowledge block in either mode.
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
-  expect((calls.at(-1)! as NotingAgentInput).text).not.toContain("topics:");
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ text: "Keep pnpm", source: [`T${t.id}#E1`] }] });
-  await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
-  const consolidation = calls.at(-1)! as ConsolidationAgentInput;
-  expect(consolidation.text.startsWith(labelled)).toBe(true);
-  // Two subjects, one automatic copy: grouping is a read projection, never a second injected line.
-  for (const text of [memory.inject(s.id), consolidation.text]) expect(text.match(new RegExp(`\\[${tag(1, changed.commit)}\\]`, "g"))).toHaveLength(1);
+  const noting = calls.at(-1)!;
+  expect(knowledgeBlockOf(noting.material)).toBe(labelled);
+  // Two subjects, one body in every consumer, not a duplicated line per topic.
+  for (const text of [memory.inject(s.id), compacted(memory.compact(s.id, "main", t.id)), noting.text])
+    expect(text.match(new RegExp(`\\[${tag(1, changed.commit)}\\]`, "g"))).toHaveLength(1);
 });
 
 test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the leading block stays byte-identical across tasks", async () => {
@@ -365,16 +317,15 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   expect(memory.store.knowledgeRevision(changed.commit)!.topics).toEqual(["packaging", "storage"]);
   // Restore enough room for the subject and the explicitly accounted worker trigger.
   setKnowledgeCapacity(memory, 12_000);
-  // Identical selected revisions and topics render the same leading bytes when only the range and the
-  // pending facts change. Pinned on the Consolidator since 25a removed the Noter's knowledge block.
+  // Identical selected revisions and topics retain their bytes when N's preceding facts change.
   const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
     .find(tool => tool.name === "note")!.execute({ facts: [{ text, source: [`T${t.id}#E1`] }] });
   note("Keep pnpm");
-  await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   note("Still pnpm");
-  await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
-  const [first, later] = calls as ConsolidationAgentInput[];
-  expect(later!.range.facts.map(f => f.id)).not.toEqual(first!.range.facts.map(f => f.id));
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const [first, later] = calls;
+  expect(later!.supplied.factIds).not.toEqual(first!.supplied.factIds);
   expect(knowledgeBlockOf(later!.material)).toBe(knowledgeBlockOf(first!.material));
   expect(knowledgeBlockOf(later!.material)).toContain('· topics: ["packaging","storage"]');
 });
@@ -411,15 +362,14 @@ test("25a 2026-09-09: a Noter freeze keeps its history inside the reserved allow
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   for (let i = 0; i < 8; i++) tools.find(tool => tool.name === "note")!
     .execute({ facts: [{ text: `history ${i} ` + "word ".repeat(120), source: [`T${t.id}#E1`] }] });
-  // Nine tenths of the episodic budget is the reserved Raw ceiling; the room left for history is what
-  // this freeze may use, however little of that ceiling this one short batch actually needs.
+  // Independent facts cap: a small Raw batch cannot enlarge it.
   const room = 400;
-  memory.config.render.episodicBlockTokens = memory.config.noting.batchTokens + room;
+  memory.config.compaction.factsTokens = room;
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const material = calls.at(-1)!.material as NotingAgentInput["material"];
   const raw = tokens(material.entries.map(e => e.view).join(BLOCK));
   expect(raw).toBeLessThan(memory.config.noting.batchTokens / 10); // the batch nowhere near its ceiling
-  expect(charge([FACTS_TITLE, ...material.facts, ...material.receipts])).toBeLessThanOrEqual(room + charge([FACTS_TITLE]));
+  expect(tokens(compactText({ facts: material.facts, receipts: material.receipts }))).toBeLessThanOrEqual(room);
   expect(material.facts.length).toBeGreaterThan(0);
   expect(material.receipts.some(r => r.includes(" older facts; expand: "))).toBe(true); // the rest is named, not hidden
 });
@@ -490,7 +440,7 @@ function history(sessionId: number, turnId: number, count: number) {
 /** Case 10. The allowance is set to hold exactly three fact lines. With the newest facts visible, the
  * three the child cannot see fill it — a budget applied first and visibility subtracted afterwards
  * would leave one. Filtering first is also never filling: fewer needed facts make a smaller block. */
-test("29b 2026-09-10 (case 10): visible facts leave the history allowance before it is filled, and the missing ones get all of it", async () => {
+test("29b/92: compact filters retained facts before budgeting; fork N adds no historical supplement", async () => {
   const { s, t } = seeded();
   history(s.id, t.id, 5); // F2..F6 beside the seeded F1
   const facts = memory.store.listSessionFacts(s.id);
@@ -498,13 +448,13 @@ test("29b 2026-09-10 (case 10): visible facts leave the history allowance before
   const turns = memory.store.factTurnTimes(facts);
   // An allowance around three fact lines, so the block is really bound by it.
   const room = charge(budgetFacts(facts, line, Number.MAX_SAFE_INTEGER, turns).recent.slice(0, 3));
-  memory.close();
-  open({ render: { episodicBlockTokens: DEFAULT_CONFIG.noting.batchTokens + room } });
-  const seen = visibleTarget(memory, s.id, "main", t.id);
-  const supplied = async (factIds: number[]) => {
-    await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
-      visible: { ...seen, factIds: new Set(factIds) } });
-    return (calls.at(-1)! as NotingAgentInput).material.facts;
+  memory.config.compaction.factsTokens = room;
+  memory.config.compaction.rawTokens = 0;
+  memory.config.compaction.sharedAllowanceTokens = 0;
+  const supplied = (factIds: number[]) => {
+    const compact = memory.compact(s.id, "main", t.id, { ...noVisibility(), factIds: new Set(factIds) });
+    if ("native" in compact) throw new Error(compact.reason);
+    return compact.material!.facts!;
   };
   // Nothing proven visible: the allowance goes to the newest facts, and it really binds.
   const all = await supplied([]);
@@ -523,6 +473,10 @@ test("29b 2026-09-10 (case 10): visible facts leave the history allowance before
   expect(one).toHaveLength(1);
   expect(one.join("\n")).toContain("[F6]");
   expect(charge(one)).toBeLessThan(charge(older));
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
+    visible: visibleTarget(memory, s.id, "main", t.id) });
+  expect(calls.at(-1)!.material.facts).toEqual([]);
+  expect(calls.at(-1)!.supplied.factIds).toEqual([]);
 });
 
 /** Case 12. The frozen target is the processing target, not the injection: a fork that repeats no Raw
@@ -565,13 +519,12 @@ test("29b 2026-09-10 (case 12): a fork with no newly supplied Raw still commits 
 
 /** Case 13. The empty initial state is not a special path: it produces the whole selected target and
  * the bounded optional material for both phases, and the run sends that text once. */
-test("29b 2026-09-10 (case 13): an empty view and zero inherited cost produce the full material for both phases, sent once", async () => {
-  const { s, t, first } = consolidated();
-  await first;
+test("29b/92 (case 13): fresh N receives one full material dispatch across its two tool rounds", async () => {
+  const { s, t } = seeded();
   calls.length = 0;
   let rounds = 0;
   const worker = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    const input = raw as NotingAgentInput | ConsolidationAgentInput;
+    const input = raw as NotingAgentInput;
     calls.push(input);
     if (input.kind === "noting") {
       // Two tool rounds inside one run: the child keeps its own messages and nothing is resent.
@@ -591,20 +544,17 @@ test("29b 2026-09-10 (case 13): an empty view and zero inherited cost produce th
     expect(noting.supplied.entries.map(e => e.id)).toEqual(noting.entryIds);
     expect(rounds).toBe(2);
     expect(calls).toHaveLength(1); // one prepared material, one dispatch: the second round adds nothing
-    await worker.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
-    const consolidation = calls[1]! as ConsolidationAgentInput;
-    expect(consolidation.material.rangeFacts.join("\n")).toContain(consolidation.material.factAddresses[0]!);
-    expect(consolidation.material.knowledgeNotes).toEqual([]);
-    expect(consolidation.text).toContain("<knowledge>");
-    expect(consolidation.supplied.factIds.length).toBeGreaterThan(0);
-    expect(calls).toHaveLength(2);
+    expect(noting.text).toContain("<knowledge>");
+    expect(noting.supplied.factIds.length).toBeGreaterThan(0);
+    expect(noting.supplied.knowledgeCommitIds).toEqual([1]);
+    expect(worker.store.listRuns(s.id).filter(run => run.kind === "consolidation")).toEqual([]);
   } finally { worker.close(); }
 });
 
 /** Case 15. Knowledge is compared by exact commit: an unchanged visible commit is omitted, a visible
  * predecessor covers nothing, and what happened to a stale inherited commit is said inside the same
  * knowledge allowance rather than in an unbounded block of its own. */
-test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and stale inherited commits are explained inside its allowance", async () => {
+test("29b/92: foreground Knowledge is an exact-version delta with stale state notices inside its allowance", async () => {
   const { s, t } = seeded();
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   tools[0]!.execute({ address: "K1@v1" });
@@ -615,33 +565,27 @@ test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and sta
   const current = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!.revision.id;
   expect(current).toBe(changed.commit);
 
-  const freeze = (commits: number[], config = memory.config) => freezeConsolidation(memory.store,
-    { sessionId: s.id, branch: "main", mode: "fork", effectiveMode: "fork",
-      visible: { raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(commits), injection: false, suppliedGeneration: 0 } }, config);
-  // The visible predecessor covers nothing: the current commit is supplied and its predecessor named.
-  const stale = freeze([1]);
-  expect(stale.prepared!.material.knowledge.map(g => g.text).join("\n")).toContain(`[${tag(1, current)}]`);
-  expect(stale.prepared!.material.knowledgeNotes).toEqual(["K1@v1 is superseded by K1@v2 above"]);
-  expect(stale.prepared!.text).toContain("Inherited knowledge status");
-  expect(stale.prepared!.supplied.knowledgeCommitIds).toEqual([current]);
-  // The same commit, unchanged and visible: omitted, with nothing to explain.
-  const unchanged = freeze([current]);
-  expect(unchanged.prepared!.material.knowledge.map(g => g.text).join("")).toBe("");
-  expect(unchanged.prepared!.material.knowledgeNotes).toEqual([]);
-  expect(unchanged.prepared!.text).not.toContain("Inherited knowledge status");
-  expect(unchanged.prepared!.supplied.knowledgeCommitIds).toEqual([]);
-  // An archived revision is not current authority, and the status says so where the block cannot.
+  // Knowledge publication belongs to the foreground, not to the retired C fork.
+  const delivery = (commits: number[]) => memory.injection({ sessionId: s.id, branch: "main", headTurnId: t.id },
+    { ...noVisibility(), knowledgeCommitIds: new Set(commits), knowledgeTokens: 0 });
+  const stale = delivery([1]);
+  expect(stale.text).toContain(`[${tag(1, current)}]`);
+  expect(stale.text).toContain("K1@v1 is superseded by K1@v2");
+  expect(stale.text).toContain("Inherited knowledge status");
+  expect(stale.knowledgeCommitIds).toEqual([current]);
+  const unchanged = delivery([current]);
+  expect(unchanged.text).toBe("");
+  expect(unchanged.knowledgeCommitIds).toEqual([]);
   tools[0]!.execute({ address: tag(1, current) });
   await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "archive", id: tag(1, current),
     reason: "Withdrawn by the user.", supports: ["F1"] }, tag(1, current));
-  expect(freeze([current]).prepared!.material.knowledgeNotes).toEqual(["K1@v2 is archived"]);
-  // Ticket 45 keeps 29b's status reservation inside the frozen database-derived allowance.
-  const note = "K1@v2 is archived";
   setKnowledgeCapacity(memory, 5_000);
-  const squeezed = freeze([current]);
-  expect(squeezed.knowledgeCapacity).toBe(5_000);
-  expect(squeezed.prepared!.material.knowledgeNotes).toEqual([note]);
-  expect(squeezed.prepared!.material.knowledge.map(g => g.text).join("")).toBe("");
+  const squeezed = delivery([current]);
+  expect(squeezed.text).toContain("K1@v2 is archived");
+  expect(squeezed.text).not.toContain("<knowledge>");
+  expect(squeezed.knowledgeCommitIds).toEqual([]);
+  expect(tokens(squeezed.text)).toBeLessThanOrEqual(5_000);
+  expect(squeezed.knowledgeTokens).toBe(tokens(squeezed.text));
 });
 
 test("64c: recency uses commit order across categories, not identity, timestamp or input order", () => {
@@ -665,7 +609,7 @@ test("64c: recency uses commit order across categories, not identity, timestamp 
   expect(selected.cost).toBeLessThanOrEqual(cap);
 });
 
-test("64c: foreground and Consolidator keep the same newer items and receipt omitted older knowledge", () => {
+test("64c/92: foreground and fresh N keep the same newer items and receipt omitted older knowledge", () => {
   const { s, t } = seeded();
   const write = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!;
   const receipt = JSON.parse(write.execute({ operations: ["constraint", "understanding", "reference"].map(category => ({
@@ -677,7 +621,7 @@ test("64c: foreground and Consolidator keep the same newer items and receipt omi
   setKnowledgeCapacity(memory, 5_000);
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const injected = memory.injection(target);
-  const frozen = freezeConsolidation(memory.store, target, memory.config);
+  const frozen = freezeNoting(memory.store, { ...target, mode: "subagent" }, memory.config);
   expect(injected.knowledgeCommitIds).toEqual(commits.slice(1));
   expect(frozen.prepared!.supplied.knowledgeCommitIds).toEqual(injected.knowledgeCommitIds);
   for (const text of [injected.text, frozen.prepared!.text]) {
@@ -776,37 +720,6 @@ test("45: inherited status competes with active bodies and omission receipt floo
     current: "", framing: [], caps: { knowledge: 1, episodic: 1 } })).toThrow(/inherited status omission receipt alone.*tiny status cap/);
 });
 
-/** Case 14. The Consolidator's processing target is the whole pending prefix, whether or not the
- * child can already read a fact; what is newly supplied is only the bodies it cannot. A fact address
- * is not a fact body, so the missing ones are injected whole, and this phase still receives no
- * automatic Raw block and no already-consolidated history block (25a). */
-test("29e 2026-09-10 (case 14): a Consolidation fork's target is the union; only the missing fact bodies are injected", () => {
-  const { s, t } = seeded();
-  const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [{ text, source: [`T${t.id}#E1`] }] });
-  note("ALPHA the inherited claim");
-  note("BETA the missing claim");
-  const pending = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
-  expect(pending).toHaveLength(3); // `seeded`'s F1 (committed knowledge does not consolidate it) and the two above
-  const frozen = freezeConsolidation(memory.store, { sessionId: s.id, branch: "main", mode: "fork", effectiveMode: "fork",
-    visible: { raw: new Map(), factIds: new Set(pending.slice(0, 2)), knowledgeCommitIds: new Set(), injection: false, suppliedGeneration: 0 } }, memory.config);
-  const prepared = frozen.prepared!;
-  // The exact target is the union: both facts are integrated and both are addressed.
-  expect(frozen.rangeFacts.map(f => f.id)).toEqual(pending);
-  expect(prepared.material.factAddresses).toEqual(pending.map(id => `F${id}`));
-  expect([prepared.range.from, prepared.range.to]).toEqual([`F${pending[0]}`, `F${pending.at(-1)}`]);
-  // Only the missing one is a body, and it is the complete one — an address is not evidence.
-  expect(prepared.supplied.factIds).toEqual([pending[2]!]);
-  expect(prepared.text).toContain("BETA the missing claim");
-  expect(prepared.text).not.toContain("ALPHA the inherited claim");
-  // No automatic Raw, and no already-consolidated history block: F1 is neither supplied nor rendered.
-  expect(prepared.supplied.entries).toEqual([]);
-  expect(prepared.text).not.toContain(RAW_TITLE);
-  expect(prepared.text).not.toContain(FACTS_TITLE);
-  expect(prepared.text).not.toContain("Use pnpm");
-  // A fresh child of the same freeze receives both bodies: the subtraction is the view's, not the task's.
-  const fresh = freezeConsolidation(memory.store, { sessionId: s.id, branch: "main", mode: "subagent" }, memory.config);
-  expect(fresh.rangeFacts.map(f => f.id)).toEqual(pending);
-  expect(fresh.prepared!.supplied.factIds).toEqual(pending);
-  expect(fresh.prepared!.text).toContain("ALPHA the inherited claim");
-});
+// 92 “C删掉” retires case 14's fact-queue/fork subtraction contract.
+// N's full frozen processing target versus supplied Raw is tested by case 12;
+// its no-facts supplement and compact's filter-before-budget rule remain above.
