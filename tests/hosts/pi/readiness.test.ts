@@ -156,14 +156,33 @@ test("19c 2026-09-08: a checkpoint with an unanswered tool call defers the launc
   } finally { await f.dispose(); }
 }, 20000);
 
-test("19c 2026-09-08: a tree switch before the launch does not substitute the new branch's history for the waiting task", async () => {
+test("19c controlled boundaries: a tree switch never retargets a waiting task after a failed stable-parent run", async () => {
   const f = await fixture();
   try {
     f.script(body => !worker(body) ? say("好的。")
       : toolResults(body) ? say("Done.") : say("Nothing to note."));
     await f.turn();
     await vi.waitFor(() => expect(notingRuns(f.h)).toHaveLength(1), { timeout: 5000 });
-    const beforeSwitch = f.h.memory.store.listRuns(1)[0]!.branch;
+    const first = f.h.memory.store.listRuns(1)[0]!;
+    expect(first.outcome).toBe("failure");
+    expect(JSON.parse(first.response!).problems.join(" ")).toContain("explicitly call both note");
+    const beforeSwitch = first.branch;
+    const store = f.h.memory.store, head = store.listTurns(1).at(-1)!.id;
+    const pendingBeforeSettle = store.pendingEntries(1, "main", head).map(entry => entry.id);
+    const executions = store.db.prepare("SELECT id,outcome FROM task_executions ORDER BY id").all();
+    const requestsBeforeSettle = f.sent.length;
+    // Persist the independent foreground boundary before testing navigation. It must not retry
+    // the deliberately failed N, start D, or consume the evidence the failed task left pending.
+    await f.h.emit("agent_settled");
+    await f.h.drain();
+    expect(store.listRuns(1).map(run => run.id)).toEqual([first.id]);
+    expect(store.db.prepare("SELECT id,outcome FROM task_executions ORDER BY id").all()).toEqual(executions);
+    expect(store.pendingEntries(1, "main", head).map(entry => entry.id)).toEqual(pendingBeforeSettle);
+    expect(f.sent).toHaveLength(requestsBeforeSettle);
+    const saved = f.manager().getEntries().filter(e => e.type === "custom" && e.customType === "trace-memory").at(-1);
+    if (saved?.type !== "custom") throw new Error("missing settled binding");
+    expect(saved.data).toMatchObject({ sessionId: 1 });
+    expect(store.db.prepare("SELECT id FROM sessions WHERE host = ?").all(`pi:${f.manager().getSessionId()}`)).toEqual([{ id: 1 }]);
     // Due work whose checkpoint is not a safe boundary yet: it waits.
     f.manager().appendMessage({ role: "user", content: long, timestamp: 1 } as never);
     const waiting = f.manager().appendMessage({ role: "assistant", api: "openai-completions", provider: "fake", model: "test", stopReason: "toolUse",
@@ -182,6 +201,8 @@ test("19c 2026-09-08: a tree switch before the launch does not substitute the ne
     f.manager().appendMessage({ ...reply("a different answer"), timestamp: 1 } as never);
     await f.h.emit("message_start", { message: reply("") });
     const second = await vi.waitFor(() => { const runs = notingRuns(f.h); expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
+    expect(store.db.prepare("SELECT id FROM sessions WHERE host = ?").all(`pi:${f.manager().getSessionId()}`)).toEqual([{ id: 1 }]);
+    expect(store.getRun(first.id)!.outcome).toBe("failure");
     expect(second.branch).not.toBe(beforeSwitch); // a different memory branch: not the waiting task
     expect(second.mode).toBe("subagent"); // no capture for this branch, so no inherited context
     const response = JSON.parse(second.response!);
