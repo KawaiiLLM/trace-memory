@@ -13,8 +13,7 @@ import { DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, visibleTarget, ca
 import * as api from "../../source-fixture.ts";
 import { tokens, hydrate } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
-import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
-import { consolidationToolDefinitions, dreamingToolDefinitions } from "../../../src/core/api/tools.ts";
+import { dreamingToolDefinitions } from "../../../src/core/api/tools.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
@@ -101,7 +100,7 @@ test("2026-09-24, 86: 'catchup 选A' and '任务失败后不检查' — retry th
     attempts++;
     expect(task.kind).toBe("noting");
     if (attempts === 1) return { outcome: "failure", request: { fake: true }, output: "first attempt failed" };
-    expect(checks.mock.calls.map(([phase]) => phase)).toEqual(["consolidation", "dreaming"]);
+    expect(checks.mock.calls.map(([phase]) => phase)).toEqual(["dreaming"]);
     expect(retryMemory.store.taskFailures(target.sessionId).some(row => row.count === 1)).toBe(true);
     task.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
     task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
@@ -115,7 +114,7 @@ test("2026-09-24, 86: 'catchup 选A' and '任务失败后不检查' — retry th
   const ids = retryMemory.store.pendingEntryIds(session.id, "main", turn.id);
   const checks = vi.spyOn(retryMemory, "taskEligibility");
   const worker = resolveCcHostConfig({ dbPath: join(directory, "unused.sqlite"), stateDir: directory,
-    notingModel: "synthetic", notingThinking: "medium", consolidationModel: "synthetic", consolidationThinking: "medium",
+    notingModel: "synthetic", notingThinking: "medium",
     "dreaming.model": "synthetic", "dreaming.thinking": "medium",
     worker: { cwd: directory, claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } }).worker;
   const scheduler = new CcTaskScheduler(retryMemory, worker, () => {});
@@ -233,7 +232,8 @@ test("20a 2026-09-08: core owns the host-neutral domain text and still builds no
   const input = calls[0]!;
   // Domain text, from core, in core's own order — instructions stay their own field, not a system message.
   expect(input.text).toContain(input.material.entries[0]!.view);
-  expect(input.text.startsWith("Recent facts (by Turn):")).toBe(true); // 25a: no leading knowledge block
+  expect(input.text).toContain("The project uses pnpm"); // 92 §6: a seeded, visible knowledge body is actually supplied
+  expect(input.text).toContain(memory.inject(s.id).split("\n\nReceipts:")[0]!);
   expect(input.prompt).toContain("Noting (facts and knowledge)");
   expect(input.text).not.toContain(input.prompt);
   // What core still does not build: a message sequence, a system slot, a provider body.
@@ -269,30 +269,24 @@ test("20a 2026-09-08: the full text and the inherited increment come from one fr
   expect(fresh!.text).not.toContain(fork!.text);
 });
 
-// Ticket 20 "Stable prefix": keep task ranges, entry ids belonging only to the new batch, timestamps,
-// run ids and omission counts out of the leading knowledge block. A byte-layout rule, not a cache claim.
-// 25a supersedes this ruling's "all four consumers" for the Noter: it renders no knowledge block in
-// either mode, so the identical-block pin covers the three consumers that still carry one, and the
-// Noter is pinned to carry none.
-test("20a 2026-09-08, narrowed by 25a: nothing task-specific enters the leading knowledge block, and the three knowledge consumers render it identically", async () => {
+// 92 §6 supersedes 25a's N exclusion: one seeded Knowledge body uses the same leading renderer
+// for foreground injection, compact and fresh N; target-specific framing stays outside that block.
+test("20a/92: fresh N shares the leading Knowledge block without copying task framing into it", async () => {
   const { s, t } = session();
   seededKnowledge(s.id, t.id);
+  const block = memory.inject(s.id);
+  expect(block).toContain("The project uses pnpm");
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
-  expect(calls[0]!.text).not.toContain("<knowledge>"); // the fourth consumer no longer
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ text: "Keep pnpm", source: [`T${t.id}#E1`] }] });
-  await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
-  const consolidation = calls.at(-1)! as unknown as import("../../../src/core/api/index.ts").ConsolidationAgentInput;
-  const block = consolidation.text.split("\n\nRange: ")[0]!;
-  expect(block).toBe(memory.inject(s.id)); // the initial injection and the Consolidator share one block
+  const input = calls[0]!;
+  expect(input.text).toContain(block);
+  expect(input.text).toContain(`Range: ${input.range.from}..${input.range.to}`);
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(`${block}\n\n<episodic>`)).toBe(true);
   expect(block).not.toContain("Range: ");
-  expect(block).not.toContain(`Range: ${consolidation.range.from}..${consolidation.range.to}`);
   expect(block).not.toContain("[entry ");
   expect(block).not.toContain("omitted");
-  for (const line of consolidation.material.rangeFacts) expect(block).not.toContain(line); // no copy of this task's own facts
-  expect(block).not.toMatch(/\bR\d+\b/); // no run id
-  expect(block).not.toContain(memory.store.getTurn(t.id)!.startedAt); // no timestamp of this task
+  for (const line of input.material.facts) expect(block).not.toContain(line);
+  expect(block).not.toMatch(/\bR\d+\b/);
+  expect(block).not.toContain(memory.store.getTurn(t.id)!.startedAt);
 });
 
 test("09:43: trace accepts both T<n> and S<n>/T<n>; a mismatched session does not resolve", () => {
@@ -386,7 +380,6 @@ function memoryWriter() {
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: entries.at(-1)!.id };
   const tools = memory.tools({ kind: "manual", ...path, currentTurnId: t.id });
   expect(tools[2]!.execute({ facts: ["Use pnpm", "Do not use npm"].map(text => ({ text, source: [`T${t.id}#E1`] })) })).not.toContain("rejected:");
-  recorded(memory, s.id, "main", t.id); // recorded: the facts may enter a Consolidation batch
   const create = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
   const write = (operations: any[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] }));
   return { s, t, path, tools, write, create };
@@ -420,6 +413,29 @@ test("2026-09-24, 85: '余量只有一点，几乎必然导致每次C都会触�
   expect(memory.store.admitKnowledgePool(path, memory.executorId, false, undefined, 5_000).outcome).toBe("empty");
   memory.setKnowledgeBudget("project", projected.pending[0]!.tokens);
   expect(memory.store.duePools(path, 5_000)).toContainEqual(expect.objectContaining({ pool: projectPool }));
+});
+
+test("92 §§6–8: a D range excludes a later version from this run's material and processing", async () => {
+  const { path, write, create } = memoryWriter();
+  const trigger = createDreamerTrigger(memory, path, 1, 1);
+  const pool = `project:${memory.store.getSession(path.sessionId)!.projectId}`;
+  let lateCommit = 0;
+  const result = await admittedScenarios.run(memory, path, input => {
+    input.acknowledgeRequest();
+    const frozen = suppliedHandles(input.material.changed);
+    expect(frozen).toContain(history(trigger.knowledgeId, trigger.commit));
+    const late = write([{ ...create, text: "Later knowledge that did not exist at D admission" }]).committed[0];
+    lateCommit = commitOf(late);
+    expect(input.material.changed).not.toContain("Later knowledge that did not exist at D admission");
+    expect(frozen).not.toContain(history(late.knowledgeId, lateCommit));
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      skipped: frozen.map(knowledge => ({ knowledge, because: "Reviewed only frozen versions" })) })).toContain("committed");
+    return ok([]);
+  });
+  expect(result.outcome).toBe("success");
+  expect(memory.store.getClaim(path.sessionId, "dreaming")).toBeNull();
+  expect(memory.store.openDreamingRange(path.sessionId, path.branch)).toBeNull();
+  expect(memory.store.pendingVersions(pool, path).map(item => item.revisionId)).toContain(lateCommit);
 });
 
 test("2026-09-07: one operation shape, inapplicable fields rejected", () => {
@@ -502,29 +518,37 @@ test("2026-09-07: merge atomic", async () => {
   expect(memory.trace(`K${second.knowledgeId}`)).toContain(`K${first.knowledgeId}@${mergeCommit}`);
 });
 
-test("2026-09-07: the first valid submission commits after an invalid batch", async () => {
-  const { create, s } = memoryWriter(); memory.close();
+
+
+test.each(["success", "failure"] as const)("92: invalid knowledge slot is corrected but terminal %s decides joint publication and preserves audit", async outcome => {
+  const { s, t } = session(); memory.close();
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    const input = raw as import("../../../src/core/api/index.ts").ConsolidationAgentInput;
-    const batch = { operations: [create], skipped: [{ fact: "F2", because: "Already expressed." }] };
+    const input = raw as NotingAgentInput;
+    const note = input.tools.find(tool => tool.name === "note")!;
+    const tool = input.tools.find(tool => tool.name === "memory")!;
     input.reportRequest({ messages: ["invalid"] });
-    const tool = input.tools[3]!;
-    expect(tool.execute({ operations: [{ ...create, id: "K1" }], skipped: [] })).toContain("rejected:");
-    expect(memory.store.getKnowledge(1)).toBeNull();
-    expect(memory.store.listConsolidatedFacts(1)).toEqual([]);
+    expect(note.execute({ facts: [{ text: "The user chose pnpm", source: [`T${t.id}#E1`] }] })).toContain("held: $1");
+    const create = { op: "create", topics: [], reason: "User choice", text: "Use pnpm", category: "constraint", scope: "project", supports: ["$1"] };
+    expect(tool.execute({ operations: [{ ...create, id: "K1" }], skipped: [] })).toContain("rejected: M1");
+    expect(memory.store.listSessionFacts(s.id)).toEqual([]);
+    expect(memory.store.currentKnowledge()).toEqual([]);
     input.reportRequest({ messages: ["corrected"] });
-    expect(JSON.parse(tool.execute(batch)).committed).toHaveLength(1);
-    expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
-    expect(memory.store.consolidatedOnPath(2, memory.store.knowledgePath(s.id, "main"))).toBe(true);
-    expect(tool.execute(batch)).toContain("already committed");
-    return { outcome: "failure", output: "provider failed after commit", request: { messages: ["last"] } };
+    expect(tool.execute({ operations: [{ ...create, slot: "M1" }], skipped: [] })).toContain("held: M1");
+    expect(JSON.parse(tool.execute({ operations: [], skipped: [] })).held).toContain("M1");
+    return { outcome, output: outcome === "failure" ? "provider failed after correction" : "completed", request: { messages: ["last"] } };
   });
-  const result = await memory.consolidate({ sessionId: s.id, branch: "main" });
-  if (result.outcome !== "success") throw new Error("committed run must stay successful");
+  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  expect(result.outcome).toBe(outcome);
+  if (!("runId" in result) || result.runId === undefined) throw new Error("missing run audit");
   const run = memory.store.getRun(result.runId)!;
-  expect(run.outcome).toBe("success"); expect(JSON.parse(run.request!)).toEqual({ messages: ["last"] });
-  expect(JSON.parse(run.response!).problems).toEqual(["provider failed after commit"]);
-  expect(JSON.parse(run.response!).toolCalls).toHaveLength(3);
+  expect(run.outcome).toBe(outcome);
+  expect(JSON.parse(run.request!)).toEqual({ messages: ["last"] });
+  const audit = JSON.parse(run.response!);
+  expect(audit.toolCalls).toHaveLength(4); // note plus three memory calls, including rejection and correction
+  expect(audit.toolCalls.map((call: { result: string }) => call.result)).toEqual(expect.arrayContaining([expect.stringContaining("rejected: M1"), expect.stringContaining("held: M1")]));
+  expect(memory.store.listSessionFacts(s.id).map(fact => fact.text)).toEqual(outcome === "success" ? ["The user chose pnpm"] : []);
+  expect(memory.store.currentKnowledge().map(item => item.revision.text)).toEqual(outcome === "success" ? ["Use pnpm"] : []);
+  expect(memory.store.sourcePath(s.id, "main", t.id).every(entry => memory.store.entryNoted(entry.id))).toBe(outcome === "success");
 });
 
 
@@ -718,15 +742,10 @@ test.skip("footer progress retains total current-tip semantics while exposing it
   const counted = memory.progress(third.sessionId, third.branch, third.headTurnId);
   expect(counted).toMatchObject({ knowledge: 2, changedKnowledge: 2 });
   expect(counted.knowledge).toBe(memory.store.currentKnowledge({ sessionId: third.sessionId, headTurnId: third.headTurnId, branch: third.branch }).length);
-  // This peer wrote one fact and consolidated nothing, so every applicable fact is still pending.
-  expect(counted).toMatchObject({ facts: 1, unconsolidated: 1 });
+  expect(counted).toMatchObject({ facts: 1 });
   expect(counted.entries).toBe(hydrate(memory.pendingEntries(third.sessionId, third.branch, third.headTurnId), memory.store).length);
-  const consolidated = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: third.sessionId, branch: third.branch, createdAt: time },
-    operations: [], consolidated: [Number(third.fact.slice(1))] });
-  expect(consolidated.ok).toBe(true);
   const after = memory.progress(third.sessionId, third.branch, third.headTurnId);
-  expect(after).toMatchObject({ facts: 1, unconsolidated: 0, knowledge: 2, changedKnowledge: 2 }); // fact queue empties; Knowledge is unchanged
-  expect(after.unconsolidated).toBe(memory.store.consolidationBatch(third.sessionId, third.branch, third.headTurnId).length);
+  expect(after).toMatchObject({ facts: 1, knowledge: 2, changedKnowledge: 2 });
   // The root path sees one tip of the same identity: the count follows the path, not the knowledge row.
   expect(memory.progress(1, "main", 1).knowledge).toBe(1);
 });
@@ -1528,10 +1547,8 @@ test("73: three windows plus the shared allowance — pending material first, tr
   // Padding gives the two items the tight-window case below must drop a size it can reliably
   // exclude, while the substrings the assertions look for stay intact.
   const pad = "word ".repeat(500);
-  const history = write(`CONSOLIDATED HISTORY ${pad}`);
-  memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "consolidation", createdAt: time },
-    operations: [], consolidated: [history] });
-  const pending = write("PENDING FACT");
+  write(`OLDER FACT ${pad}`);
+  write("RECENT FACT");
   const extracted = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "done", turnId: t.id, role: "assistant", text: `EXTRACTED RAW ${pad}`, raw: "", calls: [] });
   expect(memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
     facts: [], entryIds: hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).map(e => e.id) }).ok).toBe(true);
@@ -1542,8 +1559,8 @@ test("73: three windows plus the shared allowance — pending material first, tr
   const text = compacted(full), windows = charged(full);
   expect(windows.envelope).toBe(50_000);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
-  expect(text).toContain("CONSOLIDATED HISTORY"); // manual write has no frozen source set to prove completeness
-  for (const marker of ["PENDING FACT", "PENDING RAW", "EXTRACTED RAW"]) expect(text).toContain(marker);
+  expect(text).toContain("OLDER FACT"); // manual write has no frozen source set to prove completeness
+  for (const marker of ["RECENT FACT", "PENDING RAW", "EXTRACTED RAW"]) expect(text).toContain(marker);
   // The Noter's envelope is not compact's: moving it changes not one byte here.
   memory.config.render.episodicBlockTokens = 40;
   expect(compacted(memory.compact(s.id, "main", t.id))).toBe(text);
@@ -1553,8 +1570,8 @@ test("73: three windows plus the shared allowance — pending material first, tr
   // newest pending material (short, unpadded) is untouched.
   compactionWindows(Math.max(1, windows.knowledge), 150, 150);
   const required = compacted(memory.compact(s.id, "main", t.id));
-  expect(required).toContain("PENDING FACT"); expect(required).toContain("PENDING RAW");
-  expect(required).not.toContain("CONSOLIDATED HISTORY"); expect(required).not.toContain("EXTRACTED RAW");
+  expect(required).toContain("RECENT FACT"); expect(required).toContain("PENDING RAW");
+  expect(required).not.toContain("OLDER FACT"); expect(required).not.toContain("EXTRACTED RAW");
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
   expect(memory.store.entryNoted(extracted.id)).toBe(true); // no processing was reset by any of it
 
@@ -1564,45 +1581,38 @@ test("73: three windows plus the shared allowance — pending material first, tr
   const squeezed = memory.compact(s.id, "main", t.id);
   expect("native" in squeezed).toBe(false);
   if ("native" in squeezed) throw new Error("unreachable");
-  expect(compacted(squeezed)).not.toContain("PENDING FACT");
+  expect(compacted(squeezed)).not.toContain("RECENT FACT");
   expect(compacted(squeezed)).not.toContain("PENDING RAW");
-  expect(squeezed.truncated?.facts?.count).toBe(1);
+  expect(squeezed.truncated?.facts?.count).toBeUndefined(); // 92 §6: retired C pending warning is gone
   expect(squeezed.truncated?.raw?.entries).toBe(1);
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
   expect(calls).toHaveLength(0);
   defaultWindows();
 });
 
-test("45: Consolidator capacity is the frozen database policy and the retired config key is rejected", () => {
-  const { s, t } = session();
-  const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: t.id, branch: "main" });
-  expect(tools[2]!.execute({ facts: [{ text: "Evidence", source: [`T${t.id}#E1`] }] })).toContain("ok: F1");
-  for (let i = 0; i < 12; i++) expect(tools[3]!.execute({ operations: [{ op: "create", topics: [],
-    reason: "Durable rule", text: `Rule ${i}: ` + "word ".repeat(1_500), category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain("committed");
+// 92 §8 replaces C's database-derived capacity with D's K window; the old C-only
+// knowledgeTokens override is retired, not mapped onto either N or D.
+test("45/92: D freezes the database-owned K capacity; later Settings edits cannot reprice an admitted run", async () => {
+  const { path } = memoryWriter();
+  createDreamerTrigger(memory, path, 1, 1);
   for (const override of [{ render: { knowledgeBlockTokens: 10_000 } }, { consolidation: { knowledgeTokens: 10_000 } }])
     expect(() => api.validateConfig(override as never)).toThrow(/Removed setting .*knowledge.*Tokens/);
-  expect(memory.config.consolidation).not.toHaveProperty("knowledgeTokens");
-  const input = { sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" as const };
-
+  expect(Object.hasOwn(memory.config, "consolidation")).toBe(false);
   setKnowledgeCapacity(memory, 10_000);
-  const admitted = freezeConsolidation(memory.store, input, memory.config);
-  expect(admitted.knowledgeCapacity).toBe(10_000);
-  expect(admitted.prepared!.material.receipts.join("\n")).toContain("knowledge; expand:");
-  expect(tokens(admitted.prepared!.text)).toBeGreaterThan(0);
-
-  setKnowledgeCapacity(memory, 20_000);
-  const enlarged = freezeConsolidation(memory.store, input, memory.config);
-  expect(enlarged.knowledgeCapacity).toBe(20_000);
-  expect(enlarged.prepared!.supplied.knowledgeCommitIds.length).toBeGreaterThan(admitted.prepared!.supplied.knowledgeCommitIds.length);
-  // The earlier task owns its already-rendered policy snapshot; a later Settings edit cannot mutate it.
-  expect(admitted.knowledgeCapacity).toBe(10_000);
-  expect(admitted.prepared!.material.receipts.join("\n")).toContain("knowledge; expand:");
-
-  setKnowledgeCapacity(memory, 5_000); // explicit smaller base; no hidden fixed allowance
-  const smaller = freezeConsolidation(memory.store, input, memory.config);
-  expect(memory.knowledgeBudgets()).toMatchObject({ global: 0, project: 0, session: 0, injection: 0 });
-  expect(smaller.knowledgeCapacity).toBe(5_000);
-  expect(smaller.prepared!.supplied.knowledgeCommitIds.length).toBeLessThan(admitted.prepared!.supplied.knowledgeCommitIds.length);
+  let frozenCap = 0, frozenMaterial = "";
+  const result = await admittedScenarios.run(memory, path, task => {
+    frozenCap = task.admittedProcessedInputCap + tokens(task.material.changed) + 1;
+    frozenMaterial = task.text;
+    expect(frozenCap).toBe(10_000);
+    expect(tokens([task.material.processed, task.material.changed].join("\n\n"))).toBeLessThanOrEqual(frozenCap);
+    setKnowledgeCapacity(memory, 20_000);
+    expect(task.admittedProcessedInputCap + tokens(task.material.changed) + 1).toBe(10_000);
+    expect(task.text).toBe(frozenMaterial);
+    return { outcome: "failure", output: "retain the pending range", request: { fake: true } };
+  });
+  expect(result.outcome).toBe("failure");
+  expect(frozenCap).toBe(10_000);
+  expect(memory.config.compaction.sharedAllowanceTokens).toBe(20_000);
 });
 
 // ---- 20c 2026-09-08: the compaction rule is superseded, recorded here by its own name ----
@@ -1668,7 +1678,7 @@ test("30: one Raw entry view — C and R are independent, E binds the whole entr
   }
   // Asymmetric budgets: what the other side does not use never enlarges this one.
   for (const [c, r] of [[50, 100], [100, 50], [1_000, 100], [100, 1_000]] as const) {
-    const p = profile(100_000, c, r);
+    const p = profile(2_000, c, r);
     expect([c, r, size("assistant", p) <= c && size("assistant", p) > c - 5]).toEqual([c, r, true]);
     expect([c, r, size("toolResult", p) <= r && size("toolResult", p) > r - 5]).toEqual([c, r, true]);
   }
@@ -1699,12 +1709,12 @@ test("30: the shipped profile is 2,000/100/100 and the retired B and secondary k
     expect(() => open({ [key]: 100 })).toThrow(`Removed setting render.${key}`);
   }
   // An explicitly configured `E` is honoured as written: nothing is halved, ignored or rewritten.
-  const explicit = open({ entryTokens: 10_000 });
-  try { expect(explicit.config.render.entryTokens).toBe(10_000); } finally { explicit.close(); }
+  expect(() => open({ entryTokens: 2_001 })).toThrow("Invalid render.entryTokens: at most 2000");
+  const explicit = open({ entryTokens: 2_000 });
+  try { expect(explicit.config.render.entryTokens).toBe(2_000); } finally { explicit.close(); }
   // 30 (GPT ruling 2026-09-10): the smaller views change no phase limit. The trigger, the batch
   // ceilings and target limits keep their values. 92 removes only lexical review here.
   expect(DEFAULT_CONFIG.noting).toEqual({ forkModeDefault: false, batchTokens: 10_000, triggerTokens: 10_000, maxToolRounds: 0 });
-  expect(DEFAULT_CONFIG.consolidation).toMatchObject({ triggerTokens: 5_000, batchTokens: 10_000 });
   for (const retired of [0, 1, -0.001, 1.001, Infinity, Number.NaN])
     expect(() => api.validateConfig({ noting: { nearThreshold: retired } } as never)).toThrow("Removed setting noting.nearThreshold");
 });
@@ -1775,9 +1785,9 @@ test("30: a marked compressed view is visible Raw; a budget change adds no richn
   ])], binding);
   expect([...view.raw.keys()].sort()).toEqual(["e1", "e2", "e3"]);
   expect([...new Set(view.raw.values())]).toEqual(["view"]);
-  // No richness gate: the same carrier counts under a much tighter and a much wider profile, because
+  // No richness gate: the same carrier counts under two legal profiles, because
   // nothing compares what it holds with what the current configuration would render.
-  for (const render of [{ entryTokens: 40, toolInputTokens: 1, toolResultTokens: 1 }, { entryTokens: 100_000, toolInputTokens: 1_000, toolResultTokens: 1_000 }]) {
+  for (const render of [{ entryTokens: 40, toolInputTokens: 1, toolResultTokens: 1 }, { entryTokens: 2_000, toolInputTokens: 1_000, toolResultTokens: 1_000 }]) {
     const m = sourceSeededMemory(join(directory, "richness.sqlite"), async () => ok([]), { render });
     try { expect([...visibleView([carrier([{ id: 1, nativeId: "e1", view: "bounded" }])], binding).raw.keys()]).toEqual(["e1"]); }
     finally { m.close(); }
@@ -1791,20 +1801,9 @@ test("30: a marked compressed view is visible Raw; a budget change adds no richn
   expect(visibleView([{ id: "c", type: "compaction", details: { readFiles: [], modifiedFiles: [] } }], binding).raw.size).toBe(0);
 });
 
-// 17b, 2026-09-08: "Consolidation triggers at fifty applicable unconsolidated committed facts" with
-// no batch ceiling. Superseded by ticket 20 on 2026-09-08: 5,000 rendered fact tokens trigger it and
-// one batch takes at most 10,000 of the same rendered representation.
-test("20b 2026-09-08: 17b's fifty-fact Consolidation trigger and unbounded batch are superseded by 5,000 trigger tokens and a 10,000-token batch", () => {
-  expect(DEFAULT_CONFIG.consolidation).toMatchObject({ triggerTokens: 5_000, batchTokens: 10_000 });
-  expect("triggerUnconsolidatedFacts" in DEFAULT_CONFIG.consolidation).toBe(false);
-  const { s, t } = session();
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: Array.from({ length: 60 }, (_, i) => ({ text: `claim ${i}`, source: [`T${t.id}#E1`] })) });
-  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
-  expect(memory.store.consolidationBatch(s.id, "main", t.id).length).toBeGreaterThan(50); // a count would be due
-  expect(tokens(memory.store.consolidationBatch(s.id, "main", t.id).map(f => memory.trace(`F${f.id}`)).join("\n"))).toBeLessThan(5_000);
-  expect(memory.taskEligibility("consolidation", target).due).toBe(false);
-});
+
+// 92 §8's "C删掉" supersedes the independent 5k fact-queue trigger and batch.
+// N's 10k Raw trigger and oldest whole-entry prefix remain pinned by 20b above.
 
 // 17b, 2026-09-08: the knowledge budget was a soft cap — constraints, open items and disputes were
 // exempt from it. Superseded by ticket 20 and confirmed by the user on 2026-09-08: the cap is hard,
@@ -1829,38 +1828,11 @@ test("64c: the knowledge cap remains hard and recency, not category, selects who
   expect(t.id).toBeGreaterThan(0);
 });
 
-test("2026-09-07 superseded 2026-09-08 (17b): the Consolidation threshold triggers, the turn boundary no longer cuts; partly recorded Turns are eligible", async () => {
-  const project = memory.store.createProject({ name: "batches", declaredBy: "mark" });
-  const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
-  const turns = [1, 2, 3, 4].map((i, _, arr) => memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: `t${i}`, assistantText: "ok", startedAt: time, parentTurnId: undefined }));
-  for (let i = 1; i < turns.length; i++) memory.store.db.prepare("UPDATE turns SET parent_turn_id = ? WHERE id = ?").run(turns[i - 1]!.id, turns[i]!.id);
-  const seed = (turn: number, n: number, kind: "noting" | "manual" = "noting") => memory.store.commitNotingRun({ run: { kind, sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
-    facts: Array.from({ length: n }, (_, k) => ({ turnId: turn, category: "observation", actor: "user", text: `fact ${turn}.${k}`, source: [`T${turn}#user`], createdAt: time })) });
-  seed(turns[0]!.id, 3); seed(turns[1]!.id, 3); seed(turns[2]!.id, 3);
-  recorded(memory, s.id, "main", turns[2]!.id); // T1..T3 recorded, T4 (head) not yet
-  seed(turns[3]!.id, 2, "manual"); // manual facts on the head being recorded
-  const batch = memory.store.consolidationBatch(s.id, "main", turns[3]!.id);
-  expect(batch.map(f => f.id)).toEqual(Array.from({ length: 11 }, (_, i) => i + 1));
-  expect(batch.filter(f => f.turnId === turns[3]!.id)).toHaveLength(2);
+// 92 §8 retires C's independent fact queue. N's oldest contiguous Raw prefix across Turns
+// remains pinned by 20b above and boundary.test.ts's two-Turn capacity/membership cases.
 
-});
-
-test("2026-09-07 review: a late fact on an early turn does not make the batch skip pending facts of later turns", () => {
-  const project = memory.store.createProject({ name: "late-facts", declaredBy: "mark" });
-  const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
-  const t1 = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "one", assistantText: "ok", startedAt: time, parentTurnId: undefined });
-  const t2 = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "two", assistantText: "ok", startedAt: time, parentTurnId: t1.id });
-  const seed = (turn: number, text: string) => memory.store.commitNotingRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
-    facts: [{ turnId: turn, category: "decision", actor: "user", text, source: [`T${turn}#user`], createdAt: time }] });
-  seed(t1.id, "early decision"); seed(t2.id, "later decision"); seed(t1.id, "late supplement to the early decision"); // F3 lands on T1 after F2 on T2
-  // "Nothing before the first Noting" was superseded on 2026-09-08 by 17b.
-  expect(memory.store.consolidationBatch(s.id, "main", t2.id).map(f => f.id)).toEqual([1, 2, 3]);
-  recorded(memory, s.id, "main", t2.id);
-  const first = memory.store.consolidationBatch(s.id, "main", t2.id);
-  expect(first.map((f) => f.id)).toEqual([1, 2, 3]); // no Turn grouping
-  expect(memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: time }, operations: [], consolidated: [1, 3] }).ok).toBe(true);
-  expect(memory.store.consolidationBatch(s.id, "main", t2.id).map((f) => f.id)).toEqual([2]); // F2 is still pending, not skipped
-});
+// 92 §8 retires C's separate fact-processing marks: late facts no longer create a C queue.
+// The frozen-N late-entry fence stays in 18b; D late-version processing is pinned above.
 
 test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added after it was captured, even though they are on-path", async () => {
   const { s, t } = session();
@@ -1875,16 +1847,8 @@ test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added 
   expect(calls[0]!.entryIds).toEqual([entry1.id]); // the later on-path entry stays outside the frozen target
   expect(hydrate(memory.pendingEntries(s.id, "main", t2.id), memory.store).map(e => e.id)).toEqual([entry2.id]); // it remains pending
 
-  // Same guarantee for Consolidation's frozen fact-id set.
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [
-    { text: "Frozen fact", source: [`T${t.id}#E${entry1.entryOrdinal}`] } ] });
-  const frozenFacts = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [
-    { text: "Later fact", source: [`T${t.id}#E${entry1.entryOrdinal}`] } ] });
-  const cresult = await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent", boundary: { allowedFactIds: frozenFacts } });
-  expect(cresult.outcome).toBe("success");
-  if (cresult.outcome === "success") expect(cresult.range.facts.map(f => f.id)).toEqual(frozenFacts);
-  expect(memory.store.consolidationBatch(s.id, "main", t.id)).toHaveLength(1); // the later fact stays outside the frozen target
+  // 92 §8 replaces C's frozen fact-id set with N's exact entry boundary above; the
+  // independently frozen D revision range is exercised by the late-version case above.
 });
 
 // ---- 19c: the execution mode is fork; branch remains the evidence path (ticket 19 "Naming and compatibility") ----
@@ -1908,21 +1872,13 @@ test("19c 2026-09-08: both execution-mode spellings with different values fail t
 });
 
 test("24 amendment 2 2026-09-09, as 29e left it: configure replaces each phase's execution-mode default, validated like the load path, and nothing else", async () => {
-  // A saved global preference must reach tasks admitted afterwards without a reload. Admission reads
-  // its mode from the configuration frozen at construction, so exactly those two booleans may move —
-  // 29e restored Consolidation's, which 25b had retired; every other key is still refused below.
+  // 92 §7: only the N mode preference survives; D is subagent-only.
   expect(memory.config.noting.forkModeDefault).toBe(false);
   memory.configure({ noting: { forkModeDefault: true } });
   expect(memory.config.noting.forkModeDefault).toBe(true);
   memory.configure({ noting: { forkModeDefault: false } });
   expect(memory.config.noting.forkModeDefault).toBe(false);
   expect(memory.config.noting.batchTokens).toBe(DEFAULT_CONFIG.noting.batchTokens); // nothing else moved
-  // The other phase exposes the same key and also defaults to subagent.
-  expect(memory.config.consolidation.forkModeDefault).toBe(false);
-  memory.configure({ consolidation: { forkModeDefault: true } });
-  expect(memory.config.consolidation.forkModeDefault).toBe(true);
-  expect(memory.config.consolidation.batchTokens).toBe(DEFAULT_CONFIG.consolidation.batchTokens);
-  memory.configure({ consolidation: { forkModeDefault: false } });
   // A task admitted after the call runs in the new mode; the run record keeps what it was launched with.
   const { s, t } = session();
   expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
@@ -1936,8 +1892,7 @@ test("24 amendment 2 2026-09-09, as 29e left it: configure replaces each phase's
   expect(() => memory.configure({ noting: { branchModeDefault: false, forkModeDefault: true } })).toThrow("Conflicting settings");
   expect(() => memory.configure({ noting: { batchTokens: 5 } })).toThrow("noting.batchTokens is not reconfigurable at runtime");
   expect(() => memory.configure({ render: { entryTokens: 5 } })).toThrow("Unknown setting render");
-  expect(() => memory.configure({ consolidation: { triggerUnconsolidatedFacts: 5 } as never })).toThrow("Removed setting");
-  expect(() => memory.configure({ consolidation: { forkModeDefault: 1 as unknown as boolean } })).toThrow("Invalid consolidation.forkModeDefault");
+  expect(() => memory.configure({ consolidation: { triggerUnconsolidatedFacts: 5 } } as never)).toThrow("Removed setting");
   expect(() => memory.configure({ noting: { nearThreshold: 0.5 } } as never)).toThrow("Removed setting noting.nearThreshold");
   expect(memory.config.noting.forkModeDefault).toBe(true);
   expect(memory.config.render.entryTokens).toBe(DEFAULT_CONFIG.render.entryTokens);
@@ -1945,63 +1900,65 @@ test("24 amendment 2 2026-09-09, as 29e left it: configure replaces each phase's
 
 // ---- 25 amendment 2 2026-09-09, as 29e superseded it: Consolidation has two execution modes again ----
 
-test("25b/29e: the retired inverse Consolidation mode key is refused by name at load, in every configuration space", () => {
-  // 25b removed the key; 29e restored the choice under `consolidation.forkModeDefault`. The old key
-  // stays a removed setting rather than becoming an alias, because it is the INVERSE boolean: reading
-  // a saved `true` as fork mode would switch the meaning of the value. A saved value of either
-  // polarity fails the load naming the key and the one remedy. No file is rewritten.
-  expect(REMOVED_SETTINGS["consolidation.subagentModeDefault"]).toBe("use consolidation.forkModeDefault (the inverse boolean: true means fork)");
-  const message = `Removed setting consolidation.subagentModeDefault: ${REMOVED_SETTINGS["consolidation.subagentModeDefault"]}`;
+test("25b/92: retired C mode is not a live setting or a Noter alias", () => {
+  const message = "Removed setting consolidation.subagentModeDefault: Consolidation is retired; remove this key";
+  expect(REMOVED_SETTINGS["consolidation.subagentModeDefault"]).toBe("Consolidation is retired; remove this key");
   for (const saved of [true, false]) {
-    const load = () => sourceSeededMemory(join(directory, `saved-${saved}.sqlite`), async () => ok([]), { consolidation: { subagentModeDefault: saved } as never });
-    expect(load).toThrow(message);
-    // The flat `section.key` space every host loads its settings files through, and the runtime surface.
+    expect(() => sourceSeededMemory(join(directory, `saved-${saved}.sqlite`), async () => ok([]),
+      { consolidation: { subagentModeDefault: saved } } as never)).toThrow(message);
     expect(() => canonicalFlatConfig({ "consolidation.subagentModeDefault": saved })).toThrow(message);
-    expect(() => memory.configure({ consolidation: { subagentModeDefault: saved } as never })).toThrow(message);
+    expect(() => memory.configure({ consolidation: { subagentModeDefault: saved } } as never)).toThrow(message);
   }
-  expect(Object.hasOwn(DEFAULT_CONFIG.consolidation, "subagentModeDefault")).toBe(false); // and the menu that builds itself from the defaults shows it nowhere
-  expect(DEFAULT_CONFIG.consolidation.forkModeDefault).toBe(false); // the restored key keeps this phase's existing default
+  expect(Object.hasOwn(DEFAULT_CONFIG, "consolidation")).toBe(false);
+  expect(DEFAULT_CONFIG.noting.forkModeDefault).toBe(false); // no C mode is mapped into N
 });
 
-test("29: Consolidation may fork; borrowed work, manual catchup and recovery workers stay subagent", async () => {
+
+// 92 §8 retires C's fork, fact-queue borrowing and catchup mode. N's corresponding live
+// mode contract uses actual Raw entries and retains the configured/requested audit.
+test("92: N explicit/default modes, frozen configuration, borrowed and catchup subagent", async () => {
   const { s, t } = session();
-  const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ text, source: [`T${t.id}#E1`] }] });
-  note("Keep pnpm");
-  // 29e (parent 29 "Restore Consolidator fork without weakening review", superseding 25b): the mode
-  // exists again, so an explicit request runs — neither refused by name nor normalized behind the
-  // caller. The run record keeps it, as it always kept Noting's.
-  expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" })).outcome).toBe("success");
+  const next = (parent: number, text: string) => memory.store.appendTurn({ sessionId: s.id, parentTurnId: parent,
+    kind: "turn", userPrompt: text, assistantText: "acknowledged", startedAt: time });
+  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" })).outcome).toBe("success");
   expect(calls.at(-1)!.mode).toBe("fork");
-  const forked = memory.store.listRuns(s.id).at(-1)!;
-  expect([forked.kind, forked.mode]).toEqual(["consolidation", "fork"]);
-  // The default is unchanged: a request that says nothing gets a subagent, because
-  // `consolidation.forkModeDefault` is false. 29e restored the option, not a new default.
-  note("Keep vitest");
-  expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
+  expect(memory.store.listRuns(s.id).at(-1)).toMatchObject({ kind: "noting", mode: "fork" });
+  const second = next(t.id, "Keep vitest");
+  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: second.id })).outcome).toBe("success");
   expect(calls.at(-1)!.mode).toBe("subagent");
   expect(JSON.parse(memory.store.listRuns(s.id).at(-1)!.response!).requestedMode).toBe("subagent");
-  // With the preference on, the same silent request forks.
-  memory.configure({ consolidation: { forkModeDefault: true } });
-  note("Keep sqlite");
-  expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
+
+  memory.configure({ noting: { forkModeDefault: true } });
+  const third = next(second.id, "Keep sqlite");
+  const before = calls.length;
+  memory.close();
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
+    const task = raw as NotingAgentInput;
+    calls.push(task);
+    if (calls.length === before + 1) memory.configure({ noting: { forkModeDefault: false } });
+    task.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    return ok([]);
+  }, { noting: { forkModeDefault: true } });
+  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: third.id })).outcome).toBe("success");
   expect(calls.at(-1)!.mode).toBe("fork");
-  // Borrowed closed-session work stays fresh-context whatever the preference says, exactly as
-  // Noting's does: the façade replaces the mode of a borrowed task at its admission.
-  const tail = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: memory.store.getSession(s.id)!.projectId });
+  expect(memory.store.listRuns(s.id).at(-1)!.mode).toBe("fork");
+  expect(memory.config.noting.forkModeDefault).toBe(false); // only future admission observes the edit
+  memory.configure({ noting: { forkModeDefault: true } });
+
+  const tail = memory.store.createSession({ enrollmentChoice: true, host: "pi:borrowed", startedAt: time,
+    firstReplyAt: time, projectId: memory.store.getSession(s.id)!.projectId });
   const tailTurn = memory.store.appendTurn({ sessionId: tail.id, kind: "turn", userPrompt: "closed tail", assistantText: "ok", startedAt: time });
-  memory.tools({ kind: "manual", sessionId: tail.id, branch: "main", currentTurnId: tailTurn.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ text: "Keep esbuild", source: [`T${tailTurn.id}#E1`] }] });
   memory.store.closeSession(tail.id);
-  expect((await memory.consolidate({ sessionId: tail.id, branch: "main", headTurnId: tailTurn.id, borrowed: true, executorSessionId: s.id })).outcome).toBe("success");
+  expect((await memory.noting({ sessionId: tail.id, branch: "main", headTurnId: tailTurn.id,
+    borrowed: true, executorSessionId: s.id })).outcome).toBe("success");
   expect(calls.at(-1)!.mode).toBe("subagent");
-  // A manual catchup asks for a subagent explicitly, beside the allowable fact set it froze (18b), and
-  // ticket 28's recovery workers will reach this line the same way: the requested mode is what runs,
-  // so the restored preference turns neither of them into a fork.
-  note("Keep node:sqlite");
-  const frozen = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
-  expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent", boundary: { allowedFactIds: frozen } })).outcome).toBe("success");
+  const fourth = next(third.id, "Keep node:sqlite");
+  const frozen = memory.store.pendingEntryIds(s.id, "main", fourth.id);
+  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: fourth.id,
+    mode: "subagent", boundary: { exactEntryIds: frozen } })).outcome).toBe("success");
   expect(calls.at(-1)!.mode).toBe("subagent");
+  expect(calls.at(-1)!.entryIds).toEqual(frozen);
 });
 
 test("25 amendment 2 2026-09-09: a stored fork-mode Consolidation run keeps its recorded mode and is never rewritten", async () => {
@@ -2014,9 +1971,10 @@ test("25 amendment 2 2026-09-09: a stored fork-mode Consolidation run keeps its 
   // New work in the same database records the one mode and leaves the old row alone.
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
     .execute({ facts: [{ text: "Keep pnpm", source: [`T${t.id}#E1`] }] });
-  expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
+  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
   expect(memory.store.getRun(historical)!.mode).toBe("fork");
-  expect(memory.store.listRuns(s.id).filter(r => r.kind === "consolidation").map(r => r.mode)).toEqual(["fork", "subagent"]);
+  expect(memory.store.listRuns(s.id).filter(r => r.kind === "consolidation").map(r => r.mode)).toEqual(["fork"]);
+  expect(memory.store.listRuns(s.id).at(-1)!.kind).toBe("noting");
 });
 
 test("19c 2026-09-08: new work records the canonical fork spelling, in the task input and in the run record", async () => {
@@ -2304,12 +2262,7 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
   expect(long.text).toContain(`[F${shared}]`); expect(long.text).toContain(`[F${onPath}]`);
   expect(long.text).not.toContain(`[F${siblingOnly}]`); expect(long.text).not.toContain("SIBLING ONLY");
 
-  // --- the freshness order survives the filter. 73: both path facts are now consolidated (processed),
-  // so neither may borrow the allowance — a facts base sized to only the omission receipt keeps the
-  // Raw whole and the receipt enumerates the candidates newest first: the sibling's fact is not among
-  // them, because it is not omitted for budget but absent for membership.
-  memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "C", kind: "consolidation", createdAt: time },
-    operations: [], consolidated: [onPath, shared] });
+  // 92 §6: facts never borrow the allowance; the receipt orders omitted path facts newest first.
   const measured = charged(memory.compact(s.id, "C", selected.id));
   compactionWindows(Math.max(1, measured.knowledge), 40, measured.raw);
   const squeezed = compacted(memory.compact(s.id, "C", selected.id));
@@ -2466,14 +2419,15 @@ test("29: one material builder — filter visible, then budget", async () => {
     expect(carried.material.entries).toEqual([]);
     expect(carried.text).toContain(`Range: ${carried.range.from}..${carried.range.to}`);
     expect(carried.material.sources.length).toBeGreaterThan(0);
-    // Filter, then budget: the visible fact leaves the optional block, and the block gets smaller
-    // rather than refilled — the allowance is a ceiling, never a target.
-    expect(none.material.facts.join("\n")).toContain("[F1]");
+    // 92 §6: fork inherits its parent and never adds a historical-fact supplement,
+    // irrespective of a fact marker in the visible view. The shared compact path's
+    // actual filtering-before-budgeting remains pinned by 26 amendment 2 above.
+    expect(none.material.facts).toEqual([]);
+    expect(carried.material.facts).toEqual([]);
     expect(factSeen.material.facts).toEqual([]);
-    expect(tokens(factSeen.text)).toBeLessThan(tokens(carried.text));
     // What the text really carries is what a carrier may state — never what the task considered.
     expect(none.supplied.entries.map(e => e.id)).toEqual(none.entryIds);
-    expect(none.supplied.factIds).toEqual([1]);
+    expect(none.supplied.factIds).toEqual([]);
     expect(carried.supplied.entries).toEqual([]);
     expect(factSeen.supplied.factIds).toEqual([]);
   } finally { probe.close(); }
@@ -2518,37 +2472,54 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
   // cancellation so that only this task's tools close and only its claim is invalidated." The
   // executor-wide `cancelTasks` is untouched: what follows uses neither it nor `stopping`.
   const { s, t } = session(); memory.close();
-  let releaseNoting = () => {};
-  const held = new Promise<void>(resolve => { releaseNoting = resolve; });
+  let releaseNoting = () => {}, releaseDreaming = () => {};
+  const heldNoting = new Promise<void>(resolve => { releaseNoting = resolve; });
+  const heldDreaming = new Promise<void>(resolve => { releaseDreaming = resolve; });
+  let enteredDreaming = () => {};
+  const dreamingStarted = new Promise<void>(resolve => { enteredDreaming = resolve; });
   const submissions: unknown[] = [];
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
+    if ((raw as { kind: string }).kind === "dreaming") {
+      const task = raw as import("../../../src/core/api/index.ts").DreamingAgentInput;
+      task.acknowledgeRequest();
+      enteredDreaming();
+      await heldDreaming;
+      const skipped = suppliedHandles(task.material.changed).map(knowledge => ({ knowledge, because: "Reviewed unchanged" }));
+      expect(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped })).toContain("committed");
+      return ok([]);
+    }
     const input = raw as NotingAgentInput;
-    if (input.kind !== "noting") return ok([]); // the Consolidation below commits through its own tool
-    await held; // still in flight when the signal fires
+    await heldNoting; // still in flight when the signal fires
     submissions.push(input.tools.find(tool => tool.name === "note")!.execute({ facts: [
       { text: "a fact this cancelled run tries to commit", source: [`T${t.id}#E1`] }] }));
     return ok([]);
   });
-  const target = { sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" as const };
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  const fact = JSON.parse(memory.tools({ kind: "manual", ...target, currentTurnId: t.id })
+    .find(tool => tool.name === "note")!.execute({ facts: [{ text: "D's independent evidence", source: [`T${t.id}#E1`] }] })).factIds[0] as number;
+  const trigger = createDreamerTrigger(memory, target, fact, 1);
   const controller = new AbortController();
-  const cancelled = memory.noting({ ...target, signal: controller.signal });
-  // A second task, of the other phase, running under no signal of its own: the one this must not touch.
-  const others = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [{ text: "the durable claim of the untouched task", source: [`T${t.id}#E1`] }] });
-  expect(String(others)).not.toContain("rejected");
-  const untouched = memory.consolidate(target);
+  const cancelled = memory.noting({ ...target, mode: "subagent", signal: controller.signal });
+  const untouched = memory.dream(target);
+  await dreamingStarted;
+  expect(memory.store.getClaim(s.id, "noting")).not.toBeNull();
+  expect(memory.store.getClaim(s.id, "dreaming")).not.toBeNull();
+  expect(memory.store.openDreamingRange(s.id, "main")).not.toBeNull();
 
   controller.abort();
   releaseNoting();
   const result = await cancelled;
-  // Its tools are closed: the submission after the abort is rejected, and nothing of it is committed.
+  // N's late write is rejected while the independent D run keeps its claim and frozen range.
   expect(String(submissions[0])).toContain("rejected: run has finished");
-  expect(memory.store.listSessionFacts(s.id).map(f => f.text)).toEqual(["the durable claim of the untouched task"]);
+  expect(memory.store.listSessionFacts(s.id).map(f => f.text)).toEqual(["D's independent evidence"]);
   expect(result.outcome).not.toBe("success");
-  // Its claim is gone, so the same target is admissible again — the executor was not stopped.
   expect(memory.store.getClaim(s.id, "noting")).toBeNull();
-  expect((await untouched).outcome).toBe("success"); // the unsignalled task of the other phase ran to completion
-  expect(memory.taskEligibility("noting", { sessionId: s.id, branch: "main", headTurnId: t.id })).toBeDefined();
+  expect(memory.store.getClaim(s.id, "dreaming")).not.toBeNull();
+  releaseDreaming();
+  expect((await untouched).outcome).toBe("success");
+  expect(memory.store.getClaim(s.id, "dreaming")).toBeNull();
+  expect(memory.store.pendingVersions(`project:${memory.store.getSession(s.id)!.projectId}`, target).map(item => item.revisionId)).not.toContain(trigger.commit);
+  expect(memory.taskEligibility("noting", target)).toBeDefined();
 });
 
 test("28 amendment 3: a signal already aborted at admission cancels that task before its first request", async () => {
@@ -2564,86 +2535,11 @@ test("28 amendment 3: a signal already aborted at admission cancels that task be
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0); // nothing advanced
 });
 
-// ---- 29e: Consolidation's exact fact target and its cancellation fence (parent 29 cases 19 and 20)
+// 92 §8 retires the C fact target and C fork fallback. The live exact Raw entry
+// membership/capacity fence remains in 27 amendment 6 above; D uses revision ranges.
 
-test("29e (parent 27 amendment 6, case 19): a Consolidation fork's exact fact target survives fallback or the task stays pending", async () => {
-  // The twin of "27 amendment 6" above, for the phase 29e restored the mode to. The frozen batch is
-  // taken whole or not at all: a fallback window that holds only its oldest fact leaves the batch
-  // pending rather than consolidating a subset and marking the rest processed.
-  const { s, t } = session();
-  const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [{ text, source: [`T${t.id}#E1`] }] });
-  note("The first durable claim of this batch");
-  note("The second durable claim of this batch");
-  const [f1, f2] = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
-  const target = { sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" as const };
-  // What the batch really costs, priced the way the freeze prices a fresh child: instructions, tool
-  // definitions and the prepared text. The oldest fact's own price is the allowance that fits one.
-  const instructions = loadPrompt("consolidation.md");
-  const priced = (exactFactIds: number[]) => {
-    const frozen = freezeConsolidation(memory.store, { ...target, boundary: { exactFactIds } }, memory.config);
-    return tokens(instructions) + tokens(JSON.stringify(consolidationToolDefinitions())) + tokens(frozen.prepared!.text);
-  };
-  const capacity = { inputTokens: priced([f1!]), prefixTokens: 0 };
-  expect(priced([f1!, f2!])).toBeGreaterThan(capacity.inputTokens);
-  await expect(memory.consolidate({ ...target, boundary: { exactFactIds: [f1!, f2!] }, capacity }))
-    .rejects.toThrow(api.CONSOLIDATION_CAPACITY);
-  expect(calls).toEqual([]); // nothing ran on a smaller batch
-  expect(memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id)).toEqual([f1, f2]);
-
-  // With room, the same boundary runs on exactly those facts, and the range says so.
-  const ran = await memory.consolidate({ ...target, boundary: { exactFactIds: [f1!, f2!] } });
-  expect(ran.outcome).toBe("success");
-  if (ran.outcome === "success") expect(ran.range.facts.map(f => f.id)).toEqual([f1, f2]);
-
-  // A member another executor already consolidated drops the task with its reason, and re-processes
-  // nothing: the claim fence a fresh freeze would otherwise walk straight past.
-  note("The third durable claim of this batch");
-  const f3 = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
-  expect(f3).toEqual([f3[0]]); // f1 and f2 are consolidated now
-  const before = calls.length;
-  const dropped = await memory.consolidate({ ...target, boundary: { exactFactIds: [f2!, f3[0]!] } }) as { outcome: string; reason?: string };
-  expect(dropped.outcome).toBe("dropped");
-  expect(dropped.reason).toContain(api.CONSOLIDATION_MEMBERSHIP);
-  expect(dropped.reason).toContain(`facts F${f2} of the frozen batch`);
-  expect(calls).toHaveLength(before); // no model call, and no run
-  expect(memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id)).toEqual(f3);
-});
-
-test("29e (27d repair 4, case 20): a Consolidation task cancelled between refusal and re-admission launches no fallback", async () => {
-  // Parent 27 line 83, for the restored phase: the refused attempt carries the generation it was
-  // admitted under, `cancelTasks()` advances it, and the re-admission drops without launching.
-  const { s, t } = session();
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ text: "Keep pnpm", source: [`T${t.id}#E1`] }] });
-  memory.close();
-  const generations: unknown[] = [];
-  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    const input = raw as { cancellation?: number };
-    generations.push(input.cancellation);
-    if (generations.length === 1) return { outcome: "failure", output: "context overflow", request: null, refused: { reason: "context overflow" } };
-    return ok([]); // a run that submits nothing succeeds with zero knowledge and advances the range
-  });
-  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
-  const first = await memory.consolidate({ ...target, mode: "fork" }) as { outcome: string; refused?: unknown };
-  expect(first.outcome).toBe("dropped");
-  const runs = () => memory.store.listRuns(s.id).filter(r => r.kind === "consolidation"); // the manual `note` above has its own record
-  expect(runs()).toEqual([]); // this refusal sent nothing, so it recorded nothing
-  const frozen = generations[0] as number;
-
-  memory.cancelTasks(); // /trace stop, between the refusal and the re-admission
-  const dropped = await memory.consolidate({ ...target, mode: "fork", effectiveMode: "subagent",
-    fallbackReason: "context overflow", forkAttempt: first.refused, cancellation: frozen });
-  expect(dropped).toEqual({ outcome: "dropped", reason: api.CANCELLED_BEFORE_FALLBACK });
-  expect(generations).toHaveLength(1); // no fresh request
-  expect(runs()).toEqual([]);
-  expect(memory.store.consolidationBatch(s.id, "main", t.id).length).toBeGreaterThan(0); // the facts stay pending
-
-  // The cancellation stopped this executor's pending fallback, not the executor: a task admitted
-  // after it carries the current generation and runs.
-  expect((await memory.consolidate({ ...target, mode: "subagent" })).outcome).toBe("success");
-  expect(generations).toHaveLength(2);
-});
+// 92 §8 retires C's fallback. N's cancelled refusal/re-admission fence remains
+// in 27: cancellation between refusal and re-admission above.
 
 
 test("64b/29/31: archived divergent history follows the owner's shared foreground", async () => {
@@ -2753,7 +2649,7 @@ test("47: read-version descriptions name current, history and all without making
 
 
 
-test("61: definitions are shared and hold definitions only; the principles are the maintainer's note, shared between the Consolidator and the Dreamer", () => {
+test("61/92: definitions stay shared, and N and D retain the maintainer's principle blocks", () => {
   const block = (name: string) => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8");
   const definitions = ["model", "facts", "knowledge"].map(block).join("\n");
   for (const leaked of ["There is no open category", "first decide whether", "never becomes pending", "**Object state.**", "**Status.**", "however small", "weighs as an assistant claim"])
@@ -2775,7 +2671,7 @@ test("61: definitions are shared and hold definitions only; the principles are t
   expect(principles[3]).toContain("A matter worth tracking that still awaits an answer, adoption, verification or completion belongs to `open`");
   expect(principles[3]).toContain("Incompatible claims about one object under the same conditions, with evidence insufficient to explain or decide, remain in `open` with both accounts and missing evidence named.");
   expect(principles[4]).toContain("never pad them for coverage");
-  for (const file of ["consolidation.md", "dreaming.md"] as const) {
+  for (const file of ["noting.md", "dreaming.md"] as const) {
     const composed = loadPrompt(file);
     for (const text of [...principles, ...["model", "facts", "knowledge"].map(block)]) expect(composed).toContain(text.trimEnd());
     expect(composed).not.toContain("<!-- include:");
@@ -2801,7 +2697,7 @@ test("61: definitions are shared and hold definitions only; the principles are t
 
 // 61 (2026-09-19): the prompts are written to one standard — shared memory-model blocks, per-stage judgment,
 // short imperative sentences, no internal references, defined vocabulary only.
-const STAGE_PROMPTS = ["noting.md", "consolidation.md", "dreaming.md"] as const;
+const STAGE_PROMPTS = ["noting.md", "dreaming.md"] as const;
 const promptSentences = (text: string) => {
   const body = text.replace(/```[\s\S]*?```/g, "");
   const sentences: string[] = [];
@@ -2909,16 +2805,14 @@ test("86 rule 2: '必须等该会话无 N C D 运行且未达到任意触发阈�
   expect(memory.store.findProjectByName("cannot-move")).toBeNull();
   memory.store.releaseClaim(held);
   memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
-  memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
   expect(memory.declareProject(s.id, "can-move", "mark", path)).toContain("can-move");
 });
 
 test("86 rule 3: '超出一批处理上限的，都应该按序先处理旧的'", () => {
   const { s, t } = session();
-  const first = memory.store.listSourceEntries(s.id, t.id)[0]!;
   memory.config.noting.batchTokens = 1;
   const selected = memory.notingBatch({ sessionId: s.id, branch: "main", headTurnId: t.id });
-  expect(selected.map(entry => entry.id)).toEqual([first.id]);
+  expect(selected).toEqual([]); // 92 §6: no oldest-item overflow beyond the Raw batch window
 });
 
 test("86 rule 4: '单条事实/知识不能超过1k'", () => {
