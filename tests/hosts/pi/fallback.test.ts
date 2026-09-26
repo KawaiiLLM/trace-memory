@@ -13,8 +13,8 @@
 //
 // A capacity fallback is a warning, not an error: no cache-miss latch, no settings file, no default
 // mode change, and a later task may request fork again. Authentication and rate-limit rejections are
-// not capacity failures; a committed note, a cancellation and every failure after a commit end the
-// task where it is.
+// not capacity failures. A cancellation ends the task. Since 92, a held note is not a commit;
+// failed attempts discard their drafts and only normal termination publishes both layers.
 //
 // 27c generalised the second path: whatever refuses a fork — the live state at admission, the launch,
 // the native gate, the provider — the task is admitted once more as a subagent on the CONFIGURED
@@ -25,7 +25,7 @@ import { expect, test, vi } from "vitest";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { host, reply } from "./test-host.ts";
 // This suite explicitly requests forks to exercise their refusal and re-admission paths.
-import { forkFixture as fixture, say, call, worker, submitted, memoryBatch, noteBatch, settled, toolResults, usage as wireUsage, type Body } from "./native-fixture.ts";
+import { forkFixture as fixture, say, call, noteAndMemory, worker, submitted, memoryBatch, noteBatch, settled, toolResults, usage as wireUsage, type Body } from "./native-fixture.ts";
 import { recorded , hydrate } from "../../source-fixture.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
 import { forkable, runNative } from "../../../src/hosts/pi/native.ts";
@@ -37,7 +37,7 @@ const rejected = (message: string) => new Response(JSON.stringify({ error: { mes
 const OVERFLOW = "prompt is too long: 213462 tokens > 200000 maximum";
 /** A fresh child's own body: its system prompt is the Noter's, which a fork's never is (a fork
  * inherits the parent's system prompt and carries the Noter instructions in its appended message). */
-const fresh = (body: Body) => body.messages?.[0]?.role === "system" && String(body.messages[0].content).includes("Noting (fact extraction)");
+const fresh = (body: Body) => body.messages?.[0]?.role === "system" && String(body.messages[0].content).includes("Noting (facts and knowledge)");
 const forkAttempt = (body: Body) => worker(body) && !fresh(body);
 /** 27d (user ruling 2026-09-10, superseding 27c's "one run record for both attempts"): a fallback
  * task leaves one record per attempt that sent a request — the refused fork first, then the
@@ -75,7 +75,7 @@ test("27b 2026-09-10: a fork prefix the freeze cannot fit is re-admitted once as
     expect(h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
     expect(h.notices.filter(n => n.includes("and the inherited context 40000"))).toHaveLength(1);
     // Fresh material, and only the evidence the second freeze selected is committed.
-    expect(h.conversations[0]!.systemPrompt).toContain("Noting (fact extraction)");
+    expect(h.conversations[0]!.systemPrompt).toContain("Noting (facts and knowledge)");
     expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId)).toEqual(["e1"]);
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.nativeId)).toEqual(["e2"]);
     // No latch, no configuration change.
@@ -93,7 +93,7 @@ test("27b 2026-09-10: the pre-send fallback decides before any provider request,
   try {
     // A measure no window could hold: this session has no fork base the freeze can price.
     (f.h.ctx as unknown as { getContextUsage: () => unknown }).getContextUsage = () => ({ tokens: 10_000_000, contextWindow: 200_000, percent: 5_000 });
-    f.script((body: Body) => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script((body: Body) => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn();
     const run = await settled(f);
     const response = JSON.parse(run.response!);
@@ -126,7 +126,7 @@ test("27b 2026-09-10: a provider context-overflow rejection with nothing committ
         (f.h.ctx as { model: unknown }).model = { ...f.h.ctx.model!, contextWindow: 11_000 };
         return rejected(OVERFLOW); // the fork attempt, rejected by the provider
       }
-      return submitted(body) ? say("Done.", wireUsage(7, 2)) : call("t1", "note", noteBatch, wireUsage(11, 3));
+      return submitted(body) ? say("Done.", wireUsage(7, 2)) : noteAndMemory("t1", noteBatch, wireUsage(11, 3));
     });
     await f.turn();
     // 27d: two records, one per attempt. The first is the fork attempt's own.
@@ -165,28 +165,28 @@ test("27b 2026-09-10: a provider context-overflow rejection with nothing committ
     expect(response.usage.input).toBe(18);
     expect(response.usage.output).toBe(5);
     expect(first.usage).toBeNull(); // and the attempt's record reports its own unknown, not the fresh child's spend
-    // One submission across both attempts: the rejected attempt executed no tool, and its child was
+    // One explicit note/memory pair across both attempts: the rejected attempt executed no tool, and its child was
     // disposed before the fresh one started, so nothing of it could still write.
-    expect(response.toolCalls.map((c: { name: string }) => c.name)).toEqual(["note"]);
+    expect(response.toolCalls.map((c: { name: string }) => c.name)).toEqual(["note", "memory"]);
     expect(first.toolCalls).toEqual([]);
     expect(f.h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
   } finally { await f.dispose(); }
 }, 30000);
 
-test("38b: a Noter review overflow fallback isolates different held pools and diagnoses only the committing attempt", async () => {
+test("92: a Noter overflow fallback discards the first held pool and publishes only the fresh attempt", async () => {
   const f = await fixture({ notingModel: "fake/test-mini" });
   try {
     const oldText = "Package trace-memory moved from beta.1 to beta.2";
     const finalText = "Package trace-memory moved from beta.2 to beta.3";
     f.script((body: Body) => {
       if (!worker(body)) return say("Seeded.");
-      return submitted(body) ? say("Done.") : call("seed", "note", { facts: [{ ...noteBatch.facts[0], text: oldText }] });
+      return submitted(body) ? say("Done.") : noteAndMemory("seed", { facts: [{ ...noteBatch.facts[0], text: oldText }] });
     });
     await f.turn("seed source " + "word ".repeat(100));
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual([oldText]);
 
     let inserted = false;
-    const finalBatch = { facts: [{ ...noteBatch.facts[0], text: finalText, source: ["T2#user"] }] };
+    const finalBatch = { facts: [{ ...noteBatch.facts[0], text: finalText, source: ["T2#E1"] }] };
     f.script((body: Body) => {
       if (!worker(body)) return say("Target recorded.");
       if (!fresh(body)) {
@@ -198,17 +198,18 @@ test("38b: a Noter review overflow fallback isolates different held pools and di
         }
         return rejected(OVERFLOW);
       }
-      return toolResults(body) >= 2 ? say("Done.") : call(`fresh-${toolResults(body)}`, "note", finalBatch);
+      return submitted(body) ? say("Done.") : noteAndMemory("fresh", finalBatch);
     });
     await f.turn("target source " + "word ".repeat(100));
     const [, attempt, run] = await records(f, 3);
     const first = JSON.parse(attempt!.response!), second = JSON.parse(run!.response!);
     expect([attempt!.mode, attempt!.outcome, run!.mode, run!.outcome]).toEqual(["fork", "failure", "subagent", "success"]);
-    expect(first.notingNearReview.shown[0].neighbours.map((n: { factId: number }) => n.factId)).toEqual([1]);
-    expect(first.diagnostics).toBeUndefined();
-    expect(second.notingNearReview.shown[0].neighbours.map((n: { factId: number }) => n.factId)).toEqual([2, 3, 4]);
-    expect(second.diagnostics[0].pairs.map((pair: { neighbour: string }) => pair.neighbour)).toEqual(["F2", "F3", "F4"]);
-    expect(second.diagnostics[0].pairs.every((pair: { fact: string }) => pair.fact === "F5")).toBe(true);
+    expect(first.notingNearReview).toBeUndefined();
+    expect(second.notingNearReview).toBeUndefined();
+    expect(first.toolCalls[0].result).toContain("held: $1");
+    expect(f.h.memory.store.listSessionFacts(1).sort((a, b) => a.id - b.id).map(fact => fact.text)).toEqual([oldText, finalText, finalText, finalText, finalText]);
+    expect(f.h.memory.store.listFactsByRun(attempt!.id)).toEqual([]);
+    expect(f.h.memory.store.listFactsByRun(run!.id)).toHaveLength(1);
     expect(second.fallbackReason).toContain(`R${attempt!.id}`);
   } finally { await f.dispose(); }
 }, 30000);
@@ -232,24 +233,24 @@ test.each([
 }, 30000);
 
 test.each([
-  ["a nonempty", noteBatch, ["用 pnpm，不要 npm"]],
-  ["an explicit empty", { facts: [] }, []],
-])("27b 2026-09-10: %s note followed by a provider failure never runs a second extraction", async (_kind, batch, facts) => {
+  ["a nonempty", noteBatch],
+  ["an explicit empty", { facts: [] }],
+])("92: %s held note followed by overflow can fall back, but neither failed attempt publishes", async (_kind, batch) => {
   const f = await fixture();
   try {
     f.script((body: Body) => {
       if (!worker(body)) return say("好的。");
-      if (fresh(body)) throw new Error("a committed batch must never be extracted a second time");
-      return submitted(body) ? rejected(OVERFLOW) : call("t1", "note", batch);
+      if (fresh(body)) return rejected(OVERFLOW);
+      return submitted(body) ? rejected(OVERFLOW) : noteAndMemory("t1", batch);
     });
     await f.turn();
-    const run = await settled(f);
-    expect(run.mode).toBe("fork");
-    expect(run.outcome).toBe("success"); // 26a: the submission is the commit, whatever the trailing reply does
-    expect(f.sent.filter(fresh)).toEqual([]);
-    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(facts);
-    expect(JSON.parse(run.response!).problems.join(" ")).toContain("provider failed after commit");
-    expect(hydrate(f.h.memory.pendingEntries(1, "main", 1), f.h.memory.store)).toEqual([]); // the committed batch advanced
+    const [attempt, run] = await records(f, 2);
+    expect([attempt!.mode, attempt!.outcome, run!.mode, run!.outcome]).toEqual(["fork", "failure", "subagent", "failure"]);
+    expect(f.sent.filter(fresh)).toHaveLength(1);
+    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
+    expect(f.h.memory.store.listVisibleKnowledge(1, f.h.memory.store.getSession(1)!.projectId)).toEqual([]);
+    expect(JSON.parse(attempt!.response!).problems.join(" ")).toContain(OVERFLOW);
+    expect(hydrate(f.h.memory.pendingEntries(1, "main", 1), f.h.memory.store)).toHaveLength(2);
   } finally { await f.dispose(); }
 }, 30000);
 
@@ -351,7 +352,7 @@ test("27b 2026-09-10 (amendment 1): the memory child runs with Pi's automatic co
     const before = f.sent.length;
     const result = await runNative(f.task(captured, {
       tools: toolDefinitions.map(t => ({ ...t, execute: () => "committed" })),
-      task: "# Noting (fact extraction)\n\nnote what happened",
+      task: "# Noting (facts and knowledge)\n\nnote what happened",
     }));
     // The overflow reached the adapter as an error, with the terminal message Pi built for it.
     expect(result.outcome).toBe("failure");
@@ -377,7 +378,7 @@ test("27b 2026-09-10: a capacity fallback latches nothing — the next task requ
     // (25b), and this case is about the fallback latching nothing, not about that pause.
     let submissions = 0;
     f.script((body: Body) => !worker(body) ? say("好的。") : submitted(body) ? say("Done.")
-      : call(`t${++submissions}`, "note", submissions === 1 ? { facts: [] } : noteBatch));
+      : noteAndMemory(`t${++submissions}`, submissions === 1 ? { facts: [] } : { facts: [{ ...noteBatch.facts[0], source: ["T2#E1"] }] }));
     await f.turn();
     const first = await settled(f);
     expect(first.mode).toBe("subagent");
@@ -433,7 +434,7 @@ test.each([
     expect((h.requests[0] as { model?: string }).model).toBe("test-mini"); // which really is the one asked
     expect(String(response.fallbackReason)).toContain(reason);
     expect(h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
-    expect(h.conversations[0]!.systemPrompt).toContain("Noting (fact extraction)"); // fresh material
+    expect(h.conversations[0]!.systemPrompt).toContain("Noting (facts and knowledge)"); // fresh material
     h.ctx.hasUI = true;
     h.answers.push("Settings…", undefined); await h.commands.get("trace")!.handler("", h.ctx);
     expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment setting — this edit will not take effect)"); // no executor mode change
@@ -449,7 +450,7 @@ test("27c 2026-09-10: the reported live case — an entry the compaction did not
   const f = await fixture({ notingModel: "fake/test-thinking", notingThinking: "high" });
   try {
     let notes = 0;
-    f.script((body: Body) => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : call(`t${++notes}`, "note", noteBatch));
+    f.script((body: Body) => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory(`t${++notes}`, notes === 1 ? noteBatch : { facts: [{ ...noteBatch.facts[0], source: ["T2#E1"] }] }));
     await f.turn(); // an ordinary fork Noting first: fork mode always runs on the session model
     const first = await settled(f);
     expect(first.mode).toBe("fork");
@@ -487,7 +488,7 @@ test("27c 2026-09-10: the re-admission keeps the frozen entry membership — evi
     let frozen: string[] = [];
     f.script(async (body: Body) => {
       if (!worker(body)) return say("好的。");
-      if (fresh(body)) return submitted(body) ? say("Done.") : call("t1", "note", noteBatch);
+      if (fresh(body)) return submitted(body) ? say("Done.") : noteAndMemory("t1", noteBatch);
       // The fork attempt is in flight when new foreground evidence lands, and the provider then
       // rejects this body for context capacity.
       if (frozen.length) return rejected(OVERFLOW);
@@ -498,8 +499,8 @@ test("27c 2026-09-10: the re-admission keeps the frozen entry membership — evi
       return rejected(OVERFLOW);
     });
     await f.turn();
-    const run = await settled(f);
-    const response = JSON.parse(run.response!);
+    const [, run] = await records(f, 2);
+    const response = JSON.parse(run!.response!);
     expect(frozen.length).toBeGreaterThan(0);
     expect(hydrate(f.h.memory.store.listSourceEntries(1), f.h.memory.store).length).toBeGreaterThan(frozen.length); // the newcomers were recorded
     // 18b's boundary: the re-admission selects the batch the refused attempt was frozen on, never the
@@ -522,7 +523,7 @@ test("27d 2026-09-10 (user ruling): a fork attempt that sent a round is its own 
     f.script((body: Body) => {
       if (!worker(body)) return say("好的。");
       if (!fresh(body)) return ++forks === 1 ? call("r1", "search", { query: "pnpm" }, wireUsage(1234, 7)) : rejected(OVERFLOW);
-      return submitted(body) ? say("Done.", wireUsage(7, 2)) : call("t1", "note", noteBatch, wireUsage(11, 3));
+      return submitted(body) ? say("Done.", wireUsage(7, 2)) : noteAndMemory("t1", noteBatch, wireUsage(11, 3));
     });
     await f.turn();
     const [attempt, run] = await records(f, 2);
@@ -758,7 +759,7 @@ const consolidationRecords = async (f: Awaited<ReturnType<typeof fixture>>, coun
 /** One pending fact for the Consolidator, written manually so these cases drive one phase. */
 const seedFact = (f: Awaited<ReturnType<typeof fixture>>) => {
   f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
-    .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
+    .find(t => t.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] });
   recorded(f.h.memory, 1, "main", 1); // T1 recorded: F1 may enter the Consolidation batch
 };
 

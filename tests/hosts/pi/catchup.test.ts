@@ -15,7 +15,7 @@ function target(memory: Memory, options: { closed?: boolean; enabled?: boolean; 
   const path = { sessionId: session.id, branch: options.branch ?? "main", headTurnId: turn.id };
   memory.selectEntries(session.id, path.branch, [entry.id]);
   if (options.facts) memory.tools({ kind: "manual", sessionId: session.id, branch: path.branch, currentTurnId: turn.id })[2]!.execute({ facts:
-    Array.from({ length: options.facts }, (_, i) => ({ category: "observation", actor: "user", text: `Target claim ${i}`, source: [`T${turn.id}#user`] })) });
+    Array.from({ length: options.facts }, (_, i) => ({ text: `Target claim ${i}`, source: [`T${turn.id}#E1`] })) });
   if (options.noted) expect(memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: path.branch, createdAt: at }, facts: [], entryIds: [entry.id] }).ok).toBe(true);
   if (options.closed !== false) memory.store.closeSession(session.id);
   if (options.enabled === false) memory.store.setEnrollment(session.id, false);
@@ -39,7 +39,7 @@ test("17c 2026-09-08: two executor slots prefer own work over several closed tai
     await h.turn();
     const tails = Array.from({ length: 4 }, () => target(h.memory, { facts: 1 }));
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts:
-      Array.from({ length: 50 }, (_, i) => ({ category: "observation", actor: "user", text: `Own claim ${i}`, source: ["T1#user"] })) });
+      Array.from({ length: 50 }, (_, i) => ({ text: `Own claim ${i}`, source: ["T1#E1"] })) });
     const release = hold(h);
     h.persist(reply("word ".repeat(15000))); await h.emit("agent_end");
     // drain can return after 150ms with one held request, before both native children reach the wire.
@@ -93,7 +93,7 @@ test("17c 2026-09-08: tiny closed tails bypass thresholds; empty Noting does not
     const factsOnly = target(h.memory, { facts: 1, noted: true });
     const entryOnly = target(h.memory);
     await tick(h);
-    expect(h.requests).toHaveLength(3); // 26a: the borrowed Noting run submits, so it costs two requests
+    expect(h.requests).toHaveLength(4); // N: note, memory, terminal; C: its own terminal request
     expect(h.memory.store.listRuns(live.sessionId)).toHaveLength(1);
     expect(h.memory.store.listRuns(disabled.sessionId)).toHaveLength(1);
     expect(h.memory.store.consolidationBatch(factsOnly.sessionId, factsOnly.branch, factsOnly.headTurnId)).toEqual([]);
@@ -137,7 +137,7 @@ test("17c 2026-09-08: borrowed requests freeze target project and branch; costs 
     h.memory.declareProject(1, "Borrowed project", "mark", h.memory.store.knowledgePath(1, "main"));
     const t = target(h.memory, { facts: 1, project: "Borrowed project", branch: "target-branch" });
     const f = h.memory.store.listSessionFacts(t.sessionId)[0]!;
-    const operations = [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Target knowledge", category: "term", scope: "project", supports: [`F${f.id}`] }];
+    const operations = [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Target knowledge", category: "understanding", scope: "project", supports: [`F${f.id}`] }];
     h.provider(async c => phaseOf(c) === "noting" ? notingFact(c) : ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: { operations, skipped: [] } }] }));
     await tick(h);
     const runs = h.memory.store.listRuns(t.sessionId).filter(r => r.kind !== "manual");
@@ -163,7 +163,10 @@ test.each(["noting", "consolidation"] as const)("17c 2026-09-08: %s commit trans
     h.memory.store.invalidateExecutor(old.executorId); // Do not close tools: exercise the transaction fence itself.
     const replacement = h.memory.store.acquireClaim(t, phase, old.executorId, true)!;
     expect(replacement.token).not.toBe(old.token);
-    if (phase === "noting") input.tools[2]!.execute({ facts: [{ category: "observation", actor: "user", text: "Late", source: [`T${t.headTurnId}#user`] }] });
+    if (phase === "noting") {
+      input.tools[2]!.execute({ facts: [{ text: "Late", source: [`T${t.headTurnId}#E1`] }] });
+      input.tools[3]!.execute({ operations: [], skipped: [] });
+    }
     else {
       input.tools[3]!.execute({ operations: [], skipped: [] }); input.reportRequest({ round: 2 });
       input.tools[3]!.execute({ operations: [], skipped: [] });
@@ -181,7 +184,9 @@ test("17c 2026-09-08: reopen blocks selection and immediately replaces borrowed 
   let finish!: () => void;
   const old = TraceMemory(h.dbPath, async () => { await new Promise<void>(r => { finish = r; }); return { outcome: "success", output: "", request: {} }; });
   // 26a: the new owner's run completes its batch with the explicit empty submission.
-  const own = TraceMemory(h.dbPath, async raw => { (raw as NotingAgentInput).tools.find(t => t.name === "note")!.execute({ facts: [] });
+  const own = TraceMemory(h.dbPath, async raw => {
+    (raw as NotingAgentInput).tools.find(t => t.name === "note")!.execute({ facts: [] });
+    (raw as NotingAgentInput).tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "", request: {} }; });
   try {
     await h.turn();
@@ -238,22 +243,23 @@ test("17c 2026-09-08: shared five-second shutdown deadline fences own and borrow
   } finally { vi.useRealTimers(); await h.dispose(); }
 });
 
-test("17c 2026-09-08: shutdown cancels retry waits, retains available usage, and never restarts a committed batch", async () => {
+test("17c 2026-09-08: shutdown cancels retry waits, retains available usage, and discards the held batch", async () => {
   const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30, retry: { baseDelayMs: 60_000 } });
   try {
     h.provider(async c => c.messages.some(m => m.role === "toolResult") ? { ...reply(""), stopReason: "error", errorMessage: "503 overloaded" } : notingFact(c), { autoStop: false });
     await h.turn();
-    expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
+    expect(h.memory.store.listSessionFacts(1)).toHaveLength(0);
     expect(h.requests).toHaveLength(2);
     const started = performance.now(); await h.emit("session_shutdown");
     expect(performance.now() - started).toBeLessThan(1000);
     const run = h.memory.store.listRuns(1)[0]!;
-    expect(run.outcome).toBe("success"); expect(run.response).toContain("cancelled");
+    expect(run.outcome).toBe("cancelled");
+    expect(JSON.parse(run.response!).output).toContain("503 overloaded");
     // Available usage is retained: the attempt that reached the provider reported 1 input token, and
     // the attempt that died in transport reported none (19c: usage now comes from the child's own
     // responses, and a connection error produces no usage at all).
     expect(JSON.parse(run.response!).usage.input).toBe(1); expect(JSON.parse(run.response!).retries).toHaveLength(1);
-    expect(h.requests).toHaveLength(2); expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
+    expect(h.requests).toHaveLength(2); expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(2);
   } finally { await h.dispose(); }
 });
 
@@ -280,12 +286,18 @@ test("17c 2026-09-08: late rejection after deadline is consumed, normal restore 
 });
 
 
-test.each(["noting", "consolidation"] as const)("17c 2026-09-08: %s cleanup or audit failure preserves committed success", async phase => {
+test.each([
+  ["noting", "claim-release failure after terminal publication"],
+  ["consolidation", "cleanup and post-commit audit failure"],
+] as const)("17c/92: %s %s preserves committed success", async (phase, _failure) => {
   const h = host();
   const worker = TraceMemory(h.dbPath, async raw => {
     const input = raw as NotingAgentInput | ConsolidationAgentInput;
     input.reportRequest({ phase });
-    if (phase === "noting") input.tools[2]!.execute({ facts: [] });
+    if (phase === "noting") {
+      input.tools[2]!.execute({ facts: [] });
+      input.tools[3]!.execute({ operations: [], skipped: [] });
+    }
     else { input.tools[3]!.execute({ operations: [], skipped: [] }); input.reportRequest({ phase, round: 2 }); input.tools[3]!.execute({ operations: [], skipped: [] }); }
     return { outcome: "success", output: "", request: { phase } };
   });
@@ -293,16 +305,19 @@ test.each(["noting", "consolidation"] as const)("17c 2026-09-08: %s cleanup or a
     await h.turn();
     const t = target(h.memory, { facts: 1 });
     const release = vi.spyOn(worker.store, "releaseClaim").mockImplementation(() => { throw new Error("release unavailable"); });
-    const audit = vi.spyOn(worker.store, "updateRun").mockImplementation(() => { throw new Error("audit unavailable"); });
+    // N's audit INSERT belongs to terminal publication and must roll back on failure (core regression).
+    // This host N case injects only cleanup failure AFTER publication; C retains its post-commit audit probe.
+    const audit = phase === "consolidation"
+      ? vi.spyOn(worker.store, "updateRun").mockImplementation(() => { throw new Error("audit unavailable"); }) : undefined;
     const result = await (phase === "noting" ? worker.noting(t) : worker.consolidate(t));
     expect(result.outcome).toBe("success");
     if (result.outcome !== "success") throw new Error("expected committed success");
     expect(result.problems!.join(" ")).toContain("release unavailable");
-    expect(result.problems!.join(" ")).toContain("audit unavailable");
+    if (phase === "consolidation") expect(result.problems!.join(" ")).toContain("audit unavailable");
     expect(h.memory.store.getRun(result.runId)!.outcome).toBe("success");
     if (phase === "noting") expect(h.memory.pendingEntries(t.sessionId, t.branch, t.headTurnId)).toEqual([]);
     else expect(h.memory.store.consolidationBatch(t.sessionId, t.branch, t.headTurnId)).toEqual([]);
-    release.mockRestore(); audit.mockRestore();
+    release.mockRestore(); audit?.mockRestore();
   } finally { vi.restoreAllMocks(); worker.close(); await h.dispose(); }
 });
 
@@ -397,17 +412,15 @@ test("17c 2026-09-08: disabled executors cannot acquire or commit borrowed work;
 test("17c 2026-09-08: failed own capacity admission leaves the slot free for a smaller closed tail", async () => {
   const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
   try {
-    // 27a: the allowance is the window minus the 10,000-token headroom (no 85% multiplier, no output
-    // reserve), so 17,800 leaves 7,800 for input — above the small closed tail's updated fixed cost
-    // (about 6,000 after 40's Noter rules, reduced again when 64a removed Consolidator review
-    // framing) and below that plus this session's own entry view, which 30 caps at 2,000 tokens. That
-    // is the split this case needs at the current prompt size.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 17000 };
+    // 92's shared note/memory definitions and joint instructions cost 7,341 tokens before
+    // material. A 19,000 window leaves 9,000 input tokens: the tiny borrowed tail fits,
+    // but this executor's 2,000-token oldest entry must still fail whole-entry admission.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 19000 };
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);
     await tick(h);
-    expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
+    expect(h.requests, h.notices.join("\n")).toHaveLength(3); // explicit note, empty memory, then normal terminal
     expect(h.conversations[0]!.messages[0]!.content).toContain(`S${t.sessionId}/T${t.headTurnId}`);
     expect(h.notices.join(" ")).toContain("Noting capacity: selected evidence cannot fit the model context");
     expect(h.memory.store.getClaim(1, "noting")).toBeNull();

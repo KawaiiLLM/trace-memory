@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { wholeTrace } from "../../trace-pages.ts";
+import { readHandle } from "../../read-handle-fixture.ts";
 import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { DEFAULT_CONFIG, TraceMemory, renderEntry, tokens, type NotingAgentInput } from "../../../src/core/api/index.ts";
@@ -70,7 +71,7 @@ test("17a 2026-09-08: attach surfaces missing native ancestry without manufactur
   } finally { await h.dispose(); }
 });
 
-test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and keep legacy citations bound to the frozen occurrence", async () => {
+test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bind held facts to exact frozen entries", async () => {
   const h = host(quiet);
   let release!: () => void;
   let input!: NotingAgentInput;
@@ -92,12 +93,14 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and ke
     expect(read).toContain("late result");
     const note = input.tools.find(t => t.name === "note")!;
     const lateResult = hydrate(h.memory.store.sourcePath(1, "main", 1), h.memory.store).find(entry => entry.role === "toolResult")!;
-    expect(JSON.parse(note.execute({ facts: [{ category: "observation", actor: "agent", text: "Late evidence", source: [`T1#E${lateResult.entryOrdinal}`] }] })).results[0]).toMatch(/^rejected:/);
-    const committed = JSON.parse(note.execute({ facts: [{ category: "observation", actor: "agent", text: "The first response was produced.", source: ["T1#assistant"] }] }));
-    expect(committed.results).toEqual([`ok: F${committed.factIds[0]}`]);
-    expect(h.memory.store.factEntries(committed.factIds[0])).toEqual([before[1]!.id]);
+    expect(note.execute({ facts: [{ text: "Late evidence", source: [`T1#E${lateResult.entryOrdinal}`] }] })).toContain("rejected:");
+    const held = JSON.parse(note.execute({ facts: [{ slot: "$1", text: "The first response was produced.", source: [`T1#E${before[1]!.entryOrdinal}`] }] }));
+    expect(held.held).toEqual(["$1"]);
+    expect(h.memory.store.listSessionFacts(1)).toEqual([]);
+    input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
     release();
     expect((await pending).outcome).toBe("success");
+    expect(h.memory.store.factEntries(h.memory.store.listSessionFacts(1)[0]!.id)).toEqual([before[1]!.id]);
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)).toHaveLength(2);
     const after = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
     expect(after.map(e => e.role)).toEqual(["toolResult", "assistant"]);
@@ -114,7 +117,8 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and ke
       // carries is the head reply the captured request cannot contain.
       expect(forkInput.text).not.toContain("T1#user");
       expect(forkInput.text).toContain("late assistant");
-      forkInput.tools.find(tool => tool.name === "note")!.execute({ facts: [] }); // 26a: completed by a submission
+      forkInput.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+      forkInput.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
       return { outcome: "success", output: "", request: {} };
     });
     try {
@@ -171,13 +175,13 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
   try {
     await h.prompt("check"); await h.answer("observed");
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    tools[2]!.execute({ facts: [{ category: "observation", actor: "user", text: "A useful fact", source: ["T1#user"] }] });
+    tools[2]!.execute({ facts: [{ text: "A useful fact", source: ["T1#E1"] }] });
     await h.emit("tool_result", { toolName: "read", input: { path: "large" }, content: [{ type: "text", text: "head " + "word ".repeat(60000) + " tail" }], isError: false });
     const entries = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
     expect(tokens(entries.map(e => e.raw).join("\n\n"))).toBeGreaterThan(20000);
     expect(tokens(entries.map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBeLessThan(20000);
     const block = compacted(h.memory.compact(1, "main", 1));
-    const grouped = `[T1] ${h.memory.store.getTurn(1)!.startedAt} (selected facts)\n${h.memory.trace("F1")}`;
+    const grouped = `[T1] ${h.memory.store.getTurn(1)!.startedAt} (selected facts) · session harness: Pi agent (context, not claim attribution)\n${h.memory.trace("F1")}`;
     expect(block.split("Recent facts (by Turn):\n\n")[1]!.split("\n\nRaw:")[0]).toBe(grouped);
     let sent = "";
     const noting = TraceMemory(join(h.dir, "trace.db"), async raw => {
@@ -193,7 +197,9 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
 test("17a 2026-09-08: forks reuse shared identities and ordinals but native short ids in different lineages never collide", async () => {
   const h = host(quiet);
   // 26a: a Noting run completes its batch with a submission; nothing to record is `{facts: []}`.
-  const noter = TraceMemory(join(h.dir, "trace.db"), async raw => { (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+  const noter = TraceMemory(join(h.dir, "trace.db"), async raw => {
+    (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    (raw as NotingAgentInput).tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "", request: {} }; });
   try {
     await h.prompt("same Turn");
@@ -215,7 +221,7 @@ test("17a 2026-09-08: forks reuse shared identities and ordinals but native shor
       .toEqual([{ lineage: "fork-native-session", branch }, { lineage: "pi-test", branch: "main" }]);
     const fork = hydrate(h.memory.pendingEntries(1, branch, 1), h.memory.store)[0]!;
     const manual = h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
-    expect(JSON.parse(manual[2]!.execute({ facts: [{ category: "observation", actor: "agent", text: "Sibling result", source: ["T1#t2"] }] })).results[0]).toMatch(/^rejected:/);
+    expect(JSON.parse(manual[2]!.execute({ facts: [{ text: "Sibling result", source: [`T1#E${original.entryOrdinal}`] }] })).results[0]).toMatch(/^rejected:/);
     expect([original.nativeId, fork.nativeId]).toEqual(["collision", "collision"]);
     expect(original.nativeLineage).not.toBe(fork.nativeLineage);
     expect([initial[1]!.calls[0]!.ordinal, original.calls[0]!.ordinal, fork.calls[0]!.ordinal]).toEqual([1, 2, 3]);
@@ -322,12 +328,12 @@ test("review 2026-09-08 P1: a sibling entry of the same Turn is off-path for fac
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "sibling-only", name: "bash", arguments: { command: "adopt alpha" } }] });
     await h.emit("agent_end");
     let tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(tools[2]!.execute({ facts: [{ category: "proposal", actor: "agent", text: "Adopt alpha", source: ["T1#t2"] }] })).not.toContain("rejected:");
+    expect(tools[2]!.execute({ facts: [{ text: "Adopt alpha", source: ["T1#E3"] }] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(branch).not.toBe("main");
     tools = h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
-    expect(tools[2]!.execute({ facts: [{ category: "proposal", actor: "agent", text: "Adopt alpha", source: ["T1#t2"] }] })).toContain("rejected:");
+    expect(tools[2]!.execute({ facts: [{ text: "Adopt alpha", source: ["T1#E3"] }] })).toContain("rejected:");
     expect(h.memory.store.listBranchFacts(1, branch, 1)).toHaveLength(0); // F1 cites the sibling entry: off this path
     const knowledge = tools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] });
     expect(knowledge).toContain("rejected:");
@@ -361,8 +367,8 @@ test("64b/P1b: frozen Fact isolation remains reader-path local while Knowledge f
     const common = [...h.entries];
     h.persist(reply("ALPHA_ONLY: adopt alpha.")); await h.emit("agent_end");
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(tools[2]!.execute({ facts: [{ category: "proposal", actor: "agent", text: "Adopt alpha", quote: "ALPHA_ONLY: adopt alpha.", source: ["T1#assistant"] }] })).not.toContain("rejected:");
-    expect(h.memory.store.factEntries(1)).toHaveLength(2); // both assistant entries of T1 carry that address; the fact is bound to both
+    expect(tools[2]!.execute({ facts: [{ text: "Pi agent proposed: ALPHA_ONLY: adopt alpha.", source: ["T1#E2", "T1#E3"] }] })).not.toContain("rejected:");
+    expect(h.memory.store.factEntries(1)).toHaveLength(2); // both exact assistant sources remain required by the fact
     expect(tools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
@@ -403,7 +409,7 @@ test("review 2026-09-08 P3: the Noter's active knowledge follows the branch path
     await h.prompt("Investigate"); await h.answer("Shared interim."); const common = [...h.entries];
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "alpha", name: "bash", arguments: { command: "adopt alpha" } }] }); await h.emit("agent_end");
     const t = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(t[2]!.execute({ facts: [{ category: "proposal", actor: "agent", text: "Use alpha", source: ["T1#t1"] }] })).not.toContain("rejected:");
+    expect(t[2]!.execute({ facts: [{ text: "Use alpha", source: ["T1#E3"] }] })).not.toContain("rejected:");
     expect(t[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "SIBLING_POLICY_ALPHA", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
@@ -438,16 +444,16 @@ test("64b/21a: an archive follows its support owner's foreground without changin
     const common = [...h.entries];
     const write = (branch: string) => h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
     let tools = write("main");
-    expect(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use alpha everywhere", source: ["T1#user"] }] })).not.toContain("rejected:");
+    expect(tools[2]!.execute({ facts: [{ text: "Use alpha everywhere", source: ["T1#E1"] }] })).not.toContain("rejected:");
     expect(tools[3]!.execute({ operations: [{ op: "create", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
       supports: ["F1"], reason: "Admitted from the shared ancestry." }], skipped: [] })).not.toContain("rejected:");
     // The withdrawal is bound to a sibling entry of the same Turn: only this path holds it.
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });
     await h.emit("agent_end");
     tools = write("main");
-    expect(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Alpha is withdrawn", source: ["T1#t2"] }] })).not.toContain("rejected:");
-    tools[0]!.execute({ address: "K1@1" });
-    expect(tools[3]!.execute({ operations: [{ op: "archive", id: "K1@1", supports: ["F2"], reason: "The user withdrew the rule on this path." }], skipped: [] })).not.toContain("rejected:");
+    expect(tools[2]!.execute({ facts: [{ text: "Alpha is withdrawn", source: ["T1#E4"] }] })).not.toContain("rejected:");
+    const base = readHandle(tools, "K1");
+    expect(tools[3]!.execute({ operations: [{ op: "archive", id: base, supports: ["F2"], reason: "The user withdrew the rule on this path." }], skipped: [] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(branch).not.toBe("main");

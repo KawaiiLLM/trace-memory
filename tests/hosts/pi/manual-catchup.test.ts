@@ -49,8 +49,8 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     await h.emit("session_start"); // import only; no automatic trigger (17a/17b)
     const head = h.memory.store.listTurns(1).at(-1)!.id;
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { category: "observation", actor: "user", text: "Pre-existing A", source: ["T1#user"] },
-      { category: "observation", actor: "user", text: "Pre-existing B", source: ["T1#user"] },
+      { text: "Pre-existing A", source: ["T1#E1"] },
+      { text: "Pre-existing B", source: ["T1#E1"] },
     ] });
     h.provider(async c => phaseOf(c) === "consolidation" ? consolidationReply() : notingFact(c));
     await command(h, "catchup");
@@ -67,7 +67,7 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     // A later ordinary Turn and a later manual fact must stay outside this already-completed target.
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { category: "observation", actor: "user", text: "Later, unrelated", source: ["T1#user"] } ] });
+      { text: "Later, unrelated", source: ["T1#E1"] } ] });
     expect(h.requests.length).toBe(requestsBefore); // nothing auto-triggered (both are far below threshold)
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
     expect(h.memory.store.consolidationBatch(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
@@ -109,8 +109,8 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
   try {
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { category: "observation", actor: "user", text: "Needs consolidation A", source: ["T1#user"] },
-      { category: "observation", actor: "user", text: "Needs consolidation B", source: ["T1#user"] },
+      { text: "Needs consolidation A", source: ["T1#E1"] },
+      { text: "Needs consolidation B", source: ["T1#E1"] },
     ] });
     const release = hold(h);
     h.persist(reply("word ".repeat(15000))); await h.emit("agent_end"); await h.drain();
@@ -137,7 +137,7 @@ test("18b 2026-09-08: a foreign claim on the target shows Waiting without steali
   try {
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { category: "observation", actor: "user", text: "Foreign claim target", source: ["T1#user"] } ] });
+      { text: "Foreign claim target", source: ["T1#E1"] } ] });
     const other = TraceMemory(h.dbPath, async () => { throw new Error("no model expected"); });
     try {
       const foreign = other.store.acquireClaim({ sessionId: 1, branch: "main", headTurnId: 1 }, "noting", "foreign-executor")!;
@@ -260,7 +260,7 @@ test("18b 2026-09-08: switching tree paths during catchup ends it; it is never r
   try {
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { category: "observation", actor: "user", text: "Old path fact", source: ["T1#user"] } ] });
+      { text: "Old path fact", source: ["T1#E1"] } ] });
     h.provider(async (_c, signal) => new Promise<Reply>(resolve => signal!.addEventListener("abort", () => resolve({ ...reply(""), stopReason: "aborted" }), { once: true })));
     await command(h, "catchup");
     await h.drain();
@@ -349,7 +349,8 @@ test("18b 2026-09-08: stop prevents the next batch from being scheduled even whe
       await settle(h);
     } finally { spy.mockRestore(); }
     expect(stoppedOnce).toBe(true);
-    expect(h.requests).toHaveLength(1); // the committed batch must not chain into a second one after stop
+    expect(h.requests).toHaveLength(3); // note, memory and terminal publish one batch; stop forbids a second batch
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(1);
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");
@@ -381,7 +382,7 @@ test("67: even a many-batch fact backlog remains pending below C's ordinary trig
     await h.emit("session_start");
     const head = h.memory.store.listTurns(1).at(-1)!.id;
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts:
-      Array.from({ length: 12 }, (_, i) => ({ category: "observation", actor: "user", text: `Pre-existing ${i} ` + "word ".repeat(40), source: ["T1#user"] })) });
+      Array.from({ length: 12 }, (_, i) => ({ text: `Pre-existing ${i} ` + "word ".repeat(40), source: ["T1#E1"] })) });
     const frozenFacts = h.memory.store.consolidationBatch(1, "main", head).map(f => f.id);
     expect(frozenFacts.length).toBe(12);
     h.provider(async c => phaseOf(c) === "consolidation" ? consolidateRange(c) : notingFact(c));
@@ -404,7 +405,7 @@ test("67: even a many-batch fact backlog remains pending below C's ordinary trig
     const requests = h.requests.length;
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { category: "observation", actor: "user", text: "Later, unrelated", source: ["T1#user"] } ] });
+      { text: "Later, unrelated", source: ["T1#E1"] } ] });
     expect(h.requests.length).toBe(requests);
     const later = h.memory.store.listTurns(1).at(-1)!.id;
     expect(h.memory.pendingEntries(1, "main", later).length).toBeGreaterThan(0);
@@ -417,7 +418,7 @@ test("68: stop after a C commit fences that drain; a fresh catchup reaches the C
   try {
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts:
-      Array.from({ length: 12 }, (_, i) => ({ category: "observation", actor: "user", text: `Pre-existing ${i} ` + "word ".repeat(40), source: ["T1#user"] })) });
+      Array.from({ length: 12 }, (_, i) => ({ text: `Pre-existing ${i} ` + "word ".repeat(40), source: ["T1#E1"] })) });
     const frozen = h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id);
     // Stop fires after the first Consolidation batch has already committed, so the race is decided:
     // that batch stands, and the drain must schedule nothing further.
@@ -458,7 +459,7 @@ test("review 2026-09-08: an unavailable Consolidator model fails the catchup onc
     await h.turn();
     h.provider(async c => emptyNote(c) ?? reply("done"));
     const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(t => t.name === "note")!;
-    expect(note.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] })).toContain("ok: F1");
+    expect(note.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] })).toContain("ok: F1");
     let lookups = 0;
     // A re-admission loop has no wait a timeout could catch, so the stub itself stops it after a few lookups.
     const find = h.ctx.modelRegistry.find.bind(h.ctx.modelRegistry);
