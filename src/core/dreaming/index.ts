@@ -68,14 +68,17 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Dreamer Knowledge capacity must be a safe integer");
   // Changed and current references share one Knowledge window, not two independent allowances.
   const processedInputCap = knowledgeCapacity - tokens(changed) - 1;
+  const referenceTitle = "Current pool knowledge outside this range:\n";
+  if (processedInputCap < tokens(referenceTitle))
+    throw new Error("Dreaming capacity: pending Knowledge and required framing cannot fit the Knowledge window; left pending");
   const renderReference = (value: (typeof references)[number]) => due.rendered.get(value.revision.id)!;
   let old = processedBlock(references, renderReference);
-  if (tokens(`Current pool knowledge outside this range:\n${old}`) > processedInputCap) {
-    const selected = budgetKnowledge(references, Math.max(0, processedInputCap - tokens("Current pool knowledge outside this range:\n")),
+  if (tokens(`${referenceTitle}${old}`) > processedInputCap) {
+    const selected = budgetKnowledge(references, processedInputCap - tokens(referenceTitle),
       renderReference, "Dreamer current reference input");
     old = [renderKnowledgeBlock(selected.groups.filter(group => group.text)), ...selected.receipts].join("\n");
   }
-  old = `Current pool knowledge outside this range:\n${old}`;
+  old = `${referenceTitle}${old}`;
   if (tokens(old) > processedInputCap)
     throw new Error(`Dreaming current reference input exceeds ${processedInputCap} tokens including framing`);
   if (tokens(changed) > 10_000 || tokens([old, changed].join("\n\n")) > knowledgeCapacity)
