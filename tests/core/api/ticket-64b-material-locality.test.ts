@@ -43,15 +43,12 @@ function fixture(baseText = "divergent base") {
   if (!created.ok) throw new Error(created.problems.join("; "));
   const historical = created.committed[0]!;
   // Historical manual body remains readable, but the current pending predecessor fits D's 10k slice.
-  const base = baseText.length > 10_000
-    ? (() => {
-      const revised = commitNoterKnowledge(memory.store, { path: { sessionId: session.id, branch: "root", headTurnId: turn.id },
-        run: { sessionId: session.id, branch: "root", createdAt: at }, operations: [{ op: "update",
-          knowledgeId: historical.knowledgeId, baseCommit: historical.commit, text: "current concise parent",
-          category: "constraint", scope: "project", supports: [fact], topics: [], reason: "Historical body superseded", createdAt: at }] });
-      if (!revised.ok) throw new Error(revised.problems.join("; "));
-      return revised.committed[0]!;
-    })() : historical;
+  const revised = commitNoterKnowledge(memory.store, { path: { sessionId: session.id, branch: "root", headTurnId: turn.id },
+    run: { sessionId: session.id, branch: "root", createdAt: at }, operations: [{ op: "update",
+      knowledgeId: historical.knowledgeId, baseCommit: historical.commit, text: "current concise parent",
+      category: "constraint", scope: "project", supports: [fact], topics: [], reason: "Historical body superseded", createdAt: at }] });
+  if (!revised.ok) throw new Error(revised.problems.join("; "));
+  const base = revised.committed[0]!;
   return { memory, scenarios, session, turn, fact, branchFacts, left, right, joined, historical, base };
 }
 
@@ -112,7 +109,7 @@ test("64b F1: oversized unrelated history does not pin a fitting pending identit
   const pool = `project:${f.session.projectId}`;
   const pendingVersions = f.memory.store.pendingVersions(pool, { sessionId: f.session.id, branch: "joined", headTurnId: f.turn.id });
   expect(pendingVersions.map(value => value.revisionId)).toContain(pending.commit);
-  expect(tokens(["Pending current knowledge:", ...pendingVersions.map(value => value.material)].join("\n"))).toBeLessThan(15000);
+  expect(tokens(["Pending current knowledge:", ...pendingVersions.map(value => value.material)].join("\n"))).toBeLessThan(10_000);
 
   let changed = "";
   const result = await f.scenarios.run(f.memory,
@@ -125,5 +122,5 @@ test("64b F1: oversized unrelated history does not pin a fitting pending identit
   expect(changed).toContain(`New K${pending.knowledgeId}@v1`);
   expect(changed).not.toContain(`K${f.base.knowledgeId}@v3`);
   expect(changed).not.toContain(`K${f.base.knowledgeId}@v4`);
-  expect(tokens(changed)).toBeLessThanOrEqual(15000);
+  expect(tokens(changed)).toBeLessThanOrEqual(10_000);
 });
