@@ -16,7 +16,10 @@ test.each(choices.flatMap(choice => (choice.name === "legacy true" ? ["noting"] 
   const memory = sourceSeededMemory(":memory:", async raw => {
     const input = raw as NotingAgentInput | ConsolidationAgentInput;
     calls.push(input);
-    if (input.kind === "noting") input.tools.find(t => t.name === "note")!.execute({ facts: [] });
+    if (input.kind === "noting") {
+      expect(input.tools.find(t => t.name === "note")!.execute({ facts: [] })).not.toContain("rejected:");
+      expect(input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).not.toContain("rejected:");
+    }
     else {
       const tool = input.tools.find(t => t.name === "memory")!;
       const batch = { operations: [], skipped: input.range.facts.map(f => ({ fact: `F${f.id}`, because: "Not durable." })) };
@@ -30,7 +33,7 @@ test.each(choices.flatMap(choice => (choice.name === "legacy true" ? ["noting"] 
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Evidence", assistantText: "Reply", startedAt: "t" });
     const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     if (phase === "consolidation") memory.tools({ kind: "manual", ...target, currentTurnId: turn.id })
-      .find(t => t.name === "note")!.execute({ facts: [{ category: "observation", actor: "user", text: "Evidence", source: [`T${turn.id}#user`] }] });
+      .find(t => t.name === "note")!.execute({ facts: [{ text: "Evidence", source: [`T${turn.id}#E1`] }] });
     const run = phase === "noting" ? memory.noting : memory.consolidate;
     expect((await run({ ...target, ...(mode ? { mode } : {}) })).outcome).toBe("success");
     expect(calls).toHaveLength(1);

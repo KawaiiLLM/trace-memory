@@ -65,10 +65,10 @@ function fact(text = memories.base, options: { sessionId?: number; branch?: stri
   if (!result.ok) throw new Error(result.problems.join("\n"));
   return result.facts[0]!.id;
 }
-function knowledge(supports: number[], options: { sessionId?: number; text?: string; category?: "constraint" | "open" | "dispute" | "goal" | "mechanism" | "term" | "reference"; scope?: "session" | "project" | "global" } = {}) {
+function knowledge(supports: number[], options: { sessionId?: number; text?: string; category?: "constraint" | "open" | "goal" | "understanding" | "reference"; scope?: "session" | "project" | "global" } = {}) {
   const result = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: options.sessionId ?? sessionId, createdAt: time }, operations: [{
     op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text: options.text ?? memories.knowledge, supports, createdAt: time,
-    category: options.category ?? "mechanism", scope: options.scope ?? "project",
+    category: options.category ?? "understanding", scope: options.scope ?? "project",
   }] });
   if (!result.ok) throw new Error("fixture knowledge failed");
   return result.committed[0]!.knowledgeId;
@@ -78,7 +78,7 @@ function watermark(id: number, branch = "main") {
   expect(result.ok).toBe(true);
 }
 const consolidated = (id: number, branch = "main", owner = sessionId) => memory.store.consolidatedOnPath(id, memory.store.knowledgePath(owner, branch));
-const createOutput = (support: number, text = memories.knowledge) => ({ ...empty, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text, category: "mechanism" as const, scope: "project" as const, supports: [`F${support}`] }] });
+const createOutput = (support: number, text = memories.knowledge) => ({ ...empty, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text, category: "understanding" as const, scope: "project" as const, supports: [`F${support}`] }] });
 const consolidation = (branch = "main") => memory.consolidate({ sessionId, branch });
 function queue(...outputs: unknown[]) { for (const output of outputs) script.push(async (input) => success(output, input)); }
 function deferred() {
@@ -175,7 +175,7 @@ test("empty ranges do not call the agent or create records", async () => {
 // unchanged, and the removal itself is pinned below.
 test("already-consolidated facts are not supplied while the range remains complete, and categories keep presentation order", async () => {
   const newest = fact(memories.base, { createdAt: "2026-08-17" }), oldest = fact(memories.observation, { createdAt: "2026-08-15" });
-  const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
+  const categories = ["constraint", "open", "goal", "understanding", "reference"] as const;
   for (const category of categories) knowledge([newest], { category });
   watermark(newest); watermark(oldest); const current = fact(memories.interpretation);
   // The two consolidated facts are stored and readable; neither is injected, and the range is exactly
@@ -193,7 +193,7 @@ test("already-consolidated facts are not supplied while the range remains comple
 });
 
 
-const updateOutput = (id: number, support: number) => ({ ...empty, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: `K${id}`, text: memories.editedKnowledge, category: "mechanism", scope: "project", supports: [`F${support}`] }] });
+const updateOutput = (id: number, support: number) => ({ ...empty, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: `K${id}`, text: memories.editedKnowledge, category: "understanding", scope: "project", supports: [`F${support}`] }] });
 const decline = (...ids: number[]) => ids.map((id) => ({ fact: `F${id}`, because: "Not durable." }));
 
 
@@ -203,7 +203,7 @@ const decline = (...ids: number[]) => ids.map((id) => ({ fact: `F${id}`, because
 
 test("32d: Consolidator merge cannot create a survivor revision or absorbed links", async () => {
   const a = fact(), b = fact(memories.observation), survivor = knowledge([a]), absorbed = knowledge([b]);
-  const output = { ...empty, operations: [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: `K${survivor}`, absorb: [`K${absorbed}`], text: memories.editedKnowledge, category: "mechanism", scope: "project", supports: [`F${a}`, `F${b}`] }] };
+  const output = { ...empty, operations: [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: `K${survivor}`, absorb: [`K${absorbed}`], text: memories.editedKnowledge, category: "understanding", scope: "project", supports: [`F${a}`, `F${b}`] }] };
   queue(output, output); const result = await consolidation();
   expect(result.outcome).toBe("bounced");
   expect("problems" in result && result.problems?.join()).toContain("Dreamer");
@@ -286,7 +286,7 @@ test("simulation v7m fixture consolidates through the facade with traceable Chin
   const fixture = JSON.parse(readFileSync(new URL("../../fixtures/consolidation.json", import.meta.url), "utf8"));
   const ids = new Map<number, number>();
   for (const source of fixture.facts) ids.set(source.id, fact(source.text, { actor: source.actor, category: source.category, quote: source.quote, createdAt: source.timestamp }));
-  const output = { ...empty, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...fixture.knowledge, supports: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) }] };
+  const output = { ...empty, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...fixture.knowledge, category: "understanding", supports: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) }] };
   queue(output, output); const result = await consolidation();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.committed).toHaveLength(1);

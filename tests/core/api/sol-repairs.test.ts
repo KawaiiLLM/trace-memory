@@ -10,7 +10,7 @@ const time = "2026-09-01T00:00:00Z";
 function setup(normalized = true) {
   const m = TraceMemory(":memory:", async () => { throw new Error("offline only"); }, {}, undefined, normalized ? piSourceBlocks : undefined);
   const projectId = m.store.createProject({ name: "sol", declaredBy: "mark" }).id;
-  const sessionId = m.store.createSession({ host: "test", projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true }).id;
+  const sessionId = m.store.createSession({ host: "pi:sol", projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true }).id;
   const turn = m.store.appendTurn({ sessionId, kind: "turn", startedAt: time });
   let next = 0;
   const text = (body: string, role: "user" | "assistant" = "assistant", turnId = turn.id, parts = [body]) => m.appendEntry({
@@ -74,30 +74,34 @@ test("Sol 2: single entry selectors budget each selected block; collections reta
   } finally { f.m.close(); }
 });
 
-test.each(["manual", "noting"] as const)("Sol 4: %s completion uses resolved blocks, not incidental text or sibling results", kind => {
+test.each(["manual", "noting"] as const)("92 supersedes Sol 4 status policing: %s sources are whole entries, not incidental text or siblings", kind => {
   const f = setup();
   try {
     const mixed = f.dispatch("I will start it"), pure = f.dispatch(), delivery = f.text("Here is the requested explanation."), sibling = f.result(), unrelated = f.result("other");
     f.select([mixed.id, pure.id, delivery.id, unrelated.id]);
-    const submit = (sources: string[], status = "completed") => f.note(kind).execute({ facts: [{ category: "event", actor: "agent", status, text: "A delivery", source: sources }] });
-    for (const sources of [["T1#E1"], ["T1#E2"], ["T1#E1@dispatch"], ["T1#t1"], ["T1#E1", "T1#E3@text"], ["T1#E1", "T1#E5@other"]])
-      expect(submit(sources)).toContain("requires result evidence");
-    expect(submit(["T1#E1", "T1#E4@dispatch"])).toContain("invalid source");
-    for (const sources of [["T1#E1@text"], ["T1#E3"], ["T1#assistant"]]) expect(submit(sources)).not.toContain("rejected:");
-    for (const status of ["reported", "dispatched", "attempted"]) expect(submit(["T1#E1"], status)).not.toContain("rejected:");
+    const submit = (sources: string[]) => f.note(kind).execute({ facts: [{ text: "Pi agent claimed delivery; evidence remains separately attributed.", source: sources }] });
+    for (const sources of [["T1#E1@dispatch"], ["T1#t1"], ["T1#E1", "T1#E3@text"], ["T1#E1", "T1#E5@other"], ["T1#assistant"]])
+      expect(submit(sources)).toContain("invalid source");
+    expect(submit(["T1#E1", "T1#E4"])).toContain("invalid source");
+    for (const sources of [["T1#E1"], ["T1#E2"], ["T1#E3"], ["T1#E1", "T1#E5"]]) expect(submit(sources)).not.toContain("rejected:");
     f.select([mixed.id, pure.id, delivery.id, sibling.id, unrelated.id]);
-    for (const sources of [["T1#E4"], ["T1#E4@dispatch"], ["T1#E1", "T1#E4@dispatch"], ["T1#t1"]]) expect(submit(sources)).not.toContain("rejected:");
+    for (const sources of [["T1#E4"], ["T1#E1", "T1#E4"]]) expect(submit(sources)).not.toContain("rejected:");
+    if (kind === "manual") {
+      expect(f.m.store.listTurnFacts(f.turn.id).at(-1)!.roles).toEqual([{ role: "assistant", harness: "Pi agent" }, { role: "observation" }]);
+    } else expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]); // tool holds do not publish
   } finally { f.m.close(); }
 });
 
-test("Sol 4: legacy whole-entry dispatches are not completed; role aliases retain text projection", () => {
+test("92: an unnormalized whole entry remains assistant evidence; legacy read aliases retain text projection", () => {
   const f = setup(false);
   try {
     const entry = f.dispatch("Claimed delivery"); f.select([entry.id]);
-    const submit = (source: string) => f.note().execute({ facts: [{ category: "event", actor: "agent", status: "completed", text: "Delivered", source: [source] }] });
-    expect(submit("T1#E1")).toContain("requires result evidence");
-    expect(submit("T1#assistant")).not.toContain("rejected:");
+    const submit = (source: string) => f.note().execute({ facts: [{ text: "Pi agent claimed delivery", source: [source] }] });
+    expect(submit("T1#E1")).not.toContain("rejected:");
+    expect(f.m.store.listTurnFacts(f.turn.id)[0]!.roles).toEqual([{ role: "assistant", harness: "Pi agent" }]);
+    expect(submit("T1#assistant")).toContain("invalid source");
     expect(submit("T1#E1@text")).toContain("invalid source");
+    expect(f.m.trace("T1#assistant")).toContain("Claimed delivery");
   } finally { f.m.close(); }
 });
 
@@ -142,7 +146,7 @@ test("Sol 5: semantic groups and walks budget complete framing; automatic facts 
   const f = setup();
   try {
     const entry = f.text("evidence", "user"); f.select([entry.id]);
-    const fact = { category: "observation", actor: "user", text: "long evidence ".repeat(180), source: ["T1#E1"] };
+    const fact = { text: "long evidence ".repeat(180), source: ["T1#E1"] };
     expect(f.note().execute({ facts: [fact, { ...fact, negate: [["$1", "strong"]] }] })).not.toContain("rejected:");
     for (const address of ["F1", "T1@F*", "F1-F1", "F1-F2"]) {
       const text = f.m.trace(address, { itemBudget: 100, pageBudget: null });
@@ -188,9 +192,14 @@ test("Sol 4: one source-path read serves a whole submission, including repeated 
     const a = f.text("one"), b = f.text("two"); f.select([a.id, b.id]);
     const note = f.note();
     const scan = vi.spyOn(f.m.store, "sourcePath");
-    expect(note.execute({ facts: Array.from({ length: 6 }, () => ({ category: "observation", actor: "agent", text: "Claim", source: ["T1#E1@text", "T1#E2@text"] })) })).not.toContain("rejected:");
+    expect(note.execute({ facts: Array.from({ length: 6 }, () => ({ text: "Claim", source: ["T1#E1", "T1#E2"] })) })).not.toContain("rejected:");
     expect(scan).toHaveBeenCalledTimes(1);
     expect(f.m.store.factEntries(1)).toEqual([a.id, b.id]);
+    f.select([b.id]); // same Turn, different actual entry path; reuse the same manual tool
+    expect(note.execute({ facts: [{ text: "still present", source: ["T1#E2"] },
+      { text: "no longer on path", source: ["T1#E1"] }] })).toContain("invalid source");
+    expect(scan).toHaveBeenCalledTimes(2); // exactly one fresh read on the next call
+    expect(f.m.store.listTurnFacts(f.turn.id)).toHaveLength(6); // no partial write
   } finally { f.m.close(); }
 });
 

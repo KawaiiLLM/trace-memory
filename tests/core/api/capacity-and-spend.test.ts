@@ -43,7 +43,10 @@ function open(entries = 6) {
   calls = []; renders = 0;
   // 26a: with nothing to record a Noter still submits the explicit empty batch to complete it.
   memory = sourceSeededMemory(dbPath, async raw => { const input = raw as NotingAgentInput; calls.push(input);
-      if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+      if (input.kind === "noting") {
+        input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+        input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+      }
       return { outcome: "success", output: "", request: { probe: true } }; },
     {}, result => { renders++; return { text: result }; });
   const project = memory.store.createProject({ name: "capacity", declaredBy: "mark" });

@@ -36,7 +36,10 @@ for (const final of ["success", "failure"] as const) test(`32c: fork refusal + $
   const ids = m.pendingEntries(target.sessionId, target.branch, target.headTurnId).map(e => e.id);
   m.close(); // crash/restart observation must not promote the refused run's failure audit
   m = open(db, async raw => {
-    if (final === "success") (raw as NotingAgentInput).tools.find(t => t.name === "note")!.execute({ facts: [] });
+    if (final === "success") {
+      raw.tools.find(t => t.name === "note")!.execute({ facts: [] });
+      raw.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+    }
     return { outcome: final, output: final, request };
   });
   expect(streaks(m)).toEqual([]);
@@ -110,23 +113,27 @@ test("32c: third failure closes and aborts locally owned work for that target wi
   expect(streaks(m).filter(r => r.phase === "consolidation")).toEqual([]);
 });
 
-test("32c: corrected refusal and post-success audit failure reset the task; cancellation and busy admission do not count", async () => {
+test.each([false, true])("92: corrected refusal resets only after atomic terminal publication (audit failure: %s)", async auditFailure => {
   const m = open(); const target = seed(m);
   await note(m, target);
   const head = Number(streaks(m)[0]!.head);
   const claim = m.store.acquireClaim(target, "noting", "busy")!;
   expect((await note(m, target)).outcome).toBe("dropped");
   expect(streaks(m)[0]!.count).toBe(1); m.store.releaseClaim(claim);
-  const db = file(); // establish success before a trailing provider/audit failure
+  const db = file();
   const good = open(db, async raw => {
     const tools = (raw as NotingAgentInput).tools;
-    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ category: "invalid" }] })).toContain("rejected");
-    expect(tools.find(t => t.name === "note")!.execute({ facts: [] })).not.toContain("rejected");
-    return { outcome: "failure", output: "trailing provider error", request };
+    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "invalid citation", source: ["T999#E1"] }] })).toContain("rejected");
+    expect(tools.find(t => t.name === "note")!.execute({ facts: [], drop: ["$1"] })).not.toContain("rejected:");
+    expect(tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).not.toContain("rejected:");
+    return { outcome: "success", output: "corrected", request };
   });
-  const t = seed(good); vi.spyOn(good.store, "updateRun").mockImplementation(() => { throw Error("audit unavailable"); });
-  expect((await note(good, t)).outcome).toBe("success");
-  expect(streaks(good)[0]!.count).toBe(0);
+  const t = seed(good);
+  if (auditFailure) vi.spyOn(good.store, "updateRun").mockImplementation(() => { throw Error("audit unavailable"); });
+  const result = await note(good, t);
+  expect(result.outcome, JSON.stringify(result)).toBe(auditFailure ? "failure" : "success");
+  expect(streaks(good)[0]!.count).toBe(auditFailure ? 1 : 0);
+  expect(good.pendingEntries(t.sessionId, t.branch, t.headTurnId)).toHaveLength(auditFailure ? 1 : 0);
   expect(m.store.db.prepare("SELECT head FROM task_failures").get()!.head).toBe(head);
 });
 
@@ -154,7 +161,7 @@ test("68: Dreamer terminal outcomes consume accepted skips; a later range settle
   const m = open(":memory:", async raw => {
     const input = raw as DreamingAgentInput;
     if (input.kind !== "dreaming") return { outcome, output: outcome, request };
-    const handles = [...new Set([...input.material.changed.matchAll(/K\d+@\d+/g)].map(match => match[0]))];
+    const handles = [...new Set([...input.material.changed.matchAll(/K\d+@v\d+/g)].map(match => match[0]))];
     input.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
       skipped: handles.map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
     return { outcome, output: outcome, request };
@@ -199,7 +206,7 @@ test("86: three Dreamer failures on one unchanged pending revision turn memory o
     const input = raw as DreamingAgentInput;
     if (skip && input.kind === "dreaming") {
       input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [
-        { knowledge: /K\d+@\d+/.exec(input.material.changed)![0], because: "Reviewed without a change" },
+        { knowledge: /K\d+@v\d+/.exec(input.material.changed)![0], because: "Reviewed without a change" },
       ] });
       return { outcome: "success", output: "processed", request };
     }

@@ -17,13 +17,13 @@ function setup(agent: (input: ConsolidationAgentInput) => Promise<RunAgentResult
   memory.selectEntries(s.id, "main", entries.map(entry => entry.id));
   triggerEntryId = entries.at(-1)!.id;
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
+  tools[2]!.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] });
   recorded(memory, s.id, "main", t.id); // T1 recorded: its facts may enter an Consolidation batch
   return tools[3]!;
 }
 const success = (): RunAgentResult => ({ outcome: "success", output: "Done", request: { last: true } });
 const integrate = () => memory.consolidate({ sessionId: 1, branch: "main" });
-const read = (address: string) => readHandle(memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }), address);
+const read = (id: number, version = 1) => readHandle(memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }), `K${id}@v${version}`);
 const dreamPath = () => ({ sessionId: 1, branch: "main", headTurnId: 1, triggerEntryId });
 
 test("payload-free acknowledgement preserves explicit native request-audit unavailability", async () => {
@@ -103,7 +103,7 @@ test("memory rejects malformed items, obsolete fields and invisible evidence wit
   const p = memory.store.createProject({ name: "foreign", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "secret", startedAt: "now" });
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "secret", source: [`T${t.id}#user`] }] });
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [{ text: "secret", source: [`T${t.id}#E1`] }] });
   expect(tool.execute({ operations: [{ ...create, supports: ["F2"] }], skipped: [] })).toContain("not an available fact");
 });
 
@@ -122,11 +122,11 @@ test("manual memory accepts create and archive but rejects Dreamer maintenance o
   const write = setup(async () => success());
   expect(JSON.parse(write.execute({ operations: [create, create], skipped: [] })).committed).toHaveLength(2);
   for (const operation of [
-    { ...create, op: "update", id: read("K1@1") },
-    { ...create, op: "merge", id: read("K1@1"), absorb: [read("K2@2")] },
-    { op: "split", id: read("K1@1"), supports: ["F1"], reason: "split", children: [] },
+    { ...create, op: "update", id: read(1) },
+    { ...create, op: "merge", id: read(1), absorb: [read(2)] },
+    { op: "split", id: read(1), supports: ["F1"], reason: "split", children: [] },
   ]) expect(write.execute({ operations: [operation], skipped: [] })).toContain("belongs to the Dreamer");
-  expect(JSON.parse(write.execute({ operations: [{ op: "archive", reason: "Retired by the user.", id: read("K1@1"), supports: ["F1"] }], skipped: [] })).committed).toHaveLength(1);
+  expect(JSON.parse(write.execute({ operations: [{ op: "archive", reason: "Retired by the user.", id: read(1), supports: ["F1"] }], skipped: [] })).committed).toHaveLength(1);
 });
 
 test("2026-09-07: an audit update that fails after the commit is reported, not turned into a business failure", async () => {
@@ -156,11 +156,11 @@ test("21a 2026-09-08: create, update, merge and archive all carry nonempty suppo
   const result = await admittedScenarios.run(memory, path, input => {
     const request = { fixture: "supports on merge and archive" }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!, dream = input.tools.find(tool => tool.name === "memory")!;
-    trace.execute({ address: "K1@1,K2@2", itemBudget: null });
-    const merge = JSON.parse(dream.execute({ operations: [{ op: "merge", id: "K1@1", absorb: ["K2@2"], text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Two readings of one packaging rule." }], skipped: [] }));
+    trace.execute({ address: "K1@v1,K2@v1", itemBudget: null });
+    const merge = JSON.parse(dream.execute({ operations: [{ op: "merge", id: read(1), absorb: [read(2)], text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Two readings of one packaging rule." }], skipped: [] }));
     expect(merge.committed).toHaveLength(1);
-    const merged = merge.committed[0]; trace.execute({ address: `K1@${merged.commit}`, itemBudget: null });
-    expect(JSON.parse(dream.execute({ operations: [{ op: "archive", id: `K1@${merged.commit}`, supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] })).committed).toHaveLength(1);
+    const merged = merge.committed[0]; expect(merged.version).toBe("K1@v2");
+    expect(JSON.parse(dream.execute({ operations: [{ op: "archive", id: read(1, 2), supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] })).committed).toHaveLength(1);
     return { outcome: "success", output: "maintained", request };
   });
   expect(result.outcome).toBe("success");
@@ -172,7 +172,7 @@ test("21a 2026-09-08: create, update, merge and archive all carry nonempty suppo
 test("21a 2026-09-08: an omitted, wrongly typed or empty reason or supports rejects the whole batch", () => {
   const write = setup(async () => success());
   expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
-  const archive = { op: "archive", id: "K1", supports: ["F1"], reason: "The user withdrew the rule." };
+  const archive = { op: "archive", id: read(1), supports: ["F1"], reason: "The user withdrew the rule." };
   const drop = (operation: Record<string, unknown>, key: string) => { const copy = { ...operation }; delete copy[key]; return copy; };
   for (const bad of [drop(create, "reason"), drop(create, "supports"), { ...create, reason: "" }, { ...create, reason: "  \n " },
     { ...create, reason: 7 }, { ...create, reason: ["F1"] }, { ...create, supports: [] }, { ...create, supports: "F1" },
@@ -207,14 +207,14 @@ test("21a 2026-09-08: a commit-level because is rejected by name, also beside a 
 test("21a 2026-09-08: one supports list holds both the text's grounds and the fact that prompted the change", async () => {
   const write = setup(async () => success());
   memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-    { category: "decision", actor: "user", text: "npm is banned outright", source: ["T1#user"], negate: [["F1", "strong"]] }] });
+    { text: "npm is banned outright", source: ["T1#E1"], negate: [["F1", "strong"]] }] });
   expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
-  const update = { ...create, op: "update", id: read("K1@1"), text: "Use pnpm; npm is banned outright", supports: ["F1", "F2"],
+  const update = { ...create, op: "update", id: read(1), text: "Use pnpm; npm is banned outright", supports: ["F1", "F2"],
     reason: "The user withdrew the softer rule; F2 corrects F1." };
   createDreamerTrigger(memory, dreamPath(), 1, 1, "project");
   const result = await admittedScenarios.run(memory, dreamPath(), input => {
     const request = { fixture: "multi-fact supports" }; input.reportRequest(request);
-    input.tools[0]!.execute({ address: "K1@1", itemBudget: null });
+    input.tools[0]!.execute({ address: "K1@v1", itemBudget: null });
     expect(input.tools[3]!.execute({ operations: [update], skipped: [] })).toContain("committed");
     return { outcome: "success", output: "updated", request };
   });
@@ -231,9 +231,10 @@ test("21a 2026-09-08: reason shows in commit history, diffs and the run, never i
   let updatedCommit = 0;
   const result = await admittedScenarios.run(memory, dreamPath(), input => {
     const request = { fixture: "reason history" }; input.reportRequest(request);
-    input.tools[0]!.execute({ address: "K1@1", itemBudget: null });
-    const receipt = JSON.parse(input.tools[3]!.execute({ operations: [{ op: "update", id: "K1@1", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
-    updatedCommit = receipt.committed[0].commit;
+    input.tools[0]!.execute({ address: "K1@v1", itemBudget: null });
+    const receipt = JSON.parse(input.tools[3]!.execute({ operations: [{ op: "update", id: read(1), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
+    expect(receipt.committed[0].version).toBe("K1@v2");
+    updatedCommit = memory.store.resolveVersionOrdinal(1, 2);
     return { outcome: "success", output: "updated", request };
   });
   expect(result.outcome).toBe("success");
@@ -250,11 +251,11 @@ test("21a 2026-09-08: a reason-only update on a stale base is rejected like any 
   createDreamerTrigger(memory, dreamPath(), 1, 1, "project");
   const result = await admittedScenarios.run(memory, dreamPath(), input => {
     const request = { fixture: "stale reason-only update" }; input.reportRequest(request);
-    input.tools[0]!.execute({ address: "K1@1", itemBudget: null });
-    const sharpened = JSON.parse(input.tools[3]!.execute({ operations: [{ op: "update", id: "K1@1", text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Sharpened wording." }], skipped: [] })).committed[0];
-    expect(input.tools[3]!.execute({ operations: [{ op: "update", id: "K1@1", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Classification cleanup only." }], skipped: [] })).toContain(`base is not the latest effective applicable revision; current: K1@${sharpened.commit}`);
-    input.tools[0]!.execute({ address: `K1@${sharpened.commit}`, itemBudget: null });
-    expect(input.tools[3]!.execute({ operations: [{ op: "update", id: `K1@${sharpened.commit}`, text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Corrected the stale address without changing the conclusion." }], skipped: [] })).toContain("committed");
+    const original = read(1);
+    const sharpened = JSON.parse(input.tools[3]!.execute({ operations: [{ op: "update", id: original, text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Sharpened wording." }], skipped: [] })).committed[0];
+    expect(sharpened.version).toBe("K1@v2");
+    expect(input.tools[3]!.execute({ operations: [{ op: "update", id: original, text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Classification cleanup only." }], skipped: [] })).toContain("base is not the latest effective applicable revision; current: K1@v2");
+    expect(input.tools[3]!.execute({ operations: [{ op: "update", id: read(1, 2), text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Corrected the stale address without changing the conclusion." }], skipped: [] })).toContain("committed");
     return { outcome: "success", output: "stale corrected", request };
   });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
@@ -304,17 +305,17 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   const result = await admittedScenarios.run(memory, path, input => {
     const request = { fixture: "topic maintenance sequence" }; input.reportRequest(request);
     const trace = input.tools[0]!, dream = input.tools[3]!;
-    trace.execute({ address: "K1@1,K2@2", itemBudget: null });
-    const cleanup = JSON.parse(dream.execute({ operations: [{ op: "update", id: "K1@1", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: ["packaging", "tooling"], reason: "Classification cleanup: the rule also concerns tooling." }], skipped: [] }));
-    cleanupCommit = cleanup.committed[0].commit;
-    trace.execute({ address: `K1@${cleanupCommit}`, itemBudget: null });
-    const cleared = JSON.parse(dream.execute({ operations: [{ op: "update", id: `K1@${cleanupCommit}`, text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Classification cleanup: the labels named no subject." }], skipped: [] }));
-    clearedCommit = cleared.committed[0].commit;
-    trace.execute({ address: `K1@${clearedCommit}`, itemBudget: null });
-    const merged = JSON.parse(dream.execute({ operations: [{ op: "merge", id: `K1@${clearedCommit}`, absorb: ["K2@2"], topics: ["packaging"], text: "Use pnpm and commit the lockfile", category: "constraint", scope: "project", supports: ["F1"], reason: "Two readings of one packaging rule." }], skipped: [] }));
-    mergedCommit = merged.committed[0].commit;
-    trace.execute({ address: `K1@${mergedCommit}`, itemBudget: null });
-    dream.execute({ operations: [{ op: "archive", id: `K1@${mergedCommit}`, supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] });
+    trace.execute({ address: "K1@v1,K2@v1", itemBudget: null });
+    const cleanup = JSON.parse(dream.execute({ operations: [{ op: "update", id: read(1), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: ["packaging", "tooling"], reason: "Classification cleanup: the rule also concerns tooling." }], skipped: [] }));
+    expect(cleanup.committed[0].version).toBe("K1@v2");
+    cleanupCommit = memory.store.resolveVersionOrdinal(1, 2);
+    const cleared = JSON.parse(dream.execute({ operations: [{ op: "update", id: read(1, 2), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Classification cleanup: the labels named no subject." }], skipped: [] }));
+    expect(cleared.committed[0].version).toBe("K1@v3");
+    clearedCommit = memory.store.resolveVersionOrdinal(1, 3);
+    const merged = JSON.parse(dream.execute({ operations: [{ op: "merge", id: read(1, 3), absorb: [read(2)], topics: ["packaging"], text: "Use pnpm and commit the lockfile", category: "constraint", scope: "project", supports: ["F1"], reason: "Two readings of one packaging rule." }], skipped: [] }));
+    expect(merged.committed[0].version).toBe("K1@v4");
+    mergedCommit = memory.store.resolveVersionOrdinal(1, 4);
+    dream.execute({ operations: [{ op: "archive", id: read(1, 4), supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] });
     return { outcome: "success", output: "maintained", request };
   });
   expect(result.outcome).toBe("success");

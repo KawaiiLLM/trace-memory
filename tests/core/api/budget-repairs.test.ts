@@ -13,7 +13,10 @@ function seeded(config: Record<string, unknown> = {}) {
   const calls: (ConsolidationAgentInput | NotingAgentInput)[] = [];
   // 26a: a Noting run completes its batch by submitting; an empty one is `{facts: []}`.
   const fallback = async (raw: unknown) => { const input = raw as ConsolidationAgentInput | NotingAgentInput; calls.push(input);
-    if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    if (input.kind === "noting") {
+      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    }
     return { outcome: "success" as const, output: "", request: { probe: true } }; };
   const scenarios = new AdmittedDreamerScenarios(fallback);
   const m = sourceSeededMemory(":memory:", scenarios.agent, config);
@@ -21,7 +24,7 @@ function seeded(config: Record<string, unknown> = {}) {
   const s = m.store.createSession({ host: "review", startedAt: "2026-09-08", firstReplyAt: "2026-09-08", projectId: p.id, enrollmentChoice: true });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });
   const tools = m.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "observation", actor: "user", text, source: [`T${t.id}#user`], ...extra }] });
+  const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ facts: [{ text, source: [`T${t.id}#E1`], ...extra }] });
   const knowledge = (text: string) => tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
   return { m, calls, s, t, note, knowledge, scenarios };
 }
@@ -180,9 +183,11 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
     const result = await f.scenarios.run(f.m, path, input => {
       const request = { fixture: "topic-set diff" }; input.reportRequest(request);
       const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-      trace.execute({ address: "K1@1", itemBudget: null });
-      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: "K1@1", ...content, topics: ["a", "b"] }], skipped: [] }));
-      updatedCommit = receipt.committed[0].commit;
+      const base = `K1#${f.m.store.versionTag(1, 1)}`;
+      expect(trace.execute({ address: "K1@v1", itemBudget: null })).toContain(base);
+      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: base, ...content, topics: ["a", "b"] }], skipped: [] }));
+      expect(receipt.committed[0].version).toBe("K1@v2");
+      updatedCommit = f.m.store.resolveVersionOrdinal(1, 2);
       return { outcome: "success", output: "updated", request };
     });
     expect(result.outcome).toBe("success");

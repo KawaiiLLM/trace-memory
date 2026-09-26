@@ -34,7 +34,7 @@ test("59/68: the memory schema branches on phase and says accepted Dreamer skips
   const items = (definitions: { name: string; parameters: Record<string, unknown> }[]) =>
     ((definitions.find(t => t.name === "memory")!.parameters.properties as any).skipped.items) as { required: string[]; properties: Record<string, unknown> };
   expect(items(dreamingToolDefinitions()).required).toEqual(["knowledge", "because"]);
-  expect(items(dreamingToolDefinitions()).properties.knowledge).toEqual({ type: "string", pattern: "^K[1-9][0-9]*@[1-9][0-9]*$" });
+  expect(items(dreamingToolDefinitions()).properties.knowledge).toEqual({ type: "string", pattern: "^K[1-9][0-9]*@v[1-9][0-9]*$" });
   expect(items(consolidationToolDefinitions()).required).toEqual(["fact", "because"]);
   expect(items(toolDefinitions as any).required).toEqual(["fact", "because"]);
   expect(dreamingToolDefinitions().find(t => t.name === "memory")!.description)
@@ -52,7 +52,7 @@ test("64c: a skip is audited but terminal success processes the frozen pair inde
   const f = fixture(async task => {
     expect(tool(task, "check").execute({})).toContain("Blockers: none");
     const receipt = JSON.parse(tool(task, "memory").execute({ operations: [],
-      skipped: [{ knowledge: handle(f.items[0]!), because: "reviewed; no maintenance needed" }] }));
+      skipped: [{ knowledge: `K${f.items[0]!.knowledgeId}@v1`, because: "reviewed; no maintenance needed" }] }));
     expect(receipt).toMatchObject({ results: ["ok"], committed: [] });
     expect(tool(task, "check").execute({})).toContain("Blockers: none");
     return success;
@@ -61,7 +61,7 @@ test("64c: a skip is audited but terminal success processes the frozen pair inde
   expect(result.outcome).toBe("success");
   if (!("runId" in result)) throw Error("missing run");
   const response = JSON.parse(f.store.getRun(result.runId)!.response!);
-  expect(response.skipped).toEqual([{ knowledge: handle(f.items[0]!), because: "reviewed; no maintenance needed" }]);
+  expect(response.skipped).toEqual([{ knowledge: `K${f.items[0]!.knowledgeId}@v1`, because: "reviewed; no maintenance needed" }]);
   expect(response.check).toMatchObject({ pool: f.pool, frozenRevisionIds: [f.items[0]!.commit], ownRevisionIds: [], problems: [] });
   expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all())
     .toEqual([{ pool: f.pool, revision_id: f.items[0]!.commit }]);
@@ -81,13 +81,14 @@ test("68: untouched frozen items are not an admission failure and remain pending
 test("68: malformed, unknown and consumed skips remain rejected atomically and consume nothing", async () => {
   const f = fixture(async task => {
     const memory = tool(task, "memory"), skip = (skipped: unknown[], operations: unknown[] = []) => memory.execute({ operations, skipped });
-    expect(skip([{ knowledge: "K999@999", because: "x" }])).toContain("not a supplied handle of this run");
-    expect(skip([{ knowledge: handle(f.items[0]!), because: " " }])).toContain("skipped requires knowledge and non-empty because only");
+    expect(skip([{ knowledge: "K999@v999", because: "x" }])).toContain("not a supplied handle of this run");
+    const version = `K${f.items[0]!.knowledgeId}@v1`;
+    expect(skip([{ knowledge: version, because: " " }])).toContain("skipped requires knowledge and non-empty because only");
     expect(skip([{ fact: "F1", because: "wrong phase shape" }])).toContain("skipped requires knowledge and non-empty because only");
-    expect(skip([{ knowledge: handle(f.items[0]!), because: "x" }, { knowledge: handle(f.items[0]!), because: "y" }]))
+    expect(skip([{ knowledge: version, because: "x" }, { knowledge: version, because: "y" }]))
       .toContain("duplicate skipped knowledge");
-    const update = { op: "update", id: handle(f.items[0]!), text: "maintained rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain" };
-    expect(skip([{ knowledge: handle(f.items[0]!), because: "x" }], [update]))
+    const update = { op: "update", id: `K${f.items[0]!.knowledgeId}#${f.store.versionTag(f.items[0]!.knowledgeId, f.items[0]!.commit)}`, text: "maintained rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain" };
+    expect(skip([{ knowledge: version, because: "x" }], [update]))
       .toContain("already consumed by an operation of this batch");
     expect(f.store.listKnowledgeRevisions()).toHaveLength(1);
     return success;
@@ -129,7 +130,7 @@ test("59: a batched search returns one best hit per query under the shared optio
   // The Dreamer's bound tool takes the same form.
   const bound = f.memory.tools({ kind: "manual", sessionId: f.target.sessionId, branch: "main", currentTurnId: f.target.headTurnId });
   const search = bound.find(t => t.name === "search")!;
-  expect(search.execute({ queries: ["schema"], layer: "knowledge" })).toContain(`"schema": [${handle(f.items[2]!)}]`);
+  expect(search.execute({ queries: ["schema"], layer: "knowledge" })).toContain(`"schema": [K${f.items[2]!.knowledgeId}@v1]`);
   expect(search.execute({ query: "schema", queries: ["schema"] })).toContain("rejected: query and queries are exclusive");
 });
 

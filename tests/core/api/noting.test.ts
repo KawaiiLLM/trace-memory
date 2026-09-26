@@ -13,16 +13,16 @@ let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
 let sessionId: number;
 let calls: NotingAgentInput[];
-type ScriptResult = RunAgentResult & { noteInput?: unknown };
+type ScriptResult = RunAgentResult & { noteInput?: unknown; memoryInput?: unknown };
 let script: ((input: NotingAgentInput) => Promise<ScriptResult>)[];
 const time = "2026-08-16 02:54";
 const request = { system: "actual host system", messages: [{ role: "user", content: "actual provider input" }], tools: [] };
 // 26a: a Noter completes its batch by calling `note`, and an empty batch is submitted explicitly as
 // `note({facts: []})`. `silent` is the run that submits nothing at all, which is incomplete.
-const success = (batches: { facts: unknown[] }[]): ScriptResult => ({ outcome: "success", output: "Done.", noteInput: { facts: batches.flatMap((b) => b.facts) }, request, usage: { tokens: 12 } });
+const success = (batches: { facts: unknown[] }[]): ScriptResult => ({ outcome: "success", output: "Done.", noteInput: { facts: batches.flatMap((b) => b.facts) }, memoryInput: { operations: [], skipped: [] }, request, usage: { tokens: 12 } });
 const silent = (): ScriptResult => ({ outcome: "success", output: "Nothing to note.", request, usage: { tokens: 12 } });
-const fact = (extra = {}) => ({ category: "observation", actor: "agent", text: memories.base, source: ["T1#assistant"], ...extra });
-const batch = (turnId: number, facts = [fact()]) => ({ turn: `S${sessionId}/T${turnId}`, title: "mapC terrain", topic: "terrain", facts: facts.map((f) => ({ ...f, source: f.source[0] === "T1#assistant" ? [`T${turnId}#assistant`] : f.source })) });
+const fact = (extra = {}) => ({ text: memories.base, source: ["T1#E2"], ...extra });
+const batch = (turnId: number, facts = [fact()]) => ({ turn: `S${sessionId}/T${turnId}`, title: "mapC terrain", topic: "terrain", facts: facts.map((f) => ({ ...f, source: f.source[0] === "T1#E2" ? [`T${turnId}#E${hydrate(memory.store.listSourceEntries(sessionId), memory.store).find(e => e.turnId === turnId && e.role === "assistant")!.entryOrdinal}`] : f.source })) });
 function open(config: ConfigOverride = {}) {
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async (raw) => {
     const input = raw as NotingAgentInput;
@@ -34,15 +34,15 @@ function open(config: ConfigOverride = {}) {
     if (result.noteInput !== undefined) {
       const note = input.tools.find((t) => t.name === "note")!;
       note.execute(result.noteInput);
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     }
+    if (result.memoryInput !== undefined) input.tools.find(tool => tool.name === "memory")!.execute(result.memoryInput);
     return result;
   }, config);
 }
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-noting-")); calls = []; script = []; open();
   const project = memory.store.createProject({ name: "fixture", declaredBy: "mark" });
-  sessionId = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id }).id;
+  sessionId = memory.store.createSession({ enrollmentChoice: true, host: "pi:noting", startedAt: time, firstReplyAt: time, projectId: project.id }).id;
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 function turn(parentTurnId: number | null = null, index = 0) {
@@ -74,7 +74,7 @@ test("a turn arriving during the model call waits for the next trigger", async (
   expect(result.outcome).toBe("success");
   expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).length).toBeGreaterThan(0);
   expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  script.push(async () => success([batch(second.id, [fact({ source: [`T${second.id}#user`], support: [["F1", "weak"]] })])]));
+  script.push(async () => success([batch(second.id, [fact({ source: [`T${second.id}#E1`], support: [["F1", "weak"]] })])]));
   await noting(second.id);
   expect(calls[1]!.text).toContain(second.userPrompt!);
   expect(calls[1]!.material.facts[0]).toContain("[F1]");
@@ -142,7 +142,7 @@ for (const [label, changes, problem] of [
   ["malformed handle", { support: [["$x", "weak"]] }, "target"],
   ["relation shape", { support: ["F1"] }, "expected [target, strength]"],
   ["embedded id", { text: "See F101" }, "must not embed"],
-  ["event status", { category: "event" }, "status"],
+  ["event status", { status: "completed" }, "status"],
 ] as const) test(`bounces ${label} with problems and only a run record`, async () => {
   const t = turn(), output = [batch(t.id, [fact(changes)])];
   script.push(async () => success(output));
@@ -189,7 +189,7 @@ test("an explicit empty submission notings the range; compactions cannot acquire
 test("read knowledge revisions and exact provider request are recorded, even when a knowledge item moves", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const created = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [
-    { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", category: "mechanism", scope: "project", text: memories.knowledge, supports: [1], createdAt: time },
+    { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", category: "understanding", scope: "project", text: memories.knowledge, supports: [1], createdAt: time },
   ] });
   expect(created.ok).toBe(true);
   const second = turn(first.id, 1), resolve = deferred(), pending = noting(second.id);
@@ -198,7 +198,7 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   expect(calls[1]!.material.knowledge).toBeUndefined();
   expect(calls[1]!.text).not.toContain("[K1@1]");
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [
-    { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: 1, baseCommit: 1, category: "mechanism", scope: "project", text: memories.editedKnowledge, supports: [1], createdAt: time },
+    { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: 1, baseCommit: 1, category: "understanding", scope: "project", text: memories.editedKnowledge, supports: [1], createdAt: time },
   ] });
   resolve(success([])); const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
@@ -229,12 +229,14 @@ test("fixture turn golden and noting input use identical rendering with receipts
 
 test("fixture fact goldens include quote, sources and both relation directions across turns", async () => {
   const first = turn(), second = turn(first.id, 1);
-  script.push(async () => success([
-    batch(first.id, [fact({ quote: memories.quote })]),
-    batch(second.id, [fact({ category: "interpretation", text: memories.interpretation, source: ["T2#assistant"], support: [["$1", "weak"]] }),
-      fact({ category: "observation", text: memories.observation, source: ["T2#assistant"], negate: [["$1", "strong"]] })]),
-  ]));
-  expect((await noting(second.id)).outcome).toBe("success");
+  // Stored legacy rows keep their original metadata and source selectors. New N
+  // writes above exercise the new schema; this golden deliberately tests history.
+  const legacy = memory.store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time }, facts: [
+    { turnId: first.id, category: "observation", actor: "agent", text: memories.base, quote: memories.quote, source: ["T1#assistant"], createdAt: time },
+    { turnId: second.id, category: "interpretation", actor: "agent", text: memories.interpretation, source: ["T2#assistant"], support: [{ target: "$1", strength: "weak" }], createdAt: time },
+    { turnId: second.id, category: "observation", actor: "agent", text: memories.observation, source: ["T2#assistant"], negate: [{ target: "$1", strength: "strong" }], createdAt: time },
+  ] });
+  expect(legacy.ok).toBe(true);
   expect([1, 2, 3].map((id) => memory.trace(`F${id}`)).join("\n\n")).toBe(golden("facts"));
 });
 
@@ -266,27 +268,28 @@ test("86: an oldest entry exceeding the batch envelope still reaches the Noter",
 // cap any more, so the cap is pinned where the automatic block still is. The rule is unchanged.
 test("64c: no knowledge category bypasses the cap, newer commits are kept, and omitted items stay traceable", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
-  const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
+  const categories = ["constraint", "open", "goal", "understanding", "reference"] as const;
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: categories.map((category, i) => ({
     op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const,
     text: `${memories.knowledge} ${"word ".repeat(800)}`, supports: [1], createdAt: time,
   })) });
-  const item = (id: number) => renderKnowledge(memory.store.currentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!);
+  const item = (id: number) => renderKnowledge(memory.store.currentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!, `K${id}#${memory.store.versionTag(id, id)}`);
   const consolidate = () => memory.consolidate({ sessionId, branch: "main", mode: "subagent" });
-  // Use the real runtime authorities to make the total Knowledge input exactly 5k. This keeps the
-  // omission boundary meaningful now that the shared allowance is derived from all five triggers.
+  // With five admitted categories instead of seven, a 3k window still forces
+  // whole-item omission. Use the real capacity policy rather than empty knowledge.
   memory.close(); open();
-  setKnowledgeCapacity(memory, 5_000);
-  const cap = 5_000;
+  setKnowledgeCapacity(memory, 3_000);
+  const cap = 3_000;
   script.push(async () => ({ outcome: "success", output: "Done.", request }));
   expect((await consolidate()).outcome).toBe("success");
   const material = calls.at(-1)!.material as unknown as { knowledge: { category: string; text: string }[]; receipts: string[] };
   const block = knowledgeBlock(material as unknown as Parameters<typeof knowledgeBlock>[0]);
-  const kept = material.knowledge.map(g => g.category);
+  const text = material.knowledge.map(g => g.text).join("\n");
+  const kept = [...text.matchAll(/\[K(\d+)#[a-z]+\]/g)].map(match => Number(match[1]));
   expect(kept.length).toBeGreaterThan(0);
   expect(kept.length).toBeLessThan(categories.length); // the cap really binds
-  expect(kept).toEqual(categories.slice(-kept.length)); // newer commits; stable category presentation
-  expect(material.knowledge.map(g => g.text)).toEqual(kept.map(category => item(categories.indexOf(category as typeof categories[number]) + 1))); // whole items, never rewritten
+  expect(kept).toEqual(categories.map((_, index) => index + 1).slice(-kept.length)); // one chronological list, newest retained
+  expect(text).toBe(kept.map(item).join("\n")); // complete tagged bodies, never rewritten
   const receipts = material.receipts.filter(r => r.includes(" knowledge; expand: "));
   expect(receipts).toHaveLength(categories.length - kept.length);
   expect(tokens(block) + tokens(receipts.join("\n"))).toBeLessThanOrEqual(cap);

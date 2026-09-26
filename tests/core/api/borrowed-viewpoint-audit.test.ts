@@ -20,7 +20,7 @@ function fixture(agent: RunAgent, phase: 'noting' | 'consolidation', dead = fals
   s.publishSourcePath(target.id,'old',oldIds,old.id,'target');
   s.publishSourcePath(executor.id,'main',entryFor(ex.id),ex.id,'executor');
   function fact(session:number,branch:string,turn:number,text:string) {
-    const receipt=memory.tools({kind:'manual',sessionId:session,branch,currentTurnId:turn})[2]!.execute({facts:[{category:'decision',actor:'user',text,source:[`T${turn}#user`]}]});
+    const receipt=memory.tools({kind:'manual',sessionId:session,branch,currentTurnId:turn})[2]!.execute({facts:[{text,source:[`T${turn}#E1`]}]});
     if(receipt.includes('rejected:'))throw Error(receipt);
     return s.listSessionFacts(session).find(f=>f.text===text)!;
   }
@@ -60,18 +60,19 @@ async function execute(phase:'noting'|'consolidation',borrowed:boolean,dead:bool
     expect(historical, historical).toContain('SIBLING_MUST_NOT_LEAK');
     if(phase==='noting') {
       const note=input.tools.find(t=>t.name==='note')!;
-      const bad=note.execute({facts:[{category:'decision',actor:'user',text:'wrong sibling',source:[`T${f.live.id}#user`]}]});
+      const bad=note.execute({facts:[{text:'wrong sibling',source:[`T${f.live.id}#E1`]}]});
       expect(bad).toContain('rejected:');checks.push('sibling Raw citation rejected');
-      const badExecutor=note.execute({facts:[{category:'decision',actor:'user',text:'wrong executor',source:[`T${f.ex.id}#user`]}]});
+      const badExecutor=note.execute({facts:[{slot:'$1',text:'wrong executor',source:[`T${f.ex.id}#E1`]}]});
       expect(badExecutor).toContain('rejected:');checks.push('executor Raw citation rejected');
-      const batch={facts:[{category:'decision',actor:'user',text:'Recorded target statement',source:[`T${f.old.id}#user`]}]};
+      const batch={facts:[{slot:'$1',text:'Recorded target statement',source:[`T${f.old.id}#E1`]}]};
       let receipt=note.execute(batch);
       input.tools.find(t=>t.name==='memory')!.execute({operations:[],skipped:[]});
       expect(receipt).not.toContain('rejected:');
     } else {
       const write=input.tools.find(t=>t.name==='memory')!;
-      trace.execute({address:'K1@1',itemBudget:null,toolCallBudget:null,toolResultBudget:null});
-      const op={op:'update',id:'K1@1',category:'constraint',scope:'project',text:'OLD_BRANCH_RESULT',topics:[],reason:'target evidence changes the rule'};
+      const base = `K1#${f.s.versionTag(1, 1)}`;
+      expect(trace.execute({address:'K1@v1',itemBudget:null,toolCallBudget:null,toolResultBudget:null})).toContain(base);
+      const op={op:'update',id:base,category:'constraint',scope:'project',text:'OLD_BRANCH_RESULT',topics:[],reason:'target evidence changes the rule'};
       const bad=write.execute({operations:[{...op,supports:[`F${f.liveFact.id}`]}],skipped:[]});
       expect(bad).toContain('rejected:');checks.push('sibling fact citation rejected');
       const receipt=write.execute({operations:[{...op,supports:[`F${f.oldFact!.id}`]},

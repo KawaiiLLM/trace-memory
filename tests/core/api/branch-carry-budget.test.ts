@@ -7,7 +7,7 @@ import * as render from "../../../src/core/render/index.ts";
 function fixture(texts: string[], normalized = false) {
   const memory = TraceMemory(":memory:", async () => { throw new Error("No provider expected"); }, {}, undefined, normalized ? piSourceBlocks : undefined);
   const project = memory.store.createProject({ name: "carry", declaredBy: "mark" });
-  const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+  const session = memory.store.createSession({ host: "pi:carry", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: texts[0] ?? "", assistantText: "reply", startedAt: "now" });
   const entries = texts.map((text, index) => memory.appendEntry({ sessionId: session.id, turnId: turn.id,
     nativeLineage: "test", nativeId: `entry-${index}`, role: index === 0 ? "user" : "assistant", text,
@@ -35,12 +35,12 @@ test("entry/cleanup integration: carry budgets only its exact normalized Raw suf
     const factText = "complete event evidence ".repeat(1000), knowledgeText = "complete conclusion ".repeat(1000);
     const note = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id }).find(t => t.name === "note")!;
     expect(note.execute({ facts: [
-      { category: "event", actor: "agent", status: "completed", text: factText, source: [`T${turn.id}#E${mixed.entryOrdinal}`, source] },
-      { category: "observation", actor: "user", text: "a later correction", source: [`T${turn.id}#E1@text`], negate: [["$1", "strong"]] },
+      { text: factText, source: [`T${turn.id}#E${mixed.entryOrdinal}`, `T${turn.id}#E${result.entryOrdinal}`] },
+      { text: "a later correction", source: [`T${turn.id}#E1`], negate: [["$1", "strong"]] },
     ] })).not.toContain("rejected:");
     const knowledge = m.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
       run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$k", author: "test", text: knowledgeText,
-        category: "mechanism", scope: "session", supports: [1], topics: [], reason: "synthetic integration evidence", createdAt: "now" }] });
+        category: "understanding", scope: "session", supports: [1], topics: [], reason: "synthetic integration evidence", createdAt: "now" }] });
     expect(knowledge.ok).toBe(true);
     const views = [mixed, result].map(e => renderEntry(e, m.config.render).content);
     const cap = charge(["Pending raw:", ...views, receipt(1)]);
@@ -54,7 +54,8 @@ test("entry/cleanup integration: carry budgets only its exact normalized Raw suf
     views.forEach(view => expect(tokens(view)).toBeLessThanOrEqual(m.config.render.entryTokens));
     expect(carry).toContain("(selected facts)");
     expect(carry).toContain(factText); expect(carry).toContain(knowledgeText);
-    expect(carry).toContain("negate F1 strong"); expect(carry).toContain(`source: T${turn.id}#E3, ${source}`);
+    expect(carry).toContain("negate F1 strong");
+    expect(carry).toContain(`source: T${turn.id}#E3 (Pi agent), T${turn.id}#E4 (observation)`);
     expect(tokens(carry)).toBeGreaterThan(cap); // Only Pending raw owns the carry cap.
     expect(carry).not.toContain("SIBLING-ONLY");
     expect(m.trace(`T${turn.id}`, { branch: "main", full: true, pageBudget: null })).not.toContain("SIBLING-ONLY");
@@ -78,7 +79,7 @@ test("67: long carry renders only its bounded suffix and prepares applicability 
     const created = m.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
       run: { kind: "manual", sessionId: session.id, createdAt: "now" },
       operations: Array.from({ length: 100 }, (_, i) => ({ op: "create" as const, handle: `$k${i}`, author: "test", text: `conclusion ${i}`,
-        category: "mechanism" as const, scope: "session" as const, supports: [noted.facts[0]!.id], topics: [], reason: "carry work bound", createdAt: "now" })) });
+        category: "understanding" as const, scope: "session" as const, supports: [noted.facts[0]!.id], topics: [], reason: "carry work bound", createdAt: "now" })) });
     if (!created.ok) throw new Error(created.problems.join("; "));
     m.config.render.episodicBlockTokens = 250;
     const rendered = vi.spyOn(render, "renderEntry"), inputs = vi.spyOn(m.store, "commitGraphInput");

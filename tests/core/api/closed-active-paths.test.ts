@@ -10,7 +10,10 @@ function fixture(db = ":memory:") {
   let requests = 0;
   const agent: RunAgent = async raw => {
     requests++;
-    if ((raw as NotingAgentInput).kind === "noting") (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    if (raw.kind === "noting") {
+      raw.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+      raw.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    }
     return { outcome: "success", output: "", request: {} };
   };
   const memory = sourceSeededMemory(db, agent);

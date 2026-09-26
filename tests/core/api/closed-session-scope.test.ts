@@ -2,11 +2,13 @@ import { expect, test } from "vitest";
 import { sourceSeededMemory, validateConfig, type ClosedSessionScope, type NotingAgentInput } from "../../source-fixture.ts";
 
 const at = "2026-09-09T00:00:00Z";
-/** 26a: a Noting batch is completed by a submission, so a run that has nothing to record submits the
- * explicit empty batch. Consolidation's protocol is unchanged and submits nothing here. */
+/** Explicit scripted empty N output uses both tools. C still needs no submission. */
 const submitted = (raw: unknown) => {
   const input = raw as NotingAgentInput;
-  if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+  if (input.kind === "noting") {
+    input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+  }
 };
 function setup(scope: ClosedSessionScope = "project", agent: Parameters<typeof sourceSeededMemory>[1] = async raw => { submitted(raw); return { outcome: "success", output: "", request: {} }; }) {
   const memory = sourceSeededMemory(":memory:", agent, { closedSessionScope: scope });
@@ -126,10 +128,15 @@ test("a project-scoped borrowed writer cannot commit after its executor moves to
   try {
     const pending = memory.noting({ ...same, borrowed: true, executorSessionId: active.sessionId });
     memory.declareProject(active.sessionId, "different", "mark", active);
-    const receipt = String(await input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "observation", actor: "user", text: "late write", source: [`T${same.headTurnId}#user`] }] }));
-    expect(receipt).toContain("borrowed work");
+    const receipt = String(await input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "late write", source: [`T${same.headTurnId}#E1`] }] }));
+    expect(receipt).toContain("held");
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    expect(memory.store.listTurnFacts(same.headTurnId)).toHaveLength(1); // only the prior manual fact
     finish();
-    expect((await pending).outcome).not.toBe("success");
+    const result = await pending;
+    expect(result.outcome).not.toBe("success");
+    expect("problems" in result && result.problems?.join(" ")).toContain("borrowed work");
+    expect(memory.store.listTurnFacts(same.headTurnId)).toHaveLength(1);
     expect(memory.pendingEntries(same.sessionId, same.branch, same.headTurnId)).toHaveLength(2);
   } finally { memory.close(); }
 });

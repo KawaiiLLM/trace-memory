@@ -35,11 +35,11 @@ afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: tr
 
 function session() {
   const project = memory.store.createProject({ name: "p", declaredBy: "mark" });
-  return memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id }).id;
+  return memory.store.createSession({ enrollmentChoice: true, host: "pi:boundary", startedAt: time, firstReplyAt: time, projectId: project.id }).id;
 }
 const turn = (sessionId: number, parentTurnId: number | null, user: string, assistant: string) =>
   memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: user, assistantText: assistant, startedAt: time });
-const fact = (source: string) => ({ category: "observation", actor: "user", text: `Observed at ${source}`, source: [source] });
+const fact = (source: string) => ({ text: `Observed at ${source}`, source: [source] });
 
 test.each([
   ["noting", false], ["consolidation", false], ["noting", true], ["consolidation", true],
@@ -49,7 +49,7 @@ test.each([
   const otherTurn = turn(other, null, "other evidence", "reply");
   for (const [id, t] of [[own, ownTurn], [other, otherTurn]] as const)
     memory.tools({ kind: "manual", sessionId: id, branch: "main", currentTurnId: t.id })
-      .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] });
+      .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#E1`)] });
   let releaseOwn = () => {}, releaseOther = () => {};
   const ownGate = new Promise<void>(resolve => { releaseOwn = resolve; });
   const otherGate = new Promise<void>(resolve => { releaseOther = resolve; });
@@ -101,7 +101,7 @@ test.each([
 ] as const)("external abort retries %s claim release (persistent failure: %s, already aborted: %s)", async (phase, persistent, alreadyAborted) => {
   const id = session(), t = turn(id, null, "evidence", "reply");
   if (phase === "consolidation") memory.tools({ kind: "manual", sessionId: id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] });
+    .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#E1`)] });
   let settle = () => {};
   const held = new Promise<void>(resolve => { settle = resolve; });
   runAgent = async () => {
@@ -139,14 +139,17 @@ test.each([
   } finally { settle(); release.mockRestore(); await attempt; }
 });
 
-test.each(["noting", "consolidation"] as const)("external abort after a %s commit preserves success", async phase => {
+test.each(["noting", "consolidation"] as const)("external abort respects the %s publication boundary", async phase => {
   const id = session(), t = turn(id, null, "evidence", "reply");
   if (phase === "consolidation") memory.tools({ kind: "manual", sessionId: id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] });
+    .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#E1`)] });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   runAgent = async input => {
-    if (input.kind === "noting") expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [] })).toContain("committed");
+    if (input.kind === "noting") {
+      expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [] })).toContain("held");
+      expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] })).toContain("held");
+    }
     else {
       const tool = input.tools.find(tool => tool.name === "memory")!;
       const batch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
@@ -159,13 +162,14 @@ test.each(["noting", "consolidation"] as const)("external abort after a %s commi
   const target = { sessionId: id, branch: "main", headTurnId: t.id, mode: "subagent" as const, signal: controller.signal };
   const attempt = phase === "noting" ? memory.noting(target) : memory.consolidate(target);
   try {
-    expect(memory.store.listRuns(id).filter(run => run.kind === phase)).toHaveLength(1); // tool commit precedes runner completion
+    expect(memory.store.listRuns(id).filter(run => run.kind === phase)).toHaveLength(phase === "noting" ? 0 : 1); // only C commits before completion
     controller.abort();
     expect(memory.store.getClaim(id, phase)).toBeNull();
     release();
     const result = await attempt;
-    expect(result.outcome).toBe("success");
-    expect(memory.store.listRuns(id).find(run => run.kind === phase)!.outcome).toBe("success");
+    expect(result.outcome).toBe(phase === "noting" ? "cancelled" : "success");
+    expect(memory.store.listRuns(id).find(run => run.kind === phase)!.outcome).toBe(phase === "noting" ? "cancelled" : "success");
+    if (phase === "noting") expect(memory.pendingEntries(id, "main", t.id)).toHaveLength(2);
   } finally { release(); await attempt; }
 });
 
@@ -200,14 +204,15 @@ test("19b 2026-09-08: a host stub that receives structured material and declares
     expect(input.material.entries.map(e => e.view)).toEqual(hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store).map(e => renderEntry(e, memory.config.render).content));
     expect(input.entryAudit.viewVersion).toBe(ENTRY_VIEW_VERSION);
     expect(input.entryAudit.viewBudgets).toEqual({ entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 }); // the one profile (30)
-    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] })).toContain("ok: F1");
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#E1`)] })).toContain("held");
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "done", audit: { available: false, reason: "this host cannot expose provider requests" } };
   };
   const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
   expect(result.outcome).toBe("success");
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.problems).toBeUndefined();
-  expect(memory.store.listSessionFacts(sessionId).map(f => f.text)).toEqual([`Observed at T${t.id}#user`]);
+  expect(memory.store.listSessionFacts(sessionId).map(f => f.text)).toEqual([`Observed at T${t.id}#E1`]);
   const run = memory.store.getRun(result.runId)!;
   expect(run.outcome).toBe("success");
   expect(run.request).toBeNull(); // nothing fabricated
@@ -222,7 +227,8 @@ test("19b 2026-09-08: the same stub still fails core validation, and a host expe
   const t = turn(sessionId, null, "用 pnpm", "好的。");
   // Unavailable audit is not a licence to write anything: validation is core's and is unchanged.
   runAgent = async raw => {
-    (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!.execute({ facts: [{ ...fact(`T${t.id}#user`), category: "invalid" }] });
+    raw.tools.find(tool => tool.name === "note")!.execute({ facts: [{ ...fact(`T${t.id}#E1`), category: "invalid" }] });
+    raw.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "done", audit: { available: false, reason: "no request available" } };
   };
   const bounced = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
@@ -231,7 +237,11 @@ test("19b 2026-09-08: the same stub still fails core validation, and a host expe
   expect(bounced.problems.join("\n")).toContain("category");
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
   // A host that claims nothing about its audit and returns no request is still an audit problem.
-  runAgent = async () => ({ outcome: "success", output: "done" });
+  runAgent = async input => {
+    input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    return { outcome: "success", output: "done" };
+  };
   const failed = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
   expect(failed.outcome).toBe("failure");
   if (failed.outcome !== "failure") throw new Error("expected a failure");
@@ -243,7 +253,7 @@ test("19b 2026-09-08: a Consolidation stub with unavailable audit runs the two s
   const sessionId = session();
   const t = turn(sessionId, null, "用 pnpm", "好的。");
   memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] });
+    .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#E1`)] });
   const batch = { operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] };
   runAgent = async raw => {
     const input = raw as ConsolidationAgentInput;
@@ -287,8 +297,9 @@ test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the on
     expect(input.material.entries.map(e => e.id)).toEqual(owned.map(e => e.id)); // oldest first, one Turn
     expect(input.range).toEqual({ from: `S${sessionId}/T${first.id}`, to: `S${sessionId}/T${first.id}` });
     // Inherited context is not evidence permission: the excluded tail cannot be cited.
-    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${second.id}#user`)] })).toContain("rejected:");
-    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${first.id}#user`)] })).toContain("ok: F1");
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${second.id}#E1`)] })).toContain("rejected:");
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ ...fact(`T${first.id}#E1`), slot: "$1" }] })).toContain("held");
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "done", request: { fake: true } };
   };
   const result = await memory.noting({ sessionId, branch: "main", headTurnId: second.id, mode: "fork",
@@ -299,7 +310,7 @@ test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the on
   const run = memory.store.getRun(result.runId)!;
   expect([run.rangeFrom, run.rangeTo]).toEqual([`S${sessionId}/T${first.id}`, `S${sessionId}/T${first.id}`]);
   expect(JSON.parse(run.response!).entryAudit.entries.map((e: { id: number }) => e.id)).toEqual(owned.map(e => e.id));
-  expect(memory.store.listSessionFacts(sessionId).map(f => f.text)).toEqual([`Observed at T${first.id}#user`]);
+  expect(memory.store.listSessionFacts(sessionId).map(f => f.text)).toEqual([`Observed at T${first.id}#E1`]);
   // The unselected tail is untouched: still pending, for a later permitted trigger.
   expect(hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store).map(e => e.turnId)).toEqual([second.id, second.id]);
 });
@@ -323,7 +334,8 @@ test("19b 2026-09-08: the frozen material carries the whole batch, and core's fr
   runAgent = async raw => {
     const input = raw as NotingAgentInput;
     expect(input.text).toContain("用 pnpm");
-    input.tools.find(t => t.name === "note")!.execute({ facts: [] }); // 26a: a batch is completed by a submission
+    input.tools.find(t => t.name === "note")!.execute({ facts: [] });
+    input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "", request: { fake: true } };
   };
   expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("success");
@@ -341,9 +353,10 @@ test("20a 2026-09-08 scenario 1: a host stub with no provider message types runs
     const input = raw as NotingAgentInput;
     assertNoProviderMessage(input);
     noted = input.text; // the whole task, as text: instructions stay a separate field
-    expect(input.prompt).toContain("Noting (fact extraction)");
+    expect(input.prompt).toContain("Noting (facts and knowledge)");
     expect(noted).toContain(input.material.entries[0]!.view);
-    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] })).toContain("ok: F1");
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#E1`)] })).toContain("held");
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "done", audit: { available: false, reason: "text-only host" } };
   };
   expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("success");
@@ -418,8 +431,9 @@ test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes t
   let sent!: NotingAgentInput;
   runAgent = async raw => {
     sent = raw as NotingAgentInput;
-    expect(sent.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${second.id}#user`)] })).toContain("rejected:");
-    expect(sent.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${first.id}#user`)] })).toContain("ok: F1");
+    expect(sent.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${second.id}#E1`)] })).toContain("rejected:");
+    expect(sent.tools.find(tool => tool.name === "note")!.execute({ facts: [{ ...fact(`T${first.id}#E1`), slot: "$1" }] })).toContain("held");
+    sent.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "done", request: { fake: true } };
   };
   const result = await memory.noting({ sessionId, branch: "main", headTurnId: second.id, mode: "subagent",
@@ -471,18 +485,16 @@ test("26a scenario 1: a run that never calls note is incomplete, records its usa
     const input = raw as NotingAgentInput;
     frozen = input.entryIds;
     input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "", request: { fake: true } };
   };
   expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("success");
   expect(frozen).toEqual(before);
 });
 
-/** Ticket 26 "Empty submission" and acceptance scenario 1: `note({facts: []})` is a valid explicit
- * submission. It commits a successful zero-fact run, marks exactly the frozen entries processed,
- * closes the batch to later `note` calls, and a provider failure after that commit keeps the success
- * and only appends the trailing problem. (29d removed this scenario's "creates no delivery" clause
- * with the delivery mechanism itself: no commit creates one now.) */
-test("26a scenario 1: note({facts: []}) commits a zero-fact run, and a later provider failure keeps it", async () => {
+/** 92 supersedes immediate N completion: empty output is explicit for both tools,
+ * remains editable, and publishes progress only at normal terminal success. */
+test.each(["success", "failure"] as const)("92: empty output remains editable until terminal %s", async outcome => {
   const sessionId = session();
   const t = turn(sessionId, null, "用 pnpm", "好的。");
   const before = hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store).map(e => e.id);
@@ -490,19 +502,23 @@ test("26a scenario 1: note({facts: []}) commits a zero-fact run, and a later pro
   runAgent = async raw => {
     const note = (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!;
     receipt = note.execute({ facts: [] });
-    second = note.execute({ facts: [fact(`T${t.id}#user`)] }); // the empty submission closed the batch
-    return { outcome: "failure", output: "provider exploded after the commit", request: { fake: true } };
+    second = note.execute({ facts: [fact(`T${t.id}#E1`)] });
+    expect(second).toContain("held: $1");
+    expect(note.execute({ facts: [], drop: ["$1"] })).not.toContain("rejected:");
+    raw.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
+    expect(memory.pendingEntries(sessionId, "main", t.id).map(e => e.id)).toEqual(before);
+    return { outcome, output: outcome === "failure" ? "provider exploded before publication" : "done", request: { fake: true } };
   };
   const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
-  if (result.outcome !== "success") throw new Error(`expected success, got ${result.outcome}`);
-  expect(result.facts).toEqual([]);
-  expect(JSON.parse(receipt)).toEqual({ results: [], factIds: [], committed: "zero facts; this batch is complete" });
-  expect(second).toBe("rejected: already committed");
-  expect(result.problems?.join(" ")).toContain("provider failed after commit"); // trailing problem, commit intact
-  expect(memory.store.getRun(result.runId)!.outcome).toBe("success");
+  expect(result.outcome, JSON.stringify(result)).toBe(outcome);
+  expect(JSON.parse(receipt)).toMatchObject({ results: [], held: [], rejected: {} });
+  expect(JSON.parse(receipt)).not.toHaveProperty("committed");
+  if (!("runId" in result) || result.runId === undefined) throw new Error("Expected terminal audit");
+  expect(memory.store.getRun(result.runId)!.outcome).toBe(outcome);
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
-  expect(hydrate(memory.store.sourcePath(sessionId, "main", t.id), memory.store).filter(e => memory.store.entryNoted(e.id)).map(e => e.id)).toEqual(before);
-  expect(hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store)).toEqual([]);
+  expect(memory.store.sourcePath(sessionId, "main", t.id).filter(e => memory.store.entryNoted(e.id)).map(e => e.id)).toEqual(outcome === "success" ? before : []);
+  expect(memory.pendingEntries(sessionId, "main", t.id).map(e => e.id)).toEqual(outcome === "success" ? [] : before);
 });
 
 
@@ -511,7 +527,7 @@ test.each((["noting", "consolidation"] as const).flatMap(phase =>
   "29 $phase fallback cannot revive its original $loss claim", async ({ phase, loss }) => {
   const id = session(), t = turn(id, null, "ownership evidence", "reply");
   if (phase === "consolidation") memory.tools({ kind: "manual", sessionId: id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] });
+    .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#E1`)] });
   const peer = sourceSeededMemory(join(directory, "test.sqlite"), async () => ({ outcome: "success", output: "" }));
   const now = Date.now();
   const clock = vi.spyOn(Date, "now").mockReturnValue(now);
