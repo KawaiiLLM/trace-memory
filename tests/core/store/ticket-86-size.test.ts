@@ -68,7 +68,7 @@ test("92: held N create/update cap resulting text at 1000; manual memory remains
     const pending = store.pendingEntryIds(session.id, "main", turn.id);
     const rejectedCreate = await memory.noting(path);
     expect(rejectedCreate.outcome).toBe("bounced");
-    expect("problems" in rejectedCreate && rejectedCreate.problems.join(" ")).toMatch(/1000-token limit: 1001 tokens/);
+    expect("problems" in rejectedCreate && rejectedCreate.problems?.join(" ")).toMatch(/1000-token limit: 1001 tokens/);
     expect(store.listKnowledgeRevisions()).toHaveLength(0);
     expect(store.listSessionFacts(session.id)).toEqual([]);
     expect(store.pendingEntryIds(session.id, "main", turn.id)).toEqual(pending);
@@ -91,7 +91,7 @@ test("92: held N create/update cap resulting text at 1000; manual memory remains
     const factsBefore = store.listSessionFacts(session.id);
     const rejectedUpdate = await memory.noting(nextPath);
     expect(rejectedUpdate.outcome).toBe("bounced");
-    expect("problems" in rejectedUpdate && rejectedUpdate.problems.join(" ")).toMatch(/1000-token limit: 1001 tokens/);
+    expect("problems" in rejectedUpdate && rejectedUpdate.problems?.join(" ")).toMatch(/1000-token limit: 1001 tokens/);
     expect(store.currentKnowledge(nextPath)[0]!.revision.id).toBe(base.revision.id);
     expect(store.listSessionFacts(session.id)).toEqual(factsBefore);
     expect(store.pendingEntryIds(session.id, "main", next.id)).toEqual(nextPending);

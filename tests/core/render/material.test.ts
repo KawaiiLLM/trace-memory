@@ -6,11 +6,11 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, visibleTarget, type ConfigOverride, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
+import { NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, visibleTarget, type ConfigOverride, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
-import { KNOWLEDGE_RECENCY_NOTICE, budgetFacts, budgetKnowledge, charge, finish, renderFact, renderKnowledge, renderKnowledgeBlock, wholeKnowledge } from "../../../src/core/render/index.ts";
+import { KNOWLEDGE_RECENCY_NOTICE, budgetFacts, budgetKnowledge, charge, finish, renderFact, renderFactGroups, renderKnowledge, renderKnowledgeBlock, wholeKnowledge, xmlBlock } from "../../../src/core/render/index.ts";
 import { budgetMaterial, compactText, rawWindowTokens, injectionText, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -148,7 +148,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   const raw = views(s.id, t.id);
   // Facts have an independent window; its omission receipt follows the complete Raw block.
   const factReceipt = "omitted 1 older facts; expand: F1";
-  memory.config.compaction.factsTokens = tokens(compactText({ facts: [], receipts: [factReceipt] }));
+  memory.config.compaction.factsTokens = charge([factReceipt]) + charge(["Receipts:"]);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const noting = calls[0]! as NotingAgentInput;
   expect(knowledgeBlockOf(noting.material)).toBe(knowledgeBlock);
@@ -255,14 +255,18 @@ test("25a/92: default N material has independent 10k facts and Raw windows plus 
 
 test("45/92: N sends Knowledge within the database-derived cap without borrowing from facts or Raw", async () => {
   const { s, t } = overloaded();
-  setKnowledgeCapacity(memory, 10_000);
+  const knowledge = memory.store.currentKnowledge({ sessionId: s.id, branch: "main", headTurnId: t.id });
+  // Leave room for omission receipts but less than another whole item; the receipt must actually emit.
+  const cap = wholeKnowledge(knowledge.slice(-15), value => renderKnowledge(value, tag(value.knowledge.id, value.revision.id))).cost + 200;
+  expect(cap).toBeLessThan(10_000);
+  setKnowledgeCapacity(memory, cap);
   const pending = memory.store.pendingEntryIds(s.id, "main", t.id);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const input = calls.at(-1)!;
   const material = input.material;
   const knowledgeReceipts = material.receipts.filter(r => r.includes(" knowledge; expand: "));
   expect(knowledgeReceipts.length).toBeGreaterThan(0); // the knowledge cap really binds
-  expect(tokens(knowledgeBlockOf(material)) + charge(knowledgeReceipts)).toBeLessThanOrEqual(10_000);
+  expect(tokens(injectionText({ knowledge: material.knowledge, receipts: knowledgeReceipts }))).toBeLessThanOrEqual(cap);
   const factReceipts = material.receipts.filter(receipt => receipt.includes(" older facts; expand: "));
   expect(factReceipts.length).toBeGreaterThan(0);
   expect(tokens(compactText({ facts: material.facts, receipts: factReceipts }))).toBeLessThanOrEqual(10_000);
@@ -447,7 +451,9 @@ test("29b/92: compact filters retained facts before budgeting; fork N adds no hi
   const line = (fact: Fact) => renderFact(fact, memory.store.listFactRelations(fact.id));
   const turns = memory.store.factTurnTimes(facts);
   // An allowance around three fact lines, so the block is really bound by it.
-  const room = charge(budgetFacts(facts, line, Number.MAX_SAFE_INTEGER, turns).recent.slice(0, 3));
+  const room = charge([xmlBlock("episodic", ""), FACTS_TITLE])
+    + charge(renderFactGroups(facts.slice(-3), line, turns))
+    + charge(["Receipts:", "omitted 3 older facts; expand: F3, F2, F1"]);
   memory.config.compaction.factsTokens = room;
   memory.config.compaction.rawTokens = 0;
   memory.config.compaction.sharedAllowanceTokens = 0;
