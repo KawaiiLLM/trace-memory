@@ -91,7 +91,7 @@ test("26b: a worker model that does not support the level runs at Pi's clamped l
   } finally { await h.dispose(); }
 });
 
-test("26b: every launch path freezes the same level — both phases, automatic work, a fork fallback, borrowed closed-session work and manual catchup", async () => {
+test("26b/92: every N launch path freezes the same level — automatic work, a fork fallback, borrowed work and manual catchup", async () => {
   const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 30 });
   try {
     h.setThinkingLevel("high");
@@ -199,7 +199,7 @@ test("26d: the same fork task, refused by the gate, runs its fresh child at the 
   } finally { await f.dispose(); }
 });
 
-test("26d: every subagent path takes its phase's configured level — explicit subagent mode, borrowed closed-session work, manual catchup and Consolidation", async () => {
+test("26d/92: every N subagent path takes its configured level — explicit subagent mode, borrowed work and manual catchup", async () => {
   const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, notingThinking: "high" });
   try {
     h.setThinkingLevel("off"); // the foreground level, which `inherit` would have used

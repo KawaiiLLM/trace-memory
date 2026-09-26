@@ -237,7 +237,7 @@ test("92: an oldest entry over the configured batch ceiling remains pending with
     expect(h.requests).toHaveLength(0);
     expect(tokens(renderEntry(all[0]!, h.memory.config.render).content)).toBeGreaterThan(1000);
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.id)).toEqual(all.map(e => e.id));
-    expect(h.notices.join("\n")).toMatch(/batch|capacity|1000/i);
+    expect(h.notices.join("\n")).toContain("oldest entry and Raw framing exceed noting.batchTokens (1000); left pending");
   } finally { await h.dispose(); }
 });
 
