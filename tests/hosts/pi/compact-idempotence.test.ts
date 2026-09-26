@@ -12,7 +12,7 @@ test("Pi refuses an immediate repeat before the hook; small pending turns preser
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-idempotence-"));
   const f = await piSession({ extensions: [extension as never],
     env: { TRACE_MEMORY_CONFIG: JSON.stringify({ dbPath: join(dir, "trace.db"),
-      "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000 }) },
+      "noting.triggerTokens": 1_000_000_000 }) },
     prepare: ({ agentDir }) => writeFileSync(join(agentDir, "trace-memory-baseline.json"), JSON.stringify("2000-01-01T00:00:00.000Z")) });
   try {
     f.script(() => say("answer"));
@@ -38,8 +38,8 @@ test("Pi refuses an immediate repeat before the hook; small pending turns preser
 
 // The native API above refuses a no-Turn repeat before extension dispatch. Drive that missing
 // dispatch explicitly, but persist every result through the real manager and run session_compact.
-test("persisted hook lifecycle: repeat, N/C, 117 knowledge commits, small turns and cold restore", async () => {
-  const quiet = { "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000, "dreaming.triggerTokens": 1 };
+test("persisted hook lifecycle: repeat, N progress, 117 knowledge commits, small turns and cold restore", async () => {
+  const quiet = { "noting.triggerTokens": 1_000_000_000, "dreaming.triggerTokens": 1 };
   const f = await fixture(quiet);
   const compact = async (h = f.h, manager = f.manager()) => {
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 1000 } });

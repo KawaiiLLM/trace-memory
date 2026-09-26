@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import type { JsonObject } from "@earendil-works/pi-ai";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { host, reply, emptyNote, type Reply } from "./test-host.ts";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
@@ -181,17 +181,12 @@ test("64c native host: a fitting residual ends successfully without a repair rou
 });
 
 test("32d native host: Noter and Dreamer occupy independent seats", async () => {
-  const { h, store, item } = await seeded();
+  const { h, store, item } = await seeded({ "noting.triggerTokens": 1 });
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   try {
     const phases = new Set<string>();
     let dreamerRequests = 0;
-    // Apply this non-hot setting through the host's ordinary session reload boundary.
-    const settings = JSON.parse(readFileSync(join(h.dir, "agent", "settings.json"), "utf8"));
-    settings["trace-memory"]["noting.triggerTokens"] = 1;
-    writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify(settings));
-    await h.emit("session_start");
     h.provider(async c => { const dreamer = c.systemPrompt!.startsWith("# Dreamer"); phases.add(dreamer ? "D" : "N"); await held;
       if (!dreamer) return emptyNote(c) ?? reply("Done");
       if (++dreamerRequests > 2) throw new Error("Unexpected Dreamer continuation");
