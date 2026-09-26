@@ -23,10 +23,10 @@ function open(config: ConfigOverride = {}) {
     // own provider record out of the material, the tool rounds and core's review feedback (19b).
     const input = raw as ConsolidationAgentInput;
     const guidance = input.tools.find(t => t.name === "trace")!.description;
-    expect(guidance).toContain("trace({address:'K12@57',itemBudget:null})");
+    expect(guidance).toContain("trace({address:'K12@v3',itemBudget:null})");
     expect(guidance).toContain("pageBudget still applies");
-    expect(guidance).toContain("Follow every cursor");
-    expect(guidance).toContain("already supplied internally need no reread");
+    expect(guidance).toContain("complete body carries its exact K#tag");
+    expect(guidance).not.toContain("granted");
     const rounds: any[] = [{ material: structuredClone(input.material) }];
     for (;;) {
       input.request = { system: input.prompt, rounds: structuredClone(rounds), tools: input.tools.map(({execute, ...tool}) => tool) };
@@ -38,8 +38,8 @@ function open(config: ConfigOverride = {}) {
       // only participants the script selected; it neither grants reads nor resolves live tips.
       const batch = structuredClone(response.output) as { operations?: { id?: string; absorb?: string[] }[] };
       const suppliedHandle = (address: string) => {
-        const reads = input.readKnowledgeCommits.filter(r => `K${r.knowledgeId}` === address);
-        return reads.length === 1 ? `${address}@${reads[0]!.commit}` : address;
+        const handles = input.text.match(new RegExp(`${address}#[a-z]{4,}`, "g")) ?? [];
+        return new Set(handles).size === 1 ? handles[0]! : address;
       };
       for (const op of batch.operations ?? []) {
         if (op.id) op.id = suppliedHandle(op.id);
@@ -91,7 +91,7 @@ function audit(runId: number, callIndex: number, outcome: "success" | "failure" 
   expect(run.outcome).toBe(outcome);
   expect(JSON.parse(run.request!)).toEqual(calls[callIndex]!.request);
   expect(run.promptHash).toBe(createHash("sha256").update(calls[callIndex]!.prompt).digest("hex"));
-  expect(JSON.parse(run.response!).readKnowledgeCommits).toEqual(calls[callIndex]!.readKnowledgeCommits);
+  expect(JSON.parse(run.response!)).not.toHaveProperty("readKnowledgeCommits");
   return JSON.parse(run.response!);
 }
 
@@ -112,13 +112,13 @@ test("freezes branch, range, supplied knowledge and relations until its single v
   const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range).toEqual({ from: `F${current}`, to: `F${current}`, facts: [memory.store.getFact(current)!] });
-  expect(result.readKnowledgeCommits).toEqual([{ knowledgeId: existing, commit: existing }]);
+  expect(result).not.toHaveProperty("readKnowledgeCommits");
   expect(calls).toHaveLength(1);
   const call = calls[0]!;
   expect(call.branch).toBe("main"); expect(call.model).toBe("fake-model"); expect(call.mode).toBe("subagent");
   expect(call.text).not.toContain(`[F${late}]`); expect(call.text).not.toContain(`[F${foreign}]`);
   expect(call.text).not.toContain(`inbound negate F${late}`); expect(call.text).not.toContain(`[K${laterKnowledge}@`);
-  expect(call.text).toContain(`[K${existing}@${existing}]`);
+  expect(call.text).toContain(`[K${existing}#${memory.store.versionTag(existing, existing)}]`);
   expect(audit(result.runId, 0).toolCalls).toHaveLength(1);
   expect(memory.trace(`K${existing}`)).toBe(before);
   expect(consolidated(current)).toBe(true);

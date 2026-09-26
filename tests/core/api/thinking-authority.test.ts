@@ -21,7 +21,7 @@ for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} reject
   const f = fixture();
   try {
     const tools = f.m.tools(kind === "manual" ? { kind, sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }
-      : { kind, sessionId: f.sessionId, branch: "main", entryIds: f.entries.map(e => e.id), range: { from: "S1/T1", to: "S1/T1" }, readKnowledgeCommits: [] });
+      : { kind, sessionId: f.sessionId, branch: "main", entryIds: f.entries.map(e => e.id), range: { from: "S1/T1", to: "S1/T1" } });
     const note = tools.find(t => t.name === "note")!, trace = tools.find(t => t.name === "trace")!;
     const fact = (source: string[]) => ({ category: "observation", actor: "agent", text: "An observation", source });
     for (const source of ["T1#E1", "T1#E1@thinking", "T1#E2@thinking"]) {

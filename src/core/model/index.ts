@@ -237,7 +237,9 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
   if (!isNonEmptyString(f.text)) {
     problems.push(`${path}.text: expected a non-empty string`);
   } else {
-    if (EMBEDDED_ID_RE.test(f.text)) {
+    // Essential verbatim snippets moved from the retired quote field into 「…」.
+    // Their literal identifiers are evidence text, never structured references.
+    if (EMBEDDED_ID_RE.test(f.text.replace(/「[^」]*」/gu, ""))) {
       problems.push(`${path}.text: must not embed a fact or knowledge id; ids live in structured relation/support fields`);
     }
   }

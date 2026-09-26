@@ -21,7 +21,7 @@ function setup() {
   const select = (entries: SourceEntry[], branch = "main") => m.selectEntries(sessionId, branch, entries.map(e => e.id));
   const note = (kind: "manual" | "noting", entries: SourceEntry[], head = turn.id) => m.tools(kind === "manual"
     ? { kind, sessionId, branch: "main", currentTurnId: head }
-    : { kind, sessionId, branch: "main", entryIds: entries.map(e => e.id), range: { from: `S${sessionId}/T${turn.id}`, to: `S${sessionId}/T${head}` }, readKnowledgeCommits: [] }).find(t => t.name === "note")!;
+    : { kind, sessionId, branch: "main", entryIds: entries.map(e => e.id), range: { from: `S${sessionId}/T${turn.id}`, to: `S${sessionId}/T${head}` } }).find(t => t.name === "note")!;
   return { m, sessionId, turn, append, select, note };
 }
 const address = (entry: SourceEntry, exact: boolean) => `T${entry.turnId}#E${entry.entryOrdinal}${exact ? `@${entry.calls[0]!.callId}` : ""}`;

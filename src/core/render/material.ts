@@ -156,16 +156,16 @@ export interface ConsolidationMaterial extends SharedMaterial {
 
 export type TransportItem =
   | { kind: "knowledge"; text: string; category: string; commitId: number; address: string }
-  | { kind: "state"; text: string; receipt: { fromCommit: number; toCommits: number[] } }
+  | { kind: "state"; text: string; address: string; receipt: { fromCommit: number; toCommits: number[] } }
   | { kind: "fact"; text: string; factId: number; pending: boolean }
   | { kind: "raw"; text: string; entryId: number; address: string; pending: boolean }
   | { kind: "receipt"; text: string };
 
 /** A whole selected domain item can be independently framed when its transport has several
  * unordered carriers. The host only decides which complete framed items fit each carrier. */
-export function transportItemText(item: TransportItem): string {
+export function transportItemText(item: TransportItem, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): string {
   switch (item.kind) {
-    case "knowledge": return `<knowledge>\n${KNOWLEDGE_RECENCY_NOTICE}\n<${item.category}>\n${item.text}\n</${item.category}>\n</knowledge>`;
+    case "knowledge": return `<knowledge>\n${recencyNotice}\n${item.text}\n</knowledge>`;
     case "state": return `${KNOWLEDGE_STATUS_TITLE}\n${item.text}`;
     case "fact": return `<episodic>\n${FACTS_TITLE}\n\n${item.text}\n</episodic>`;
     case "raw": return `<episodic>\n${RAW_TITLE}\n\n${item.text}\n</episodic>`;

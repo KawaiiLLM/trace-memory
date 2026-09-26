@@ -378,12 +378,12 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
 export function notingFact(conversation: Conversation) {
   const input = String(conversation.messages[0]!.content);
   const address = /S(\d+)\/T(\d+)/.exec(input)!;
-  const source = /\[(T\d+#E\d+@text)\] (?:user|assistant):/.exec(input)?.[1] ?? `T${address[2]}#user`;
+  const source = /\[(T\d+#E\d+@text)\] (?:user|assistant):/.exec(input)?.[1] ?? `T${address[2]}#E1`;
   const previous = latestNoteResult(conversation), review = parsedNoteResult(conversation)?.feedback;
   if (previous && (!review || typeof review !== "object")) return reply("Done.");
   return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const,
     id: previous ? "note-2" : "note-1", name: "note", arguments: { facts: [
-      { category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [source] },
+      { text: "用 pnpm，不要 npm", source: [source] },
     ] } }] };
 }
 

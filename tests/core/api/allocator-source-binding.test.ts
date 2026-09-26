@@ -10,7 +10,7 @@ function fixture(manual = false, count = 1) {
   const append = (nativeId: string) => m.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId, turnId: t.id, role: "assistant", text: "source " + nativeId, raw: "", calls: [] });
   const entries = [append("a"), append("b")];
   const context = manual ? { kind: "manual" as const, sessionId: s.id, branch: "main", currentTurnId: t.id }
-    : { kind: "noting" as const, sessionId: s.id, branch: "main", entryIds: entries.map(e => e.id), range: { from: `S${s.id}/T${t.id}`, to: `S${s.id}/T${t.id}` }, readKnowledgeCommits: [] };
+    : { kind: "noting" as const, sessionId: s.id, branch: "main", entryIds: entries.map(e => e.id), range: { from: `S${s.id}/T${t.id}`, to: `S${s.id}/T${t.id}` } };
   const receipt = JSON.parse(m.tools(context).find(t => t.name === "note")!.execute({ facts: Array.from({ length: count }, (_, i) => ({ category: "observation", actor: "user", text: `optional fact ${i}`, source: [`T${t.id}#assistant`] })) }));
   expect(receipt.factIds).toHaveLength(count);
   const facts = (receipt.factIds as number[]).map(id => m.store.getFact(id)!);
@@ -77,7 +77,7 @@ for (const damage of ["none", "missing", "uncovered", "required"] as const) test
     const tool = [entry("call", "assistant"), entry("result", "toolResult")];
     const ids = [...f.entries, ...tool].map(e => e.id);
     const receipt = JSON.parse(f.m.tools({ kind: "noting", sessionId: f.s.id, branch: "main", entryIds: ids,
-      range: { from: `S${f.s.id}/T${f.t.id}`, to: `S${f.s.id}/T${t.id}` }, readKnowledgeCommits: [] })
+      range: { from: `S${f.s.id}/T${f.t.id}`, to: `S${f.s.id}/T${t.id}` } })
       .find(t => t.name === "note")!.execute({ facts: [{ category: "observation", actor: "user", text: "cross Turn tool fact", source: [`T${f.t.id}#assistant`, `T${t.id}#t${call.ordinal}`] }] }));
     expect(receipt.factIds).toHaveLength(1);
     const fact = f.m.store.getFact(receipt.factIds[0])!;

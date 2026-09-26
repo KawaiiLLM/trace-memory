@@ -248,7 +248,8 @@ test("20a 2026-09-08: the full text and the inherited increment come from one fr
   expect(fork!.mode).toBe("fork"); expect(fresh!.mode).toBe("subagent");
   expect(fork!.entryIds).toEqual(fresh!.entryIds); // one writable range, whatever the execution mode
   expect(fork!.range).toEqual(fresh!.range);
-  expect(fork!.readKnowledgeCommits).toEqual(fresh!.readKnowledgeCommits);
+  expect(fork).not.toHaveProperty("readKnowledgeCommits");
+  expect(fresh).not.toHaveProperty("readKnowledgeCommits");
   // 29b: one builder over one frozen task, two initial states. What the fork does not send is exactly
   // what its own context already holds, and it is never a second copy of the full text.
   expect(fork!.text).not.toEqual(fresh!.text);
@@ -2650,18 +2651,19 @@ test("64b/29/31: an identity disappearance is noticed again after restore and re
 /** Ticket 40 N0 (2026-09-14): a correction keeps the object's identity. The Sol replay read the
  * id-in-text rejection as "delete" and dropped K213@271 and five other audited objects on
  * resubmission; the prompt and the rejection reason now both say where the span goes. */
-test("40 N0: the verbatim span naming the object goes in quote, which the id check does not cover", () => {
+test("40 N0/92: the verbatim object span stays inside the episode in corner quotes", () => {
   const { s, t } = session();
   const note = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!;
-  const fact = (changes: Record<string, unknown>) => ({ category: "observation", actor: "agent",
-    text: "The audited knowledge item names its object in the text instead of the quote.", source: [`T${t.id}#user`], ...changes });
+  const fact = (changes: Record<string, unknown>) => ({
+    text: "The audited item was named as 「K213@271」.", source: [`T${t.id}#E1`], ...changes });
   const rejected = JSON.parse(note.execute({ facts: [fact({ text: "K213@271 names its object in the text instead of the quote." })] }));
   expect(rejected.results[0]).toContain("rejected:");
-  expect(rejected.results[0]).toContain("move the verbatim span to quote");
+  expect(rejected.results[0]).toContain("ids live in structured relation/support fields");
   expect(memory.store.listSessionFacts(s.id)).toEqual([]);
-  const accepted = JSON.parse(note.execute({ facts: [fact({ quote: "K213@271" })] }));
+  const accepted = JSON.parse(note.execute({ facts: [fact({})] }));
   expect(accepted.results[0]).toMatch(/^ok:/);
-  expect(memory.store.getFact(accepted.factIds[0])!.quote).toBe("K213@271");
+  expect(memory.store.getFact(accepted.factIds[0])!.quote).toBeNull();
+  expect(memory.store.getFact(accepted.factIds[0])!.text).toContain("「K213@271」");
 });
 
 
@@ -2678,10 +2680,10 @@ test("59: every supplied item is accounted for by an operation or a skip; New it
   // Step B, before the first New item: one batched history search; a hit is read in full before the revival decision.
   expect(prompt).toContain("Before the first `New` item, run one `search` with `queries`, `layer: knowledge`, `versions: history`, `cap: 3`. One query per New item: the shortest common noun of its object, the word an older body would use, never the item's own phrase.");
   // The memory call names the skip shape; the empty-skip literal is gone.
-  expect(prompt).toContain('`memory({operations, skipped})`; a skip is `{knowledge: "K12@57", because}` for a deliberated item left without an operation.');
+  expect(prompt).toContain('`memory({operations, skipped})`; a skip is `{knowledge: "K12@v3", because}` for a deliberated item left without an operation.');
   expect(prompt).not.toContain("skipped: []");
   // The check tool's receipt and the memory tool's description carry the same contract.
-  expect(dreamingToolDefinitions().find(tool => tool.name === "memory")!.description).toContain("skipped accounts for an exact frozen version that was deliberated and intentionally left unchanged");
+  expect(dreamingToolDefinitions().find(tool => tool.name === "memory")!.description).toContain("skipped uses an exact untagged K@vN history address");
 });
 
 test("47: read-version descriptions name current, history and all without making inapplicable revisions write bases", () => {

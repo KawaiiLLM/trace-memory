@@ -206,14 +206,14 @@ test.each(["😀", "𠮷", "👨‍👩‍👧‍👦", "é", "\\\\uD83D\\\\uDE0
   expect(drainTrace(memory, memory.trace(`T${t.id}#user`, options), options).joined).toBe(`[T${t.id}#E1@text] user: ${text}`);
 });
 
-test.each(["K1@1", "F1-F1,K1@1,T1#t1"])("admitted Dreamer drains token-paged historical %s losslessly", async address => {
+test.each(["K1@v1", "F1-F1,K1@v1,T1#t1"])("admitted Dreamer drains token-paged historical %s losslessly", async address => {
   const { sessionId, turn } = corpus();
   const run = { kind: "manual" as const, sessionId, branch: "main", createdAt: time };
   const noted = memory.store.commitNotingRun({ run, facts: [{ turnId: turn.id, category: "observation", actor: "user", text: "evidence",
     source: [`T${turn.id}#user`], createdAt: time }] });
   expect(noted.ok).toBe(true);
   const created = memory.store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "h1", author: "fake", text: "知识😀".repeat(1_800),
-    category: "mechanism", scope: "project", supports: [1], reason: "test", topics: [], createdAt: time }] });
+    category: "understanding", scope: "project", supports: [1], reason: "test", topics: [], createdAt: time }] });
   expect(created.ok).toBe(true);
   const selectedEntries = hydrate(memory.store.listSourceEntries(sessionId, turn.id), memory.store);
   memory.selectEntries(sessionId, "main", selectedEntries.map(entry => entry.id));
@@ -222,14 +222,14 @@ test.each(["K1@1", "F1-F1,K1@1,T1#t1"])("admitted Dreamer drains token-paged his
   const settled = await admittedScenarios.run(memory, path, input => {
     const request = { fixture: "make pagination target historical" }; input.reportRequest(request);
     const trace = input.tools.find(t => t.name === "trace")!, write = input.tools.find(t => t.name === "memory")!;
-    trace.execute({ address: "K1@1", itemBudget: null });
-    write.execute({ operations: [{ op: "update", id: "K1@1", text: "current replacement", category: "mechanism", scope: "project",
-      supports: ["F1"], reason: "Make the large revision historical for the pagination ledger test.", topics: [] },
-    { op: "archive", id: `K${firstTrigger.knowledgeId}@${firstTrigger.commit}`, supports: ["F1"], reason: "Retire the initial pagination trigger." }], skipped: [] });
+    trace.execute({ address: "K1@v1", itemBudget: null });
+    write.execute({ operations: [{ op: "update", id: `K1#${memory.store.versionTag(1, 1)}`, text: "current replacement", category: "understanding", scope: "project",
+      supports: ["F1"], reason: "Make the large revision historical for the stateless pagination test.", topics: [] },
+    { op: "archive", id: `K${firstTrigger.knowledgeId}#${memory.store.versionTag(firstTrigger.knowledgeId, firstTrigger.commit)}`, supports: ["F1"], reason: "Retire the initial pagination trigger." }], skipped: [] });
     return { outcome: "success", output: "settled", request };
   });
   if (settled.outcome !== "success") throw new Error(JSON.stringify(settled));
-  const expected = wholeTrace(memory, address, { full: true, ...path });
+  const expected = wholeTrace(memory, address, { full: true, modelFacing: true, ...path });
   const trigger = createDreamerTrigger(memory, path, 1, 2, "project");
   const result = await admittedScenarios.run(memory, path, input => {
     const request = { fixture: "token-paged handle", trigger }; input.reportRequest(request);
@@ -247,8 +247,9 @@ test.each(["K1@1", "F1-F1,K1@1,T1#t1"])("admitted Dreamer drains token-paged his
     }
     expect(pages).toBeGreaterThan(1);
     expect(joined).toBe(expected);
-    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
-    write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`,
+    const tag = `K${trigger.knowledgeId}#${memory.store.versionTag(trigger.knowledgeId, trigger.commit)}`;
+    trace.execute({ address: tag, itemBudget: null });
+    write.execute({ operations: [{ op: "archive", id: tag,
       supports: ["F1"], reason: "Retire the explicit fixture trigger." }], skipped: [] });
     return { outcome: "success", output: "pagination checked", request };
   });
@@ -275,7 +276,7 @@ test("named multi-address values freeze under the transaction, but rendering and
   expect(store.commitNotingRun({ run, facts: [{ turnId: turn.id, category: "observation", actor: "user", text: "original fact",
     source: [`T${turn.id}#user`], createdAt: time }] }).ok).toBe(true);
   expect(store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "h1", author: "fake", text: "original knowledge",
-    category: "mechanism", scope: "project", supports: [1], reason: "test", topics: [], createdAt: time }] }).ok).toBe(true);
+    category: "understanding", scope: "project", supports: [1], reason: "test", topics: [], createdAt: time }] }).ok).toBe(true);
   const address = `T${turn.id},S${sessionId},pagination,F1,K1,F1-F1`;
   const expected = wholeTrace(memory, address);
   const spies = (["renderTrace", "renderFact", "renderKnowledgeTrace", "tokens"] as const).map(name => {

@@ -1,8 +1,9 @@
 import { expect, test } from "vitest";
-import { decodeCcInjection, encodeCcInjection, type CcVisibleBinding } from "../../src/hosts/cc/injection.ts";
+import { ccInjectionLength, decodeCcInjection, encodeCcInjection, type CcVisibleBinding } from "../../src/hosts/cc/injection.ts";
 import { transportItemText } from "../../src/core/render/material.ts";
-import { sliceCcInjection, CC_SLICE_COUNT, CC_SLICE_LIMIT } from "../../src/hosts/cc/slices.ts";
+import { sliceCcInjection, CC_SLICE_COUNT, CC_SLICE_LIMIT, CC_KNOWLEDGE_RECENCY_NOTICE } from "../../src/hosts/cc/slices.ts";
 import type { TransportItem } from "../../src/core/render/material.ts";
+import { renderKnowledgeBlock } from "../../src/core/render/index.ts";
 
 const binding: CcVisibleBinding = { db: "unit-db", nativeSession: "native-66", coreSession: 1 };
 const items: TransportItem[] = [
@@ -61,16 +62,16 @@ test("66 legacy oversized omission receipt keeps its actual bounded expansion", 
 test("66 slice marker fits its extended host framing bound without changing the 10k UTF-16 cap", () => {
   const native: CcVisibleBinding = { db: "123456789:123456789", nativeSession: "12345678-1234-1234-1234-123456789012", coreSession: 123 };
   const base: TransportItem = { kind: "knowledge", category: "constraint", commitId: 1, address: "K1@1", text: "" };
-  const frame = encodeCcInjection(native, { text: transportItemText(base), knowledgeCommitIds: [1],
+  const frame = encodeCcInjection(native, { text: transportItemText(base, CC_KNOWLEDGE_RECENCY_NOTICE), knowledgeCommitIds: [1],
     factIds: [], entryIds: [], slice: [23, 24] });
-  const oldFraming = frame.length - transportItemText(base).length;
+  const oldFraming = frame.length - transportItemText(base, CC_KNOWLEDGE_RECENCY_NOTICE).length;
   expect(oldFraming).toBeGreaterThan(300 + 12);
   const short: CcVisibleBinding = { ...native, db: "1:2" };
-  const shortFrame = encodeCcInjection(short, { text: transportItemText(base), knowledgeCommitIds: [1],
+  const shortFrame = encodeCcInjection(short, { text: transportItemText(base, CC_KNOWLEDGE_RECENCY_NOTICE), knowledgeCommitIds: [1],
     factIds: [], entryIds: [], slice: [0, 24] });
   for (const target of [9999, 10000, 10001]) {
     const item: TransportItem = { ...base, text: `${"x".repeat(target - shortFrame.length - 2)}😀` };
-    const exact = encodeCcInjection(short, { text: transportItemText(item), knowledgeCommitIds: [1],
+    const exact = encodeCcInjection(short, { text: transportItemText(item, CC_KNOWLEDGE_RECENCY_NOTICE), knowledgeCommitIds: [1],
       factIds: [], entryIds: [], slice: [0, 24] });
     expect(exact.length).toBe(target);
     const slices = sliceCcInjection(short, [item]);
@@ -78,6 +79,83 @@ test("66 slice marker fits its extended host framing bound without changing the 
     expect(contexts.every(text => text.length <= 10000)).toBe(true);
     expect(contexts.flatMap(text => decodeCcInjection(text, short)?.commits ?? [])).toEqual(target <= 10000 ? [1] : []);
   }
+});
+
+test("92 CC placement prices the final single knowledge list, including exact UTF-16 boundaries", () => {
+  const first: TransportItem = { kind: "knowledge", category: "reference", commitId: 1, address: "K1@v1", text: `[K1#aaaa] ${"a".repeat(3_000)}` };
+  const emptySecond: TransportItem = { kind: "knowledge", category: "reference", commitId: 2, address: "K2@v1", text: "[K2#bbbb] " };
+  const membership = { knowledgeCommitIds: [1, 2], factIds: [], entryIds: [], slice: [0, 24] as [number, number] };
+  const body = (second: TransportItem) => renderKnowledgeBlock([first, second].map(item => ({ category: "items", text: item.text })), CC_KNOWLEDGE_RECENCY_NOTICE);
+  const initial = encodeCcInjection(binding, { ...membership, text: body(emptySecond) }).length;
+  for (const target of [9999, 10000, 10001]) {
+    const second = { ...emptySecond, text: emptySecond.text + "x".repeat(target - initial - 2) + "😀" };
+    const text = body(second);
+    expect(ccInjectionLength(binding, membership, text.length)).toBe(target);
+    expect(encodeCcInjection(binding, { ...membership, text: text }).length).toBe(target);
+    const outputs = sliceCcInjection(binding, [first, second]);
+    const actual = outputs.filter(Boolean).map(value => decodeCcInjection(value!.hookSpecificOutput.additionalContext, binding)!);
+    expect(actual.flatMap(header => header.commits)).toEqual([1, 2]);
+    expect(actual[0]!.commits).toEqual(target <= 10000 ? [1, 2] : [1]);
+    expect(outputs.filter(Boolean).every(value => value!.hookSpecificOutput.additionalContext.length <= 10000)).toBe(true);
+  }
+});
+
+test("92 CC knowledge is next-fit oldest-first by segment, while Raw and facts fill earlier gaps", () => {
+  const knowledge = (id: number, size: number): TransportItem => ({ kind: "knowledge", category: "constraint", commitId: id,
+    address: `K${id}@v1`, text: `[K${id}#aaaa] [constraint/project] ${"x".repeat(size)}` });
+  const values: TransportItem[] = [knowledge(1, 6_000), knowledge(2, 5_000), knowledge(3, 500),
+    { kind: "raw", address: "T8#E1", entryId: 8, pending: true, text: `[T8#E1@text] user: ${"r".repeat(500)}` },
+    { kind: "fact", factId: 9, pending: true, text: `[F9] ${"f".repeat(500)}` }];
+  const outputs = sliceCcInjection(binding, values);
+  expect(outputs).toHaveLength(24);
+  const received = [...outputs].reverse().filter(Boolean).map(output => {
+    const text = output!.hookSpecificOutput.additionalContext;
+    expect(text.length).toBeLessThanOrEqual(CC_SLICE_LIMIT);
+    expect(text).not.toMatch(/K\d+@\d+/);
+    const header = decodeCcInjection(text, binding)!;
+    const bodies = [...text.matchAll(/\[K(\d+)#aaaa\]/g)].map(match => Number(match[1]));
+    expect(bodies).toEqual(header.commits);
+    if (bodies.length) {
+      expect(text.split(CC_KNOWLEDGE_RECENCY_NOTICE)).toHaveLength(2);
+      expect(text).toContain("Arrival order is not recency");
+    }
+    return { text, header };
+  });
+  const ordered = received.sort((a, b) => a.header.slice![0] - b.header.slice![0]);
+  expect(ordered.flatMap(value => value.header.commits)).toEqual([1, 2, 3]);
+  expect(ordered[0]!.header.commits).toEqual([1]);
+  expect(ordered[1]!.header.commits).toEqual([2, 3]); // small K3 must not fill segment zero
+  expect(ordered[0]!.header.factIds).toEqual([9]);
+  expect(ordered[0]!.header.entryIds).toEqual([8]);
+  expect(sliceCcInjection(binding, values)).toEqual(outputs);
+});
+
+test("92 CC sequential overflow retains newest whole knowledge and accounts only actual carriers", () => {
+  const values: TransportItem[] = Array.from({ length: 80 }, (_, i) => ({ kind: "knowledge", category: "reference", commitId: i + 1,
+    address: `K${i + 1}@v1`, text: `[K${i + 1}#aaaa] ${"x".repeat(4_500)}` }));
+  values.push({ kind: "knowledge", category: "reference", commitId: 81, address: "K81@v1", text: `[K81#aaaa] ${"x".repeat(20_000)}` });
+  const outputs = sliceCcInjection(binding, values);
+  expect(outputs).toHaveLength(24);
+  // A deterministic permutation of all 24 arrivals, not just the first two populated segments.
+  const arrivals = Array.from({ length: 24 }, (_, i) => outputs[(i * 7) % 24]!);
+  const decoded = arrivals.filter(Boolean).map(value => {
+    const text = value!.hookSpecificOutput.additionalContext;
+    expect(text.length).toBeLessThanOrEqual(CC_SLICE_LIMIT);
+    expect(text).not.toMatch(/K\d+@\d+/);
+    const header = decodeCcInjection(text, binding)!;
+    expect([...text.matchAll(/\[K(\d+)#aaaa\]/g)].map(match => Number(match[1]))).toEqual(header.commits);
+    return header;
+  }).sort((a, b) => a.slice![0] - b.slice![0]);
+  const retained = decoded.flatMap(value => value.commits);
+  expect(retained.length).toBeGreaterThan(0);
+  expect(retained.length).toBeLessThan(80);
+  expect(retained).toEqual([...retained].sort((a, b) => a - b));
+  expect(retained.at(-1)).toBe(80);
+  expect(retained).toEqual(Array.from({ length: retained.length }, (_, i) => 81 - retained.length + i));
+  const text = outputs.filter(Boolean).map(value => value!.hookSpecificOutput.additionalContext).join("\n");
+  expect(text).toContain("omitted");
+  expect(text).not.toContain("[K81#aaaa]");
+  expect(new Set(retained).size).toBe(retained.length);
 });
 
 test("66 oversized whole item is not split or counted delivered", () => {

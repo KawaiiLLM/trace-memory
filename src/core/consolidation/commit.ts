@@ -1,5 +1,5 @@
 import { isKnowledgeCategory, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
-import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath, KnowledgeWithRevision } from "../store/index.ts";
+import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
 import type { freezeConsolidation } from "./index.ts";
 
@@ -10,12 +10,11 @@ const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 
 /** Validate the complete batch before writes, including every merge participant. */
 export function prepareMemory(store: Store, sessionId: number, raw: unknown, run: RunInput,
-  frozen?: ReturnType<typeof freezeConsolidation>, path: KnowledgePath = store.knowledgePath(sessionId), reads?: KnowledgeWithRevision[],
+  frozen?: ReturnType<typeof freezeConsolidation>, path: KnowledgePath = store.knowledgePath(sessionId),
   eligibleSupport?: (factId: number) => boolean, skippable?: (commit: number) => string | undefined) {
   const results: string[] = [], operations: KnowledgeOperationInput[] = [];
   const batch = raw as MemoryBatch;
   const projectId = store.getSession(sessionId)!.projectId;
-  const knowledge = reads ?? [];
   const touched = new Set<number>();
   const dreaming = store.isDreamingRun(run);
   if (!batch || typeof batch !== "object" || Array.isArray(batch) || !Array.isArray(batch.operations) || !Array.isArray(batch.skipped) || Object.keys(batch).some(k => !["operations", "skipped"].includes(k))) {
@@ -64,15 +63,16 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
         ? "absorb belongs to the Dreamer and is not available to the Consolidator" : `${key}: inapplicable field`);
     if (typeof value.reason !== "string" || !value.reason.trim()) errors.push("reason: expected a non-empty commit message");
     const target = (address: unknown) => {
-      const match = typeof address === "string" ? /^K([1-9]\d*)(?:@([1-9]\d*))?$/.exec(address) : null;
-      const id = Number(match?.[1]), commitId = match?.[2] === undefined ? undefined : Number(match[2]);
-      const tips = knowledge.filter(k => k.knowledge.id === id && (commitId === undefined || k.revision.id === commitId));
-      const current = Number.isSafeInteger(id) ? store.currentCommit(id, path) : [];
-      if (commitId === undefined) errors.push(`${address}: an exact read K@commit is required; current tips: ${current.map(r => `K${id}@${r.id}`).join(", ") || "none (inapplicable)"}; read and resubmit`);
-      const applicableReads = tips.filter(k => current.some(r => r.id === k.revision.id));
-      const read = applicableReads.length === 1 ? applicableReads[0] : tips.length === 1 ? tips[0] : undefined;
-      if (!Number.isSafeInteger(id) || !read) errors.push(`${address}: ${tips.length > 1 ? "several tips; specify a commit: " + tips.map(k => `K${id}@${k.revision.id}`).join(", ") : "knowledge was not read as visible and active"}`);
-      const base = read?.revision.id ?? 0;
+      const match = typeof address === "string" ? /^K([1-9]\d*)#([a-z]{4,})$/.exec(address) : null;
+      const id = Number(match?.[1]);
+      let base = 0;
+      if (!match || !Number.isSafeInteger(id)) errors.push(`${address}: supply an exact K#tag version`);
+      else try { base = store.resolveVersionTag(id, match[2]!); }
+      catch (error) { errors.push((error as Error).message); }
+      // A valid historical tag is not write authority: Store checks effective applicability and
+      // the writer's scope again inside the commit transaction.
+      const revision = base ? store.getKnowledgeRevision(id, base) : null;
+      if (!revision) errors.push(`${address}: knowledge version does not exist`);
       if (touched.has(base)) errors.push(`${address}: duplicate operation target`);
       touched.add(base);
       return { knowledgeId: id, baseCommit: base };
@@ -96,7 +96,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     }
     const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: facts(value.supports, errors, !dreaming), reason: value.reason!,
       topics: op === "archive" || op === "split" ? [] : labels(value.topics, errors), createdAt: run.createdAt };
-    const scope = op === "archive" || op === "split" ? knowledge.find(k => k.revision.id === dest?.baseCommit)?.revision.scope : value.scope;
+    const scope = op === "archive" || op === "split" ? store.getKnowledgeRevision(dest!.knowledgeId, dest!.baseCommit)?.scope : value.scope;
     if (scope && content.supports.every(Number.isSafeInteger)) {
       const bad = store.citationProblem(content.supports, scope, path);
       if (bad) errors.push(bad);
@@ -119,8 +119,9 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       // 59: a Dreamer skip accounts for one supplied handle (a frozen-block version or an own result)
       // without processing it; an unknown or consumed handle is an illegal write like any other.
       const handle = "knowledge" in skipped ? skipped.knowledge : undefined;
-      const match = typeof handle === "string" ? /^K([1-9]\d*)@([1-9]\d*)$/.exec(handle) : null;
-      const commit = match ? Number(match[2]) : NaN;
+      const match = typeof handle === "string" ? /^K([1-9]\d*)@v([1-9]\d*)$/.exec(handle) : null;
+      let commit = NaN;
+      if (match) try { commit = store.resolveVersionOrdinal(Number(match[1]), Number(match[2])); } catch { /* reported as an unknown supplied handle */ }
       if (Object.keys(skipped).some(k => !["knowledge", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skipped requires knowledge and non-empty because only");
       const problem = !match || store.knowledgeRevision(commit)?.knowledgeId !== Number(match[1]) ? "not a supplied handle of this run"
         : touched.has(commit) ? "already consumed by an operation of this batch" : skippable ? skippable(commit) : "not a supplied handle of this run";

@@ -86,7 +86,9 @@ test("92 schema upgrade retains legacy rows, source bindings, relation, indexes,
     expect(knowledge).toHaveLength(1);
     expect(renderKnowledge(knowledge[0]!)).toContain("[understanding/session]");
     expect(renderKnowledgePreview(knowledge[0]!, "current", new Set(["text"]))).toContain("[understanding/session]");
-    expect(wholeKnowledge(knowledge).groups.find(g => g.category === "understanding")!.text).toContain("legacy knowledge");
+    const list = wholeKnowledge(knowledge).groups;
+    expect(list).toHaveLength(1);
+    expect(list[0]!.text).toContain("[understanding/session] legacy knowledge");
     const selection = knowledgeReadSelection(store, { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id, category: "understanding" });
     expect(selection.representatives([...selection.byCommit.values()])).toHaveLength(1);
     expect(knowledgeReadSelection(store, { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id, category: "open" })

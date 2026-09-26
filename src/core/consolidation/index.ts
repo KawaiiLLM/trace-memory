@@ -5,7 +5,7 @@ import { type Fact, type MemoryBatch } from "../model/index.ts";
 import { type ConsolidationDiagnostic } from "./commit.ts";
 import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderFact, renderFactGroups, tokens, wholeKnowledge, type BudgetedKnowledge, type FactTurns } from "../render/index.ts";
+import { renderFact, renderFactGroups, renderKnowledge, tokens, wholeKnowledge, type BudgetedKnowledge, type FactTurns } from "../render/index.ts";
 import { consolidationToolDefinitions } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
 import { knowledgeStatusNotes } from "../api/read.ts";
@@ -43,7 +43,6 @@ export interface ConsolidationAgentInput extends AgentControl {
   sessionId: number;
   branch: string;
   range: ConsolidationRange;
-  readKnowledgeCommits: { knowledgeId: number; commit: number }[];
   model: string;
   /** The mode this task was frozen for (29e: both values are reachable again). */
   mode: "fork" | "subagent";
@@ -70,7 +69,7 @@ export type ConsolidateResult = { executionId?: string; automaticOff?: string } 
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] }
   | { outcome: "success"; runId: number; output: MemoryBatch; problems?: string[];
       committed: CommittedKnowledgeOp[]; diagnostics: ConsolidationDiagnostic[];
-      range: ConsolidationRange; readKnowledgeCommits: { knowledgeId: number; commit: number }[] });
+      range: ConsolidationRange });
 
 /** 27b's twin for this phase (29e): the opening of both capacity refusals a Consolidation freeze can
  * raise — the preflight floor and the loop exit that pops the batch down to its oldest fact. The Pi
@@ -142,11 +141,14 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   // carries only what is current, so nothing in it would contradict the inherited text. One line per
   // stale commit says what happened to it. Computed once for the freeze: the batch does not affect it.
   // 31 made this the shared rule: the main agent's knowledge block explains a stale commit the same way.
-  const knowledgeNotes = knowledgeStatusNotes(store, knowledge, initial.visible.knowledgeCommitIds, path);
+  const knowledgeNotes = knowledgeStatusNotes(store, knowledge, initial.visible.knowledgeCommitIds, path, undefined, true);
   // Visibility and the stable complete-pool rendering do not depend on the fact prefix. Freeze them
   // once; capacity negotiation changes the evidence range, not Knowledge recency order.
   const suppliedKnowledge = knowledge.filter(({ revision }) => !initial.visible.knowledgeCommitIds.has(revision.id));
-  const knowledgeWhole = wholeKnowledge(suppliedKnowledge);
+  const knowledgeLines = new Map(suppliedKnowledge.map(value => [value.revision.id, renderKnowledge(value,
+    `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`)]));
+  const knowledgeLine = (value: (typeof suppliedKnowledge)[number]) => knowledgeLines.get(value.revision.id)!;
+  const knowledgeWhole = wholeKnowledge(suppliedKnowledge, knowledgeLine);
   const pathSnapshot = store.pathSnapshot(path);
   const relations = store.listFactRelationsOnPathOf(facts.map(f => f.id), path, pathSnapshot);
   const lines = new Map(facts.map((f) => [f.id, renderFact(f, relations.get(f.id) ?? [])]));
@@ -179,7 +181,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   let optionalKnowledge = true;
   while (rangeFacts.length) {
     const frozen = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts: [...rangeFacts], facts, factTurns,
-      knowledge, suppliedKnowledge, knowledgeWhole, knowledgeCapacity, knowledgeNotes, lines,
+      knowledge, suppliedKnowledge, knowledgeWhole, knowledgeLine, knowledgeCapacity, knowledgeNotes, lines,
       model: input.model ?? "session", mode };
     const prepared = consolidationMaterial(frozen, config, initial, optionalKnowledge);
     // Priced by the mode that runs (29b's one line, as in Noting): the subagent's instructions, tools
@@ -208,7 +210,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   if (applicable.length) throw new Error(CONSOLIDATION_CAPACITY
     + `${last!.episodic ? `it is ${last!.episodic} tokens over consolidation.batchTokens (${config.consolidation.batchTokens})` : `it costs ${last!.priced} tokens`}`
     + `${capacity ? ` against the ${capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
-  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, knowledge, suppliedKnowledge, knowledgeWhole, knowledgeCapacity, knowledgeNotes, lines, factTurns,
+  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, knowledge, suppliedKnowledge, knowledgeWhole, knowledgeLine, knowledgeCapacity, knowledgeNotes, lines, factTurns,
     model: input.model ?? "session", mode };
   return { ...empty, prepared: undefined };
 }
@@ -223,8 +225,8 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
  * inherited status use the database-derived injection capacity frozen with this task; pending facts
  * use `consolidation.batchTokens`, including their titles and range. There is no automatic
  * Raw block and, since 25a, no already-consolidated history block: both are reached by explicit read. */
-function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnType<Store["currentKnowledge"]>; suppliedKnowledge: ReturnType<Store["currentKnowledge"]>; knowledgeWhole: BudgetedKnowledge; knowledgeCapacity: number; knowledgeNotes: string[]; lines: Map<number, string>; factTurns: FactTurns }, config: TraceMemoryConfig, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }, optionalKnowledge = true) {
-  const { rangeFacts, knowledge: applicable, suppliedKnowledge: knowledge, knowledgeWhole, knowledgeCapacity, knowledgeNotes, lines, factTurns } = frozen;
+function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnType<Store["currentKnowledge"]>; suppliedKnowledge: ReturnType<Store["currentKnowledge"]>; knowledgeWhole: BudgetedKnowledge; knowledgeLine: (value: ReturnType<Store["currentKnowledge"]>[number]) => string; knowledgeCapacity: number; knowledgeNotes: string[]; lines: Map<number, string>; factTurns: FactTurns }, config: TraceMemoryConfig, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }, optionalKnowledge = true) {
+  const { rangeFacts, knowledge: applicable, suppliedKnowledge: knowledge, knowledgeWhole, knowledgeLine, knowledgeCapacity, knowledgeNotes, lines, factTurns } = frozen;
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
   // The addresses name the whole frozen target — that is what this run must integrate — while the
   // bodies are only the facts the child cannot already read in its own context.
@@ -235,7 +237,7 @@ function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnTy
   const grouped = renderFactGroups(supplied, f => lines.get(f.id)!, factTurns);
   const dropped = !optionalKnowledge && knowledge.length
     ? [`omitted all ${knowledge.length} current knowledge items; the model context left no room for the knowledge block; expand: trace K<n>`] : [];
-  const budgeted = budgetMaterial({ ...(optionalKnowledge ? { knowledge, knowledgeWhole } : {}), knowledgeNotes, current: grouped.join("\n"),
+  const budgeted = budgetMaterial({ ...(optionalKnowledge ? { knowledge, knowledgeWhole, knowledgeLine } : {}), knowledgeNotes, current: grouped.join("\n"),
     framing: [RANGE_FACTS_TITLE], range, label: "range",
     // Candidate eligibility remains Consolidation's; all consumers share the recency cut.
     knowledgeBudget: "Consolidator Knowledge base plus shared allowance",
@@ -251,11 +253,7 @@ function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnTy
   // 29a "Renderers return what they kept". This phase supplies no Raw (25a); the facts are the bodies
   // this text carries, and the commits are the ones the knowledge block kept after its cap.
   const keptIdentities: SuppliedMaterial = { entries: [], factIds: supplied.map(f => f.id), knowledgeCommitIds: budgeted.knowledgeCommitIds };
-  // One authoritative list for write eligibility and the run audit.
-  const readKnowledgeCommits = applicable.filter(item => initial.visible.knowledgeCommitIds.has(item.revision.id)
-    || keptIdentities.knowledgeCommitIds.includes(item.revision.id))
-    .map(item => ({ knowledgeId: item.knowledge.id, commit: item.revision.id }));
-  return { range, material, text, supplied: keptIdentities, readKnowledgeCommits, over: budgeted.over,
+  return { range, material, text, supplied: keptIdentities, over: budgeted.over,
     // Candidate state, not rendered groups or receipt text: an over-cap pool may emit receipts only.
     hasOptionalKnowledge: optionalKnowledge && knowledge.length > 0 };
 }
@@ -267,17 +265,16 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
   // The material was rendered and budgeted when the task was frozen (consolidationMaterial), so the
   // batch that runs is exactly the batch whose size was checked.
   const { range, material, text, supplied } = frozen.prepared;
-  const readKnowledgeCommits = frozen.prepared.readKnowledgeCommits;
-  const base = { kind: "consolidation" as const, sessionId, branch, range, readKnowledgeCommits, model, mode, prompt, promptHash };
+  const base = { kind: "consolidation" as const, sessionId, branch, range, model, mode, prompt, promptHash };
   const run: RunInput = { kind: "consolidation", sessionId, branch, rangeFrom: range.from, rangeTo: range.to, promptHash, model, mode, createdAt: new Date().toISOString() };
-  const binding = bind({ kind: "consolidation", sessionId, branch, headTurnId: frozen.path.headTurnId, range, readKnowledgeCommits }, run, frozen);
+  const binding = bind({ kind: "consolidation", sessionId, branch, headTurnId: frozen.path.headTurnId, range }, run, frozen);
   let result: RunAgentResult;
   try { result = await runAgent({ ...structuredClone(base), material, text, supplied: structuredClone(supplied),
     tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest }); }
   catch (error) { result = agentException(error); }
   binding.close();
   // A direct facade close may dispose before the provider settles; never access that store.
-  if (store.closed) return binding.memory.committed ? { outcome: "success", ...binding.memory.committed, range, readKnowledgeCommits } : { outcome: "dropped" };
+  if (store.closed) return binding.memory.committed ? { outcome: "success", ...binding.memory.committed, range } : { outcome: "dropped" };
   // 27c/27d, as 29e restores them for this phase: the host would not run this frozen task in the mode
   // it was admitted for, and admits it once more itself. Nothing was committed, so the refusal goes
   // back to the host unread. An attempt that really sent a request is finalized here as
@@ -285,18 +282,18 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
   // a refusal that sent nothing records nothing and carries its gate result instead.
   if (result.refused !== undefined && !binding.memory.committed) {
     if (result.request == null) return { outcome: "dropped", refused: result.refused };
-    recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
+    recordAttempt(run, result, mode, { toolCalls: binding.sequence, fetched: binding.fetched,
       problems: [String(result.output)] });
     return { outcome: "dropped", refused: result.refused, runId: store.recordRun({ ...run, outcome: "failure" }).id };
   }
   const committed = binding.memory.committed;
   const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)] : requestMissing(result) ? ["runAgent must return the exact provider request"] : binding.memory.problems;
-  recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
+  recordAttempt(run, result, mode, { toolCalls: binding.sequence, fetched: binding.fetched,
     problems,
     ...(committed ? { committed: committed.committed, diagnostics: committed.diagnostics } : {}) });
   if (committed) {
     const after = updateCommitted(store, committed.runId, run, problems);
-    return { outcome: "success", ...committed, range, readKnowledgeCommits, ...(after.length ? { problems: after } : {}) };
+    return { outcome: "success", ...committed, range, ...(after.length ? { problems: after } : {}) };
   }
   const outcome = result.outcome !== "success" ? result.outcome : requestMissing(result) || binding.memory.failure ? "failure" : problems.length ? "bounced" : "success";
   if (outcome !== "success") {
@@ -305,6 +302,6 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
     return { outcome, runId, problems };
   }
   const empty = store.commitConsolidationRun({ run, operations: [], consolidated: rangeFacts.map((f) => f.id) });
-  return empty.ok ? { outcome: "success", ...empty, output: { operations: [], skipped: [] }, diagnostics: [], range, readKnowledgeCommits }
+  return empty.ok ? { outcome: "success", ...empty, output: { operations: [], skipped: [] }, diagnostics: [], range }
     : { outcome: "failure", runId: empty.runId, problems: empty.problems };
 }

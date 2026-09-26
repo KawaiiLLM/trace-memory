@@ -4,7 +4,7 @@ import { knowledgeReadSelection } from "./knowledge-read.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
 import { sourceBlocks, resultHasText, type SourceNormalizer } from "../model/source.ts";
-import { readFacade, readProfile, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups, type KnowledgeRead } from "./read.ts";
+import { readFacade, readProfile, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
 // 29a/53: core owns only the host-neutral visibility contract; each host reads its own envelopes.
 import type { VisibleView } from "./visible.ts";
@@ -542,19 +542,27 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     return owned;
   };
   // Freeze database values first; the returned renderer runs outside the read transaction.
-  const prepareTrace = (address: string, display: ListingOptions = {}, reads?: KnowledgeRead[]): (() => string) => {
+  const prepareTrace = (address: string, display: ListingOptions = {}): (() => string) => {
     const target = address.trim(), flags = /^(?:S\d+\/)?T\d/.test(target) ? [] : target.split(/\s+/).slice(1);
     const invalid = () => new Error(`invalid trace address: ${address}`);
     const itemCap = readProfile(display, display.profile ?? cfg.render).entryTokens;
     const knowledgeMatch = parseKnowledgeAddress(target);
     if (knowledgeMatch) {
-      const { id, from, to } = knowledgeMatch;
+      const { id } = knowledgeMatch;
+      if (display.modelFacing && knowledgeMatch.from !== undefined && !knowledgeMatch.ordinal ||
+          display.modelFacing && /@\d/.test(target)) throw invalid();
+      const from = knowledgeMatch.tag ? store.resolveVersionTag(id, knowledgeMatch.tag)
+        : knowledgeMatch.ordinal && knowledgeMatch.from !== undefined ? store.resolveVersionOrdinal(id, knowledgeMatch.from) : knowledgeMatch.from;
+      const to = knowledgeMatch.ordinal && knowledgeMatch.to !== undefined ? store.resolveVersionOrdinal(id, knowledgeMatch.to) : knowledgeMatch.to;
       const knowledge = store.getKnowledge(id!);
       if (!knowledge) throw new Error(`knowledge K${id} does not exist`);
       const history = store.listKnowledgeRevisions(id!);
+      const labels = new Map(history.map(r => [r.id, display.modelFacing
+        ? `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}` : `K${r.knowledgeId}@${r.id}`]));
+      const shown = (r: typeof history[number]) => labels.get(r.id)!;
       const commit = (commitId: number) => {
         const value = store.getKnowledgeRevision(id!, commitId);
-        if (!value) throw new Error(`commit K${id}@${commitId} does not exist`);
+        if (!value) throw new Error(display.modelFacing ? `knowledge K${id} version does not exist` : `commit K${id}@${commitId} does not exist`);
         return value;
       };
       const fields = new Set(display.fields ?? ["text", "supports", "topics", "status", "links"]);
@@ -565,10 +573,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           const parents = store.commitParents(r), children = store.commitChildren(r);
           descriptions.set(r.id, () => {
             const grounds = [...store.revisionGrounds(r)].sort((a, b) => a - b);
-            const full = renderKnowledgeTrace({ knowledge, revision: r }, parents, children, Infinity, grounds, fields, historyLines);
-            const text = renderKnowledgeTrace({ knowledge, revision: r }, parents, children, itemCap, grounds, fields, historyLines);
-            if (!fields.has("text") || text !== full) for (const read of reads ?? []) if (read.knowledgeId === id && read.commits.includes(r.id)) read.complete = false;
-            return text;
+            const address = display.modelFacing ? (revision: typeof r) => revision.id === r.id
+              ? `K${id}#${store.versionTag(id, r.id)}` : shown(revision) : undefined;
+            return renderKnowledgeTrace({ knowledge, revision: r }, parents, children, itemCap, grounds, fields, historyLines, undefined, address);
           });
         }
       };
@@ -585,24 +592,23 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           return ids;
         };
         const left = ancestors(a), right = ancestors(b);
-        return () => renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)), itemCap, fields);
+        const rangeAddress = display.modelFacing ? `${shown(a)}..v${store.versionOrdinal(id, b.id)}` : undefined;
+        return () => renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)), itemCap, fields, shown, rangeAddress);
       }
       if (from !== undefined) {
         const revision = commit(from);
-        reads?.push({ knowledgeId: id!, commits: [revision.id], replace: false });
         capture([revision]);
         return () => describe(revision);
       }
       if (knowledgeMatch.history) {
         capture(history, true);
-        return () => `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
+        return () => `K${id} history (all branches):\n` + history.map(describe).join("\n");
       }
       const versions = display.versions ?? "current";
       const selection = knowledgeReadSelection(store, display);
       const { path, graph, matches } = selection;
       const tips = versions === "current" ? selection.representatives(history)
         : graph.current.filter(r => r.knowledgeId === id && matches(r));
-      reads?.push({ knowledgeId: id!, commits: tips.filter(r => r.op !== "archive").map(r => r.id), replace: true });
       const applicable = history.filter(r => graph.applicable.has(r.id) && matches(r));
       const allHistory = history.filter(matches);
       const otherHistory = allHistory.filter(r => !graph.applicable.has(r.id));
@@ -613,14 +619,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         ? graph.current.filter(r => r.knowledgeId === id && r.op === "archive" && matches(r)) : [];
       const described = versions === "current" ? tips : versions === "history" ? [...tips, ...applicable] : [...tips, ...allHistory, ...otherTips];
       capture([...new Map(described.map(r => [r.id, r])).values()]);
-      return () => [path ? `K${id} path current: ${tips.map(r => `K${id}@${r.id}`).join(", ") || "none"}`
-        : `K${id} tips (newest-created: ${tips.length ? `K${id}@${Math.max(...tips.map(r => r.id))}` : "none"}):`,
-        ...tips.map(r => (tips.length > 1 ? `Alternative K${id}@${r.id}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
-        ...archived.map(r => `  K${id}@${r.id}: ${selection.status(r)}; inspect trace(K${id}, versions:history)`),
-        ...(fields.has("links") ? links.map(l => `  ${l.kind}: K${l.toKnowledge}@${l.toCommit} (from K${l.fromKnowledge}@${l.fromCommit})`) : []),
-        ...(versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable, fields)]
-          : ["Commit history:", renderCommitHistory(allHistory, fields)]),
-        ...(path && versions === "all" ? ["Other branches' tips:", ...otherTips.map(describe), "Other branches' commits:", renderCommitHistory(otherHistory, fields)] : [])].join("\n");
+      return () => [path ? `K${id} path current: ${tips.map(shown).join(", ") || "none"}`
+        : `K${id} tips (newest-created: ${tips.length ? shown(tips.reduce((a, b) => a.id > b.id ? a : b)) : "none"}):`,
+        ...tips.map(r => (tips.length > 1 ? `Alternative ${shown(r)}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
+        ...archived.map(r => `  ${shown(r)}: ${selection.status(r)}; inspect trace(K${id}, versions:history)`),
+        ...(fields.has("links") ? links.map(l => `  ${l.kind}: ${display.modelFacing ? `K${l.toKnowledge}@v${store.versionOrdinal(l.toKnowledge, l.toCommit)}` : `K${l.toKnowledge}@${l.toCommit}`} (from ${display.modelFacing ? `K${l.fromKnowledge}@v${store.versionOrdinal(l.fromKnowledge, l.fromCommit)}` : `K${l.fromKnowledge}@${l.fromCommit}`})`) : []),
+        ...(versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable, fields, shown)]
+          : ["Commit history:", renderCommitHistory(allHistory, fields, shown)]),
+        ...(path && versions === "all" ? ["Other branches' tips:", ...otherTips.map(describe), "Other branches' commits:", renderCommitHistory(otherHistory, fields, shown)] : [])].join("\n");
     }
     const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
     if (walkMatch) {
@@ -928,14 +934,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     if (external?.aborted) onExternalAbort();
     else external?.addEventListener("abort", onExternalAbort, { once: true });
-    const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, consolidation?: ReturnType<typeof freezeConsolidation>, dreaming?: Parameters<typeof bindTools>[6]) => {
+    const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, consolidation?: ReturnType<typeof freezeConsolidation>, dreaming?: Parameters<typeof bindTools>[5]) => {
       run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
       run.executionId = executionId!;
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
       Object.assign(run, store.bindRunOrigin(run, origin));
       if (phase === "dreaming") Object.assign(run, store.bindDreamingRun(run));
       const binding = bindTools(store, read, input.maxReadChars === undefined ? context : { ...context, maxReadChars: input.maxReadChars },
-        run, consolidation, undefined, dreaming, cfg.noting.nearThreshold);
+        run, consolidation, dreaming, cfg.noting.nearThreshold);
       task.close = binding.close;
       return binding;
     };
@@ -1004,9 +1010,6 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }
     return result;
   };
-  // A manual tool binding may be recreated between host calls. Keep exact full-body reads in
-  // this database instance and target branch, never in a process-global or cross-database cache.
-  const manualReads = new Map<string, Map<number, import("../store/index.ts").KnowledgeWithRevision>>();
   return {
     store, executorId, resultText, cancelTasks, taskEligibility, pendingTokens, dreamingPending, settleExecution,
     knowledgeBudgets: () => store.knowledgeBudgets(),
@@ -1045,11 +1048,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
     notingBatch: (target, boundary) => notingBatch(store, notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
-    tools: (context) => {
-      const key = `${context.sessionId}/${context.branch}`;
-      if (!manualReads.has(key)) manualReads.set(key, new Map());
-      return bindTools(store, read, context, undefined, undefined, manualReads.get(key)).tools;
-    },
+    tools: (context) => bindTools(store, read, context).tools,
     noting: input => execute("noting", input) as Promise<NotingResult>,
     consolidate: input => execute("consolidation", input) as Promise<ConsolidateResult>,
     dream: input => execute("dreaming", { ...input, mode: "subagent", effectiveMode: "subagent" }) as Promise<DreamingResult>,

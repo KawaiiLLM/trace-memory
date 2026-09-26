@@ -88,7 +88,7 @@ test("25a 2026-09-09: the Noter's fresh order is historical facts, range, the se
   expect(input.text).not.toContain("<knowledge>");
   expect(input.text).not.toContain("The project uses pnpm");
   expect(memory.inject(s.id)).toBe(knowledgeBlock);
-  expect(input.readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
+  expect(input).not.toHaveProperty("readKnowledgeCommits");
 });
 
 /** 29b (case 12) supersedes 20a's fixed inherited layout and 25a's "a Noter fork never adds

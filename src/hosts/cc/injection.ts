@@ -39,21 +39,34 @@ export interface CcHookOutput { hookSpecificOutput: { hookEventName: "SessionSta
    * only when `/clear`'s compaction omitted unprocessed material. */
   systemMessage?: string }
 
-const identityCount = (injection: CcInjectionPayload): number => injection.knowledgeCommitIds.length +
+type InjectionMembership = Omit<CcInjectionPayload, "text">;
+const identityCount = (injection: InjectionMembership): number => injection.knowledgeCommitIds.length +
   (injection.knowledgeStates ?? []).reduce((count, state) => count + 1 + state.toCommits.length, 0) +
   (injection.factIds?.length ?? 0) + (injection.entryIds?.length ?? 0);
 
-/** Encode exactly one core block. The host envelope is outside core's allowance but has its own bound. */
-export function encodeCcInjection(binding: CcVisibleBinding, injection: CcInjectionPayload): string {
+/** Shared framing for actual encoding and exact UTF-16 capacity measurement. */
+function injectionFrame(binding: CcVisibleBinding, injection: InjectionMembership, hash: string): string {
   const header: WireHeader = { d: binding.db, n: binding.nativeSession, s: binding.coreSession,
-    k: injection.knowledgeCommitIds, r: (injection.knowledgeStates ?? []).map(knowledgeStateKey), h: digest(injection.text),
+    k: injection.knowledgeCommitIds, r: (injection.knowledgeStates ?? []).map(knowledgeStateKey), h: hash,
     ...(injection.factIds === undefined ? {} : { f: injection.factIds }),
     ...(injection.entryIds === undefined ? {} : { e: injection.entryIds }),
     ...(injection.slice === undefined ? {} : { p: injection.slice }) };
   const framing = `${BEGIN}\n${CC_INJECTION_HEADER}${JSON.stringify(header)}\n\n${END}`;
   const bound = 300 + (injection.slice ? 16 : 0) + 12 * identityCount(injection);
   if (framing.length > bound) throw new Error(`CC injection envelope exceeds its ${bound}-character host framing bound`);
-  return `${BEGIN}\n${CC_INJECTION_HEADER}${JSON.stringify(header)}\n${injection.text}\n${END}`;
+  return framing;
+}
+
+/** Measure only: a digest always occupies 64 ASCII characters; no synthetic hash is emitted. */
+export function ccInjectionLength(binding: CcVisibleBinding, injection: InjectionMembership, textLength: number): number {
+  return injectionFrame(binding, injection, "0".repeat(64)).length + textLength;
+}
+
+/** Encode exactly one core block. The host envelope is outside core's allowance but has its own bound. */
+export function encodeCcInjection(binding: CcVisibleBinding, injection: CcInjectionPayload): string {
+  const frame = injectionFrame(binding, injection, digest(injection.text));
+  const boundary = frame.length - END.length - 1;
+  return frame.slice(0, boundary) + injection.text + frame.slice(boundary);
 }
 
 /** Identity-only decoding is shared with native previews whose original file no longer exists.

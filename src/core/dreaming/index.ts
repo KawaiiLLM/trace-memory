@@ -69,12 +69,11 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   // Changed and current references share one Knowledge window, not two independent allowances.
   const processedInputCap = knowledgeCapacity - tokens(changed) - 1;
   const renderReference = (value: (typeof references)[number]) => due.rendered.get(value.revision.id)!;
-  let old = processedBlock(references, renderReference), oldIds = references.map(value => value.revision.id);
+  let old = processedBlock(references, renderReference);
   if (tokens(`Current pool knowledge outside this range:\n${old}`) > processedInputCap) {
     const selected = budgetKnowledge(references, Math.max(0, processedInputCap - tokens("Current pool knowledge outside this range:\n")),
       renderReference, "Dreamer current reference input");
     old = [renderKnowledgeBlock(selected.groups.filter(group => group.text)), ...selected.receipts].join("\n");
-    oldIds = selected.commits;
   }
   old = `Current pool knowledge outside this range:\n${old}`;
   if (tokens(old) > processedInputCap)
@@ -84,11 +83,6 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   // 76: a frozen archive is not among `due.versions` (pool size/versions exclude archives); its own
   // supports and the body it removed still need to reach D, exactly as any other frozen item's do.
   const frozenArchives = due.archived.filter(value => frozenIds.has(value.revision.id));
-  const archivedBodies = frozenArchives.map(value => {
-    const body = store.getKnowledgeRevision(value.knowledge.id, value.revision.parentId!);
-    if (!body) throw new Error(`K${value.knowledge.id}@${value.revision.id}: archive has no archived body`);
-    return { knowledge: value.knowledge, revision: body };
-  });
   const facts = [...new Set([...frozenValues, ...frozenArchives].flatMap(value => value.revision.supports))].sort((a, b) => a - b).map(id => {
     const fact = store.getFact(id); if (!fact) throw new Error(`Missing direct support F${id}`); return fact;
   });
@@ -108,19 +102,15 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
       tokens(prompt) + tokens(JSON.stringify(dreamingToolDefinitions())) + tokens(text) > input.capacity.inputTokens))
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
-  // 76: registers the archive version, and the archived body it shows, as read — a Dreamer update
-  // that revokes or adjusts an archive needs no separate `trace` (its base is the archive commit).
-  const supplied = [...references.filter(value => oldIds.includes(value.revision.id)), ...frozenValues, ...frozenArchives, ...archivedBodies];
   return { sessionId: path.sessionId, branch: path.branch, path, range, pool: due.pool, frozenIds: [...frozenIds],
     eventIds: [...frozenIds], changed: { versions: [...frozenValues, ...frozenArchives] }, material, text,
     profile: structuredClone(config.render), model: input.model ?? "session", mode: "subagent" as const, claim,
-    readKnowledgeCommits: supplied.map(value => ({ knowledgeId: value.knowledge.id, commit: value.revision.id })),
     maxToolRounds: config.dreaming.maxToolRounds, admittedProcessedInputCap: processedInputCap };
 }
 
 export async function runDreaming(store: Store, frozen: ReturnType<typeof freezeDreaming>, runAgent: RunAgent,
-  bind: (context: Parameters<typeof bindTools>[2], run: RunInput, review?: undefined, dreaming?: Parameters<typeof bindTools>[6]) => ReturnType<typeof bindTools>): Promise<DreamingResult> {
-  const { sessionId, branch, path, range, readKnowledgeCommits } = frozen;
+  bind: (context: Parameters<typeof bindTools>[2], run: RunInput, review?: undefined, dreaming?: Parameters<typeof bindTools>[5]) => ReturnType<typeof bindTools>): Promise<DreamingResult> {
+  const { sessionId, branch, path, range } = frozen;
   let rounds = 0;
   const run: RunInput = { kind: "dreaming", sessionId, branch, dreamingRangeId: range.id, model: frozen.model, mode: "subagent",
     promptHash, rangeFrom: `${frozen.pool}#${range.id}`, rangeTo: `${frozen.pool}#${range.id}`, createdAt: new Date().toISOString() };
@@ -136,9 +126,15 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
       totals: pools.map(({ pool, budget, tokens }) => ({ pool, budget, tokens })), operationFailures, problems: operationFailures };
   };
   binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
-    range: { from: run.rangeFrom!, to: run.rangeTo! }, readKnowledgeCommits }, run, undefined,
-    { path, check: () => renderDreamingCheckReceipt(check()), skippable: commit => frozen.frozenIds.includes(commit)
-      ? undefined : "skip must name an exact frozen version from this run" });
+    range: { from: run.rangeFrom!, to: run.rangeTo! } }, run, undefined,
+    { path, check: () => renderDreamingCheckReceipt(check(), commit => {
+      const revision = store.knowledgeRevision(commit)!;
+      return `K${revision.knowledgeId}@v${store.versionOrdinal(revision.knowledgeId, commit)}`;
+    }), skippable: commit => !frozen.frozenIds.includes(commit)
+      ? "skip must name an exact frozen version from this run"
+      : binding.memory.skippedCommits.includes(commit) || binding.memory.allCommitted.some(item =>
+          store.commitParents(store.knowledgeRevision(item.commit)!).some(parent => parent.id === commit))
+        ? "version was already consumed by this run" : undefined });
   let result: RunAgentResult;
   try {
     result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt, promptHash,
@@ -159,7 +155,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   }).filter(id => frozenSet.has(id)));
   const deliberatedRevisionIds = [...new Set([...skippedRevisionIds, ...operatedFrozenIds])].sort((a, b) => a - b);
   recordAttempt(run, result, "subagent", { toolCalls: binding.sequence, fetched: binding.fetched, material: frozen.material,
-    profile: frozen.profile, admittedProcessedInputCap: frozen.admittedProcessedInputCap, readKnowledgeCommits,
+    profile: frozen.profile, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
     committed: binding.memory.allCommitted, skipped: binding.memory.skipped, check: checked, rounds,
     deliberatedRevisionIds, deliberated: deliberatedRevisionIds.length, frozen: frozen.frozenIds.length, problems });
   const runId = store.dreamingRunId(run)!;

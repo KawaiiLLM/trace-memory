@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
-import { renderKnowledgeBlock, tokens, wholeKnowledge } from "../../../src/core/render/index.ts";
+import { renderKnowledge, renderKnowledgeBlock, tokens, wholeKnowledge } from "../../../src/core/render/index.ts";
 import { budgetKnowledge } from "../../../src/core/render/index.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 
@@ -39,14 +39,15 @@ function fixture(texts: (string | { text: string; category: "constraint" | "open
 
 test("45: a whole applicable pool fitting its exact rendered capacity has no omission receipt", () => {
   const f = fixture(["whole applicable rule " + "word ".repeat(5_100)]);
-  const exact = wholeKnowledge(f.values).cost;
+  const exact = wholeKnowledge(f.values, value => renderKnowledge(value, `K${value.knowledge.id}#${f.memory.store.versionTag(value.knowledge.id, value.revision.id)}`)).cost;
   expect(exact).toBeGreaterThanOrEqual(5_000);
   setKnowledgeCapacity(f.memory, exact);
   const frozen = freezeConsolidation(f.memory.store, f.target, f.memory.config);
   expect(frozen.knowledgeCapacity).toBe(exact);
   expect(tokens(renderKnowledgeBlock(frozen.prepared!.material.knowledge))).toBeLessThanOrEqual(exact);
   expect(frozen.prepared!.supplied.knowledgeCommitIds).toEqual(f.commits);
-  expect(frozen.prepared!.readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: f.commits[0]! }]);
+  expect(frozen.prepared!.text).toContain(`K1#${f.memory.store.versionTag(1, f.commits[0]!)}`);
+  expect(frozen.prepared).not.toHaveProperty("readKnowledgeCommits");
   expect(frozen.prepared!.material.receipts.filter(receipt => receipt.includes(" knowledge; expand:"))).toEqual([]);
 });
 
@@ -144,7 +145,7 @@ test("64c: shortening the fact range keeps the newest knowledge while the admitt
   expect(later.prepared!.supplied.knowledgeCommitIds).toEqual(f.commits);
 });
 
-test("64c: over-cap Consolidation retains newer commits and grants only kept commits", () => {
+test("64c/92: over-cap Consolidation retains newer commits and renders tags only for kept bodies", () => {
   const f = fixture([
     "unrelated archive geometry " + "plain ".repeat(1_800),
     "target batch alpha " + "relevant ".repeat(1_800),
@@ -157,10 +158,9 @@ test("64c: over-cap Consolidation retains newer commits and grants only kept com
   const second = freezeConsolidation(f.memory.store, f.target, f.memory.config);
   expect(first.prepared).toEqual(second.prepared);
   expect(first.prepared!.supplied.knowledgeCommitIds).toEqual([f.commits[1], f.commits[2]]);
-  expect(first.prepared!.readKnowledgeCommits).toEqual([
-    { knowledgeId: 2, commit: f.commits[1]! }, { knowledgeId: 3, commit: f.commits[2]! },
-  ]);
+  for (const value of f.values.slice(1)) expect(first.prepared!.text)
+    .toContain(`K${value.knowledge.id}#${f.memory.store.versionTag(value.knowledge.id, value.revision.id)}`);
   expect(first.prepared!.material.receipts.join("\n")).toContain("omitted 1 constraint knowledge");
   expect(first.prepared!.material.receipts.join("\n")).toContain("K1");
-  expect(first.prepared!.readKnowledgeCommits.some(value => value.commit === f.commits[0])).toBe(false);
+  expect(first.prepared!.text).not.toContain(`K1#${f.memory.store.versionTag(1, f.commits[0]!)}`);
 });

@@ -94,16 +94,16 @@ test("malformed items still produce results for every item, and reject the entir
   expect(memory.store.listSessionFacts(1)).toEqual([]);
 });
 
-test("tools freeze context, reject sibling and late sources, and preserve read revisions", () => {
+test("tools freeze context, reject sibling and late sources, and keep no read ledger", () => {
   memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, assistantText: "sibling", startedAt: "later" });
-  const context: ToolContext = { kind: "noting", sessionId: 1, branch: "frozen", range: { from: "S1/T1", to: "S1/T1" }, readKnowledgeCommits: [{ knowledgeId: 9, commit: 2 }] };
+  const context: ToolContext = { kind: "noting", sessionId: 1, branch: "frozen", range: { from: "S1/T1", to: "S1/T1" } };
   const note = memory.tools(context)[2]!;
-  context.range.to = "S1/T2"; context.branch = "mutated"; context.readKnowledgeCommits[0]!.commit = 3;
+  context.range.to = "S1/T2"; context.branch = "mutated";
   expect(note.execute({ facts: [fact("T2#assistant")] })).toContain("rejected:");
   expect(note.execute({ facts: [fact()] })).toContain("F1");
   expect(memory.store.sourcePath(1, "frozen", 1).length).toBeGreaterThan(0);
   expect(memory.store.sourcePath(1, "frozen", 1).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  expect(JSON.parse(memory.store.getRun(1)!.response!).readKnowledgeCommits).toEqual([{ knowledgeId: 9, commit: 2 }]);
+  expect(JSON.parse(memory.store.getRun(1)!.response!)).not.toHaveProperty("readKnowledgeCommits");
 });
 
 test("trace and search use parameter options, share scoped pagination, and reject obsolete address flags", () => {

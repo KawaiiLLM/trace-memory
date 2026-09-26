@@ -51,5 +51,7 @@ export function createDreamerTrigger(memory: TraceMemory, path: TaskTarget, fact
   if (scope !== "project") operations.push(operation(`Fixture trigger companion ${sequence}: ${"trigger ".repeat(scope === "global" ? 700 : 350)}`));
   const receipt = JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ operations, skipped: [] }));
   if (!receipt.committed?.[0]) throw new Error(`could not create Dreamer fixture trigger: ${JSON.stringify(receipt)}`);
-  return receipt.committed[0] as { knowledgeId: number; commit: number };
+  const item = receipt.committed[0] as { knowledgeId: number; version: string };
+  return { knowledgeId: item.knowledgeId,
+    commit: memory.store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1])) };
 }

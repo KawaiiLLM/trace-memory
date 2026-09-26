@@ -52,7 +52,12 @@ export function parseTurnAddress(address: string): TurnAddress | null {
   }
   return result;
 }
-export function parseKnowledgeAddress(address: string): { id: number; from?: number; to?: number; history: boolean } | null {
+export function parseKnowledgeAddress(address: string): { id: number; from?: number; to?: number; tag?: string; history: boolean; ordinal?: boolean } | null {
+  const tagged = /^K([1-9]\d*)#([a-z]{4,})$/.exec(address);
+  if (tagged) return { id: positive(tagged[1]!), tag: tagged[2], history: false };
+  const ordinal = /^K([1-9]\d*)@v([1-9]\d*)(?:\.\.v([1-9]\d*))?$/.exec(address);
+  if (ordinal) return { id: positive(ordinal[1]!), from: positive(ordinal[2]!),
+    ...(ordinal[3] ? { to: positive(ordinal[3]) } : {}), history: false, ordinal: true };
   const match = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.(?:K([1-9]\d*)@)?([1-9]\d*))?|(\.\.))?$/.exec(address);
   if (!match) return null;
   try {

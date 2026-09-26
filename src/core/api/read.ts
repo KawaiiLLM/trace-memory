@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { knowledgeReadSelection, KNOWLEDGE_REPRESENTATIVE_RECEIPT } from "./knowledge-read.ts";
-import { traceTargets } from "../model/address.ts";
+import { parseKnowledgeAddress, traceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, PathSnapshot } from "../store/index.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, knowledgeCategoryGroup, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
@@ -24,7 +24,7 @@ export const SEARCH_DEFAULT_FIELDS: readonly ReadField[] = ["text"];
 export const SEARCH_HISTORY_DEFAULT_FIELDS: readonly ReadField[] = ["text", "status"];
 export const SEARCH_PREVIEW_TOKENS = 80;
 export const MAX_PUBLIC_READ_TOKENS = 8000;
-export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; /** Host transport ceiling over the final returned string, in JavaScript UTF-16 code units. Not model-facing. */ maxChars?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
+export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; /** Host transport ceiling over the final returned string, in JavaScript UTF-16 code units. Not model-facing. */ maxChars?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile; /** Internal presentation seam; never accepted from model input. */ modelFacing?: boolean }
 /** Validate aliases and filters before rendering or touching cursor state. Null is only a
  * content-ceiling disable; pageBudget=null is reserved for internal assembled material reads. */
 export function validateBudgets(options: ListingOptions): void {
@@ -54,9 +54,7 @@ export function readProfile(options: ListingOptions, inherited: EntryProfile): E
 }
 /** Shared default response budget for trace and search, including pagination receipts. */
 export const DEFAULT_READ_TOKENS = 2000;
-/** Exact versions resolved by a named K read; bare reads replace that identity's prior bases. */
-export interface KnowledgeRead { knowledgeId: number; commits: number[]; replace: boolean; complete?: boolean }
-export interface TraceRead { text: string; completed: KnowledgeRead[] }
+export interface TraceRead { text: string }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
 /** 21b "Group projection": the topics of current visible knowledge, as references to the exact
@@ -110,7 +108,8 @@ type Miss = { miss: string };
 /** One component of a `trace` comma list, in request order: either an interval's immutable fact
  * identity with frozen relations, or a named component's renderer over frozen database values.
  * Both render only after the snapshot transaction exits. */
-type TraceUnit = { fact: number; relations: FactRelation[]; header?: string } | { render: () => string };
+type TaggedBody = { lines: string[]; taggedHeader: string; plainHeader: string; tag: string };
+type TraceUnit = { fact: number; relations: FactRelation[]; header?: string } | { render: () => string | TaggedBody | (string | TaggedBody)[] };
 
 /** Parent 29 "Version-aware knowledge" (29b): one line per commit the reader's context already holds
  * that is not among the current applicable commits here — superseded, archived or merged away. The
@@ -120,19 +119,20 @@ type TraceUnit = { fact: number; relations: FactRelation[]; header?: string } | 
  * The full revision read happens only when there is a stale commit to explain. */
 export interface KnowledgeStateNote { receipt: KnowledgeStateReceipt; text: string; revisions: KnowledgeRevision[] }
 
-const knowledgeStateText = (from: KnowledgeRevision, successors: readonly KnowledgeRevision[]): string => {
-  const label = `K${from.knowledgeId}@${from.id} is `;
-  if (successors.length > 1) return label + `split into ${successors.map(r => `K${r.knowledgeId}@${r.id}`).join(" and ")}`;
+const knowledgeStateText = (from: KnowledgeRevision, successors: readonly KnowledgeRevision[], address: (r: KnowledgeRevision) => string): string => {
+  const label = `${address(from)} is `;
+  if (successors.length > 1) return label + `split into ${successors.map(address).join(" and ")}`;
   const successor = successors[0]!;
   return label + (successor.op === "archive" ? "archived"
-    : successor.op === "merge" || successor.knowledgeId !== from.knowledgeId ? `merged into K${successor.knowledgeId}@${successor.id}`
-    : `superseded by K${successor.knowledgeId}@${successor.id}`);
+    : successor.op === "merge" || successor.knowledgeId !== from.knowledgeId ? `merged into ${address(successor)}`
+    : `superseded by ${address(successor)}`);
 };
 
 /** Necessary state changes for exact bodies already visible on this path. The receipt is deliberately
  * separate from body visibility: naming a survivor or split child grants no read handle or body. */
 export function knowledgeStateNotes(store: Store, current: readonly KnowledgeWithRevision[], visible: Iterable<number>,
-  path: KnowledgePath | null, projectId?: number, prepared?: ReturnType<Store["commitGraph"]>): KnowledgeStateNote[] {
+  path: KnowledgePath | null, projectId?: number, prepared?: ReturnType<Store["commitGraph"]>, modelFacing = false): KnowledgeStateNote[] {
+  const address = (r: KnowledgeRevision) => modelFacing ? `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}` : `K${r.knowledgeId}@${r.id}`;
   const retained = [...visible];
   if (!retained.length) return [];
   const graph = prepared ?? store.commitGraph(path, projectId);
@@ -150,7 +150,7 @@ export function knowledgeStateNotes(store: Store, current: readonly KnowledgeWit
       const targets = shown ? [shown] : resolvedIdentity;
       return [{ receipt: { fromCommit: id, toCommits: targets.length ? targets.map(target => target.id) : [id] },
         revisions: targets, text: targets.length || applicableIdentity.length
-          ? `K${revision.knowledgeId}@${id} no longer applies`
+          ? `${address(revision)} no longer applies`
           : `K${revision.knowledgeId} no longer applies` }];
     }
     const descendants = graph.descendants(id);
@@ -163,31 +163,31 @@ export function knowledgeStateNotes(store: Store, current: readonly KnowledgeWit
     const directBranches = graph.revisions.filter(candidate => candidate.parentId === id);
     if (shown && shown.id !== id && (directBranches.length > 1 || !descendants.has(shown.id)))
       return [{ receipt: { fromCommit: id, toCommits: [shown.id] }, revisions: [shown],
-        text: `K${revision.knowledgeId}@${id} is shown as K${shown.knowledgeId}@${shown.id}` }];
+        text: `${address(revision)} is shown as ${address(shown)}` }];
     if (!successors.length) return [];
     const split = graph.revisions.some(r => r.op === "split" && r.parentId === id && graph.applicable.has(r.id));
     if (split) return [{ receipt: { fromCommit: id, toCommits: successors.map(r => r.id) }, revisions: successors,
-      text: knowledgeStateText(revision, successors) }];
+      text: knowledgeStateText(revision, successors, address) }];
     return successors.map(successor => ({ receipt: { fromCommit: id, toCommits: [successor.id] }, revisions: [successor],
-      text: knowledgeStateText(revision, [successor]) }));
+      text: knowledgeStateText(revision, [successor], address) }));
   });
 }
 
 /** Compatibility projection used by Consolidation and explicit renderer tests. */
 export function knowledgeStatusNotes(store: Store, current: readonly KnowledgeWithRevision[], visible: Iterable<number>,
-  path: KnowledgePath | null, projectId?: number): string[] {
-  return knowledgeStateNotes(store, current, visible, path, projectId).map(note =>
-    note.text.replace(/(superseded by K\d+@\d+)$/, "$1 above"));
+  path: KnowledgePath | null, projectId?: number, modelFacing = false): string[] {
+  return knowledgeStateNotes(store, current, visible, path, projectId, undefined, modelFacing).map(note =>
+    note.text.replace(/(superseded by K\d+@(?:v)?\d+)$/, "$1 above"));
 }
 
-export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (address: string, options?: ListingOptions, reads?: KnowledgeRead[]) => (() => string),
+export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (address: string, options?: ListingOptions) => (() => string),
   resultText: ResultExtractor = rawResultText) {
   const expand = (address: string, options?: ListingOptions) => prepare(address, options)();
   // 22c: what a listing still owes its caller is kept as hit identities plus the formatter that turns
   // exactly one page of them into lines. The formatter carries its query's own snapshot, so a page
   // asked for later prints the labels that query established, and nothing but values is held between
   // pages — no open transaction, no reserved connection.
-  interface Continuation { items: readonly unknown[]; format: (items: readonly unknown[]) => string[];
+  interface Continuation { items: readonly unknown[]; format: (items: readonly unknown[]) => (string | TaggedBody)[];
     /** 22c "complete snapshot": run once, on the hits this query defers, to freeze the mutable state
      * their lines will read. The pages formatted at query time need nothing frozen, so the whole
      * hit set is never formatted and no transaction is held; the deferred hits carry their own. */
@@ -200,14 +200,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * line cap, fields, filters and configured content profile; an oversized line leaves its unsent
    * suffix in the same queue, without a second fragment cache.
    * `fragmented` prevents re-estimating a giant line's whole suffix on each continuation.
-   * `reads` carries only named trace-origin K versions; search leaves it empty. Completion belongs
-   * to the whole requested expression, not a rendered child or an unconsumed/evicted remainder. */
+   * Cursor state holds only frozen output, never a caller's read or write grants. */
   type FrozenListing = {
     itemBudget: number | null; toolCallBudget: number | null; toolResultBudget: number | null;
     tool?: number; versions?: ReadVersions; category?: KnowledgeCategory;
     scope?: KnowledgeScope; fields?: readonly ReadField[]; queryCap?: number;
   };
-  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; maxChars?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; frozen: FrozenListing };
+  type PendingLine = { text: string; completionTag?: string };
+  type Remainder = Continuation & { offset: number; pending: readonly (PendingLine | TaggedBody)[]; footer: string; cap: number; owner: string; maxTokens?: number; maxChars?: number; origin: "trace" | "search"; modelFacing: boolean; fragmented: boolean; frozen: FrozenListing };
   // A model asks for page one and usually never asks for page two, so a continuation is a cache
   // entry, not an obligation: the least recently used one is dropped once this many are outstanding,
   // and the reader meets the "unknown or expired cursor" error that an unknown cursor always met.
@@ -215,10 +215,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   // ever becomes large enough that sixteen of them matter.
   const CURSORS = 16;
   const cursors = new Map<string, Remainder>();
-  const page = (source: string[] | Continuation, options: ListingOptions = {}, footer = "", reads: KnowledgeRead[] = [], origin: "trace" | "search" = "trace"): TraceRead => {
+  const page = (source: string[] | Continuation, options: ListingOptions = {}, footer = "", origin: "trace" | "search" = "trace"): TraceRead => {
     const owner = options.sessionId === undefined ? "unbound" : `${options.sessionId}:${store.getSession(options.sessionId)?.projectId}`;
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
+    if (saved && saved.modelFacing !== !!options.modelFacing) throw new Error("cursor belongs to another presentation surface");
     if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue a trace cursor; use trace");
     const defaults = { itemBudget: config.render.entryTokens, toolCallBudget: config.render.toolInputTokens,
       toolResultBudget: config.render.toolResultTokens };
@@ -242,7 +243,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const cap = saved?.cap ?? requested;
     const { items, format, capture } = saved ?? (Array.isArray(source)
       ? { items: source, format: (lines: readonly unknown[]) => lines as string[], capture: undefined } : source);
-    if (saved) { footer = saved.footer; reads = saved.reads; }
+    if (saved) footer = saved.footer;
     const namesPageBudget = options.pageBudget !== undefined || options.maxTokens !== undefined;
     const requestedMaxTokens = options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens;
     const maxTokens = namesPageBudget ? requestedMaxTokens : saved ? saved.maxTokens : DEFAULT_READ_TOKENS;
@@ -271,13 +272,27 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     let at = saved?.offset ?? 0, fragment = false, fragmented = saved?.fragmented ?? false;
     while (lines.length < cap && (pending.length || at < items.length)) {
       // One-hit lookahead only. Unrendered hits retain the existing frozen identity snapshot.
-      if (!pending.length) pending.push(...format([items[at++]]));
+      if (!pending.length) pending.push(...format([items[at++]]).map(part => typeof part === "string" ? { text: part } : part));
       if (!pending.length) continue;
-      const line = pending[0]!;
+      const next = pending[0]!;
+      if ("lines" in next) {
+        // Body identity and completion stay structured until the page actually emits it.
+        // Queueing a later collection member is not the start of that member's body.
+        if (lines.length + next.lines.length <= cap && fits([...lines, ...next.lines], pending.length > 1 || at < items.length)) {
+          lines.push(...next.lines); pending.shift(); continue;
+        }
+        if (lines.length) break;
+        const body = [...next.lines];
+        body[0] = next.plainHeader + body[0]!.slice(next.taggedHeader.length);
+        pending.splice(0, 1, ...body.slice(0, -1).map(text => ({ text })), { text: body.at(-1)!, completionTag: next.tag });
+      }
+      const part = pending[0] as PendingLine;
+      const line = part.text;
+      const tagged = part.completionTag ? `${line} · version ${part.completionTag}` : line;
       const more = pending.length > 1 || at < items.length;
       // The estimator is not monotone (an ASCII suffix can reclassify an emoji run).
       // Price each intact line once before probing; never repeat this full scan on its fragments.
-      if (!fragmented && fits([...lines, line], more)) { lines.push(pending.shift()!); continue; }
+      if (!fragmented && fits([...lines, tagged], more)) { lines.push(tagged); pending.shift(); continue; }
       // Prefer an intact pending line on the next page instead of splitting it into spare room.
       if (lines.length) break;
       // Probe near the page size, not halfway through a potentially megabyte-long remainder.
@@ -290,17 +305,19 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       while (high < line.length && fits([prefix(high)], true, true)) {
         low = high; high = Math.min(line.length, high * 2);
       }
-      if (high === line.length && fits([line], more)) { lines.push(pending.shift()!); fragmented = false; continue; }
+      if (high === line.length && fits([tagged], more)) { lines.push(tagged); pending.shift(); fragmented = false; continue; }
       // Keep the suffix in the SAME pending queue, at code-point boundaries. Escaped text is
       // transported verbatim: fragments must be concatenated before interpreting JSON escapes.
       while (low < high) {
         const mid = Math.ceil((low + high) / 2);
-        if (fits([prefix(mid)], true, true)) low = mid; else high = mid - 1;
+        const candidate = prefix(mid);
+        if (fits([candidate + (mid === line.length && part.completionTag ? ` · version ${part.completionTag}` : "")],
+          mid === line.length ? more : true, mid !== line.length)) low = mid; else high = mid - 1;
       }
       const kept = prefix(low);
       if (!kept || !fits([kept], true, true)) throw new Error(maxChars === undefined
         ? "listing maxTokens is too small for this hit and pagination hints" : "listing limits are too small for this hit and pagination hints");
-      lines.push(kept); pending[0] = line.slice(kept.length); fragment = true; fragmented = true;
+      lines.push(kept); pending[0] = { ...part, text: line.slice(kept.length) }; fragment = true; fragmented = true;
       break;
     }
     const more = pending.length > 0 || at < items.length;
@@ -309,14 +326,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       ? "listing maxTokens is too small for pagination hints" : "listing limits are too small for pagination hints");
     // Snapshot and validate first: a rejected request must leave the input cursor usable.
     const remainder = more ? saved ? { ...saved, offset: at, pending, fragmented }
-      : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner, maxTokens, maxChars, reads, origin, fragmented, frozen }
-      : { items, offset: at, pending, format, footer, cap, owner, maxTokens, maxChars, reads, origin, fragmented, frozen } : undefined;
+      : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner, maxTokens, maxChars, origin, modelFacing: !!options.modelFacing, fragmented, frozen }
+      : { items, offset: at, pending, format, footer, cap, owner, maxTokens, maxChars, origin, modelFacing: !!options.modelFacing, fragmented, frozen } : undefined;
     if (options.cursor) cursors.delete(options.cursor);
     if (remainder) {
       cursors.set(cursor, remainder);
       for (const oldest of cursors.keys()) { if (cursors.size <= CURSORS) break; cursors.delete(oldest); }
     }
-    return { text: result, completed: more ? [] : reads.filter(read => read.complete !== false) };
+    return { text: result };
   };
   const session = (id: number) => {
     const value = store.getSession(id);
@@ -327,7 +344,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const factLine = (id: number, relations: readonly FactRelation[] = store.listFactRelations(id)) => renderFact(store.getFact(id)!, [...relations]);
   const factGroups = (facts: Fact[], relations = store.listFactRelationsOf(facts.map(fact => fact.id))) =>
     renderFactGroups(facts, f => factLine(f.id, relations.get(f.id) ?? []), store.factTurnTimes(facts));
-  const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge(value);
+  const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge(value,
+    `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`);
   // The knowledge part of the shared material contract (20a): the applicable commits at one node,
   // under the existing scope and commit-graph rules. Its block layout lives in core/render/material.ts.
   const applicable = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string) =>
@@ -360,7 +378,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const current = values(graph.current.filter(revision => revision.op !== "archive"));
     const visibleBodies = values(graph.revisions.filter(revision => revision.op !== "archive"
       && graph.applicable.has(revision.id) && visible.knowledgeCommitIds.has(revision.id)));
-    const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? undefined : projectId, graph);
+    const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? undefined : projectId, graph, true);
 
     const rawIds = store.visibleSourceEntryIds(path, snapshot, visible.raw, visible.rawEntryIds ?? new Map());
     const supported = new Set([...current.filter(item => !visible.knowledgeCommitIds.has(item.revision.id)).map(item => item.revision),
@@ -378,13 +396,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // Historical applicable bodies still retained in context spend the same configured allowance.
     // Re-render one coherent visible view with the same category/status framing; do not sum stored
     // body bytes, averages or candidate counts. Existing acknowledged notices are charged too.
-    const line = (value: KnowledgeWithRevision) => renderKnowledge(value);
+    const line = knowledgeLine;
     const visibleKnowledge = budgetKnowledge(visibleBodies, Infinity, line);
     const acknowledged = visible.knowledgeStates ?? new Set<string>();
     // A retained status notice is independent of its old body: hosts may keep the notice alone.
     // Reconstruct its current matching transition without granting body coverage or producing a new notice.
     const acknowledgedSources = [...acknowledged].map(key => Number(key.split(">")[0]));
-    const acknowledgedStateTexts = knowledgeStateNotes(store, current, acknowledgedSources, path, path ? undefined : projectId, graph)
+    const acknowledgedStateTexts = knowledgeStateNotes(store, current, acknowledgedSources, path, path ? undefined : projectId, graph, true)
       .filter(state => acknowledged.has(knowledgeStateKey(state.receipt))).map(state => state.text);
     const visibleText = injectionText({ knowledge: visibleKnowledge.groups, receipts: [] }, acknowledgedStateTexts);
     const remaining = knowledgeCap - tokens(visibleText);
@@ -401,14 +419,18 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       }
       return low;
     };
+    const transportState = (state: KnowledgeStateNote): TransportItem => {
+      const from = store.knowledgeRevision(state.receipt.fromCommit)!;
+      return { kind: "state", text: state.text, receipt: state.receipt,
+        address: `K${from.knowledgeId}@v${store.versionOrdinal(from.knowledgeId, from.id)}` };
+    };
     const stateCount = longest(states.length, count => tokens(buildStates(count)) <= remaining);
     if (stateCount < states.length) {
       if (!stateCount) return empty();
       const material = { knowledge: [], receipts: [] };
       const rendered = measuredMemory(buildStates(stateCount), material);
       return { ...rendered, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
-        ...(transport ? { transportItems: states.slice(0, stateCount).map(state => ({ kind: "state" as const,
-          text: state.text, receipt: state.receipt })) } : {}) };
+        ...(transport ? { transportItems: states.slice(0, stateCount).map(transportState) } : {}) };
     }
     const selectedStates = states.slice(0, stateCount);
     const ordered = [...delta].sort((a, b) => b.revision.id - a.revision.id);
@@ -427,9 +449,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     return { ...rendered, knowledgeCommitIds: selected.commits,
       ...(transport ? { transportItems: [
         ...delta.filter(item => selected.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
-          text: renderKnowledge(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
-          address: `K${item.knowledge.id}@${item.revision.id}` })),
-        ...selectedStates.map(state => ({ kind: "state" as const, text: state.text, receipt: state.receipt })),
+          text: knowledgeLine(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
+          address: `K${item.knowledge.id}@v${store.versionOrdinal(item.knowledge.id, item.revision.id)}` })),
+        ...selectedStates.map(transportState),
         ...material.receipts.map(text => ({ kind: "receipt" as const, text })),
       ] } : {}),
       ...(selectedStates.length ? { knowledgeStates: selectedStates.map(state => state.receipt) } : {}) };
@@ -474,13 +496,31 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     options = { ...options, fields: [...(options.fields ?? (historyFields ? TRACE_HISTORY_DEFAULT_FIELDS : TRACE_DEFAULT_FIELDS))] };
     options = { ...options, maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS,
       ...(options.pageBudget === null ? { cap: Number.MAX_SAFE_INTEGER } : {}) };
-    const reads: KnowledgeRead[] = [];
     const collectionReceipts: string[] = [];
     const profile = readProfile(options, config.render);
     const items = store.transaction(() => {
       const intervals = targets.map(factInterval);
       // Freeze only values under the write lock. Renderers close over these values, not queries.
-      const named = (target: string): (() => string) => {
+      const fields = new Set(options.fields!);
+      // Freeze identity, links, status and version metadata in this same snapshot. A cursor
+      // formats these values only; it must not consult a later database state.
+      const knowledgeBody = (value: KnowledgeWithRevision, parents: KnowledgeRevision[], children: KnowledgeRevision[], status?: string) => {
+        const { knowledge, revision } = value;
+        const grounds = [...store.revisionGrounds(revision)].sort((a, b) => a - b);
+        const labels = new Map([revision, ...parents, ...children].map(r => [r.id,
+          `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}`]));
+        const tag = `K${knowledge.id}#${store.versionTag(knowledge.id, revision.id)}`;
+        const plainHeader = `[K${knowledge.id}]`, taggedHeader = `[${tag}]`;
+        const shown = (r: KnowledgeRevision) => r.id === revision.id ? tag : labels.get(r.id)!;
+        const plain = (r: KnowledgeRevision) => r.id === revision.id ? `K${knowledge.id}` : labels.get(r.id)!;
+        return (): string | TaggedBody => {
+          const full = renderKnowledgeTrace(value, parents, children, Infinity, grounds, fields, false, status, shown, labels.get(revision.id));
+          if (!fields.has("text") || tokens(full) > profile.entryTokens)
+            return renderKnowledgeTrace(value, parents, children, profile.entryTokens, grounds, fields, false, status, plain, labels.get(revision.id));
+          return { lines: full.split("\n"), taggedHeader, plainHeader, tag };
+        };
+      };
+      const named = (target: string, status?: string): (() => string | TaggedBody | (string | TaggedBody)[]) => {
         const s = /^S([1-9]\d*)$/.exec(target);
         if (s) {
           const id = Number(s[1]);
@@ -494,7 +534,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         while (project?.mergedInto != null) project = store.getProject(project.mergedInto);
         if (project) {
           const selection = knowledgeReadSelection(store, options, project.id);
-          const revisions = selection.representatives(selection.graph.revisions);
+          const revisions = selection.representatives(selection.graph.revisions).sort((a, b) => a.id - b.id);
           const records = store.knowledgeRecords(revisions.map(r => r.knowledgeId));
           const fields = new Set(options.fields!);
           const knowledge = revisions.map(revision => {
@@ -502,8 +542,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
             const children = selection.graph.revisions.filter(r => selection.input.parents.get(r.id)?.includes(revision.id));
             const grounds = [...store.revisionGrounds(revision)].sort((a, b) => a - b);
             const status = selection.status(revision);
-            return () => renderKnowledgeTrace({ knowledge: records.get(revision.knowledgeId)!, revision },
-              parents, children, profile.entryTokens, grounds, fields, false, status);
+            const value = { knowledge: records.get(revision.knowledgeId)!, revision };
+            return options.modelFacing ? knowledgeBody(value, parents, children, status)
+              : () => renderKnowledgeTrace(value, parents, children, profile.entryTokens, grounds, fields, false, status);
           });
           const facts = store.listProjectFacts(project.id);
           const relations = options.sessionId === undefined ? store.listFactRelationsOf(facts.map(fact => fact.id)) : (() => {
@@ -513,13 +554,30 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           const times = store.factTurnTimes(facts);
           collectionReceipts.push(`selected: project ${project.name} facts; ${options.scope ?? "global/project"} knowledge; ${options.versions} versions`, KNOWLEDGE_REPRESENTATIVE_RECEIPT);
           return () => [...knowledge.map(render => render()), ...renderFactGroups(facts,
-            (fact, frame) => renderFact(fact, relations.get(fact.id) ?? [], profile.entryTokens, frame), times, true)].filter(Boolean).join("\n");
+            (fact, frame) => renderFact(fact, relations.get(fact.id) ?? [], profile.entryTokens, frame), times, true)].filter(Boolean);
         }
-        return prepare(target, { ...options, profile }, reads);
+        const exact = options.modelFacing ? parseKnowledgeAddress(target) : null;
+        if (exact && exact.to === undefined && (exact.tag || exact.ordinal)) {
+          const commit = exact.tag ? store.resolveVersionTag(exact.id, exact.tag) : store.resolveVersionOrdinal(exact.id, exact.from!);
+          const revision = store.getKnowledgeRevision(exact.id, commit)!;
+          return knowledgeBody({ knowledge: store.getKnowledge(exact.id)!, revision }, store.commitParents(revision), store.commitChildren(revision), status);
+        }
+        return prepare(target, { ...options, profile });
       };
       // Intervals keep immutable fact bodies lazy; membership and mutable relations freeze now.
       const units = targets.flatMap((target, index): TraceUnit[] => {
         const range = intervals[index];
+        if (!range && options.modelFacing && /^K[1-9]\d*(?:\.\.)?$/.test(target)) {
+          const id = Number(/^K([1-9]\d*)/.exec(target)![1]);
+          const history = store.listKnowledgeRevisions(id);
+          if (!history.length) return [{ render: named(target) }];
+          const selection = knowledgeReadSelection(store, options);
+          const revisions = target.endsWith("..") ? history
+            : options.versions === "current" ? selection.representatives(history)
+            : history.filter(r => selection.matches(r) && (options.versions === "all" || selection.graph.applicable.has(r.id)));
+          return revisions.length ? revisions.map(revision => ({ render: named(`K${id}@v${store.versionOrdinal(id, revision.id)}`, selection.status(revision)) }))
+            : [{ render: named(target) }];
+        }
         if (!range) return [{ render: named(target) }];
         const facts = store.factMetadataInRange(range.from, range.to);
         const times = new Map(facts.map(fact => [fact.turnId, fact.time]));
@@ -533,11 +591,15 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       return units.map(unit => "fact" in unit ? { ...unit, relations: relations.get(unit.fact)! } : unit);
     });
     const format = (units: readonly unknown[]) => (units as TraceUnit[])
-      .flatMap(unit => ("fact" in unit ? renderFact(store.getFact(unit.fact)!, unit.relations, profile.entryTokens, text => "\n" + (unit.header ?? "") + text).slice(1) : unit.render()).split("\n"));
+      .flatMap<string | TaggedBody>(unit => {
+        const rendered = "fact" in unit ? renderFact(store.getFact(unit.fact)!, unit.relations, profile.entryTokens,
+          text => "\n" + (unit.header ?? "") + text).slice(1) : unit.render();
+        return (Array.isArray(rendered) ? rendered : [rendered]).flatMap<string | TaggedBody>(part => typeof part === "string" ? part.split("\n") : [part]);
+      });
     const footer = [...collectionReceipts, ...(targets.some(target => /^K[1-9]\d*(?:\.\.)?$/.test(target))
       ? [`versions: ${targets.every(target => /^K[1-9]\d*\.\.$/.test(target)) ? "all" : options.versions}${historyFields ? "; explicit K history" : ""}`,
         ...(targets.some(target => /^K[1-9]\d*\.\.$/.test(target)) ? ["selected: explicit K.. histories use all branches"] : [])] : [])].join("\n");
-    return page({ items, format }, options, footer, reads);
+    return page({ items, format }, options, footer);
   };
   // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).
   // 22d: the usage is projected out of the stored response by the store; the request and response
@@ -680,7 +742,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
 
       // ---- 1. Knowledge first: required status notices, newest kept, then bodies newest-first. ----
       const knowledgeEnvelope = caps.knowledge + sharedAllowance;
-      const allNotes = knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path)
+      const allNotes = knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path, undefined, undefined, true)
         .sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit)
         .map(note => note.text.replace(/(superseded by K\d+@\d+)$/, "$1 above"));
       const noteReceipt = (omitted: number) => omitted
@@ -808,8 +870,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
         ...(transport ? { transportItems: [
           ...knowledge.filter(item => active.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
-            text: renderKnowledge(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
-            address: `K${item.knowledge.id}@${item.revision.id}` })),
+            text: knowledgeLine(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
+            address: `K${item.knowledge.id}@v${store.versionOrdinal(item.knowledge.id, item.revision.id)}` })),
           ...notes.map(text => ({ kind: "receipt" as const, text })),
           ...factGroupLayout(finalFacts, factTurns).map(({ fact, header }) => ({ kind: "fact" as const,
             text: header + factLine(fact.id, factRelations.get(fact.id) ?? []), factId: fact.id,
@@ -879,7 +941,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
       if (input.category !== undefined && scope !== "knowledge")
         throw new Error("category filter requires layer knowledge");
-      if (input.cursor) return page([], input, "", [], "search").text;
+      if (input.cursor) return page([], input, "", "search").text;
       const effective = effectiveOptions(input);
       const historyFields = (scope === "knowledge" || scope === "all") && effective.versions !== "current";
       const options = { ...effective, fields: [...(input.fields ?? (historyFields ? SEARCH_HISTORY_DEFAULT_FIELDS : SEARCH_DEFAULT_FIELDS))],
@@ -905,18 +967,30 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const revision = (address: string) => byCommit.get(Number(address.split("@")[1]))!;
       const fields = new Set(options.fields!.filter(field => field !== "reason"
         || ((scope === "knowledge" || scope === "all") && options.versions !== "current")));
+      const chronological = (addresses: string[]) => !options.modelFacing ? addresses : [
+        ...addresses.filter(a => a.startsWith("K")).sort((a, b) => revision(a).id - revision(b).id),
+        ...addresses.filter(a => !a.startsWith("K")),
+      ];
       const represented = found.map((list, index) => {
         const ranked = selection?.representatives(list.filter(a => a.startsWith("K")).map(revision), (batched ?? [query as string])[index], batched ? "score" : "id") ?? [];
         const selected = new Set(ranked.map(r => r.id));
-        if (!batched) return list.filter(address => !address.startsWith("K") || selected.has(revision(address).id));
+        if (!batched) return chronological(list.filter(address => !address.startsWith("K") || selected.has(revision(address).id)));
         // 59b: knowledge hits in similarity order, then the query's fact and Raw hits as listed.
         return [...ranked.map(r => `K${r.knowledgeId}@${r.id}`), ...list.filter(address => !address.startsWith("K"))];
       });
       const perQuery = input.cap ?? 1;
       if (batched && (!Number.isSafeInteger(perQuery) || perQuery < 1)) throw new Error("listing cap must be a positive integer");
-      const addresses = batched ? represented.flatMap((list, index) => list.slice(0, perQuery).map(address => ({ address, query: batched[index]! }))) : represented[0]!;
+      const addresses = batched ? represented.flatMap((list, index) => chronological(list.slice(0, perQuery)).map(address => ({ address, query: batched[index]! }))) : represented[0]!;
       // 59c: a query with no hit is a line after every hit, paged like one, never a footer entry.
       const items: (string | FrozenHit | Miss)[] = [...addresses, ...(batched ? batched.filter((_, index) => !represented[index]!.length).map(miss => ({ miss })) : [])];
+      const knowledgeSnapshots = new Map([...new Set(addresses.map(item => typeof item === "string" ? item : item.address).filter(a => a.startsWith("K")))].map(address => {
+        const hit = revision(address);
+        const parents = (graphInput!.parents.get(hit.id) ?? []).map(parent => byCommit.get(parent)!).filter(Boolean);
+        const descendants = children.get(hit.id) ?? [];
+        const labels = new Map(options.modelFacing ? [hit, ...parents, ...descendants].map(r =>
+          [r.id, `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}`] as const) : []);
+        return [hit.id, { knowledge: store.getKnowledge(hit.knowledgeId)!, status: selection!.status(hit), parents, descendants, labels }];
+      }));
       // The graph freezes knowledge hits; this freezes mutable Raw membership for deferred pages.
       // No open transaction survives the first page.
       const capture = (deferred: readonly unknown[]): (FrozenHit | Miss)[] => {
@@ -939,13 +1013,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         const echo = frozen?.query === undefined ? "" : `${JSON.stringify(frozen.query)}: `;
         if (address.startsWith("F")) return echo + renderFactPreview(store.getFact(Number(address.slice(1)))!, fields, options.itemBudget === null ? Infinity : options.itemBudget!);
         if (address.startsWith("T")) return echo + expand(address, frozen?.entryIds && { entryIds: frozen.entryIds, profile: frozen.profile });
-        const [id, commit] = address.slice(1).split("@").map(Number);
-        const knowledge = store.getKnowledge(id!)!;
         const hit = revision(address);
-        const status = selection!.status(hit);
-        const parents = (graphInput!.parents.get(hit.id) ?? []).map(parent => byCommit.get(parent)!).filter(Boolean);
-        return echo + renderKnowledgePreview({ knowledge, revision: hit }, status, fields,
-          options.itemBudget === null ? Infinity : options.itemBudget!, parents, children.get(hit.id) ?? []);
+        const snapshot = knowledgeSnapshots.get(hit.id)!;
+        return echo + renderKnowledgePreview({ knowledge: snapshot.knowledge, revision: hit }, snapshot.status, fields,
+          options.itemBudget === null ? Infinity : options.itemBudget!, snapshot.parents, snapshot.descendants,
+          options.modelFacing ? revision => snapshot.labels.get(revision.id)! : undefined);
       }).map(listingLine);
       const material = options.scope === "session" ? "this session; session knowledge" : options.scope === "project"
         ? "project sessions; project knowledge" : options.scope === "global" ? "all sessions; global knowledge"
@@ -955,7 +1027,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const preview = `preview: ${fields.size === 0 ? "identity only" : fields.size === 1 && fields.has("text") ? "text only" : `fields ${[...fields].join(", ")}`}; omitted fields: ${omitted.join(", ") || "none"}`;
       return page({ items, format, capture, ...(batched ? { queryCap: perQuery } : {}) }, { ...options, ...(batched ? { cap: undefined } : {}),
         maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS },
-        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${KNOWLEDGE_REPRESENTATIVE_RECEIPT}\n${preview}`, [], "search").text;
+        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${KNOWLEDGE_REPRESENTATIVE_RECEIPT}\n${preview}`, "search").text;
     },
     status: (sessionId: number, branch?: string, headTurnId?: number | null): string => {
       const s = session(sessionId), runs = store.listRuns(sessionId);

@@ -41,7 +41,7 @@ function fixture(agent: RunAgent, phase: 'noting' | 'consolidation', dead = fals
 function material(input:Worker) {
   return {kind:input.kind,sessionId:input.sessionId,branch:input.branch,range:input.range,
     prompt:input.prompt,text:input.text,material:input.material,supplied:input.supplied,
-    readKnowledgeCommits:input.readKnowledgeCommits,model:input.model,mode:input.mode,
+    model:input.model,mode:input.mode,
     tools:input.tools.map(({name,description,parameters})=>({name,description,parameters}))};
 }
 async function execute(phase:'noting'|'consolidation',borrowed:boolean,dead:boolean) {

@@ -35,14 +35,14 @@ export class CcForegroundTools {
   private boundTools(projection: CcToolProjection): ToolDefinition[] {
     return projection.memory.tools({ kind: "manual", sessionId: projection.coreSessionId, branch: projection.branch,
       currentTurnId: projection.headTurnId, triggerEntryId: projection.triggerEntryId, entryIds: projection.entryIds,
-      readKnowledgeCommits: [], maxReadChars: CC_MAX_RESULT_CHARS });
+      maxReadChars: CC_MAX_RESULT_CHARS });
   }
 
   private read(projection: CcReadProjection, name: "trace" | "search", input: unknown): string {
     if (projection.binding) return this.boundTools({ memory: projection.memory, ...projection.binding })
       .find(candidate => candidate.name === name)!.execute(input);
     const value = validateReadInput(name, input);
-    const options = { ...value, maxChars: CC_MAX_RESULT_CHARS };
+    const options = { ...value, modelFacing: true, maxChars: CC_MAX_RESULT_CHARS };
     return name === "trace" ? projection.memory.trace(value.address as string, options)
       : projection.memory.search(value.query as string, value.layer as SearchScope | undefined, options);
   }

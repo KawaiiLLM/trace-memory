@@ -20,7 +20,7 @@ function setup(agent: RunAgent = async () => { throw new Error("offline only"); 
 test("33: equivalent JSON call-ID spellings preserve authored sources and exact coverage", () => {
   const { m, sessionId, turn, entry } = setup();
   try {
-    const note = m.tools({ kind: "noting", sessionId, branch: "main", entryIds: [entry.id], readKnowledgeCommits: [],
+    const note = m.tools({ kind: "noting", sessionId, branch: "main", entryIds: [entry.id],
       range: { from: `S${sessionId}/T${turn.id}`, to: `S${sessionId}/T${turn.id}` } }).find(tool => tool.name === "note")!;
     const source = `T${turn.id}#E1@"\\u0061ctual"`;
     expect(m.trace(source)).toContain('command="test"');

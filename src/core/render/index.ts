@@ -539,63 +539,74 @@ export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap =
 // Labels are shown as a JSON array (review 2026-09-08): a joined list cannot tell ["a, b"] from ["a", "b"].
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
 
-export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision): string {
+export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`): string {
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
-  return `[K${knowledge.id}@${r.id}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
 export const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
 // 21a: commit history carries the authored message; the compact automatic knowledge line does not.
 const commitLine = (r: KnowledgeRevision): string =>
   `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)} reason: ${r.reason}`;
-const selectedCommitLine = (r: KnowledgeRevision, fields: ReadonlySet<string>): string => [
-  `  K${r.knowledgeId}@${r.id}`,
+const selectedCommitLine = (r: KnowledgeRevision, fields: ReadonlySet<string>, address = `K${r.knowledgeId}@${r.id}`): string => [
+  `  ${address}`,
   ...(fields.has("status") ? [r.op, r.createdAt] : []),
   ...(fields.has("supports") ? [`${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}`] : []),
   ...(fields.has("topics") && r.topics.length ? [`topics: ${JSON.stringify(r.topics)}`] : []),
   ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
 ].join(" ");
-export const renderCommitHistory = (revisions: KnowledgeRevision[], fields?: ReadonlySet<string>): string =>
-  revisions.length ? `Commits:\n${revisions.map(r => fields ? selectedCommitLine(r, fields) : commitLine(r)).join("\n")}` : "Commits: none";
+export const renderCommitHistory = (revisions: KnowledgeRevision[], fields?: ReadonlySet<string>, address?: (revision: KnowledgeRevision) => string): string => {
+  const title = address ? "History" : "Commits";
+  return revisions.length ? `${title}:\n${revisions.map(r => fields ? selectedCommitLine(r, fields, address?.(r)) : commitLine(r)).join("\n")}` : `${title}: none`;
+};
 
 export function renderKnowledgePreview(value: KnowledgeWithRevision, status: string,
-  fields: ReadonlySet<string>, cap = 80, parents: KnowledgeRevision[] = [], children: KnowledgeRevision[] = []): string {
+  fields: ReadonlySet<string>, cap = 80, parents: KnowledgeRevision[] = [], children: KnowledgeRevision[] = [],
+  address?: (revision: KnowledgeRevision) => string): string {
   const r = value.revision, supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
+  const shown = address ?? ((revision: KnowledgeRevision) => `K${revision.knowledgeId}@${revision.id}`);
   const suffix = [
     ...(fields.has("supports") ? [`${supportLabel}: ${factAddresses(r.supports)}`] : []),
     ...(fields.has("topics") && r.topics.length ? [`topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`status: ${status}`] : []),
     ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
-    ...(fields.has("links") ? [`parents: ${parents.map(parent => `K${parent.knowledgeId}@${parent.id}`).join(", ") || "none"}`, `children: ${children.map(child => `K${child.knowledgeId}@${child.id}`).join(", ") || "none"}`] : []),
+    ...(fields.has("links") ? [`parents: ${parents.map(shown).join(", ") || "none"}`, `children: ${children.map(shown).join(", ") || "none"}`] : []),
   ];
-  return renderPreview(`[K${value.knowledge.id}@${r.id}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] `, r.text,
+  return renderPreview(`[${shown(r)}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] `, r.text,
     suffix.length ? ` · ${suffix.join(" · ")}` : "", cap, fields.has("text"));
 }
 
 export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity,
-  effectiveGrounds: number[] = value.revision.supports, fields?: ReadonlySet<string>, historyLine = false, pathStatus?: string): string {
-  const addresses = (commits: KnowledgeRevision[]) => commits.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none";
+  effectiveGrounds: number[] = value.revision.supports, fields?: ReadonlySet<string>, historyLine = false, pathStatus?: string,
+  address?: (revision: KnowledgeRevision) => string, versionLabel?: string): string {
+  const shown = address ?? ((r: KnowledgeRevision) => `K${r.knowledgeId}@${r.id}`);
+  const addresses = (commits: KnowledgeRevision[]) => commits.map(shown).join(", ") || "none";
   const direct = new Set(value.revision.supports), inherited = effectiveGrounds.filter(id => !direct.has(id));
   if (!fields) {
-    const whole = [renderKnowledge(value),
+    const whole = [renderKnowledge(value, shown(value.revision)),
       ...(value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : []),
       ...(value.revision.supportSemantics === "change" ? [`  inherited lineage supports: ${factAddresses(inherited)}`] : []),
       `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
-    const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] `;
+    const prefix = `[${shown(value.revision)}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] `;
     return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
   }
-  const r = value.revision, prefix = `[K${value.knowledge.id}@${r.id}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] `;
+  const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "";
+  const prefix = `[${shown(r)}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] `;
   const suffix = [
     ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}${fields.has("topics") ? topicList(r.topics) : ""}`,
       ...(r.supportSemantics === "change" ? [`\n  inherited lineage supports: ${factAddresses(inherited)}`] : [])] : []),
     ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`\n  status: ${r.op} ${r.createdAt}${r.actorRole ? `; actor ${r.actorRole}; run R${r.runId}${!r.supports.length ? "; maintenance judgment" : ""}` : ""}`] : []),
     ...(fields.has("status") && pathStatus ? [`\n  status: ${pathStatus}`] : []),
+    ...(address && fields.has("reason") ? [`\n  reason: ${r.reason}`] : []),
     ...(fields.has("links") ? [`\n  parents: ${addresses(parents)}`, `\n  children: ${addresses(children)}`] : []),
-    ...(historyLine ? [`\n${selectedCommitLine(r, fields)}`] : []),
+    ...(historyLine ? [`\n${selectedCommitLine(r, fields, address ? `K${r.knowledgeId}` : undefined)}`] : []),
   ].join("");
-  if (!fields.has("text")) return prefix.trimEnd() + suffix;
-  return renderSemantic(prefix, r.text, suffix, cap);
+  if (!fields.has("text")) return `${address ? `[K${value.knowledge.id}]` : `[${shown(r)}]`}${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}]` + suffix;
+  const rendered = renderSemantic(prefix, r.text, suffix, cap);
+  // A content cap may omit part of the body. Such a preview is never a version handle.
+  return !address || rendered === prefix + r.text + suffix ? rendered
+    : renderSemantic(`[K${value.knowledge.id}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] `, r.text, suffix, cap);
 }
 
 // Lossless lexical tokens: Han characters, other words/numbers, whitespace runs, punctuation.
@@ -655,7 +666,8 @@ export function wordLevelDiff(before: string, after: string): WordDiff {
  * sees"). Weight is the tokens of every inserted and deleted segment across all of those — never
  * zero for a real change, far less than the whole item for a metadata-only one (76 ruling "(a)"); the
  * `K@commit` address itself is never part of the comparison. */
-export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRevision, current: KnowledgeRevision): { text: string; addedTokens: number; removedTokens: number } {
+export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRevision, current: KnowledgeRevision,
+  address = `K${knowledgeId}@${current.id}`): { text: string; addedTokens: number; removedTokens: number } {
   const body = wordLevelDiff(baseline.text, current.text);
   const categoryChanged = knowledgeCategoryGroup(baseline.category) !== knowledgeCategoryGroup(current.category), scopeChanged = baseline.scope !== current.scope;
   const supportsAdded = current.supports.filter(id => !baseline.supports.includes(id));
@@ -664,7 +676,7 @@ export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRe
   const topicsRemoved = baseline.topics.filter(t => !current.topics.includes(t));
   const supportLabel = current.supportSemantics === "change" ? "change supports" : "supports";
   const lines = [
-    `[K${knowledgeId}@${current.id}] [${knowledgeCategoryGroup(current.category)}/${current.scope}] ${body.text}`,
+    `[${address}] [${knowledgeCategoryGroup(current.category)}/${current.scope}] ${body.text}`,
     `  ${supportLabel} added: ${factAddresses(supportsAdded)} removed: ${factAddresses(supportsRemoved)}`,
     ...(categoryChanged ? [`  category: ${knowledgeCategoryGroup(baseline.category)} -> ${knowledgeCategoryGroup(current.category)}`] : []),
     ...(scopeChanged ? [`  scope: ${baseline.scope} -> ${current.scope}`] : []),
@@ -684,8 +696,9 @@ export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRe
 }
 
 export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[], cap = Infinity,
-  fields?: ReadonlySet<string>): string {
-  const text = diffText(a.text, b.text), identity = `[K${a.knowledgeId}@${a.id}..K${b.knowledgeId}@${b.id}]`;
+  fields?: ReadonlySet<string>, address: (revision: KnowledgeRevision) => string = r => `K${r.knowledgeId}@${r.id}`,
+  rangeAddress = `${address(a)}..${address(b)}`): string {
+  const text = diffText(a.text, b.text), identity = `[${rangeAddress}]`;
   if (fields) {
     const prefix = fields.has("text") ? `${identity}\n  text: ` : identity;
     const lines = [
@@ -695,7 +708,7 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
       ...(fields.has("status") && a.scope !== b.scope ? [`  scope: ${a.scope} -> ${b.scope}`] : []),
       ...(fields.has("reason") && a.reason !== b.reason ? [`  reason: ${a.reason} -> ${b.reason}`] : []),
       ...(fields.has("topics") && JSON.stringify(a.topics) !== JSON.stringify(b.topics) ? [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`] : []),
-      renderCommitHistory(revisions, fields),
+      renderCommitHistory(revisions, fields, address),
     ];
     if (!fields.has("text")) return [prefix, ...lines].join("\n");
     const whole = [prefix + text, ...lines].join("\n");
@@ -731,7 +744,7 @@ const EXPAND_LIMIT = 8;
 export const expandList = (addresses: string[]): string => addresses.length <= EXPAND_LIMIT ? addresses.join(", ")
   : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 
-export const KNOWLEDGE_RECENCY_NOTICE = "Larger @commit numbers are newer. For claims about the same object, the newer item takes precedence until maintenance merges them.";
+export const KNOWLEDGE_RECENCY_NOTICE = "Items are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.";
 
 export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision[]): string[] =>
   KNOWLEDGE_CATEGORIES.flatMap(category => {
@@ -741,25 +754,22 @@ export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision
 
 interface RenderedKnowledgeItem { category: KnowledgeCategory; text: string; id: number; commit: number; size: number }
 export interface BudgetedKnowledge {
-  groups: { category: KnowledgeCategory; text: string }[];
+  groups: { category: string; text: string }[];
   receipts: string[];
   cost: number;
   commits: number[];
 }
 
 const orderedKnowledge = (knowledge: KnowledgeWithRevision[], line: (knowledge: KnowledgeWithRevision) => string): RenderedKnowledgeItem[] =>
-  [...knowledge].sort((a, b) => KNOWLEDGE_CATEGORIES.indexOf(knowledgeCategoryGroup(a.revision.category)) - KNOWLEDGE_CATEGORIES.indexOf(knowledgeCategoryGroup(b.revision.category))
-    || a.revision.id - b.revision.id)
+  [...knowledge].sort((a, b) => a.revision.id - b.revision.id)
     .map(value => { const text = line(value); return {
       category: knowledgeCategoryGroup(value.revision.category), text, id: value.knowledge.id, commit: value.revision.id, size: tokens(text) + 1,
     }; });
 
 const knowledgeBody = (items: RenderedKnowledgeItem[]): Omit<BudgetedKnowledge, "receipts"> => ({
-  groups: KNOWLEDGE_CATEGORIES.map(category => ({ category,
-    text: items.filter(item => item.category === category).map(item => item.text).join("\n") })),
-  cost: items.length ? tokens(xmlBlock("knowledge", KNOWLEDGE_RECENCY_NOTICE)) + items.reduce((sum, item) => sum + item.size, 0)
-    + [...new Set(items.map(item => item.category))].reduce((sum, category) => sum + charge([xmlBlock(category, "")]), 0) : 0,
-  commits: KNOWLEDGE_CATEGORIES.flatMap(category => items.filter(item => item.category === category).map(item => item.commit)),
+  groups: items.length ? [{ category: "items", text: items.map(item => item.text).join("\n") }] : [],
+  cost: items.length ? tokens(xmlBlock("knowledge", KNOWLEDGE_RECENCY_NOTICE)) + items.reduce((sum, item) => sum + item.size, 0) : 0,
+  commits: items.map(item => item.commit),
 });
 
 /** Linear rendering and conservative measurement of one complete, stably ordered knowledge pool.
@@ -776,8 +786,7 @@ export function wholeKnowledge(knowledge: KnowledgeWithRevision[], line: (knowle
 export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge,
   budget = "Knowledge capacity", required?: ReadonlySet<number>,
   priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number): BudgetedKnowledge {
-  // Selection is newest-first across categories; presentation stays grouped, oldest-to-newest
-  // within each category. Neither input order, identity number nor timestamps establish recency.
+  // Selection remains newest-first; presentation is a single oldest-first list.
   const ordered = orderedKnowledge(knowledge, line);
   const byCommit = new Map(knowledge.map(value => [value.revision.id, value]));
   const optional = ordered.filter(item => !required?.has(item.commit)).sort((a, b) =>
@@ -787,11 +796,9 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   const receipts = (kept: number) => renderKnowledgeOmissions(optional.slice(kept).map(item => byCommit.get(item.commit)!));
   // Prefix trials need only scalar costs; build grouped text and commit lists after selection.
   const outerCost = tokens(xmlBlock("knowledge", KNOWLEDGE_RECENCY_NOTICE));
-  const categoryCosts = new Map<string, number>(KNOWLEDGE_CATEGORIES.map(category => [category, charge([xmlBlock(category, "")])]));
   const bodyCost = (kept: number) => {
     const items = selected(kept);
-    return items.length ? outerCost + items.reduce((sum, item) => sum + item.size, 0)
-      + [...new Set(items.map(item => item.category))].reduce((sum, category) => sum + categoryCosts.get(category)!, 0) : 0;
+    return items.length ? outerCost + items.reduce((sum, item) => sum + item.size, 0) : 0;
   };
   // Optional omission framing cannot spend required overflow. If it cannot fit, omit it too.
   const emittedReceipts = (kept: number) => required && bodyCost(kept) + charge(receipts(kept))
@@ -809,12 +816,17 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   return { ...body, receipts: emittedReceipts(kept), cost: cost(kept) };
 }
 
-/** Turn start times for the facts being displayed, read once without loading Turn bodies. */
-export type FactTurns = ReadonlyMap<number, string>;
+/** Turn metadata, read once without loading Raw. Plain times also support metadata-free fixtures. */
+export type FactTurns = ReadonlyMap<number, string | { time: string; harness?: string }>;
+const factTurnTime = (turnId: number, turns: FactTurns): string => {
+  const value = turns.get(turnId);
+  if (value === undefined) throw new Error(`missing Turn T${turnId} for fact rendering`);
+  return typeof value === "string" ? value : value.time;
+};
 const factGroupHeader = (turnId: number, turns: FactTurns): string => {
-  const time = turns.get(turnId);
-  if (time === undefined) throw new Error(`missing Turn T${turnId} for fact rendering`);
-  return `[T${turnId}] ${time} (selected facts)`;
+  const value = turns.get(turnId);
+  const harness = typeof value === "object" ? value.harness : undefined;
+  return `[T${turnId}] ${factTurnTime(turnId, turns)} (selected facts)${harness ? ` · session harness: ${harness} (context, not claim attribution)` : ""}`;
 };
 
 /** One representation for injected facts: chronological Turn groups, then ascending fact ids.
@@ -827,7 +839,7 @@ export function factGroupLayout<T extends Pick<Fact, "id" | "turnId">>(facts: re
     const group = groups.get(fact.turnId);
     if (group) group.push(fact); else groups.set(fact.turnId, [fact]);
   }
-  const ordered = [...groups].map(([id, group]) => ({ id, group, header: factGroupHeader(id, turns), time: Date.parse(turns.get(id)!) }));
+  const ordered = [...groups].map(([id, group]) => ({ id, group, header: factGroupHeader(id, turns), time: Date.parse(factTurnTime(id, turns)) }));
   // Native times are ISO timestamps; legacy/unknown times stay explicit and sort last, by Turn id.
   ordered.sort((a, b) => (Number.isFinite(a.time) ? a.time : Infinity) - (Number.isFinite(b.time) ? b.time : Infinity) || a.id - b.id);
   return ordered.flatMap(({ group, header }) => group.sort((a, b) => a.id - b.id)
@@ -866,8 +878,10 @@ export function budgetFacts(facts: Fact[], line: (fact: Fact) => string, remaini
 
 // Tags delimit blocks for the model; the lines inside are trace lines byte for byte, never escaped.
 export const xmlBlock = (tag: string, text: string): string => `<${tag}>\n${text}\n</${tag}>`;
-export const renderKnowledgeBlock = (groups: { category: string; text: string }[]): string => {
-  const blocks = groups.filter((g) => g.text).map((g) => xmlBlock(g.category, g.text));
-  return blocks.length ? `<knowledge>\n${KNOWLEDGE_RECENCY_NOTICE}\n${blocks.join("\n")}\n</knowledge>` : ""; // nothing to inject: no block at all
+export const knowledgeBlockParts = (groups: { category: string; text: string }[], recencyNotice = KNOWLEDGE_RECENCY_NOTICE): string[] => {
+  const lines = groups.filter(group => group.text).map(group => group.text);
+  return lines.length ? [`<knowledge>\n${recencyNotice}\n`, ...lines.flatMap((line, index) => index ? ["\n", line] : [line]), "\n</knowledge>"] : [];
 };
+export const renderKnowledgeBlock = (groups: { category: string; text: string }[], recencyNotice = KNOWLEDGE_RECENCY_NOTICE): string =>
+  knowledgeBlockParts(groups, recencyNotice).join("");
 export const listingLine = (text: string): string => text.replaceAll("\n", " ⏎ ");

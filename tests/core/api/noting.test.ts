@@ -193,8 +193,8 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   ] });
   expect(created.ok).toBe(true);
   const second = turn(first.id, 1), resolve = deferred(), pending = noting(second.id);
-  expect(calls[1]!.readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
-  // 25a: the run freezes the commit its explicit reads are judged against, and supplies no block.
+  expect(calls[1]).not.toHaveProperty("readKnowledgeCommits");
+  // 03 removes read registration; this legacy N material still supplies no knowledge block until 06.
   expect(calls[1]!.material.knowledge).toBeUndefined();
   expect(calls[1]!.text).not.toContain("[K1@1]");
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [
@@ -203,7 +203,7 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   resolve(success([])); const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
   const run = memory.store.getRun(result.runId)!;
-  expect(JSON.parse(run.response!).readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
+  expect(JSON.parse(run.response!)).not.toHaveProperty("readKnowledgeCommits");
   expect(JSON.parse(run.request!)).toEqual(request);
   expect(run.model).toBe("fake-model"); expect(run.promptHash).toMatch(/^[0-9a-f]{64}$/);
   expect(run.request).not.toBe(calls[1]!.text);

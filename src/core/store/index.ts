@@ -4,6 +4,7 @@
 // reuses an id and is not reset per session or project — that is the "global id" the spec asks for.
 
 import { createHash, randomUUID } from "node:crypto";
+import { assignVersionTag, migrateVersionTags } from "./version-tags.ts";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
 import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
@@ -643,8 +644,18 @@ export interface CommittedKnowledgeOp {
 
 export type CommitConsolidationResult =
   | { ok: true; runId: number; committed: CommittedKnowledgeOp[] }
-  | { ok: false; runId: number; problems: string[] };
+  | { ok: false; runId: number; problems: string[]; readerProblems?: string[] };
 
+// Knowledge-only diagnostic seam: validation chooses visible identities once. Human audit
+// keeps commits; model receipts render the same frozen diagnostic with history addresses.
+type KnowledgeAddress = (knowledgeId: number, commitId: number) => string;
+const commitAddress: KnowledgeAddress = (knowledgeId, commitId) => `K${knowledgeId}@${commitId}`;
+class KnowledgeVersionProblem extends Error {
+  readonly describe: (address: KnowledgeAddress) => string;
+  constructor(describe: (address: KnowledgeAddress) => string) {
+    super(describe(commitAddress)); this.describe = describe;
+  }
+}
 
 export interface KnowledgeWithRevision {
   knowledge: Knowledge;
@@ -1176,6 +1187,7 @@ export class Store {
         this.db.exec("DELETE FROM task_failures WHERE phase = 'dreaming'; PRAGMA user_version = 1");
       migrateKnowledgeLineage(this.db, true);
       migrateFactAndKnowledge92(this.db);
+      migrateVersionTags(this.db);
       // The policy is part of the same schema transaction. Concurrent openers serialize at BEGIN;
       // INSERT OR IGNORE preserves an edited existing row and initializes an absent row once.
       this.transaction(() => {
@@ -1984,11 +1996,13 @@ export class Store {
   }
 
   /** Display metadata only: grouping facts must not reread their Turns' Raw bodies per fact. */
-  factTurnTimes(facts: readonly Pick<Fact, "turnId">[]): Map<number, string> {
+  factTurnTimes(facts: readonly Pick<Fact, "turnId">[]): Map<number, { time: string; harness?: string }> {
     const ids = [...new Set(facts.map(f => f.turnId))];
     if (!ids.length) return new Map();
-    return new Map((this.db.prepare("SELECT id, started_at FROM turns WHERE id IN (SELECT value FROM json_each(?))")
-      .all(JSON.stringify(ids)) as { id: number; started_at: string }[]).map(row => [row.id, row.started_at]));
+    return new Map((this.db.prepare(`SELECT t.id, t.started_at, s.host FROM turns t JOIN sessions s ON s.id=t.session_id
+      WHERE t.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as { id: number; started_at: string; host: string }[])
+      .map(row => [row.id, { time: row.started_at,
+        ...(row.host.startsWith("pi:") ? { harness: "Pi agent" } : row.host.startsWith("cc:") ? { harness: "Claude Code" } : {}) }]));
   }
 
   listSessionFacts(sessionId: number): Fact[] {
@@ -2330,6 +2344,35 @@ export class Store {
 
   listKnowledgeRevisions(knowledgeId?: number): KnowledgeRevision[] {
     return this.db.prepare("SELECT * FROM knowledge_revisions WHERE ? IS NULL OR knowledge_id = ? ORDER BY id").all(knowledgeId ?? null, knowledgeId ?? null).map(toKnowledgeRevision);
+  }
+
+  versionTag(knowledgeId: number, commitId: number): string {
+    const row = this.db.prepare("SELECT tag FROM knowledge_version_tags WHERE knowledge_id = ? AND commit_id = ?")
+      .get(knowledgeId, commitId) as { tag: string } | undefined;
+    if (!row) throw new Error(`unknown knowledge version K${knowledgeId}`);
+    return row.tag;
+  }
+
+  versionOrdinal(knowledgeId: number, commitId: number): number {
+    const row = this.db.prepare("SELECT ordinal FROM knowledge_version_tags WHERE knowledge_id = ? AND commit_id = ?")
+      .get(knowledgeId, commitId) as { ordinal: number } | undefined;
+    if (!row) throw new Error(`unknown knowledge version K${knowledgeId}`);
+    return row.ordinal;
+  }
+
+  resolveVersionTag(knowledgeId: number, tag: string): number {
+    if (!/^[a-z]{4,}$/.test(tag)) throw new Error(`invalid knowledge version tag K${knowledgeId}#${tag}`);
+    const row = this.db.prepare("SELECT commit_id FROM knowledge_version_tags WHERE knowledge_id = ? AND tag = ?")
+      .get(knowledgeId, tag) as { commit_id: number } | undefined;
+    if (!row) throw new Error(`unknown knowledge version K${knowledgeId}#${tag}`);
+    return row.commit_id;
+  }
+
+  resolveVersionOrdinal(knowledgeId: number, ordinal: number): number {
+    const row = this.db.prepare("SELECT commit_id FROM knowledge_version_tags WHERE knowledge_id = ? AND ordinal = ?")
+      .get(knowledgeId, ordinal) as { commit_id: number } | undefined;
+    if (!row) throw new Error(`unknown knowledge history K${knowledgeId}@v${ordinal}`);
+    return row.commit_id;
   }
 
   /** The head's Turn ancestry, read in one query instead of one per Turn. The walk below still
@@ -2881,7 +2924,7 @@ export class Store {
   /** Write-base integrity consumes the same resolved graph as every reader. The surrounding
    * BEGIN IMMEDIATE transaction keeps this check and the revision insert atomic. */
   private resolvedBaseProblem(graph: CommitGraph,
-    target: { knowledgeId: number; baseCommit: number }): string | null {
+    target: { knowledgeId: number; baseCommit: number }): KnowledgeVersionProblem | null {
     const current = graph.resolved.filter(revision => revision.knowledgeId === target.knowledgeId);
     if (graph.effective.has(target.baseCommit) && current.some(revision => revision.id === target.baseCommit)) return null;
     const related = new Set<number>();
@@ -2894,10 +2937,12 @@ export class Store {
     // still following merge/split links across identities, but only into what this writer can read.
     const consumingCurrent = graph.current.filter(revision => related.has(revision.id));
     const sameIdentity = graph.current.filter(revision => revision.knowledgeId === target.knowledgeId);
-    const actual = consumingCurrent.length ? consumingCurrent.map(revision => `K${revision.knowledgeId}@${revision.id}`).join(", ")
-      : sameIdentity.length ? sameIdentity.map(revision => `K${revision.knowledgeId}@${revision.id}`).join(", ") : undefined;
-    return `K${target.knowledgeId}@${target.baseCommit}: base is not the latest effective applicable revision; `
-      + (actual ? `current: ${actual}` : "no current version is visible on this branch");
+    const visible = consumingCurrent.length ? consumingCurrent : sameIdentity;
+    return new KnowledgeVersionProblem(address => {
+      const actual = visible.map(revision => address(revision.knowledgeId, revision.id)).join(", ");
+      return `${address(target.knowledgeId, target.baseCommit)}: base is not the latest effective applicable revision; `
+        + (actual ? `current: ${actual}` : "no current version is visible on this branch");
+    });
   }
 
   private collectionAdmits(revision: KnowledgeRevision, projectId: number | undefined, input: ApplicabilityInput): boolean {
@@ -3220,6 +3265,11 @@ export class Store {
 
   baseProblem(knowledgeId: number, base: number, path: KnowledgePath | null, allowArchived = false,
     prepared?: ApplicabilityInput): string | null {
+    return this.baseDiagnostic(knowledgeId, base, path, allowArchived, prepared)?.message ?? null;
+  }
+
+  private baseDiagnostic(knowledgeId: number, base: number, path: KnowledgePath | null, allowArchived = false,
+    prepared?: ApplicabilityInput): KnowledgeVersionProblem | null {
     const revision = this.getKnowledgeRevision(knowledgeId, base);
     let visible = !path, applicable = !path;
     if (path && revision) {
@@ -3233,7 +3283,9 @@ export class Store {
       visible = applicable && this.visibleOnPath(revision, path, input, snapshot);
     }
     if (revision && (revision.op !== "archive" || allowArchived) && visible) return null;
-    const generic = `K${knowledgeId}@${base}: base is missing, archived, inapplicable or outside the writer's scope`;
+    const problem = (suffix: string, current?: KnowledgeRevision) => new KnowledgeVersionProblem(address =>
+      `${address(knowledgeId, base)}${suffix}${current ? address(current.knowledgeId, current.id) : ""}`);
+    const generic = problem(": base is missing, archived, inapplicable or outside the writer's scope");
     // 76: name the writer's current version instead of the generic refusal, so a rejected C or D
     // operation can resubmit against the right address without a blind read. `currentCommit` reuses
     // the same reader-visible resolution every other consumer of this path sees; it is only ever
@@ -3241,9 +3293,9 @@ export class Store {
     if (!revision || !path) return generic;
     const current = this.currentCommit(knowledgeId, path)[0];
     if (current) return current.id === base
-      ? `K${knowledgeId}@${base}: current version is archived`
-      : `K${knowledgeId}@${base} is not current on this branch; current is K${knowledgeId}@${current.id}`;
-    return `K${knowledgeId}@${base}: ${revision.op === "archive" ? "archived" : !applicable ? "inapplicable" : "outside the writer's scope"} on this branch`;
+      ? problem(": current version is archived")
+      : problem(" is not current on this branch; current is ", current);
+    return problem(`: ${revision.op === "archive" ? "archived" : !applicable ? "inapplicable" : "outside the writer's scope"} on this branch`);
   }
 
   /** Direct consuming edges across update, merge, split and archive identities. */
@@ -3308,7 +3360,7 @@ export class Store {
           const role: "consolidation" | "dreaming" | "manual" = trustedDreaming ? "dreaming" : input.run.kind === "consolidation" ? "consolidation" : "manual";
           const outcome = this.applyKnowledgeOperation(op, runId, projectId, sessionId, path, trustedDreaming, role, dreamingPool);
           if (outcome.ok) committed.push(...outcome.value);
-          else throw new Error(outcome.reason);
+          else throw outcome.reason instanceof Error ? outcome.reason : new Error(outcome.reason);
         }
         for (const factId of input.consolidated ?? []) this.markConsolidated(factId, runId, projectId);
         if (input.finalizeResponse) {
@@ -3329,7 +3381,12 @@ export class Store {
       }
       const runId = this.dreamingRunId(run);
       const failed = runId === undefined ? this.recordFailure(run, err) : { runId, problems: [err instanceof Error ? err.message : String(err)] };
-      return { ok: false, ...failed };
+      const readerProblems = err instanceof KnowledgeVersionProblem ? [err.describe((knowledgeId, commitId) => {
+        const row = this.db.prepare("SELECT ordinal FROM knowledge_version_tags WHERE knowledge_id=? AND commit_id=?")
+          .get(knowledgeId, commitId) as { ordinal: number } | undefined;
+        return row ? `K${knowledgeId}@v${row.ordinal}` : `K${knowledgeId}`;
+      })] : undefined;
+      return { ok: false, ...failed, ...(readerProblems ? { readerProblems } : {}) };
     }
   }
 
@@ -3340,12 +3397,12 @@ export class Store {
 
   private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,
     sessionId: number, path: KnowledgePath | null, dreaming = false, role: "consolidation" | "dreaming" | "manual" = "manual",
-    dreamingPool: string | null = null): { ok: true; value: CommittedKnowledgeOp[] } | { ok: false; reason: string } {
+    dreamingPool: string | null = null): { ok: true; value: CommittedKnowledgeOp[] } | { ok: false; reason: string | KnowledgeVersionProblem } {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
     if (op.op === "merge" && (op.absorb.length !== 1 || op.absorb[0]!.baseCommit === op.intoBaseCommit))
       return { ok: false, reason: "merge requires id as the survivor and absorb as exactly one distinct other parent" };
     if (op.op === "merge" && op.intoKnowledgeId > op.absorb[0]!.knowledgeId)
-      return { ok: false, reason: `merge survivor K${op.intoKnowledgeId} is newer than absorbed K${op.absorb[0]!.knowledgeId}; swap them: use K${op.absorb[0]!.knowledgeId}@${op.absorb[0]!.baseCommit} as the survivor and absorb K${op.intoKnowledgeId}@${op.intoBaseCommit}` };
+      return { ok: false, reason: new KnowledgeVersionProblem(address => `merge survivor K${op.intoKnowledgeId} is newer than absorbed K${op.absorb[0]!.knowledgeId}; swap them: use ${address(op.absorb[0]!.knowledgeId, op.absorb[0]!.baseCommit)} as the survivor and absorb ${address(op.intoKnowledgeId, op.intoBaseCommit)}`) };
     const targets = op.op === "create" ? [] : op.op === "merge"
       ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb]
       : [{ knowledgeId: op.knowledgeId, baseCommit: op.baseCommit }];
@@ -3363,9 +3420,9 @@ export class Store {
       if (dreamingPool !== null && base) {
         const owner = placementOwner(this, { revision: base }, writerInput!.metadata);
         if (owner !== dreamingPool)
-          return { ok: false, reason: `K${target.knowledgeId}@${target.baseCommit}: base belongs to ${owner}, outside Dreamer pool ${dreamingPool}` };
+          return { ok: false, reason: new KnowledgeVersionProblem(address => `${address(target.knowledgeId, target.baseCommit)}: base belongs to ${owner}, outside Dreamer pool ${dreamingPool}`) };
       }
-      const bad = this.baseProblem(target.knowledgeId, target.baseCommit, path,
+      const bad = this.baseDiagnostic(target.knowledgeId, target.baseCommit, path,
         revivalSurvivor && target.knowledgeId === revivalTarget!.knowledgeId && target.baseCommit === revivalTarget!.baseCommit, writerInput!.metadata);
       if (bad) return { ok: false, reason: bad };
       const validityProblem = this.resolvedBaseProblem(writerGraph!, target);
@@ -3395,7 +3452,9 @@ export class Store {
         (knowledge_id, parent_id, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role)
         VALUES (?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, text, category, scope,
           JSON.stringify(supports), revisionOp, op.reason, JSON.stringify(topics), runId, op.createdAt, role);
-      return Number(info.lastInsertRowid);
+      const commitId = Number(info.lastInsertRowid);
+      assignVersionTag(this.db, knowledgeId, commitId);
+      return commitId;
     };
     if (op.op === "split") {
       if (op.children.length !== 2) return { ok: false, reason: "split requires exactly two complete children" };
@@ -3495,7 +3554,9 @@ export class Store {
     const processed = new Set(history.map(row => `${row.pool}:${row.revision_id}`));
     return pools.map(([pool, budget]) => {
       const values = versions.get(pool)!;
-      const rendered = new Map(values.map(value => [value.revision.id, renderKnowledge(value)]));
+      const address = (revision: KnowledgeRevision) => `K${revision.knowledgeId}@v${this.versionOrdinal(revision.knowledgeId, revision.id)}`;
+      const tagged = (revision: KnowledgeRevision) => `K${revision.knowledgeId}#${this.versionTag(revision.knowledgeId, revision.id)}`;
+      const rendered = new Map(values.map(value => [value.revision.id, renderKnowledge(value, tagged(value.revision))]));
       const size = tokens(processedBlock(values, value => rendered.get(value.revision.id)!));
       // 76: baseline lookup, segmentation and diff run only for a pending version that has a
       // processed ancestor in this pool; a version with none is shown and weighed whole ("New").
@@ -3503,11 +3564,11 @@ export class Store {
         const baselineId = this.nearestProcessedAncestor(value.revision.id, pool, input.parents, processed);
         const baseline = baselineId === undefined ? undefined : input.metadata.revisions!.get(baselineId);
         if (!baseline) {
-          const material = `New K${value.revision.knowledgeId}@${value.revision.id}:\n${rendered.get(value.revision.id)!}`;
+          const material = `New ${address(value.revision)}:\n${rendered.get(value.revision.id)!}`;
           return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material };
         }
-        const change = renderKnowledgeChange(value.revision.knowledgeId, baseline, value.revision);
-        const material = `Changed K${value.revision.knowledgeId}@${value.revision.id} (from @${baseline.id}):\n${change.text}`;
+        const change = renderKnowledgeChange(value.revision.knowledgeId, baseline, value.revision, address(value.revision));
+        const material = `Changed ${address(value.revision)} (from ${address(baseline)}):\n${change.text}`;
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: change.addedTokens + change.removedTokens, material };
       });
       // 76: an archive shows the body it removed (its parent, since the archive itself stores empty
@@ -3517,15 +3578,15 @@ export class Store {
       const pendingArchives = (archivedVersions.get(pool) ?? []).filter(value => !processed.has(`${pool}:${value.revision.id}`)).map(value => {
         const parent = value.revision.parentId === null ? undefined : input.metadata.revisions!.get(value.revision.parentId);
         if (!parent) throw new Error(`K${value.revision.knowledgeId}@${value.revision.id}: archive has no archived body`);
-        const archivedBody = renderKnowledge({ knowledge: value.knowledge, revision: parent });
+        const archivedBody = renderKnowledge({ knowledge: value.knowledge, revision: parent }, tagged(parent));
         const baselineId = this.nearestProcessedAncestor(value.revision.id, pool, input.parents, processed);
         const baseline = baselineId === undefined ? undefined : input.metadata.revisions!.get(baselineId);
-        const diffLine = baseline && baseline.id !== parent.id ? `\n${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent).text}` : "";
+        const diffLine = baseline && baseline.id !== parent.id ? `\n${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent, address(parent)).text}` : "";
         // 76 review: the archive revision's own supports are the evidence that caused the archive
         // (e.g. F3), distinct from the archived body's own supports already inside `archivedBody`.
         // Show them explicitly, labelled as the archive's evidence, beside the body they retire.
         const evidenceLine = `\n  archive evidence: ${factAddresses(value.revision.supports)}`;
-        const material = `Archived K${value.revision.knowledgeId}@${value.revision.id} (reason: ${value.revision.reason}):\n${archivedBody}${evidenceLine}${diffLine}`;
+        const material = `Archived ${address(value.revision)} (reason: ${value.revision.reason}):\n${archivedBody}${evidenceLine}${diffLine}`;
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(archivedBody), material };
       });
       const pending = [...pendingUpdates, ...pendingArchives].sort((left, right) => left.revisionId - right.revisionId);

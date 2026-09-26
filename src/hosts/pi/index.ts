@@ -1365,15 +1365,11 @@ export default function (pi: ExtensionAPI) {
   const definitions = toolDefinitions.map(definition => ({ ...definition, label: definition.name,
     async execute(_id: string, raw: unknown, _signal: unknown, _update: unknown, context: ExtensionContext) {
       ensure(context); reconcile();
-      const bound = state.sessionId && current?.id ? memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id, triggerEntryId: state.sourceHead,
-        readKnowledgeCommits: [...visible(binding()).knowledgeCommitIds].flatMap(commit => {
-          const revision = memory.store.knowledgeRevision(commit);
-          return revision ? [{ knowledgeId: revision.knowledgeId, commit }] : [];
-        }) }) : null;
+      const bound = state.sessionId && current?.id ? memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id, triggerEntryId: state.sourceHead }) : null;
       if (definition.name === "trace" || definition.name === "search") {
         const input = validateReadInput(definition.name, raw);
         if (bound) return result(bound.find(t => t.name === definition.name)!.execute(input));
-        const options = { ...input, sessionId: state.sessionId, headTurnId: state.head, branch: state.branch };
+        const options = { ...input, modelFacing: true, sessionId: state.sessionId, headTurnId: state.head, branch: state.branch };
         return result(definition.name === "trace" ? memory.trace(input.address as string, options)
           : memory.search((input.queries ?? input.query) as string | string[], input.layer as import("../../core/api/index.ts").SearchScope, options));
       }

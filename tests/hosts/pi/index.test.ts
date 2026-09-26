@@ -43,6 +43,16 @@ test("92 Pi registered tool rejects old fields and writes entry roles through th
   const accepted = await note.execute("good", { facts: [{ text: "User chose the newer policy", source: [source] }] }, undefined, undefined, h.ctx);
   const result = JSON.parse(accepted.content[0].text);
   expect(h.memory.store.getFact(result.factIds[0])!.roles).toEqual([{ role: "user" }]);
+  const write = h.tools.get("memory")!;
+  const created = await write.execute("create", { operations: [{ op: "create", text: "Keep the chosen policy", category: "constraint", scope: "session",
+    topics: [], supports: [`F${result.factIds[0]}`], reason: "policy" }], skipped: [] }, undefined, undefined, h.ctx);
+  const identity = JSON.parse(created.content[0].text).committed[0];
+  expect(identity.version).toBe(`K${identity.knowledgeId}@v1`);
+  const injection = h.memory.injection({ sessionId: 1, branch: "main", headTurnId: 1 });
+  const tag = injection.text.match(new RegExp(`K${identity.knowledgeId}#[a-z]{4,}`))![0];
+  // The registered adapter never traces or registers this injected version before archive.
+  const archived = await write.execute("archive", { operations: [{ op: "archive", id: tag, supports: [`F${result.factIds[0]}`], reason: "replaced" }], skipped: [] }, undefined, undefined, h.ctx);
+  expect(JSON.parse(archived.content[0].text).committed[0].version).toBe(`K${identity.knowledgeId}@v2`);
 });
 
 test("smoke: the default extension loads and registers the Pi hooks, tools, and read-only command", async () => {

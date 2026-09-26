@@ -24,7 +24,7 @@ function setup(normalized = true) {
   const select = (ids: number[], branch = "main") => m.selectEntries(sessionId, branch, ids);
   const note = (kind: "manual" | "noting" = "manual", entryIds?: number[]) => m.tools(kind === "manual"
     ? { kind, sessionId, currentTurnId: turn.id, branch: "main" }
-    : { kind, sessionId, branch: "main", entryIds, range: { from: `S${sessionId}/T${turn.id}`, to: `S${sessionId}/T${turn.id}` }, readKnowledgeCommits: [] }).find(tool => tool.name === "note")!;
+    : { kind, sessionId, branch: "main", entryIds, range: { from: `S${sessionId}/T${turn.id}`, to: `S${sessionId}/T${turn.id}` } }).find(tool => tool.name === "note")!;
   return { m, sessionId, turn, text, dispatch, result, select, note };
 }
 

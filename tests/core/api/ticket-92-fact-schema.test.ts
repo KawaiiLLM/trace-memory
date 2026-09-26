@@ -2,9 +2,10 @@ import { afterEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory } from "../../source-fixture.ts";
-import { renderFact, renderFactPreview } from "../../../src/core/render/index.ts";
+import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
+import { renderFact, renderFactPreview, renderFactGroups } from "../../../src/core/render/index.ts";
 import { toolDefinitions } from "../../../src/core/api/tools.ts";
+import { assignVersionTag } from "../../../src/core/store/version-tags.ts";
 import { CcForegroundTools } from "../../../src/hosts/cc/tools.ts";
 import type { CcCoordinator } from "../../../src/hosts/cc/lifecycle.ts";
 
@@ -77,17 +78,18 @@ test("92: legacy knowledge is found as understanding in search and exact history
       (knowledge_id,parent_id,text,category,scope,supports,support_semantics,op,reason,topics,run_id,created_at,actor_role)
       VALUES (?,NULL,'legacy mechanism needle','mechanism','session',?,'change','create','legacy','[]',?,'now','manual')`)
       .run(knowledgeId, JSON.stringify([factId]), runId).lastInsertRowid);
+    assignVersionTag(f.memory.store.db, knowledgeId, commit);
     const options = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id, category: "understanding" as const };
     expect(f.memory.search("legacy mechanism needle", "knowledge", options)).toContain(`[K${knowledgeId}@${commit}] [understanding/session]`);
     expect(f.memory.trace(`K${knowledgeId}@${commit}`, options)).toContain("[understanding/session]");
     expect(f.memory.search("legacy mechanism needle", "knowledge", { ...options, category: "open" })).not.toContain(`[K${knowledgeId}@${commit}]`);
     expect(f.memory.store.getKnowledgeRevision(knowledgeId, commit)!.category).toBe("mechanism");
     const tools = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" });
-    expect(tools.find(tool => tool.name === "trace")!.execute({ address: `K${knowledgeId}@${commit}` })).toContain("legacy mechanism needle");
+    expect(tools.find(tool => tool.name === "trace")!.execute({ address: `K${knowledgeId}@v1` })).toContain("legacy mechanism needle");
     const archived = JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ operations: [
-      { op: "archive", id: `K${knowledgeId}@${commit}`, supports: [`F${factId}`], reason: "Legacy item retired" }], skipped: [] }));
+      { op: "archive", id: `K${knowledgeId}#${f.memory.store.versionTag(knowledgeId, commit)}`, supports: [`F${factId}`], reason: "Legacy item retired" }], skipped: [] }));
     expect(archived.committed).toHaveLength(1);
-    expect(f.memory.store.getKnowledgeRevision(knowledgeId, archived.committed[0].commit)!.category).toBe("understanding");
+    expect(f.memory.store.getKnowledgeRevision(knowledgeId, f.memory.store.resolveVersionOrdinal(knowledgeId, 2))!.category).toBe("understanding");
   } finally { f.memory.close(); }
 });
 
@@ -111,9 +113,72 @@ test("92: CC adapter writes against the borrowed target and renders legacy categ
       (knowledge_id,parent_id,text,category,scope,supports,support_semantics,op,reason,topics,run_id,created_at,actor_role)
       VALUES (?,NULL,'borrowed legacy reference','term','session',?,'change','create','legacy','[]',?,'now','manual')`)
       .run(knowledgeId, JSON.stringify([id]), runId).lastInsertRowid);
+    assignVersionTag(f.memory.store.db, knowledgeId, commit);
     const searched = await adapter.call("search", { query: "borrowed legacy reference", layer: "knowledge", category: "understanding" }, null);
-    expect(searched.content[0]!.text).toContain(`[K${knowledgeId}@${commit}] [understanding/session]`);
+    expect(searched.content[0]!.text).toContain(`[K${knowledgeId}@v1] [understanding/session]`);
+    const injected = f.memory.injection({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
+    const tag = injected.text.match(new RegExp(`K${knowledgeId}#[a-z]{4,}`))![0];
+    const archived = await adapter.call("memory", { operations: [{ op: "archive", id: tag, supports: [`F${id}`], reason: "retired" }], skipped: [] }, meta);
+    expect(archived.isError).toBeUndefined();
+    expect(JSON.parse(archived.content[0]!.text).committed[0].version).toBe(`K${knowledgeId}@v2`);
+    const unbound = new CcForegroundTools({ toolProjection: async () => ({ memory: f.memory }) } as unknown as CcCoordinator);
+    const historical = await unbound.call("trace", { address: `K${knowledgeId}@v1` }, null);
+    expect(historical.content[0]!.text).toContain(tag);
+    expect(historical.content[0]!.text).not.toMatch(/K\d+@\d+/);
   } finally { f.memory.close(); }
+});
+
+test("92: essential quoted identifiers stay literal and legacy groups name only their session context", () => {
+  const f = fixture("cc:legacy");
+  try {
+    const text = 'Claude Code received the error 「unknown knowledge K12」 and 「missing F9」.';
+    const receipt = JSON.parse(f.note.execute({ facts: [{ text, source: [f.source[0]] }] }));
+    expect(receipt.factIds).toHaveLength(1);
+    expect(f.memory.store.getFact(receipt.factIds[0])!.text).toBe(text);
+    expect(f.memory.store.listFactRelations(receipt.factIds[0])).toEqual([]);
+    const next = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" }).find(t => t.name === "note")!;
+    expect(next.execute({ facts: [{ text: "This adopts K12", source: [f.source[0]] }] })).toContain("must not embed");
+    expect(next.execute({ facts: [{ text, source: [f.source[0]], support: [["F99999", "strong"]] }] })).toContain("rejected:");
+    const legacy = f.memory.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: [{
+      turnId: f.turn.id, category: "observation", actor: "agent", text: "A pasted discussion", source: [`T${f.turn.id}#assistant`], createdAt: "now",
+    }] });
+    if (!legacy.ok) throw new Error(legacy.problems.join("; "));
+    const before = f.memory.store.db.prepare("SELECT * FROM facts WHERE id=?").get(legacy.facts[0]!.id);
+    const metadata = f.memory.store.factTurnTimes(legacy.facts);
+    const shown = renderFactGroups(legacy.facts, fact => renderFact(fact, []), metadata).join("\n");
+    expect(shown).toContain("session harness: Claude Code (context, not claim attribution)");
+    expect(shown).toContain("[observation/agent]");
+    expect(f.memory.store.db.prepare("SELECT * FROM facts WHERE id=?").get(legacy.facts[0]!.id)).toEqual(before);
+  } finally { f.memory.close(); }
+});
+
+test("92: N material carries legacy owner-session harness context without rewriting the old fact", async () => {
+  let inputText = "";
+  const memory = sourceSeededMemory(":memory:", async raw => {
+    const input = raw as NotingAgentInput;
+    inputText = input.text;
+    input.reportRequest({ fixture: "legacy N" });
+    input.tools.find(t => t.name === "note")!.execute({ facts: [] });
+    return { outcome: "success", output: "done", request: { fixture: "legacy N" } };
+  });
+  try {
+    const project = memory.store.createProject({ name: "legacy-N", declaredBy: "mark" });
+    const session = memory.store.createSession({ projectId: project.id, host: "cc:legacy-N", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
+    const old = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "older", assistantText: "Legacy claim", startedAt: "now" });
+    const entries = memory.store.sourcePath(session.id, "main", old.id);
+    const result = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: "now" }, entryIds: entries.map(e => e.id), facts: [{
+      turnId: old.id, text: "Legacy actor episode", category: "observation", actor: "agent", source: [`T${old.id}#assistant`], createdAt: "now",
+    }] });
+    if (!result.ok) throw new Error(result.problems.join("; "));
+    const before = memory.store.db.prepare("SELECT * FROM facts WHERE id=?").get(result.facts[0]!.id);
+    const next = memory.store.appendTurn({ sessionId: session.id, parentTurnId: old.id, kind: "turn", userPrompt: "new question", startedAt: "later" });
+    const noting = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: next.id });
+    expect(noting.outcome, JSON.stringify(noting)).toBe("success");
+    expect(inputText).toContain("Legacy actor episode");
+    expect(inputText).toContain("[observation/agent]");
+    expect(inputText).toContain("session harness: Claude Code (context, not claim attribution)");
+    expect(memory.store.db.prepare("SELECT * FROM facts WHERE id=?").get(result.facts[0]!.id)).toEqual(before);
+  } finally { memory.close(); }
 });
 
 test("92: Store recalculates source roles; caller cannot supply borrowed or reordered labels", () => {

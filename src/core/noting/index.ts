@@ -42,7 +42,6 @@ export interface NotingAgentInput extends AgentControl {
   sessionId: number;
   branch: string;
   range: { from: string; to: string };
-  readKnowledgeCommits: { knowledgeId: number; commit: number }[];
   model: string;
   mode: "fork" | "subagent";
   /** The domain instructions; core owns the prompt file and its hash. */
@@ -299,7 +298,6 @@ function notingMaterial(frozen: { sessionId: number; headEntryId?: number; entri
   const { sessionId, entries, turns, knowledge, facts: applicable } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
-  const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
   // Every entry the map holds is either the retained original or a marked bounded view of ours (29a,
   // 30: one view, and a legacy tier-1 or tier-2 carrier counts as that same view).
   const supplied = entries.filter(entry => !initial.visible.raw.has(entry.nativeId));
@@ -341,7 +339,7 @@ function notingMaterial(frozen: { sessionId: number; headEntryId?: number; entri
   const carried = [...supplied, ...(headEntry && head ? [headEntry] : [])];
   const suppliedMaterial: SuppliedMaterial = { entries: carried.map(e => ({ id: e.id, nativeId: e.nativeId, view: "bounded" as const })),
     factIds: budgeted.factIds, knowledgeCommitIds: [] };
-  return { range, readKnowledgeCommits, views: new Map(carried.map(e => [e.id, view(e)])),
+  return { range, views: new Map(carried.map(e => [e.id, view(e)])),
     material, text, supplied: suppliedMaterial, over: budgeted.over };
 }
 
@@ -358,7 +356,7 @@ export async function runNoting(
   if (!turns.length || !frozen.prepared) return { outcome: "empty" };
   // The material the freeze priced is the material that runs (review 2026-09-08): re-rendering here
   // would restore the historical facts the capacity negotiation trimmed.
-  const { range, readKnowledgeCommits, views, material, text, supplied } = frozen.prepared;
+  const { range, views, material, text, supplied } = frozen.prepared;
   // 29b: the audit still lists every entry of the frozen target — membership is the processing target,
   // not what was injected — but the omission markers are read from the view this run actually sent.
   // An inherited entry without a head supplement sent no view and has no markers of ours to record.
@@ -367,9 +365,9 @@ export async function runNoting(
       toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } };
   const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
     promptHash, model, mode, entryAudit, createdAt: new Date().toISOString() };
-  const binding = tools({ kind: "noting", sessionId, branch, range, entryIds: entries.map(e => e.id), readKnowledgeCommits }, run);
+  const binding = tools({ kind: "noting", sessionId, branch, range, entryIds: entries.map(e => e.id) }, run);
   const agentInput: NotingAgentInput = { kind: "noting", entryIds: entries.map(e => e.id), sessionId, branch, range,
-    readKnowledgeCommits: structuredClone(readKnowledgeCommits), model, mode, prompt, promptHash,
+    model, mode, prompt, promptHash,
     material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit), reviewFeedback,
     tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
@@ -392,7 +390,7 @@ export async function runNoting(
   // hook, before the body leaves — reports none.
   if (result.refused !== undefined) {
     if (result.request == null) return { outcome: "dropped", refused: result.refused };
-    recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
+    recordAttempt(run, result, mode, { toolCalls: binding.sequence, fetched: binding.fetched,
       ...(binding.notingNearAudit ? { notingNearReview: binding.notingNearAudit } : {}), problems: [String(result.output)] });
     return { outcome: "dropped", refused: result.refused, runId: store.recordRun({ ...run, outcome: "failure" }).id };
   }
@@ -405,7 +403,7 @@ export async function runNoting(
     : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
     : requestMissing(result) ? ["runAgent must return the exact provider request"]
     : incomplete ? [NOTING_INCOMPLETE] : binding.problems;
-  recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
+  recordAttempt(run, result, mode, { toolCalls: binding.sequence, fetched: binding.fetched,
     ...(binding.committed ? { diagnostics: binding.committed.diagnostics } : {}),
     ...(binding.notingNearAudit ? { notingNearReview: binding.notingNearAudit } : {}), problems });
   if (binding.committed) {
