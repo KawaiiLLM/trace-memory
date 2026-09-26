@@ -535,6 +535,9 @@ test.each(["success", "failure"] as const)("92: invalid knowledge slot is correc
     input.reportRequest({ messages: ["corrected"] });
     expect(tool.execute({ operations: [{ ...create, slot: "M1" }], skipped: [] })).toContain("held: M1");
     expect(JSON.parse(tool.execute({ operations: [], skipped: [] })).held).toContain("M1");
+    expect(memory.store.listSessionFacts(s.id)).toEqual([]);
+    expect(memory.store.currentKnowledge()).toEqual([]);
+    expect(memory.store.sourcePath(s.id, "main", t.id).every(entry => !memory.store.entryNoted(entry.id))).toBe(true);
     return { outcome, output: outcome === "failure" ? "provider failed after correction" : "completed", request: { messages: ["last"] } };
   });
   const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
@@ -544,11 +547,13 @@ test.each(["success", "failure"] as const)("92: invalid knowledge slot is correc
   expect(run.outcome).toBe(outcome);
   expect(JSON.parse(run.request!)).toEqual({ messages: ["last"] });
   const audit = JSON.parse(run.response!);
+  expect(audit.problems).toEqual(outcome === "failure" ? ["provider failed after correction"] : []);
   expect(audit.toolCalls).toHaveLength(4); // note plus three memory calls, including rejection and correction
   expect(audit.toolCalls.map((call: { result: string }) => call.result)).toEqual(expect.arrayContaining([expect.stringContaining("rejected: M1"), expect.stringContaining("held: M1")]));
   expect(memory.store.listSessionFacts(s.id).map(fact => fact.text)).toEqual(outcome === "success" ? ["The user chose pnpm"] : []);
   expect(memory.store.currentKnowledge().map(item => item.revision.text)).toEqual(outcome === "success" ? ["Use pnpm"] : []);
-  expect(memory.store.sourcePath(s.id, "main", t.id).every(entry => memory.store.entryNoted(entry.id))).toBe(outcome === "success");
+  for (const entry of memory.store.sourcePath(s.id, "main", t.id))
+    expect(memory.store.entryNoted(entry.id)).toBe(outcome === "success");
 });
 
 
@@ -1828,10 +1833,10 @@ test("64c: the knowledge cap remains hard and recency, not category, selects who
   expect(t.id).toBeGreaterThan(0);
 });
 
-// 92 §8 retires C's independent fact queue. N's oldest contiguous Raw prefix across Turns
+// 92 §8's “C删掉” retires C's independent fact queue. N's oldest contiguous Raw prefix across Turns
 // remains pinned by 20b above and boundary.test.ts's two-Turn capacity/membership cases.
 
-// 92 §8 retires C's separate fact-processing marks: late facts no longer create a C queue.
+// 92 §8's “C删掉” retires C's separate fact-processing marks: late facts no longer create a C queue.
 // The frozen-N late-entry fence stays in 18b; D late-version processing is pinned above.
 
 test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added after it was captured, even though they are on-path", async () => {
@@ -1847,7 +1852,7 @@ test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added 
   expect(calls[0]!.entryIds).toEqual([entry1.id]); // the later on-path entry stays outside the frozen target
   expect(hydrate(memory.pendingEntries(s.id, "main", t2.id), memory.store).map(e => e.id)).toEqual([entry2.id]); // it remains pending
 
-  // 92 §8 replaces C's frozen fact-id set with N's exact entry boundary above; the
+  // 92 §8's “C删掉” replaces C's frozen fact-id set with N's exact entry boundary above; the
   // independently frozen D revision range is exercised by the late-version case above.
 });
 
@@ -2503,8 +2508,10 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
   const untouched = memory.dream(target);
   await dreamingStarted;
   expect(memory.store.getClaim(s.id, "noting")).not.toBeNull();
-  expect(memory.store.getClaim(s.id, "dreaming")).not.toBeNull();
-  expect(memory.store.openDreamingRange(s.id, "main")).not.toBeNull();
+  const dreamClaim = memory.store.getClaim(s.id, "dreaming");
+  const dreamRange = memory.store.openDreamingRange(s.id, "main");
+  expect(dreamClaim).not.toBeNull();
+  expect(dreamRange).not.toBeNull();
 
   controller.abort();
   releaseNoting();
@@ -2514,7 +2521,8 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
   expect(memory.store.listSessionFacts(s.id).map(f => f.text)).toEqual(["D's independent evidence"]);
   expect(result.outcome).not.toBe("success");
   expect(memory.store.getClaim(s.id, "noting")).toBeNull();
-  expect(memory.store.getClaim(s.id, "dreaming")).not.toBeNull();
+  expect(memory.store.getClaim(s.id, "dreaming")).toEqual(dreamClaim);
+  expect(memory.store.openDreamingRange(s.id, "main")).toEqual(dreamRange);
   releaseDreaming();
   expect((await untouched).outcome).toBe("success");
   expect(memory.store.getClaim(s.id, "dreaming")).toBeNull();
@@ -2535,10 +2543,10 @@ test("28 amendment 3: a signal already aborted at admission cancels that task be
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0); // nothing advanced
 });
 
-// 92 §8 retires the C fact target and C fork fallback. The live exact Raw entry
+// 92 §8's “C删掉” retires the C fact target and C fork fallback. The live exact Raw entry
 // membership/capacity fence remains in 27 amendment 6 above; D uses revision ranges.
 
-// 92 §8 retires C's fallback. N's cancelled refusal/re-admission fence remains
+// 92 §8's “C删掉” retires C's fallback. N's cancelled refusal/re-admission fence remains
 // in 27: cancellation between refusal and re-admission above.
 
 
