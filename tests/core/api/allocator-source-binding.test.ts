@@ -9,17 +9,20 @@ function fixture(manual = false, count = 1) {
   const t = m.store.appendTurn({ sessionId: s.id, userPrompt: null, assistantText: "source", kind: "turn", startedAt: time });
   const append = (nativeId: string) => m.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId, turnId: t.id, role: "assistant", text: "source " + nativeId, raw: "", calls: [] });
   const entries = [append("a"), append("b")];
-  const context = manual ? { kind: "manual" as const, sessionId: s.id, branch: "main", currentTurnId: t.id }
-    : { kind: "noting" as const, sessionId: s.id, branch: "main", entryIds: entries.map(e => e.id), range: { from: `S${s.id}/T${t.id}`, to: `S${s.id}/T${t.id}` } };
-  const receipt = JSON.parse(m.tools(context).find(t => t.name === "note")!.execute({ facts: Array.from({ length: count }, (_, i) => ({ category: "observation", actor: "user", text: `optional fact ${i}`, source: [`T${t.id}#assistant`] })) }));
-  expect(receipt.factIds).toHaveLength(count);
-  const facts = (receipt.factIds as number[]).map(id => m.store.getFact(id)!);
+  // Historical ambiguous role aliases remain readable. New N input no longer accepts these
+  // aliases; seed their original persisted shape through the Store, not the live tool protocol.
+  const receipt = m.store.commitNotingRun({ run: { kind: manual ? "manual" : "noting", sessionId: s.id, branch: "main", createdAt: time },
+    ...(manual ? {} : { entryIds: entries.map(e => e.id) }), facts: Array.from({ length: count }, (_, i) => ({ turnId: t.id,
+      category: "observation", actor: "user", text: `optional fact ${i}`, source: [`T${t.id}#assistant`], entryIds: entries.map(e => e.id), createdAt: time })) });
+  if (!receipt.ok) throw new Error(receipt.problems.join("; "));
+  const facts = receipt.facts;
+  expect(facts).toHaveLength(count);
   for (const f of facts) expect(m.store.factEntries(f.id)).toEqual(entries.map(e => e.id));
-  expect(m.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "consolidation", createdAt: time }, operations: [], consolidated: receipt.factIds }).ok).toBe(true);
+  expect(m.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "consolidation", createdAt: time }, operations: [], consolidated: facts.map(fact => fact.id) }).ok).toBe(true);
   const compact = () => { const r = m.compact(s.id, "main", t.id); if ("native" in r) throw new Error(r.reason); return r; };
   return { m, s, t, entries, facts, append, compact };
 }
-for (const missing of [false, true]) test(`real note same-address binding: missing=${missing}`, () => {
+for (const missing of [false, true]) test(`historical note same-address binding: missing=${missing}`, () => {
   const f = fixture();
   try {
     if (missing) f.m.store.db.prepare("DELETE FROM fact_sources WHERE fact_id = ? AND entry_id = ?").run(f.facts[0]!.id, f.entries[0]!.id);
@@ -76,11 +79,12 @@ for (const damage of ["none", "missing", "uncovered", "required"] as const) test
       calls: [{ ordinal: call.ordinal, name: "bash", callId: "call", status: "success", ...(role === "assistant" ? { input: "true" } : { result: "passed" }) }] });
     const tool = [entry("call", "assistant"), entry("result", "toolResult")];
     const ids = [...f.entries, ...tool].map(e => e.id);
-    const receipt = JSON.parse(f.m.tools({ kind: "noting", sessionId: f.s.id, branch: "main", entryIds: ids,
-      range: { from: `S${f.s.id}/T${f.t.id}`, to: `S${f.s.id}/T${t.id}` } })
-      .find(t => t.name === "note")!.execute({ facts: [{ category: "observation", actor: "user", text: "cross Turn tool fact", source: [`T${f.t.id}#assistant`, `T${t.id}#t${call.ordinal}`] }] }));
-    expect(receipt.factIds).toHaveLength(1);
-    const fact = f.m.store.getFact(receipt.factIds[0])!;
+    const receipt = f.m.store.commitNotingRun({ run: { kind: "noting", sessionId: f.s.id, branch: "main", createdAt: time }, entryIds: ids,
+      facts: [{ turnId: f.t.id, category: "observation", actor: "user", text: "cross Turn tool fact",
+        source: [`T${f.t.id}#assistant`, `T${t.id}#t${call.ordinal}`], entryIds: ids, createdAt: time }] });
+    if (!receipt.ok) throw new Error(receipt.problems.join("; "));
+    expect(receipt.facts).toHaveLength(1);
+    const fact = receipt.facts[0]!;
     expect(f.m.store.factEntries(fact.id)).toEqual(ids);
     if (damage !== "required") expect(f.m.store.commitConsolidationRun({ run: { sessionId: f.s.id, branch: "main", kind: "consolidation", createdAt: time }, operations: [], consolidated: [fact.id] }).ok).toBe(true);
     if (damage === "missing") f.m.store.db.prepare("DELETE FROM fact_sources WHERE fact_id = ? AND entry_id = ?").run(fact.id, tool[0]!.id);

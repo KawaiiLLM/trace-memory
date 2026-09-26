@@ -29,7 +29,8 @@ test("92: one note schema derives ordered entry roles and original harness, not 
   const f = fixture();
   try {
     const schema = (toolDefinitions.find(t => t.name === "note")!.parameters.properties as any).facts.items;
-    expect(Object.keys(schema.properties)).toEqual(["text", "source", "support", "negate"]);
+    expect(Object.keys(schema.properties)).toEqual(["slot", "text", "source", "support", "negate"]);
+    expect(schema.properties.slot.description).toContain("N only");
     const result = JSON.parse(f.note.execute({ facts: [{ text: "User proposed A; Pi agent reported B; tool returned C.", source: f.source }] }));
     expect(result.factIds).toHaveLength(1);
     const fact = f.memory.store.getFact(result.factIds[0])!;
@@ -159,6 +160,7 @@ test("92: N material carries legacy owner-session harness context without rewrit
     inputText = input.text;
     input.reportRequest({ fixture: "legacy N" });
     input.tools.find(t => t.name === "note")!.execute({ facts: [] });
+    input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "done", request: { fixture: "legacy N" } };
   });
   try {

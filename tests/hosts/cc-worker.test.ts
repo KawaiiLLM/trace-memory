@@ -1085,11 +1085,10 @@ test("manual catchup drains bounded Noting but leaves below-threshold facts and 
     const input = raw as NotingAgentInput | ConsolidationAgentInput; phases.push(input.kind);
     admissions.push({ kind: input.kind, model: input.model, thinking: input.subagentThinkingLevel });
     if (input.kind === "noting") {
-      const facts = input.material.entries.map((entry, index) => ({ category: "observation" as const, actor: "user" as const,
-        text: `Observed catchup item ${entry.id}.`, source: [entry.view.match(/\[T\d+#E\d+/)![0].slice(1)] }));
+      const facts = input.material.entries.map((entry, index) => ({ text: `Observed catchup item ${entry.id}.`, source: [entry.view.match(/\[T\d+#E\d+/)![0].slice(1)] }));
       const note = input.tools.find(tool => tool.name === "note")!, batch = { facts };
-      const feedback = input.reviewFeedback(note.execute(batch));
-      if (feedback) { input.reportRequest({ exact: true }); note.execute(batch); }
+      note.execute(batch);
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     } else {
       const batch = { operations: [], skipped: input.range.facts.map(fact => ({ fact: `F${fact.id}`, because: "Synthetic test fact." })) };
       const write = input.tools.find(tool => tool.name === "memory")!;
@@ -1203,10 +1202,11 @@ test("86: catchup retries C after a committed write without rolling back its kno
     const input = raw as NotingAgentInput | ConsolidationAgentInput;
     if (input.kind === "noting") {
       const entry = input.material.entries[0]!;
-      const batch = { facts: [{ category: "observation", actor: "user", text: "A durable synthetic observation.",
+      const batch = { facts: [{ text: "A durable synthetic observation.",
         source: [entry.view.match(/\[T\d+#E\d+/)![0].slice(1)] }] };
       const note = input.tools.find(tool => tool.name === "note")!;
-      if (input.reviewFeedback(note.execute(batch))) { input.reportRequest({ exact: true }); note.execute(batch); }
+      note.execute(batch);
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     } else {
       input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create",
         text: "Committed before terminal failure.", category: "reference", scope: "session", topics: [],

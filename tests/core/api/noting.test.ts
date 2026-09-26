@@ -33,8 +33,8 @@ function open(config: ConfigOverride = {}) {
     if (result.request !== undefined) input.reportRequest(result.request);
     if (result.noteInput !== undefined) {
       const note = input.tools.find((t) => t.name === "note")!;
-      const receipt = note.execute(result.noteInput);
-      if (input.reviewFeedback(receipt)) { input.reportRequest(result.request); note.execute(result.noteInput); }
+      note.execute(result.noteInput);
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     }
     return result;
   }, config);

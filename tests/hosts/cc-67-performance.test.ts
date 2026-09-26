@@ -135,8 +135,8 @@ async function fullChain(entries: number, due: boolean) {
     if (task.kind === "noting") {
       const input = task as NotingAgentInput, note = input.tools.find(tool => tool.name === "note")!;
       const batch = { facts: [] };
-      const feedback = input.reviewFeedback(note.execute(batch));
-      if (feedback) { input.reportRequest({ exact: true }); note.execute(batch); }
+      note.execute(batch);
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     }
     return { outcome: "success", output: "synthetic worker", audit: { available: false, reason: "deterministic fixture" } };
   });

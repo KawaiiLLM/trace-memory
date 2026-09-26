@@ -22,7 +22,7 @@ export const call = (id: string, name: string, args: unknown, tokens = usage()) 
 export const broken = () => new Response(JSON.stringify({ error: { message: "provider exploded" } }), { status: 500, headers: { "content-type": "application/json" } });
 
 /** Tell the child's requests from the parent's by the production prompt they carry. */
-export const worker = (body: Body, phase = "Noting") => JSON.stringify(body).includes(`${phase} (${phase === "Noting" ? "fact" : "knowledge"} extraction)`);
+export const worker = (body: Body, phase = "Noting") => JSON.stringify(body).includes(phase === "Noting" ? "Noting (facts and knowledge)" : `${phase} (knowledge extraction)`) ;
 export const toolResults = (body: Body) => (body.messages ?? []).filter((m: Body) => m.role === "tool").length;
 /** 26a: whether this body already carries the child's own `note` submission, so a scripted Noter
  * answers with its closing reply instead of submitting twice. Unlike `toolResults`, an inherited
@@ -30,7 +30,7 @@ export const toolResults = (body: Body) => (body.messages ?? []).filter((m: Body
 export const submitted = (body: Body) => (body.messages ?? []).some((m: Body) =>
   (m.tool_calls ?? []).some((c: Body) => c.function?.name === "note"));
 
-export const noteBatch = { facts: [{ category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: ["T1#user"] }] };
+export const noteBatch = { facts: [{ text: "用 pnpm，不要 npm", source: ["T1#E1"] }] };
 export const memoryBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
 
 /** A real Pi parent session that really runs extensions: `DefaultResourceLoader` accepts inline

@@ -66,7 +66,7 @@ async function execute(phase:'noting'|'consolidation',borrowed:boolean,dead:bool
       expect(badExecutor).toContain('rejected:');checks.push('executor Raw citation rejected');
       const batch={facts:[{category:'decision',actor:'user',text:'Recorded target statement',source:[`T${f.old.id}#user`]}]};
       let receipt=note.execute(batch);
-      if(input.kind==='noting' && input.reviewFeedback(receipt)){input.reportRequest({offlineAudit:true,review:true});receipt=note.execute(batch);}
+      input.tools.find(t=>t.name==='memory')!.execute({operations:[],skipped:[]});
       expect(receipt).not.toContain('rejected:');
     } else {
       const write=input.tools.find(t=>t.name==='memory')!;

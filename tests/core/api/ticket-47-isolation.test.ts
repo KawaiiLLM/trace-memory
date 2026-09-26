@@ -31,8 +31,9 @@ test("47: head and rewind N/C material and eligibility ignore sibling-only and t
     if ((raw as { kind: string }).kind === "noting") {
       const input = raw as NotingAgentInput;
       const note = input.tools.find(tool => tool.name === "note")!;
-      const receipt = note.execute({ facts: [{ category: "observation", actor: "user", text: "shared durable rule", source: [source] }] });
-      captures.set(`${key}:N`, { text: input.text, material: structuredClone(input.material), feedback: input.reviewFeedback(receipt) });
+      const receipt = note.execute({ facts: [{ text: "shared durable rule", source: [source] }] });
+      expect(receipt).toContain("held:");
+      captures.set(`${key}:N`, { text: input.text, material: structuredClone(input.material), hasReviewFeedback: "reviewFeedback" in input });
       return cancelled;
     }
     if ((raw as { kind: string }).kind === "consolidation") {
@@ -115,7 +116,7 @@ test("47: head and rewind N/C material and eligibility ignore sibling-only and t
   for (const name of Object.keys(targets)) {
     const notingCapture = captures.get(`before:${name}:N`)!;
     const consolidationCapture = captures.get(`before:${name}:C`)!;
-    expect(notingCapture.feedback).toContain("NEAR:");
+    expect(notingCapture.hasReviewFeedback).toBe(false);
     expect(consolidationCapture.text).toContain("<knowledge>");
     expect(consolidationCapture.text).not.toMatch(/\b(?:NEAR|CLOSER)\b/);
     expect(consolidationCapture.hasReviewFeedback).toBe(false);

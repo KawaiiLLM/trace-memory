@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { type Fact, type Turn } from "../model/index.ts";
 import type { Store, RunInput, SourceEntry, SourceEntryMeta } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
-import { reviewFeedback, toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
-import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
+import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
+import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskBoundary, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderFact, renderEntryIndex, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
 import { budgetMaterial, notingText, BLOCK, FACTS_TITLE, RAW_TITLE, SOURCES_TITLE, type NotingMaterial } from "../render/material.ts";
@@ -57,9 +57,9 @@ export interface NotingAgentInput extends AgentControl {
   supplied: SuppliedMaterial;
   /** The view versions, budgets and omissions core records for this batch. */
   entryAudit: EntryAudit;
-  /** Read a note receipt's user-role NEAR feedback for delivery before the next provider request. */
-  reviewFeedback(toolResult: string): string | undefined;
   tools: ToolDefinition[];
+  /** A host schema refusal must invalidate the same held slot even when execute was not reached. */
+  reportToolRejection(id: string, name: "note" | "memory", input: unknown, reason: string): void;
   /** Host-only: a proven later model turn acknowledges review delivery without fabricating an audit
    * payload. This is not a model-facing tool or argument. A native boundary calls this or
    * reportRequest exactly once, never both. */
@@ -109,7 +109,7 @@ export const NOTING_MEMBERSHIP = "Noting membership: the frozen batch is no long
  * a `note` call, `note({facts: []})` included; final prose is never read as an implicit empty
  * submission. The run is recorded with its usage under the existing `failure` outcome and advances no
  * entry progress, so the same entries stay pending for the next admission. */
-export const NOTING_INCOMPLETE = "incomplete Noting: the run ended without calling note, so nothing was submitted; call note({facts: []}) to complete an empty batch. The selected entries stay pending.";
+export const NOTING_INCOMPLETE = "incomplete Noting: explicitly call both note({facts: []}) and memory({operations: [], skipped: []}) even for empty output. The selected entries stay pending.";
 
 /** The pending entries one task's boundary admits, and the exact-membership form when it has one.
  * A manual catchup (18b) freezes an entry-id boundary so later arrivals never join this target.
@@ -368,14 +368,14 @@ export async function runNoting(
   const binding = tools({ kind: "noting", sessionId, branch, range, entryIds: entries.map(e => e.id) }, run);
   const agentInput: NotingAgentInput = { kind: "noting", entryIds: entries.map(e => e.id), sessionId, branch, range,
     model, mode, prompt, promptHash,
-    material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit), reviewFeedback,
-    tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
+    material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit),
+    tools: binding.tools, reportToolRejection: binding.reportToolRejection,
+    acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
   try { result = await runAgent(agentInput); }
   catch (error) { result = agentException(error); }
-  finally { binding.close(); }
   // A direct facade close may dispose before the provider settles; never access that store.
-  if (store.closed) return binding.committed ? { outcome: "success", ...binding.committed } : { outcome: "dropped" };
+  if (store.closed) { binding.close(); return { outcome: "dropped" }; }
   // 27c: the host would not run this frozen task in the mode it was admitted for (its fork was
   // refused at the launch, by the host's gate or by the provider's context limit) and admits it once
   // more itself. Nothing was committed, so the refusal goes back to the host unread.
@@ -389,28 +389,29 @@ export async function runNoting(
   // refusal that sends nothing — a launch that never started, a gate that rejects inside the payload
   // hook, before the body leaves — reports none.
   if (result.refused !== undefined) {
+    binding.close();
     if (result.request == null) return { outcome: "dropped", refused: result.refused };
     recordAttempt(run, result, mode, { toolCalls: binding.sequence, fetched: binding.fetched,
-      ...(binding.notingNearAudit ? { notingNearReview: binding.notingNearAudit } : {}), problems: [String(result.output)] });
+      problems: [String(result.output)] });
     return { outcome: "dropped", refused: result.refused, runId: store.recordRun({ ...run, outcome: "failure" }).id };
   }
   // 26a: the run ended normally, committed nothing and had nothing rejected. That is incomplete, not
   // an implicit empty submission: the attempt and its usage are recorded under the existing `failure`
   // outcome and no entry is marked processed. A provider failure or a cancellation keeps its own.
-  const incomplete = !binding.committed && result.outcome === "success" && !requestMissing(result) && !binding.problems.length;
-  const problems = binding.committed
-    ? (result.outcome === "success" ? (requestMissing(result) ? ["runAgent must return the exact provider request after commit"] : []) : [`provider ${result.outcome === "cancelled" ? "cancelled" : "failed"} after commit: ${String(result.output)}`])
-    : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
+  if (binding.cancelled && result.outcome === "success") result = { ...result, outcome: "cancelled", output: "Noter cancelled before terminal publication" };
+  const incomplete = result.outcome === "success" && binding.incomplete;
+  const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)]
     : requestMissing(result) ? ["runAgent must return the exact provider request"]
-    : incomplete ? [NOTING_INCOMPLETE] : binding.problems;
-  recordAttempt(run, result, mode, { toolCalls: binding.sequence, fetched: binding.fetched,
-    ...(binding.committed ? { diagnostics: binding.committed.diagnostics } : {}),
-    ...(binding.notingNearAudit ? { notingNearReview: binding.notingNearAudit } : {}), problems });
-  if (binding.committed) {
-    const after = updateCommitted(store, binding.committed.runId, run, problems);
-    return { outcome: "success", ...binding.committed, ...(after.length ? { problems: after } : {}) };
-  }
-  const outcome = result.outcome !== "success" ? result.outcome : requestMissing(result) || incomplete ? "failure" : "bounced";
-  return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id,
-    ...(incomplete ? { incompleteHeadEntryId: entries[0]!.id } : {}) };
+    : [...binding.problems, ...(incomplete ? [NOTING_INCOMPLETE] : [])];
+  recordAttempt(run, result, mode, { toolCalls: binding.sequence, fetched: binding.fetched, problems });
+  try {
+    if (result.outcome === "success" && !problems.length) {
+      const published = binding.finalize();
+      return published.ok ? { outcome: "success", runId: published.runId, facts: published.facts, diagnostics: [] }
+        : { outcome: "failure", runId: published.runId, problems: published.problems };
+    }
+    const outcome = result.outcome !== "success" ? result.outcome : requestMissing(result) || incomplete ? "failure" : "bounced";
+    return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id,
+      ...(incomplete ? { incompleteHeadEntryId: entries[0]!.id } : {}) };
+  } finally { binding.close(); }
 }

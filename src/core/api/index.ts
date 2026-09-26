@@ -60,7 +60,6 @@ export interface TraceMemoryConfig {
     batchTokens: number;
     triggerTokens: number;
     /** Character-bigram Jaccard threshold for automatic same-session fact review. */
-    nearThreshold: number;
     /** Tool rounds a run may take before it fails; 0 = unlimited (the model stops when it stops). */
     maxToolRounds: number;
   };
@@ -117,7 +116,6 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     forkModeDefault: false,
     batchTokens: 10_000,
     triggerTokens: 10_000,
-    nearThreshold: 0.40,
     maxToolRounds: 0,
   },
   dreaming: { triggerTokens: DEFAULT_DREAMING_TRIGGER_TOKENS, maxToolRounds: 0, timeoutMs: 600_000 },
@@ -167,6 +165,7 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   // silently. No file is rewritten and no request is normalized.
   "consolidation.subagentModeDefault": "use consolidation.forkModeDefault (the inverse boolean: true means fork)",
   "consolidation.knowledgeTokens": "remove it and use Settings to edit the bound database's Global, Project and Session Knowledge budgets",
+  "noting.nearThreshold": "remove it; Noting lexical NEAR review no longer exists",
   "consolidation.nearThreshold": "remove it; Consolidation review cues and lexical NEAR selection no longer exist",
   // Ticket 23: the stdout/stderr branch they budgeted reads a result shape Pi never produces, so they
   // were never effective on any Pi run; the uniform entry rule replaces them. Ticket 30 renamed the
@@ -265,8 +264,6 @@ export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
     const name = `${section}.${key}`;
     if (key.endsWith("ModeDefault")) {
       if (typeof value !== "boolean") throw new Error(`Invalid ${name}: expected boolean`);
-    } else if (key === "nearThreshold") {
-      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) throw new Error(`Invalid ${name}: expected a similarity between 0 and 1`);
     } else if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "maxToolRounds" ? 0 : 1)) {
       throw new Error(`Invalid ${name}: expected ${key === "maxToolRounds" ? "a nonnegative" : "a positive"} safe integer`);
     }
@@ -941,7 +938,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       Object.assign(run, store.bindRunOrigin(run, origin));
       if (phase === "dreaming") Object.assign(run, store.bindDreamingRun(run));
       const binding = bindTools(store, read, input.maxReadChars === undefined ? context : { ...context, maxReadChars: input.maxReadChars },
-        run, consolidation, dreaming, cfg.noting.nearThreshold);
+        run, consolidation, dreaming);
       task.close = binding.close;
       return binding;
     };

@@ -138,8 +138,10 @@ const parsedNoteResult = (conversation: Conversation): Record<string, unknown> |
 };
 /** A NEAR review receipt is a successful tool result but not a business commit. */
 export const noteCommitted = (conversation: Conversation): boolean => Array.isArray(parsedNoteResult(conversation)?.factIds);
+const memoryUsed = (conversation: Conversation) => conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "memory");
+const emptyMemoryReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-empty", name: "memory", arguments: { operations: [], skipped: [] } }] });
 export const emptyNote = (conversation: Conversation): Reply | undefined =>
-  conversation.systemPrompt?.startsWith("# Noting") && !latestNoteResult(conversation) ? emptyNoteReply() : undefined;
+  conversation.systemPrompt?.startsWith("# Noting") ? !latestNoteResult(conversation) ? emptyNoteReply() : !memoryUsed(conversation) ? emptyMemoryReply() : undefined : undefined;
 
 export function host(config: Record<string, unknown> = {}, options: { native?: NativeSource; fetch?: boolean; extension?: typeof extension; inflight?: () => number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-host-"));
@@ -379,8 +381,8 @@ export function notingFact(conversation: Conversation) {
   const input = String(conversation.messages[0]!.content);
   const address = /S(\d+)\/T(\d+)/.exec(input)!;
   const source = /\[(T\d+#E\d+@text)\] (?:user|assistant):/.exec(input)?.[1] ?? `T${address[2]}#E1`;
-  const previous = latestNoteResult(conversation), review = parsedNoteResult(conversation)?.feedback;
-  if (previous && (!review || typeof review !== "object")) return reply("Done.");
+  const previous = latestNoteResult(conversation);
+  if (previous) return memoryUsed(conversation) ? reply("Done.") : emptyMemoryReply();
   return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const,
     id: previous ? "note-2" : "note-1", name: "note", arguments: { facts: [
       { text: "用 pnpm，不要 npm", source: [source] },

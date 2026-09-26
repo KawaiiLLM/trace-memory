@@ -494,9 +494,16 @@ export interface FactCommitInput {
 
 export interface CommitNotingRunInput {
   run: RunInput; // sessionId required: every turn and watermark must belong to it
-  facts: FactCommitInput[];
+  facts: FactCommitInput[] | (() => FactCommitInput[]);
   responseForFacts?: (ids: number[]) => string;
   entryIds?: number[];
+  /** N's private draft is revalidated and published inside this transaction, never a second run. */
+  held?: {
+    path: KnowledgePath;
+    validate(): void;
+    slots: number[];
+    knowledge(ids: ReadonlyMap<number, number>): KnowledgeOperationInput[];
+  };
 }
 
 export type CommitNotingResult =
@@ -650,7 +657,7 @@ export type CommitConsolidationResult =
 // keeps commits; model receipts render the same frozen diagnostic with history addresses.
 type KnowledgeAddress = (knowledgeId: number, commitId: number) => string;
 const commitAddress: KnowledgeAddress = (knowledgeId, commitId) => `K${knowledgeId}@${commitId}`;
-class KnowledgeVersionProblem extends Error {
+export class KnowledgeVersionProblem extends Error {
   readonly describe: (address: KnowledgeAddress) => string;
   constructor(describe: (address: KnowledgeAddress) => string) {
     super(describe(commitAddress)); this.describe = describe;
@@ -2011,26 +2018,6 @@ export class Store {
     ).all(sessionId).map(toFact);
   }
 
-  /** One immutable Noting NEAR pool read. Facts, source bindings and rendered relations use three
-   * batched queries in one database snapshot regardless of pool size; applicability reuses
-   * factOnPath and the binding's path snapshot rather than consulting the mutable branch tip. */
-  notingNearPool(sessionId: number, path: KnowledgePath, snapshot: PathSnapshot): { facts: Fact[]; relations: Map<number, FactRelation[]> } {
-    return this.transaction(() => {
-      const rows = this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id
-        WHERE t.session_id = ? ORDER BY f.id`).all(sessionId);
-      const projected: ApplicabilityInput = { runs: new Map(), projects: new Map(), facts: new Map() };
-      for (const row of rows) {
-        const fact = toFact(row);
-        projected.facts.set(fact.id, { fact, sessionId: Number(row.session_id), runId: Number(row.run_id), entries: [] });
-      }
-      const ids = JSON.stringify([...projected.facts.keys()]);
-      for (const row of this.db.prepare("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id").all(ids))
-        projected.facts.get(Number(row.fact_id))!.entries.push(Number(row.entry_id));
-      const facts = [...projected.facts.values()].map(value => value.fact).filter(fact => this.factOnPath(fact, path, snapshot, projected));
-      return { facts, relations: this.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot) };
-    });
-  }
-
   listProjectFacts(projectId: number): Fact[] {
     return this.db.prepare(
       `SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id
@@ -2175,9 +2162,11 @@ export class Store {
         const sessionId = this.requireRunSession(input.run);
         this.requireEnabled(sessionId);
         this.requireClaim(input.run);
+        input.held?.validate();
+        const facts = typeof input.facts === "function" ? input.facts() : input.facts;
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const batchIds: number[] = [];
-        for (const f of input.facts) {
+        for (const f of facts) {
           if (input.run.kind === "noting") this.requireWorkerItemSize(f.text, "Fact");
           const turn = this.getTurn(f.turnId);
           if (!turn || turn.sessionId !== sessionId) {
@@ -2218,24 +2207,37 @@ export class Store {
           if (handleMatch) {
             const n = Number(handleMatch[1]);
             // A handle may only point at an earlier fact of this batch: the extractor sees the past, never the future.
-            if (n < 1 || n > batchIndex) {
+            const position = input.held ? input.held.slots.indexOf(n) : n - 1;
+            if (position < 0 || position >= batchIndex) {
               throw new Error(`invalid local handle "${target}" in fact #${batchIndex + 1}: a handle must name an earlier fact of this batch`);
             }
-            return batchIds[n - 1]!;
+            return batchIds[position]!;
           }
           throw new Error(`invalid relation target "${target}" in fact #${batchIndex + 1}`);
         };
-        input.facts.forEach((f, i) => {
+        facts.forEach((f, i) => {
           const fromFact = batchIds[i]!;
           for (const kind of ["support", "negate"] as const) for (const rel of f[kind] ?? []) {
             this.db.prepare("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, ?, ?)")
               .run(fromFact, resolve(rel.target, i), kind, rel.strength);
           }
         });
+        const knowledgeAudit: { requested: KnowledgeOperationInput; applied: KnowledgeOperationInput | null; committed: CommittedKnowledgeOp[] }[] = [];
+        if (input.held) {
+          const mapping = new Map(input.held.slots.map((slot, index) => [slot, batchIds[index]!]));
+          for (const requested of input.held.knowledge(mapping)) {
+            const op = this.normalizeNotingOperation(requested, input.held.path);
+            if (!op) { knowledgeAudit.push({ requested, applied: null, committed: [] }); continue; }
+            const result = this.applyKnowledgeOperation(op, runId, this.getSession(sessionId)!.projectId,
+              sessionId, input.held.path, false, "noting");
+            if (!result.ok) throw result.reason instanceof Error ? result.reason : new Error(result.reason);
+            knowledgeAudit.push({ requested, applied: op, committed: result.value });
+          }
+        }
         let response: Record<string, unknown>;
         try { const parsed = JSON.parse(input.responseForFacts?.(batchIds) ?? input.run.response ?? "{}"); response = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : { output: parsed }; }
         catch { response = { output: input.run.response }; }
-        const finalResponse = JSON.stringify({ ...response, ...(input.run.entryAudit ? { entryAudit: input.run.entryAudit } : {}), factIds: batchIds });
+        const finalResponse = JSON.stringify({ ...response, ...(input.held ? { knowledgeOperations: knowledgeAudit } : {}), ...(input.run.entryAudit ? { entryAudit: input.run.entryAudit } : {}), factIds: batchIds });
         this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(finalResponse, runId);
         this.db.prepare(`UPDATE runs SET usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`)
           .run(...this.usageColumns(finalResponse), runId);
@@ -2248,7 +2250,9 @@ export class Store {
       });
       return { ok: true, runId: result.runId, facts: result.facts };
     } catch (err) {
-      return { ok: false, ...this.recordFailure(input.run, err) };
+      const run = input.held ? { ...input.run, response: JSON.stringify({ ...JSON.parse(input.run.response ?? "{}"),
+        problems: [err instanceof Error ? err.message : String(err)] }) } : input.run;
+      return { ok: false, ...this.recordFailure(run, err) };
     }
   }
 
@@ -3390,13 +3394,38 @@ export class Store {
     }
   }
 
+  /** Only an applicable, scope-authorized tagged predecessor consumed by a later visible
+   * descendant is a Noter concurrency conversion. Other invalid bases remain errors. */
+  normalizeNotingOperation(op: KnowledgeOperationInput, path: KnowledgePath): KnowledgeOperationInput | null {
+    if (op.op !== "create" && op.op !== "update" && op.op !== "archive") throw new Error("Noter permits create, update and archive only");
+    if (op.op !== "archive") this.requireWorkerItemSize(op.text, "Knowledge item");
+    if (op.op === "create") return op;
+    const input = this.commitGraphInput();
+    const bad = this.baseDiagnostic(op.knowledgeId, op.baseCommit, path, false, input.metadata);
+    if (bad) throw bad;
+    const graph = this.commitGraph(path, undefined, undefined, input);
+    const stale = this.resolvedBaseProblem(graph, op);
+    if (!stale) return op;
+    const descendants = graph.descendants(op.baseCommit);
+    if (!graph.current.some(revision => revision.id > op.baseCommit && descendants.has(revision.id))) throw stale;
+    if (op.op === "archive") return null;
+    const address = `K${op.knowledgeId}#${this.versionTag(op.knowledgeId, op.baseCommit)}`;
+    const annotation = /[\u3400-\u9fff]/u.test(op.text)
+      ? `〔并发冲突转新建，原拟更新 ${address}，待核对。〕`
+      : `[Concurrent update converted to create; originally targeted ${address}; pending reconciliation.]`;
+    const text = `${op.text}\n${annotation}`;
+    this.requireWorkerItemSize(text, "Knowledge item");
+    const { knowledgeId: _knowledgeId, baseCommit: _baseCommit, ...content } = op;
+    return { ...content, op: "create", handle: address, author: "noting", text };
+  }
+
   private requireWorkerItemSize(text: string, label: string): void {
     const size = tokens(text);
     if (size > 1_000) throw new Error(`${label} exceeds 1000-token limit: ${size} tokens`);
   }
 
   private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,
-    sessionId: number, path: KnowledgePath | null, dreaming = false, role: "consolidation" | "dreaming" | "manual" = "manual",
+    sessionId: number, path: KnowledgePath | null, dreaming = false, role: "noting" | "consolidation" | "dreaming" | "manual" = "manual",
     dreamingPool: string | null = null): { ok: true; value: CommittedKnowledgeOp[] } | { ok: false; reason: string | KnowledgeVersionProblem } {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
     if (op.op === "merge" && (op.absorb.length !== 1 || op.absorb[0]!.baseCommit === op.intoBaseCommit))

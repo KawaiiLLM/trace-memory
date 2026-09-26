@@ -9,7 +9,7 @@
 import { mkdirSync } from "node:fs";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
   type ExtensionAPI, type SessionEntry, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
-import { capturedSystemPrompt, capturedTools, hash, messageKey, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./fork.ts";
+import { capturedSystemPrompt, capturedTools, hash, messageKey, serialize, stripCacheControl, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./fork.ts";
 import { toolRejected, type ToolDefinition } from "../../core/api/index.ts";
 import { THINKING_LEVELS, type ThinkingLevel } from "../phase-settings.ts";
 
@@ -37,6 +37,7 @@ interface NativeCommon {
   /** The adapter-composed user prompt for this run (hosts/pi/compose.ts). */
   task: string;
   tools: ToolDefinition[];
+  reportToolRejection?(id: string, name: "note" | "memory", input: unknown, reason: string): void;
   /** 0 = unlimited, as `maxToolRounds` has always meant. */
   maxToolRounds: number;
   signal?: AbortSignal;
@@ -48,8 +49,6 @@ interface NativeCommon {
   /** Review 2026-09-10 (P2): `thinking` rides along as soon as the child exists, so a run the host
    * force-cancels at its cleanup deadline still audits the level it was really sent at. */
   onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: { requested?: ThinkingLevel; effective: ThinkingLevel } }): void;
-  /** Noting review feedback, delivered to the child as a native user message. */
-  feedback?(result: string): string | undefined;
   /** Dreamer's host check at a completed pass, with one same-child repair. */
   passEnd?(rounds: number): string | undefined;
   reportRounds?(rounds: number): void;
@@ -227,7 +226,13 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       tools = capturedTools(api, task.captured);
     } catch (error) { throw new NotForkable(String(error)); }
     if (!tools.length) throw new NotForkable("captured payload carries no tool definitions");
-    for (const definition of task.tools) if (!tools.some(t => t.name === definition.name)) throw new NotForkable(`captured payload omits the ${definition.name} tool`);
+    for (const definition of task.tools) {
+      const captured = tools.find(t => t.name === definition.name);
+      if (!captured) throw new NotForkable(`captured payload omits the ${definition.name} tool`);
+      if (task.reportToolRejection && (definition.name === "note" || definition.name === "memory") &&
+          (captured.description !== definition.description || serialize(stripCacheControl(captured.parameters)) !== serialize(definition.parameters)))
+        throw new NotForkable(`captured ${definition.name} definition is incompatible with the current Noter protocol; refresh foreground tools or use subagent mode`);
+    }
 
     // An independent manager on the parent's file, writing into the runs directory. The foreground
     // manager is never touched, and `createBranchedSession` copies only the selected ancestry.
@@ -250,7 +255,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
 
   const calls: { name: string; executed: boolean }[] = [];
   let committed = false;
-  const pending: Promise<unknown>[] = [];
+  const attempts = new Map<string, { name: "note" | "memory"; input: unknown; executed: boolean }>();
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
   // In fork mode the tool DEFINITIONS are the parent's, byte for byte, because the gate compares
   // them; a fresh child registers only core's four. Tool EXECUTION is whitelisted to the memory
@@ -260,6 +265,8 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     name: tool.name, label: tool.name, description: tool.description, parameters: tool.parameters as never,
     executionMode: "sequential" as const,
     async execute(_id: string, raw: unknown) {
+      const attempt = attempts.get(_id);
+      if (attempt) attempt.executed = true;
       const bound = task.tools.find(t => t.name === tool.name);
       calls.push({ name: tool.name, executed: !!bound && !exceeded });
       if (exceeded) throw new Error(`rejected: tool rounds exceeded (${task.maxToolRounds})`);
@@ -267,15 +274,10 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       let content: string;
       try { content = bound.execute(raw); }
       catch (error) { content = `rejected: ${String(error)}`; }
-      const review = task.feedback?.(content);
-      // A rejection receipt is not a commit. A Noting candidate accepted for review also writes
-      // nothing. Reading `committed` off the receipt shape keeps candidate-then-overflow
-      // re-admissible while commit-then-overflow stays this run's own failure (`overflowFallback`
-      // in worker.ts). Consolidation commits its first valid submission.
-      if (!toolRejected(tool.name, content) && !review) committed ||= tool.name === "note" || tool.name === "memory";
-      // Noting review is a native user message, queued as steering so the child reads it before its
-      // next model call.
-      if (review) pending.push(session.sendUserMessage(review, { deliverAs: "steer" }));
+      // Held N receipts are not business commits, including the explicit empty calls.
+      let held = false;
+      try { held = Array.isArray(JSON.parse(content).held); } catch { /* Ordinary text receipt. */ }
+      if (!toolRejected(tool.name, content) && !held) committed ||= tool.name === "note" || tool.name === "memory";
       return { ...result(content), ...(task.passEnd && task.maxToolRounds > 0 && rounds >= task.maxToolRounds ? { terminate: true } : {}) };
     },
   })) satisfies { name: string }[] as unknown as PiToolDefinition[];
@@ -379,6 +381,15 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     return inherited ? inherited(payload as never, model as never) : payload;
   };
   const unsubscribe = session.subscribe(event => {
+    if (task.reportToolRejection) {
+      if (event.type === "tool_execution_start" && (event.toolName === "note" || event.toolName === "memory") && !attempts.has(event.toolCallId))
+        attempts.set(event.toolCallId, { name: event.toolName, input: structuredClone(event.args), executed: false });
+      if (event.type === "tool_execution_end" && event.isError) {
+        const attempt = attempts.get(event.toolCallId);
+        if (attempt && !attempt.executed) task.reportToolRejection(event.toolCallId, attempt.name, attempt.input,
+          JSON.stringify(event.result));
+      }
+    }
     if (event.type === "auto_retry_start") {
       retries.push({ attempt: event.attempt, error: event.errorMessage });
       task.onProgress({ usage, retries });
@@ -424,7 +435,6 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   try {
     task.signal?.throwIfAborted();
     await session.prompt(task.task, { expandPromptTemplates: false });
-    await Promise.allSettled(pending);
     await session.waitForIdle();
     // A native prompt includes the whole tool loop and provider retries. Only now is this a pass
     // end. The same child, counters and retry accounting survive the one system-generated repair.

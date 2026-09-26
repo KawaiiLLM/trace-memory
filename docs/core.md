@@ -1,5 +1,17 @@
 src/core/ is host-agnostic: it must not import any host SDK.
 
+## Noter publication (92/04)
+
+This contract supersedes the older immediate-Noting and NEAR descriptions below. Input selection and live Consolidation retirement remain separate 92 integration steps.
+
+- Foreground and N advertise identical `note`/`memory` definitions. Core enforces role permissions. Manual writes remain immediate and reject N-only slots, drops and local knowledge supports; manual within-call relation handles still work.
+- N holds facts in stable `$n` slots and knowledge operations in `Mn` slots. Omitted slot appends; explicit slot fully replaces. A rejected replacement invalidates the prior value. Drop leaves a gap and cannot remove a referenced fact. Empty calls confirm use but do not clear drafts or slot errors.
+- A valid call clears top-level errors only. Host schema refusals are correlated by native call ID and original arguments, including failures before core execution. Duplicate refusal events cannot allocate another slot. A missing CC dispatch/refusal fails the run explicitly.
+- Only normal model termination, both tools used and no unresolved refusal permits publication. One short Store transaction revalidates sources, roles, path, enrollment, project, claim, supports and tagged bases; allocates F IDs; maps structured references; writes knowledge, Raw progress and successful execution. Rollback exposes neither layer nor successful progress. Audit keeps final usage and requested/applied operations.
+- An applicable, authorized predecessor consumed by a visible effective descendant permits N's update-to-annotated-create or archive-to-no-op conversion. Missing tags, invalid evidence or authority do not convert. The converted identity enters ordinary D pending accounting.
+- Pi forks preserve captured tool definitions and the existing prefix gate. Incompatible old definitions are refused through the existing fallback path. The SDK's structured pre-execution failures invalidate held slots; no schema is loosened to bypass validation.
+- Live NEAR capture, feedback and its configuration are removed. Historical audit types and reading remain. Explicit `noting.nearThreshold` configuration now reports a removed-setting error.
+
 The [entry-address contract](unified-entry.md) supersedes older ticket descriptions below of Raw labels, source previews, trace content limits and full-read branch scope. It is the current reference for stable E identities, ordered normalized blocks, per-child budgets and semantic read completion.
 
 - model/   Turn, Fact, Knowledge types and write-time validation (shape only).

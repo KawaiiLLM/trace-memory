@@ -11,12 +11,16 @@ const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 /** Validate the complete batch before writes, including every merge participant. */
 export function prepareMemory(store: Store, sessionId: number, raw: unknown, run: RunInput,
   frozen?: ReturnType<typeof freezeConsolidation>, path: KnowledgePath = store.knowledgePath(sessionId),
-  eligibleSupport?: (factId: number) => boolean, skippable?: (commit: number) => string | undefined) {
+  eligibleSupport?: (factId: number) => boolean, skippable?: (commit: number) => string | undefined,
+  localFacts?: ReadonlyMap<number, { text: string; quote?: string | null }>) {
   const results: string[] = [], operations: KnowledgeOperationInput[] = [];
   const batch = raw as MemoryBatch;
   const projectId = store.getSession(sessionId)!.projectId;
   const touched = new Set<number>();
   const dreaming = store.isDreamingRun(run);
+  if (run.kind !== "noting" && batch && typeof batch === "object" && "drop" in batch)
+    return { results: ["rejected: drop is N-only; this role uses immediate memory writes"], operations, batch,
+      diagnostics: [] as ConsolidationDiagnostic[], declinedCommits: new Map<MemoryBatch["skipped"][number], number>() };
   if (!batch || typeof batch !== "object" || Array.isArray(batch) || !Array.isArray(batch.operations) || !Array.isArray(batch.skipped) || Object.keys(batch).some(k => !["operations", "skipped"].includes(k))) {
     return { results: ["rejected: memory expects {operations: [...], skipped: [...]} only"], operations, batch,
       diagnostics: [] as ConsolidationDiagnostic[], declinedCommits: new Map<MemoryBatch["skipped"][number], number>() };
@@ -24,9 +28,11 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
   const facts = (raw: unknown, errors: string[], nonempty = false): number[] => {
     if (!Array.isArray(raw) || (nonempty && !raw.length)) { errors.push("expected fact array" + (nonempty ? "; supports must not be empty" : "")); return []; }
     return raw.map(address => {
-      const id = typeof address === "string" && /^F[1-9]\d*$/.test(address) ? Number(address.slice(1)) : NaN;
-      if (!Number.isSafeInteger(id) || !store.getFact(id)) errors.push(`${address}: not an available fact`);
-      else if (eligibleSupport && !eligibleSupport(id)) errors.push(`${address}: fact evidence is after the exact triggering source prefix`);
+      const id = typeof address === "string" && /^F[1-9]\d*$/.test(address) ? Number(address.slice(1))
+        : localFacts && typeof address === "string" && /^\$[1-9]\d*$/.test(address) ? -Number(address.slice(1)) : NaN;
+      if (!localFacts && typeof address === "string" && address.startsWith("$")) errors.push(`${address}: local knowledge supports are N-only; cite an existing F fact`);
+      if (!Number.isSafeInteger(id) || !(id < 0 ? localFacts?.has(-id) : store.getFact(id))) errors.push(`${address}: not an available fact`);
+      else if (id > 0 && eligibleSupport && !eligibleSupport(id)) errors.push(`${address}: fact evidence is after the exact triggering source prefix`);
       return id;
     });
   };
@@ -48,7 +54,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
     const op = value.op;
     const allowed = dreaming ? ["update", "merge", "split", "archive"]
-      : run.kind === "consolidation" ? ["create", "update", "archive"] : ["create", "archive"];
+      : run.kind === "consolidation" || run.kind === "noting" ? ["create", "update", "archive"] : ["create", "archive"];
     if (!allowed.includes(op)) errors.push(
       ["update", "merge", "split", "archive"].includes(op)
         ? `${op} belongs to the Dreamer and is not available to ${run.kind === "consolidation" ? "the Consolidator" : "manual memory"}`
@@ -59,6 +65,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
     // model still writing the old shape is told which two fields replace it.
     for (const key of Object.keys(value)) if (key === "because") errors.push('because: removed field; supply "reason" (a string) and "supports" (the commit\'s evidence)');
+      else if (key === "slot") errors.push("slot is N-only; this role uses immediate memory writes");
       else if (!keys.includes(key)) errors.push(key === "absorb" && run.kind === "consolidation"
         ? "absorb belongs to the Dreamer and is not available to the Consolidator" : `${key}: inapplicable field`);
     if (typeof value.reason !== "string" || !value.reason.trim()) errors.push("reason: expected a non-empty commit message");
@@ -98,7 +105,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       topics: op === "archive" || op === "split" ? [] : labels(value.topics, errors), createdAt: run.createdAt };
     const scope = op === "archive" || op === "split" ? store.getKnowledgeRevision(dest!.knowledgeId, dest!.baseCommit)?.scope : value.scope;
     if (scope && content.supports.every(Number.isSafeInteger)) {
-      const bad = store.citationProblem(content.supports, scope, path);
+      const bad = store.citationProblem(content.supports.filter(id => id > 0), scope, path);
       if (bad) errors.push(bad);
     }
     if (!errors.length) operations.push(op === "create" ? { op: "create", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
@@ -143,7 +150,10 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     if (op.op === "archive") continue;
     const label = op.op === "create" ? op.handle : `K${op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId}`;
     const grounding = new Set(op.supports);
-    const cited = new Set([...grounding].flatMap(id => numbers(`${store.getFact(id)!.text}\n${store.getFact(id)!.quote ?? ""}`)));
+    const cited = new Set([...grounding].flatMap(id => {
+      const fact = id < 0 ? localFacts!.get(-id)! : store.getFact(id)!;
+      return numbers(`${fact.text}\n${fact.quote ?? ""}`);
+    }));
     // A shorthand merge copies an existing body in the transaction; it submits no new text to audit.
     const bodies = op.op === "split" ? op.children.map((child, index) => ({ label: `${label}/child${index + 1}`, text: child.text }))
       : op.text === undefined ? [] : [{ label, text: op.text }];

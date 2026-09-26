@@ -4,40 +4,39 @@ import { expect, test, vi } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "../../../src/hosts/pi/fork.ts";
 import { addUsage, placeholderUsage, runNative } from "../../../src/hosts/pi/native.ts";
-import { NOTING_INCOMPLETE, recorded, reviewFeedback } from "../../source-fixture.ts";
+import { NOTING_INCOMPLETE, recorded } from "../../source-fixture.ts";
 import { broken, call, fixture, forkFixture, memoryBatch, noteBatch, say, settled, sse, submitted, toolResults, usage, worker, type Body } from "./native-fixture.ts";
 
-for (const [label, make] of [["subagent", fixture], ["fork", forkFixture]] as const) test(`38a: native ${label} Noter receives NEAR as user feedback and commits its correction`, async () => {
+for (const [label, make] of [["subagent", fixture], ["fork", forkFixture]] as const) test(`92: native ${label} Noter submits optional relations without NEAR feedback`, async () => {
   const f = await make({ "noting.triggerTokens": 1 });
   try {
     f.script(body => {
       if (!worker(body)) return say("好的。");
-      const hasNear = (body.messages ?? []).some((message: Body) => message.role === "user" && JSON.stringify(message.content).includes("NEAR:"));
-      if (hasNear && toolResults(body) === 1) return call("revised", "note", { facts: [{ ...noteBatch.facts[0], source: ["T2#user"], support: [["F1", "strong"]] }] });
-      if (hasNear || submitted(body)) return say("Done.");
+      if (toolResults(body) >= 2) return say("Done.");
+      if (submitted(body)) return call("memory-empty", "memory", { operations: [], skipped: [] });
       const prior = f.h.memory.store.listSessionFacts(1).length;
-      return call(`note-${prior}`, "note", prior ? { facts: [{ ...noteBatch.facts[0], source: ["T2#user"] }] } : noteBatch);
+      return call(`note-${prior}`, "note", prior ? { facts: [{ ...noteBatch.facts[0], source: ["T2#E1"], support: [["F1", "strong"]] }] } : noteBatch);
     });
     await f.turn();
     await f.turn();
     expect(f.h.memory.store.listSessionFacts(1)).toHaveLength(2);
     expect(f.sent.filter(body => worker(body)).some(body => (body.messages ?? []).some((message: Body) =>
-      message.role === "user" && JSON.stringify(message.content).includes("System-generated review guidance")))).toBe(true);
+      message.role === "user" && JSON.stringify(message.content).includes("System-generated review guidance")))).toBe(false);
     expect(f.h.memory.store.listFactRelations(2)).toContainEqual({ fromFact: 2, toFact: 1, kind: "support", strength: "strong" });
   } finally { await f.dispose(); }
 });
 
-test("38a: a native review receipt is neither rejected nor marked as committed", async () => {
+test("92: a native held receipt is neither rejected nor marked as committed", async () => {
   const f = await fixture({ "noting.triggerTokens": 1e9 });
   try {
     f.script(() => say("好的。"));
     const captured = await f.turn();
-    const receipt = JSON.stringify({ results: ["ok"], feedback: { role: "user", content: "System-generated review guidance\n\nNEAR:" } });
+    const receipt = JSON.stringify({ results: ["held: $1"], held: ["$1"] });
     f.script(body => toolResults(body) ? say("Done.") : call("near", "note", { facts: [] }));
     const result = await runNative(f.task(captured, { tools: [{ name: "note", description: "write", parameters: { type: "object", properties: {} },
-      execute: () => receipt }], feedback: reviewFeedback }));
+      execute: () => receipt }] }));
     expect(result.committed).toBe(false);
-    expect(f.sent.at(-1)!.messages.some((message: Body) => message.role === "user" && JSON.stringify(message.content).includes("NEAR:"))).toBe(true);
+    expect(f.sent.at(-1)!.messages.some((message: Body) => message.role === "user" && JSON.stringify(message.content).includes("NEAR:"))).toBe(false);
   } finally { await f.dispose(); }
 });
 

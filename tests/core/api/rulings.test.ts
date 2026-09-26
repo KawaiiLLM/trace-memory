@@ -38,7 +38,10 @@ beforeEach(() => {
   // 26a: a Noting batch is completed only by a submission, so the default run submits the explicit
   // empty batch a Noter with nothing to record must send.
   const fallback = async (raw: unknown) => { const input = raw as NotingAgentInput; calls.push(input);
-    if (input.kind === "noting") input.tools.find(t => t.name === "note")!.execute({ facts: [] });
+    if (input.kind === "noting") {
+      input.tools.find(t => t.name === "note")!.execute({ facts: [] });
+      input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+    }
     return ok([]); };
   admittedScenarios = new AdmittedDreamerScenarios(fallback);
   memory = sourceSeededMemory(join(directory, "test.sqlite"), admittedScenarios.agent);
@@ -1671,14 +1674,11 @@ test("30: the shipped profile is 2,000/100/100 and the retired B and secondary k
   const explicit = open({ entryTokens: 10_000 });
   try { expect(explicit.config.render.entryTokens).toBe(10_000); } finally { explicit.close(); }
   // 30 (GPT ruling 2026-09-10): the smaller views change no phase limit. The trigger, the batch
-  // ceilings and the target limits keep their values, and no entry-count cap joins them. Noting's
-  // lexical review threshold is an ordinary loaded setting beside them.
-  expect(DEFAULT_CONFIG.noting).toEqual({ forkModeDefault: false, batchTokens: 10_000, triggerTokens: 10_000, nearThreshold: 0.40, maxToolRounds: 0 });
+  // ceilings and target limits keep their values. 92 removes only lexical review here.
+  expect(DEFAULT_CONFIG.noting).toEqual({ forkModeDefault: false, batchTokens: 10_000, triggerTokens: 10_000, maxToolRounds: 0 });
   expect(DEFAULT_CONFIG.consolidation).toMatchObject({ triggerTokens: 5_000, batchTokens: 10_000 });
-  expect(api.validateConfig({ noting: { nearThreshold: 0 } }).noting.nearThreshold).toBe(0);
-  expect(api.validateConfig({ noting: { nearThreshold: 1 } }).noting.nearThreshold).toBe(1);
-  for (const invalid of [-0.001, 1.001, Infinity, Number.NaN])
-    expect(() => api.validateConfig({ noting: { nearThreshold: invalid } })).toThrow("Invalid noting.nearThreshold");
+  for (const retired of [0, 1, -0.001, 1.001, Infinity, Number.NaN])
+    expect(() => api.validateConfig({ noting: { nearThreshold: retired } } as never)).toThrow("Removed setting noting.nearThreshold");
 });
 
 // 28a "Windows": the two new compaction keys are ordinary token settings — the same finite positive
@@ -1909,7 +1909,7 @@ test("24 amendment 2 2026-09-09, as 29e left it: configure replaces each phase's
   expect(() => memory.configure({ render: { entryTokens: 5 } })).toThrow("Unknown setting render");
   expect(() => memory.configure({ consolidation: { triggerUnconsolidatedFacts: 5 } as never })).toThrow("Removed setting");
   expect(() => memory.configure({ consolidation: { forkModeDefault: 1 as unknown as boolean } })).toThrow("Invalid consolidation.forkModeDefault");
-  expect(() => memory.configure({ noting: { nearThreshold: 0.5 } })).toThrow("noting.nearThreshold is not reconfigurable at runtime");
+  expect(() => memory.configure({ noting: { nearThreshold: 0.5 } } as never)).toThrow("Removed setting noting.nearThreshold");
   expect(memory.config.noting.forkModeDefault).toBe(true);
   expect(memory.config.render.entryTokens).toBe(DEFAULT_CONFIG.render.entryTokens);
 });

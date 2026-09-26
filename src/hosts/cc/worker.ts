@@ -81,6 +81,8 @@ export class CcResponseOrigins {
   private readonly toolRoundIds = new Set<string>();
   private readonly origins = new Map<string, string>();
   private readonly claimed = new Set<string>();
+  private readonly pendingWrites = new Map<string, { name: "note" | "memory"; input: unknown }>();
+  private readonly rejectedWrites = new Set<string>();
   private readonly waiters = new Map<string, WaitingOrigin[]>();
   private failure: Error | null = null;
   private readonly onFailure: (error: Error) => void;
@@ -111,6 +113,9 @@ export class CcResponseOrigins {
       if (prior && prior !== responseId)
         throw this.fail(new Error(`CC tool use ${block.id} is ambiguous across assistant responses`));
       this.origins.set(block.id, responseId);
+      const name = block.name.replace(/^mcp__trace_memory__/, "");
+      if (this.task.kind === "noting" && (name === "note" || name === "memory") && !this.pendingWrites.has(block.id))
+        this.pendingWrites.set(block.id, { name, input: structuredClone(block.input) });
       for (const waiter of this.waiters.get(block.id) ?? []) {
         clearTimeout(waiter.timer); waiter.resolve(responseId);
       }
@@ -134,6 +139,21 @@ export class CcResponseOrigins {
       }, this.timeoutMs) };
       this.waiters.set(id, [...(this.waiters.get(id) ?? []), waiter]);
     });
+  }
+
+  /** Native argument/permission refusal can precede the MCP handler. Route it by tool-use ID,
+   * never by parsing the error prose. A missing result/dispatch cannot establish correction. */
+  rejected(id: string, reason: string): void {
+    const attempt = this.pendingWrites.get(id);
+    if (!attempt || this.claimed.has(id) || this.rejectedWrites.has(id)) return;
+    if (this.task.kind !== "noting" || !this.task.reportToolRejection) throw this.fail(new Error("CC Noter cannot report native tool rejection"));
+    this.task.reportToolRejection(id, attempt.name, attempt.input, reason);
+    this.rejectedWrites.add(id);
+  }
+
+  requireDispatchedWrites(): void {
+    for (const id of this.pendingWrites.keys()) if (!this.claimed.has(id) && !this.rejectedWrites.has(id))
+      throw this.fail(new Error(`CC Noter tool call ${id} has neither a handler dispatch nor a correlated refusal`));
   }
 
   rounds(): number { return this.toolRoundIds.size; }
@@ -415,6 +435,9 @@ export class CcAgentWorker {
           origins.observe(message);
           progress();
           if (task.kind === "dreaming") task.reportRounds(origins.rounds());
+        } else if (message.type === "user" && Array.isArray(message.message.content)) {
+          for (const block of message.message.content) if (block.type === "tool_result" && block.is_error)
+            origins.rejected(block.tool_use_id, JSON.stringify(block.content));
         } else if (message.type === "system" && (message as unknown as { subtype?: unknown }).subtype === "api_retry") {
           const retry = message as unknown as { attempt?: unknown; max_retries?: unknown; retry_delay_ms?: unknown; error?: unknown };
           if (!Number.isSafeInteger(retry.attempt) || typeof retry.error !== "string")
@@ -462,6 +485,7 @@ export class CcAgentWorker {
       if (initIdentity === null) throw new Error("CC worker ended without native init metadata");
       if (protocolError) throw protocolError;
       if (!results.length) throw new Error("CC worker ended without an SDK result message");
+      origins.requireDispatchedWrites();
       const usage = observedUsage();
       return { outcome, output, ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent",
         ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
