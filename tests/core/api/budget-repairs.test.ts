@@ -41,7 +41,7 @@ test("92: fresh N has separate fact and knowledge windows without reviving C pro
     expect(input.material.facts.join("\n")).toContain("Withdraw the original evidence");
     expect(input.material.knowledge!.map(group => group.text).join("\n")).toContain("Rule 19:");
     expect(input.material.receipts.some(receipt => receipt.includes("overage"))).toBe(false);
-    expect(input.supplied.factIds).toEqual([1, 2]);
+    expect(input.supplied.factIds).toEqual([2, 1]); // selection is newest-first; rendered Turn groups sort F IDs
     const factReceipts = input.material.receipts.filter(receipt => receipt.includes(" older facts; expand:"));
     const knowledgeReceipts = input.material.receipts.filter(receipt => receipt.includes(" knowledge; expand:"));
     expect(tokens(compactText({ facts: input.material.facts, receipts: factReceipts }))).toBeLessThanOrEqual(f.m.config.compaction.factsTokens);
