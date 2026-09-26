@@ -1347,7 +1347,7 @@ test("16b: commit addresses are global, full diffs allow siblings and reverse or
   }
   // Public history is per identity; a well-formed missing version still fails as missing.
   for (const address of ["K1@v57", `${history(1, cCommit)}..v57`])
-    expect(c.tools[0]!.execute({ address })).toContain("does not exist");
+    expect(c.tools[0]!.execute({ address })).toContain("unknown knowledge history K1@v57");
   expect(c.tools[0]!.execute({ address: history(1, dCommit) })).toContain("D version");
   expect(c.tools[0]!.execute({ address: "K1.." })).toContain("D version");
 });
@@ -1877,10 +1877,10 @@ test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added 
 
   // Same guarantee for Consolidation's frozen fact-id set.
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [
-    { text: "Frozen fact", source: [`T${t.id}#E5`] } ] });
+    { text: "Frozen fact", source: [`T${t.id}#E${entry1.entryOrdinal}`] } ] });
   const frozenFacts = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [
-    { text: "Later fact", source: [`T${t.id}#E5`] } ] });
+    { text: "Later fact", source: [`T${t.id}#E${entry1.entryOrdinal}`] } ] });
   const cresult = await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent", boundary: { allowedFactIds: frozenFacts } });
   expect(cresult.outcome).toBe("success");
   if (cresult.outcome === "success") expect(cresult.range.facts.map(f => f.id)).toEqual(frozenFacts);
@@ -2223,7 +2223,7 @@ test("21b 2026-09-08: topics are revision metadata only — no fact or note fiel
   expect(calls).toEqual([]); // storing a label calls no model
 });
 
-test("26a/92: a Noter completes only with explicit note and memory; missing either is not zero-fact success", async () => {
+test("26a/92: a Noter requires both tools; silence or note alone is not zero-fact success", async () => {
   const { s, t } = session(); memory.close();
   let submit = false, submitKnowledge = false;
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
