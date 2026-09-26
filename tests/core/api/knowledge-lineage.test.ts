@@ -7,6 +7,7 @@ import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/inde
 import { Store, type KnowledgeOperationInput, type KnowledgePath, type SourceInput } from "../../../src/core/store/index.ts";
 import { renderRun } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 
 const stores: Store[] = [], dirs: string[] = [];
 afterEach(() => {
@@ -15,6 +16,8 @@ afterEach(() => {
 });
 
 const time = "2026-09-12T00:00:00.000Z";
+const tagged = (store: Store, id: number, commit: number) => `K${id}#${store.versionTag(id, commit)}`;
+const history = (store: Store, id: number, commit: number) => `K${id}@v${store.versionOrdinal(id, commit)}`;
 
 function fullRead(tool: { execute(input: unknown): string }, address: string) {
   let page = tool.execute({ address, full: true, itemBudget: null });
@@ -54,19 +57,23 @@ function fixture() {
       const trace = input.tools.find(tool => tool.name === "trace")!, tool = input.tools.find(tool => tool.name === "memory")!;
       const addressed = new Set<string>();
       const converted = operations.map(operation => {
-        if (operation.op === "update") { const id = `K${operation.knowledgeId}@${operation.baseCommit}`; addressed.add(id); fullRead(trace, id);
+        if (operation.op === "update") { const id = tagged(store, operation.knowledgeId, operation.baseCommit); addressed.add(history(store, operation.knowledgeId, operation.baseCommit)); fullRead(trace, id);
           return { op: "update", id, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
-        if (operation.op === "split") { const id = `K${operation.knowledgeId}@${operation.baseCommit}`; addressed.add(id); fullRead(trace, id);
+        if (operation.op === "split") { const id = tagged(store, operation.knowledgeId, operation.baseCommit); addressed.add(history(store, operation.knowledgeId, operation.baseCommit)); fullRead(trace, id);
           return { op: "split", id, children: operation.children, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
-        if (operation.op === "merge") { const id = `K${operation.intoKnowledgeId}@${operation.intoBaseCommit}`, absorb = operation.absorb.map(parent => `K${parent.knowledgeId}@${parent.baseCommit}`); for (const address of [id, ...absorb]) { addressed.add(address); fullRead(trace, address); }
+        if (operation.op === "merge") { const id = tagged(store, operation.intoKnowledgeId, operation.intoBaseCommit), absorb = operation.absorb.map(parent => tagged(store, parent.knowledgeId, parent.baseCommit));
+          addressed.add(history(store, operation.intoKnowledgeId, operation.intoBaseCommit));
+          for (const parent of operation.absorb) addressed.add(history(store, parent.knowledgeId, parent.baseCommit));
+          for (const address of [id, ...absorb]) fullRead(trace, address);
           return { op: "merge", id, absorb, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
         return operation;
       });
-      const triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`, supplied = new Set(input.material.changed.match(/K\d+@\d+/g) ?? []);
-      supplied.delete(triggerAddress); for (const address of addressed) supplied.delete(address);
+      const triggerAddress = tagged(store, trigger.knowledgeId, trigger.commit), supplied = new Set(suppliedHandles(input.material.changed));
+      supplied.delete(history(store, trigger.knowledgeId, trigger.commit)); for (const address of addressed) supplied.delete(address);
       const receipt = JSON.parse(tool.execute({ operations: [...converted, { op: "archive", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit lineage trigger." }],
         skipped: [...supplied].map(knowledge => ({ knowledge, because: "No lineage maintenance is needed for this supplied item." })) }));
-      committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId);
+      committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
+        .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId, commit: store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1])) }));
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
       return { outcome: "success", output: "lineage maintenance complete", request };
     });
@@ -147,14 +154,14 @@ test("64b: a merge keeps exactly two historical parents but applicability uses o
   const malformedRun = await f.scenarios.run(f.memory, childPath, input => {
     const request = { fixture: "invalid three-parent merge" }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!, tool = input.tools.find(tool => tool.name === "memory")!;
-    for (const address of [`K${f.created.knowledgeId}@${merged.commit}`, `K${childOnly.knowledgeId}@${childOnly.commit}`, `K${f.created.knowledgeId}@${f.created.commit}`])
+    for (const address of [tagged(f.store, f.created.knowledgeId, merged.commit), tagged(f.store, childOnly.knowledgeId, childOnly.commit), tagged(f.store, f.created.knowledgeId, f.created.commit)])
       fullRead(trace, address);
-    const malformed = tool.execute({ operations: [{ op: "merge", id: `K${f.created.knowledgeId}@${merged.commit}`,
-      absorb: [`K${childOnly.knowledgeId}@${childOnly.commit}`, `K${f.created.knowledgeId}@${f.created.commit}`],
+    const malformed = tool.execute({ operations: [{ op: "merge", id: tagged(f.store, f.created.knowledgeId, merged.commit),
+      absorb: [tagged(f.store, childOnly.knowledgeId, childOnly.commit), tagged(f.store, f.created.knowledgeId, f.created.commit)],
       text: "illegal three-parent merge", category: "constraint", scope: "project", topics: [], supports: [`F${f.rootFact}`], reason: "invalid fixture" }], skipped: [] });
     expect(malformed).toContain("absorb as exactly one distinct other parent");
-    const supplied = new Set(input.material.changed.match(/K\d+@\d+/g) ?? []); supplied.delete(`K${trigger.knowledgeId}@${trigger.commit}`);
-    tool.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${f.rootFact}`], reason: "Retire the explicit invalid-merge trigger." }],
+    const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(history(f.store, trigger.knowledgeId, trigger.commit));
+    tool.execute({ operations: [{ op: "archive", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [`F${f.rootFact}`], reason: "Retire the explicit invalid-merge trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "The rejected malformed merge makes no valid change." })) });
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "malformed merge rejected", request };
@@ -174,21 +181,21 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
     const tool = input.tools.find(t => t.name === "memory")!;
     const illegalCreate = tool.execute({ operations: [{ op: "create", text: "not a split", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "illegal" }], skipped: [] });
     expect(illegalCreate).toContain("rejected:");
-    const invalid = tool.execute({ operations: [{ op: "split", id: `K${parent.knowledgeId}@${parent.commit}`, supports: [], reason: "separate independent rules",
+    const invalid = tool.execute({ operations: [{ op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), supports: [], reason: "separate independent rules",
       children: [{ text: "first rule", category: "constraint", topics: [] }, { text: "", category: "goal", topics: [] }] }], skipped: [] });
     expect(invalid).toContain("rejected:");
     expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
-    const split = JSON.parse(tool.execute({ operations: [{ op: "split", id: `K${parent.knowledgeId}@${parent.commit}`, supports: [], reason: "separate independent rules",
+    const split = JSON.parse(tool.execute({ operations: [{ op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), supports: [], reason: "separate independent rules",
       children: [{ text: "first rule", category: "constraint", topics: ["first"] }, { text: "second rule", category: "goal", topics: ["second"] }] }], skipped: [] }));
     expect(split.committed).toHaveLength(2);
-    const [first, second] = split.committed as { knowledgeId: number; commit: number }[];
+    const [first, second] = split.committed as { knowledgeId: number; version: string }[];
     const trace = input.tools.find(t => t.name === "trace")!;
-    expect(trace.execute({ address: `K${first!.knowledgeId}@${first!.commit}`, itemBudget: null })).not.toContain("rejected:");
-    const update = JSON.parse(tool.execute({ operations: [{ op: "update", id: `K${first!.knowledgeId}@${first!.commit}`,
+    expect(trace.execute({ address: first!.version, itemBudget: null })).not.toContain("rejected:");
+    const update = JSON.parse(tool.execute({ operations: [{ op: "update", id: tagged(memory.store, first!.knowledgeId, memory.store.resolveVersionOrdinal(first!.knowledgeId, Number(first!.version.split("@v")[1]))),
       text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }], skipped: [] }));
     expect(update.committed).toHaveLength(1);
-    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
-    expect(tool.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`,
+    trace.execute({ address: history(memory.store, trigger.knowledgeId, trigger.commit), itemBudget: null });
+    expect(tool.execute({ operations: [{ op: "archive", id: tagged(memory.store, trigger.knowledgeId, trigger.commit),
       supports: [], reason: "Retire the explicit split trigger." }], skipped: [] })).toContain("committed");
     expect(input.tools.find(t => t.name === "check")!.execute({})).toContain("Blockers: none");
     attempted = true;

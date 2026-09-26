@@ -2,6 +2,10 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { skipRest } from "../../dreaming-skips.ts";
+import type { Store } from "../../../src/core/store/index.ts";
+
+const tagged = (store: Store, id: number, commit: number) => `K${id}#${store.versionTag(id, commit)}`;
+const history = (store: Store, id: number, commit: number) => `K${id}@v${store.versionOrdinal(id, commit)}`;
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -40,8 +44,13 @@ function pathFixture(seedOlderSurvivor = false) {
     branchFacts[branch] = result.facts[0]!.id;
   }
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "root", currentTurnId: turn.id, triggerEntryId: root.id });
-  const create = (text: string) => JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text,
-    category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: `Create ${text}.` }], skipped: [] })).committed[0] as { knowledgeId: number; commit: number };
+  const create = (text: string) => {
+    const receipt = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text,
+      category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: `Create ${text}.` }], skipped: [] }));
+    expect(receipt.committed).toHaveLength(1);
+    const item = receipt.committed[0] as { knowledgeId: number; version: string };
+    return { knowledgeId: item.knowledgeId, commit: store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1])) };
+  };
   const older = seedOlderSurvivor ? create("older survivor") : undefined;
   const base = create("base");
   const entries = { root, left, right };
@@ -60,29 +69,29 @@ async function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, s
     const request = { operation, branch, trigger }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!;
     const write = input.tools.find(tool => tool.name === "memory")!;
-    trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-    for (const item of currentTriggers) trace.execute({ address: `K${item.knowledge.id}@${item.revision.id}`, itemBudget: null, pageBudget: 8_000 });
+    trace.execute({ address: tagged(f.store, f.base.knowledgeId, f.base.commit), itemBudget: null });
+    for (const item of currentTriggers) trace.execute({ address: tagged(f.store, item.knowledge.id, item.revision.id), itemBudget: null, pageBudget: 8_000 });
     const common = { text, category: "constraint", scope: "project", supports: [`F${f.branchFacts[branch]}`], topics: [], reason: `${operation} on ${branch}.` };
     let operationInput: Record<string, unknown>;
-    if (operation === "archive") operationInput = { op: "archive", id: `K${f.base.knowledgeId}@${f.base.commit}`, supports: common.supports, reason: common.reason };
-    else if (operation === "split") operationInput = { op: "split", id: `K${f.base.knowledgeId}@${f.base.commit}`, supports: common.supports, reason: common.reason,
+    if (operation === "archive") operationInput = { op: "archive", id: tagged(f.store, f.base.knowledgeId, f.base.commit), supports: common.supports, reason: common.reason };
+    else if (operation === "split") operationInput = { op: "split", id: tagged(f.store, f.base.knowledgeId, f.base.commit), supports: common.supports, reason: common.reason,
       children: [{ text: `${text} one`, category: "constraint", topics: [] }, { text: `${text} two`, category: "constraint", topics: [] }] };
     else if (operation === "merge-into") {
       const other = mergeOther ?? (() => { throw new Error("missing merge identity"); })();
-      trace.execute({ address: `K${other.knowledgeId}@${other.commit}`, itemBudget: null });
-      operationInput = { op: "merge", id: `K${f.base.knowledgeId}@${f.base.commit}`, absorb: [`K${other.knowledgeId}@${other.commit}`], ...common };
+      trace.execute({ address: tagged(f.store, other.knowledgeId, other.commit), itemBudget: null });
+      operationInput = { op: "merge", id: tagged(f.store, f.base.knowledgeId, f.base.commit), absorb: [tagged(f.store, other.knowledgeId, other.commit)], ...common };
     } else if (operation === "merge-absorb") {
       const survivor = f.older ?? (() => { throw new Error("missing older survivor"); })();
-      trace.execute({ address: `K${survivor.knowledgeId}@${survivor.commit}`, itemBudget: null });
-      operationInput = { op: "merge", id: `K${survivor.knowledgeId}@${survivor.commit}`, absorb: [`K${f.base.knowledgeId}@${f.base.commit}`], ...common };
-    } else operationInput = { op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`, ...common };
+      trace.execute({ address: tagged(f.store, survivor.knowledgeId, survivor.commit), itemBudget: null });
+      operationInput = { op: "merge", id: tagged(f.store, survivor.knowledgeId, survivor.commit), absorb: [tagged(f.store, f.base.knowledgeId, f.base.commit)], ...common };
+    } else operationInput = { op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit), ...common };
     const receipt = write.execute({ operations: [operationInput, ...currentTriggers.map(item => ({ op: "archive",
-      id: `K${item.knowledge.id}@${item.revision.id}`, supports: [], reason: "Retire explicit trigger." }))], skipped: [] });
+      id: tagged(f.store, item.knowledge.id, item.revision.id), supports: [], reason: "Retire explicit trigger." }))], skipped: [] });
     expect(receipt).toContain('"committed"');
-    const consumed = [`K${f.base.knowledgeId}@${f.base.commit}`,
-      ...currentTriggers.map(item => `K${item.knowledge.id}@${item.revision.id}`)];
-    if (operation === "merge-into" && mergeOther) consumed.push(`K${mergeOther.knowledgeId}@${mergeOther.commit}`);
-    if (operation === "merge-absorb" && f.older) consumed.push(`K${f.older.knowledgeId}@${f.older.commit}`);
+    const consumed = [history(f.store, f.base.knowledgeId, f.base.commit),
+      ...currentTriggers.map(item => history(f.store, item.knowledge.id, item.revision.id))];
+    if (operation === "merge-into" && mergeOther) consumed.push(history(f.store, mergeOther.knowledgeId, mergeOther.commit));
+    if (operation === "merge-absorb" && f.older) consumed.push(history(f.store, f.older.knowledgeId, f.older.commit));
     skipRest(input, consumed);
     return { ...success, request };
   });
@@ -97,8 +106,8 @@ test.each(["archive", "split", "merge-into", "merge-absorb"] as const)(
     await runOperation(f, "left", 1, operation, `${operation} result`);
     const leftPath = f.path("left");
     const stale = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "left", currentTurnId: f.turn.id, triggerEntryId: f.entries.left.id });
-    stale.find(tool => tool.name === "trace")!.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-    expect(stale.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", id: `K${f.base.knowledgeId}@${f.base.commit}`,
+    stale.find(tool => tool.name === "trace")!.execute({ address: tagged(f.store, f.base.knowledgeId, f.base.commit), itemBudget: null });
+    expect(stale.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
       supports: [`F${f.fact}`], reason: "Probe the stale base." }], skipped: [] })).toContain("base is not the latest effective applicable revision");
     await runOperation(f, "right", 2, "update", `${operation} divergent result`);
     expect(f.store.currentCommit(f.base.knowledgeId, f.path("right"))[0]!.text).toBe(`${operation} divergent result`);
@@ -125,20 +134,22 @@ test.each([false, true])("64b: stale Dreamer completion fails unless corrected (
   const result = await f.scenarios.run(f.memory, path, input => {
     const trace = input.tools.find(tool => tool.name === "trace")!;
     const write = input.tools.find(tool => tool.name === "memory")!;
-    trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null, pageBudget: 8_000 });
+    trace.execute({ address: tagged(f.store, f.base.knowledgeId, f.base.commit), itemBudget: null });
+    trace.execute({ address: tagged(f.store, trigger.knowledgeId, trigger.commit), itemBudget: null, pageBudget: 8_000 });
     const first = JSON.parse(write.execute({ operations: [
-      { op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`, text: "first successor", category: "constraint",
+      { op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit), text: "first successor", category: "constraint",
         scope: "project", supports: [], topics: [], reason: "First maintenance." },
-      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [], reason: "Retire explicit trigger." },
-    ], skipped: [] })).committed[0] as { commit: number };
-    const stale = write.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
+      { op: "archive", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
+    ], skipped: [] })).committed[0] as { version: string };
+    const stale = write.execute({ operations: [{ op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
       text: "unresolved stale submission", category: "constraint", scope: "project", supports: [], topics: [], reason: "Must fail." }], skipped: [] });
-    expect(stale).toContain(`base is not the latest effective applicable revision; current: K${f.base.knowledgeId}@${first.commit}`);
+    expect(stale).toContain(`base is not the latest effective applicable revision; current: ${first.version}`);
+    expect(stale).not.toContain(tagged(f.store, f.base.knowledgeId, f.store.resolveVersionOrdinal(f.base.knowledgeId, Number(first.version.split("@v")[1]))));
     expect(stale).not.toContain("skipped");
     if (!corrected) return success;
-    trace.execute({ address: `K${f.base.knowledgeId}@${first.commit}`, itemBudget: null });
-    expect(write.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${first.commit}`,
+    const current = f.store.resolveVersionOrdinal(f.base.knowledgeId, Number(first.version.split("@v")[1]));
+    trace.execute({ address: first.version, itemBudget: null });
+    expect(write.execute({ operations: [{ op: "update", id: tagged(f.store, f.base.knowledgeId, current),
       text: "corrected successor", category: "constraint", scope: "project", supports: [], topics: [], reason: "Reread and correct." }], skipped: [] }))
       .toContain('"committed"');
     return success;

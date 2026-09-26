@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -30,7 +31,12 @@ function fixture() {
   };
   return { memory, store, scenarios, project, session, turn, entry, fact, target, create };
 }
-const address = (item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@${item.commit}`;
+const address = (f: ReturnType<typeof fixture>, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}#${f.store.versionTag(item.knowledgeId, item.commit)}`;
+const history = (f: ReturnType<typeof fixture>, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@v${f.store.versionOrdinal(item.knowledgeId, item.commit)}`;
+const commit = (f: ReturnType<typeof fixture>, item: { knowledgeId: number; version: string }) => {
+  expect(item.version).toMatch(new RegExp(`^K${item.knowledgeId}@v\\d+$`));
+  return f.store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1]));
+};
 const processed = (f: ReturnType<typeof fixture>) => f.store.db.prepare("SELECT pool, revision_id, run_id FROM knowledge_processed ORDER BY pool, revision_id").all();
 
 async function admitted(f: ReturnType<typeof fixture>, scenario: (input: DreamingAgentInput, trigger: { knowledgeId: number; commit: number }) => Promise<RunAgentResult> | RunAgentResult,
@@ -44,11 +50,11 @@ test("64c exact provider request and terminal audit are preserved while success 
   const exact = { provider: "exact body" };
   const { trigger, result } = await admitted(f, (task, trigger) => {
     task.reportRequest(exact); task.acknowledgeRequest();
-    expect(task.material.changed).toContain(address(base));
-    expect(task.material.changed).toContain(address(trigger));
+    expect(task.material.changed).toContain(history(f, base));
+    expect(task.material.changed).toContain(history(f, trigger));
     expect(task.tools.map(tool => tool.name)).toEqual(["trace", "search", "check", "memory"]);
     task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [base, trigger]
-      .map(item => ({ knowledge: address(item), because: "fixture reviewed unchanged" })) });
+      .map(item => ({ knowledge: history(f, item), because: "fixture reviewed unchanged" })) });
     return { outcome: "success", output: "audited", request: exact, nativeLog: "/tmp/dream.jsonl",
       usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: { total: 0.1 } } };
   });
@@ -118,9 +124,9 @@ test("64c cancellation after a commit consumes the frozen revisions and the own 
   let own = 0;
   const { trigger, result } = await admitted(f, (task, trigger) => {
     const committed = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
-      op: "update", id: address(base), text: "moved global result", category: "constraint", scope: "global", supports: [], topics: [], reason: "scope correction",
-    }], skipped: [{ knowledge: address(trigger), because: "fixture trigger needs no maintenance" }] })).committed;
-    own = committed[0].commit;
+      op: "update", id: address(f, base), text: "moved global result", category: "constraint", scope: "global", supports: [], topics: [], reason: "scope correction",
+    }], skipped: [{ knowledge: history(f, trigger), because: "fixture trigger needs no maintenance" }] })).committed;
+    own = commit(f, committed[0]);
     return { outcome: "cancelled", output: "cancelled after commit", request: { exact: "cancel-after-write" } };
   });
   expect(result.outcome, JSON.stringify(result)).toBe("cancelled");
@@ -136,10 +142,10 @@ test("64c two schema-valid updates roll back atomically when the second hits a S
   const { trigger, result } = await admitted(f, (task, trigger) => {
     f.store.db.exec(`CREATE TRIGGER reject_second_legal_update BEFORE INSERT ON knowledge_revisions
       WHEN NEW.knowledge_id = ${second.knowledgeId} BEGIN SELECT RAISE(ABORT, 'injected second legal update failure'); END`);
-    const update = (base: typeof first, text: string) => ({ op: "update", id: address(base), text, category: "constraint", scope: "project", supports: [], topics: [], reason: text });
+    const update = (base: typeof first, text: string) => ({ op: "update", id: address(f, base), text, category: "constraint", scope: "project", supports: [], topics: [], reason: text });
     const receipt = task.tools.find(tool => tool.name === "memory")!.execute({
       operations: [update(first, "first legal update executes before the fault"), update(second, "second legal update reaches Store insertion")],
-      skipped: [{ knowledge: address(trigger), because: "fixture trigger" }],
+      skipped: [{ knowledge: history(f, trigger), because: "fixture trigger" }],
     });
     expect(receipt).toContain("rejected:");
     expect(receipt).toContain("injected second legal update failure");
@@ -153,17 +159,17 @@ test("64c two schema-valid updates roll back atomically when the second hits a S
   expect(processed(f)).toEqual([]);
 });
 
-test("64c a complete exact read grants same-pool maintenance without enlarging the frozen range", async () => {
+test("64c an exact version tag permits same-pool maintenance without a read grant or enlarged frozen range", async () => {
   const f = fixture(), base = f.create("frozen base");
   let late!: { knowledgeId: number; commit: number }, own = 0;
   const { trigger, result } = await admitted(f, (task, trigger) => {
     late = f.create("arrived after freeze");
-    const trace = task.tools.find(tool => tool.name === "trace")!;
-    expect(trace.execute({ address: address(late), itemBudget: null })).toContain("arrived after freeze");
+    // A tag identifies the revision; no per-run read registration grants authority.
+    expect(f.memory.trace(address(f, late), { itemBudget: null })).toContain("arrived after freeze");
     const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
-      op: "update", id: address(late), text: "maintained exact late item", category: "constraint", scope: "project", supports: [], topics: [], reason: "complete exact read",
-    }], skipped: [{ knowledge: address(base), because: "unchanged" }, { knowledge: address(trigger), because: "fixture trigger" }] }));
-    own = receipt.committed[0].commit;
+      op: "update", id: address(f, late), text: "maintained exact late item", category: "constraint", scope: "project", supports: [], topics: [], reason: "complete exact read",
+    }], skipped: [{ knowledge: history(f, base), because: "unchanged" }, { knowledge: history(f, trigger), because: "fixture trigger" }] }));
+    own = commit(f, receipt.committed[0]);
     return success;
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");
@@ -188,9 +194,9 @@ test.each([
   const exact = { provider: `fault-${failure}` };
   const { trigger, result } = await admitted(f, (task, trigger) => {
     const committed = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
-      op: "update", id: address(base), text: "committed before terminal fault", category: "constraint", scope: "project", supports: [], topics: [], reason: "real committed batch",
-    }], skipped: [{ knowledge: address(trigger), because: "fixture trigger" }] })).committed;
-    own = committed[0].commit;
+      op: "update", id: address(f, base), text: "committed before terminal fault", category: "constraint", scope: "project", supports: [], topics: [], reason: "real committed batch",
+    }], skipped: [{ knowledge: history(f, trigger), because: "fixture trigger" }] })).committed;
+    own = commit(f, committed[0]);
     rangeId = f.store.openDreamingRange(f.session.id, f.target.branch)!.id;
     install(f, trigger);
     return { outcome: "success", output: "provider completed before terminal fault", request: exact };
@@ -217,7 +223,7 @@ test("64c reference material is genuinely non-empty, capped and receipted when c
   const pool = `project:${f.project.id}`, pendingWeight = f.store.pendingPoolWeight(pool, f.target);
   f.store.setKnowledgeBudget("project", pendingWeight * 2);
   const settled = await f.scenarios.run(f.memory, f.target, task => {
-    const handles = [...new Set([...task.material.changed.matchAll(/K\d+@\d+/g)].map(match => match[0]))];
+    const handles = suppliedHandles(task.material.changed);
     task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
       skipped: handles.map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
     return success;
@@ -229,7 +235,7 @@ test("64c reference material is genuinely non-empty, capped and receipted when c
     expect(task.material.processed).toContain("Current pool knowledge outside this range:");
     expect(task.material.processed).toContain("omitted");
     expect(tokens(task.material.processed)).toBeLessThanOrEqual(task.admittedProcessedInputCap);
-    const supplied = [...task.material.processed.matchAll(/\[K\d+@\d+\]/g)].length;
+    const supplied = [...task.material.processed.matchAll(/\[K\d+#[a-z]+\]/g)].length;
     expect(supplied).toBeGreaterThan(0);
     expect(supplied).toBeLessThan(references.length);
     return success;

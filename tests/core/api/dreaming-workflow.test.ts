@@ -19,7 +19,8 @@ const prompt = loadPrompt("dreaming.md"), active: ReturnType<typeof TraceMemory>
 afterEach(() => { for (const memory of active.splice(0)) memory.close(); });
 const success = { outcome: "success", output: "scripted fixture complete", request: { fixture: "dreaming-workflow" } } as const;
 const example = (id: string) => { const found = fixture.examples.find(value => value.id === id); if (!found) throw new Error(`Missing ${id}`); return found; };
-const handle = (item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@${item.commit}`;
+const handle = (state: ReturnType<typeof seeded>, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}#${state.store.versionTag(item.knowledgeId, item.commit)}`;
+const history = (state: ReturnType<typeof seeded>, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@v${state.store.versionOrdinal(item.knowledgeId, item.commit)}`;
 
 function seeded(parents: ParentExample[]) {
   const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unexpected phase"); });
@@ -86,7 +87,7 @@ test("85: a pending-triggered deterministic Dreamer still archives until its sel
   const outcome = await state.scenarios.run(state.memory, state.target, task => {
     task.acknowledgeRequest();
     const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [
-      { op: "archive", id: handle(state.items[0]!), supports: [], reason: "Reviewed low-value routine progress retired to fit budget" }],
+      { op: "archive", id: handle(state, state.items[0]!), supports: [], reason: "Reviewed low-value routine progress retired to fit budget" }],
       skipped: [] }));
     expect(receipt.committed).toHaveLength(1);
     expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
@@ -100,19 +101,19 @@ test("85: a pending-triggered deterministic Dreamer still archives until its sel
 
 test("35c faithful merge keeps authority, conditions, exception and rendered topics through a real pool run", async () => {
   const reviewed = example("faithful-authority-merge"), body = reviewed.result as unknown as ParentExample, state = seeded(reviewed.parents);
-  let merged!: { knowledgeId: number; commit: number };
+  let merged!: { knowledgeId: number; version: string };
   const outcome = await state.scenarios.run(state.memory, state.target, task => {
     const write = task.tools.find(tool => tool.name === "memory")!;
-    merged = JSON.parse(write.execute({ operations: [{ op: "merge", id: handle(state.items[0]!), absorb: [handle(state.items[1]!)],
+    merged = JSON.parse(write.execute({ operations: [{ op: "merge", id: handle(state, state.items[0]!), absorb: [handle(state, state.items[1]!)],
       ...body, supports: [], reason: "Reviewed complete claims retain authority, condition, exception, and subjects" }],
-      skipped: [{ knowledge: handle(state.trigger), because: "fixture trigger has no maintenance meaning" }] })).committed[0];
+      skipped: [{ knowledge: history(state, state.trigger), because: "fixture trigger has no maintenance meaning" }] })).committed[0];
     expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return success;
   });
   expect(outcome.outcome).toBe("success");
   const current = state.store.currentCommit(merged.knowledgeId, state.target)[0]!;
   expect(current).toMatchObject({ text: body.text, category: body.category, scope: body.scope, topics: [...body.topics].sort() });
-  const rendered = state.memory.trace(handle(merged));
+  const rendered = state.memory.trace(merged.version);
   expect(rendered).toContain("artifacts may be prepared before deployment");
   expect(rendered).toContain('topics: ["artifact-preparation","deployment","offline-runtime"]');
 });
@@ -122,9 +123,9 @@ test("35c archive and no-op skip preserve the compared survivor and original no-
   const disposition = reviewed.result as { archiveParent: number; survivorParent: number; reason: string };
   const state = seeded(reviewed.parents), archived = state.items[disposition.archiveParent]!, survivor = state.items[disposition.survivorParent]!;
   const outcome = await state.scenarios.run(state.memory, state.target, task => {
-    const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", id: handle(archived), supports: [], reason: disposition.reason }],
-      skipped: [{ knowledge: handle(survivor), because: "Compared survivor already states the claim" },
-        { knowledge: handle(state.trigger), because: "fixture trigger has no maintenance meaning" }] }));
+    const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", id: handle(state, archived), supports: [], reason: disposition.reason }],
+      skipped: [{ knowledge: history(state, survivor), because: "Compared survivor already states the claim" },
+        { knowledge: history(state, state.trigger), because: "fixture trigger has no maintenance meaning" }] }));
     expect(receipt.committed).toHaveLength(1);
     return success;
   });

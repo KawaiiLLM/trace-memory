@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
+import { skipRest as skipAll } from "../../dreaming-skips.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -30,9 +31,6 @@ function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>) {
 }
 
 const ok = { outcome: "success", output: "done", request: { exact: "request" } } as const;
-const skipAll = (task: DreamingAgentInput) => task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
-  skipped: [...new Set([...task.material.changed.matchAll(/K\d+@\d+/g)].map(match => match[0]))]
-    .map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
 
 test("67: admission, freeze, final check and consumption have bounded independent projections", async () => {
   let admissionGraphs = -1;
@@ -61,7 +59,7 @@ test("64c facade freezes one due pool and terminal success processes its exact c
   expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: true });
   const result = await f.memory.dream(f.target);
   expect(result.outcome).toBe("success");
-  expect(seen.material.changed).toContain(`K${item.knowledgeId}@${item.commit}`);
+  expect(seen.material.changed).toContain(`K${item.knowledgeId}@v${f.store.versionOrdinal(item.knowledgeId, item.commit)}`);
   expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all()).toEqual([{ pool, revision_id: item.commit }]);
   expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: false });
   expect(f.memory.progress(f.session.id, "main", f.target.headTurnId)).toMatchObject({ knowledge: 1, changedKnowledge: 0 });
@@ -103,15 +101,15 @@ test("64c facade cancellation before a commit closes the range without processin
   expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
 });
 
-test("64c cancelled run after a scope-changing commit processes the frozen source and resulting owner", async () => {
+test("64c cancelled run after a scope-changing commit processes only its resulting owner", async () => {
   const controller = new AbortController();
   let output = 0;
   const f = fixture(async task => {
     task.acknowledgeRequest();
     const memory = task.tools.find(tool => tool.name === "memory")!;
-    const committed = JSON.parse(memory.execute({ operations: [{ op: "update", id: task.material.changed.match(/K\d+@\d+/)![0],
+    const committed = JSON.parse(memory.execute({ operations: [{ op: "update", id: `K${input.knowledgeId}#${f.store.versionTag(input.knowledgeId, input.commit)}`,
       text: "moved global rule", category: "constraint", scope: "global", supports: [], topics: [], reason: "scope change" }], skipped: [] })).committed;
-    output = committed[0].commit;
+    output = f.store.resolveVersionOrdinal(committed[0].knowledgeId, Number(committed[0].version.split("@v")[1]));
     return await new Promise<RunAgentResult>(resolve => task.signal!.addEventListener("abort",
       () => resolve({ outcome: "cancelled", output: "cancelled", request: { exact: "request" } }), { once: true }));
   });
@@ -139,10 +137,10 @@ test.each([
     task = input; task.acknowledgeRequest();
     if (committed) {
       const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
-        op: "update", id: task.material.changed.match(/K\d+@\d+/)![0], text: "maintained rule",
+        op: "update", id: `K${item.knowledgeId}#${f.store.versionTag(item.knowledgeId, item.commit)}`, text: "maintained rule",
         category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain",
       }], skipped: [] }));
-      output = receipt.committed[0].commit;
+      output = f.store.resolveVersionOrdinal(receipt.committed[0].knowledgeId, Number(receipt.committed[0].version.split("@v")[1]));
     }
     entered(); await held;
     return { outcome: "cancelled", output: "stopped", request: { exact: "request" } };
@@ -161,7 +159,7 @@ test.each([
     expect(f.store.acquireClaim(f.target, "dreaming", "other-executor")).toBeNull();
     const before = f.store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions").get();
     const late = task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
-      op: "archive", id: `K${item.knowledgeId}@${output || item.commit}`, supports: [], reason: "late forbidden write",
+      op: "archive", id: `K${item.knowledgeId}#${f.store.versionTag(item.knowledgeId, output || item.commit)}`, supports: [], reason: "late forbidden write",
     }], skipped: [] });
     expect(late).toBe("rejected: run has finished");
     expect(f.store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions").get()).toEqual(before);
@@ -188,15 +186,15 @@ test.each(["absorbed", "survivor", "explicit"] as const)("64c merge shorthand co
     const write = task.tools.find(tool => tool.name === "memory")!;
     const trace = task.tools.find(tool => tool.name === "trace")!;
     if (mode === "survivor") {
-      const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: `K${older.knowledgeId}@${older.commit}`,
+      const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
         text: latest, category: "constraint", scope: "project", supports: [], topics: [], reason: "newer commit of older identity" }], skipped: [] }));
-      older = updated.committed[0];
-      trace.execute({ address: `K${older.knowledgeId}@${older.commit}`, itemBudget: null });
+      older = { knowledgeId: updated.committed[0].knowledgeId, commit: f.store.resolveVersionOrdinal(updated.committed[0].knowledgeId, Number(updated.committed[0].version.split("@v")[1])) };
+      trace.execute({ address: updated.committed[0].version, itemBudget: null });
     }
-    const receipt = JSON.parse(write.execute({ operations: [{ op: "merge", id: `K${older.knowledgeId}@${older.commit}`,
-      absorb: [`K${newer.knowledgeId}@${newer.commit}`], ...(mode === "explicit" ? { text: explicit } : {}),
+    const receipt = JSON.parse(write.execute({ operations: [{ op: "merge", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
+      absorb: [`K${newer.knowledgeId}#${f.store.versionTag(newer.knowledgeId, newer.commit)}`], ...(mode === "explicit" ? { text: explicit } : {}),
       category: "constraint", scope: "project", supports: [], topics: ["merged"], reason: "same conclusion" }], skipped: [] }));
-    merged = receipt.committed[0].commit;
+    merged = f.store.resolveVersionOrdinal(receipt.committed[0].knowledgeId, Number(receipt.committed[0].version.split("@v")[1]));
     return ok;
   });
   older = f.create("project", "original earlier conclusion");
