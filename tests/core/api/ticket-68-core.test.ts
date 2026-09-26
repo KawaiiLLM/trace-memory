@@ -88,7 +88,7 @@ test("68 external cancellation remains cancellation when its native worker coope
 test.each(["success", "failure", "cancelled"] as const)("68 %s consumes an accepted skip but leaves untouched frozen versions pending", async outcome => {
   const f = setup(async task => {
     task.acknowledgeRequest();
-    const handles = [...task.material.changed.matchAll(/K\d+@\d+/g)].map(match => match[0]);
+    const handles = [...task.material.changed.matchAll(/K\d+@v\d+/g)].map(match => match[0]);
     const receipt = task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [{ knowledge: handles[0], because: "already correct" }] });
     expect(receipt).toContain("committed");
     return { outcome, output: outcome, request: exactRequest };
@@ -105,11 +105,12 @@ test("68 own output is processed, its superseded parent needs no processing row,
   let output = 0;
   const f = setup(async task => {
     task.acknowledgeRequest();
-    const handle = task.material.changed.match(/K\d+@\d+/)![0];
+    const handle = task.text.match(/K\d+#[a-z]{4,}/)![0];
     const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
       op: "update", id: handle, text: "updated", category: "constraint", scope: "project", supports: [], topics: [], reason: "maintained",
     }], skipped: [] }));
-    output = receipt.committed[0].commit;
+    expect(receipt.committed[0].version).toBe("K1@v2");
+    output = f.store.resolveVersionOrdinal(1, 2);
     return { outcome: "failure", output: "cut", request: exactRequest };
   });
   const first = f.create("project", "first ".repeat(20));

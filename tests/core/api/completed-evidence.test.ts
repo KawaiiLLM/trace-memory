@@ -5,7 +5,8 @@ import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 const time = "2026-09-01T00:00:00Z";
 function setup() {
   let run: (input: NotingAgentInput) => void = () => {};
-  const m = TraceMemory(":memory:", async input => {
+  const m = TraceMemory(":memory:", async raw => {
+    const input = raw as NotingAgentInput;
     if (input.kind !== "noting") throw new Error("Only Noting is expected");
     input.reportRequest({ fixture: "source evidence" });
     run(input);

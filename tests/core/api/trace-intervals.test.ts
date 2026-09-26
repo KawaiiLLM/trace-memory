@@ -48,12 +48,14 @@ async function updateKnowledge(path: { sessionId: number; branch: string; headTu
   const result = await scenarios.run(memory, target, input => {
     input.reportRequest({ fixture: "trace interval revision" });
     const trace = input.tools.find(tool => tool.name === "trace")!;
-    fullRead(trace, `K${base.knowledgeId}@${base.commit}`);
+    const tag = `K${base.knowledgeId}#${memory.store.versionTag(base.knowledgeId, base.commit)}`;
+    fullRead(trace, tag);
     const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [
-      { op: "update", id: `K${base.knowledgeId}@${base.commit}`, text, category: "mechanism", scope: "session", supports: [`F${factId}`], reason: "test", topics: [] },
-      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${factId}`], reason: "Retire the explicit interval trigger." },
+      { op: "update", id: tag, text, category: "understanding", scope: "session", supports: [`F${factId}`], reason: "test", topics: [] },
+      { op: "archive", id: `K${trigger.knowledgeId}#${memory.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: [`F${factId}`], reason: "Retire the explicit interval trigger." },
     ], skipped: [] }));
-    changed = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === base.knowledgeId)!;
+    const item = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === base.knowledgeId)!;
+    changed = { knowledgeId: item.knowledgeId, commit: memory.store.resolveVersionOrdinal(item.knowledgeId, Number(/@v(\d+)$/.exec(item.version)![1])) };
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "revision complete", request: { fixture: "trace interval revision" } };
   });
@@ -257,26 +259,26 @@ test("25d: the `..` grammars keep their single meaning beside the interval, and 
 
   const created = store.commitConsolidationRun({ path: { sessionId, headTurnId: turnId, branch: "main" },
     run: { kind: "consolidation", sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "create", handle: "h1", author: "fake", text: "first", category: "mechanism", scope: "session",
+    operations: [{ op: "create", handle: "h1", author: "fake", text: "first", category: "understanding", scope: "session",
       supports: [ids[0]!], reason: "test", topics: [], createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const { knowledgeId, commit } = created.committed[0]!;
   const updated = await updateKnowledge({ sessionId, headTurnId: turnId, branch: "main" }, ids[0]!, { knowledgeId, commit }, "second");
   const diff = memory.trace(`K${knowledgeId}@${commit}..K${knowledgeId}@${updated.commit}`);
   expect(diff).toContain("{+second+}");
-  expect(memory.trace(`K${knowledgeId}..`)).toContain("commit tree (all branches)");
+  expect(memory.trace(`K${knowledgeId}..`)).toContain("history (all branches)");
 
   const description = toolDefinitions.find(t => t.name === "trace")!.description;
-  for (const form of ["F81,F90,F95", "F81-F90", "F81-F90,F95", "F<n>..", "K1@57..K1@61"]) expect(description).toContain(form);
+  for (const form of ["F81,F90,F95", "F81-F90", "F81-F90,F95", "F<n>..", "K1@v2..v5"]) expect(description).toContain(form);
   expect(description).toContain("cap counts output lines (default 100)"); // the existing unit, documented as it is
 });
 
-test("25d accounting: a mixed batch read is recorded whole and keeps knowledge read-base tracking", async () => {
+test("25d/92: mixed batch reads keep exact tags without granting manual update authority", async () => {
   const { sessionId, turnId, ids } = facts(3);
   const store = memory.store;
   const path = { sessionId, headTurnId: turnId, branch: "main" };
   const created = store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "create", handle: "h1", author: "fake", text: "first", category: "mechanism", scope: "session",
+    operations: [{ op: "create", handle: "h1", author: "fake", text: "first", category: "understanding", scope: "session",
       supports: [ids[0]!], reason: "test", topics: [], createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const { knowledgeId, commit } = created.committed[0]!;
@@ -284,10 +286,11 @@ test("25d accounting: a mixed batch read is recorded whole and keeps knowledge r
   // The commit this run read at its start is superseded while the run is open.
   const superseded = await updateKnowledge(path, ids[0]!, { knowledgeId, commit }, "second");
   const tip = superseded.commit;
-  const update = (base: number) => knowledge!.execute({ operations: [{ op: "update", id: `K${knowledgeId}@${base}`, text: "third",
-    category: "mechanism", scope: "session", supports: [`F${ids[0]!}`], reason: "test", topics: [] }], skipped: [] });
-  expect(update(tip)).toContain("rejected:"); // the new tip has not been read by this run
-  const read = trace!.execute({ address: `K${knowledgeId}@${tip},F1-F3` });
-  expect(read).toContain("[F2]"); expect(read).toContain(`[K${knowledgeId}@${tip}]`);
+  const tag = `K${knowledgeId}#${store.versionTag(knowledgeId, tip)}`;
+  const update = (base: number) => knowledge!.execute({ operations: [{ op: "update", id: `K${knowledgeId}#${store.versionTag(knowledgeId, base)}`, text: "third",
+    category: "understanding", scope: "session", supports: [`F${ids[0]!}`], reason: "test", topics: [] }], skipped: [] });
+  expect(update(tip)).toContain("update belongs to the Dreamer"); // authority is independent of read completion
+  const read = trace!.execute({ address: `K${knowledgeId}@v2,F1-F3` });
+  expect(read).toContain("[F2]"); expect(read).toContain(`[${tag}]`);
   expect(update(tip)).toContain("update belongs to the Dreamer"); // complete reads do not grant manual maintenance authority
 });

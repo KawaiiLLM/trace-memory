@@ -13,7 +13,10 @@ let memory: ReturnType<typeof sourceSeededMemory>, calls: number, admittedScenar
 beforeEach(() => { calls = 0;
   const fallback = async (raw: unknown) => { calls++;
     const input = raw as { kind: string; tools: { name: string; execute(input: unknown): string }[] };
-    if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    if (input.kind === "noting") {
+      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    }
     return { outcome: "success" as const, output: [], request: {} };
   };
   admittedScenarios = new AdmittedDreamerScenarios(fallback);
@@ -34,7 +37,7 @@ function noting(sessionId: number, turnId: number, text = fixture.base, branch =
   if (!result.ok) throw new Error(result.problems.join("\n"));
   return result;
 }
-function knowledge(sessionId: number, factId: number, category: "constraint" | "open" | "dispute" | "goal" | "mechanism" | "term" | "reference" = "constraint",
+function knowledge(sessionId: number, factId: number, category: "constraint" | "open" | "goal" | "understanding" | "reference" = "constraint",
   scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time, topics: string[] = [], historicalManual = false) {
   const result = memory.store.commitConsolidationRun({ run: { sessionId, branch: "main", kind: historicalManual ? "manual" : "consolidation", createdAt: time },
     operations: [{ op: "create", topics, reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
@@ -70,8 +73,11 @@ const defaultWindows = () => {
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
   const { s, t } = populated();
   turn(s.id, rawFixture[1].userPrompt, t.id);
-  expect(memory.inject(s.id)).toBe(golden("inject"));
-  expect(compacted(memory.compact(s.id, "main"))).toBe(golden("compact"));
+  const knowledge = `<knowledge>\nItems are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] 地形层和高度层一起读。\n  change supports: F1\n</knowledge>`;
+  expect(memory.inject(s.id)).toBe(knowledge);
+  // 92 replaces only the Knowledge format; the historical fact and Raw golden stays byte-identical.
+  const episodic = golden("compact").slice(golden("compact").indexOf("\n\n<episodic>"));
+  expect(compacted(memory.compact(s.id, "main"))).toBe(knowledge + episodic);
   expect(calls).toBe(0);
 });
 
@@ -91,23 +97,27 @@ test("visibility includes global, own project and own session only, excluding in
   memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "manual", createdAt: time },
     operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: archived, baseCommit: archived, supports: [f.id], createdAt: time }] });
   for (const block of [memory.inject(s.id), compacted(memory.compact(s.id))]) {
-    expect(block).toContain(`[K${own}@${own}]`); expect(block).toContain(`[K${global}@${global}]`);
-    for (const id of [other, outside, archived]) expect(block).not.toContain(`[K${id}@`);
+    expect(block).toContain(`[K${own}#${memory.store.versionTag(own, own)}]`); expect(block).toContain(`[K${global}#${memory.store.versionTag(global, global)}]`);
+    for (const id of [other, outside, archived]) expect(block).not.toContain(`[K${id}#`);
   }
 });
 
 test("64c category display and commit recency retain whole newer items; lines are never escaped", () => {
   const { s, f } = populated();
-  const ids = ["reference", "term", "mechanism", "goal", "dispute", "open"].map((c) => knowledge(s.id, f.id, c as "goal"));
+  const categories = ["reference", "understanding", "goal", "open"] as const;
+  const ids = categories.map(category => knowledge(s.id, f.id, category));
   // The renderer must also handle a large single body manually stored before any worker runs.
   const earlier = knowledge(s.id, f.id, "constraint", "project", "<&> " + "word ".repeat(6_000), "2020", [], true);
   const all = memory.inject(s.id);
-  expect(all.indexOf(`[K${earlier}@`)).toBeGreaterThan(all.indexOf("[K1@")); // older timestamp, newer commit
+  expect(all.indexOf(`[K${earlier}#`)).toBeGreaterThan(all.indexOf("[K1#")); // older timestamp, newer commit
   // Injected lines are trace lines byte for byte (ruling 15:14); tags only delimit blocks.
   expect(all).toContain("<&>");
   expect(all).not.toContain("&lt;");
-  const tags = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"];
-  expect(tags.map((tag) => all.indexOf(`<${tag}>`))).toEqual(tags.map((tag) => all.indexOf(`<${tag}>`)).sort((a, b) => a - b));
+  expect([...all.matchAll(/\[K(\d+)#[a-z]+\]/g)].map(match => Number(match[1]))).toEqual([1, ...ids, earlier]);
+  for (const category of ["constraint", ...categories]) {
+    expect(all).toContain(`[${category}/project]`);
+    expect(all).not.toContain(`<${category}>`); // one chronological list, not category blocks
+  }
   // 34c: the foreground cap is hard, and a zero remainder emits neither a clipped item nor an
   // omission-only block. Receipt accounting for compaction and worker material remains separate.
   setKnowledgeCapacity(memory, 5_000);
@@ -115,9 +125,8 @@ test("64c category display and commit recency retain whole newer items; lines ar
   // A binding cap drops the oldest commits regardless of category; receipts grant no body visibility.
   setKnowledgeCapacity(memory, tokens(all) - 50);
   const partial = memory.inject(s.id);
-  const kept = tags.filter(tag => partial.includes(`<${tag}>`));
-  expect(kept.length).toBeGreaterThan(0);
-  const visibleIds = [...partial.matchAll(/\[K(\d+)@/g)].map(match => Number(match[1]));
+  const visibleIds = [...partial.matchAll(/\[K(\d+)#/g)].map(match => Number(match[1]));
+  expect(visibleIds.length).toBeGreaterThan(0);
   expect(new Set(visibleIds)).toEqual(new Set([1, ...ids, earlier].sort((a, b) => b - a).slice(0, visibleIds.length)));
   expect(partial).toContain("Receipts:"); // omitted bodies remain eligible and unacknowledged
   for (const id of ids.slice(0, 4)) expect(memory.trace(`K${id}`)).toContain(`[K${id}@${id}]`);
@@ -467,7 +476,7 @@ test("branch facts use run ownership independently of audit JSON", () => {
   const s = session(), t = turn(s.id);
   const first = noting(s.id, t.id, "noted", "main");
   memory.tools({ kind: "manual", sessionId: s.id, branch: "other", currentTurnId: t.id })[2]!.execute({
-    facts: [{ category: "decision", actor: "user", text: "manual", source: [`T${t.id}#user`] }] });
+    facts: [{ text: "manual", source: [`T${t.id}#E1`] }] });
   const manual = memory.store.listRuns(s.id).at(-1)!;
   memory.store.db.exec("UPDATE run_bodies SET response = 'not JSON'"); // 79: response lives in run_bodies
   expect(memory.store.listBranchFacts(s.id, "main").map(f => f.text)).toEqual(["noted", "manual"]); // facts belong to their turn, whichever branch wrote them
@@ -598,14 +607,14 @@ test("project mark merges an undeclared own project, relabels facts and knowledg
   expect(memory.store.listProjectFacts(project.id).map((f) => f.id)).toEqual([f.id]);
   expect(memory.store.getKnowledge(e)!.projectId).toBe(project.id);
   const peer = session(project.id);
-  expect(memory.inject(peer.id)).toContain(`[K${e}@${e}]`); expect(memory.inject(peer.id)).not.toContain(`[K${own}@${own}]`);
+  expect(memory.inject(peer.id)).toContain(`[K${e}#${memory.store.versionTag(e, e)}]`); expect(memory.inject(peer.id)).not.toContain(`[K${own}#`);
   memory.declareProject(s.id, "ignored marker", "marker");
   expect(memory.store.getSession(s.id)!.projectId).toBe(project.id);
   expect(memory.store.findProjectByName("ignored marker")).toBeNull();
   memory.declareProject(s.id, "next", "mark", selected);
   expect(memory.store.getSession(peer.id)!.projectId).toBe(project.id);
   expect(memory.store.getProject(project.id)!.mergedInto).toBeNull();
-  expect(memory.inject(s.id)).toContain(`[K${own}@${own}]`);
+  expect(memory.inject(s.id)).toContain(`[K${own}#${memory.store.versionTag(own, own)}]`);
 });
 
 test("listing line caps still apply with an explicit large search token budget", () => {
@@ -629,7 +638,7 @@ test("first-prompt injection by project needs no session: global and project kno
   knowledge(s.id, f.id, "constraint", "session", "session-only");
   const byProject = memory.inject({ projectId: p });
   const bySession = memory.inject(s.id);
-  expect(byProject).toContain("[K1@");
+  expect(byProject).toContain("[K1#");
   expect(byProject).not.toContain("session-only");
   expect(bySession).toContain("session-only");
   expect(() => memory.inject({ projectId: 999 })).toThrow("does not exist");
@@ -645,29 +654,35 @@ test("search marks historical, merged and archived knowledge hits so they do not
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: selectedEntries.at(-1)!.id };
   const trigger1 = createDreamerTrigger(memory, path, n.facts[0]!.id, 1);
   let updated!: { knowledgeId: number; commit: number }, merged!: { knowledgeId: number; commit: number };
-  await admittedScenarios.run(memory, path, input => {
+  const maintained = await admittedScenarios.run(memory, path, input => {
     const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-    for (const address of [`K${a}@1`, `K${b}@${b}`, `K${c}@${c}`, `K${trigger1.knowledgeId}@${trigger1.commit}`]) trace.execute({ address, itemBudget: null });
+    const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
+    for (const address of [tag(a, 1), tag(b, b), tag(c, c), tag(trigger1.knowledgeId, trigger1.commit)]) trace.execute({ address, itemBudget: null });
     const receipt = JSON.parse(write.execute({ operations: [
-      { op: "update", id: `K${a}@1`, topics: [], reason: "Substantive correction of the recorded conclusion.", text: "Use npm for installs", category: "constraint", scope: "project", supports: ["F1"] },
-      { op: "merge", id: `K${b}@${b}`, absorb: [`K${c}@${c}`], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: ["F1"] },
-      { op: "archive", id: `K${trigger1.knowledgeId}@${trigger1.commit}`, supports: ["F1"], reason: "Retire the explicit fixture trigger." },
+      { op: "update", id: tag(a, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "Use npm for installs", category: "constraint", scope: "project", supports: ["F1"] },
+      { op: "merge", id: tag(b, b), absorb: [tag(c, c)], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: ["F1"] },
+      { op: "archive", id: tag(trigger1.knowledgeId, trigger1.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
     ], skipped: [] }));
-    updated = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === a)!;
-    merged = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === b)!;
+    expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === a)!.version).toBe(`K${a}@v2`);
+    expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === b)!.version).toBe(`K${b}@v2`);
+    updated = { knowledgeId: a, commit: memory.store.resolveVersionOrdinal(a, 2) };
+    merged = { knowledgeId: b, commit: memory.store.resolveVersionOrdinal(b, 2) };
     return { outcome: "success", output: "maintenance complete", request: { fixture: "history statuses", trigger: trigger1 } };
   });
+  expect(maintained.outcome, JSON.stringify(maintained)).toBe("success");
   const trigger2 = createDreamerTrigger(memory, path, n.facts[0]!.id, 2);
-  await admittedScenarios.run(memory, path, input => {
+  const retired = await admittedScenarios.run(memory, path, input => {
     const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-    trace.execute({ address: `K${b}@${merged.commit}`, itemBudget: null });
-    trace.execute({ address: `K${trigger2.knowledgeId}@${trigger2.commit}`, itemBudget: null });
+    const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
+    trace.execute({ address: tag(b, merged.commit), itemBudget: null });
+    trace.execute({ address: tag(trigger2.knowledgeId, trigger2.commit), itemBudget: null });
     write.execute({ operations: [
-      { op: "archive", id: `K${b}@${merged.commit}`, supports: ["F1"], reason: "Retired: the cited evidence withdraws this conclusion." },
-      { op: "archive", id: `K${trigger2.knowledgeId}@${trigger2.commit}`, supports: ["F1"], reason: "Retire the explicit fixture trigger." },
+      { op: "archive", id: tag(b, merged.commit), supports: ["F1"], reason: "Retired: the cited evidence withdraws this conclusion." },
+      { op: "archive", id: tag(trigger2.knowledgeId, trigger2.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
     ], skipped: [] });
     return { outcome: "success", output: "maintenance complete", request: { fixture: "archive merged result", trigger: trigger2 } };
   });
+  expect(retired.outcome, JSON.stringify(retired)).toBe("success");
   const hits = memory.search("pnpm", "knowledge", { versions: "all", fields: ["text", "status"] });
   expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`status: superseded by K${a}@${updated.commit}`);
   expect(hits.split("\n").find(l => l.startsWith(`[K${c}@3]`))).toContain("status: archived");
@@ -684,26 +699,29 @@ test("reads resolve any existing address: another session's history, current rev
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: selectedEntries.at(-1)!.id };
   const trigger = createDreamerTrigger(memory, path, n.facts[0]!.id, 1);
   let privateRevision!: { knowledgeId: number; commit: number };
-  await admittedScenarios.run(memory, path, input => {
+  const scoped = await admittedScenarios.run(memory, path, input => {
     const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-    trace.execute({ address: `K${k}@1`, itemBudget: null });
-    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
+    const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
+    trace.execute({ address: tag(k, 1), itemBudget: null });
+    trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null });
     const receipt = JSON.parse(write.execute({ operations: [
-      { op: "update", id: `K${k}@1`, topics: [], reason: "Substantive correction of the recorded conclusion.", text: "private goal now",
+      { op: "update", id: tag(k, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "private goal now",
         category: "goal", scope: "session", supports: ["F1"] },
-      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: ["F1"], reason: "Retire the explicit fixture trigger." },
+      { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
     ], skipped: [] }));
-    privateRevision = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === k)!;
+    expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === k)!.version).toBe(`K${k}@v2`);
+    privateRevision = { knowledgeId: k, commit: memory.store.resolveVersionOrdinal(k, 2) };
     return { outcome: "success", output: "maintenance complete", request: { fixture: "cross-session history", trigger } };
   });
+  expect(scoped.outcome, JSON.stringify(scoped)).toBe("success");
   const peer = session(memory.store.getSession(s.id)!.projectId), pt = turn(peer.id, "peer raw");
   memory.store.updateTurn(pt.id, { assistantText: "ok" });
   const trace = memory.tools({ kind: "manual", sessionId: peer.id, branch: "main", currentTurnId: pt.id }).find((d) => d.name === "trace")!;
   expect(memory.search("shared-then-private", "knowledge", { sessionId: peer.id })).not.toContain(`[K${k}@`);
-  expect(trace.execute({ address: `K${k}@1` })).toContain("shared-then-private goal");
+  expect(trace.execute({ address: `K${k}@v1` })).toContain("shared-then-private goal");
   expect(trace.execute({ address: `K${k}` })).not.toContain("shared-then-private goal");
-  expect(trace.execute({ address: `K${k}@${privateRevision!.commit}` })).toContain("private goal now");
-  expect(trace.execute({ address: `K${k}@${privateRevision!.commit + 100}` })).toContain("does not exist");
+  expect(trace.execute({ address: `K${k}@v2` })).toContain("private goal now");
+  expect(trace.execute({ address: `K${k}@v999` })).toContain(`unknown knowledge history K${k}@v999`);
 });
 
 // ---- 21b 2026-09-08: topic grouping and literal label retrieval ----
@@ -711,8 +729,8 @@ test("reads resolve any existing address: another session's history, current rev
 test("21b 2026-09-08: one topic spans categories, one commit joins two groups, and a label absent from the text finds that commit once", () => {
   const { s, f, e } = populated();
   const a = knowledge(s.id, f.id, "constraint", "project", "The extractor keeps every raw entry", time, ["extraction", "database"]);
-  const b = knowledge(s.id, f.id, "mechanism", "project", "One row per entry, written in the same transaction", time, ["database"]);
-  const c = knowledge(s.id, f.id, "term", "project", "An entry is one native message", time);
+  const b = knowledge(s.id, f.id, "understanding", "project", "One row per entry, written in the same transaction", time, ["database"]);
+  const c = knowledge(s.id, f.id, "understanding", "project", "An entry is one native message", time);
   const groups = memory.topicGroups(s.id);
   // One subject holds knowledge of two categories; the groups reference the exact commits.
   expect(groups.topics).toEqual([

@@ -147,13 +147,8 @@ test("47: head and rewind N/C material and eligibility ignore sibling-only and t
     input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!;
     const write = input.tools.find(tool => tool.name === "memory")!;
-    const addressed = [
-      `K${maintained.knowledgeId}@${maintained.commit}`,
-      `K${archived.knowledgeId}@${archived.commit}`,
-      `K${survivor.knowledgeId}@${survivor.commit}`,
-      `K${victim.knowledgeId}@${victim.commit}`,
-      `K${trigger.knowledgeId}@${trigger.commit}`,
-    ];
+    const addressed = [maintained, archived, survivor, victim, trigger]
+      .map(item => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`);
     for (const address of addressed) completeRead(trace, address);
     const change = { category: "open", scope: "project", topics: [] as string[], supports: [`F${siblingFact.id}`], reason: "sibling-only mutation" };
     maintenanceReceipt = JSON.parse(write.execute({ operations: [
@@ -161,7 +156,7 @@ test("47: head and rewind N/C material and eligibility ignore sibling-only and t
       { op: "archive", id: addressed[1], supports: [`F${siblingFact.id}`], reason: "sibling-only archive" },
       { op: "merge", id: addressed[2], absorb: [addressed[3]], ...change, text: "sibling-only merge" },
       { op: "archive", id: addressed[4], supports: [`F${siblingFact.id}`], reason: "retire the explicit sibling trigger" },
-    ], skipped: [{ knowledge: `K${siblingOnly.knowledgeId}@${siblingOnly.commit}`,
+    ], skipped: [{ knowledge: `K${siblingOnly.knowledgeId}@v1`,
       because: "The new sibling-only identity is left unchanged; its visibility is asserted separately." }] }));
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "sibling maintenance complete", request };

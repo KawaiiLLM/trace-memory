@@ -91,7 +91,7 @@ test("64c zero changed-pool cap still dispatches the oldest pending revision; fa
   zeroBase(f.memory);
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   expect(f.captured).toHaveLength(1);
-  expect(f.captured[0]!.material.changed).toContain(`[K${created.knowledgeId}@${created.commit}]`);
+  expect(f.captured[0]!.material.changed).toContain(`New K${created.knowledgeId}@v1`);
   expect(f.memory.store.pendingVersions(`project:${f.memory.store.getSession(f.session.id)!.projectId}`, f.target)
     .map(value => value.revisionId)).toEqual([created.commit]);
   expect(f.memory.store.getClaim(f.session.id, "dreaming")).toBeNull();

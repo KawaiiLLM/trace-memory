@@ -50,7 +50,9 @@ function create(f: Fixture, branch: string, text: string) {
     .find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text, category: "reference", scope: "project",
       supports: [`F${f.fact}`], topics: ["test-fixture"], reason: "Deterministic Dreamer input." }], skipped: [] }));
   if (!receipt.committed?.[0]) throw new Error(JSON.stringify(receipt));
-  return receipt.committed[0] as { knowledgeId: number; commit: number };
+  const item = receipt.committed[0] as { knowledgeId: number; version: string };
+  expect(item.version).toBe(`K${item.knowledgeId}@v1`);
+  return { knowledgeId: item.knowledgeId, commit: f.memory.store.resolveVersionOrdinal(item.knowledgeId, 1) };
 }
 
 async function diverge(f: Fixture, branch: "left" | "right", triggerEntryId: number, text: string) {
@@ -61,16 +63,17 @@ async function diverge(f: Fixture, branch: "left" | "right", triggerEntryId: num
     const request = { branch }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!;
     const write = input.tools.find(tool => tool.name === "memory")!;
+    const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
     drainTrace({ trace: (next, options) => trace.execute({ address: next, ...options }) },
-      trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, full: true, itemBudget: null }));
-    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null });
+      trace.execute({ address: tag(f.base.knowledgeId, f.base.commit), full: true, itemBudget: null }));
+    trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null });
     const receipt = write.execute({ operations: [
-      { op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`, text, category: "constraint", scope: "project",
+      { op: "update", id: tag(f.base.knowledgeId, f.base.commit), text, category: "constraint", scope: "project",
         supports: [`F${f.branchFacts[branch]}`], topics: [], reason: `${branch} evidence-driven divergence.` },
-      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [], reason: "Retire trigger." },
+      { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire trigger." },
     ], skipped: [] });
     expect(receipt).toContain('"committed"');
-    skipRest(input, [`K${f.base.knowledgeId}@${f.base.commit}`, `K${trigger.knowledgeId}@${trigger.commit}`]);
+    skipRest(input, [`K${f.base.knowledgeId}@v1`, `K${trigger.knowledgeId}@v1`]);
     return { outcome: "success", output: "maintained", request };
   });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
@@ -107,8 +110,8 @@ test("64b F1: oversized unrelated history does not pin a fitting pending identit
       return { outcome: "success", output: "reviewed", request: {} };
     });
   expect(result.outcome).toBe("success");
-  expect(changed).toContain(`[K${pending.knowledgeId}@${pending.commit}]`);
-  expect(changed).not.toContain(`[K${f.base.knowledgeId}@${left.id}]`);
-  expect(changed).not.toContain(`[K${f.base.knowledgeId}@${right.id}]`);
+  expect(changed).toContain(`New K${pending.knowledgeId}@v1`);
+  expect(changed).not.toContain(`K${f.base.knowledgeId}@v2`);
+  expect(changed).not.toContain(`K${f.base.knowledgeId}@v3`);
   expect(tokens(changed)).toBeLessThanOrEqual(15000);
 });

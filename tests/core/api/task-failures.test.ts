@@ -37,8 +37,9 @@ for (const final of ["success", "failure"] as const) test(`32c: fork refusal + $
   m.close(); // crash/restart observation must not promote the refused run's failure audit
   m = open(db, async raw => {
     if (final === "success") {
-      raw.tools.find(t => t.name === "note")!.execute({ facts: [] });
-      raw.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+      const input = raw as NotingAgentInput;
+      input.tools.find(t => t.name === "note")!.execute({ facts: [] });
+      input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
     }
     return { outcome: final, output: final, request };
   });
@@ -121,19 +122,42 @@ test.each([false, true])("92: corrected refusal resets only after atomic termina
   expect((await note(m, target)).outcome).toBe("dropped");
   expect(streaks(m)[0]!.count).toBe(1); m.store.releaseClaim(claim);
   const db = file();
+  let attempt = 0;
   const good = open(db, async raw => {
     const tools = (raw as NotingAgentInput).tools;
     expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "invalid citation", source: ["T999#E1"] }] })).toContain("rejected");
     expect(tools.find(t => t.name === "note")!.execute({ facts: [], drop: ["$1"] })).not.toContain("rejected:");
-    expect(tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).not.toContain("rejected:");
+    const text = `accepted attempt ${++attempt}`;
+    expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ text, source: [`T${t.headTurnId}#E1`] }] })).toContain("held: $2");
+    expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text,
+      category: "constraint", scope: "session", supports: ["$2"], topics: [], reason: "joint extraction" }], skipped: [] })).toContain("held");
+    expect(good.store.listSessionFacts(t.sessionId)).toEqual([]);
+    expect(good.store.listKnowledgeRevisions()).toEqual([]);
     return { outcome: "success", output: "corrected", request };
   });
   const t = seed(good);
-  if (auditFailure) vi.spyOn(good.store, "updateRun").mockImplementation(() => { throw Error("audit unavailable"); });
+  if (auditFailure) good.store.db.exec(`CREATE TEMP TRIGGER reject_success_audit BEFORE INSERT ON runs
+    WHEN NEW.outcome = 'success' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`);
   const result = await note(good, t);
   expect(result.outcome, JSON.stringify(result)).toBe(auditFailure ? "failure" : "success");
   expect(streaks(good)[0]!.count).toBe(auditFailure ? 1 : 0);
   expect(good.pendingEntries(t.sessionId, t.branch, t.headTurnId)).toHaveLength(auditFailure ? 1 : 0);
+  if (auditFailure) {
+    expect("problems" in result && result.problems?.join(" ")).toContain("audit unavailable");
+    expect(good.store.listSessionFacts(t.sessionId)).toEqual([]);
+    expect(good.store.listKnowledgeRevisions()).toEqual([]);
+    expect(good.store.listRuns(t.sessionId).map(run => run.outcome)).toEqual(["failure"]);
+    expect(good.store.db.prepare("SELECT outcome FROM task_executions").all()).toEqual([{ outcome: "failure" }]);
+    good.store.db.exec("DROP TRIGGER reject_success_audit");
+    const retried = await note(good, t);
+    expect(retried.outcome, JSON.stringify(retried)).toBe("success");
+    expect(streaks(good)[0]!.count).toBe(0);
+    expect(good.store.db.prepare("SELECT outcome FROM task_executions ORDER BY rowid").all()).toEqual([{ outcome: "failure" }, { outcome: "success" }]);
+  }
+  const text = `accepted attempt ${auditFailure ? 2 : 1}`;
+  expect(good.store.listSessionFacts(t.sessionId).map(fact => fact.text)).toEqual([text]);
+  expect(good.store.listKnowledgeRevisions().map(revision => revision.text)).toEqual([text]);
+  expect(good.pendingEntries(t.sessionId, t.branch, t.headTurnId)).toEqual([]);
   expect(m.store.db.prepare("SELECT head FROM task_failures").get()!.head).toBe(head);
 });
 

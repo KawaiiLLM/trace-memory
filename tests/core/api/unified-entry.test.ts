@@ -1,18 +1,19 @@
 import { expect, test } from "vitest";
-import { TraceMemory, DEFAULT_CONFIG, renderEntry, tokens } from "../../../src/core/api/index.ts";
+import { TraceMemory, DEFAULT_CONFIG, renderEntry, tokens, type NotingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 const time = "2026-09-01T00:00:00Z";
 function fixture() {
-  const m = TraceMemory(":memory:", async () => { throw new Error("offline test"); }, {}, undefined, piSourceBlocks);
+  let run: (input: NotingAgentInput) => Promise<RunAgentResult> = async () => { throw new Error("offline test"); };
+  const m = TraceMemory(":memory:", raw => run(raw as NotingAgentInput), {}, undefined, piSourceBlocks);
   const project = m.store.createProject({ name: "p", declaredBy: "mark" });
-  const session = m.store.createSession({ host: "fake", projectId: project.id, startedAt: time, firstReplyAt: time, enrollmentChoice: true });
+  const session = m.store.createSession({ host: "pi:entry", projectId: project.id, startedAt: time, firstReplyAt: time, enrollmentChoice: true });
   const turn = m.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "question", startedAt: time });
   let serial = 0;
   const append = (role: "user" | "assistant" | "toolResult", content: any, calls: any[] = []) => m.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "test", nativeId: String(++serial), role,
     text: role === "toolResult" ? "" : typeof content === "string" ? content : content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n"),
     raw: JSON.stringify({ role, content: Array.isArray(content) ? content.map((block: any) => block.type === "toolCall" ? { ...block, name: calls.find(c => c.callId === block.id)?.name, arguments: JSON.parse(calls.find(c => c.callId === block.id)?.input ?? "{}") } : block) : content,
       ...(role === "toolResult" ? { toolCallId: calls[0]?.callId, isError: false } : {}) }), calls });
-  return { m, turn, session, append };
+  return { m, turn, session, append, setNoter: (agent: typeof run) => { run = agent; } };
 }
 test("33: entry lists retain repeats/order; ranges tolerate sibling gaps; role and text collections preserve blocks", () => {
   const f = fixture();
@@ -58,18 +59,26 @@ test("33: Turn budgets each entry, entry budgets each block; null disables each 
     expect(() => f.m.trace(`T${f.turn.id}`, { full: true, toolCallBudget: 100 })).toThrow(/conflicts/);
   } finally { f.m.close(); }
 });
-test("33: exact frozen entry/block citations bind only that occurrence; placeholders are not evidence", () => {
+test("92: whole-entry frozen citations bind only that occurrence; block selectors and placeholders are not evidence", async () => {
   const f = fixture();
   try {
     const a = f.append("user", "question"), b = f.append("assistant", "first"), c = f.append("assistant", "sibling");
     f.m.selectEntries(f.session.id, "main", [a.id, b.id, c.id]);
-    const context = { kind: "noting" as const, sessionId: f.session.id, branch: "main", range: { from: `S${f.session.id}/T${f.turn.id}`, to: `S${f.session.id}/T${f.turn.id}` }, entryIds: [a.id, b.id], readKnowledgeCommits: [] };
-    const noter = f.m.tools(context).find(t => t.name === "note")!;
-    const fact = (source: string) => ({ facts: [{ category: "observation", actor: "agent", text: "statement", source: [source] }] });
-    for (const source of [`T${f.turn.id}#E3`, `T${f.turn.id}#E2@thinking`, `T${f.turn.id}#E2@nonexistent`]) expect(noter.execute(fact(source))).toContain("rejected:");
-    const receipt = JSON.parse(noter.execute(fact(`T${f.turn.id}#E2@text`)));
-    expect(f.m.store.factEntries(receipt.factIds[0])).toEqual([b.id]);
-    expect(f.m.store.factCoveredByRaw(f.m.store.getFact(receipt.factIds[0])!, new Set([b.id]))).toBe(true);
+    f.setNoter(async input => {
+      const noter = input.tools.find(t => t.name === "note")!;
+      const fact = (source: string) => ({ facts: [{ slot: "$1", text: "statement", source: [source] }] });
+      expect(noter.execute({ facts: [{ text: "statement", source: [`T${f.turn.id}#E3`] }] })).toContain("rejected:");
+      for (const source of [`T${f.turn.id}#E2@thinking`, `T${f.turn.id}#E2@nonexistent`, `T${f.turn.id}#E2@text`]) expect(noter.execute(fact(source))).toContain("rejected:");
+      expect(noter.execute(fact(`T${f.turn.id}#E2`))).toContain("held: $1");
+      input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+      expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]);
+      return { outcome: "success", output: "done", request: {} };
+    });
+    const result = await f.m.noting({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id, boundary: { exactEntryIds: [a.id, b.id] } });
+    expect(result.outcome, JSON.stringify(result)).toBe("success");
+    expect(f.m.store.factEntries(1)).toEqual([b.id]);
+    expect(f.m.store.factCoveredByRaw(f.m.store.getFact(1)!, new Set([b.id]))).toBe(true);
+    expect(f.m.store.entryNoted(c.id)).toBe(false);
     const image = f.append("user", [{ type: "image", data: "not evidence" }]);
     expect(() => f.m.trace(`T${f.turn.id}#E${image.entryOrdinal}@text`)).toThrow();
   } finally { f.m.close(); }

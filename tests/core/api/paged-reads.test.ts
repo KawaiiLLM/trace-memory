@@ -2,12 +2,12 @@
 // Turn's native occurrences once and reuses them across its tool ordinals; a knowledge search applies
 // the page cap before it formats a hit and resolves the commit graph once per query, so a later page
 // still carries the labels that query established. Nothing here changes what the reads print.
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import * as render from "../../../src/core/render/index.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory } from "../../source-fixture.ts";
-import { Store } from "../../../src/core/store/index.ts";
 import { countSourceReads, countGraphResolutions } from "../../perf/fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -27,13 +27,10 @@ beforeEach(() => {
 });
 afterEach(() => { memory.close(); rmSync(dir, { recursive: true, force: true }); });
 
-/** Count knowledge record loads performed while formatting deferred search hits. */
-function countFormattedHits(): { hits: () => number; restore: () => void } {
-  const prototype = Store.prototype;
-  const original = prototype.getKnowledge;
-  let count = 0;
-  prototype.getKnowledge = function (this: Store, id: number) { count++; return original.call(this, id); };
-  return { hits: () => count, restore: () => { prototype.getKnowledge = original; } };
+/** Count actual preview rendering, not immutable identity capture for later pages. */
+function countFormattedHits() {
+  const preview = vi.spyOn(render, "renderKnowledgePreview");
+  return { hits: () => preview.mock.calls.length, reset: () => preview.mockClear(), restore: () => preview.mockRestore() };
 }
 
 /** A session of `turns` Turns; the middle one carries `calls` tool calls and a second native result
@@ -116,7 +113,7 @@ async function knowledgeCorpus(knowledge: number, revisions: number) {
   for (let i = 0; i < knowledge; i++) {
     const run = { kind: "consolidation" as const, sessionId, branch: "main", createdAt: time };
     const created = store.commitConsolidationRun({ path, run, operations: [{ op: "create", handle: `h${i}`, author: "fake",
-      text: `SEARCHNEEDLE conclusion ${i}`, category: "mechanism", scope: "session", supports, reason: "corpus", topics: [], createdAt: time }] });
+      text: `SEARCHNEEDLE conclusion ${i}`, category: "understanding", scope: "session", supports, reason: "corpus", topics: [], createdAt: time }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     tips.push({ knowledgeId: created.committed[0]!.knowledgeId, commit: created.committed[0]!.commit });
   }
@@ -126,14 +123,16 @@ async function knowledgeCorpus(knowledge: number, revisions: number) {
     const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
     const consumed = new Set<string>();
     for (let i = 0; i < tips.length; i++) for (let j = 1; j < revisions; j++) {
-      const tip = tips[i]!, address = `K${tip.knowledgeId}@${tip.commit}`; consumed.add(address);
+      const tip = tips[i]!, address = `K${tip.knowledgeId}#${store.versionTag(tip.knowledgeId, tip.commit)}`;
+      consumed.add(`K${tip.knowledgeId}@v${j}`);
       fullRead(trace, address);
       const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: address,
-        text: `SEARCHNEEDLE conclusion ${i} revision ${j}`, category: "mechanism", scope: "session", supports: supports.map(id => `F${id}`), reason: "corpus", topics: [] }], skipped: [] }));
-      tip.commit = updated.committed[0]!.commit;
+        text: `SEARCHNEEDLE conclusion ${i} revision ${j}`, category: "understanding", scope: "session", supports: supports.map(id => `F${id}`), reason: "corpus", topics: [] }], skipped: [] }));
+      expect(updated.committed[0]!.version).toBe(`K${tip.knowledgeId}@v${j + 1}`);
+      tip.commit = store.resolveVersionOrdinal(tip.knowledgeId, j + 1);
     }
-    const triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`;
-    const supplied = new Set(input.material.changed.match(/K\d+@\d+/g) ?? []); supplied.delete(triggerAddress); for (const address of consumed) supplied.delete(address);
+    const triggerAddress = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
+    const supplied = new Set(input.material.changed.match(/K\d+@v\d+/g) ?? []); supplied.delete(`K${trigger.knowledgeId}@v1`); for (const address of consumed) supplied.delete(address);
     write.execute({ operations: [{ op: "archive", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit paged-read trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No further corpus maintenance is needed." })) });
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
@@ -150,13 +149,23 @@ test("22c: a search page formats its own hits and resolves the commit graph once
   try {
     graph.reset();
     const page = memory.search(large.query, "knowledge", { ...options, cap: 1 });
-    // One resolution for the query, not one (or two) per hit.
+    // One resolution for the query, not one (or two) per hit. Only this page renders.
     expect(graph.resolutions()).toBe(1);
-    expect(format.hits()).toBe(1); // 36 revisions match in this database; one page of one was asked for
+    expect(format.hits()).toBe(1);
     expect(page.split("\n").filter(l => l.startsWith("[K"))).toHaveLength(1);
-    graph.reset();
+    const cursor = /cursor=(\S+)/.exec(page)![1]!;
+    graph.reset(); format.reset();
+    memory.search("", "knowledge", { ...options, cursor });
+    expect(format.hits()).toBe(1);
+    expect(graph.resolutions()).toBe(0); // the next page reuses the frozen selection
+    graph.reset(); format.reset();
     memory.search(small.query, "knowledge", { sessionId: small.sessionId, headTurnId: small.headTurnId, cap: 1 });
     expect(graph.resolutions()).toBe(1); // a third of the hits: the same resolution count
+    expect(format.hits()).toBe(1);
+    graph.reset(); format.reset();
+    memory.search(large.query, "knowledge", { ...options, cap: 2 });
+    expect(graph.resolutions()).toBe(1);
+    expect(format.hits()).toBe(2);
     graph.reset();
     const whole = memory.search(large.query, "knowledge", options);
     expect(graph.resolutions()).toBe(1);
@@ -166,7 +175,7 @@ test("22c: a search page formats its own hits and resolves the commit graph once
 
 test("22c: continuation is complete and stable, and a commit between pages moves no label", async () => {
   const corpus = await knowledgeCorpus(4, 3);
-  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, versions: "all" as const, category: "mechanism" as const, fields: ["text", "status"] as const };
+  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, versions: "all" as const, category: "understanding" as const, fields: ["text", "status"] as const };
   const addresses = (text: string) => text.split("\n").filter(l => l.startsWith("[K")).map(l => l.slice(1, l.indexOf("]")));
   const whole = memory.search("", "knowledge", options);
   const expected = addresses(whole);
@@ -189,11 +198,12 @@ test("22c: continuation is complete and stable, and a commit between pages moves
       const changed = await otherScenarios.run(other, corpus.path, input => {
         const request = { fixture: "between paged reads" }; input.reportRequest(request);
         const trace = input.tools.find(tool => tool.name === "trace")!;
-        fullRead(trace, `K${last.knowledgeId}@${last.commit}`);
+        const base = `K${last.knowledgeId}#${other.store.versionTag(last.knowledgeId, last.commit)}`;
+        fullRead(trace, base);
         input.tools.find(tool => tool.name === "memory")!.execute({ operations: [
-          { op: "update", id: `K${last.knowledgeId}@${last.commit}`, text: "SEARCHNEEDLE later conclusion",
-            category: "mechanism", scope: "session", supports: corpus.supports.map(id => `F${id}`), reason: "between pages", topics: [] },
-          { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: corpus.supports.map(id => `F${id}`), reason: "Retire the explicit between-pages trigger." },
+          { op: "update", id: base, text: "SEARCHNEEDLE later conclusion",
+            category: "understanding", scope: "session", supports: corpus.supports.map(id => `F${id}`), reason: "between pages", topics: [] },
+          { op: "archive", id: `K${trigger.knowledgeId}#${other.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: corpus.supports.map(id => `F${id}`), reason: "Retire the explicit between-pages trigger." },
         ], skipped: [] });
         expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
         return { outcome: "success", output: "between-pages revision complete", request };

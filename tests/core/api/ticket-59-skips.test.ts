@@ -38,7 +38,7 @@ test("59/68: the memory schema branches on phase and says accepted Dreamer skips
   expect(items(consolidationToolDefinitions()).required).toEqual(["fact", "because"]);
   expect(items(toolDefinitions as any).required).toEqual(["fact", "because"]);
   expect(dreamingToolDefinitions().find(t => t.name === "memory")!.description)
-    .toContain("skipped accounts for an exact frozen version that was deliberated and intentionally left unchanged; it marks that version processed without changing it");
+    .toContain("skipped uses an exact untagged K@vN history address for a frozen version that was deliberated and intentionally left unchanged; it requires no full-body read and grants no mutation authority; it marks that version processed without changing it");
   const search = toolDefinitions.find(t => t.name === "search")!.parameters as { properties: Record<string, unknown>; oneOf?: unknown[] };
   expect(search.properties.queries).toMatchObject({ type: "array", minItems: 1 });
   expect(search.oneOf).toBeUndefined();

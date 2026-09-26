@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { readHandle } from "../../read-handle-fixture.ts";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 
 const opened: ReturnType<typeof TraceMemory>[] = [];
@@ -22,7 +23,7 @@ function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, tri
   };
   return { memory, store, create, session, pool: `project:${project.id}`, target: { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id } };
 }
-const handles = (task: DreamingAgentInput) => [...task.material.changed.matchAll(/^\[?(K\d+@\d+)\]? /gm)].map(match => match[1]!);
+const handles = (task: DreamingAgentInput) => [...task.material.changed.matchAll(/\b(K\d+@v\d+)\b/g)].map(match => match[1]!);
 
 test.each([
   ["global", 4000], ["project", 5000], ["session", 1000],
@@ -60,7 +61,7 @@ test("86: Dreamer executes the oldest pending revision even when its framing exc
   f.memory.setKnowledgeBudget("project", 1);
   const result = await f.memory.dream(f.target);
   expect(result.outcome, JSON.stringify(result)).toBe("success");
-  expect(seen).toEqual([`K${first.knowledgeId}@${first.commit}`]);
+  expect(seen).toEqual([`K${first.knowledgeId}@v1`]);
   expect(f.store.pendingVersions(f.pool, f.target).map(value => value.revisionId)).toEqual([second.commit]);
 });
 
@@ -78,8 +79,10 @@ test.each(["success", "failure", "cancelled", "timeout"] as const)("68: 86 froze
     }
     expect(ids).toHaveLength(86);
     for (const id of ids.slice(0, 34)) {
-      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id, text: `Maintained rule ${outputs.length + 1}`, category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain" }], skipped: [] }));
-      expect(receipt.committed).toHaveLength(1); outputs.push(receipt.committed[0].commit);
+      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(task.tools, id), text: `Maintained rule ${outputs.length + 1}`, category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain" }], skipped: [] }));
+      expect(receipt.committed).toHaveLength(1);
+      const version = /^K(\d+)@v(\d+)$/.exec(receipt.committed[0].version)!;
+      outputs.push(f.store.resolveVersionOrdinal(Number(version[1]), Number(version[2])));
     }
     expect(write.execute({ operations: [], skipped: [{ knowledge: ids[34], because: "already correct" }] })).toContain("committed");
     if (outcome === "timeout") return new Promise<RunAgentResult>(() => {});
@@ -106,9 +109,9 @@ test("68: deliberated count measures frozen parents, not output revisions", asyn
   const f = setup(async task => {
     task.acknowledgeRequest();
     const ids = handles(task), write = task.tools.find(tool => tool.name === "memory")!;
-    const merged = JSON.parse(write.execute({ operations: [{ op: "merge", id: ids[0], absorb: [ids[1]], text: "One rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "duplicate" }], skipped: [] }));
+    const merged = JSON.parse(write.execute({ operations: [{ op: "merge", id: readHandle(task.tools, ids[0]!), absorb: [readHandle(task.tools, ids[1]!)], text: "One rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "duplicate" }], skipped: [] }));
     expect(merged.committed).toHaveLength(1);
-    const split = JSON.parse(write.execute({ operations: [{ op: "split", id: ids[2], supports: [], reason: "independent rules", children: [{ text: "First", category: "constraint", topics: [] }, { text: "Second", category: "constraint", topics: [] }] }], skipped: [] }));
+    const split = JSON.parse(write.execute({ operations: [{ op: "split", id: readHandle(task.tools, ids[2]!), supports: [], reason: "independent rules", children: [{ text: "First", category: "constraint", topics: [] }, { text: "Second", category: "constraint", topics: [] }] }], skipped: [] }));
     expect(split.committed).toHaveLength(2);
     return { outcome: "success", output: "done", ...exact };
   });

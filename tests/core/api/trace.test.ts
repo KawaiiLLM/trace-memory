@@ -33,29 +33,36 @@ async function consolidation(...operations: Operation[]) {
     const request = { fixture: "trace maintenance" }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
     const addressed = new Set<string>();
+    const exact = (id: number, commit: number) => {
+      addressed.add(`K${id}@v${memory.store.versionOrdinal(id, commit)}`);
+      const tag = `K${id}#${memory.store.versionTag(id, commit)}`;
+      fullRead(trace, tag);
+      return tag;
+    };
     const converted = operations.map(operation => {
       if (operation.op === "update") {
-        const id = `K${operation.knowledgeId}@${operation.baseCommit}`; addressed.add(id); fullRead(trace, id);
+        const id = exact(operation.knowledgeId, operation.baseCommit);
         return { op: "update", id, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics,
           supports: operation.supports.map(value => `F${value}`), reason: operation.reason };
       }
       if (operation.op === "archive") {
-        const id = `K${operation.knowledgeId}@${operation.baseCommit}`; addressed.add(id); fullRead(trace, id);
+        const id = exact(operation.knowledgeId, operation.baseCommit);
         return { op: "archive", id, supports: operation.supports.map(value => `F${value}`), reason: operation.reason };
       }
       if (operation.op === "merge") {
-        const id = `K${operation.intoKnowledgeId}@${operation.intoBaseCommit}`, absorb = operation.absorb.map(parent => `K${parent.knowledgeId}@${parent.baseCommit}`);
-        for (const address of [id, ...absorb]) { addressed.add(address); fullRead(trace, address); }
+        const id = exact(operation.intoKnowledgeId, operation.intoBaseCommit), absorb = operation.absorb.map(parent => exact(parent.knowledgeId, parent.baseCommit));
         return { op: "merge", id, absorb, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics,
           supports: operation.supports.map(value => `F${value}`), reason: operation.reason };
       }
       return operation;
     });
-    const triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`;
-    const supplied = new Set(input.material.changed.match(/K\d+@\d+/g) ?? []); supplied.delete(triggerAddress); for (const address of addressed) supplied.delete(address);
+    const triggerAddress = exact(trigger.knowledgeId, trigger.commit);
+    const supplied = new Set(input.material.changed.match(/K\d+@v\d+/g) ?? []); for (const address of addressed) supplied.delete(address);
     const receipt = JSON.parse(write.execute({ operations: [...converted, { op: "archive", id: triggerAddress, supports: [`F${triggerFact}`], reason: "Retire the explicit trace trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied item." })) }));
-    committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId);
+    committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
+      .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId,
+        commit: memory.store.resolveVersionOrdinal(item.knowledgeId, Number(/@v(\d+)$/.exec(item.version)![1])) }));
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "trace maintenance complete", request };
   });
@@ -109,7 +116,7 @@ test("diff preserves unchanged spans and lists all transitions even if endpoints
   const red = await edit(id, green.commit, "use red tiles now");
   expect(memory.trace(`K${id}@1..K${id}@${red.commit}`, { fields })).toContain("text: use red tiles now\n  change supports added: none\n  change supports removed: none");
   expect(memory.trace(`K${id}@1..K${id}@${red.commit}`, { fields })).toContain(`K1@${green.commit} update ${dreamTime} change supports: F2, F3 reason: Third reading after the shared correction`);
-  expect(memory.trace(`K${id}@${blue.commit}..K${id}@${blue.commit}`, { fields })).toContain("Commits: none");
+  expect(memory.trace(`K${id}@${blue.commit}..K${id}@${blue.commit}`, { fields })).toContain("History: none");
 });
 
 test.each([

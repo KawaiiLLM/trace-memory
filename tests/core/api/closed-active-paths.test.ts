@@ -10,9 +10,10 @@ function fixture(db = ":memory:") {
   let requests = 0;
   const agent: RunAgent = async raw => {
     requests++;
-    if (raw.kind === "noting") {
-      raw.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-      raw.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    const input = raw as NotingAgentInput;
+    if (input.kind === "noting") {
+      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     }
     return { outcome: "success", output: "", request: {} };
   };

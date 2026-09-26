@@ -58,14 +58,15 @@ async function maintain(f: ReturnType<typeof fixture>, branch: "left" | "right",
     const request = { branch, sequence }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!;
     const write = input.tools.find(tool => tool.name === "memory")!;
-    trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null, pageBudget: 8000 });
-    for (const item of olderTriggers) trace.execute({ address: `K${item.knowledge.id}@${item.revision.id}`, itemBudget: null, pageBudget: 8000 });
+    const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
+    trace.execute({ address: tag(f.base.knowledgeId, f.base.commit), itemBudget: null });
+    trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null, pageBudget: 8000 });
+    for (const item of olderTriggers) trace.execute({ address: tag(item.knowledge.id, item.revision.id), itemBudget: null, pageBudget: 8000 });
     const receipt = write.execute({ operations: [
-      { op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`, text, category: "constraint", scope: "project",
+      { op: "update", id: tag(f.base.knowledgeId, f.base.commit), text, category: "constraint", scope: "project",
         supports: evidence === undefined ? [] : [`F${evidence}`], topics: [], reason: `${branch} maintenance.` },
-      ...olderTriggers.map(item => ({ op: "archive", id: `K${item.knowledge.id}@${item.revision.id}`, supports: [], reason: "Retire earlier explicit trigger." })),
-      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [], reason: "Retire explicit trigger." },
+      ...olderTriggers.map(item => ({ op: "archive", id: tag(item.knowledge.id, item.revision.id), supports: [], reason: "Retire earlier explicit trigger." })),
+      { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
     ], skipped: [] });
     expect(receipt).toContain('"committed"');
     return { outcome: "success", output: "maintained", request };
@@ -106,28 +107,29 @@ test("64b: global current selects one direct-fact branch and rejects the histori
     const request = { branch: "right", purpose: "global-current stale refusal" }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!;
     const write = input.tools.find(tool => tool.name === "memory")!;
-    for (const revision of [leftTip, rightTip]) trace.execute({ address: `K${f.base.knowledgeId}@${revision.id}`, itemBudget: null });
-    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null, pageBudget: 8000 });
+    const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
+    for (const revision of [leftTip, rightTip]) trace.execute({ address: tag(f.base.knowledgeId, revision.id), itemBudget: null });
+    trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null, pageBudget: 8000 });
     const before = f.memory.store.listKnowledgeRevisions().length;
     const refused = write.execute({ operations: [
-      { op: "update", id: `K${f.base.knowledgeId}@${leftTip.id}`, text: "stale sibling edit", category: "constraint",
+      { op: "update", id: tag(f.base.knowledgeId, leftTip.id), text: "stale sibling edit", category: "constraint",
         scope: "project", supports: [], topics: [], reason: "Probe the historical sibling write fence." },
-      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [], reason: "Would otherwise be valid." },
+      { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Would otherwise be valid." },
     ], skipped: [] });
     // 76: baseProblem now names the current version when the identity has a visible one on this branch,
     // instead of the generic "missing, archived, inapplicable or outside the writer's scope" fallback.
-    expect(refused).toContain(`K${f.base.knowledgeId}@${leftTip.id} is not current on this branch; current is K${f.base.knowledgeId}@${rightTip.id}`);
+    expect(refused).toContain(`K${f.base.knowledgeId}@v2 is not current on this branch; current is K${f.base.knowledgeId}@v3`);
     expect(f.memory.store.listKnowledgeRevisions()).toHaveLength(before);
     expect(write.execute({ operations: [
-      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [], reason: "Retire explicit trigger." },
+      { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
     ], skipped: [] })).toContain('"committed"');
-    skipRest(input, [`K${trigger.knowledgeId}@${trigger.commit}`]);
+    skipRest(input, [`K${trigger.knowledgeId}@v1`]);
     return { outcome: "success", output: "global current checked", request };
   });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-  expect(changed).toContain(`[K${trigger.knowledgeId}@${trigger.commit}]`);
-  expect(changed).not.toContain(`[K${f.base.knowledgeId}@${rightTip.id}]`);
-  expect(changed).not.toContain(`[K${f.base.knowledgeId}@${leftTip.id}]`);
+  expect(changed).toContain(`New K${trigger.knowledgeId}@v1`);
+  expect(changed).not.toContain(`K${f.base.knowledgeId}@v3`);
+  expect(changed).not.toContain(`K${f.base.knowledgeId}@v2`);
   expect(tokens(changed)).toBeLessThanOrEqual(10000);
   const history = f.memory.trace(`K${f.base.knowledgeId}..`, { ...rightPath, versions: "all" });
   expect(history).toContain("left knowledge");
