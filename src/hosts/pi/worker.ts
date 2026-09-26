@@ -13,9 +13,9 @@
 import { isContextOverflow } from "@earendil-works/pi-ai";
 import { NotForkable, runNative, type CacheObservation, type NativeForkTask, type NativeResult, type ThinkingLevel, type Verification as NativeVerification } from "./native.ts";
 import type { Body } from "./fork.ts";
-import type { ConsolidationAgentInput, NotingAgentInput, DreamingAgentInput, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
+import type { NotingAgentInput, DreamingAgentInput, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 
-type Task = NotingAgentInput | ConsolidationAgentInput | DreamingAgentInput;
+type Task = NotingAgentInput | DreamingAgentInput;
 /** The model shape Pi's own child session takes, already resolved by the host's registry lookup. */
 export type WorkerModel = NativeForkTask["model"];
 /** Inherited context: the parent state a fork run is launched from, read by the host at launch. */
@@ -43,7 +43,7 @@ export interface ForkRefusal {
    * the exact ids of this phase's own members — Noting's entries, Consolidation's facts — never an
    * upper bound and never a manual catchup's larger allowable set, both of which prevent additions
    * but permit a smaller batch. */
-  boundary?: { exactEntryIds?: number[]; exactFactIds?: number[] };
+  boundary?: { exactEntryIds?: number[] };
   /** The rejected gate result of a refusal that sent nothing, which the re-admitted run records
    * (a refused attempt that did send one records its own gate result on its own run). */
   verification?: RunVerification;
@@ -158,8 +158,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       // way: nothing was committed and the evidence stays pending.
       const refused = (reason: string, attempt: Partial<RunAgentResult> = {}, gate?: RunVerification): RunAgentResult =>
         ({ outcome: "failure", output: reason, request, ...attempt,
-          refused: { reason, boundary: task.kind === "noting" ? { exactEntryIds: [...task.entryIds] }
-              : { exactFactIds: task.range.facts.map(fact => fact.id) },
+          refused: { reason, boundary: { exactEntryIds: [...task.entryIds] },
             ...(task.thinkingLevel !== undefined ? { thinkingLevel: task.thinkingLevel } : {}),
             ...(task.subagentThinkingLevel !== undefined ? { subagentThinkingLevel: task.subagentThinkingLevel } : {}),
             ...(task.cancellation !== undefined ? { cancellation: task.cancellation } : {}),

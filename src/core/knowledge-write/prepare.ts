@@ -1,7 +1,6 @@
 import { isKnowledgeCategory, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
 import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
-import type { freezeConsolidation } from "./index.ts";
 
 export type ConsolidationDiagnostic =
   | { kind: "unsupported_numbers"; knowledge: string; numbers: string[] }
@@ -10,7 +9,7 @@ const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 
 /** Validate the complete batch before writes, including every merge participant. */
 export function prepareMemory(store: Store, sessionId: number, raw: unknown, run: RunInput,
-  frozen?: ReturnType<typeof freezeConsolidation>, path: KnowledgePath = store.knowledgePath(sessionId),
+  path: KnowledgePath = store.knowledgePath(sessionId),
   eligibleSupport?: (factId: number) => boolean, skippable?: (commit: number) => string | undefined,
   localFacts?: ReadonlyMap<number, { text: string; quote?: string | null }>) {
   const results: string[] = [], operations: KnowledgeOperationInput[] = [];
@@ -54,10 +53,10 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
     const op = value.op;
     const allowed = dreaming ? ["update", "merge", "split", "archive"]
-      : run.kind === "consolidation" || run.kind === "noting" ? ["create", "update", "archive"] : ["create", "archive"];
+      : run.kind === "noting" ? ["create", "update", "archive"] : ["create", "archive"];
     if (!allowed.includes(op)) errors.push(
       ["update", "merge", "split", "archive"].includes(op)
-        ? `${op} belongs to the Dreamer and is not available to ${run.kind === "consolidation" ? "the Consolidator" : "manual memory"}`
+        ? `${op} belongs to the Dreamer and is not available to ${run.kind === "noting" ? "the Noter" : "manual memory"}`
         : "invalid op");
     const structural = op === "split";
     const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []),
@@ -66,8 +65,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     // model still writing the old shape is told which two fields replace it.
     for (const key of Object.keys(value)) if (key === "because") errors.push('because: removed field; supply "reason" (a string) and "supports" (the commit\'s evidence)');
       else if (key === "slot") errors.push("slot is N-only; this role uses immediate memory writes");
-      else if (!keys.includes(key)) errors.push(key === "absorb" && run.kind === "consolidation"
-        ? "absorb belongs to the Dreamer and is not available to the Consolidator" : `${key}: inapplicable field`);
+      else if (!keys.includes(key)) errors.push(`${key}: inapplicable field`);
     if (typeof value.reason !== "string" || !value.reason.trim()) errors.push("reason: expected a non-empty commit message");
     const target = (address: unknown) => {
       const match = typeof address === "string" ? /^K([1-9]\d*)#([a-z]{4,})$/.exec(address) : null;
@@ -137,11 +135,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       declined.add(commit);
       declinedCommits.set(skipped, commit);
     } else {
-      const ids = facts(["fact" in skipped ? skipped.fact : undefined], errors);
-      if (Object.keys(skipped).some(k => !["fact", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skipped requires fact and non-empty because only");
-      if (!frozen?.rangeFacts.some(f => f.id === ids[0])) errors.push("skipped fact must belong to this run's range");
-      if (declined.has(ids[0]!)) errors.push("duplicate skipped fact");
-      declined.add(ids[0]!);
+      errors.push("skipped must be empty outside Dreamer maintenance");
     }
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   }

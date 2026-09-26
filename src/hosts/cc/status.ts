@@ -9,7 +9,7 @@ import type { MemoryStatusCounts } from "../status-line.ts";
  * (a much larger, validated record) so this module stays cheap to import from the status command's
  * bundle entry — no Store, no `node:sqlite`, no core import.
  */
-export interface CcStatusRunning { noting: boolean; consolidation: boolean; dreaming: boolean }
+export interface CcStatusRunning { noting: boolean; dreaming: boolean }
 
 export interface CcStatusFile {
   version: 1;

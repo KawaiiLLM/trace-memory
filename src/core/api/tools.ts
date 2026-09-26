@@ -1,6 +1,5 @@
 import { resolveFactSource, sourceAddressScope, type SourceResolution } from "../model/source.ts";
-import { bindMemory } from "../consolidation/memory.ts";
-import type { freezeConsolidation } from "../consolidation/index.ts";
+import { bindMemory } from "../knowledge-write/bind.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact } from "../model/index.ts";
 import type { Store, RunInput, FactCommitInput, KnowledgePath, SourceEntry } from "../store/index.ts";
 import { DEFAULT_READ_TOKENS, MAX_PUBLIC_READ_TOKENS, READ_FIELDS, READ_VERSIONS, SEARCH_PREVIEW_TOKENS, validateBudgets, type ListingOptions, type SearchScope, type TraceRead } from "./read.ts";
@@ -15,7 +14,7 @@ export interface ToolDefinition {
   execute(input: unknown): string;
 }
 export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number; triggerEntryId?: number; entryIds?: number[]; maxReadChars?: number }
-  | { kind: "noting" | "consolidation" | "dreaming"; sessionId: number; branch: string; headTurnId?: number | null; triggerEntryId?: number; entryIds?: number[]; range: { from: string; to: string }; maxReadChars?: number };
+  | { kind: "noting" | "dreaming"; sessionId: number; branch: string; headTurnId?: number | null; triggerEntryId?: number; entryIds?: number[]; range: { from: string; to: string }; maxReadChars?: number };
 type Reads = { traceRead(address: string, options?: ListingOptions): TraceRead;
   search(query: string | readonly string[], layer?: SearchScope, options?: ListingOptions & { sessionId?: number }): string };
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
@@ -50,23 +49,6 @@ export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
   { name: "note", description: "Cite each whole native source entry separately (T12#E3); block selectors are not allowed. No model-supplied category, status, quote or actor. Thinking alone is not evidence. Relations are optional; manual $ references name earlier facts in this call, N $ references name accepted earlier stable slots. Manual calls commit immediately and reject slot/drop. N calls hold privately until normal terminal publication: omit slot to append, slot:$n completely replaces including a rejected item, drop:[$n] removes only unreferenced slots. Failed replacement invalidates the prior value; numbers never recycle; accepted siblings survive. Empty facts confirms use, never clears drafts or rejected slots. Receipts list held/rejected handles, including after a native schema refusal; an empty call inspects them. A valid call clears top-level call errors only. Both note and memory are required in N.", parameters: object({ facts: { type: "array", items: factSchema }, drop: { type: "array", items: { type: "string", pattern: "^\\$[1-9][0-9]*$" }, description: "N only: drop unreferenced held fact slots." } }, ["facts"]) },
   { name: "memory", description: "Role-bound knowledge writing. Manual writers may create/archive only and commit a valid batch immediately; rejected batches write nothing and require whole-batch correction. N holds create/update/archive privately until normal termination with both note and memory used and every refusal resolved. Merge/split remain D-only. N-only fields: operation slot:Mn fully replaces a held operation; omit it to append; drop:[Mn] removes without recycling numbers; supports may cite accepted local $ fact slots. Manual writers reject slot/drop/local knowledge supports with a reason and have no drafts. N always supplies skipped:[]; empty operations confirms use without clearing drafts or rejected slots. A legitimately advanced tagged base converts N update to annotated create or archive to an audited no-op; other errors do not convert. Update/archive requires exact K#tag. Every operation has nonempty fact supports and reason (commit message, not evidence). Create/update supplies complete text/category/scope/topics; archive inherits them. Tagged bases still require valid scope, path and evidence. N receipts list held/rejected handles; after native schema refusal an empty call inspects them.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) }, drop: { type: "array", items: { type: "string", pattern: "^M[1-9][0-9]*$" }, description: "N only: drop held knowledge-operation slots." } }, ["operations", "skipped"]) },
 ];
-
-/** Narrow only the model-facing Consolidator interface; manual writers keep the ordinary schema.
- * 76: C creates, updates and archives; merge and split stay the Dreamer's. */
-export function consolidationToolDefinitions(): Omit<ToolDefinition, "execute">[] {
-  const tools = structuredClone(toolDefinitions);
-  const memory = tools.find(t => t.name === "memory")!;
-  const operation = (memory.parameters.properties as any).operations.items;
-  operation.properties.op.enum = ["create", "update", "archive"];
-  delete operation.properties.absorb;
-  operation.allOf = [
-    { if: { properties: { op: { const: "create" } } }, then: { not: { required: ["id"] } }, else: { required: ["id"] } },
-    { not: { required: ["absorb"] } },
-    operation.allOf[2],
-  ];
-  memory.description = "Submit one atomic Consolidation batch using create, update or archive. Merging and splitting belong to the Dreamer and are rejected here. Update names the exact K#tag base; a base that is not the writer's current version is rejected under the ordinary stale-base rule. Every operation carries non-empty change supports (the facts that caused it) and a reason; create and update carry the complete text/category/scope/topics, archive inherits them from the parent it removes. The first valid submission commits; a call after commit is rejected.";
-  return tools;
-}
 
 export function dreamingToolDefinitions(): Omit<ToolDefinition, "execute">[] {
   const tools = structuredClone(toolDefinitions.filter(t => t.name !== "note"));
@@ -135,7 +117,7 @@ export function reviewFeedback(toolResult: string): string | undefined {
   catch { return undefined; }
 }
 
-export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, consolidation?: ReturnType<typeof freezeConsolidation>,
+export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput,
   dreaming?: { path: KnowledgePath; check(): string; /** 59: why a commit may not be skipped, or undefined when it is a supplied untouched handle. */ skippable(commit: number): string | undefined }) {
   const context = structuredClone(supplied);
   const session = store.getSession(context.sessionId);
@@ -157,11 +139,10 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     }
     if (!allowed.has(from)) throw new Error("invalid frozen range ancestry");
   }
-  if (context.kind === "consolidation" && !consolidation) throw new Error("Consolidation tools require the frozen context supplied by integrate()");
   // The branch rides on the path so applicability is judged per source entry (review 2026-09-08 P1).
   const path = context.kind === "manual" ? { sessionId: session.id, headTurnId: context.currentTurnId, branch: context.branch }
     : context.kind === "noting" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]), branch: context.branch }
-    : context.kind === "dreaming" ? dreaming!.path : consolidation!.path;
+    : dreaming!.path;
   const plain: RunInput = { kind: context.kind, sessionId: session.id, branch: context.branch,
     rangeFrom: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.from,
     rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
@@ -186,7 +167,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const manualEntryIds = context.kind === "manual" && context.entryIds ? new Set(context.entryIds) : null;
   const frozenEntries = context.kind === "noting" ? (context.entryIds ?? initialPath.filter(e => allowed.has(e.turnId)).map(e => e.id)) : [];
   const frozenIds = new Set(frozenEntries);
-  const memory = bindMemory(store, session.id, run, consolidation, path, manualEntryIds
+  const memory = bindMemory(store, session.id, run, path, manualEntryIds
     ? factId => {
       const fact = store.getFact(factId);
       if (!fact) return false;
@@ -246,7 +227,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const note = (input: Record<string, unknown>): string => {
     resolvedSources.clear(); hydratedSources.clear();
     if (held) return held.note(input);
-    if (context.kind === "consolidation" || context.kind === "dreaming") return "rejected: note is not available to this knowledge worker";
+    if (context.kind === "dreaming") return "rejected: note is not available to this knowledge worker";
     if ("drop" in input || (Array.isArray(input.facts) && input.facts.some(fact => fact && typeof fact === "object" && "slot" in fact))) {
       problems = ["slot/drop are N-only held-batch fields; manual note commits immediately and has no draft slots"];
       return `rejected: ${problems[0]}`;
@@ -282,7 +263,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   // that tool is used legally; tool text is diagnostic, never a conflict classification.
   const toolProblems = new Map<string, string>();
   const definitions = dreaming ? dreamingToolDefinitions()
-    : context.kind === "consolidation" ? consolidationToolDefinitions() : toolDefinitions;
+    : toolDefinitions;
   const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ ...definitions.find(t => t.name === name)!,
     execute: (raw) => {
       if (closed) return "rejected: run has finished";

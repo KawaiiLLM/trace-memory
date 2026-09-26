@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { CONFIG_ALIASES, CONFIG_SECTIONS, DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type ConfigOverride, type ClosedSessionScope } from "../../core/api/index.ts";
 import { PHASE_SETTING_KEYS, THINKING_LEVELS } from "../phase-settings.ts";
+import { retireConsolidationSettings, upgradeSettingsFile } from "../retired-settings.ts";
 
 /** The section of a Pi settings file this extension owns, and its status/entry identity in the host. */
 export const tag = "trace-memory";
@@ -24,7 +25,10 @@ export function parseKnowledgeBudgetInput(input: string, name: string): number {
 }
 function settings(cwd: string, agentDir = agentDirectory()) {
   const read = (path: string): Record<string, any> => {
-    try { return JSON.parse(readFileSync(path, "utf8")); }
+    try {
+      upgradeSettingsFile(path, tag, values => parseLayer(values as FlatConfig), message => console.warn(message));
+      return JSON.parse(readFileSync(path, "utf8"));
+    }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw new Error(`Invalid settings.json ${path}: ${String(error)}`); }
   };
   return { global: read(join(agentDir, "settings.json")), project: read(join(cwd, ".pi", "settings.json")) };
@@ -70,7 +74,11 @@ export function parseLayer(flat: FlatConfig, named: (key: string) => string = ke
 /** The load path: the three layers, merged, validated, with the layer each effective key came from. */
 export function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFIG, agentDir = agentDirectory()) {
   const files = settings(cwd, agentDir);
-  const supplied = { Global: files.global[tag] ?? {}, Project: files.project[tag] ?? {}, Environment: JSON.parse(environment ?? "{}") };
+  const rawEnvironment = JSON.parse(environment ?? "{}");
+  if (!rawEnvironment || typeof rawEnvironment !== "object" || Array.isArray(rawEnvironment)) throw new Error("Invalid trace-memory Environment: expected an object");
+  const upgradedEnvironment = retireConsolidationSettings(rawEnvironment);
+  if (upgradedEnvironment.removed.length) console.warn(`Trace Memory removed retired Environment settings: ${upgradedEnvironment.removed.join(", ")}`);
+  const supplied = { Global: files.global[tag] ?? {}, Project: files.project[tag] ?? {}, Environment: upgradedEnvironment.values };
   for (const [name, layer] of Object.entries(supplied)) if (!layer || typeof layer !== "object" || Array.isArray(layer)) throw new Error(`Invalid trace-memory ${name}: expected an object`);
   // Ticket 19 "Legacy input": every layer's legacy execution-mode key (`noting.branchModeDefault`)
   // is mapped onto the canonical one by core's own alias table, keeping that layer as its source, so
@@ -130,14 +138,11 @@ export function writeGlobal(settingsFile: string, key: string, value: string | b
 // Consolidator-mode entry; 29e restores it on the same select-and-write path, so each phase now shows
 // the same three lines.
 // 26d added each phase's thinking level beside its model, on the same select-and-write path.
-export type Preference = { name: string; key: string } & ({ phase: "noting" | "consolidation"; kind: "mode" | "model" | "thinking" } | { phase: "dreaming"; kind: "model" | "thinking" } | { phase?: never; kind: "scope" });
+export type Preference = { name: string; key: string } & ({ phase: "noting"; kind: "mode" | "model" | "thinking" } | { phase: "dreaming"; kind: "model" | "thinking" } | { phase?: never; kind: "scope" });
 export const preferences: Preference[] = [
   { name: "Noter mode", key: "noting.forkModeDefault", phase: "noting", kind: "mode" },
   { name: "Noter model", key: PHASE_SETTING_KEYS.noting.model, phase: "noting", kind: "model" },
   { name: "Noter thinking", key: PHASE_SETTING_KEYS.noting.thinking, phase: "noting", kind: "thinking" },
-  { name: "Consolidator mode", key: "consolidation.forkModeDefault", phase: "consolidation", kind: "mode" },
-  { name: "Consolidator model", key: PHASE_SETTING_KEYS.consolidation.model, phase: "consolidation", kind: "model" },
-  { name: "Consolidator thinking", key: PHASE_SETTING_KEYS.consolidation.thinking, phase: "consolidation", kind: "thinking" },
   { name: "Dreamer model", key: PHASE_SETTING_KEYS.dreaming.model, phase: "dreaming", kind: "model" },
   { name: "Dreamer thinking", key: PHASE_SETTING_KEYS.dreaming.thinking, phase: "dreaming", kind: "thinking" },
   { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
@@ -154,7 +159,7 @@ export const shownValue = (p: Preference, raw: unknown) => p.kind === "mode" ? m
  * suppression, capacity/readiness fallback and — for Noting — Raw availability still decide what
  * actually runs (`effectiveMode`); a fallback does not grant a different model-selection policy, so
  * the display follows the configured mode. */
-export const configuredMode = (flat: FlatConfig, phase: "noting" | "consolidation" | "dreaming") =>
+export const configuredMode = (flat: FlatConfig, phase: "noting" | "dreaming") =>
   phase === "dreaming" ? "subagent" : modeName(preferenceValue(flat, preferences.find(p => p.kind === "mode" && p.phase === phase)!) as boolean);
 /** One Settings line: the effective value, its layer, the layers it masks, and — for a model whose
  * phase is configured to fork — the foreground model that fork would inherit instead. */

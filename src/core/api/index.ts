@@ -21,7 +21,7 @@ export { tokens, tokensJoined, JoinedTokens, renderEntry, renderEntryWhole, rawR
 export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.ts";
 // 20a: core owns the domain text of every memory consumer. A host places this text; it does not lay
 // out knowledge, facts or Raw itself.
-export { notingText, consolidationText, injectionText, compactText, knowledgeBlock, memoryBodyHash } from "../render/material.ts";
+export { notingText, injectionText, compactText, knowledgeBlock, memoryBodyHash } from "../render/material.ts";
 export type { SharedMaterial, KnowledgeGroup, TaskRange, MemoryComposition } from "../render/material.ts";
 export { enrollmentDefault, sourceDigest } from "../store/index.ts";
 export { directoryAllocation } from "../project/directory.ts";
@@ -35,9 +35,7 @@ import { Store, type PathPending, type SourceInput, type SourceEntry, type Sourc
 
 import { admitDreaming, freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
-import { freezeConsolidation, runConsolidation, CONSOLIDATION_MEMBERSHIP, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
-export { CONSOLIDATION_CAPACITY, CONSOLIDATION_MEMBERSHIP } from "../consolidation/index.ts";
-export type { ConsolidateInput, ConsolidateResult, ConsolidationAgentInput, ConsolidationMaterial, ConsolidationRange, ConsolidationDiagnostic } from "../consolidation/index.ts";
+
 
 
 // ---- Flat config, defaults in one place (spec.md: render budgets, noting/consolidation triggers and modes) ----
@@ -72,17 +70,6 @@ export interface TraceMemoryConfig {
     /** Cooperative wall-clock deadline shared by every host. */
     timeoutMs: number;
   };
-  consolidation: {
-    /** 29e (parent 29 "Restore Consolidator fork without weakening review"): the same canonical
-     * boolean the Noter has, for the phase that lost its mode preference in 25b. Default `false`:
-     * the option is restored, the existing default is not switched. */
-    forkModeDefault: boolean;
-    /** Ticket 20: rendered tokens of applicable unconsolidated facts that make a run due. */
-    triggerTokens: number;
-    /** Ticket 20: the most rendered fact tokens one batch may select. */
-    batchTokens: number;
-    maxToolRounds: number;
-  };
   /** The two database-independent material windows, and the allowance every consumer shares. Knowledge
    * uses the bound database policy's base sum; the maximum envelope adds all three bases and the
    * shared allowance below. */
@@ -102,7 +89,7 @@ export interface TraceMemoryConfig {
 
 /** The configuration sections, in one place: the loader, the validator and the host's flat
  * `section.key` layer all enumerate them from here rather than repeating the list (28a added one). */
-export const CONFIG_SECTIONS = ["render", "noting", "consolidation", "dreaming", "compaction"] as const;
+export const CONFIG_SECTIONS = ["render", "noting", "dreaming", "compaction"] as const;
 
 export const DEFAULT_CONFIG: TraceMemoryConfig = {
   closedSessionScope: "project",
@@ -119,12 +106,6 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     maxToolRounds: 0,
   },
   dreaming: { triggerTokens: DEFAULT_DREAMING_TRIGGER_TOKENS, maxToolRounds: 0, timeoutMs: 600_000 },
-  consolidation: {
-    forkModeDefault: false,
-    triggerTokens: 5_000,
-    batchTokens: 10_000,
-    maxToolRounds: 0,
-  },
   compaction: {
     factsTokens: 10_000,
     rawTokens: 10_000,
@@ -137,7 +118,6 @@ export type ConfigOverride = {
   render?: Partial<TraceMemoryConfig["render"]>;
   /** `branchModeDefault` is the accepted legacy spelling of `forkModeDefault` (CONFIG_ALIASES). */
   noting?: Partial<TraceMemoryConfig["noting"]> & { branchModeDefault?: boolean };
-  consolidation?: Partial<TraceMemoryConfig["consolidation"]>;
   dreaming?: Partial<TraceMemoryConfig["dreaming"]>;
   compaction?: Partial<TraceMemoryConfig["compaction"]>;
 };
@@ -157,13 +137,17 @@ export const CONFIG_ALIASES: Readonly<Record<string, string>> = { "noting.branch
  * ("use …"); a setting whose choice no longer exists says so instead. */
 const PART_BUDGETS = "use render.toolInputTokens (the whole rendered call part) and render.toolResultTokens (the whole rendered result part)";
 export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
-  "consolidation.triggerUnconsolidatedFacts": "use consolidation.triggerTokens (tokens, not a count)",
+  "consolidation.triggerUnconsolidatedFacts": "Consolidation is retired; remove this key",
+  "consolidation.forkModeDefault": "Consolidation is retired; remove this key",
+  "consolidation.triggerTokens": "Consolidation is retired; remove this key",
+  "consolidation.batchTokens": "Consolidation is retired; remove this key",
+  "consolidation.maxToolRounds": "Consolidation is retired; remove this key",
   "compaction.overflowTokens": "use compaction.sharedAllowanceTokens (a fixed configuration value, default 10,000; no longer derived from the Noting, Consolidation and Dreamer triggers)",
   // Ticket 25b removed this key; 29e restores the choice under the canonical spelling every phase
   // shares. It stays a removed setting rather than becoming an alias, because it is the INVERSE
   // boolean: reading a saved `true` as `forkModeDefault: true` would switch the meaning of the value
   // silently. No file is rewritten and no request is normalized.
-  "consolidation.subagentModeDefault": "use consolidation.forkModeDefault (the inverse boolean: true means fork)",
+  "consolidation.subagentModeDefault": "Consolidation is retired; remove this key",
   "consolidation.knowledgeTokens": "remove it and use Settings to edit the bound database's Global, Project and Session Knowledge budgets",
   "noting.nearThreshold": "remove it; Noting lexical NEAR review no longer exists",
   "consolidation.nearThreshold": "remove it; Consolidation review cues and lexical NEAR selection no longer exist",
@@ -246,7 +230,6 @@ function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMe
     closedSessionScope: override.closedSessionScope === undefined ? base.closedSessionScope : override.closedSessionScope,
     render: { ...base.render, ...override.render },
     noting: { ...base.noting, ...override.noting },
-    consolidation: { ...base.consolidation, ...override.consolidation },
     dreaming: { ...base.dreaming, ...override.dreaming },
     compaction: { ...base.compaction, ...override.compaction },
   };
@@ -318,7 +301,7 @@ export const CANCELLED_BEFORE_FALLBACK = "cancelled before fallback";
  * The *exact* target is what a fork fallback re-admits on: `exactEntryIds` (27d, parent 27
  * amendment 6) and `exactFactIds` (29e). Under either, the freeze takes exactly those members or the
  * task stays pending — a smaller batch would be a membership change made after execution started. */
-export interface TaskBoundary { maxEntryId?: number; exactEntryIds?: number[]; allowedFactIds?: number[]; exactFactIds?: number[] }
+export interface TaskBoundary { maxEntryId?: number; exactEntryIds?: number[] }
 export interface TaskOptions {
   /** Durable execution shared only with a refused attempt's fallback. */
   executionId?: string;
@@ -407,7 +390,7 @@ export interface TraceMemory {
    * projection is `dreamingPending`. With `upToTrigger`, Noting is counted only up to its trigger
    * (maintainer, 2026-09-25, for the `/trace` menus): a larger backlog reports `atLeast` with its
    * exact pending entry count, because rendering every entry of a long backlog took seconds. */
-  pendingTokens(phase: "noting" | "consolidation", target?: TaskTarget, upToTrigger?: boolean):
+  pendingTokens(phase: "noting", target?: TaskTarget, upToTrigger?: boolean):
     | { tokens: number; trigger: number; state: "known"; atLeast?: true; entries?: number }
     | { tokens: null; trigger: number | null; state: "no session" | "unavailable" };
   /** Same read-only contract as `pendingTokens`, one entry per applicable Knowledge pool (fixed
@@ -452,7 +435,6 @@ export interface TraceMemory {
   notingBatch(target: TaskTarget, boundary?: TaskBoundary): SourceEntry[];
   tools(context: ToolContext): ToolDefinition[];
   noting(input: NotingInput): Promise<NotingResult>;
-  consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
   dream(input: DreamingInput): Promise<DreamingResult>;
   /** Committed lineage facts and unrecorded raw, without dropping facts. */
   branchSummary(sessionId: number, branch: string, headTurnId: number): string;
@@ -477,7 +459,7 @@ export interface TraceMemory {
   status(sessionId: number, branch?: string, headTurnId?: number | null): string;
   /** Footer progress for one selected path: Raw and fact backlog, current visible Knowledge, and
    * current revisions changed since their owner pool last processed them. */
-  progress(sessionId: number, branch?: string, headTurnId?: number | null): { entries: number; facts: number; unconsolidated: number;
+  progress(sessionId: number, branch?: string, headTurnId?: number | null): { entries: number; facts: number;
     knowledge: number; changedKnowledge: number };
   /** Model spend of one session's runs: run counts and cost by kind, token totals and total cost (51: Current session shows this composition). */
   spend(sessionId: number): { runs: { noting: number; consolidation: number; dreaming: number; manual: number }; costs: { noting: number; consolidation: number; dreaming: number; manual: number };
@@ -787,19 +769,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // at its threshold without reading or counting the rest of the pending backlog.
   const notingDue = (target: TaskTarget): boolean =>
     countPending(pendingState(target), cfg.noting.triggerTokens) >= cfg.noting.triggerTokens;
-  const consolidationTokens = (target: TaskTarget): number => {
-    const path = store.knowledgePath(target.sessionId, target.branch, target.headTurnId);
-    const snapshot = store.pathSnapshot(path);
-    const facts = store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
-    const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot);
-    return tokens(renderFactGroups(facts, f => renderFact(f, relations.get(f.id) ?? []), store.factTurnTimes(facts)).join("\n"));
-  };
   const pendingTokens: TraceMemory["pendingTokens"] = (phase, target, upToTrigger = false) => {
+    if (phase !== "noting") throw new Error(`Unsupported pending phase: ${phase}`);
     const trigger = cfg[phase].triggerTokens;
     if (!target) return { tokens: null, trigger, state: "no session" };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
-      if (phase === "consolidation") return { tokens: consolidationTokens(target), trigger, state: "known" };
       const pending = pendingState(target), count = countPending(pending, upToTrigger ? trigger : Infinity);
       return !upToTrigger || count < trigger ? { tokens: count, trigger, state: "known" }
         : { tokens: trigger, trigger, state: "known", atLeast: true, entries: pending.length };
@@ -825,12 +800,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // new version stops consuming them"), so the requested mode no longer changes this answer. Phase
   // slots, enrollment, the host's readiness wait and claim checks are untouched.
   const taskEligibility = (phase: Phase, target: TaskTarget) => {
+    if (phase !== "noting" && phase !== "dreaming") throw new Error(`Unsupported live phase: ${phase}`);
     if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false };
     return { due: phase === "noting" ? notingDue(target)
-      : phase === "dreaming" ? store.duePools(target, cfg.dreaming.triggerTokens).length > 0
-      : consolidationTokens(target) >= cfg.consolidation.triggerTokens };
+      : store.duePools(target, cfg.dreaming.triggerTokens).length > 0 };
   };
-  const execute = async (phase: Phase, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult | DreamingResult> => {
+  const execute = async (phase: Phase, input: NotingInput): Promise<NotingResult | DreamingResult> => {
     // 29e (parent 29, superseding 25b): both phases have two execution modes again, so no mode is
     // refused here by name. What stays subagent stays subagent where it is decided — borrowed work
     // and manual catchup request it explicitly, and ticket 28's recovery workers will too.
@@ -849,7 +824,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     let empty = false, projectId: number;
     let executionId: string;
     let origin: import("../model/index.ts").TriggerOrigin | null = null;
-    let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeConsolidation> | ReturnType<typeof freezeDreaming> | null;
+    let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeDreaming> | null;
     try { frozen = store.transaction(() => {
       // Candidate discovery is advisory: recheck the executor and borrowing scope atomically
       // with claim acquisition, before loading a closed target's evidence or constructing material.
@@ -868,8 +843,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         executionId = store.beginExecution({ sessionId: target.sessionId, phase, head: frozen.range.anchor, origin }, input.executionId);
         return frozen;
       }
-      const pendingNow = phase === "noting" ? store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
-        : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
+      const pendingNow = store.pendingEntries(target.sessionId, target.branch, target.headTurnId);
       const boundary = input.boundary;
       // A frozen manual target (18b) counts only entries/facts inside its snapshot; later arrivals
       // do not turn "empty within the target" into "dropped", nor expand what a batch may take.
@@ -877,10 +851,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // still pending is "empty within the target"; a partial survivor is the drop `freezeNoting`
       // diagnoses below, never a silently smaller batch.
       empty = !boundary ? !pendingNow.length
-        : phase === "noting" ? !pendingNow.some(e => (!boundary.exactEntryIds || boundary.exactEntryIds.includes((e as { id: number }).id))
-            && (boundary.maxEntryId === undefined || (e as { id: number }).id <= boundary.maxEntryId))
-        : !pendingNow.some(f => (!boundary.exactFactIds || boundary.exactFactIds.includes((f as { id: number }).id))
-            && (!boundary.allowedFactIds || boundary.allowedFactIds.includes((f as { id: number }).id)));
+        : !pendingNow.some(e => (!boundary.exactEntryIds || boundary.exactEntryIds.includes(e.id))
+            && (boundary.maxEntryId === undefined || e.id <= boundary.maxEntryId));
       if (empty) return null;
       claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
         if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;
@@ -894,17 +866,16 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // 70: `pendingNow` above already read this exact session/branch/head's full pending set inside
       // this same admission transaction; nothing between there and here can mark an entry noted, so
       // the freeze reuses it instead of reading it again.
-      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText, pendingNow as SourceEntryMeta[])
-        : freezeConsolidation(store, selected, cfg);
+      const frozen = freezeNoting(store, selected, cfg, resultText, pendingNow);
       origin = admittedOrigin;
-      const head = "entries" in frozen ? frozen.entries[0]?.id : frozen.rangeFacts[0]?.id;
+      const head = frozen.entries[0]?.id;
       if (head !== undefined) executionId = store.beginExecution({ sessionId: target.sessionId, phase, head, origin }, input.executionId);
       return frozen;
     }); } catch (error) {
       // 27d repair 2: a batch frozen on exact membership whose evidence another executor already
       // processed is not an admission failure and not work to retry — the claim that completed it
       // has already been honoured, so this task simply drops, carrying the diagnostic that says so.
-      if (error instanceof Error && (error.message.startsWith(NOTING_MEMBERSHIP) || error.message.startsWith(CONSOLIDATION_MEMBERSHIP))) return { outcome: "dropped", reason: error.message };
+      if (error instanceof Error && error.message.startsWith(NOTING_MEMBERSHIP)) return { outcome: "dropped", reason: error.message };
       throw new Error(error instanceof Error ? error.message : String(error), { cause: "task admission" });
     }
     if (!frozen || !claim) return { outcome: empty ? "empty" : "dropped" };
@@ -931,14 +902,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     if (external?.aborted) onExternalAbort();
     else external?.addEventListener("abort", onExternalAbort, { once: true });
-    const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, consolidation?: ReturnType<typeof freezeConsolidation>, dreaming?: Parameters<typeof bindTools>[5]) => {
+    const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, dreaming?: Parameters<typeof bindTools>[4]) => {
       run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
       run.executionId = executionId!;
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
       Object.assign(run, store.bindRunOrigin(run, origin));
       if (phase === "dreaming") Object.assign(run, store.bindDreamingRun(run));
       const binding = bindTools(store, read, input.maxReadChars === undefined ? context : { ...context, maxReadChars: input.maxReadChars },
-        run, consolidation, dreaming);
+        run, dreaming);
       task.close = binding.close;
       return binding;
     };
@@ -947,7 +918,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel, fallbackReason: input.fallbackReason, forkAttempt: input.forkAttempt, cancellation: generation,
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); } }), forced]);
     };
-    let result: NotingResult | ConsolidateResult | DreamingResult | undefined;
+    let result: NotingResult | DreamingResult | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined, timedOut = false;
     if (phase === "dreaming") timeout = setTimeout(() => {
       // External cancellation owns its outcome even when the native worker ignores abort.
@@ -965,8 +936,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     try {
       result = phase === "noting"
         ? await runNoting(store, frozen as ReturnType<typeof freezeNoting>, agent, cfg, bind)
-        : phase === "dreaming" ? await runDreaming(store, frozen as ReturnType<typeof freezeDreaming>, agent, bind)
-        : await runConsolidation(store, frozen as ReturnType<typeof freezeConsolidation>, agent, cfg, bind);
+        : await runDreaming(store, frozen as ReturnType<typeof freezeDreaming>, agent, bind);
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
       external?.removeEventListener("abort", onExternalAbort);
@@ -1018,7 +988,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // Reuse load validation, then restrict edits to the Noter mode and the borrowing scope.
       const requested = canonicalConfig(settings ?? {});
       if (!requested || typeof requested !== "object" || Array.isArray(requested)) throw new Error("Invalid configuration: expected an object");
-      const reconfigurable: Record<string, string> = { noting: "forkModeDefault", consolidation: "forkModeDefault" };
+      const reconfigurable: Record<string, string> = { noting: "forkModeDefault" };
       for (const [section, values] of Object.entries(requested)) {
         if (section === "closedSessionScope") continue;
         if (!Object.hasOwn(reconfigurable, section)) throw new Error(`Unknown setting ${section}`);
@@ -1027,14 +997,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       }
       const next = validateConfig({
         closedSessionScope: requested.closedSessionScope === undefined ? cfg.closedSessionScope : requested.closedSessionScope,
-        render: cfg.render, noting: { ...cfg.noting, ...requested.noting }, consolidation: { ...cfg.consolidation, ...requested.consolidation }, dreaming: cfg.dreaming,
+        render: cfg.render, noting: { ...cfg.noting, ...requested.noting }, dreaming: cfg.dreaming,
         compaction: cfg.compaction,
       });
       // One object identity throughout, so every existing reader sees the new default at its next
       // admission; nothing else of the frozen configuration moves.
       cfg.closedSessionScope = next.closedSessionScope;
       cfg.noting.forkModeDefault = next.noting.forkModeDefault;
-      cfg.consolidation.forkModeDefault = next.consolidation.forkModeDefault;
     },
     close: () => {
       if (store.closed) return;
@@ -1047,7 +1016,6 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     notingBatch: (target, boundary) => notingBatch(store, notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
     tools: (context) => bindTools(store, read, context).tools,
     noting: input => execute("noting", input) as Promise<NotingResult>,
-    consolidate: input => execute("consolidation", input) as Promise<ConsolidateResult>,
     dream: input => execute("dreaming", { ...input, mode: "subagent", effectiveMode: "subagent" }) as Promise<DreamingResult>,
     ...read,
     declareProject: (sessionId, name, source = "mark", path) => {
@@ -1055,7 +1023,6 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         ? { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId } : undefined;
       const project = store.declareProject(sessionId, name, source, selected && { path: selected, atTrigger: phase => phase === "noting"
         ? notingDue(selected)
-        : phase === "consolidation" ? consolidationTokens(selected) >= cfg.consolidation.triggerTokens
         : store.duePools(selected, cfg.dreaming.triggerTokens).length > 0 });
       return `S${sessionId} project: ${project.name} (${store.projectDeclaration(sessionId)})`;
     },

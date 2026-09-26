@@ -2,6 +2,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { validateConfig, type ClosedSessionScope, type ConfigOverride, type TraceMemoryConfig } from "../../core/api/index.ts";
 import { MEMORY_PHASES, PHASE_SETTING_KEYS, type MemoryPhase } from "../phase-settings.ts";
+import { retireConsolidationSettings } from "../retired-settings.ts";
 
 export const CC_AGENT_SDK_VERSION = "0.1.77";
 export const CC_NATIVE_VERSION = "2.1.280";
@@ -44,12 +45,9 @@ export interface CcHostConfig {
   stateDir: string;
   notingModel?: string;
   notingThinking?: string;
-  consolidationModel?: string;
-  consolidationThinking?: string;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
   "noting.triggerTokens"?: number;
-  "consolidation.triggerTokens"?: number;
   "dreaming.triggerTokens"?: number;
   "dreaming.timeoutMs"?: number;
   /** 73: the fixed allowance shared by Knowledge, Facts and Raw (default 10,000). Not a
@@ -65,17 +63,16 @@ export interface CcHostConfig {
   /** Bound for a write tool to observe its exact native assistant call in the transcript. */
   writeSourceTimeoutMs?: number;
   closedSessionScope?: ClosedSessionScope;
-  /** Required to admit N/C/D work. Hosts that only ingest/read may omit it. */
+  /** Required to admit N/D work. Hosts that only ingest/read may omit it. */
   worker?: CcWorkerConfig;
 }
 
 export interface ResolvedCcHostConfig {
+  removedSettings: string[];
   dbPath: string;
   stateDir: string;
   notingModel?: string;
   notingThinking?: string;
-  consolidationModel?: string;
-  consolidationThinking?: string;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
   baseline?: string;
@@ -123,7 +120,9 @@ function phaseFields(input: CcHostConfig, phase: MemoryPhase): { model: string; 
 }
 
 export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
-  if (!input || typeof input !== "object") throw new Error("CC configuration is required");
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("CC configuration is required");
+  const retired = retireConsolidationSettings(input);
+  input = retired.values;
   const dbPath = input.dbPath === undefined ? join(homedir(), ".trace-memory", "trace.db") : input.dbPath;
   if (typeof dbPath !== "string" || !dbPath.trim()) throw new Error("CC dbPath must be a non-empty absolute path when specified");
   if (typeof input.stateDir !== "string" || !input.stateDir.trim()) throw new Error("CC stateDir is required");
@@ -167,7 +166,6 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   const coreConfig = validateConfig({
     closedSessionScope,
     ...(input["noting.triggerTokens"] === undefined ? {} : { noting: { triggerTokens: input["noting.triggerTokens"] } }),
-    ...(input["consolidation.triggerTokens"] === undefined ? {} : { consolidation: { triggerTokens: input["consolidation.triggerTokens"] } }),
     ...(input["dreaming.triggerTokens"] === undefined && input["dreaming.timeoutMs"] === undefined ? {} : { dreaming: {
       ...(input["dreaming.triggerTokens"] === undefined ? {} : { triggerTokens: input["dreaming.triggerTokens"] }),
       ...(input["dreaming.timeoutMs"] === undefined ? {} : { timeoutMs: input["dreaming.timeoutMs"] }),
@@ -175,6 +173,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
     ...(input["compaction.sharedAllowanceTokens"] === undefined ? {} : { compaction: { sharedAllowanceTokens: input["compaction.sharedAllowanceTokens"] } }),
   } as ConfigOverride);
   return {
+    removedSettings: retired.removed,
     dbPath: resolve(dbPath), stateDir: resolve(input.stateDir), ...phaseValues,
     ...(input.baseline === undefined ? {} : { baseline: input.baseline }),
     ...(input.retry === undefined ? {} : { retry: retry(input.retry)! }),

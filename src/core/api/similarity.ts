@@ -11,7 +11,7 @@ export function jaccardBigrams(left: ReadonlySet<string>, right: ReadonlySet<str
   return union ? intersection / union : 0;
 }
 
-/** Shared lexical similarity for Consolidation and Noting. */
+/** Lexical similarity ranks admitted knowledge search candidates. */
 export function similarity(a: string, b: string): number {
   return jaccardBigrams(characterBigrams(a), characterBigrams(b));
 }

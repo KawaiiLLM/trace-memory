@@ -60,10 +60,8 @@ test("88: neutral writes do not revisit existing knowledge revisions", () => {
         category: "observation", actor: "user", text: "uncited", source: [`T${emptyFact.id}#E1`], createdAt: at }] });
     if (!newFact.ok) throw Error(newFact.problems.join("; "));
     assertNeutral("N processing and new uncited fact");
-    const marked = store.commitConsolidationRun({ path,
-      run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: at },
-      consolidated: [fact.id], operations: [] });
-    if (!marked.ok) throw Error(marked.problems.join("; "));
+    const historical = store.recordRun({ kind: "consolidation", sessionId: session.id, branch: "main", createdAt: at, outcome: "success" });
+    store.markConsolidated(fact.id, historical.id, project.id);
     assertNeutral("C processing mark");
     const claim = store.acquireClaim(path, "dreaming", "88-neutral")!;
     const range = store.retainKnowledgePoolRange(path, `session:${session.id}`, claim);

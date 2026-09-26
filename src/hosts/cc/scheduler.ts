@@ -1,26 +1,22 @@
-import type { ConsolidateResult, DreamingResult, NotingResult, TraceMemory, TaskBoundary, TaskTarget } from "../../core/api/index.ts";
+import type { DreamingResult, NotingResult, TraceMemory, TaskBoundary, TaskTarget } from "../../core/api/index.ts";
 import type { CcReconcileResult } from "./importer.ts";
 import type { ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
-export type CcWorkerPhase = "noting" | "consolidation" | "dreaming";
-type CcTaskResult = NotingResult | ConsolidateResult | DreamingResult;
+export type CcWorkerPhase = "noting" | "dreaming";
+type CcTaskResult = NotingResult | DreamingResult;
 export type CcCatchupState = "starting" | "running" | "waiting" | "completed" | "stopped" | "failed";
 export interface CcCatchupStatus {
   state: CcCatchupState;
   phase?: CcWorkerPhase;
   entriesDone: number;
   entriesTotal: number;
-  factsDone: number;
-  factsTotal: number;
   diagnostic?: string;
 }
 interface Catchup {
   target: TaskTarget;
   maxEntryId?: number;
   entryTotal: number;
-  factIds: Set<number>;
-  factTotal: number;
   state: CcCatchupState;
   phase?: CcWorkerPhase;
   diagnostic?: string;
@@ -43,23 +39,23 @@ export class CcTaskScheduler {
   private catchup?: Catchup;
   private cancellationEpoch = 0;
   /** Ticket 72: ports 69's per-entry rule to CC. Noting has no entry here — every appended entry
-   * evaluates it, own and borrowed, exactly as before. Consolidation and Dreaming are evaluated only
+   * evaluates it, own and borrowed, exactly as before. Dreaming is evaluated only
    * while armed; a phase disarms itself the moment its own evaluation comes back not-due, and a due
    * phase that did not launch (busy slot, foreign claim, dropped) stays armed for the next opportunity.
    * `noting: true` is never read; it exists only so `phase: CcWorkerPhase` can index this object
    * without narrowing. Constructing this scheduler (attach) is itself an arming event. */
-  private readonly armed: Record<CcWorkerPhase, boolean> = { noting: true, consolidation: true, dreaming: true };
-  private armCD(): void { this.armed.consolidation = true; this.armed.dreaming = true; }
-  /** The last-seen `Store.progressSignal` for this session: a change re-arms C and D, closing what the
+  private readonly armed: Record<CcWorkerPhase, boolean> = { noting: true, dreaming: true };
+  private armDreaming(): void { this.armed.dreaming = true; }
+  /** The last-seen `Store.progressSignal` for this session: a change re-arms D, closing what the
    * flags above miss on their own — a commit made through a different connection to the same database
    * file (another executor, a Pi session, an operator CLI). Compared at every per-entry opportunity. */
   private lastArmSignal?: string;
   /** Was the last reconcile "ready" (a bound, enabled session with a persisted selected path and
    * head), and on which branch. A transition into ready (attach, or memory re-enabled) and a branch
-   * switch (a selected-path change or a retarget) both arm C and D, mirroring 69's "restore" event on
+   * switch (a selected-path change or a retarget) both arm D, mirroring 69's "restore" event on
    * Pi. A transition OUT of ready, or a branch change, also fences in-flight completions the same way
    * `stopCatchup` already does for stop/off: a task admitted against the old path must not use a late
-   * completion to launch C or D there (`checkpointCD` always re-evaluates the current path instead). */
+   * completion to launch D there (`checkpointDreaming` always re-evaluates the current path instead). */
   private lastReady = false;
   private lastBranch?: string;
   /** The freshest known effective path: what the completion checkpoint evaluates, never the settled
@@ -99,7 +95,7 @@ export class CcTaskScheduler {
     // drain active, so the ordinary completion checkpoint observes it too.
     if (this.lastReady && (!ready || reconcile.branch !== this.lastBranch)) this.cancellationEpoch++;
     if (ready) {
-      if (!this.lastReady || reconcile.branch !== this.lastBranch) this.armCD();
+      if (!this.lastReady || reconcile.branch !== this.lastBranch) this.armDreaming();
       this.lastBranch = reconcile.branch;
       this.currentTarget = { sessionId: reconcile.coreSessionId!, branch: reconcile.branch,
         headTurnId: reconcile.headTurnId!, triggerEntryId: reconcile.selectedTailId! };
@@ -121,8 +117,8 @@ export class CcTaskScheduler {
         // Ticket 72: an appended entry alone re-arms nothing; a change of the completed signal since
         // the last opportunity does (a commit through another connection this executor has not seen).
         const signal = this.memory.store.progressSignal(own.sessionId);
-        if (signal !== this.lastArmSignal) { this.lastArmSignal = signal; this.armCD(); }
-        for (const phase of ["noting", "consolidation", "dreaming"] as const) this.startAutomatic(phase, own);
+        if (signal !== this.lastArmSignal) { this.lastArmSignal = signal; this.armDreaming(); }
+        for (const phase of ["noting", "dreaming"] as const) this.startAutomatic(phase, own);
       }
     }
     this.driveCatchup(false);
@@ -134,7 +130,7 @@ export class CcTaskScheduler {
     if (ticket !== this.cancellationEpoch) return this.failedStatus("catchup was cancelled before admission");
     if (this.catchup && (this.catchup.state === "running" || this.catchup.state === "waiting")) {
       // A waiting drain with nothing drain-owned active has no in-process completion left to wake it
-      // (e.g. a C/D admission dropped by a foreign claim). A repeated command is that recovery. A
+      // (e.g. a D admission dropped by a foreign claim). A repeated command is that recovery. A
       // running drain is only reported, never duplicated.
       if (this.catchup.state === "waiting" && !this.catchup.active.size) this.driveCatchup(true);
       return this.catchupStatus();
@@ -149,9 +145,8 @@ export class CcTaskScheduler {
     const target: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
       headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedTailId! };
     const entries = this.pendingEntryIds(target);
-    const facts = this.memory.store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).map(fact => fact.id);
     this.catchup = { target, maxEntryId: entries.length ? Math.max(...entries) : undefined,
-      entryTotal: entries.length, factIds: new Set(facts), factTotal: facts.length,
+      entryTotal: entries.length,
       state: "running", active: new Set() };
     this.driveCatchup();
     return this.catchupStatus();
@@ -170,7 +165,7 @@ export class CcTaskScheduler {
     return this.catchupStatus();
   }
   beginCatchup(): CcCatchupStatus {
-    return this.startStatus = { state: "starting", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0,
+    return this.startStatus = { state: "starting", entriesDone: 0, entriesTotal: 0,
       diagnostic: "syncing the transcript" };
   }
   /** A failed start stays visible until the next one; a started drain reports itself. */
@@ -181,12 +176,8 @@ export class CcTaskScheduler {
     const drain = this.catchup;
     const remainingEntries = drain.maxEntryId === undefined ? 0 : this.pendingEntryIds(drain.target)
       .filter(id => id <= drain.maxEntryId!).length;
-    const remainingFacts = this.memory.store
-      .consolidationBatch(drain.target.sessionId, drain.target.branch, drain.target.headTurnId)
-      .filter(fact => drain.factIds.has(fact.id)).length;
     return { state: drain.state, ...(drain.phase ? { phase: drain.phase } : {}),
       entriesDone: drain.entryTotal - remainingEntries, entriesTotal: drain.entryTotal,
-      factsDone: drain.factTotal - remainingFacts, factsTotal: drain.factTotal,
       ...(drain.diagnostic ? { diagnostic: drain.diagnostic } : {}) };
   }
 
@@ -200,12 +191,12 @@ export class CcTaskScheduler {
   private startStatus: CcCatchupStatus | null = null;
 
   private failedStatus(diagnostic: string): CcCatchupStatus {
-    return { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0, diagnostic };
+    return { state: "failed", entriesDone: 0, entriesTotal: 0, diagnostic };
   }
 
-  /** Ticket 72: Noting always evaluates (own and borrowed, exactly as before). Consolidation and
-   * Dreaming evaluate their own candidate only while armed — an appended entry alone cannot change
-   * either answer (67/69: no fact and no knowledge revision comes from Raw) — but the borrowed
+  /** Ticket 72: Noting always evaluates (own and borrowed, exactly as before). Dreaming
+   * evaluates its candidate only while armed — an appended entry alone cannot change
+   * that answer (67/69: Raw ingestion alone creates no knowledge revision) — but the borrowed
    * closed-session scan keeps its per-opportunity timing unchanged, running regardless of `armed`, so
    * `includeBorrowed=false` is only ever passed by the completion checkpoint below. */
   private startAutomatic(phase: CcWorkerPhase, own: TaskTarget, includeBorrowed = true): void {
@@ -233,7 +224,7 @@ export class CcTaskScheduler {
   }
 
   /**
-   * R4: a successful ordinary completion while a drain is active is a full checkpoint (all of N/C/D
+   * R4: a successful ordinary completion while a drain is active is a full checkpoint (both N/D
    * checked). Failure and cancellation start no checks; empty/dropped/bounced retain the N-only drive.
    */
   private reserve(phase: CcWorkerPhase, sessionId: number, run: () => Promise<CcTaskResult | undefined>,
@@ -254,13 +245,12 @@ export class CcTaskScheduler {
       .finally(() => {
         this.slots.delete(phase);
         this.safeNotify(`${phase} settled`);
-        // Ticket 86: only a successful completion may check C/D. A failed D may retain partial
+        // Ticket 86: only a successful completion may check D. A failed D may retain partial
         // writes, but failure starts no check. Gated on the signal having moved since admission, so
         // a run that settles without committing anything falls back to the ordinary pace, as before.
-        // N/C retain success after their atomic commit, even when a later provider reply fails.
-        // Only D may fail with partial writes; failed N/C must not replay an unrelated signal change.
+        // Only D may fail with partial writes; failed N must not replay an unrelated signal change.
         if (settled?.outcome === "success" &&
-          this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointCD(sessionId, epoch);
+          this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointDreaming(sessionId, epoch);
         if (shouldDrive(settled)) this.driveCatchup();
       });
   }
@@ -269,15 +259,14 @@ export class CcTaskScheduler {
    * cancellation epoch (a stop, an off, or a selected-path change/retarget since admission bumps it,
    * per `reconcile` above), the executor not stopped, and memory still enabled — and it evaluates the
    * CURRENT effective path (`currentTarget`), never the finished task's own (possibly stale) target.
-   * It checks only own C and D, scanning no borrowed candidates, so it composes with 68's catchup
+   * It checks only own D, scanning no borrowed candidates, so it composes with 68's catchup
    * checkpoint through the same slot reservation: whichever `reserve`s a phase first wins that slot;
    * the other's `startAutomatic` call becomes a no-op. */
-  private checkpointCD(sessionId: number, epoch: number): void {
+  private checkpointDreaming(sessionId: number, epoch: number): void {
     if (this.stopped || this.cancellationEpoch !== epoch) return;
     const target = this.currentTarget;
     if (!target || target.sessionId !== sessionId || !this.memory.store.enabled(sessionId)) return;
-    this.armCD();
-    this.startAutomatic("consolidation", target, false);
+    this.armDreaming();
     this.startAutomatic("dreaming", target, false);
   }
 
@@ -307,7 +296,7 @@ export class CcTaskScheduler {
     if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) return;
     const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
     const result = phase === "noting" ? await this.memory.noting(options)
-      : phase === "consolidation" ? await this.memory.consolidate(options) : await this.memory.dream(options);
+      : await this.memory.dream(options);
     this.report(phase, target, result);
     return result;
   }
@@ -327,7 +316,7 @@ export class CcTaskScheduler {
   /**
    * One catchup checkpoint (R4). Start, every successful completion (catchup-owned or ordinary) while
    * a drain is active, and a repeated `catchup` command on an idle waiting drain enter here with
-   * checkAll and independently check N, C and D. The per-poll/per-entry drive stays N-only (checkAll
+   * checkAll and independently check N and D. The per-poll/per-entry drive stays N-only (checkAll
    * false). Busy ordinary slots are observed once and never adopted or queued.
    */
   private driveCatchup(checkAll = true, retryPhase?: CcWorkerPhase): void {
@@ -347,7 +336,7 @@ export class CcTaskScheduler {
     let blockedNoting = false;
     let launched = false;
 
-    const phases: readonly CcWorkerPhase[] = retryPhase ? [retryPhase] : checkAll ? ["noting", "consolidation", "dreaming"] : ["noting"];
+    const phases: readonly CcWorkerPhase[] = retryPhase ? [retryPhase] : checkAll ? ["noting", "dreaming"] : ["noting"];
     for (const phase of phases) {
       let due = retryPhase === phase || phase === "noting" && remaining.length > 0;
       if (phase !== "noting" && !retryPhase) {
@@ -380,8 +369,6 @@ export class CcTaskScheduler {
               { maxEntryId: drain.maxEntryId } as TaskBoundary))
             : await this.runCandidate(phase, drain.target.sessionId, drain.target, false, epoch);
           if (!result) return;
-          if (phase === "noting" && "facts" in result && Array.isArray(result.facts))
-            for (const fact of result.facts) if (!drain.factIds.has(fact.id)) { drain.factIds.add(fact.id); drain.factTotal++; }
           if (phase === "noting") this.report(phase, drain.target, result);
           if (!owned()) return result;
           checkpoint = result.outcome === "success";
@@ -425,7 +412,7 @@ export class CcTaskScheduler {
     const remaining = drain.maxEntryId === undefined ? 0 : this.pendingEntryIds(drain.target)
       .filter(id => id <= drain.maxEntryId!).length;
     if (remaining || blockedNoting) { drain.state = "waiting"; drain.phase = "noting"; return; }
-    for (const phase of ["consolidation", "dreaming"] as const) {
+    for (const phase of ["dreaming"] as const) {
       try {
         if (this.memory.taskEligibility(phase, drain.target).due) {
           drain.state = "waiting"; drain.phase = phase; return;

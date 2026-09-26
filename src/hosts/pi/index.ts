@@ -12,7 +12,7 @@ import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggle
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, directoryAllocation, enrollmentDefault, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
+import { TraceMemory, directoryAllocation, enrollmentDefault, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, knowledgeAccountingHash, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -119,7 +119,7 @@ export default function (pi: ExtensionAPI) {
    * at the moment it launches, and handed to the worker as a value: either the parent state to fork
    * at or the reason it was refused. Every condition is rechecked here for every task, so a task
    * queued before a transition cannot bypass one. */
-  const forkLaunch = (context: ExtensionContext, input: NotingAgentInput | ConsolidationAgentInput,
+  const forkLaunch = (context: ExtensionContext, input: NotingAgentInput,
       model: { id: string; provider: string }, piId: string): ForkLaunch | { refused: string } => {
     // 19c cache-miss latch: the requested mode stays fork; admission resolves it to subagent
     // while this memory session is automatically downgraded.
@@ -147,7 +147,7 @@ export default function (pi: ExtensionAPI) {
     return { parentFile, parentSessionId: piId, checkpoint, captured: captured.payload };
   };
   const memory = TraceMemory(dbPath, async raw => {
-    const input = raw as NotingAgentInput | ConsolidationAgentInput | DreamingAgentInput;
+    const input = raw as NotingAgentInput | DreamingAgentInput;
     const callContext = ctx;
     const callPiId = callContext.sessionManager.getSessionId();
     const registry = callContext.modelRegistry;
@@ -228,7 +228,6 @@ export default function (pi: ExtensionAPI) {
   type Catchup = {
     sessionId: number; branch: string; headTurnId: number; triggerEntryId?: number;
     maxEntryId?: number; entryTotal: number; // Noting boundary: undefined means nothing was pending to note
-    factIds: Set<number>; factTotal: number; // Progress only: C uses ordinary target eligibility, not a frozen fact drain.
     stopped: boolean;
     waitingPhase?: WorkerPhase;
     active: Set<WorkerPhase>;
@@ -274,8 +273,8 @@ export default function (pi: ExtensionAPI) {
   /** The executor's one slot per phase, and what occupies it: one task of a kind at a time. The entry
    * carries the task's target and its frozen boundary beside the promise; `done` is assigned in the
    * same tick the slot is taken. */
-  type Slot = { target: TaskTarget; boundary?: TaskBoundary; result?: Promise<NotingResult | ConsolidateResult | { outcome: string } | undefined>; done?: Promise<unknown> };
-  type WorkerPhase = "noting" | "consolidation" | "dreaming";
+  type Slot = { target: TaskTarget; boundary?: TaskBoundary; result?: Promise<NotingResult | { outcome: string } | undefined>; done?: Promise<unknown> };
+  type WorkerPhase = "noting" | "dreaming";
   const slots = new Map<WorkerPhase, Slot>();
   // 19c: the phase whose run observed the eligible cache miss, so the run id can be linked to the
   // session's suppression once core has allocated it (the miss is seen before any run row exists).
@@ -367,8 +366,8 @@ export default function (pi: ExtensionAPI) {
   // background runs never enter Pi's session totals, which only count entries of the session file.
   const activity = { running: new Map<WorkerPhase, number>() };
   const runningKind = (kind: WorkerPhase) => (activity.running.get(kind) ?? 0) > 0;
-  /** Ticket 69: Consolidation and Dreaming are only worth re-evaluating per ingested entry while
-   * something that can change their answer may have happened since the last time each was checked.
+  /** Ticket 69: Dreaming is only worth re-evaluating per ingested entry while
+   * something that can change its answer may have happened since it was last checked.
    * Noting has no entry here — it is always re-evaluated per entry, exactly as before. A phase disarms
    * itself the moment its own evaluation comes back not-due (nothing changed it, so nothing will,
    * until an arming event below happens); it never disarms merely by being launched, so a launch that
@@ -376,30 +375,26 @@ export default function (pi: ExtensionAPI) {
    * the next opportunity retries it, as today. `noting: true` is never read; it exists only so `kind:
    * WorkerPhase` can index this object without narrowing. Executor start (this initializer) is itself
    * an arming event. */
-  const armed: Record<WorkerPhase, boolean> = { noting: true, consolidation: true, dreaming: true };
-  /** A completed run of ANY phase — including Noting — may have committed facts or knowledge, so it
-   * arms both Consolidation and Dreaming for re-evaluation (68 R4's own trigger: "a Noting run that
-   * commits facts re-checks Consolidation immediately"). Called beside the other arming events: restore
-   * (session start, branch switch), enabling memory, and a knowledge-budget settings change. A phase
-   * trigger has no live-reconfiguration path in Pi (`configure` below refuses it at runtime), so
-   * changing one only takes effect through an extension reload, which is a `restore` and arms there. */
-  const armCD = () => { armed.consolidation = true; armed.dreaming = true; };
+  const armed: Record<WorkerPhase, boolean> = { noting: true, dreaming: true };
+  /** Recheck Dreaming after a commit, restore, enrollment or knowledge-budget change.
+   * Arming does not itself launch work; admission still uses ordinary due and claim checks. */
+  const armDreaming = () => { armed.dreaming = true; };
   /** The signal-based re-arm below closes what would otherwise be this mechanism's blind spot: a
    * commit made through a DIFFERENT connection to this same database file — another executor, or (in
    * this codebase's own tests) the observer connection used to seed fixtures — touches none of the
    * named events above, so the flag alone would leave it unnoticed until this executor's own next
    * arming event. `lastArmSignal` compares `Store.progressSignal` (the same cheap composite the
    * footer cache in `core/api/read.ts` uses: indexed `MAX(id)`/`MAX(rowid)` lookups over the tables a
-   * commit that changes `consolidationBatch`/`duePools` writes to, plus this session's own project)
-   * against its last-seen value at every opportunity. A change re-arms both phases for that same call,
+   * commit that changes `duePools` writes to, plus this session's own project)
+   * against its last-seen value at every opportunity. A change re-arms Dreaming for that same call,
    * so the very next entry after an out-of-band commit re-checks it — one indexed query, not the
    * taskEligibility computation this ticket removes from the per-entry path, and never triggered by
    * ingesting Raw alone, since Store.progressSignal deliberately excludes the source/entry tables. */
   let lastArmSignal: string | undefined;
   /** Ticket 72: fences the completion checkpoint below the same way CC's `cancellationEpoch` fences
    * its own — a task admitted before a stop or a branch switch must not use a late completion to
-   * launch C or D. Bumped by `stopCatchup` (every call, not only while a catchup is active) and by a
-   * restore (session start or branch switch, beside `armCD()` there). "Off" needs no bump: `toggle`
+   * launch D. Bumped by `stopCatchup` (every call, not only while a catchup is active) and by a
+   * restore (session start or branch switch, beside `armDreaming()` there). "Off" needs no bump: `toggle`
    * runs fully synchronously, so `enabled()` — already checked at `checkQueues`' own top — is correct
    * by the time any later completion callback (always a later microtask) can run. */
   let cancellationEpoch = 0;
@@ -446,7 +441,7 @@ export default function (pi: ExtensionAPI) {
     // Ticket 75: text/indicator logic moved to the host-neutral formatter Claude Code's status
     // command shares; only the painting (this host's theme roles) stays here.
     const segments = memoryStatusLine({ enabled: isEnabled,
-      running: { noting: runningKind("noting"), consolidation: runningKind("consolidation"), dreaming: runningKind("dreaming") },
+      running: { noting: runningKind("noting"), dreaming: runningKind("dreaming") },
       counts, cost });
     context.ui.setStatus(tag, `🧠 ${segments.map(segment => paint(segment.role, segment.text)).join(" ")}`);
   };
@@ -462,7 +457,7 @@ export default function (pi: ExtensionAPI) {
   const attemptPhase = (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
       selected: { mode: "fork" | "subagent"; model: string; fallbackReason?: string },
       options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal },
-      ): Promise<NotingResult | ConsolidateResult | DreamingResult | { outcome: "dropped"; permanent?: string }> => {
+      ): Promise<NotingResult | DreamingResult | { outcome: "dropped"; permanent?: string }> => {
     if (closed || !enabled()
         || (options.forkAttempt?.cancellation !== undefined && options.forkAttempt.cancellation < memory.cancellation))
       return Promise.resolve({ outcome: "dropped", reason: CANCELLED_BEFORE_FALLBACK } as const);
@@ -508,7 +503,7 @@ export default function (pi: ExtensionAPI) {
     const effective = selection.fallbackReason ? "subagent" as const : selection.mode; // admission pauses by what will run, not by what was asked
     const [provider, ...id] = selection.model.split("/");
     const model = selection.model === "session" || selection.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
-    const phase = kind === "noting" ? "Noting" : kind === "dreaming" ? "Dreaming" : "Consolidation";
+    const phase = kind === "noting" ? "Noting" : "Dreaming";
     // 27a: the allowance is the window minus the fixed headroom, so an invalid window and one that
     // cannot even hold the headroom fail here, before anything is sent. `model.maxTokens` is read
     // nowhere any more: it changes neither the allowance nor this verdict.
@@ -577,7 +572,7 @@ export default function (pi: ExtensionAPI) {
       // 27d: with it, the cancellation generation that attempt was admitted under — core drops this
       // admission when a cancellation happened in between.
       ...(carried ? { forkAttempt: carried, executionId: carried.executionId, ...(carried.cancellation !== undefined ? { cancellation: carried.cancellation } : {}) } : {}) };
-    const admitted = (kind === "dreaming" ? memory.dream(common) : kind === "consolidation" ? memory.consolidate(common) : memory.noting(common))
+    const admitted = (kind === "dreaming" ? memory.dream(common) : memory.noting(common))
       .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); return result; });
     if (effective !== "fork") return admitted;
     // 27b: the freeze priced this batch as a fork — the inherited context plus the instructions — and
@@ -589,7 +584,7 @@ export default function (pi: ExtensionAPI) {
     // capacity string. Nothing else about the path differs, which is the point of restoring the mode
     // rather than giving this phase a second fallback mechanism.
     return admitted.catch(error => error instanceof Error && error.cause === "task admission"
-      && error.message.startsWith(kind === "noting" ? NOTING_CAPACITY : CONSOLIDATION_CAPACITY)
+      && error.message.startsWith(NOTING_CAPACITY)
       ? reroute({ reason: error.message.replace(/; left pending$/, "") }) : Promise.reject(error))
       // 27c: the launch, the gate or the provider refused this fork after the task was frozen. Core
       // handed the refusal back unread, so the one re-admission happens here — on the frozen batch's
@@ -682,7 +677,7 @@ export default function (pi: ExtensionAPI) {
     }
     current = undefined;
     reconciledLeaf = undefined; reconciled = undefined; // 22b: a restored session reconciles its ancestry from the start
-    armCD(); // ticket 69: a restore (session start or branch switch) rebuilds the selected path, so C and D are re-checked at the next opportunity
+    armDreaming(); // Restore re-arms D on the selected path at the next opportunity.
     cancellationEpoch++; // ticket 72: fences a completion admitted against the path this restore left behind
     reconcile(false);
     showSpend(ctx);
@@ -1007,13 +1002,13 @@ export default function (pi: ExtensionAPI) {
     void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
     return settled;
   };
-  const checkQueues = (opportunity?: TaskTarget, phases: readonly WorkerPhase[] = ["noting", "consolidation", "dreaming"], includeBorrowed = true) => {
+  const checkQueues = (opportunity?: TaskTarget, phases: readonly WorkerPhase[] = ["noting", "dreaming"], includeBorrowed = true) => {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
     const own = opportunity ?? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
     const signal = memory.store.progressSignal(own.sessionId);
     const epoch = cancellationEpoch; // ticket 72: every phase launched by this call shares this opportunity's admission epoch
-    if (signal !== lastArmSignal) { lastArmSignal = signal; armCD(); }
+    if (signal !== lastArmSignal) { lastArmSignal = signal; armDreaming(); }
     for (const kind of phases) {
       if (slots.has(kind)) continue;
       const selected = launch(kind);
@@ -1022,9 +1017,9 @@ export default function (pi: ExtensionAPI) {
       // nothing. The requested mode stays what it is, for the audit (review 2026-09-08). 29d removed
       // the delivery pause that used to read this too.
       const effective = effectiveMode(selected.mode, { kind, target: own });
-      // Ticket 69: Noting is always evaluated (own and borrowed, exactly as before). Consolidation and
-      // Dreaming are evaluated only while armed — an ingested entry alone cannot change either answer
-      // (67/69: no fact and no knowledge revision comes from Raw), so a disarmed phase costs nothing
+      // Ticket 69: Noting is always evaluated (own and borrowed, exactly as before).
+      // Dreaming is evaluated only while armed — ingestion alone creates no knowledge revision,
+      // so a disarmed phase costs nothing
       // here until something that can change it happens. The borrowed closed-session scan below is
       // untouched by this gate and keeps running every opportunity, as before.
       let due = false;
@@ -1042,7 +1037,7 @@ export default function (pi: ExtensionAPI) {
       const waiting = due ? forkWait(context, effective) : undefined;
       // Ticket 69's completion checkpoint (below) is a NEW kind of opportunity the borrowed scan's
       // "existing per-opportunity scan unchanged" promise never anticipated: it exists only to re-check
-      // OWN C/D urgency immediately after a commit, not to give idle-time borrowed work an extra,
+      // OWN D urgency immediately after a commit, not to give idle-time borrowed work an extra,
       // earlier chance to fan out. `includeBorrowed=false` there keeps the scan's timing exactly what
       // it was — the next ordinary per-entry opportunity — while still admitting due OWN work now.
       const candidates = due && !waiting ? [{ ...own, borrowed: false }] : [];
@@ -1079,26 +1074,18 @@ export default function (pi: ExtensionAPI) {
         context.ui.notify(String(error), "error");
       }), context, () => {
         showSpend(context);
-        // Ticket 86: only a successful completion may check C/D. A failed D can retain partial
-        // writes, but failure itself starts no check. Gated against `signal` — this call's own progress
-        // snapshot, taken before this task was admitted, not the shared `lastArmSignal` another
-        // concurrent phase or entry may have moved meanwhile: a run that settles without moving
-        // `consolidationBatch`/`duePools` at all (success or failure, nothing committed — a Consolidator
-        // that only ever replies with prose is the standing example) must not re-admit itself in a tight
-        // synchronous loop with no throttling entry between attempts; it falls back to the ordinary
-        // next-entry pace instead, exactly as before this ticket. A run that did commit something
-        // always changes this signal, so the immediate check still fires for it.
+        // Ticket 86: only successful completion may check D, and only after the progress signal
+        // changed since this task's admission. A failed D can retain partial writes but starts no check.
         // Ticket 72: a `cancelled` outcome (stop, off, or a branch switch aborted this task mid-flight)
-        // must not launch C or D on the strength of its late completion, and neither may a task admitted
+        // must not launch D on the strength of its late completion, and neither may a task admitted
         // before a stop or a branch switch that happened to settle afterward with some other outcome —
         // `epoch` fences both. `checkQueues` re-checks `closed`/`enabled()` at its own top, which is
         // sufficient for "off": `toggle` runs fully synchronously, so by the time this later microtask
         // runs, `enabled()` already reflects it.
-        // N/C report success once their atomic commit succeeds, even if the provider later fails.
-        // Only D can fail after partial writes. A failed N/C must not relay an unrelated empty N's
+        // Only D can fail after partial writes. A failed N must not relay an unrelated empty N's
         // processing-signal change into an immediate retry of work that committed nothing.
         if (settled?.outcome === "success" && epoch === cancellationEpoch &&
-          memory.store.progressSignal(own.sessionId) !== signal) { armCD(); checkQueues(undefined, ["consolidation", "dreaming"], false); }
+          memory.store.progressSignal(own.sessionId) !== signal) { armDreaming(); checkQueues(undefined, ["dreaming"], false); }
         // R4: a successful ordinary completion while a drain is active is a full checkpoint; any other
         // outcome (failure, cancelled, empty, dropped, bounced) stays N-only, matching the per-poll drive.
         if (catchup && settled?.outcome !== "failure" && settled?.outcome !== "cancelled") driveCatchup(settled?.outcome === "success");
@@ -1112,32 +1099,31 @@ export default function (pi: ExtensionAPI) {
     memory.store.pendingEntryIds(c.sessionId, c.branch, c.headTurnId).filter(id => id <= c.maxEntryId!);
   const catchupProgress = (c: Catchup) => {
     const remainingEntries = pendingCatchupEntryIds(c).length;
-    const remainingFacts = memory.store.consolidationBatch(c.sessionId, c.branch, c.headTurnId).filter(f => c.factIds.has(f.id)).length;
-    return { entriesDone: c.entryTotal - remainingEntries, remainingEntries, factsDone: c.factIds.size - remainingFacts, remainingFacts };
+    return { entriesDone: c.entryTotal - remainingEntries, remainingEntries };
   };
   const catchupLine = (): string | undefined => {
     if (!catchup) return undefined;
     const c = catchup, p = catchupProgress(c);
-    if (c.outcome === "completed") return `Catchup: completed (${p.entriesDone} entries noted, ${p.factsDone} facts integrated; below-threshold work may remain pending)`;
-    if (c.outcome === "stopped") return `Catchup: stopped (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts processed; unprocessed work stays pending; /trace catchup resumes it)`;
-    if (c.outcome === "failed") return `Catchup: failed — ${c.diagnostic} (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts processed)`;
-    if (c.waitingPhase) return `Catchup: waiting for ${c.waitingPhase} (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts)`;
-    if (c.active.size) return `Catchup: running ${[...c.active].join(" + ")} (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts)`;
-    return `Catchup: idle (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts)`;
+    if (c.outcome === "completed") return `Catchup: completed (${p.entriesDone} entries noted; below-threshold knowledge may remain pending)`;
+    if (c.outcome === "stopped") return `Catchup: stopped (${p.entriesDone}/${c.entryTotal} entries processed; unprocessed work stays pending; /trace catchup resumes it)`;
+    if (c.outcome === "failed") return `Catchup: failed — ${c.diagnostic} (${p.entriesDone}/${c.entryTotal} entries processed)`;
+    if (c.waitingPhase) return `Catchup: waiting for ${c.waitingPhase} (${p.entriesDone}/${c.entryTotal} entries)`;
+    if (c.active.size) return `Catchup: running ${[...c.active].join(" + ")} (${p.entriesDone}/${c.entryTotal} entries)`;
+    return `Catchup: idle (${p.entriesDone}/${c.entryTotal} entries)`;
   };
-  const hasBackgroundWork = () => runningKind("noting") || runningKind("consolidation") || runningKind("dreaming") || !!(catchup && !catchup.outcome);
+  const hasBackgroundWork = () => runningKind("noting") || runningKind("dreaming") || !!(catchup && !catchup.outcome);
   const finishCatchup = (c: Catchup) => {
     if (catchup !== c || c.outcome || c.active.size) return;
     const p = catchupProgress(c);
     if (p.remainingEntries) { c.waitingPhase = "noting"; return; }
     const own = { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId, triggerEntryId: c.triggerEntryId };
-    for (const phase of ["consolidation", "dreaming"] as const) {
+    for (const phase of ["dreaming"] as const) {
       try {
         if (memory.taskEligibility(phase, own).due) { c.waitingPhase = phase; return; }
       } catch (error) { c.outcome = "failed"; c.diagnostic = String(error); return; }
     }
     c.outcome = "completed"; c.waitingPhase = undefined;
-    ctx.ui.notify(`Trace Memory: catchup completed (${p.entriesDone} entries noted, ${p.factsDone} facts integrated; below-threshold work may remain pending).`, "info");
+    ctx.ui.notify(`Trace Memory: catchup completed (${p.entriesDone} entries noted; below-threshold knowledge may remain pending).`, "info");
     showSpend(ctx);
   };
   const driveCatchup = (checkAll = true, retryPhase?: WorkerPhase) => {
@@ -1152,7 +1138,7 @@ export default function (pi: ExtensionAPI) {
     }
     let launched = false, blockedNoting = false;
     if (checkAll) c.waitingPhase = undefined;
-    const phases: readonly WorkerPhase[] = retryPhase ? [retryPhase] : checkAll ? ["noting", "consolidation", "dreaming"] : ["noting"];
+    const phases: readonly WorkerPhase[] = retryPhase ? [retryPhase] : checkAll ? ["noting", "dreaming"] : ["noting"];
     for (const phase of phases) {
       let due = retryPhase === phase || phase === "noting" && remainingEntries.length > 0;
       try { if (phase !== "noting" && !retryPhase) due = memory.taskEligibility(phase, own).due; }
@@ -1177,8 +1163,6 @@ export default function (pi: ExtensionAPI) {
       // completion drives the full catchup checkpoint instead of racing an ordinary check.
       let completed = false;
       const handled = promise.then(result => {
-        if (phase === "noting" && result && Array.isArray((result as { facts?: unknown }).facts))
-          for (const f of (result as { facts: { id: number }[] }).facts) if (!c.factIds.has(f.id)) { c.factIds.add(f.id); c.factTotal++; }
         reportProblems(result, context);
         const outcome = (result as { outcome?: string }).outcome;
         completed = outcome !== undefined && outcome !== "empty" && outcome !== "dropped";
@@ -1199,7 +1183,7 @@ export default function (pi: ExtensionAPI) {
       }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); });
       trackSlot(phase, slot, handled, context, () => {
         c.active.delete(phase); showSpend(context);
-        if (completed) armCD();
+        if (completed) armDreaming();
         if (catchup !== c) return; // A late completion owns no checkpoint in a replacement drain.
         if (retry) driveCatchup(false, phase); // Slot released; retry only the failed phase under the frozen boundary.
         else if (checkpoint) driveCatchup();
@@ -1225,11 +1209,10 @@ export default function (pi: ExtensionAPI) {
     const { sessionId, branch } = state, headTurnId = state.head;
     const pendingNow = memory.store.pendingEntryIds(sessionId, branch, headTurnId);
     const maxEntryId = pendingNow.length ? Math.max(...pendingNow) : undefined;
-    const factsNow = memory.store.consolidationBatch(sessionId, branch, headTurnId).map(f => f.id);
     catchup = { sessionId, branch, headTurnId, triggerEntryId: state.sourceHead, maxEntryId, entryTotal: pendingNow.length,
-      factIds: new Set(factsNow), factTotal: factsNow.length, stopped: false, active: new Set() };
+      stopped: false, active: new Set() };
     driveCatchup();
-    if (catchup.outcome === "completed" && !catchup.entryTotal && !catchup.factTotal) {
+    if (catchup.outcome === "completed" && !catchup.entryTotal) {
       ctx.ui.notify("Trace Memory: catchup found nothing pending; already caught up.", "info"); return;
     }
     ctx.ui.notify(catchupLine()!, "info");
@@ -1263,7 +1246,7 @@ export default function (pi: ExtensionAPI) {
     const at = entries.findIndex(entry => entry.id === first);
     return visibleView(at < 0 ? [] : entries.slice(at), binding());
   };
-  const PHASE_LABEL = { noting: "Noting", consolidation: "Consolidation", dreaming: "Dreamer" } as const;
+  const PHASE_LABEL = { noting: "Noting", dreaming: "Dreamer" } as const;
   // Ticket 73 "Shared allowance": core allocates once and never falls back — compact truncates
   // unprocessed material instead of asking for recovery or native delegation. This handler freezes the
   // path, allocates, and either publishes the replacement or (a host-caught error only) delegates.
@@ -1390,10 +1373,10 @@ export default function (pi: ExtensionAPI) {
       const content = bound!.find(t => t.name === definition.name)!.execute(raw);
       if (toolRejected(definition.name, content)) throw new Error(content);
       // Ticket 69: a manual `note`/`memory` commit is a real commit in this executor, made outside any
-      // automatic run's own completion checkpoint, so it arms C and D itself. Not gated on whether this
+      // automatic run's own completion checkpoint, so it arms D itself. Not gated on whether this
       // particular call actually wrote a fact or a revision (an empty batch or an all-skip review costs
       // one extra due:false re-check, not a wrong answer).
-      armCD();
+      armDreaming();
       return result(content);
     } }) as unknown as ToolDefinition);
   for (const definition of definitions) pi.registerTool(definition);
@@ -1406,7 +1389,7 @@ export default function (pi: ExtensionAPI) {
     // carriers; enabling creates no generation or one-shot intent.
     save();
     reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
-    if (value) { armCD(); reconcile(false); save(); } // ticket 69: enabling memory re-checks C and D at the next opportunity
+    if (value) { armDreaming(); reconcile(false); save(); } // Enabling re-checks D at the next opportunity.
     showSpend(ctx);
     const { lines, recovery, cost, composition, shared } = sessionSummary();
     const notice = statusBody([...recovery, ...lines, cost, ...composition, ...shared], Math.max(1, (process.stdout.columns ?? 100) - 2));
@@ -1469,8 +1452,7 @@ export default function (pi: ExtensionAPI) {
     // The merged, validated layers decide: a project or environment override still wins, and core is
     // told the value that is actually effective — never the global one an override masks.
     const effective = validateConfig(core);
-    memory.configure({ closedSessionScope: effective.closedSessionScope, noting: { forkModeDefault: effective.noting.forkModeDefault },
-      consolidation: { forkModeDefault: effective.consolidation.forkModeDefault } });
+    memory.configure({ closedSessionScope: effective.closedSessionScope, noting: { forkModeDefault: effective.noting.forkModeDefault } });
   };
   const saveGlobal = (p: Preference, value: string | boolean) => {
     let replaced: string | undefined;
@@ -1533,7 +1515,7 @@ export default function (pi: ExtensionAPI) {
     saveGlobal(p, choice === follow ? "session" : choice);
   };
   const settingsInput = (): SettingsInput => {
-    const worker = (phase: "Noter" | "Consolidator" | "Dreamer", key: "noting" | "consolidation" | "dreaming") => {
+    const worker = (phase: "Noter" | "Dreamer", key: "noting" | "dreaming") => {
       const pref = (kind: Preference["kind"]) => preferences.find(p => p.phase === key && p.kind === kind);
       const model = pref("model")!, thinking = pref("thinking")!, mode = pref("mode");
       const effective = (p: Preference) => shownValue(p, preferenceValue(flat, p));
@@ -1542,7 +1524,7 @@ export default function (pi: ExtensionAPI) {
         sources: { mode: mode && source(mode) || undefined, model: source(model), thinking: source(thinking) } };
     };
     return { database: dbPath, budgets: { ...memory.knowledgeBudgets(), sharedAllowanceTokens: memory.config.compaction.sharedAllowanceTokens },
-      workers: [worker("Noter", "noting"), worker("Consolidator", "consolidation"), worker("Dreamer", "dreaming")],
+      workers: [worker("Noter", "noting"), worker("Dreamer", "dreaming")],
       closedSessionScope: memory.config.closedSessionScope,
       closedSessionSource: sources.closedSessionScope && sources.closedSessionScope !== "Global"
         ? `${sources.closedSessionScope} setting — this edit will not take effect` : undefined };
@@ -1564,7 +1546,7 @@ export default function (pi: ExtensionAPI) {
       try {
         const value = parseKnowledgeBudgetInput(input, budget.name);
         const saved = memory.setKnowledgeBudget(budget.field, value);
-        if (saved.changed) armCD(); // ticket 69: a knowledge-budget change may make a pool due; re-check at the next opportunity
+        if (saved.changed) armDreaming(); // ticket 69: a knowledge-budget change may make a pool due; re-check at the next opportunity
         const base = saved.policy.global + saved.policy.project + saved.policy.session;
         const shared = memory.config.compaction.sharedAllowanceTokens;
         ctx.ui.notify(saved.changed
@@ -1621,7 +1603,7 @@ export default function (pi: ExtensionAPI) {
     const composition = contextComposition(ctx, pi);
     const e = enrollment();
     const target = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
-    const noting = memory.pendingTokens("noting", target, true), consolidation = memory.pendingTokens("consolidation", target);
+    const noting = memory.pendingTokens("noting", target, true);
     const dreaming = memory.dreamingPending(target);
     const pools = Object.fromEntries((dreaming.pools ?? []).map(pool => [pool.scope, { tokens: pool.tokens, trigger: pool.trigger }]));
     const unavailable = { tokens: null, trigger: memory.config.dreaming.triggerTokens };
@@ -1647,7 +1629,7 @@ export default function (pi: ExtensionAPI) {
           { name: "Unclassified" as const, tokens: composition.memory.Unclassified },
           ...(["Conversation", "Other"] as const).map(name => ({ name, tokens: composition.amounts[name] })),
         ], complete: composition.complete },
-      pending: { noting: { tokens: noting.tokens, trigger: noting.trigger, ...(noting.state === "known" && noting.atLeast ? { atLeast: true, entries: noting.entries } : {}) }, consolidation: { tokens: consolidation.tokens, trigger: consolidation.trigger },
+      pending: { noting: { tokens: noting.tokens, trigger: noting.trigger, ...(noting.state === "known" && noting.atLeast ? { atLeast: true, entries: noting.entries } : {}) },
         dreaming: { global: pools.global ?? unavailable, project: pools.project ?? unavailable, session: pools.session ?? unavailable } },
       spend: { session: totals?.cost ?? 0,
         noting: { runs: totals?.runs.noting ?? 0, cost: totals?.costs.noting ?? 0 },

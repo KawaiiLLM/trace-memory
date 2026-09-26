@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS task_failures (
  * visible after interruption, without inferring a terminal outcome from an attempt audit. */
 export function beginExecution(store: Store, task: LogicalTask, previous?: string): string {
   store.requireEnabled(task.sessionId);
+  if (task.phase !== "noting" && task.phase !== "dreaming") throw new Error(`Unsupported live phase: ${task.phase}`);
   if (!Number.isSafeInteger(task.head) || task.head <= 0) throw new Error("Logical task requires a stable backlog head");
   if (previous !== undefined) {
     const row = store.db.prepare("SELECT * FROM task_executions WHERE id = ?").get(previous);
@@ -82,7 +83,12 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
     const count = Number(store.db.prepare("SELECT count FROM task_failures WHERE session_id = ? AND phase = ? AND head = ?").get(...key)!.count);
     if (count !== 3 || !store.enabled(Number(row.session_id))) return {};
     store.setEnrollment(Number(row.session_id), false);
-    store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE session_id = ?").run(row.session_id!);
+    // Off blocks new writes, but an admitted Dreamer still needs its exact token to settle
+    // skipped/own revisions on cancellation, just as in ordinary stop/off handling.
+    store.db.prepare(`UPDATE task_claims AS c SET expires_at = 0 WHERE session_id = ?
+      AND NOT (phase = 'dreaming' AND reserved = 0 AND expires_at > ? AND EXISTS (
+        SELECT 1 FROM dreaming_ranges r WHERE r.session_id = c.session_id AND r.claim_token = c.token
+          AND r.pool IS NOT NULL AND r.completed_run IS NULL AND r.closed_at IS NULL))`).run(row.session_id!, Date.now());
     const runs = store.db.prepare(`SELECT terminal_run FROM task_executions WHERE session_id = ? AND phase = ? AND head = ?
       AND outcome = 'failure' ORDER BY updated_at DESC, rowid DESC LIMIT 3`).all(...key).reverse();
     return { automaticOff: `Trace Memory: S${row.session_id} ${row.phase} off after three failures (${runs.map(r => `R${r.terminal_run}`).join(", ")}); ${reason || "business completion failed"}. Use /trace on to resume.` };

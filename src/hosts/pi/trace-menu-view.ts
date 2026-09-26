@@ -128,7 +128,7 @@ export function renderTraceMenu(input: TraceMenuInput, width: number, paint: Pai
     const bar = paint("accent", "█".repeat(filled)) + paint("dim", "░".repeat(10 - filled));
     return `${indent}${row.label.padEnd(13)} ${bar} ${row.percent.padStart(4)}   ${row.amount}`;
   };
-  lines.push(pendingLine(model.pending.noting), pendingLine(model.pending.consolidation));
+  lines.push(pendingLine(model.pending.noting));
   lines.push(`  ${model.pending.dreamingHeading}`);
   for (const pool of [model.pending.dreaming.global, model.pending.dreaming.project, model.pending.dreaming.session])
     lines.push(pendingLine(pool, "    "));

@@ -1,3 +1,4 @@
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { expect, test } from "vitest";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
@@ -21,7 +22,7 @@ test("92/03: model lists and compact carriers use chronological tags; human read
     ] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     const first = created.committed[0]!, second = created.committed[1]!;
-    const updated = store.commitConsolidationRun({ path: target, run: { kind: "consolidation", sessionId: session.id, createdAt: "now" }, operations: [{
+    const updated = commitNoterKnowledge(store, { path: target, run: { sessionId: session.id, createdAt: "now" }, operations: [{
       op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, ...content, category: "constraint", text: "Needle latest",
     }] });
     if (!updated.ok) throw new Error(updated.problems.join("; "));

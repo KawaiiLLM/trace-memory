@@ -121,13 +121,11 @@ const pendingRow = (label: string, value: PendingInput): PendingRow => {
 
 export interface PendingSectionInput {
   noting: PendingInput;
-  consolidation: PendingInput;
   dreaming: { global: PendingInput; project: PendingInput; session: PendingInput };
 }
 export interface PendingSection {
   heading: string;
   noting: PendingRow;
-  consolidation: PendingRow;
   dreamingHeading: string;
   dreaming: { global: PendingRow; project: PendingRow; session: PendingRow };
 }
@@ -135,7 +133,6 @@ export function buildPendingSection(input: PendingSectionInput): PendingSection 
   return {
     heading: "Pending / trigger",
     noting: pendingRow("Noting", input.noting),
-    consolidation: pendingRow("Consolidation", input.consolidation),
     dreamingHeading: "Dreaming",
     dreaming: {
       global: pendingRow("global", input.dreaming.global),
@@ -236,14 +233,14 @@ export function buildSettingsBudgets(input: SettingsBudgetsInput): SettingsBudge
   };
 }
 
-export interface WorkerRowInput { phase: "Noter" | "Consolidator" | "Dreamer"; mode?: string; model: string; thinking: string; source?: string; sources?: { mode?: string; model?: string; thinking?: string } }
+export interface WorkerRowInput { phase: "Noter" | "Dreamer"; mode?: string; model: string; thinking: string; source?: string; sources?: { mode?: string; model?: string; thinking?: string } }
 export interface WorkerRow { phase: string; mode?: string; model: string; thinking: string; source?: string; sources?: WorkerRowInput["sources"] }
 export interface SettingsWorkers { showModeColumn: boolean; rows: WorkerRow[] }
 export function buildSettingsWorkers(input: WorkerRowInput[]): SettingsWorkers {
   return { showModeColumn: input.some(w => w.mode !== undefined), rows: input.map(w => ({ ...w })) };
 }
 
-export type SettingsRowId = "budget.global" | "budget.project" | "budget.session" | "noting.mode" | "noting.model" | "noting.thinking" | "consolidation.mode" | "consolidation.model" | "consolidation.thinking" | "dreaming.model" | "dreaming.thinking" | "closedSessionScope";
+export type SettingsRowId = "budget.global" | "budget.project" | "budget.session" | "noting.mode" | "noting.model" | "noting.thinking" | "dreaming.model" | "dreaming.thinking" | "closedSessionScope";
 export interface SettingsChoice { id: SettingsRowId; label: string }
 /** Stable row identifiers and labels: adapters implement edits, not menu copy or ordering. */
 export function buildSettingsChoices(input: SettingsInput): SettingsChoice[] {
@@ -252,7 +249,7 @@ export function buildSettingsChoices(input: SettingsInput): SettingsChoice[] {
     id: `budget.${scope}` as SettingsRowId, label: `${budgetRows[i]!.label} Knowledge budget: ${budgetRows[i]!.value}`,
   }));
   const workers: SettingsChoice[] = input.workers.flatMap(w => {
-    const phase = w.phase === "Noter" ? "noting" : w.phase === "Consolidator" ? "consolidation" : "dreaming";
+    const phase = w.phase === "Noter" ? "noting" : "dreaming";
     return ([...(w.mode !== undefined ? [{ id: `${phase}.mode` as SettingsRowId, label: `${w.phase} mode: ${w.mode}`, source: w.sources?.mode }] : []),
       { id: `${phase}.model` as SettingsRowId, label: `${w.phase} model: ${w.model}`, source: w.sources?.model ?? w.source },
       { id: `${phase}.thinking` as SettingsRowId, label: `${w.phase} thinking: ${w.thinking}`, source: w.sources?.thinking }]).map(row => ({ id: row.id, label: `${row.label}${row.source ? ` (${row.source})` : ""}` }));
@@ -311,7 +308,6 @@ export const TRACE_MENU_FIXTURE: TraceMenuInput = {
   },
   pending: {
     noting: { tokens: 3_200, trigger: 10_000 },
-    consolidation: { tokens: 400, trigger: 5_000 },
     dreaming: {
       global: { tokens: 0, trigger: 4_000 },
       project: { tokens: 1_500, trigger: 5_000 },
@@ -339,7 +335,6 @@ export const TRACE_SETTINGS_FIXTURE: SettingsInput = {
   budgets: { global: 4_000, project: 15_000, session: 1_000, sharedAllowanceTokens: 10_000 },
   workers: [
     { phase: "Noter", mode: "subagent", model: "follow foreground", thinking: "inherit" },
-    { phase: "Consolidator", mode: "subagent", model: "claude-sonnet-5", thinking: "medium" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" },
   ],
   closedSessionScope: "project",
@@ -354,7 +349,6 @@ export const TRACE_SETTINGS_FIXTURE_CC: SettingsInput = {
   ...TRACE_SETTINGS_FIXTURE,
   workers: [
     { phase: "Noter", model: "claude-sonnet-5", thinking: "medium" },
-    { phase: "Consolidator", model: "claude-sonnet-5", thinking: "medium" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" },
   ],
 };

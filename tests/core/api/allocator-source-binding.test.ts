@@ -1,3 +1,4 @@
+import { historicalConsolidation } from "../../noting-knowledge-fixture.ts";
 import { expect, test, vi } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 
@@ -18,7 +19,7 @@ function fixture(manual = false, count = 1) {
   const facts = receipt.facts;
   expect(facts).toHaveLength(count);
   for (const f of facts) expect(m.store.factEntries(f.id)).toEqual(entries.map(e => e.id));
-  expect(m.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "consolidation", createdAt: time }, operations: [], consolidated: facts.map(fact => fact.id) }).ok).toBe(true);
+  historicalConsolidation(m.store, s.id, facts.map(fact => fact.id));
   const compact = () => { const r = m.compact(s.id, "main", t.id); if ("native" in r) throw new Error(r.reason); return r; };
   return { m, s, t, entries, facts, append, compact };
 }
@@ -86,7 +87,7 @@ for (const damage of ["none", "missing", "uncovered", "required"] as const) test
     expect(receipt.facts).toHaveLength(1);
     const fact = receipt.facts[0]!;
     expect(f.m.store.factEntries(fact.id)).toEqual(ids);
-    if (damage !== "required") expect(f.m.store.commitConsolidationRun({ run: { sessionId: f.s.id, branch: "main", kind: "consolidation", createdAt: time }, operations: [], consolidated: [fact.id] }).ok).toBe(true);
+    if (damage !== "required") historicalConsolidation(f.m.store, f.s.id, [fact.id]);
     if (damage === "missing") f.m.store.db.prepare("DELETE FROM fact_sources WHERE fact_id = ? AND entry_id = ?").run(fact.id, tool[0]!.id);
     expect(f.m.store.factCoveredByRaw(fact, new Set(damage === "uncovered" ? ids.slice(0, -1) : ids))).toBe(damage === "none" || damage === "required");
     const r = f.m.compact(f.s.id, "main", t.id);

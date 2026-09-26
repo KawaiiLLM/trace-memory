@@ -1,3 +1,4 @@
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { expect, test } from "vitest";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import type { KnowledgePath, KnowledgeOperationInput } from "../../../src/core/store/index.ts";
@@ -28,7 +29,7 @@ test("92/03: branch history owns stable ordinals, membership/status follows the 
     });
     const write = (path: Path, operations: KnowledgeOperationInput[]) => {
       activate(path);
-      const result = store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId: session.id, branch: path.branch, createdAt: "now" }, operations });
+      const result = commitNoterKnowledge(store, { path, run: { sessionId: session.id, branch: path.branch, createdAt: "now" }, operations });
       if (!result.ok) throw new Error(result.problems.join("; "));
       return result.committed[0]!;
     };

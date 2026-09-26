@@ -69,7 +69,7 @@ export async function runCcStatusCommand(io: CcStatusIo = {}): Promise<void> {
     const alive = owned && executorAlive(status.pid);
     const segments = memoryStatusLine({
       enabled: status.enabled,
-      running: alive ? status.running : { noting: false, consolidation: false, dreaming: false },
+      running: alive ? status.running : { noting: false, dreaming: false },
       counts: alive ? status.counts : undefined,
       cost: alive ? status.cost : undefined,
     });

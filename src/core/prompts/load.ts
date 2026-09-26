@@ -4,7 +4,7 @@ const INCLUDE = /<!-- include:\s*([^\s>]+)\s*-->/g;
 
 /** A stage prompt with its shared blocks (`shared/<name>.md`) spliced in at `<!-- include: name -->`
  * markers; the hash callers compute covers the composed text. An unknown or malformed marker throws. */
-export function loadPrompt(file: "noting.md" | "consolidation.md" | "dreaming.md"): string {
+export function loadPrompt(file: "noting.md" | "dreaming.md"): string {
   const template = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
   const composed = template.replace(INCLUDE, (_, name: string) => {
     const url = new URL(`./shared/${name}.md`, import.meta.url);

@@ -1,3 +1,4 @@
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { expect, test } from "vitest";
 import { sourceSeededMemory, type DreamingAgentInput } from "../../source-fixture.ts";
 
@@ -33,7 +34,7 @@ test("92/03: D skips tagless diffs by history address; mutation diagnostics sepa
       expect(receipt).not.toContain("rejected:");
     };
     expect((await memory.dream(target)).outcome).toBe("success");
-    const changed = store.commitConsolidationRun({ path: target, run: { kind: "consolidation", sessionId: session.id, createdAt: "now" }, operations: [
+    const changed = commitNoterKnowledge(store, { path: target, run: { sessionId: session.id, createdAt: "now" }, operations: [
       { op: "update", knowledgeId: a!.knowledgeId, baseCommit: a!.commit, ...content, text: "Rule 1 changed" },
       { op: "archive", knowledgeId: c!.knowledgeId, baseCommit: c!.commit, supports: [fact], reason: "obsolete", createdAt: "now" },
     ] });

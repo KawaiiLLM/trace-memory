@@ -1,9 +1,8 @@
-export const MEMORY_PHASES = ["noting", "consolidation", "dreaming"] as const;
+export const MEMORY_PHASES = ["noting", "dreaming"] as const;
 export type MemoryPhase = typeof MEMORY_PHASES[number];
 
 export const PHASE_SETTING_KEYS = {
   noting: { model: "notingModel", thinking: "notingThinking" },
-  consolidation: { model: "consolidationModel", thinking: "consolidationThinking" },
   dreaming: { model: "dreaming.model", thinking: "dreaming.thinking" },
 } as const satisfies Record<MemoryPhase, { model: string; thinking: string }>;
 

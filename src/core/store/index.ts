@@ -427,7 +427,9 @@ function usageFromFields(fields: string | null): UsageColumns {
   return [count(input), count(output), count(cacheRead), count(cacheWrite), count(costTotal)];
 }
 
-export type Phase = "noting" | "consolidation" | "dreaming";
+export type Phase = "noting" | "dreaming";
+/** Historical executions remain readable without granting retired stages admission. */
+export type HistoricalPhase = Phase | "consolidation";
 /** Host-selected path plus the facade's exact trigger computations. Store invokes the callback
  * under the declaration transaction; it is deliberately not taskEligibility, enrollment or stop state. */
 export interface ProjectDeclarationContext {
@@ -639,7 +641,6 @@ export interface CommitConsolidationRunInput {
   operations: KnowledgeOperationInput[];
   // Runs inside the transaction after application, so diagnostics observe the committed knowledge set.
   finalizeResponse?: (result: { committed: CommittedKnowledgeOp[] }) => string;
-  consolidated?: number[]; // the batch's fact ids, marked as taken by this run
 }
 
 export interface CommittedKnowledgeOp {
@@ -1685,7 +1686,7 @@ export class Store {
   }
   taskFailures(sessionId: number) {
     return this.db.prepare("SELECT * FROM task_failures WHERE session_id = ? ORDER BY phase, head").all(sessionId).map(row => ({
-      phase: row.phase as Phase, head: Number(row.head), count: Number(row.count), lastReason: String(row.last_reason ?? ""),
+      phase: row.phase as HistoricalPhase, head: Number(row.head), count: Number(row.count), lastReason: String(row.last_reason ?? ""),
       lastRunId: row.last_run_id === null ? null : Number(row.last_run_id), updatedAt: String(row.updated_at),
     }));
   }
@@ -1749,7 +1750,7 @@ export class Store {
     this.transaction(() => {
       this.db.prepare("UPDATE sessions SET closed_at = NULL WHERE id = ?").run(sessionId);
       // Reserve the new tokens for this executor without launching either phase.
-      for (const phase of ["noting", "consolidation", "dreaming"] as const) {
+      for (const phase of ["noting", "dreaming"] as const) {
         const previous = this.getClaim(sessionId, phase);
         if (!previous || previous.executorId === executorId) continue;
         const now = Date.now(), seatUnavailable = phase === "dreaming" && this.otherSessionOwnsDreamerSeat(sessionId, now);
@@ -1766,10 +1767,10 @@ export class Store {
   }
 
   acquireClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed = false, eligible: () => boolean = () => true): TaskClaim | null {
+    if (phase !== "noting" && phase !== "dreaming") throw new Error(`Unsupported live phase: ${phase}`);
     return this.transaction(() => this.acquireAvailableClaim(target, phase, executorId, borrowed, () => {
       const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId)
-        : phase === "dreaming" ? this.knowledgePools(target).filter(pool => pool.pending.length > 0)
-        : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
+        : this.knowledgePools(target).filter(pool => pool.pending.length > 0);
       return pending.length > 0;
     }, eligible));
   }
@@ -1867,7 +1868,8 @@ export class Store {
     return !cursors.length || cursors.some(cursor => cursor.branch === target.branch && cursor.headTurnId === target.headTurnId);
   }
 
-  closedTasks(phase: "noting" | "consolidation", executorSessionId: number, scope: ClosedSessionScope = "project"): TaskTarget[] {
+  closedTasks(phase: "noting", executorSessionId: number, scope: ClosedSessionScope = "project"): TaskTarget[] {
+    if (phase !== "noting") throw new Error(`Unsupported borrowed phase: ${phase}`);
     const executor = this.getSession(executorSessionId);
     if (scope === "off" || !executor || executor.closedAt !== null || !this.enabled(executorSessionId)) return [];
     const targets: (TaskTarget & { oldest: number })[] = [];
@@ -1884,8 +1886,7 @@ export class Store {
           .map(({ branch }) => ({ branch, headTurnId: this.knowledgePath(sessionId, branch).headTurnId }));
       for (const { branch, headTurnId } of paths) {
         if (!headTurnId) continue;
-        const pending = phase === "noting" ? this.pendingEntries(sessionId, branch, headTurnId)
-          : this.consolidationBatch(sessionId, branch, headTurnId);
+        const pending = this.pendingEntries(sessionId, branch, headTurnId);
         if (pending.length) targets.push({ sessionId, branch, headTurnId,
           oldest: Math.min(...pending.map(value => value.id)) });
       }
@@ -3331,7 +3332,8 @@ export class Store {
     return successors;
   }
 
-  /** Commit one atomic knowledge batch. Every exact base and consuming edge is rechecked here. */
+  /** Immediate D/manual knowledge batch; the legacy method name does not authorize C writes.
+   * Every exact base and consuming edge is rechecked here. N uses commitNotingRun instead. */
   commitConsolidationRun(input: CommitConsolidationRunInput): CommitConsolidationResult {
     try {
       const result = this.transaction(() => {
@@ -3348,12 +3350,11 @@ export class Store {
           if (input.operations.some(op => op.op === "create"))
             throw new Error("Dreamer cannot create knowledge without an explicit split parent");
         } else {
-          if (input.run.kind !== "consolidation" && input.run.kind !== "manual")
+          if (input.run.kind !== "manual")
             throw new Error(`${input.run.kind} has no knowledge commit authority`);
-          // 76: C creates, updates and archives; merge/split stay the Dreamer's.
-          const allowed = input.run.kind === "consolidation" ? new Set(["create", "update", "archive"]) : new Set(["create", "archive"]);
+          const allowed = new Set(["create", "archive"]);
           const forbidden = input.operations.find(op => !allowed.has(op.op));
-          if (forbidden) throw new Error(`${forbidden.op} belongs to the Dreamer and is not available to ${input.run.kind === "consolidation" ? "the Consolidator" : "manual memory"}`);
+          if (forbidden) throw new Error(`${forbidden.op} belongs to the Dreamer and is not available to manual memory`);
           if (input.run.kind === "manual" && input.operations.some(op => op.op === "archive") && this.dreamerSeatHeld(Date.now()))
             throw new Error("manual archive is unavailable while the Dreamer seat is held");
         }
@@ -3361,19 +3362,17 @@ export class Store {
           const trustedDreaming = this.isDreamingRun(input.run);
           const authority = trustedDreaming ? this.dreamingAuthority(input.run) : undefined;
           const dreamingPool = authority ? this.dreamingRange(authority.rangeId)?.pool ?? null : null;
-          const role: "consolidation" | "dreaming" | "manual" = trustedDreaming ? "dreaming" : input.run.kind === "consolidation" ? "consolidation" : "manual";
+          const role: "dreaming" | "manual" = trustedDreaming ? "dreaming" : "manual";
           const outcome = this.applyKnowledgeOperation(op, runId, projectId, sessionId, path, trustedDreaming, role, dreamingPool);
           if (outcome.ok) committed.push(...outcome.value);
           else throw outcome.reason instanceof Error ? outcome.reason : new Error(outcome.reason);
         }
-        for (const factId of input.consolidated ?? []) this.markConsolidated(factId, runId, projectId);
         if (input.finalizeResponse) {
           const finalResponse = input.finalizeResponse({ committed });
           this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(finalResponse, runId);
           this.db.prepare(`UPDATE runs SET usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`)
             .run(...this.usageColumns(finalResponse), runId);
         }
-        if (input.run.kind === "consolidation") this.completeExecution(runId);
         return { runId, committed };
       });
       return { ok: true, ...result };
@@ -3425,7 +3424,7 @@ export class Store {
   }
 
   private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,
-    sessionId: number, path: KnowledgePath | null, dreaming = false, role: "noting" | "consolidation" | "dreaming" | "manual" = "manual",
+    sessionId: number, path: KnowledgePath | null, dreaming = false, role: "noting" | "dreaming" | "manual" = "manual",
     dreamingPool: string | null = null): { ok: true; value: CommittedKnowledgeOp[] } | { ok: false; reason: string | KnowledgeVersionProblem } {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
     if (op.op === "merge" && (op.absorb.length !== 1 || op.absorb[0]!.baseCommit === op.intoBaseCommit))
@@ -3884,10 +3883,10 @@ export class Store {
         if (!context || context.path.sessionId !== sessionId || context.path.branch === undefined || context.path.headTurnId === null ||
             this.getTurn(context.path.headTurnId)?.sessionId !== sessionId)
           throw new Error("Project declaration requires the host's selected session path");
-        const live = this.db.prepare("SELECT phase FROM task_claims WHERE session_id = ? AND phase IN ('noting','consolidation','dreaming') AND expires_at > ? ORDER BY phase LIMIT 1")
+        const live = this.db.prepare("SELECT phase FROM task_claims WHERE session_id = ? AND phase IN ('noting','dreaming') AND expires_at > ? ORDER BY phase LIMIT 1")
           .get(sessionId, Date.now()) as { phase: Phase } | undefined;
         if (live) throw new Error(`Project declaration rejected: ${live.phase} has a live claim; wait for it to finish, then retry`);
-        for (const phase of ["noting", "consolidation", "dreaming"] as const) if (context.atTrigger(phase))
+        for (const phase of ["noting", "dreaming"] as const) if (context.atTrigger(phase))
           throw new Error(`Project declaration rejected: ${phase} is due; run /trace catchup, then retry`);
       }
       target ??= this.createProject({ name, declaredBy: source });

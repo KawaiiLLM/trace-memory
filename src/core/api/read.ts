@@ -629,7 +629,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * entry; a head moved back or a non-append path rewrite is caught by the signal (`source_paths`'s and
    * `session_lineage_cursors`'s own `version` bumps) or, for a same-head backward-then-same case, by
    * the ancestry check itself, since a newer cached head is never an ancestor of an older requested one. */
-  const progressCache = new Map<string, { signal: string; headTurnId: number; facts: number; unconsolidated: number; knowledge: number; changedKnowledge: number }>();
+  const progressCache = new Map<string, { signal: string; headTurnId: number; facts: number; knowledge: number; changedKnowledge: number }>();
   /** Footer progress for one selected path. `knowledge` is the current visible set;
    * `changedKnowledge` is the subset whose current owner pool has not processed that revision.
    * Processing is scheduling state only: it is not exposed as a processed/unprocessed partition. */
@@ -649,17 +649,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       reusable ? undefined : prepare).length;
     if (reusable) {
       cached.headTurnId = path.headTurnId!;
-      return { entries, facts: cached.facts, unconsolidated: cached.unconsolidated,
+      return { entries, facts: cached.facts,
         knowledge: cached.knowledge, changedKnowledge: cached.changedKnowledge };
     }
     snapshot = prepare();
     const facts = store.listBranchFacts(sessionId, branch, path.headTurnId, snapshot);
     const knowledge = store.currentKnowledge(path, {}, snapshot);
     const changedKnowledge = knowledge.length - store.processedCurrentVersions(knowledge).size;
-    const unconsolidated = store.unconsolidated(facts, path, snapshot).length;
-    if (path.headTurnId != null) progressCache.set(key, { signal, headTurnId: path.headTurnId, facts: facts.length, unconsolidated, knowledge: knowledge.length, changedKnowledge });
+    if (path.headTurnId != null) progressCache.set(key, { signal, headTurnId: path.headTurnId, facts: facts.length, knowledge: knowledge.length, changedKnowledge });
     else progressCache.delete(key);
-    return { entries, facts: facts.length, unconsolidated, knowledge: knowledge.length, changedKnowledge };
+    return { entries, facts: facts.length, knowledge: knowledge.length, changedKnowledge };
   };
   return {
     spend,
@@ -1036,7 +1035,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         // 24a: the footer's own counts, spelled out. They describe imported evidence only: native
         // history of a disabled interval is imported when the session is enabled again, so a zero
         // here is not proof that every available native message has been processed.
-        `Pending: ${counts.entries} imported ${counts.entries === 1 ? "entry" : "entries"} to note, ${counts.unconsolidated} of ${counts.facts} applicable ${counts.facts === 1 ? "fact" : "facts"} to consolidate; ${counts.knowledge} current knowledge (imported evidence on this branch)`,
+        `Pending: ${counts.entries} imported ${counts.entries === 1 ? "entry" : "entries"} to note; ${counts.facts} applicable facts; ${counts.knowledge} current knowledge (imported evidence on this branch)`,
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
         `Knowledge: ${counts.knowledge} visible active`,
         ...(["noting", "consolidation", "dreaming"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; })].join("\n");

@@ -1,6 +1,6 @@
 import type { Store } from "../store/index.ts";
 import { knowledgeCategoryGroup, type KnowledgeRevision } from "../model/index.ts";
-import { similarity } from "../consolidation/similarity.ts";
+import { similarity } from "./similarity.ts";
 import type { ListingOptions } from "./read.ts";
 
 /** One read's ownership, DAG and representative policy. Selection never grants read authority.

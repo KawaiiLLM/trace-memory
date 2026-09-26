@@ -9,7 +9,6 @@ export type CcSettingId = Exclude<SettingsRowId, `${string}.mode`>;
 export interface SettingOutcome { saved: boolean; applied: boolean; diagnostic?: string }
 const PHASE_KEYS: Partial<Record<CcSettingId, keyof CcHostConfig>> = {
   "noting.model": "notingModel", "noting.thinking": "notingThinking",
-  "consolidation.model": "consolidationModel", "consolidation.thinking": "consolidationThinking",
   "dreaming.model": "dreaming.model", "dreaming.thinking": "dreaming.thinking",
   closedSessionScope: "closedSessionScope",
 };

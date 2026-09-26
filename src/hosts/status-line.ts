@@ -23,7 +23,6 @@ export interface StatusSegment {
 export interface MemoryStatusCounts {
   entries?: number;
   facts?: number;
-  unconsolidated?: number;
   changedKnowledge?: number;
   knowledge?: number;
 }
@@ -38,7 +37,7 @@ export interface MemoryStatusInput {
   cost?: number;
 }
 
-const INDICATOR_ROLE: Record<MemoryPhase, StatusColorRole> = { noting: "accent", consolidation: "success", dreaming: "customMessageLabel" };
+const INDICATOR_ROLE: Record<MemoryPhase, StatusColorRole> = { noting: "accent", dreaming: "customMessageLabel" };
 
 /** The segments of the `🧠 ...` line, without the leading emoji (a host constant, not a colour role). */
 export function memoryStatusLine(input: MemoryStatusInput): StatusSegment[] {
@@ -49,7 +48,7 @@ export function memoryStatusLine(input: MemoryStatusInput): StatusSegment[] {
   const value = (count?: number) => count === undefined ? "?" : String(count);
   const c = input.counts ?? {};
   const text = `notes: ${value(c.entries)}->${value(c.facts)}` +
-    ` memory: ${value(c.unconsolidated)}->${value(c.changedKnowledge)}/${value(c.knowledge)}` +
+    ` memory: ${value(c.changedKnowledge)}/${value(c.knowledge)}` +
     ` cost: ${input.cost === undefined ? "$?" : `$${input.cost.toFixed(2)}`}`;
   return [{ role, text: glyph }, { role: "dim", text }];
 }

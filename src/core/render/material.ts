@@ -138,22 +138,6 @@ export interface NotingMaterial extends SharedMaterial {
   sources: string[];
 }
 
-/** The frozen task material of one Consolidation run. Task-specific parts are the pending facts,
- * as addresses and rendered lines. No field is a composed message. 25a: there is no
- * already-consolidated history part; those facts stay reachable through explicit reads. */
-export interface ConsolidationMaterial extends SharedMaterial {
-  knowledge: KnowledgeGroup[];
-  /** The facts to integrate, as addresses: an inherited context already carries their lines. */
-  factAddresses: string[];
-  /** The same selected facts, rendered with relations in chronological Turn groups. */
-  rangeFacts: string[];
-  /** 29b (parent 29 "Version-aware knowledge"): one line per knowledge commit the child inherited
-   * that is no longer this path's current authority — superseded, archived or merged. The block above
-   * carries only what is current, so without these lines stale inherited text would read as current
-   * knowledge. Charged inside the knowledge allowance like everything else in that block. */
-  knowledgeNotes: string[];
-}
-
 export type TransportItem =
   | { kind: "knowledge"; text: string; category: string; commitId: number; address: string }
   | { kind: "state"; text: string; address: string; receipt: { fromCommit: number; toCommits: number[] } }
@@ -175,9 +159,8 @@ export function transportItemText(item: TransportItem, recencyNotice = KNOWLEDGE
 
 export const FACTS_TITLE = "Recent facts (by Turn):";
 export const RAW_TITLE = "Raw:";
-export const RANGE_FACTS_TITLE = "Range facts:";
 export const SOURCES_TITLE = "Sources:";
-/** 29b: the title of `ConsolidationMaterial.knowledgeNotes`, emitted only when there are notes. */
+/** Title for retained versions that are no longer current authority. */
 export const KNOWLEDGE_STATUS_TITLE = "Inherited knowledge status (these commits are not current authority):";
 /** Between blocks, and between a block's title and its body. Entry views use the same separator. */
 export const BLOCK = "\n\n";
@@ -350,11 +333,3 @@ export const notingText = (material: NotingMaterial, range: TaskRange): string =
     ...(material.entries.length ? [RAW_TITLE, rawText(material)] : []),
     ...(material.sources.length ? [`${SOURCES_TITLE}\n${material.sources.join("\n")}`] : []),
   ]), receipts: material.receipts });
-
-/** The Consolidator's one layout (29b): the current knowledge this run supplies, the status of the
- * inherited commits that are no longer current, the range and the pending fact bodies this run
- * supplies, then receipts. 25a: no already-consolidated history block — those facts are read by
- * address. */
-export const consolidationText = (material: ConsolidationMaterial, range: TaskRange): string =>
-  finish({ content: block([...leading(material), ...statusBlock(material.knowledgeNotes),
-    rangeLine(range), RANGE_FACTS_TITLE, material.rangeFacts.join("\n")]), receipts: material.receipts });

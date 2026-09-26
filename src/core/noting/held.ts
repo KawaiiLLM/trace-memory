@@ -1,4 +1,4 @@
-import { prepareMemory } from "../consolidation/commit.ts";
+import { prepareMemory } from "../knowledge-write/prepare.ts";
 import { KnowledgeVersionProblem, type FactCommitInput, type KnowledgePath, type RunInput, type Store } from "../store/index.ts";
 
 /** Private to a single N binding. Tombstones preserve handle identity; invalid replacements
@@ -77,7 +77,7 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
     });
     const locals = new Map([...facts.rows].flatMap(([id, row]) => row.value ? [[id, row.value] as const] : []));
     const result = prepareMemory(store, path.sessionId, { operations: [value], skipped: [] }, run,
-      undefined, path, undefined, undefined, mapping ? undefined : locals);
+      path, undefined, undefined, mapping ? undefined : locals);
     const errors = result.results.filter(line => line.startsWith("rejected:"));
     if (errors.length) throw new Error(errors.join("; "));
     const requested = result.operations[0]!;

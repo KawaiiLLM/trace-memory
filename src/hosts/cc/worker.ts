@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { createSdkMcpServer, query, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { ConsolidationAgentInput, DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
+import type { DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 import { toolRejected } from "../../core/api/index.ts";
 import { CC_AGENT_SDK_VERSION, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
 import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
-export type CcAgentTask = NotingAgentInput | ConsolidationAgentInput | DreamingAgentInput;
+export type CcAgentTask = NotingAgentInput | DreamingAgentInput;
 /** Called for every runtime-journal-worthy event this worker produces, before or after it returns
  * (78: the contained SDK control abort can arrive on either side of settlement). Matches the shape
  * of the executor's own runtime journal writer (`runtimeEvent` in hosts/cc/index.ts). */
@@ -513,7 +513,7 @@ export function createCcRunAgent(config: ResolvedCcHostConfig, dependencies: CcW
   const worker = new CcAgentWorker(config, dependencies);
   return (input: unknown) => {
     const task = input as CcAgentTask;
-    if (task.kind !== "noting" && task.kind !== "consolidation" && task.kind !== "dreaming")
+    if (task.kind !== "noting" && task.kind !== "dreaming")
       return Promise.resolve({ outcome: "failure", output: `CC worker does not support ${String((input as { kind?: unknown })?.kind)}`,
         audit: { available: false, reason: AUDIT_UNAVAILABLE } });
     return worker.run(task, maxToolRounds(task.kind));

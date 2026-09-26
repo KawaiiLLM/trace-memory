@@ -13,16 +13,15 @@ export interface CcMenuRun { id: number; phase: string; status: string; cost: nu
 export function ccCatchupNotice(status: CcCatchupStatus | null): string | null {
   if (!status) return null;
   const entries = `${status.entriesDone}/${status.entriesTotal} entries`;
-  const facts = `${status.factsDone}/${status.factsTotal} facts`;
   if (status.state === "completed")
-    return `Catchup: completed (${status.entriesDone} entries noted, ${status.factsDone} facts integrated; below-threshold work may remain pending)`;
+    return `Catchup: completed (${status.entriesDone} entries noted; below-threshold knowledge may remain pending)`;
   if (status.state === "stopped")
-    return `Catchup: stopped (${entries}, ${facts} processed; unprocessed work stays pending; /trace catchup resumes it)`;
+    return `Catchup: stopped (${entries} processed; unprocessed work stays pending; /trace catchup resumes it)`;
   if (status.state === "failed")
-    return `Catchup: failed — ${status.diagnostic ?? "executor reported failure"} (${entries}, ${facts} processed)`;
+    return `Catchup: failed — ${status.diagnostic ?? "executor reported failure"} (${entries} processed)`;
   if (status.state === "starting") return "Catchup: starting (syncing the transcript); reopen /trace for progress";
-  if (status.state === "waiting") return `Catchup: waiting for ${status.phase ?? "a task"} (${entries}, ${facts})`;
-  return `Catchup: running${status.phase ? ` ${status.phase}` : ""} (${entries}, ${facts})`;
+  if (status.state === "waiting") return `Catchup: waiting for ${status.phase ?? "a task"} (${entries})`;
+  return `Catchup: running${status.phase ? ` ${status.phase}` : ""} (${entries})`;
 }
 export interface CcMenuReply {
   menu: TraceMenuInput;
@@ -67,7 +66,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
         ?? store.findNativeTurn(binding.coreSessionId, id, binding.selectedLeafUuid)?.turnId : undefined;
     const target = binding.coreSessionId !== null && head
       ? { sessionId: binding.coreSessionId, branch: binding.branch, headTurnId: head } : undefined;
-    const pending = (phase: "noting" | "consolidation") => {
+    const pending = (phase: "noting") => {
       const result = memory.pendingTokens(phase, target, true);
       return { tokens: result.tokens, trigger: result.trigger,
         ...(result.state === "known" && result.atLeast ? { atLeast: true, entries: result.entries } : {}) };
@@ -80,8 +79,8 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     const spend = session ? memory.spend(session.id) : null;
     const budgets = memory.knowledgeBudgets();
     const active = effective ?? config;
-    const workers: SettingsInput["workers"] = (["noting", "consolidation", "dreaming"] as const).map((phase, index) => {
-      const name = (["Noter", "Consolidator", "Dreamer"] as const)[index]!;
+    const workers: SettingsInput["workers"] = (["noting", "dreaming"] as const).map((phase, index) => {
+      const name = (["Noter", "Dreamer"] as const)[index]!;
       const current = effective?.worker?.phases[phase];
       const saved = config.worker?.phases[phase];
       const sources = !effective ? { model: "effective configuration unavailable", thinking: "effective configuration unavailable" }
@@ -112,7 +111,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
       header: { session: session ? `S${session.id}` : "unbound", project: project?.name ?? "unavailable", enabled,
         explicit: binding.enrollment.choice !== null },
       context: { model: "Claude Code" },
-      pending: { noting: pending("noting"), consolidation: pending("consolidation"), dreaming: {
+      pending: { noting: pending("noting"), dreaming: {
         global: pool("global"), project: pool("project"), session: pool("session") } },
       spend: { session: spend?.cost ?? 0,
         noting: { runs: spend?.runs.noting ?? 0, cost: spend?.costs.noting ?? 0 },

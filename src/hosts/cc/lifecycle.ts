@@ -213,7 +213,7 @@ export class CcCoordinator {
       }
       const status: CcStatusFile = { version: 1, nativeSessionId: this.nativeSessionId, executorId: binding.executor.executorId,
         pid: binding.executor.pid, token: binding.executor.token, updatedAt: new Date().toISOString(), enabled,
-        running: { noting: running.has("noting"), consolidation: running.has("consolidation"), dreaming: running.has("dreaming") },
+        running: { noting: running.has("noting"), dreaming: running.has("dreaming") },
         ...(counts ? { counts } : {}), ...(cost !== undefined ? { cost } : {}) };
       writeCcStatus(this.config.stateDir, status);
     } catch (error) { this.diagnostic(`status publish failed (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
@@ -242,10 +242,10 @@ export class CcCoordinator {
             try {
               const projection = await this.requestReconcile("manual catchup");
               result = projection ? scheduler.startCatchup(projection, ticket)
-                : { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0,
+                : { state: "failed", entriesDone: 0, entriesTotal: 0,
                   diagnostic: "authoritative transcript reconciliation is unavailable" };
             } catch (error) {
-              result = { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0,
+              result = { state: "failed", entriesDone: 0, entriesTotal: 0,
                 diagnostic: error instanceof Error ? error.message : String(error) };
             }
             scheduler.endCatchup(result);

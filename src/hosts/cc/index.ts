@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
+import { upgradeSettingsFile } from "../retired-settings.ts";
 import { assertOperatorBinding, readBinding, recordSessionStart, updateBinding, validateNativeSessionId, type CcHookInput } from "./binding.ts";
 import { nativeCreatedAt, readCompleteTranscript } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
@@ -167,6 +168,7 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
 
 function readConfig(path: string): ResolvedCcHostConfig {
   if (!path.startsWith("/")) throw new Error("CC configuration path must be absolute");
+  upgradeSettingsFile(path, undefined, values => resolveCcHostConfig(values as unknown as CcHostConfig), message => console.warn(message));
   return resolveCcHostConfig(JSON.parse(readFileSync(path, "utf8")));
 }
 

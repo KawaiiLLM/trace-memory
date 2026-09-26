@@ -5,14 +5,14 @@ import { processedBlock } from "../store/processing.ts";
 import { budgetKnowledge, renderFact, renderFactGroups, renderKnowledgeBlock, tokens } from "../render/index.ts";
 import { dreamingToolDefinitions, type bindTools } from "../api/tools.ts";
 import type { AgentControl, RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
-import type { ConsolidateInput } from "../consolidation/index.ts";
+import type { NotingInput } from "../noting/index.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { TriggerOrigin } from "../model/index.ts";
 import { renderDreamingCheckReceipt, type DreamingCheckResult } from "./check-receipt.ts";
 
 const prompt = loadPrompt("dreaming.md");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
-export type DreamingInput = Omit<ConsolidateInput, "mode" | "effectiveMode" | "visible" | "boundary">;
+export type DreamingInput = Omit<NotingInput, "mode" | "effectiveMode" | "visible" | "boundary">;
 export type DreamingResult = { automaticOff?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
@@ -109,7 +109,7 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
 }
 
 export async function runDreaming(store: Store, frozen: ReturnType<typeof freezeDreaming>, runAgent: RunAgent,
-  bind: (context: Parameters<typeof bindTools>[2], run: RunInput, review?: undefined, dreaming?: Parameters<typeof bindTools>[5]) => ReturnType<typeof bindTools>): Promise<DreamingResult> {
+  bind: (context: Parameters<typeof bindTools>[2], run: RunInput, dreaming?: Parameters<typeof bindTools>[4]) => ReturnType<typeof bindTools>): Promise<DreamingResult> {
   const { sessionId, branch, path, range } = frozen;
   let rounds = 0;
   const run: RunInput = { kind: "dreaming", sessionId, branch, dreamingRangeId: range.id, model: frozen.model, mode: "subagent",
@@ -126,7 +126,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
       totals: pools.map(({ pool, budget, tokens }) => ({ pool, budget, tokens })), operationFailures, problems: operationFailures };
   };
   binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
-    range: { from: run.rangeFrom!, to: run.rangeTo! } }, run, undefined,
+    range: { from: run.rangeFrom!, to: run.rangeTo! } }, run,
     { path, check: () => renderDreamingCheckReceipt(check(), commit => {
       const revision = store.knowledgeRevision(commit)!;
       return `K${revision.knowledgeId}@v${store.versionOrdinal(revision.knowledgeId, commit)}`;

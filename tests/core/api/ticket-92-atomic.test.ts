@@ -1,3 +1,4 @@
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { afterEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -224,7 +225,7 @@ function seedKnowledge(f: ReturnType<typeof fixture>, scope: "session" | "projec
   const advance = (archive = false) => {
     const other = new Store(f.file);
     try {
-      const result = other.commitConsolidationRun({ path: f.path, run: { kind: "consolidation", sessionId: f.session.id, createdAt: "later" },
+      const result = commitNoterKnowledge(other, { path: f.path, run: { sessionId: f.session.id, createdAt: "later" },
         operations: [archive ? { op: "archive", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fid], reason: "retired", createdAt: "later" }
           : { op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content, text: "Concurrent rule" }] });
       if (!result.ok) throw new Error(result.problems.join("; "));
@@ -408,7 +409,7 @@ test("04: a globally selected successor outside reader scope is not a conversion
     const path = { sessionId: other.id, branch: "main", headTurnId: turn.id };
     const tools = f.memory.tools({ kind: "manual", ...path, currentTurnId: turn.id });
     const fid = JSON.parse(tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Foreign evidence", source: [`T${turn.id}#E1`] }] })).factIds[0];
-    const changed = f.memory.store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId: other.id, createdAt: "later" }, operations: [{
+    const changed = commitNoterKnowledge(f.memory.store, { path, run: { sessionId: other.id, createdAt: "later" }, operations: [{
       op: "update", knowledgeId: seed.base.knowledgeId, baseCommit: seed.base.commit, text: "Foreign session-only rule", category: "constraint", scope: "session",
       topics: [], supports: [fid], reason: "narrow scope", createdAt: "later" }] });
     expect(changed.ok).toBe(true);

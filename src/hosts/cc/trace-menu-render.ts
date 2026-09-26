@@ -307,7 +307,7 @@ export function renderTraceMenu(input: TraceMenuInput, cc: { breakdown?: CcConte
     contextUnavailable: context ? undefined : "unavailable — see the built-in /context",
     pendingHeading: model.pending.heading,
     pendingLines: [
-      pendingLine("Noting", model.pending.noting), pendingLine("Consolidation", model.pending.consolidation),
+      pendingLine("Noting", model.pending.noting),
       "  Dreaming",
       pendingLine("global", model.pending.dreaming.global, "    "),
       pendingLine("project", model.pending.dreaming.project, "    "),
