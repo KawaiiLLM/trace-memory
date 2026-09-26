@@ -181,7 +181,7 @@ export function generate(dbPath: string, options: FixtureOptions = {}): Fixture 
         if (supports.length < 2) break;
         const run = { kind: "consolidation" as const, sessionId, branch, createdAt: "2026-01-01T02:00:00Z" };
         const operations = [{ op: "create" as const, handle: `perf-${i}`, author: "perf", text: `${pick(LATIN)} ${pick(CJK)} K${i}`,
-          category: "mechanism" as const, scope: "session" as const, supports, reason: "perf fixture", topics: [pick(LATIN)], createdAt: "2026-01-01T02:00:00Z" }];
+          category: "understanding" as const, scope: "session" as const, supports, reason: "perf fixture", topics: [pick(LATIN)], createdAt: "2026-01-01T02:00:00Z" }];
         const committed = store.commitConsolidationRun({ path, run, operations, consolidated: i < 10 ? supports : [] });
         if (!committed.ok) throw new Error(committed.problems.join("; "));
         knowledgeCount += committed.committed.length;
@@ -189,11 +189,22 @@ export function generate(dbPath: string, options: FixtureOptions = {}): Fixture 
         if (i === 1) { secondKnowledge = committed.committed[0]!.knowledgeId; secondCommit = committed.committed[0]!.commit; }
       }
       if (firstCommit && secondCommit) {
-        const run = { kind: "consolidation" as const, sessionId, branch, createdAt: "2026-01-01T02:10:00Z" };
-        const merged = store.commitConsolidationRun({ path, run, operations: [{ op: "merge", intoKnowledgeId: firstKnowledge, intoBaseCommit: firstCommit,
-          absorb: [{ knowledgeId: secondKnowledge, baseCommit: secondCommit }], text: "merged perf knowledge", category: "mechanism",
-          scope: "session", supports: cite(0), reason: "perf fixture merge", topics: ["merge"], createdAt: "2026-01-01T02:10:00Z" }] });
-        if (merged.ok) knowledgeCount += merged.committed.length;
+        // Merge has D-only authority even while C remains live. Do not silently ignore a refused seed.
+        const claim = store.acquireClaim(path, "dreaming", "perf-fixture");
+        if (!claim) throw new Error("performance fixture could not acquire its Dreamer claim");
+        const range = store.retainKnowledgePoolRange(path, `session:${sessionId}`, claim);
+        const executionId = store.beginExecution({ sessionId, phase: "dreaming", head: range.anchor, origin: range.origin });
+        const run = store.bindDreamingRun({ kind: "dreaming", sessionId, branch, claim, dreamingRangeId: range.id,
+          executionId, createdAt: "2026-01-01T02:10:00Z" });
+        try {
+          const merged = store.commitConsolidationRun({ path, run, operations: [{ op: "merge", intoKnowledgeId: firstKnowledge, intoBaseCommit: firstCommit,
+            absorb: [{ knowledgeId: secondKnowledge, baseCommit: secondCommit }], text: "merged perf knowledge", category: "understanding",
+            scope: "session", supports: cite(0), reason: "perf fixture merge", topics: ["merge"], createdAt: "2026-01-01T02:10:00Z" }] });
+          if (!merged.ok) throw new Error(merged.problems.join("; "));
+          knowledgeCount += merged.committed.length;
+          store.completeKnowledgePoolRange(run, "success");
+          store.settleExecution(executionId, "success", store.dreamingRunId(run)!);
+        } finally { store.releaseClaim(claim); }
       }
 
       return { turnCount, entryCount, rawChars, headTurnId, siblingHeadTurnId, heavyTurnId,
@@ -348,7 +359,7 @@ export function searchCorpus(dbPath: string, options: { revisions: number; sessi
       const create = (i: number) => {
         const run = store.bindRunOrigin({ kind: "consolidation" as const, sessionId, branch, createdAt: time }, store.triggerOrigin(path));
         const done = store.commitConsolidationRun({ path, run, operations: [{ op: "create", handle: `corpus-${i}`, author: "perf",
-          text: `${query} conclusion ${i}`, category: "mechanism", scope: "session", supports, reason: "search corpus",
+          text: `${query} conclusion ${i}`, category: "understanding", scope: "session", supports, reason: "search corpus",
           topics: [i % 3 ? "corpus" : query], createdAt: time }] });
         if (!done.ok) throw new Error(done.problems.join("; "));
         return done.committed[0]!;
