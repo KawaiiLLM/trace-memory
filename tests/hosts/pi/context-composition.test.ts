@@ -464,10 +464,11 @@ test("initial and on/project supplement carriers share assembly measurement; ret
     const saved = JSON.stringify(retained.sm.getEntries());
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: 1, branch: "main" });
     const trace = tools.find(t => t.name === "trace")!, write = tools.find(t => t.name === "memory")!;
-    const edit = () => JSON.parse(write.execute({ operations: [{ op: "archive", id: "K2@2", supports: ["F1"], reason: "integration mutation" }], skipped: [] }));
-    // A retained carrier and raw trace supply no named-K write handle.
-    expect(edit().results[0]).toContain("knowledge was not read");
-    for (const address of ["T1", "K2@2"]) {
+    const edit = (id = "K2@v1") => JSON.parse(write.execute({ operations: [{ op: "archive", id, supports: ["F1"], reason: "integration mutation" }], skipped: [] }));
+    // History is not a tagged write base; reading creates no authority ledger.
+    expect(edit().results[0]).toContain("supply an exact K#tag");
+    let tag: string | undefined;
+    for (const address of ["T1", "K2@v1"]) {
       let page = trace.execute({ address, cap: 1 }), pages = 0;
       for (;;) {
         expect(page).not.toContain("rejected:");
@@ -475,15 +476,17 @@ test("initial and on/project supplement carriers share assembly measurement; ret
         expect(retained.read()).toEqual(before);
         expect(JSON.stringify(retained.sm.getEntries())).toBe(saved);
         const cursor = tracePage(page).cursor;
+        tag ??= /K2#[a-z]+/.exec(page)?.[0];
         if (!cursor) break;
-        expect(edit().results[0]).toContain("knowledge was not read");
+        expect(edit().results[0]).toContain("supply an exact K#tag");
         page = trace.execute({ address: `cursor=${cursor}` });
         expect(++pages).toBeLessThan(100);
       }
       expect(pages).toBeGreaterThan(0);
-      if (address === "T1") expect(edit().results[0]).toContain("knowledge was not read");
+      if (address === "T1") expect(tag).toBeUndefined();
     }
-    expect(edit().committed[0]).toMatchObject({ knowledgeId: 2, op: "archive" });
+    expect(tag).toBeDefined();
+    expect(edit(tag!).committed[0]).toMatchObject({ knowledgeId: 2, op: "archive" });
     expect(h.memory.store.currentCommit(2)[0]?.op).toBe("archive");
     expect(retained.read()).toEqual(before); // Live DB mutation and reads never remeasure a saved carrier.
     expect(h.requests).toEqual([]);

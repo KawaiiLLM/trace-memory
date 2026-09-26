@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import { host, reply } from "./test-host.ts";
 import { checkpointReadiness } from "../../../src/hosts/pi/native.ts";
 // The native cases exercise fork checkpoint readiness; the ordinary host case runs fresh.
-import { call, forkFixture as fixture, noteBatch, say, submitted, toolResults, worker, type Body } from "./native-fixture.ts";
+import { noteAndMemory, forkFixture as fixture, noteBatch, say, submitted, toolResults, worker, type Body } from "./native-fixture.ts";
 import { hydrate } from "../../source-fixture.ts";
 
 // 19c "Entry readiness and fallback": the scheduling thresholds keep their own authority (17b), and a
@@ -107,7 +107,7 @@ test("19c 2026-09-08: a fork launches from the persisted checkpoint on the exist
   // one. Here the only requests in the process are the parent's own turn and the child's.
   const f = await fixture();
   try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.h.emit("before_agent_start", { prompt: "用 pnpm，不要 npm" });
     await f.parent.prompt("用 pnpm，不要 npm");
     await f.h.emit("before_provider_request", { payload: f.sent[0] }); // the parent's one capture
@@ -128,7 +128,7 @@ test("19c 2026-09-08: a checkpoint with an unanswered tool call defers the launc
     // No facts in either batch: a noting delivery would pause the next inherited-context task on
     // 17b's own rule, which is not what this test is about.
     // 26a: an empty batch is submitted explicitly, and still creates no delivery.
-    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : call("t1", "note", { facts: [] }));
+    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", { facts: [] }));
     await f.turn();
     await vi.waitFor(() => expect(notingRuns(f.h)).toHaveLength(1), { timeout: 5000 });
     // New foreground activity that ends inside an assistant tool-call group: due, but not a safe

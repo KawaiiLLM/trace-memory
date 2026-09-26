@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { BeforeAgentStartEventResult, CompactionEntry, CustomEntry, CustomMessageEntry, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
-import { call, fixture, noteBatch, say, settled, submitted, worker } from "./native-fixture.ts";
+import { noteAndMemory, fixture, noteBatch, say, settled, submitted, worker } from "./native-fixture.ts";
 import { tag } from "../../../src/hosts/pi/settings.ts";
 
 // Ticket 26c0 — fixture parity with Pi for the three carriers 26c reads coverage off. Nothing in
@@ -122,7 +122,7 @@ test("26c0: buildContextEntries follows Pi's rule — the selected ancestry, the
 test("26c0 native fixture: the message the hook returned is persisted through the real SessionManager and the real buildContextEntries carries it", async () => {
   const f = await fixture();
   try {
-    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn();
     await settled(f); // the Noter committed a fact
     // 29d: that commit reaches no prompt on its own, so the message this case needs is the one
@@ -131,9 +131,7 @@ test("26c0 native fixture: the message the hook returned is persisted through th
     store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: "now" }, operations: [{
       op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture",
       text: "Carried knowledge", category: "constraint", scope: "global", supports: [fact.id], createdAt: "now" }] });
-    // This carrier test is about Pi persistence, not evidence suppression. Remove the binding so the
-    // current-change evidence is explicitly unknown and therefore remains deliverable under 34c.
-    store.db.prepare("DELETE FROM fact_sources WHERE fact_id = ?").run(fact.id);
+    // 92: retained Raw no longer substitutes for a knowledge body; source bindings stay intact.
     await f.turn("第二个问题");
     const manager = f.manager();
     const receipt = manager.getEntries().find(e => e.type === "custom_message") as CustomMessageEntry | undefined;

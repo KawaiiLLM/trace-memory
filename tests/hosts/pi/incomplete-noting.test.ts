@@ -24,6 +24,28 @@ const cancelled = async (h: Host) => {
 };
 const head = (h: Host) => h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)[0]!.id;
 
+test.each(["note", "memory"] as const)("92: an explicit %s-only worker ends without publishing or advancing Raw", async name => {
+  const h = host(config);
+  try {
+    let requests = 0;
+    h.provider(async c => {
+      if (++requests > 2) throw new Error("single-tool failure script repeated a request");
+      if (c.messages.some(message => message.role === "toolResult")) return reply("Done.");
+      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `only-${name}`, name,
+        arguments: name === "note" ? { facts: [{ text: "User prefers pnpm", source: ["T1#E1"] }] }
+          : { operations: [], skipped: [] } }] };
+    }, { autoStop: false });
+    await h.turn();
+    expect(requests).toBe(2);
+    const run = notingRuns(h)[0]!;
+    expect(run.outcome).toBe("failure");
+    expect(JSON.parse(run.response!).problems).toEqual([NOTING_INCOMPLETE]);
+    expect(h.memory.store.listSessionFacts(1)).toEqual([]);
+    expect(h.memory.store.currentKnowledge()).toEqual([]);
+    expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(2);
+  } finally { await h.dispose(); }
+});
+
 test("32c replaces 26a: three incomplete runs with a growing tail disable memory once and show the off footer", async () => {
   const h = host(config);
   try {

@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { host, reply, notingFact, type Reply } from "./test-host.ts";
-import { call, forkFixture, noteBatch, say, toolResults, worker } from "./native-fixture.ts";
+import { noteAndMemory, forkFixture, noteBatch, say, toolResults, worker } from "./native-fixture.ts";
 
 // Ticket 20c — compaction and post-compaction worker mode, at the host boundary. Core decides between
 // the custom replacement and the native delegation over its own frozen snapshot (core/api/read.test.ts);
@@ -192,7 +192,7 @@ test("20c 2026-09-08 scenario 13/14 (native): a real persisted compaction downgr
       if (!worker(body)) return say("好的。");
       if (toolResults(body)) return say("Done.");
       if (first) { first = false; return held; }
-      return call("t2", "note", noteBatch);
+      return noteAndMemory("t2", noteBatch);
     });
     await f.turn("用 pnpm，不要 npm " + "word ".repeat(400)); // a real fork Noting starts, holding its first request open
     await vi.waitFor(() => expect(f.sent.filter(b => worker(b))).toHaveLength(1), { timeout: 5000 });
@@ -201,7 +201,7 @@ test("20c 2026-09-08 scenario 13/14 (native): a real persisted compaction downgr
     const boundary = f.manager().appendCompaction("native summary", f.manager().getLeafId()!, 100);
     await f.h.emit("session_compact", { compactionEntry: { summary: "native summary" } });
     expect(boundary).toBeTruthy();
-    release(call("t1", "note", noteBatch));
+    release(noteAndMemory("t1", noteBatch));
     const run = await vi.waitFor(() => { const r = f.h.memory.store.listRuns(1)[0]; expect(r?.response).toBeTruthy(); return r!; }, { timeout: 5000 });
     // Not restarted, not replayed, not cancelled: the running fork finished against its frozen context.
     expect(run.mode).toBe("fork");

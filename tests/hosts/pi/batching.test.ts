@@ -1,10 +1,11 @@
 import { expect, test } from "vitest";
-import { TraceMemory, renderEntry, tokens, DEFAULT_CONFIG, type SourceEntry, type NotingAgentInput } from "../../../src/core/api/index.ts";
+import { TraceMemory, renderEntry, tokens, toolDefinitions, DEFAULT_CONFIG, type SourceEntry, type NotingAgentInput } from "../../../src/core/api/index.ts";
 import { join } from "node:path";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { conversationOf, host, reply, usage } from "./test-host.ts";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { hydrate } from "../../source-fixture.ts";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
 
 // 30 capped one entry view at `render.entryTokens` (2,000), so the cases below reach a trigger, a
 // batch ceiling or a capacity allowance with several entries or a smaller cap instead of one huge
@@ -87,21 +88,21 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("word ".repeat(15000)));
     await h.emit("session_start");
-    // The larger exact-address guidance raises fixed prompt/tool cost (40's Noter rules again, to
-    // about 6,000; 64a's shorter shared atomicity block removes part of that fixed cost). This
-    // fixture allows 9,000 input tokens: one 2,000-token entry fits beside it, but two do not.
-    // Production headroom, triggers and material windows remain unchanged.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 19000 };
+    // Price the current shared prompt/schema, not the pre-92 fixed overhead. The remaining
+    // 3k holds one 2k entry and framing, but not two entries. Production limits are unchanged.
+    const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(toolDefinitions));
+    const fittingWindow = fixed + 3_000 + CONTEXT_HEADROOM;
+    h.ctx.model = { ...h.ctx.model!, contextWindow: fittingWindow };
     h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(3); // note, memory, terminal reply
     expect(JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit.entries).toHaveLength(1);
     // 27a, replacing the whole-body estimate plus output reserve: what the child really sent had to
     // satisfy the one rule, measured as Pi measures the child's context — its messages, with no
     // assistant usage yet on a first round — with the headroom left over.
-    expect(estimateContextTokens(conversationOf(h.requests[0]).messages as never).tokens + CONTEXT_HEADROOM).toBeLessThanOrEqual(19000);
+    expect(estimateContextTokens(conversationOf(h.requests[0]).messages as never).tokens + CONTEXT_HEADROOM).toBeLessThanOrEqual(fittingWindow);
     const pending = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
-    // The 7,000-token input allowance fits fixed instructions/tools but not those plus the oldest view.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 17000 };
+    // Fixed instructions/tools still fit, but the remaining 1k cannot hold the oldest 2k view.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: fixed + 1_000 + CONTEXT_HEADROOM };
     h.persist(reply("next completion")); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(3); // the refused admission adds none
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).slice(0, pending.length)).toEqual(pending);

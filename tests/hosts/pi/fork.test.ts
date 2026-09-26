@@ -29,7 +29,9 @@ test("64a: a model switch during Consolidation does not redirect the admitted ru
     const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
     expect(runs.map(r => [r.model, r.outcome])).toEqual([["fake/test", "success"]]);
     // Every request of that run went to the frozen model.
-    expect(h.requests.map(r => (r as { model: string }).model)).not.toContain("next");
+    const requests = h.requests.filter((_, index) => h.conversations[index]!.systemPrompt?.includes("You are the Consolidator:"));
+    expect(requests).toHaveLength(2);
+    expect(requests.map(r => (r as { model: string }).model)).toEqual(["test", "test"]);
   } finally { await h.dispose(); }
 });
 

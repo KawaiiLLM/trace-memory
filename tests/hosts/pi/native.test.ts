@@ -87,7 +87,7 @@ test("19a ruling 2026-09-08: the anthropic-messages child passes the gate with c
     const run = await settled(f);
     const response = JSON.parse(run.response!);
     // The child really sent its request: the run is native fork mode, verified, with no fallback.
-    expect(run.mode).toBe("fork");
+    expect(run.mode, run.response ?? "missing native audit").toBe("fork");
     expect(response.fallbackReason).toBeUndefined();
     expect(response.verification.passed).toBe(true);
     expect(response.verification.differingPath).toBe(null);
@@ -668,9 +668,10 @@ test("21a 2026-09-08: the memory schema the child re-registers requires reason, 
     expect(operation.allOf.at(-1).then.not.anyOf).toContainEqual({ required: ["topics"] });
     // The declined-fact protocol keeps its own textual because.
     expect(memory.parameters.properties.skipped.items.properties.because).toEqual({ type: "string", minLength: 1 });
-    expect(memory.description).toContain("reason (the commit message, never evidence)");
-    expect(memory.description).toContain("topics (subject labels; the complete replacement set, empty when unclassified)");
-    expect(memory.description).toContain("archive records archival state");
+    expect(memory.description).toContain("reason (commit message, not evidence)");
+    expect(memory.description).toContain("complete text/category/scope/topics");
+    expect(memory.description).toContain("Manual writers may create/archive only");
+    expect(memory.description).toContain("normal termination with both note and memory used");
     expect(memory.description).not.toContain("archive inherits its parent body");
   } finally { await f.dispose(); }
 });

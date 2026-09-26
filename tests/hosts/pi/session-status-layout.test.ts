@@ -332,7 +332,7 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     h.provider(async conversation => {
       expect(conversation.systemPrompt).toMatch(/^# Dreamer/);
       return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: {
-        operations: [{ op: "archive", id: `K${item.knowledgeId}@${item.commit}`, supports: [], reason: "Retire active memory; preserve history" }], skipped: [],
+        operations: [{ op: "archive", id: `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`, supports: [], reason: "Retire active memory; preserve history" }], skipped: [],
       } }] };
     });
     h.ctx.mode = "tui"; h.ctx.hasUI = true;
@@ -354,7 +354,7 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     for (let i = 0; i < 10; i++) { s.key("\x1b[6~"); viewed.push(...s.frame()); }
     // Knowledge is project-scoped here; each pool triggers separately, so the project pool's own bar
     // carries the pending figure rather than a single merged "Dreaming" line.
-    expect(viewed.join(" ")).toMatch(/project\s+.*29 \/ 1/);
+    expect(viewed.join(" ")).toMatch(new RegExp(`project\\s+.*${pendingTokens} / 1`));
     s.key("\x1b"); await command; await h.drain();
     expect(snapshot()).toBe(before); expect(h.entries).toEqual(entries);
     expect(h.requests).toHaveLength(requests); expect(h.statuses.get("trace-memory")).toBe(footer);

@@ -264,6 +264,13 @@ test("CC worker counts more than fifty simulated native assistant events with un
   });
 });
 
+test("CC Noter rejects an observed write without a handler dispatch or correlated refusal", () => {
+  const task = { kind: "noting", acknowledgeRequest: vi.fn(), reportToolRejection: vi.fn() } as unknown as CcAgentTask;
+  const origins = new CcResponseOrigins(task, 100, 0, () => {});
+  origins.observe(assistant("response", ["undispatched-note"]));
+  expect(() => origins.requireDispatchedWrites()).toThrow("neither a handler dispatch nor a correlated refusal");
+});
+
 test("simultaneous phase workers keep model and thinking selection isolated", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-phases-")); dirs.push(directory);
   const executable = join(directory, "claude");

@@ -89,7 +89,7 @@ test("34c off pauses delivery; re-enable and project assignment only change the 
   } finally { await h.dispose(); }
 });
 
-test("34c archive state has a persisted receipt distinct from body visibility and read authority", async () => {
+test("34c/92 archive state has a persisted body-free receipt without a write tag", async () => {
   const { h, support } = await seeded();
   try {
     const archived = h.memory.store.commitConsolidationRun({ path: { sessionId: 1, branch: "main", headTurnId: 1 },
@@ -97,14 +97,15 @@ test("34c archive state has a persisted receipt distinct from body visibility an
         baseCommit: 1, supports: [support], reason: "withdraw", createdAt: time }] });
     if (!archived.ok) throw new Error(archived.problems.join());
     const notice = await served(h, "archive notice");
-    expect(notice.content).toContain("K1@1 is archived");
+    expect(notice.content).toContain("K1@v1 is archived");
+    expect(notice.content).not.toMatch(/K1#[a-z]+/);
     expect(carrier(notice).supplied.knowledgeCommitIds).toEqual([]);
     expect(carrier(notice).supplied.knowledgeStates).toEqual([{ fromCommit: 1, toCommits: [2] }]);
     expect((await h.prompt("archive unchanged"))?.message).toBeUndefined();
-    // State receipt never enters the manual complete-read ledger.
-    await expect(h.tools.get("memory")!.execute("call", { operations: [{ op: "update", id: "K1@2", text: "illegal",
+    // A state/history address is not a tagged base; there is no complete-read ledger.
+    await expect(h.tools.get("memory")!.execute("call", { operations: [{ op: "update", id: "K1@v2", text: "illegal",
       category: "constraint", scope: "project", supports: [`F${support}`], topics: [], reason: "no handle" }], skipped: [] }, null, null, h.ctx))
-      .rejects.toThrow("knowledge was not read as visible and active");
+      .rejects.toThrow("supply an exact K#tag");
   } finally { await h.dispose(); }
 });
 

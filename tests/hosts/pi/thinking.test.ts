@@ -11,7 +11,7 @@ import { expect, test, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { host, reply, notingFact, consolidationReply } from "./test-host.ts";
-import { call, fixture, forkFixture, memoryBatch, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
+import { call, noteAndMemory, fixture, forkFixture, memoryBatch, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { recorded } from "../../source-fixture.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 
@@ -22,7 +22,7 @@ const thinkingOf = (run: { response?: string | null }) => JSON.parse(run.respons
 /** 27d: the fallback case at the end tells the fresh child's own body from the fork attempt's — a
  * fresh child's system prompt is the Noter's, which a fork's never is — and rejects a fork body the
  * way a provider rejects one it cannot hold. */
-const freshChild = (body: Body) => ["system", "developer"].includes(body.messages?.[0]?.role) && String(body.messages[0]!.content).includes("Noting (fact extraction)");
+const freshChild = (body: Body) => ["system", "developer"].includes(body.messages?.[0]?.role) && String(body.messages[0]!.content).includes("Noting (facts and knowledge)");
 /** 29e: the same distinction for the phase whose mode was restored. */
 const freshConsolidationChild = (body: Body) => ["system", "developer"].includes(body.messages?.[0]?.role) && String(body.messages[0]!.content).includes("Consolidation (knowledge extraction)");
 const overflow = () => new Response(JSON.stringify({ error: { message: "prompt is too long: 213462 tokens > 200000 maximum" } }),
@@ -299,7 +299,7 @@ test("27/26d: the levels frozen at admission survive fallback", async () => {
     let switched = false;
     f.script(async (body: Body) => {
       if (!worker(body)) return say("好的。");
-      if (freshChild(body)) return toolResults(body) ? say("Done.") : call("t1", "note", noteBatch);
+      if (freshChild(body)) return toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch);
       if (!switched) {
         switched = true;
         f.h.setThinkingLevel("low");           // the foreground level moves
@@ -347,7 +347,7 @@ test("27/26d/29e (case 18): a Consolidation fork's fallback takes the configured
     });
     await f.turn();
     f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
-      .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
+      .find(t => t.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] });
     recorded(f.h.memory, 1, "main", 1);
     await f.turn("tick");
     const runs = await vi.waitFor(() => {

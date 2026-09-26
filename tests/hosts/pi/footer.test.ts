@@ -9,6 +9,7 @@
 // and that a refresh loads no Raw, rendered Knowledge or run audit body and builds one path snapshot.
 import { afterEach, expect, test, vi } from "vitest";
 import { host as createHost, reply, notingFact, noteHeld, type Reply } from "./test-host.ts";
+import { readHandle } from "../../read-handle-fixture.ts";
 import { countPathBuilds, countRunBodies, countSourceReads } from "../../perf/fixture.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
@@ -161,7 +162,7 @@ test("24a/92: N stays pending through staging, only normal termination moves que
 
   // A run that fails before its commit advances nothing at all.
   h.provider(async () => { throw new Error("offline"); });
-  await h.turn(); await h.answer("next completed source"); await h.drain();
+  await h.turn(); await h.drain();
   const failed = footer(h);
   expect(failed.role).toBe("dim"); // 51: a failure is reported by the notify, not by the indicator
   expect(failed.status).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: .*<\/dim>$/);
@@ -211,15 +212,15 @@ test("24a: the counts follow the selected branch, so a sibling entry of the same
   await h.emit("agent_end");
   const common = [...h.entries];
   const write = (branch: string) => h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
-  expect(write("main")[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use alpha everywhere", source: ["T1#user"] }] })).not.toContain("rejected:");
+  expect(write("main")[2]!.execute({ facts: [{ text: "Use alpha everywhere", source: ["T1#E1"] }] })).not.toContain("rejected:");
   expect(write("main")[3]!.execute({ operations: [{ op: "create", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
     supports: ["F1"], reason: "Admitted from the shared ancestry." }], skipped: [] })).not.toContain("rejected:");
   // A withdrawal bound to a sibling entry of the same Turn: only main holds it.
   h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });
   await h.emit("agent_end");
-  expect(write("main")[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Alpha is withdrawn", source: ["T1#t2"] }] })).not.toContain("rejected:");
-  write("main")[0]!.execute({ address: "K1@1" });
-  expect(write("main")[3]!.execute({ operations: [{ op: "archive", id: "K1@1", supports: ["F2"], reason: "The user withdrew the rule on this path." }], skipped: [] })).not.toContain("rejected:");
+  expect(write("main")[2]!.execute({ facts: [{ text: "Pi agent reports alpha withdrawn", source: ["T1#E4"] }] })).not.toContain("rejected:");
+  const handle = readHandle(write("main"), "K1");
+  expect(write("main")[3]!.execute({ operations: [{ op: "archive", id: handle, supports: ["F2"], reason: "The rule was withdrawn on this path." }], skipped: [] })).not.toContain("rejected:");
   await refresh(h);
   const onMain = footer(h);
   expect(onMain).toMatchObject({ ...enumerated(h), facts: "2", knowledge: "0" }); // archived here
@@ -279,7 +280,7 @@ test("an enabled refresh uses one path snapshot and one bounded processed-versio
   const created = h.memory.store.commitConsolidationRun({ path: { sessionId: 1, branch: "main", headTurnId: 1 },
     run: { kind: "manual", sessionId: 1, branch: "main", createdAt: time },
     operations: written.map((fact, i) => ({ op: "create" as const, handle: `$k${i}`, author: "test", text: `current ${i}`,
-      category: "mechanism" as const, scope: "session" as const, supports: [fact.id], topics: [], reason: "test", createdAt: time })) });
+      category: "understanding" as const, scope: "session" as const, supports: [fact.id], topics: [], reason: "test", createdAt: time })) });
   expect(created.ok).toBe(true);
   const reads = countSourceReads(), builds = countPathBuilds(), bodies = countRunBodies();
   const rendered = vi.spyOn(rendering, "renderKnowledge"), processed = vi.spyOn(Store.prototype, "processedCurrentVersions");

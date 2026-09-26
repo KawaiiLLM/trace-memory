@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { host as createHost, reply, notingFact, noteHeld, consolidationReply, usage, type Reply } from "./test-host.ts";
 import { compacted } from "../../source-fixture.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { readHandle } from "../../read-handle-fixture.ts";
 
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
@@ -94,7 +95,7 @@ test("noting through runAgent commits the exact provider request, prompt, model,
   expect(run.outcome).toBe("success");
   expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test");
   expect(JSON.parse(run.request!)).toEqual(h.requests.at(-1));
-  expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
+  expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult"]);
   expect(h.conversations[0]!.systemPrompt).toBe(loadPrompt("noting.md"));
   expect(h.conversations[0]!.messages).toHaveLength(1);
   expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
@@ -310,7 +311,7 @@ test("core contains no Pi imports and host imports core only through the facade"
 test("17b supersedes watermark growth: compressed source labels count along with CJK content", async () => {
   const h = host({ "noting.triggerTokens": 16 }); // the two labels and their two characters, and nothing else
   await h.prompt("一"); await h.answer("a"); await h.drain();
-  expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
+  expect(h.requests).toHaveLength(3); // explicit empty note, memory, terminal reply
   expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
 });
 
@@ -593,7 +594,7 @@ test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes
   expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   h.provider(async c => notingFact(c));
   await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(5); // the second worker uses one NEAR review round
+  expect(h.requests).toHaveLength(4); // each worker sends both tools in one message, then ends; no NEAR round
   expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(false);
   await h.answer(); await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
   expect(h.requests).toHaveLength(8); // the third worker reviews too; neither adds a foreground receipt
@@ -646,7 +647,7 @@ test("main facade tools bind each call to the current turn, commit immediately a
     await h.emit("tool_result", { toolCallId: name === "note" ? "n1" : undefined, toolName: name, input, ...result, isError: false });
     return result.content[0].text as string;
   };
-  const note = { facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] };
+  const note = { facts: [{ text: "Use pnpm", source: ["T1#E1"] }] };
   expect(await call("note", note)).toContain("ok: F1");
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
   expect(h.memory.store.listRuns(1)[0]).toMatchObject({ kind: "manual", branch: "main", rangeFrom: "S1/T1", request: JSON.stringify(note) });
@@ -765,7 +766,7 @@ test("a Noter provider failure after holding both tools publishes nothing and re
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("failure"); expect(h.memory.store.listSessionFacts(1)).toHaveLength(0);
   expect(h.memory.store.listSourceEntries(1).some(entry => h.memory.store.entryNoted(entry.id))).toBe(false);
-  expect(h.notices.some(n => n.includes("offline after staging"))).toBe(true);
+  expect(JSON.parse(run.response!).problems.join(" ")).toContain("offline after staging");
   expect(h.notices.some(n => n.includes("committed with problems"))).toBe(false);
 });
 
@@ -780,7 +781,7 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   const note = (text: string) => {
     const current = state(), tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: current.head, branch: current.branch,
       triggerEntryId: target().triggerEntryId });
-    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${current.head}#user`] }] }));
+    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ text, source: [`T${current.head}#E1`] }] }));
     expect(receipt.results[0]).toMatch(/^ok:/);
     return receipt.factIds[0] as number;
   };
@@ -800,18 +801,20 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   const update = async (text: string, factId: number, sequence: number) => {
     const path = target(); h.memory.store.setCurrentPath(1, path.branch, path.headTurnId, "pi-test");
     const current = h.memory.store.currentCommit(1, path)[0]!;
-    const trigger = createDreamerTrigger(h.memory, path, factId, sequence), triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`;
+    const trigger = createDreamerTrigger(h.memory, path, factId, sequence);
+    const reader = h.memory.tools({ kind: "manual", sessionId: 1, branch: path.branch, currentTurnId: path.headTurnId });
+    const baseAddress = readHandle(reader, "K1"), triggerAddress = readHandle(reader, `K${trigger.knowledgeId}`);
     expect(h.memory.taskEligibility("dreaming", path)).toEqual({ due: true });
     expect(h.memory.store.getClaim(1, "dreaming")).toBeNull();
     let round = 0;
     h.provider(async conversation => {
       expect(conversation.systemPrompt).toMatch(/^# Dreamer/);
       if (round++ === 0) return { ...reply(""), stopReason: "toolUse", content: [
-        { type: "toolCall", id: `read-base-${sequence}`, name: "trace", arguments: { address: `K1@${current.id}`, itemBudget: null, pageBudget: 8000 } },
+        { type: "toolCall", id: `read-base-${sequence}`, name: "trace", arguments: { address: baseAddress, itemBudget: null, pageBudget: 8000 } },
         { type: "toolCall", id: `read-trigger-${sequence}`, name: "trace", arguments: { address: triggerAddress, itemBudget: null, pageBudget: 8000 } },
       ] };
       if (round === 2) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `write-${sequence}`, name: "memory", arguments: {
-        operations: [{ op: "update", id: `K1@${current.id}`, text, category: "constraint", scope: "project", topics: [], supports: [`F${factId}`], reason: `Update from ${path.branch}.` },
+        operations: [{ op: "update", id: baseAddress, text, category: "constraint", scope: "project", topics: [], supports: [`F${factId}`], reason: `Update from ${path.branch}.` },
           { op: "archive", id: triggerAddress, supports: [], reason: "Retire explicit host trigger." }] as const, skipped: [],
       } }] };
       return reply("Done.");
@@ -832,9 +835,10 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   h.entries.splice(0, h.entries.length, ...c); await h.emit("session_tree");
   const restored = state();
   const injected = h.memory.injection({ sessionId: 1, headTurnId: restored.head, branch: restored.branch }).text;
-  expect(injected).toContain(`[K1@${cCommit}]`); expect(injected).not.toContain(`[K1@${dCommit}]`);
+  const cAddress = `K1#${h.memory.store.versionTag(1, cCommit)}`, dAddress = `K1#${h.memory.store.versionTag(1, dCommit)}`;
+  expect(injected).toContain(`[${cAddress}]`); expect(injected).not.toContain(`[${dAddress}]`);
   const delivered = (await h.prompt("Continue C"))?.message;
-  expect(delivered.content).toContain(`[K1@${cCommit}]`); expect(delivered.content).not.toContain(`[K1@${dCommit}]`);
+  expect(delivered.content).toContain(`[${cAddress}]`); expect(delivered.content).not.toContain(`[${dAddress}]`);
   const carry = await h.emit("session_before_tree");
   const latestTurn = h.memory.store.listTurns(1).at(-1)!.id;
   expect(carry.summary.summary).toBe(h.memory.branchSummary(1, state().branch, latestTurn));

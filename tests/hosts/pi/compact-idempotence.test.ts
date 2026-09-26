@@ -78,7 +78,7 @@ test("persisted hook lifecycle: repeat, N/C, 117 knowledge commits, small turns 
       if (dreamSubmitted) return say("Done");
       dreamSubmitted = true;
       return call("skip-all", "memory", { operations: [], skipped: consolidated.committed.map(item => ({
-        knowledge: `K${item.knowledgeId}@${item.commit}`, because: "reviewed; retain",
+        knowledge: `K${item.knowledgeId}@v1`, because: "reviewed; retain",
       })) });
     });
     const knowledge = await compact();
@@ -122,7 +122,7 @@ test("persisted hook lifecycle: repeat, N/C, 117 knowledge commits, small turns 
       await restarted.emit("session_compact", { compactionEntry: manager.getEntry(native) });
       const offered = await restarted.emit("before_agent_start", { prompt: "opaque summary" });
       expect(offered.message.details.traceMemory.supplied.knowledgeCommitIds).toHaveLength(117);
-      expect((offered.message.content.match(/\[K\d+@\d+\]/g) ?? [])).toHaveLength(117);
+      expect((offered.message.content.match(/\[K\d+#[a-z]+\]/g) ?? [])).toHaveLength(117);
     } finally { await restarted.dispose(); }
   } finally { await f.dispose(); }
 }, 30000);
