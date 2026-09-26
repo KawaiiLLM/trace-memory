@@ -3,6 +3,7 @@ import { TraceMemory, knowledgeStateKey, noVisibility, type VisibleView } from "
 import { budgetKnowledge, renderEntry, renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { injectionText } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const time = "2026-09-12T00:00:00Z";
@@ -391,8 +392,8 @@ test("92 split notice names only the visible child and never mislabels a partial
   const noted = f.memory.store.commitNotingRun({ run: { kind: "manual", sessionId: peer.id, createdAt: time }, facts: [{ turnId: turn.id, entryIds: [entry.id],
     text: "Private evidence", source: [`T${turn.id}#E${entry.entryOrdinal}`], createdAt: time }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const changed = f.memory.store.commitConsolidationRun({ path: { sessionId: peer.id, branch: "main", headTurnId: turn.id },
-    run: { kind: "consolidation", sessionId: peer.id, createdAt: time }, operations: [{ op: "update", knowledgeId: split[1]!.knowledgeId,
+  const changed = commitNoterKnowledge(f.memory.store, { path: { sessionId: peer.id, branch: "main", headTurnId: turn.id },
+    run: { sessionId: peer.id, createdAt: time }, operations: [{ op: "update", knowledgeId: split[1]!.knowledgeId,
       baseCommit: split[1]!.commit, text: "Private successor", scope: "session", category: "constraint", supports: [noted.facts[0]!.id], topics: [], reason: "private scope", createdAt: time }] });
   if (!changed.ok) throw new Error(changed.problems.join("; "));
   const result = f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([parent.commit]), knowledgeTokens: 100 }));

@@ -258,7 +258,7 @@ test("25d: the `..` grammars keep their single meaning beside the interval, and 
   expect(memory.trace("F1-F1")).not.toContain("supersedes"); // the interval, not a walk
 
   const created = store.commitConsolidationRun({ path: { sessionId, headTurnId: turnId, branch: "main" },
-    run: { kind: "consolidation", sessionId, branch: "main", createdAt: time },
+    run: { kind: "manual", sessionId, branch: "main", createdAt: time },
     operations: [{ op: "create", handle: "h1", author: "fake", text: "first", category: "understanding", scope: "session",
       supports: [ids[0]!], reason: "test", topics: [], createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
@@ -277,7 +277,7 @@ test("25d/92: mixed batch reads keep exact tags without granting manual update a
   const { sessionId, turnId, ids } = facts(3);
   const store = memory.store;
   const path = { sessionId, headTurnId: turnId, branch: "main" };
-  const created = store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId, branch: "main", createdAt: time },
+  const created = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId, branch: "main", createdAt: time },
     operations: [{ op: "create", handle: "h1", author: "fake", text: "first", category: "understanding", scope: "session",
       supports: [ids[0]!], reason: "test", topics: [], createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));

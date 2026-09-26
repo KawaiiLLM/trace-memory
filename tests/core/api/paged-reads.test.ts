@@ -112,7 +112,7 @@ async function knowledgeCorpus(knowledge: number, revisions: number) {
   const supports = [noted.facts[0]!.id];
   const tips: { knowledgeId: number; commit: number }[] = [];
   for (let i = 0; i < knowledge; i++) {
-    const run = { kind: "consolidation" as const, sessionId, branch: "main", createdAt: time };
+    const run = { kind: "manual" as const, sessionId, branch: "main", createdAt: time };
     const created = store.commitConsolidationRun({ path, run, operations: [{ op: "create", handle: `h${i}`, author: "fake",
       text: `SEARCHNEEDLE conclusion ${i}`, category: "understanding", scope: "session", supports, reason: "corpus", topics: [], createdAt: time }] });
     if (!created.ok) throw new Error(created.problems.join("; "));

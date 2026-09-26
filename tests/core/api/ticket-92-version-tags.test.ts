@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { sourceSeededMemory } from "../../source-fixture.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import { tokens } from "../../../src/core/render/index.ts";
@@ -163,7 +164,7 @@ test("92/03: complete-body tags survive collection and history paging without le
   } finally { memory.close(); }
 });
 
-test("92/03: concurrent writers serialize tags and ordinals; failed batches roll revision metadata back", async () => {
+test("92/03+04: concurrent N writers serialize version metadata and convert a stale update; failed manual batches roll back", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-92-tag-writers-")); dirs.push(dir);
   const file = join(dir, "memory.sqlite");
   const memory = sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "unused" }));
@@ -175,21 +176,23 @@ test("92/03: concurrent writers serialize tags and ordinals; failed batches roll
     const fact = JSON.parse(memory.tools({ kind: "manual", sessionId: session.id, currentTurnId: turn.id, branch: "main" }).find(t => t.name === "note")!
       .execute({ facts: [{ text: "Rule evidence", source: [`T${turn.id}#E1`] }] })).factIds[0];
     const content = { text: "Unchanged body", category: "constraint" as const, scope: "session" as const, topics: [], supports: [fact], reason: "revision", createdAt: "now" };
-    const run = { kind: "consolidation" as const, sessionId: session.id, branch: "main", createdAt: "now" };
+    const run = { kind: "manual" as const, sessionId: session.id, branch: "main", createdAt: "now" };
     const created = memory.store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     const initial = created.committed[0]!;
     const operation = { op: "update", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, ...content };
     const starts = [1, 2].map(() => {
       const worker = new Worker(`const { parentPort, workerData } = require('node:worker_threads');
-        import(workerData.module).then(({ Store }) => {
+        Promise.all([import(workerData.module), import(workerData.fixture)]).then(([{ Store }, { commitNoterKnowledge }]) => {
           const store = new Store(workerData.file);
           parentPort.once('message', () => {
-            try { parentPort.postMessage(store.commitConsolidationRun({run: workerData.run, operations:[workerData.operation]})); }
+            try { parentPort.postMessage(commitNoterKnowledge(store, {run: workerData.run, operations:[workerData.operation]})); }
             finally { store.close(); parentPort.close(); }
           });
           parentPort.postMessage('ready');
-        });`, { eval: true, workerData: { file, run, operation, module: new URL("../../../src/core/store/index.ts", import.meta.url).href } });
+        });`, { eval: true, workerData: { file, run, operation,
+          module: new URL("../../../src/core/store/index.ts", import.meta.url).href,
+          fixture: new URL("../../noting-knowledge-fixture.ts", import.meta.url).href } });
       workers.push(worker);
       let ready!: () => void;
       const opened = new Promise<void>(resolve => { ready = resolve; });
@@ -202,25 +205,32 @@ test("92/03: concurrent writers serialize tags and ordinals; failed batches roll
     await Promise.all(starts.map(value => value.opened));
     starts.forEach(value => value.worker.postMessage("write"));
     const results = await Promise.all(starts.map(value => value.done));
-    expect(results.map(value => value.ok).sort()).toEqual([false, true]);
+    // N's second stale update is a new identity, never a second effective successor.
+    expect(results.map(value => value.ok)).toEqual([true, true]);
     const history = memory.store.listKnowledgeRevisions(initial.knowledgeId);
     expect(history).toHaveLength(2);
     expect(history.map(value => value.text)).toEqual([content.text, content.text]);
+    const converted = memory.store.listKnowledgeRevisions().filter(value => value.knowledgeId !== initial.knowledgeId);
+    expect(converted).toHaveLength(1);
+    expect(converted[0]!.op).toBe("create");
+    expect(converted[0]!.text).toContain(`originally targeted K${initial.knowledgeId}#${memory.store.versionTag(initial.knowledgeId, initial.commit)}`);
     const metadata = () => memory.store.db.prepare("SELECT * FROM knowledge_version_tags ORDER BY commit_id").all();
     const before = metadata();
-    expect(before.map(row => row.ordinal)).toEqual([1, 2]);
-    expect(new Set(before.map(row => row.tag)).size).toBe(2);
+    expect(before.filter(row => row.knowledge_id === initial.knowledgeId).map(row => row.ordinal)).toEqual([1, 2]);
+    expect(before.filter(row => row.knowledge_id !== initial.knowledgeId).map(row => row.ordinal)).toEqual([1]);
+    expect(new Set(before.filter(row => row.knowledge_id === initial.knowledgeId).map(row => row.tag)).size).toBe(2);
     const failed = memory.store.commitConsolidationRun({ run, operations: [
       { op: "create", handle: "$rollback", author: "test", ...content },
       { op: "archive", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, supports: [fact], reason: "stale after insert", createdAt: "now" },
     ] });
     expect(failed.ok).toBe(false);
     expect(metadata()).toEqual(before);
-    expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
-    const metadataOnly = memory.store.commitConsolidationRun({ run, operations: [{ ...operation, op: "update", baseCommit: history[1]!.id, topics: ["new-topic"] }] });
+    expect(memory.store.listKnowledgeRevisions()).toHaveLength(3);
+    const metadataOnly = commitNoterKnowledge(memory.store, { run, operations: [{ ...operation, op: "update", baseCommit: history[1]!.id, topics: ["new-topic"] }] });
     expect(metadataOnly.ok).toBe(true);
-    expect(metadata().map(row => row.ordinal)).toEqual([1, 2, 3]);
-    expect(new Set(metadata().map(row => row.tag)).size).toBe(3);
+    const originalMetadata = metadata().filter(row => row.knowledge_id === initial.knowledgeId);
+    expect(originalMetadata.map(row => row.ordinal)).toEqual([1, 2, 3]);
+    expect(new Set(originalMetadata.map(row => row.tag)).size).toBe(3);
   } finally {
     await Promise.all(workers.map(worker => worker.terminate()));
     memory.close();

@@ -57,7 +57,7 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
   expect(archived.committed[0]!.version).toBe(`K${old.knowledgeId}@v2`);
   archiveCommit = store.resolveVersionOrdinal(old.knowledgeId, 2);
 
-  const returnedResult = store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId: session.id, createdAt: "now" },
+  const returnedResult = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, createdAt: "now" },
     operations: [{ op: "create", handle: "$returned", author: "test", ...content("Returned widget state") }] });
   if (!returnedResult.ok) throw new Error(returnedResult.problems.join("; "));
   returned = returnedResult.committed[0]!;

@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { TraceMemory, noVisibility } from "../../../src/core/api/index.ts";
 import { sourceSeededMemory } from "../../source-fixture.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { tokens } from "../../../src/core/render/tokens.ts";
 
@@ -39,7 +40,7 @@ test("92 warm reader memo respects an older SQLite read snapshot across an exter
   expect(f.memory.injection(f.target, retained).text).toBe(""); // warm 88 memo
   f.store.db.exec("BEGIN");
   const descriptor = f.store.db.prepare("SELECT MAX(id) n FROM knowledge_revisions").get()!.n;
-  const changed = external.store.commitConsolidationRun({ path: f.target, run: { kind: "consolidation", sessionId: f.session.id, branch: "main", createdAt: "later" },
+  const changed = commitNoterKnowledge(external.store, { path: f.target, run: { sessionId: f.session.id, branch: "main", createdAt: "later" },
     operations: [{ ...f.content, op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, text: "new version" }] });
   if (!changed.ok) throw new Error(changed.problems.join("; "));
   expect(descriptor).toBe(first.commit);
@@ -61,7 +62,7 @@ test("92 a globally current but reader-invisible successor hides the identity an
   const target = { sessionId: peer.id, branch: "main", headTurnId: turn.id };
   const note = f.memory.tools({ kind: "manual", ...target, currentTurnId: turn.id }).find(tool => tool.name === "note")!;
   const fact = JSON.parse(note.execute({ facts: [{ text: "Private evidence", source: [`T${turn.id}#E1`] }] })).factIds[0];
-  const changed = f.store.commitConsolidationRun({ path: target, run: { kind: "consolidation", sessionId: peer.id, createdAt: "later" }, operations: [{ ...f.content,
+  const changed = commitNoterKnowledge(f.store, { path: target, run: { sessionId: peer.id, createdAt: "later" }, operations: [{ ...f.content,
     op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, text: "Secret successor", scope: "session", supports: [fact] }] });
   if (!changed.ok) throw new Error(changed.problems.join("; "));
   expect(f.memory.injection(f.target).knowledgeCommitIds).toEqual([]);

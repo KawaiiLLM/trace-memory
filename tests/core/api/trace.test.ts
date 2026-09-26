@@ -19,7 +19,7 @@ const archived = "Retired: the cited evidence withdraws this conclusion.";
 type Operation = Parameters<ReturnType<typeof sourceSeededMemory>["store"]["commitConsolidationRun"]>[0]["operations"][number];
 async function consolidation(...operations: Operation[]) {
   if (operations.every(op => op.op === "create")) {
-    const result = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations });
+    const result = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: time }, operations });
     if (!result.ok) throw new Error(result.problems.join(", "));
     return result.committed;
   }
