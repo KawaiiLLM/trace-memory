@@ -10,6 +10,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { host as createHost, reply, notingFact, noteHeld, type Reply } from "./test-host.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
+import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { countPathBuilds, countRunBodies, countSourceReads } from "../../perf/fixture.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
@@ -319,23 +320,36 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   expect(h.requests).toEqual([]);
 });
 
-test("24a/51: N indicator, idle/off colour and no-theme fallback", async () => {
-  const h = host({ "noting.triggerTokens": 1, "noting.forkModeDefault": false });
-  h.provider(async c => notingFact(c));
+test("24a/51: concurrent N and D indicator prefers N; off and no-theme fallback", async () => {
+  const h = host({ "noting.triggerTokens": 1_000, "noting.forkModeDefault": false });
   await h.turn();
   expect(footer(h)).toMatchObject({ glyph: "○", role: "dim" });
+  const seed = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
+    .execute({ facts: [{ text: "User chose pnpm", source: ["T1#E1"] }] });
+  expect(seed).not.toContain("rejected:");
+  const priorRequests = h.requests.length;
+  const due = createDreamerTrigger(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1, 1);
+  expect(h.memory.taskEligibility("dreaming", { sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ due: true });
 
-  // A new entry makes N due again; hold that request at the wire.
-  h.provider(async () => new Promise(() => {}));
+  // Both phases hold their own real wire requests; D must not be a stand-in for retired C.
+  h.provider(async () => new Promise<Reply>(() => {}));
   await h.prompt("second"); await h.answer(); await h.emit("agent_settled"); await h.drain();
+  await vi.waitFor(() => expect(h.requests).toHaveLength(priorRequests + 1));
+  expect(footer(h)).toMatchObject({ glyph: "●", role: "customMessageLabel" });
+  h.persist(reply("word ".repeat(15_000))); await refresh(h); await h.drain();
+  await vi.waitFor(() => expect(h.requests).toHaveLength(priorRequests + 2));
+  expect(h.memory.store.getClaim(1, "dreaming")).not.toBeNull();
+  expect(h.memory.store.getClaim(1, "noting")).not.toBeNull();
+  expect(h.conversations.some(c => c.systemPrompt?.startsWith("# Dreamer") && String(c.messages[0]!.content).includes(`K${due.knowledgeId}@v1`))).toBe(true);
+  expect(footer(h)).toMatchObject({ glyph: "●", role: "accent" });
+  const requests = h.requests.length;
+  await refresh(h); await h.emit("agent_settled"); await h.drain();
+  expect(h.requests).toHaveLength(requests); // duplicate opportunity neither clears nor readmits either phase
   expect(footer(h)).toMatchObject({ glyph: "●", role: "accent" });
 
-  // Off wins over everything, including work still in flight.
   await h.commands.get("trace")!.handler("off", h.ctx);
   expect(raw(h)).toBe("🧠 <dim>○ off</dim>");
   await h.commands.get("trace")!.handler("on", h.ctx);
-
-  // Pi's native fallback: no theme support, the same line without colour.
   delete (h.ctx.ui as { theme?: unknown }).theme;
   await refresh(h);
   expect(raw(h)).toMatch(/^🧠 [●○] notes: \d+->\d+ memory: \d+\/\d+ cost: \$\d+\.\d{2}$/);

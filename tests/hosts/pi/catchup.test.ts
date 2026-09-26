@@ -64,8 +64,14 @@ test("borrowed N follows the oldest retained branch; a busy slot never takes ano
     expect(h.memory.store.getClaim(second.sessionId, "noting")).toBeNull();
     h.persist(reply("word ".repeat(15_000))); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(1);
-    release[0]!(reply("No durable material.")); await h.drain();
-    expect(h.memory.store.listRuns(first.sessionId).filter(r => r.kind === "noting").map(r => r.branch)).toEqual(["a"]);
+    release[0]!({ ...reply(""), stopReason: "error", errorMessage: "borrowed provider failure" }); await h.drain();
+    expect(h.memory.store.listRuns(first.sessionId).filter(r => r.kind === "noting").map(r => [r.branch, r.outcome])).toEqual([["a", "failure"]]);
+    expect(h.requests).toHaveLength(1); // failure cannot chain into another borrowed target
+    expect(h.memory.pendingEntries(second.sessionId, second.branch, second.headTurnId)).toHaveLength(1);
+    expect(h.signals[0]!.aborted).toBe(false); // arriving own work did not preempt borrowed N
+    h.provider(async c => notingFact(c));
+    await tick(h);
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success"]);
     expect(h.memory.pendingEntries(second.sessionId, second.branch, second.headTurnId)).toHaveLength(1);
   } finally { await h.dispose(); }
 });
@@ -112,20 +118,39 @@ test("two executors share exclusive N target claims and the loser does not steal
   } finally { await b.dispose(); await a.dispose(); }
 });
 
-test("borrowed N freezes target project, branch and spend without delivering to executor conversation", async () => {
+test("borrowed N publishes both layers to its target without a special executor delivery", async () => {
   const h = host();
   try {
     await h.turn();
     h.memory.declareProject(1, "Borrowed project", "mark", h.memory.store.knowledgePath(1, "main"));
     const t = target(h.memory, { project: "Borrowed project", branch: "target-branch" });
-    h.provider(async c => notingFact(c));
+    const beforeDelivery = h.entries.filter(e => e.type === "custom_message").length;
+    h.provider(async c => {
+      const noteResult = c.messages.some(m => m.role === "toolResult" && m.toolName === "note");
+      const memoryResult = c.messages.some(m => m.role === "toolResult" && m.toolName === "memory");
+      if (memoryResult) return reply("Done");
+      if (noteResult) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "borrowed-memory", name: "memory",
+        arguments: { operations: [{ op: "create", text: "Target knowledge", category: "understanding", scope: "project",
+          topics: [], reason: "Retain the target's finding.", supports: ["$1"] }], skipped: [] } }] };
+      const note = notingFact(c);
+      return { ...note, content: [note.content[0]!] };
+    });
     await tick(h);
     const runs = h.memory.store.listRuns(t.sessionId).filter(r => r.kind === "noting");
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({ branch: t.branch, mode: "subagent", outcome: "success" });
-    expect(h.memory.store.listSessionFacts(t.sessionId)).toHaveLength(1);
+    const fact = h.memory.store.listSessionFacts(t.sessionId)[0]!;
+    expect(fact).toBeDefined();
+    const visible = h.memory.store.listVisibleKnowledge(t.sessionId, t.projectId);
+    expect(visible).toHaveLength(1);
+    expect(visible[0]!.knowledge).toMatchObject({ originSessionId: t.sessionId, projectId: t.projectId });
+    expect(visible[0]!.revision.scope).toBe("project");
+    expect(visible[0]!.revision.supports).toEqual([fact.id]);
+    expect(h.memory.store.listVisibleKnowledge(1, t.projectId)[0]!.knowledge.originSessionId).toBe(t.sessionId);
     expect(h.memory.spend(t.sessionId).input).toBeGreaterThan(0);
     expect(h.memory.spend(1).input).toBe(0);
+    expect(h.entries.filter(e => e.type === "custom_message")).toHaveLength(beforeDelivery);
+    // Later ordinary same-project delivery remains eligible; worker completion itself injected nothing.
     expect((await h.prompt("after borrowed work"))?.message?.content ?? "").not.toContain("<noted>");
   } finally { await h.dispose(); }
 });
@@ -212,34 +237,48 @@ test("reopening a closed target replaces borrowed N token and prevents stale pub
   } finally { old.close(); own.close(); await h.dispose(); }
 });
 
-test("shutdown deadline fences both own and borrowed N even if providers never resolve", async () => {
+test("one shutdown deadline fences borrowed N and owned D even when both providers hang", async () => {
   const h = host({ "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
+    const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
+      .execute({ facts: [{ text: "User chose pnpm", source: ["T1#E1"] }] });
+    expect(receipt).not.toContain("rejected:");
+    const due = createDreamerTrigger(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1, 1);
     const t = target(h.memory);
     h.provider(async () => new Promise<Reply>(() => {}), { ignoreAbort: true });
     await tick(h);
-    expect(h.requests).toHaveLength(1);
+    await vi.waitFor(() => expect(h.requests).toHaveLength(2));
     const borrowed = h.memory.store.getClaim(t.sessionId, "noting")!;
+    const owned = h.memory.store.getClaim(1, "dreaming")!;
+    expect(borrowed.borrowed).toBe(true);
+    expect(owned).not.toBeNull();
+    expect(h.memory.store.getClaim(t.sessionId, "dreaming")).toBeNull();
     h.persist(reply("word ".repeat(15_000))); await h.emit("agent_end"); await h.drain();
-    // One N slot: own cannot start while this executor is borrowing.
-    expect(h.requests).toHaveLength(1);
+    expect(h.requests).toHaveLength(2);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let done = false;
     const shutdown = h.emit("session_shutdown").then(() => { done = true; });
     await h.drain();
+    expect(h.signals).toHaveLength(2);
     expect(h.signals.every(signal => signal.aborted)).toBe(true);
     expect(h.memory.store.getClaim(t.sessionId, "noting")!.expiresAt).toBe(0);
     await vi.advanceTimersByTimeAsync(4999); expect(done).toBe(false);
     await vi.advanceTimersByTimeAsync(1); expect(done).toBe(true);
     await shutdown;
     expect(h.memory.store.getClaim(borrowed.sessionId, "noting")).toBeNull();
+    expect(h.memory.store.getClaim(owned.sessionId, "dreaming")).toBeNull();
     expect(h.memory.store.getSession(1)!.closedAt).not.toBeNull();
     expect(h.memory.store.getSession(t.sessionId)!.closedAt).not.toBeNull();
+    expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
     expect(h.memory.pendingEntries(t.sessionId, t.branch, t.headTurnId)).toHaveLength(1);
-    const run = h.memory.store.listRuns(t.sessionId).at(-1)!;
-    expect(run.outcome).toBe("cancelled"); expect(JSON.parse(run.response!).usage).toBeNull();
-    expect(h.memory.trace(`R${run.id}`)).toContain("cost unknown");
+    expect(h.memory.store.getKnowledge(due.knowledgeId)).not.toBeNull();
+    for (const sessionId of [1, t.sessionId]) {
+      const run = h.memory.store.listRuns(sessionId).filter(r => r.kind === (sessionId === 1 ? "dreaming" : "noting")).at(-1)!;
+      expect(run.outcome).toBe("cancelled"); expect(JSON.parse(run.response!).usage).toBeNull();
+      expect(h.memory.trace(`R${run.id}`)).toContain("cost unknown");
+    }
+    await expect(tick(h)).rejects.toThrow("closed"); expect(h.requests).toHaveLength(2);
   } finally { vi.useRealTimers(); await h.dispose(); }
 });
 
@@ -312,6 +351,7 @@ test("resume takes crashed claims immediately; tree navigation keeps owned N run
     await h.turn();
     const path = { sessionId: 1, branch: "main", headTurnId: 1 };
     const old = h.memory.store.acquireClaim(path, "noting", "dead-executor")!;
+    expect(h.memory.store.getSession(1)!.closedAt).toBeNull();
     await h.emit("session_start");
     const claim = h.memory.store.getClaim(1, "noting")!;
     expect(claim.token).not.toBe(old.token); expect(claim.reserved).toBe(true);
@@ -320,6 +360,7 @@ test("resume takes crashed claims immediately; tree navigation keeps owned N run
     h.persist(reply("word ".repeat(15_000))); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(1);
     const running = h.memory.store.getClaim(1, "noting")!;
+    expect(running.reserved).toBe(false);
     await h.emit("session_tree");
     expect(h.memory.store.getClaim(1, "noting")!.token).toBe(running.token);
     release[0]!(reply("Done")); await h.drain();
