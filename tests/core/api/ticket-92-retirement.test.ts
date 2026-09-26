@@ -25,6 +25,7 @@ test("92/07: only N/D admit; historical C audit and costs keep original labels",
   try {
     expect(MEMORY_PHASES).toEqual(["noting", "dreaming"]);
     expect("consolidate" in f.memory).toBe(false);
+    expect(f.memory.status(f.session.id, "main", f.turn.id)).not.toContain("Last consolidation:");
     const run = f.store.recordRun({ kind: "consolidation", sessionId: f.session.id, branch: "main", createdAt: "2026-01-01T00:00:00Z", outcome: "success",
       response: JSON.stringify({ nativeLog: "/historical/consolidator.jsonl", usage: { input: 100, output: 20, cost: { total: 0.5 } } }) });
     expect(f.memory.trace(`R${run.id}`, { full: true })).toContain("consolidation");
@@ -32,6 +33,7 @@ test("92/07: only N/D admit; historical C audit and costs keep original labels",
     expect(f.memory.spend(f.session.id).runs.consolidation).toBe(1);
     expect(f.memory.spend(f.session.id).costs.consolidation).toBe(0.5);
     expect(f.memory.spend(f.session.id).cost).toBe(0.5);
+    expect(f.memory.status(f.session.id, "main", f.turn.id)).toContain(`Last consolidation: run ${run.id} success`);
     expect((await f.memory.noting(f.target)).outcome).toBe("success");
     expect(f.invoked).toEqual(["noting"]);
     expect(f.memory.status(f.session.id, "main", f.turn.id)).not.toContain("to consolidate");

@@ -1038,7 +1038,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         `Pending: ${counts.entries} imported ${counts.entries === 1 ? "entry" : "entries"} to note; ${counts.facts} applicable facts; ${counts.knowledge} current knowledge (imported evidence on this branch)`,
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
         `Knowledge: ${counts.knowledge} visible active`,
-        ...(["noting", "consolidation", "dreaming"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; })].join("\n");
+        ...(["noting", "consolidation", "dreaming"] as const).flatMap((kind) => {
+          const r = [...runs].reverse().find((r) => r.kind === kind);
+          return kind === "consolidation" && !r ? [] : [`Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`];
+        })].join("\n");
     },
   };
 }

@@ -29,7 +29,10 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     const entries = memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id);
     const tools = memory.tools({ kind: "manual", ...target, currentTurnId: turn.id });
-    const factReceipt = JSON.parse(tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Three rules have distinct purposes", source: [`T${turn.id}#E1`] }] }));
+    const factResult = tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Three rules have distinct purposes", source: [`T${turn.id}#E1`] }] });
+    expect(factResult).not.toContain("rejected:");
+    const factReceipt = JSON.parse(factResult);
+    expect(factReceipt.factIds).toHaveLength(1);
     const fid = factReceipt.factIds[0];
     const written = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [1, 2, 3].map(n => ({
       op: "create", handle: `$${n}`, author: "fixture", category: "constraint", scope: "session", text: `Rule ${n}`, supports: [fid], topics: [], reason: "evidence", createdAt: "now",
@@ -47,7 +50,9 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
       const claim = store.getClaim(session.id, "dreaming")!;
       const rangeId = store.openDreamingRange(session.id, "main")!.id;
       lateWrite = () => write.execute(update);
-      return new Promise(resolve => task.signal!.addEventListener("abort", () => {
+      const signal = task.signal;
+      if (!signal) throw Error("Dreamer worker has no cancellation signal");
+      return new Promise(resolve => signal.addEventListener("abort", () => {
         observedAbort = true;
         expect(store.enabled(session.id)).toBe(false);
         expect(nCalls).toBe(3);
