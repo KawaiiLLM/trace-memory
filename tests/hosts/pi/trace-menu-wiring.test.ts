@@ -68,7 +68,7 @@ test("shared settings choices expose every editable row with stable IDs", () => 
   const choices = buildSettingsChoices(TRACE_SETTINGS_FIXTURE);
   expect(choices.map(c => c.id)).toEqual([
     "budget.global", "budget.project", "budget.session", "noting.mode", "noting.model", "noting.thinking",
-    "consolidation.mode", "consolidation.model", "consolidation.thinking", "dreaming.model", "dreaming.thinking", "closedSessionScope",
+    "dreaming.model", "dreaming.thinking", "closedSessionScope",
   ]);
   expect(choices.find(c => c.id === "budget.project")!.label).toContain("15,000");
 });

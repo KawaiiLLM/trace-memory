@@ -98,7 +98,13 @@ test("92: real staging renders once across an external mid-snapshot commit and 2
     const oldIds = created.committed.map(commit => commit.commit);
     const producer = f.run(0, epoch, { pauseSnapshot: true });
     await until(`${producer.control}.snapshot`);
-    const changed = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, createdAt: "later" },
+    const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+    const claim = memory.store.acquireClaim(path, "dreaming", "snapshot-fixture")!;
+    const range = memory.store.retainKnowledgePoolRange(path, "global", claim);
+    const run = memory.store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", projectId: project.id,
+      claim, dreamingRangeId: range.id, executionId: memory.store.beginExecution({ sessionId: session.id,
+        phase: "dreaming", head: range.anchor, origin: range.origin }), createdAt: "later" });
+    const changed = memory.store.commitConsolidationRun({ path, run,
       operations: [{ ...content, op: "update", knowledgeId: created.committed[0]!.knowledgeId, baseCommit: oldIds[0]!,
         text: "NEW concurrent rule" }] });
     if (!changed.ok) throw new Error(changed.problems.join(";"));
@@ -118,7 +124,7 @@ test("92: real staging renders once across an external mid-snapshot commit and 2
     const stage = f.stages(); expect(stage).toHaveLength(1);
     expect(stage[0].snapshot.watermarks.kr).toBe(oldIds.at(-1));
     expect(memory.store.db.prepare("SELECT MAX(id) n FROM knowledge_revisions").get()!.n).toBe(newId);
-    const outputs = [first, waited, ...rest].map(result => JSON.parse(result.stdout));
+    const outputs = [first, waited, ...rest].map((result, index) => { expect(result.stdout, `slot ${index}: ${result.stderr}`).not.toBe(""); return JSON.parse(result.stdout); });
     expect(outputs).toHaveLength(24);
     const visible = { db: databaseIdentity(f.dbPath), nativeSession: "snapshot-test", coreSession: null };
     const decoded = outputs.map(output => decodeCcInjection(output.hookSpecificOutput.additionalContext, visible)!);

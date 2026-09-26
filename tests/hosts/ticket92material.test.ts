@@ -5,7 +5,7 @@ import type { CcReconcileResult } from "../../src/hosts/cc/importer.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 
 const worker = resolveCcHostConfig({ dbPath: "/unused/material.db", stateDir: "/unused/material",
-  notingModel: "synthetic", notingThinking: "medium", consolidationModel: "synthetic", consolidationThinking: "medium",
+  notingModel: "synthetic", notingThinking: "medium",
   "dreaming.model": "synthetic", "dreaming.thinking": "medium",
   worker: { cwd: "/unused/material", claudeExecutable: "/never-invoke-claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } }).worker;
 

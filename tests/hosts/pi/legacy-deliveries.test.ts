@@ -21,10 +21,11 @@ function betaDatabase(directory: string) {
     facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "用 pnpm", source: [`T${turn.id}#user`], createdAt: "now" }],
     entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(e => e.id) });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const consolidated = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: "now" },
+  const consolidated = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" },
     operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "beta",
       text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [noted.facts[0]!.id], createdAt: "now" }] });
   if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
+  const historical = memory.store.recordRun({ kind: "consolidation", sessionId: session.id, branch: "main", createdAt: "now", outcome: "success" });
   memory.store.db.exec(`CREATE TABLE pending_deliveries (
     run_id INTEGER NOT NULL REFERENCES runs(id),
     session_id INTEGER NOT NULL REFERENCES sessions(id),
@@ -33,7 +34,7 @@ function betaDatabase(directory: string) {
   )`);
   // One consumed row and one that the old version would still have delivered.
   memory.store.db.prepare("INSERT INTO pending_deliveries (run_id, session_id, branch, delivered_at) VALUES (?, ?, 'main', '2026-09-01T00:00:00Z')").run(noted.runId, session.id);
-  memory.store.db.prepare("INSERT INTO pending_deliveries (run_id, session_id, branch, delivered_at) VALUES (?, ?, 'main', NULL)").run(consolidated.runId, session.id);
+  memory.store.db.prepare("INSERT INTO pending_deliveries (run_id, session_id, branch, delivered_at) VALUES (?, ?, 'main', NULL)").run(historical.id, session.id);
   const rows = () => memory.store.db.prepare("SELECT run_id, session_id, branch, delivered_at FROM pending_deliveries ORDER BY run_id").all();
   const state = {
     schema: memory.store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get(),

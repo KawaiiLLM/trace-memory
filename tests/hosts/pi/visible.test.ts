@@ -22,7 +22,7 @@ const seedKnowledge = (h: ReturnType<typeof host>, text = "全局规则") => {
   const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: seed.id, createdAt: "now" },
     facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "规则", source: [`T${turn.id}#user`], createdAt: "now" }] });
   if (!noted.ok) throw new Error("seed");
-  const commit = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: seed.id, createdAt: "now" },
+  const commit = store.commitConsolidationRun({ run: { kind: "manual", sessionId: seed.id, createdAt: "now" },
     operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture",
       text, supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" }] });
   if (!commit.ok) throw new Error("seed");

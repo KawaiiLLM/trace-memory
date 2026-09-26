@@ -13,7 +13,7 @@ const fact = (h: Host, text: string) => {
   return recorded.facts[0]!.id;
 };
 const create = (h: Host, support: number, scope: "project" | "global", ...texts: string[]) => {
-  const result = h.memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: time },
+  const result = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: time },
     operations: texts.map((text, index) => ({ op: "create" as const, handle: `$k${Date.now()}${index}`, author: "fixture", text,
       category: "constraint" as const, scope, supports: [support], topics: [], reason: "record conclusion", createdAt: time })) });
   if (!result.ok) throw new Error(result.problems.join("; "));
@@ -27,7 +27,7 @@ const served = async (h: Host, prompt: string) => {
   return message;
 };
 async function seeded(config: Record<string, unknown> = {}) {
-  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9, ...config });
+  const h = host({ "noting.triggerTokens": 1e9, ...config });
   await h.prompt(); await h.answer();
   const support = fact(h, "use pnpm");
   create(h, support, "project", "Use pnpm.");
@@ -80,7 +80,7 @@ test("34c off pauses delivery; re-enable and project assignment only change the 
     const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: peer.id, createdAt: time }, facts: [
       { turnId: turn.id, category: "decision", actor: "user", text: "other", source: [`T${turn.id}#user`], createdAt: time }] });
     if (!noted.ok) throw new Error(noted.problems.join());
-    const committed = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: peer.id, createdAt: time }, operations: [
+    const committed = store.commitConsolidationRun({ run: { kind: "manual", sessionId: peer.id, createdAt: time }, operations: [
       { op: "create", handle: "$other", author: "peer", text: "Other project rule.", category: "constraint", scope: "project",
         supports: [noted.facts[0]!.id], topics: [], reason: "other", createdAt: time }] });
     expect(committed.ok).toBe(true);

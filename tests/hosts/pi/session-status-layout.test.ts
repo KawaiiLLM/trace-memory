@@ -425,7 +425,7 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     const toolLabel = `Tools ${(toolTokens / 1000).toFixed(1).replace(/\.0$/, "")}k (${(100 * toolTokens / total).toFixed(1)}%)`;
     const conversationLabel = `Conversation 12 (${(1200 / total).toFixed(1)}%)`;
     for (const phrase of ["Trace Memory · S1 · pi:pi-test · On", "███████░░░ 72% 36 / 50",
-      "Consolidation ░░░░░░░░░░", "global ░░░░░░░░░░", "project ░░░░░░░░░░", "session ░░░░░░░░░░",
+      "global ░░░░░░░░░░", "project ░░░░░░░░░░", "session ░░░░░░░░░░",
       "Estimated usage by category", toolLabel, conversationLabel, "Free 955.5k (95.5% of window)"])
       expect(squashed).toContain(phrase.replace(/\s+/g, ""));
     expect(seen).not.toContain("Difference");

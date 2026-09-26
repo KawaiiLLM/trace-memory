@@ -147,7 +147,7 @@ test("authenticated control reports actual applied snapshot, and failed apply le
     const snapshot = await executorSnapshot(f.config, f.session);
     expect(snapshot.config.worker?.phases.noting.thinking).toBe("high");
     expect(readCcMenu(f.config, f.session, snapshot.config, 10, snapshot.catchup).menu.notices)
-      .toContain("Catchup: waiting for noting (2/5 entries, 1/3 facts)");
+      .toContain("Catchup: waiting for noting (2/5 entries)");
     expect(snapshotReads).toBe(1);
     expect(catchupActions).toBe(0);
     const edited = editedCcConfig(f.text, "noting.thinking", "medium");

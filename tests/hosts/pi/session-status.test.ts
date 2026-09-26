@@ -171,7 +171,8 @@ test("no session, Off, zero and unavailable remain distinct; original actions an
   await h.turn();
   const before = changes(h), entries = structuredClone(h.entries), footer = h.statuses.get("trace-memory");
   title = await open(h);
-  expect(title).toContain("Consolidation ░░░░░░░░░░   0%   0 / 5k");
+  expect(title).not.toContain("Consolidation ░░░░░░░░░░");
+  expect(title).toContain("Dreaming");
   expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Stop", "Project…", "Runs…", "Settings…"]);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries); expect(h.statuses.get("trace-memory")).toBe(footer);
   await h.commands.get("trace").handler("off", h.ctx);
@@ -196,7 +197,7 @@ test("reopening replaces unavailable SDK capacity with the current valid estimat
 });
 
 test("repeated Dreaming pool reads show identical pending data without DB writes or grants", async () => {
-  const h = setup({ "noting.triggerTokens": 999999, "consolidation.triggerTokens": 4321 });
+  const h = setup({ "noting.triggerTokens": 999999 });
   await h.turn();
   const store = h.memory.store;
   const turn = store.listTurns(1)[0]!;
@@ -211,7 +212,7 @@ test("repeated Dreaming pool reads show identical pending data without DB writes
   h.memory.setKnowledgeBudget("project", 2468);
   const before = changes(h), entries = structuredClone(h.entries);
   const first = await open(h);
-  expect(first).toContain("/ 2.5k"); expect(first).toContain("/ 4.3k");
+  expect(first).toContain("/ 2.5k"); expect(first).not.toMatch(/^\s*Consolidation\s/m);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
   expect(await open(h)).toBe(first);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
@@ -258,7 +259,7 @@ test.each([false, true])("enrollment notices share only lightweight session word
     memory.status = coreStatus;
     memory.pendingTokens = (...params) => { measurements(...params); return pending(...params); };
     // Dreaming's own per-pool projection is a separate call; tag it the same way so the shared
-    // "measurements" trace still shows it fires exactly once, lazily, alongside noting/consolidation.
+    // "measurements" trace still shows it fires exactly once, lazily, alongside noting.
     memory.dreamingPending = (...params) => { measurements("dreaming", ...params); return dreaming(...params); };
     return memory;
   });
@@ -277,7 +278,7 @@ test.each([false, true])("enrollment notices share only lightweight session word
     expect(notice).not.toMatch(/Pending.*trigger|Pi rebuilt text estimate|Memory ~/);
     await command("");
     const body = h.notices.at(-1)!.split("\n/trace (menu;")[0]!;
-    expect(measurements.mock.calls.map(([phase]) => phase)).toEqual(["noting", "consolidation", "dreaming"]);
+    expect(measurements.mock.calls.map(([phase]) => phase)).toEqual(["noting", "dreaming"]);
     expect(census).toHaveBeenCalledTimes(1);
     // Toggle notices keep their lightweight legacy wording; the new panel uses the shared model.
     expect(body).toContain("Pending / trigger");

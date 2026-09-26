@@ -485,7 +485,7 @@ test("43d provisional first prompt injects global knowledge without allocating o
     facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "global rule",
       source: [`T${turn.id}#user`], createdAt: time(0) }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const committed = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, createdAt: time(0) },
+  const committed = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: time(0) },
     operations: [{ op: "create", topics: [], reason: "fixture", handle: "$global", author: "fixture",
       text: "global knowledge before first reply", supports: [noted.facts[0]!.id], createdAt: time(0),
       category: "constraint", scope: "global" }] });
