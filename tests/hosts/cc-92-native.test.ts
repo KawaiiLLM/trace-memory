@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { sourceSeededMemory } from "../source-fixture.ts";
@@ -99,6 +99,12 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
     });
     try {
       const outcome = await memory.noting({ ...path, model: "sonnet", mode: "subagent" });
+      const evidenceDir = process.env.TM92_NATIVE_EVIDENCE_DIR;
+      if (evidenceDir) {
+        mkdirSync(evidenceDir, { recursive: true });
+        writeFileSync(join(evidenceDir, `${variant}.requests.json`), JSON.stringify(requests, null, 2) + "\n");
+        if (nativeLog) writeFileSync(join(evidenceDir, `${variant}.jsonl`), readFileSync(nativeLog));
+      }
       expect(checkpointError).toBeUndefined();
       expect(observed, JSON.stringify(outcome)).toBe(true);
       expect(requests).toHaveLength(steps.length + 1);
@@ -106,14 +112,24 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
       expect(outcome.outcome, JSON.stringify(outcome)).toBe(succeeded ? "success" : "bounced");
       const facts = memory.store.listSessionFacts(session.id);
       expect(facts).toHaveLength((variant === "nine-corrected" ? 9 : succeeded ? 1 : 0) + (variant === "nine-corrected" ? 1 : 0));
-      expect(entries.every(e => memory.store.entryNoted(e.id))).toBe(succeeded);
+      for (const entry of entries) expect(memory.store.entryNoted(entry.id), `entry ${entry.id} processed in ${variant}`).toBe(succeeded);
       if (variant === "nine-corrected") {
         const current = memory.store.currentKnowledge(path);
         expect(current).toHaveLength(2);
-        expect(current.find(k => k.knowledge.id === Number(tag.match(/^K(\d+)/)![1]))!.revision.supports).toEqual([oldId, facts.find(f => f.text === "Corrected ninth episode")!.id]);
-        expect(current.find(k => k.revision.category === "open")!.revision.supports).toEqual([facts.find(f => f.text === "Episode 1")!.id]);
+        const ninth = facts.find(f => f.text === "Corrected ninth episode")!;
+        expect(ninth.source).toEqual(["T2#E1"]);
+        const updated = current.find(k => k.knowledge.id === Number(tag.match(/^K(\d+)/)![1]))!.revision;
+        expect(updated.text).toBe("Claude Code retains the user rule");
+        expect(updated.supports).toEqual([oldId, ninth.id]);
+        const speculative = current.find(k => k.revision.category === "open")!.revision;
+        expect(speculative.text).toBe("Claude Code suggests a possible explanation, not a confirmed finding");
+        expect(speculative.supports).toEqual([facts.find(f => f.text === "Episode 1")!.id]);
       } else expect(memory.store.currentKnowledge(path)).toHaveLength(0);
-      if (variant === "corrected-block") expect(facts[0]!.roles).toEqual([{ role: "assistant", harness: "Claude Code" }]);
+      if (variant === "corrected-block") {
+        expect(facts[0]!.text).toBe("Claude Code corrected whole entry");
+        expect(facts[0]!.source).toEqual(["T2#E2"]);
+        expect(facts[0]!.roles).toEqual([{ role: "assistant", harness: "Claude Code" }]);
+      }
       expect(nativeLog && existsSync(nativeLog), JSON.stringify(outcome)).toBe(true);
       const transcript = readFileSync(nativeLog!, "utf8");
       expect(transcript).toContain("mcp__trace_memory__note");
