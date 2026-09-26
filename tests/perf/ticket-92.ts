@@ -1,5 +1,6 @@
 // Offline, task-local benchmark: run under /tmp/tm-with-suite-lock.sh with an output directory.
 import { copyFileSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { TraceMemory, noVisibility, type RunAgent } from "../../src/core/api/index.ts";
@@ -16,7 +17,8 @@ const lengths = [200, 2_000];
 const repeats = 6; // first sample cold, five warm; no sample discarded
 const quantiles = (samples: number[]) => {
   const sorted = [...samples].sort((a, b) => a - b);
-  return { min: sorted[0], median: sorted[Math.floor(sorted.length / 2)], max: sorted.at(-1) };
+  const middle = Math.floor(sorted.length / 2);
+  return { min: sorted[0], median: sorted.length % 2 ? sorted[middle] : (sorted[middle - 1]! + sorted[middle]!) / 2, max: sorted.at(-1) };
 };
 function counters() {
   const raw = countSourceReads(), hydrated = countHydratedRows(), graphs = countGraphResolutions(), paths = countPathSnapshots();
@@ -121,12 +123,13 @@ if (!process.argv.includes("--fixed-only")) for (const length of lengths) {
       count.reset(); const started = performance.now();
       const result = await local.noting({ ...target, mode: "subagent" });
       const totalMs = performance.now() - started;
+      const measuredWork = count.value();
       if (result.outcome !== "success") throw Error(`real N failed: ${JSON.stringify(result)}`);
       const facts = local.store.listSessionFacts(target.sessionId).length - fixture.factCount;
       const revisions = Number((local.store.db.prepare("SELECT count(*) n FROM knowledge_revisions").get() as { n: number }).n) - terminalBaseRevisions;
       const processed = pending.filter(entry => local!.store.entryNoted(entry.id)).length;
       if (facts !== 1 || revisions !== 1 || processed === 0) throw Error(`terminal not published: ${JSON.stringify({ facts, revisions, processed })}`);
-      terminal.push({ totalMs, commitMs, work: count.value(), facts, revisions, processed });
+      terminal.push({ totalMs, commitMs, work: measuredWork, facts, revisions, processed });
     } finally { count.restore(); local.close(); rmSync(copy, { force: true }); }
   }
   measurements.push({ name: "real N admitted + scripted tools + atomic terminal", size: length,
@@ -134,7 +137,7 @@ if (!process.argv.includes("--fixed-only")) for (const length of lengths) {
     warmDistributionMs: quantiles(terminal.slice(1).map(item => item.totalMs)),
     commitMs: terminal.map(item => item.commitMs), commitDistributionMs: quantiles(terminal.map(item => item.commitMs)),
     work: terminal.map(item => item.work), published: terminal.map(({ facts, revisions, processed }) => ({ facts, revisions, processed })), ...inventory,
-    note: "scripted in-process provider; total is core + scripted calls, not native/model latency or model quality" });
+    note: "scripted in-process provider; total/work stop at noting return, before publication assertions; commitMs times Store.commitNotingRun only, including its transaction; no native/model latency or model quality" });
   const appendMemory = TraceMemory(db, async () => { throw new Error("provider unexpectedly called"); });
   const appendStore = appendMemory.store;
   const counter = counters(), times: number[] = [], work: ReturnType<typeof counter.value>[] = [];
@@ -258,7 +261,7 @@ for (const length of lengths) {
       coldMs: times[0], warmMs: times.slice(1), warmDistributionMs: quantiles(times.slice(1)), work, phases,
       material, ...inventory });
   } finally { memory.close(); }
-  const terminal: { totalMs: number; commitMs: number; work: ReturnType<ReturnType<typeof counters>["value"]> }[] = [];
+  const terminal: { totalMs: number; commitMs: number; work: ReturnType<ReturnType<typeof counters>["value"]>; facts: number; revisions: number; processed: number }[] = [];
   for (let i = 0; i < repeats; i++) {
     const copy = join(output, `fixed-task-${length}-${i}.db`);
     copyFileSync(db, copy);
@@ -276,6 +279,8 @@ for (const length of lengths) {
       return { outcome: "success", output: "done", request };
     };
     local = TraceMemory(copy, agent);
+    const previousFactIds = new Set(local.store.listSessionFacts(path.sessionId).map(fact => fact.id));
+    const previousRevisionIds = new Set(local.store.listKnowledgeRevisions().map(revision => revision.id));
     const original = local.store.commitNotingRun.bind(local.store);
     local.store.commitNotingRun = (input => { const start = performance.now(); const result = original(input);
       commitMs = performance.now() - start; return result; }) as typeof local.store.commitNotingRun;
@@ -283,20 +288,29 @@ for (const length of lengths) {
     try {
       count.reset(); const start = performance.now(); const result = await local.noting({ ...path, mode: "subagent" });
       const totalMs = performance.now() - start;
+      const measuredWork = count.value();
       if (result.outcome !== "success" || local.pendingEntries(path.sessionId, path.branch, path.headTurnId).length)
         throw Error(`fixed N terminal failed: ${JSON.stringify(result)}`);
-      terminal.push({ totalMs, commitMs, work: count.value() });
+      const newFacts = local.store.listSessionFacts(path.sessionId).filter(fact => !previousFactIds.has(fact.id));
+      const newRevisions = local.store.listKnowledgeRevisions().filter(revision => !previousRevisionIds.has(revision.id));
+      const processed = added.filter(id => local!.store.entryNoted(id)).length;
+      if (newFacts.length !== 1 || newRevisions.length !== 1 || processed !== 3 ||
+          newRevisions[0]!.supports.length !== 1 || newRevisions[0]!.supports[0] !== newFacts[0]!.id)
+        throw Error(`fixed N publication mismatch: ${JSON.stringify({ newFacts, newRevisions, processed })}`);
+      terminal.push({ totalMs, commitMs, work: measuredWork, facts: newFacts.length, revisions: newRevisions.length, processed });
     } finally { count.restore(); local.close(); rmSync(copy, { force: true }); }
   }
   measurements.push({ name: "controlled 3 pending / real N + atomic terminal", size,
     coldMs: terminal[0]!.totalMs, warmMs: terminal.slice(1).map(value => value.totalMs),
     warmDistributionMs: quantiles(terminal.slice(1).map(value => value.totalMs)),
     commitMs: terminal.map(value => value.commitMs), commitDistributionMs: quantiles(terminal.map(value => value.commitMs)),
-    work: terminal.map(value => value.work), ...inventory,
-    note: "scripted in-process provider; commitMs instruments Store.commitNotingRun only" });
+    work: terminal.map(value => value.work), published: terminal.map(({ facts, revisions, processed }) => ({ facts, revisions, processed })), ...inventory,
+    note: "scripted in-process provider; total/work stop at noting return before publication assertions; commitMs instruments Store.commitNotingRun including its transaction only" });
   rmSync(db, { force: true });
 }
-const report = { candidate: "7701155498f5f13f5e9dad538887c74e981a4f90", node: process.version,
+const report = { candidate: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+  dirty: execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=normal"], { encoding: "utf8" }).trim().length > 0,
+  implementationBase: "7701155498f5f13f5e9dad538887c74e981a4f90", node: process.version,
   warmup: "first cold, next five warm on same store; terminal uses six independent identical DB copies; no discarded samples",
   measurements };
 writeFileSync(join(output, process.argv.includes("--fixed-only") ? "ticket-92-fixed-results.json" : "ticket-92-results.json"), JSON.stringify(report, null, 2));
