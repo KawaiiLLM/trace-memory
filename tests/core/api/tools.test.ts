@@ -1,4 +1,3 @@
-import { recorded } from "../../source-fixture.ts";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, toolRejected, type NotingAgentInput, type RunAgent, type ToolContext } from "../../source-fixture.ts";
 
@@ -63,7 +62,7 @@ test("a rejected Noting batch can be corrected in the same provider loop", async
   expect(memory.store.listSessionFacts(1)).toHaveLength(2);
 });
 
-test("manual input and result are the run request and response; facts enter the branch at once and Consolidation ranges once their turn is recorded, without advancing Noting", async () => {
+test("manual input and result are audited; facts enter the branch without advancing Noting", () => {
   const input = { facts: [fact()] };
   const result = memory.tools(manual())[2]!.execute(input);
   const run = memory.store.listRuns(1)[0]!;
@@ -72,13 +71,7 @@ test("manual input and result are the run request and response; facts enter the 
   expect(memory.store.listSourceEntries(1).some(e => memory.store.entryNoted(e.id))).toBe(false);
   expect(memory.store.listBranchFacts(1, "main").map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "sibling")).toEqual([]);
-  let range: unknown;
-  agent = async raw => { range = (raw as { range: unknown }).range; return { outcome: "cancelled", output: "test", request: {} }; };
-  // The unrecorded-Turn gate is superseded by 17b on 2026-09-08; committed facts are eligible.
-  expect((await memory.consolidate({ sessionId: 1, branch: "main" })).outcome).toBe("cancelled");
-  recorded(memory, 1, "main", 1);
-  await memory.consolidate({ sessionId: 1, branch: "main" });
-  expect(range).toMatchObject({ facts: [{ id: 1 }] });
+  expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
 });
 
 test("source time follows the first source, including tool sources; all sources are checked", () => {
@@ -153,13 +146,13 @@ test("reads reach any project's evidence; write sources stay bound to the sessio
 });
 
 
-test("manual facts belong to their turn: a branch whose path includes that turn consolidates them", async () => {
+test("manual facts belong to their turn on every branch containing that turn", async () => {
   memory.tools(manual(1, 1, "A"))[2]!.execute({ facts: [fact()] });
   await memory.noting({ sessionId: 1, branch: "B", headTurnId: 1 });
   expect(memory.store.listBranchFacts(1, "A").map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "B", 1).map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "C")).toEqual([]); // no path known for C
-  expect((await memory.consolidate({ sessionId: 1, branch: "B", headTurnId: 1 })).outcome).not.toBe("empty");
+  expect(memory.store.listConsolidatedProjectFacts(1)).toEqual([]);
 });
 
 test("reads return every knowledge item while injection still applies the scope rule", () => {
@@ -172,7 +165,7 @@ test("reads return every knowledge item while injection still applies the scope 
   for (const sessionId of [1, 2, 3]) {
     const note = memory.tools(manual(sessionId, sessionId))[2]!;
     note.execute({ facts: [fact(`T${sessionId}#E1`)] });
-    memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: "now" }, operations:
+    memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: "now" }, operations:
       (["global", "project", "session"] as const).map((scope, i) => ({ op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "understanding" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
   const [trace, search] = memory.tools(manual());

@@ -1,14 +1,13 @@
 import { readHandle } from "../../read-handle-fixture.ts";
-import { recorded } from "../../source-fixture.ts";
 import { afterEach, expect, test } from "vitest";
-import { sourceSeededMemory, type ConsolidationAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 let memory: ReturnType<typeof sourceSeededMemory>, admittedScenarios: AdmittedDreamerScenarios, triggerEntryId: number;
 afterEach(() => memory?.close());
 const create = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
 const batch = { operations: [create], skipped: [] };
-function setup(agent: (input: ConsolidationAgentInput) => Promise<RunAgentResult>) {
-  admittedScenarios = new AdmittedDreamerScenarios(raw => agent(raw as ConsolidationAgentInput));
+function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>) {
+  admittedScenarios = new AdmittedDreamerScenarios(raw => agent(raw as NotingAgentInput));
   memory = sourceSeededMemory(":memory:", admittedScenarios.agent);
   const project = memory.store.createProject({ name: "test", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
@@ -18,18 +17,18 @@ function setup(agent: (input: ConsolidationAgentInput) => Promise<RunAgentResult
   triggerEntryId = entries.at(-1)!.id;
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   tools[2]!.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] });
-  recorded(memory, s.id, "main", t.id); // T1 recorded: its facts may enter an Consolidation batch
   return tools[3]!;
 }
 const success = (): RunAgentResult => ({ outcome: "success", output: "Done", request: { last: true } });
-const integrate = () => memory.consolidate({ sessionId: 1, branch: "main" });
+const integrate = () => memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
 const read = (id: number, version = 1) => readHandle(memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }), `K${id}@v${version}`);
 const dreamPath = () => ({ sessionId: 1, branch: "main", headTurnId: 1, triggerEntryId });
 
 test("payload-free acknowledgement preserves explicit native request-audit unavailability", async () => {
   setup(async input => {
     input.acknowledgeRequest();
-    expect(JSON.parse(input.tools[3]!.execute(batch)).committed).toHaveLength(1);
+    input.tools[2]!.execute({ facts: [] });
+    expect(JSON.parse(input.tools[3]!.execute(batch)).held).toHaveLength(1);
     return { outcome: "success", output: "done", audit: { available: false, reason: "native request body unavailable" } };
   });
   const result = await integrate();
@@ -39,58 +38,70 @@ test("payload-free acknowledgement preserves explicit native request-audit unava
   expect(JSON.parse(run.response!)).toMatchObject({ usage: null, audit: { available: false }, problems: [] });
 });
 
-test("Consolidation stopping after its first valid batch keeps the committed batch and receipt", async () => {
-  setup(async input => { input.reportRequest({ first: true }); input.tools[3]!.execute(batch); return success(); });
+test("N publishes its held batch only on normal terminal success", async () => {
+  setup(async input => {
+    input.reportRequest({ first: true });
+    input.tools[2]!.execute({ facts: [] });
+    expect(input.tools[3]!.execute(batch)).toContain("held");
+    expect(memory.store.getKnowledge(1)).toBeNull();
+    expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
+    return success();
+  });
   const result = await integrate();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(memory.store.getKnowledge(1)).not.toBeNull();
-  expect(memory.store.listConsolidatedProjectFacts(1)).toEqual([expect.objectContaining({ id: 1 })]);
+  expect(memory.pendingEntries(1, "main", 1)).toEqual([]);
+  expect(memory.store.listConsolidatedProjectFacts(1)).toEqual([]);
   const audit = JSON.parse(memory.store.getRun(result.runId)!.response!);
-  expect(audit.toolCalls[0].input).toEqual(batch);
-  expect(JSON.parse(audit.toolCalls[0].result).committed).toHaveLength(1);
+  expect(audit.toolCalls[1].input).toEqual(batch);
+  expect(JSON.parse(audit.toolCalls[1].result).held).toHaveLength(1);
 });
 
 test("a rejected batch can be corrected before the first valid submission", async () => {
   setup(async input => {
     const write = input.tools[3]!; input.reportRequest({ first: true });
+    input.tools[2]!.execute({ facts: [] });
     expect(write.execute({ operations: [{ ...create, supports: [] }], skipped: [] })).toContain("rejected:");
     expect(memory.store.getKnowledge(1)).toBeNull();
     input.reportRequest({ second: true });
-    expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
+    expect(JSON.parse(write.execute({ ...batch, operations: [{ ...create, slot: "M1" }] })).held).toHaveLength(1);
     return success();
   });
   expect((await integrate()).outcome).toBe("success");
   expect(memory.store.getKnowledge(2)).toBeNull();
 });
 
-for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`Consolidation ${mode} after commit only appends a problem`, async () => {
+for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`N ${mode} after staging publishes nothing`, async () => {
   setup(async input => {
     input.reportRequest({ provider: "captured" });
-    input.tools[3]!.execute(batch);
-    const run = memory.store.listRuns(1).at(-1)!;
-    expect(run.outcome).toBe("success"); expect(JSON.parse(run.response!).toolCalls).toHaveLength(1);
+    input.tools[2]!.execute({ facts: [{ text: "Additional evidence", source: ["T1#E1"] }] });
+    expect(input.tools[3]!.execute(batch)).toContain("held");
+    expect(memory.store.getKnowledge(1)).toBeNull();
     if (mode === "throw" || mode === "abort") { const error = new Error("late provider error"); if (mode === "abort") error.name = "AbortError"; throw error; }
     return { outcome: mode, output: "late provider error", request: { final: true } };
   });
   const result = await integrate();
-  if (result.outcome !== "success") throw new Error("commit is success");
-  expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
-  expect(memory.store.consolidatedOnPath(1, memory.store.knowledgePath(1, "main"))).toBe(true);
+  const expected = mode === "cancelled" || mode === "abort" ? "cancelled" : "failure";
+  expect(result.outcome).toBe(expected);
+  if (result.outcome !== "failure" && result.outcome !== "cancelled") throw new Error("expected no publication");
+  expect(memory.store.currentCommit(1)).toEqual([]);
+  expect(memory.store.listSessionFacts(1)).toHaveLength(1);
+  expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
   const run = memory.store.getRun(result.runId)!;
-  expect(run.outcome).toBe("success"); expect(JSON.parse(run.response!).problems).toEqual(["late provider error"]);
+  expect(run.outcome).toBe(expected); expect(JSON.parse(run.response!).problems).toEqual(["late provider error"]);
   expect(JSON.parse(run.request!)).toEqual(mode === "throw" || mode === "abort" ? { provider: "captured" } : { final: true });
 });
 
-for (const mode of ["failure", "cancelled"] as const) test(`Consolidation ${mode} before commit advances nothing`, async () => {
+for (const mode of ["failure", "cancelled"] as const) test(`N ${mode} before staging advances nothing`, async () => {
   setup(async () => ({ outcome: mode, output: "stopped", request: {} }));
   expect((await integrate()).outcome).toBe(mode);
   expect(memory.store.getKnowledge(1)).toBeNull(); expect(memory.store.listConsolidatedProjectFacts(1)).toEqual([]);
 });
 
-test("Consolidation normal stop without a submission succeeds with zero knowledge", async () => {
+test("N normal stop without explicit tools is incomplete", async () => {
   setup(async () => success()); const result = await integrate();
-  expect(result.outcome).toBe("success"); expect(memory.store.getKnowledge(1)).toBeNull();
-  expect(memory.store.consolidatedOnPath(1, memory.store.knowledgePath(1, "main"))).toBe(true);
+  expect(result.outcome).toBe("failure"); expect(memory.store.getKnowledge(1)).toBeNull();
+  expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
 });
 
 test("memory rejects malformed items, obsolete fields and invisible evidence without losing ordered results", () => {
@@ -107,15 +118,22 @@ test("memory rejects malformed items, obsolete fields and invisible evidence wit
   expect(tool.execute({ operations: [{ ...create, supports: ["F2"] }], skipped: [] })).toContain("not an available fact");
 });
 
-test("skipped validates its range, reason and shape atomically", async () => {
+test("N rejects retired fact skips without publishing a valid sibling operation", async () => {
   setup(async input => {
     for (const skipped of [null, { fact: "F999", because: "not durable" }, { fact: "F1", because: "" }, { fact: "F1", because: "skip", id: "F1" }]) {
       expect(input.tools[3]!.execute({ operations: [create], skipped: [skipped] })).toContain("rejected:");
       expect(memory.store.getKnowledge(1)).toBeNull();
     }
-    input.tools[3]!.execute(batch); input.reportRequest({ second: true }); input.tools[3]!.execute(batch); return success();
+    input.tools[2]!.execute({ facts: [] });
+    return success();
   });
-  expect((await integrate()).outcome).toBe("success");
+  const result = await integrate();
+  expect(result.outcome, JSON.stringify(result)).toBe("failure");
+  if (result.outcome !== "failure") throw new Error("expected incomplete rejected batch");
+  expect(result.problems.join(" ")).toContain("memory expects operations, optional drop, and skipped: []");
+  expect(result.problems.join(" ")).toContain("incomplete Noting");
+  expect(memory.store.getKnowledge(1)).toBeNull();
+  expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
 });
 
 test("manual memory accepts create and archive but rejects Dreamer maintenance operations", () => {
@@ -129,21 +147,28 @@ test("manual memory accepts create and archive but rejects Dreamer maintenance o
   expect(JSON.parse(write.execute({ operations: [{ op: "archive", reason: "Retired by the user.", id: read(1), supports: ["F1"] }], skipped: [] })).committed).toHaveLength(1);
 });
 
-test("2026-09-07: an audit update that fails after the commit is reported, not turned into a business failure", async () => {
-  let done = false;
+test("N terminal success-audit failure rolls back facts, knowledge and Raw progress", async () => {
   setup(async input => {
-    input.reportRequest({ first: true }); input.tools[3]!.execute(batch);
-    input.reportRequest({ second: true }); input.tools[3]!.execute(batch);
-    done = true; return success();
+    input.reportRequest({ first: true });
+    expect(input.tools[2]!.execute({ facts: [{ text: "New evidence", source: ["T1#E1"] }] })).toContain("held");
+    expect(input.tools[3]!.execute({ operations: [{ ...create, supports: ["$1"] }], skipped: [] })).toContain("held");
+    return success();
   });
-  const original = memory.store.updateRun.bind(memory.store);
-  memory.store.updateRun = ((...args: Parameters<typeof original>) => { if (done) throw new Error("disk full"); return original(...args); }) as typeof original;
+  memory.store.db.exec(`CREATE TEMP TRIGGER reject_success_audit BEFORE INSERT ON runs
+    WHEN NEW.outcome = 'success' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`);
   const result = await integrate();
-  expect(result.outcome).toBe("success");
-  if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.problems).toEqual(["audit update failed after commit: Error: disk full"]);
-  expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
-  expect(memory.store.getRun(result.runId)!.outcome).toBe("success");
+  expect(result.outcome).toBe("failure");
+  if (result.outcome !== "failure") throw new Error("expected terminal failure");
+  expect(result.problems.join(" ")).toContain("audit unavailable");
+  expect(memory.store.getKnowledge(1)).toBeNull();
+  expect(memory.store.listSessionFacts(1)).toHaveLength(1);
+  expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
+  expect(memory.store.getRun(result.runId)!.outcome).toBe("failure");
+  memory.store.db.exec("DROP TRIGGER reject_success_audit");
+  expect((await integrate()).outcome).toBe("success");
+  expect(memory.store.listSessionFacts(1)).toHaveLength(2);
+  expect(memory.store.currentCommit(1)[0]!.supports).toEqual([2]);
+  expect(memory.pendingEntries(1, "main", 1)).toEqual([]);
 });
 
 // ---- 21a 2026-09-08: one evidence list per knowledge commit, with a reason as its message ----
@@ -194,14 +219,11 @@ test("21a 2026-09-08: a commit-level because is rejected by name, also beside a 
       expect(result.results[0]).toContain('supply "reason"');
       expect(memory.store.getKnowledge(1)).toBeNull();
     }
-    // The declined-fact protocol keeps its own textual because unchanged.
-    const declined = { operations: [], skipped: [{ fact: "F1", because: "Not durable on its own." }] };
-    expect(write.execute(declined)).toContain("feedback");
-    input.reportRequest({ second: true });
-    expect(JSON.parse(write.execute(declined)).results).toEqual(["ok"]);
+    // Invalid held slots cannot be hidden by normal provider termination.
+    input.tools[2]!.execute({ facts: [] });
     return success();
   });
-  expect((await integrate()).outcome).toBe("success");
+  expect((await integrate()).outcome).toBe("bounced");
 });
 
 test("21a 2026-09-08: one supports list holds both the text's grounds and the fact that prompted the change", async () => {

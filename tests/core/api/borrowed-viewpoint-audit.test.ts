@@ -1,10 +1,10 @@
 import { expect, test } from 'vitest';
-import { sourceSeededMemory, recorded, type RunAgent, type NotingAgentInput, type ConsolidationAgentInput } from '../../source-fixture.ts';
+import { sourceSeededMemory, recorded, type RunAgent, type NotingAgentInput } from '../../source-fixture.ts';
 
 const at = '2026-09-01T00:00:00.000Z';
-type Worker = NotingAgentInput | ConsolidationAgentInput;
-function fixture(agent: RunAgent, phase: 'noting' | 'consolidation', dead = false) {
-  const memory = sourceSeededMemory(':memory:', agent, { noting: { triggerTokens: 1 }, consolidation: { triggerTokens: 1 } });
+type Worker = NotingAgentInput;
+function fixture(agent: RunAgent) {
+  const memory = sourceSeededMemory(':memory:', agent, { noting: { triggerTokens: 1 } });
   const s = memory.store;
   const project = s.createProject({name:'target-project',declaredBy:'mark'});
   const target = s.createSession({host:'target',projectId:project.id,startedAt:at,firstReplyAt:at,enrollmentChoice:true});
@@ -32,11 +32,9 @@ function fixture(agent: RunAgent, phase: 'noting' | 'consolidation', dead = fals
   const executorKnowledge=memory.tools({kind:'manual',sessionId:executor.id,branch:'main',currentTurnId:ex.id})[3]!.execute({operations:[{op:'create',category:'constraint',scope:'session',text:'EXECUTOR_PRIVATE_KNOWLEDGE',supports:[`F${exFact.id}`],topics:[],reason:'seed executor-only knowledge'}],skipped:[]});
   if(executorKnowledge.includes('rejected:'))throw Error(executorKnowledge);
   recorded(memory,target.id,'old',root.id);
-  const oldFact=phase==='consolidation'?fact(target.id,'old',old.id,'OLD_TARGET_EVIDENCE'):undefined;
-  if(phase==='consolidation')recorded(memory,target.id,'old',old.id);
   // Both execution modes must be admitted on the active target. Dead-path admission is forbidden.
   const livePath=s.knowledgePath(target.id,'live',live.id);
-  return {memory,s,target,executor,root,old,live,ex,rootFact,oldFact,liveFact,oldIds,liveIds,livePath};
+  return {memory,s,target,executor,root,old,live,ex,rootFact,liveFact,oldIds,liveIds,livePath};
 }
 function material(input:Worker) {
   return {kind:input.kind,sessionId:input.sessionId,branch:input.branch,range:input.range,
@@ -44,7 +42,7 @@ function material(input:Worker) {
     model:input.model,mode:input.mode,
     tools:input.tools.map(({name,description,parameters})=>({name,description,parameters}))};
 }
-async function execute(phase:'noting'|'consolidation',borrowed:boolean,dead:boolean) {
+async function execute(borrowed:boolean,dead:boolean) {
   let f:ReturnType<typeof fixture>;let captured:ReturnType<typeof material>|undefined;
   const checks:string[]=[];
   const agent:RunAgent=async raw=>{
@@ -58,7 +56,7 @@ async function execute(phase:'noting'|'consolidation',borrowed:boolean,dead:bool
     // Exact fact reads stay legal, but must not turn a sibling into a valid citation.
     const historical = trace.execute({address:`F${f.liveFact.id}`,itemBudget:null});
     expect(historical, historical).toContain('SIBLING_MUST_NOT_LEAK');
-    if(phase==='noting') {
+    {
       const note=input.tools.find(t=>t.name==='note')!;
       const bad=note.execute({facts:[{text:'wrong sibling',source:[`T${f.live.id}#E1`]}]});
       expect(bad).toContain('rejected:');checks.push('sibling Raw citation rejected');
@@ -66,36 +64,38 @@ async function execute(phase:'noting'|'consolidation',borrowed:boolean,dead:bool
       expect(badExecutor).toContain('rejected:');checks.push('executor Raw citation rejected');
       const batch={facts:[{slot:'$1',text:'Recorded target statement',source:[`T${f.old.id}#E1`]}]};
       let receipt=note.execute(batch);
-      input.tools.find(t=>t.name==='memory')!.execute({operations:[],skipped:[]});
       expect(receipt).not.toContain('rejected:');
-    } else {
+    }
+    {
       const write=input.tools.find(t=>t.name==='memory')!;
       const base = `K1#${f.s.versionTag(1, 1)}`;
       expect(trace.execute({address:'K1@v1',itemBudget:null,toolCallBudget:null,toolResultBudget:null})).toContain(base);
       const op={op:'update',id:base,category:'constraint',scope:'project',text:'OLD_BRANCH_RESULT',topics:[],reason:'target evidence changes the rule'};
       const bad=write.execute({operations:[{...op,supports:[`F${f.liveFact.id}`]}],skipped:[]});
       expect(bad).toContain('rejected:');checks.push('sibling fact citation rejected');
-      const receipt=write.execute({operations:[{...op,supports:[`F${f.oldFact!.id}`]},
+      const receipt=write.execute({operations:[{...op,slot:'M1',supports:['$1'] },
         {op:'create',category:'constraint',scope:'project',text:'SHARED_ANCESTOR_RESULT',topics:[],reason:'shared ancestor remains on active path',supports:[`F${f.rootFact.id}`]}],skipped:[]});
-      expect(receipt).toContain('committed');
+      expect(receipt).toContain('held');
+      expect(f.s.currentCommit(1)[0]!.text).toBe('ROOT_KNOWLEDGE');
+      expect(f.s.listSessionFacts(f.target.id).some(fact=>fact.text==='Recorded target statement')).toBe(false);
     }
     return {outcome:'success',output:'offline deterministic submission',request:{offlineAudit:true}};
   };
-  f=fixture(agent,phase,dead);
+  f=fixture(agent);
   try {
     if(borrowed)f.s.closeSession(f.target.id);
     const input={sessionId:f.target.id,branch:'old',headTurnId:f.old.id,triggerEntryId:f.oldIds.at(-1)!,
       executorSessionId:borrowed?f.executor.id:f.target.id,borrowed,automatic:true,model:'same-offline-model',mode:'subagent' as const};
-    const result=await (phase==='noting'?f.memory.noting(input):f.memory.consolidate(input));
+    const result=await f.memory.noting(input);
     expect(result.outcome,JSON.stringify(result)).toBe('success');
     const run=f.s.listRuns(f.target.id).at(-1)!;
     expect(run.sessionId).toBe(f.target.id);expect(run.branch).toBe('old');
-    expect(f.s.listRuns(f.executor.id).filter(r=>r.kind===phase)).toHaveLength(0);
+    expect(f.s.listRuns(f.executor.id).filter(r=>r.kind==='noting')).toHaveLength(0);
     const cursor=f.s.db.prepare('SELECT branch,head_turn_id FROM session_lineage_cursors WHERE session_id=?').get(f.target.id);
     expect(cursor?.branch).toBe('old');
     if(dead)f.s.publishSourcePath(f.target.id,'live',f.liveIds,f.live.id,'target');
     const revisions=f.s.db.prepare('SELECT knowledge_id,parent_id,text,category,scope,supports,op FROM knowledge_revisions WHERE run_id=? ORDER BY id').all(run.id);
-    if(phase==='consolidation') {
+    {
       const current=f.s.currentKnowledge(f.livePath);
       if(dead){expect(current.some(k=>k.revision.text==='OLD_BRANCH_RESULT')).toBe(false);expect(current.some(k=>k.revision.text==='ROOT_KNOWLEDGE')).toBe(true);}
       else expect(current.some(k=>k.revision.text==='OLD_BRANCH_RESULT')).toBe(true);
@@ -106,7 +106,7 @@ async function execute(phase:'noting'|'consolidation',borrowed:boolean,dead:bool
     return {captured,checks,facts,revisions};
   } finally {f.memory.close();}
 }
-for(const phase of ['noting','consolidation'] as const)for(const dead of [false,true])test(`${phase}: own versus borrowed active target has identical material and writes ${dead?'after later withdrawal':'while active'}`,async()=>{
-  const own=await execute(phase,false,dead),borrowed=await execute(phase,true,dead);
+for(const dead of [false,true])test(`joint N: own versus borrowed active target has identical material and writes ${dead?'after later withdrawal':'while active'}`,async()=>{
+  const own=await execute(false,dead),borrowed=await execute(true,dead);
   expect(borrowed).toEqual(own);
 });

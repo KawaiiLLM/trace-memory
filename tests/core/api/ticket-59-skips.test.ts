@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
-import { consolidationToolDefinitions, dreamingToolDefinitions, toolDefinitions, validateReadInput } from "../../../src/core/api/tools.ts";
+import { dreamingToolDefinitions, toolDefinitions, validateReadInput } from "../../../src/core/api/tools.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -35,7 +35,6 @@ test("59/68: the memory schema branches on phase and says accepted Dreamer skips
     ((definitions.find(t => t.name === "memory")!.parameters.properties as any).skipped.items) as { required: string[]; properties: Record<string, unknown> };
   expect(items(dreamingToolDefinitions()).required).toEqual(["knowledge", "because"]);
   expect(items(dreamingToolDefinitions()).properties.knowledge).toEqual({ type: "string", pattern: "^K[1-9][0-9]*@v[1-9][0-9]*$" });
-  expect(items(consolidationToolDefinitions()).required).toEqual(["fact", "because"]);
   expect(items(toolDefinitions as any).required).toEqual(["fact", "because"]);
   expect(dreamingToolDefinitions().find(t => t.name === "memory")!.description)
     .toContain("skipped uses an exact untagged K@vN history address for a frozen version that was deliberated and intentionally left unchanged; it requires no full-body read and grants no mutation authority; it marks that version processed without changing it");
