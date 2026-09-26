@@ -99,12 +99,10 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
     });
     try {
       const outcome = await memory.noting({ ...path, model: "sonnet", mode: "subagent" });
-      const evidenceDir = process.env.TM92_NATIVE_EVIDENCE_DIR;
-      if (evidenceDir) {
-        mkdirSync(evidenceDir, { recursive: true });
-        writeFileSync(join(evidenceDir, `${variant}.requests.json`), JSON.stringify(requests, null, 2) + "\n");
-        if (nativeLog) writeFileSync(join(evidenceDir, `${variant}.jsonl`), readFileSync(nativeLog));
-      }
+      const evidenceDir = join(tmpdir(), "tm92-native-evidence");
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, `${variant}.requests.json`), JSON.stringify(requests, null, 2) + "\n");
+      if (nativeLog) writeFileSync(join(evidenceDir, `${variant}.jsonl`), readFileSync(nativeLog));
       expect(checkpointError).toBeUndefined();
       expect(observed, JSON.stringify(outcome)).toBe(true);
       expect(requests).toHaveLength(steps.length + 1);
