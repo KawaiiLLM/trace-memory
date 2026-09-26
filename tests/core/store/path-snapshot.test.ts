@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { historicalConsolidation } from "../../noting-knowledge-fixture.ts";
 import { sourceSeededMemory, hydrate } from "../../source-fixture.ts";
 import { Store, type KnowledgePath } from "../../../src/core/store/index.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
@@ -44,11 +45,11 @@ function history(turns: number, options: { unbound?: number } = {}) {
       ...(options.unbound && i % options.unbound === 0 ? {} : { entryIds: [entries.find(e => e.turnId === turnId && e.role === "user")!.id] }) })) });
   if (!committed.ok) throw new Error(committed.problems.join("; "));
   const path: KnowledgePath = { sessionId: session.id, headTurnId: turnIds.at(-1)!, branch: "main" };
-  const knowledge = store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time },
+  const knowledge = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time },
     operations: [{ op: "create", handle: "$k1", author: "fake", text: "consolidated", category: "understanding", scope: "session",
-      supports: [committed.facts[0]!.id, committed.facts[1]!.id], reason: "pin the snapshot", topics: [], createdAt: time }],
-    consolidated: [committed.facts[0]!.id] });
+      supports: [committed.facts[0]!.id, committed.facts[1]!.id], reason: "pin the snapshot", topics: [], createdAt: time }] });
   if (!knowledge.ok) throw new Error(knowledge.problems.join("; "));
+  historicalConsolidation(store, session.id, [committed.facts[0]!.id]);
   return { session, path, turnIds, entries, facts: committed.facts, knowledgeId: knowledge.committed[0]!.knowledgeId };
 }
 
@@ -180,16 +181,14 @@ test("22a: a snapshot never outlives its operation, so another connection's writ
   const before = memory.store.listBranchFacts(session.id, "main", path.headTurnId).length;
   const other = new Store(dbPath);
   try {
-    // Another executor commits a fact, consolidates an existing one and moves the branch's ancestry.
+    // Another connection writes a fact, imports historical C processing and moves the ancestry.
     const written = other.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
       facts: [{ turnId: turnIds.at(-1)!, category: "observation", actor: "user", text: "from another executor",
         source: [`T${turnIds.at(-1)}#user`], createdAt: time, entryIds: [entries.find(e => e.turnId === turnIds.at(-1) && e.role === "user")!.id] }] });
     if (!written.ok) throw new Error(written.problems.join("; "));
     expect(memory.store.listBranchFacts(session.id, "main", path.headTurnId).length).toBe(before + 1);
     expect(memory.store.consolidationBatch(session.id, "main", path.headTurnId!).map(f => f.id)).toContain(written.facts[0]!.id);
-    const consolidated = other.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time },
-      operations: [], consolidated: [written.facts[0]!.id] });
-    if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
+    historicalConsolidation(other, session.id, [written.facts[0]!.id]);
     expect(memory.store.consolidationBatch(session.id, "main", path.headTurnId!).map(f => f.id)).not.toContain(written.facts[0]!.id);
     // A relation is an annotation on a rendered fact, not membership: the next read renders it.
     const carry = memory.branchSummary(session.id, "main", path.headTurnId!);

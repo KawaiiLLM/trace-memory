@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -228,7 +229,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
     store.selectSourcePath(s.id, "main", [entry.id]);
     const path = { sessionId: s.id, branch: "main", headTurnId: t.id };
     const origin = store.triggerOrigin(path, entry.id);
-    const run = (createdAt: string) => store.bindRunOrigin({ kind: "consolidation" as const, sessionId: s.id, branch: "main", createdAt }, origin);
+    const run = (createdAt: string) => store.bindRunOrigin({ kind: "noting" as const, sessionId: s.id, branch: "main", createdAt }, origin);
     const notingResult = store.commitNotingRun({
       run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
@@ -237,7 +238,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
     if (!notingResult.ok) return;
     const factId = notingResult.facts[0]!.id;
 
-    const created = store.commitConsolidationRun({
+    const created = commitNoterKnowledge(store, {
       path, run: run("2026-01-01T00:01:00Z"),
       operations: [
         {
@@ -255,7 +256,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     const knowledgeId = created.committed[0]!.knowledgeId;
-    const second = store.commitConsolidationRun({ path, run: run("2026-01-01T00:01:30Z"), operations: [{
+    const second = commitNoterKnowledge(store, { path, run: run("2026-01-01T00:01:30Z"), operations: [{
       op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e2", author: "consolidation",
       text: "A second, unrelated knowledge.", category: "reference", scope: "project", supports: [factId],
       createdAt: "2026-01-01T00:01:30Z",
@@ -319,8 +320,8 @@ describe("project merge", () => {
     });
     expect(recorded.ok).toBe(true);
     if (!recorded.ok) return;
-    const consolidated = store.commitConsolidationRun({
-      run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
+    const consolidated = commitNoterKnowledge(store, {
+      run: { sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       operations: [
         {
           op: "create", topics: [], reason: "Initial admission of this conclusion.",
@@ -368,8 +369,8 @@ describe("visibility rule", () => {
       const evidence = store.commitNotingRun({ run: { kind: "noting", sessionId, createdAt: "2026-01-01T00:01:00Z" }, facts: [
         { turnId: turn.id, category: "observation", actor: "user", text: "context fact", source: [`T${turn.id}#user`], createdAt: "2026-01-01T00:01:00Z" } ] });
       if (!evidence.ok) throw new Error("fixture evidence failed");
-      const r = store.commitConsolidationRun({
-        run: { kind: "consolidation", sessionId, createdAt: "2026-01-01T00:01:00Z" },
+      const r = commitNoterKnowledge(store, {
+        run: { sessionId, createdAt: "2026-01-01T00:01:00Z" },
         operations: [
           { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text, category: "understanding", scope, supports: [evidence.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
         ],
@@ -418,7 +419,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     ["turn ordinal", "turns", "session_id, ordinal, kind, started_at"],
   ])("database rejects a duplicate %s", (_name, table, columns) => {
     const { s, t, factId } = seed();
-    const made = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+    const made = commitNoterKnowledge(store, { run: { sessionId: s.id, createdAt: consolidationAt },
       operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "term", category: "understanding", scope: "session", supports: [factId], createdAt: consolidationAt }] });
     if (!made.ok) throw new Error(made.problems.join("; "));
     store.appendToolCall({ turnId: t.id, name: "bash", status: "success" });
@@ -432,7 +433,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
 
   test("database enforces fact ownership, knowledge origin, link revisions and watermark references", () => {
     const { s, factId } = seed();
-    const made = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+    const made = commitNoterKnowledge(store, { run: { sessionId: s.id, createdAt: consolidationAt },
       operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "term", category: "understanding", scope: "session", supports: [factId], createdAt: consolidationAt }] });
     if (!made.ok) throw new Error(made.problems.join("; "));
     const id = made.committed[0]!.knowledgeId;
@@ -462,7 +463,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
         source: [`T${turn.id}#E${entry.entryOrdinal}`], createdAt: consolidationAt }] });
     if (!recorded.ok) throw new Error("setup failed");
     const peerFact = recorded.facts[0]!.id;
-    const made = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+    const made = commitNoterKnowledge(store, { run: { sessionId: s.id, createdAt: consolidationAt },
       operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "term", category: "understanding", scope: "project", supports: [factId], createdAt: consolidationAt }] });
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
@@ -493,8 +494,8 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
 
   test("64b: a scope change moves the knowledge's ownership, so it stays visible after reopening", async () => {
     const { p, s, t, factId } = seed();
-    const made = store.commitConsolidationRun({
-      run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+    const made = commitNoterKnowledge(store, {
+      run: { sessionId: s.id, createdAt: consolidationAt },
       operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text: "Use pnpm.", category: "constraint", scope: "global", supports: [factId], createdAt: consolidationAt }],
     });
     if (!made.ok) throw new Error("setup failed");
@@ -524,8 +525,8 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
   test("34a merge rejects self and duplicate parents instead of normalizing cardinality", async () => {
     const { s, factId, path } = seed();
     const mk = (text: string) =>
-      store.commitConsolidationRun({
-        run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+      commitNoterKnowledge(store, {
+        run: { sessionId: s.id, createdAt: consolidationAt },
         operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text, category: "understanding", scope: "project", supports: [factId], createdAt: consolidationAt }],
       });
     const a = mk("A");
@@ -632,7 +633,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.listKnowledgeLinks(older2.knowledgeId)).toEqual([]);
   });
 
-  test("76: a Consolidator batch commits create and archive together; a forbidden op still rolls back the whole batch atomically", () => {
+  test("92: an N batch commits create and archive together; a forbidden op still rolls back the whole batch atomically", () => {
     const { s, factId } = seed();
     const manual = { kind: "manual" as const, sessionId: s.id, createdAt: consolidationAt };
     const created = store.commitConsolidationRun({ run: manual, operations: [{ op: "create", handle: "$base", author: "test",
@@ -642,26 +643,26 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const item = created.committed[0]!;
     const archive = { op: "archive" as const, knowledgeId: item.knowledgeId, baseCommit: item.commit,
       supports: [factId], reason: "retire rule", createdAt: consolidationAt };
-    // 76: create and archive together are the Consolidator's own authority now; both commit atomically.
-    const accepted = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+    // N owns create and archive; terminal publication commits both atomically.
+    const accepted = commitNoterKnowledge(store, { run: { sessionId: s.id, createdAt: consolidationAt },
       operations: [{ op: "create", handle: "$partial", author: "test", text: "commits alongside the archive", category: "understanding",
         scope: "project", supports: [factId], reason: "mixed item", topics: [], createdAt: consolidationAt }, archive] });
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) return;
     expect(accepted.committed.map(op => op.op)).toEqual(["create", "archive"]);
-    expect(store.currentCommit(item.knowledgeId)[0]).toMatchObject({ op: "archive", actorRole: "consolidation" });
+    expect(store.currentCommit(item.knowledgeId)[0]).toMatchObject({ op: "archive", actorRole: "noting" });
 
-    // A batch mixing a legal op with one still forbidden to the Consolidator (merge) rolls back whole.
+    // A batch mixing a legal op with one forbidden to N (merge) rolls back whole.
     const before = store.listKnowledgeRevisions();
     const currentBase = store.currentCommit(item.knowledgeId)[0]!.id;
-    const rejected = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+    const rejected = commitNoterKnowledge(store, { run: { sessionId: s.id, createdAt: consolidationAt },
       operations: [{ op: "create", handle: "$partial2", author: "test", text: "must roll back", category: "understanding",
         scope: "project", supports: [factId], reason: "mixed item", topics: [], createdAt: consolidationAt },
         { op: "merge", intoKnowledgeId: item.knowledgeId, intoBaseCommit: currentBase,
           absorb: [{ knowledgeId: item.knowledgeId, baseCommit: currentBase }],
           category: "reference", scope: "project", supports: [factId], reason: "forbidden", topics: [], createdAt: consolidationAt }] });
     expect(rejected.ok).toBe(false);
-    if (!rejected.ok) expect(rejected.problems.join(" ")).toContain("Dreamer");
+    if (!rejected.ok) expect(rejected.problems.join(" ")).toContain("Noter permits create, update and archive only");
     expect(store.listKnowledgeRevisions()).toEqual(before);
   });
 
@@ -706,7 +707,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
 
   test("cited facts must exist and supports must not be empty; marks bind to an existing revision", () => {
     const { s, factId } = seed();
-    const run = { kind: "consolidation" as const, sessionId: s.id, createdAt: consolidationAt };
+    const run = { kind: "manual" as const, sessionId: s.id, createdAt: consolidationAt };
     for (const [supports, problem] of [[ [999999], "F999999 does not exist" ], [ [], "must not be empty" ]] as const) {
       const r = store.commitConsolidationRun({ run, operations: [
         { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text: "invalid", category: "understanding", scope: "project", supports: [...supports], createdAt: consolidationAt },
@@ -722,7 +723,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     if (!r.ok) return;
     const id = r.committed[0]!.knowledgeId;
     const archive = store.commitConsolidationRun({
-      run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+      run: { kind: "manual", sessionId: s.id, createdAt: consolidationAt },
       operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: id, baseCommit: 1, supports: [999998], createdAt: consolidationAt }],
     });
     expect(archive.ok).toBe(false);
@@ -730,30 +731,42 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
 
   });
 
-  test("an consolidation rejection rolls back knowledge and progress marks; a fact outside the project cannot be marked", () => {
-    const { s, factId } = seed();
-    const r = store.commitConsolidationRun({
-      run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: consolidationAt },
-      operations: [
-        { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text: "ok", category: "understanding", scope: "project", supports: [factId], createdAt: consolidationAt },
-        { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: 424242, baseCommit: 1, text: "gone", category: "understanding", scope: "project", supports: [factId], createdAt: consolidationAt },
-      ],
-      consolidated: [factId],
+  test("an N terminal rejection rolls back facts, knowledge and Raw progress; foreign entries cannot be marked", () => {
+    const { s, t, factId, path } = seed();
+    const entryIds = store.pendingEntryIds(s.id, "main", t.id);
+    expect(entryIds).toHaveLength(1);
+    const before = store.listSessionFacts(s.id);
+    const r = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: consolidationAt },
+      facts: [{ turnId: t.id, text: "new fact must roll back", source: [`T${t.id}#E1`], entryIds, createdAt: consolidationAt }],
+      entryIds,
+      held: { path, slots: [1], validate() {}, knowledge: ids => [
+        { op: "create", topics: [], reason: "new evidence", handle: "$e1", author: "noting", text: "ok", category: "understanding", scope: "project", supports: [ids.get(1)!], createdAt: consolidationAt },
+        { op: "update", topics: [], reason: "invalid target", knowledgeId: 424242, baseCommit: 1, text: "gone", category: "understanding", scope: "project", supports: [factId], createdAt: consolidationAt },
+      ] },
     });
     expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.problems.join(" ")).toContain("K424242");
+    expect(store.listSessionFacts(s.id)).toEqual(before);
     expect(store.listVisibleKnowledge(s.id, store.getSession(s.id)!.projectId)).toEqual([]);
+    expect(store.pendingEntryIds(s.id, "main", t.id)).toEqual(entryIds);
     expect(store.listConsolidatedProjectFacts(store.getSession(s.id)!.projectId)).toEqual([]);
-    const foreign = store.commitConsolidationRun({
-      run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: consolidationAt },
-      operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text: "ok", category: "understanding", scope: "project", supports: [factId], createdAt: consolidationAt }],
-      consolidated: [424242],
+    const other = makeSession(store.createProject({ name: "foreign-progress", declaredBy: "mark" }).id);
+    const turn = store.appendTurn({ sessionId: other.id, kind: "turn", startedAt: consolidationAt });
+    const foreignEntry = store.appendSourceEntry({ sessionId: other.id, turnId: turn.id, nativeLineage: "foreign", nativeId: "u",
+      role: "user", text: "foreign", raw: "foreign", calls: [] });
+    const foreign = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: consolidationAt }, facts: [], entryIds: [foreignEntry.id],
+      held: { path, slots: [], validate() {}, knowledge: () => [{ op: "create", topics: [], reason: "must roll back", handle: "$e1", author: "noting", text: "ok", category: "understanding", scope: "project", supports: [factId], createdAt: consolidationAt }] },
     });
     expect(foreign.ok).toBe(false);
+    if (!foreign.ok) expect(foreign.problems.join(" ")).toMatch(/entry|session/i);
+    expect(store.pendingEntryIds(s.id, "main", t.id)).toEqual(entryIds);
     expect(store.listVisibleKnowledge(s.id, store.getSession(s.id)!.projectId)).toEqual([]);
   });
 
   test("a short write lock held by another process delays the commit instead of losing it", async () => {
-    const { s, t } = seed();
+    const { s, t, factId } = seed();
     const holder = spawn(process.execPath, ["--input-type=module", "-e", `
       import { DatabaseSync } from "node:sqlite";
       import { setTimeout } from "node:timers/promises";
@@ -780,6 +793,11 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const entry = store.appendSourceEntry({ sessionId: s.id, turnId: t.id, nativeId: "pending", nativeLineage: "process-test",
       role: "user", text: "pending evidence", raw: "pending evidence", calls: [] });
     store.selectSourcePath(s.id, "main", [entry.id]);
+    const knowledge = store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, createdAt: consolidationAt }, operations: [{
+      op: "create", handle: "$pending", author: "test", text: "pending maintenance", category: "constraint", scope: "session",
+      supports: [factId], reason: "evidence", topics: [], createdAt: consolidationAt,
+    }] });
+    if (!knowledge.ok) throw Error(knowledge.problems.join("; "));
     store.closeSession(s.id);
     const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
     const clock = Date.now();
@@ -787,8 +805,8 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       import { Store } from ${JSON.stringify(new URL("../../../src/core/store/index.ts", import.meta.url).href)};
       const store = new Store(${JSON.stringify(dbPath)});
       Date.now = () => ${clock};
-      process.on("message", () => process.send(["noting", "consolidation"].map(phase =>
-        store.acquireClaim(${JSON.stringify(target)}, phase, ${JSON.stringify(executor)}, true))));
+      process.on("message", () => process.send(["noting", "dreaming"].map(phase =>
+        store.acquireClaim(${JSON.stringify(target)}, phase, ${JSON.stringify(executor)}, phase === "noting"))));
       process.send("ready");
     `], { stdio: ["ignore", "pipe", "inherit", "ipc"] }));
     const exits = workers.map(worker => once(worker, "exit"));
@@ -797,20 +815,25 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       const results = workers.map(worker => once(worker, "message"));
       workers.forEach(worker => worker.send("race"));
       const claims = (await Promise.all(results)).flatMap(([value]) => value as (import("../../../src/core/store/index.ts").TaskClaim | null)[]).filter(c => c !== null);
-      expect(claims.map(c => c.phase).sort()).toEqual(["consolidation", "noting"]);
+      expect(claims.map(c => c.phase).sort()).toEqual(["dreaming", "noting"]);
       expect(claims.every(c => c.expiresAt === clock + 30 * 60_000)).toBe(true);
       workers.forEach(worker => worker.kill("SIGKILL"));
       await Promise.all(exits);
       expect(store.getSession(s.id)!.closedAt).not.toBeNull();
+      const dreamClaim = claims.find(claim => claim.phase === "dreaming")!;
+      const range = store.retainKnowledgePoolRange(target, `session:${s.id}`, dreamClaim);
+      const dreamRun = store.bindDreamingRun({ kind: "dreaming", sessionId: s.id, branch: "main", claim: dreamClaim,
+        dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: s.id, phase: "dreaming", head: range.anchor }), createdAt: consolidationAt });
       const time = vi.spyOn(Date, "now").mockReturnValue(clock + 30 * 60_000);
       try {
         for (const stale of claims) {
-          const replacement = store.acquireClaim(target, stale.phase, "replacement-process", true)!;
+          const replacement = store.acquireClaim(target, stale.phase, "replacement-process", stale.phase === "noting")!;
           expect(replacement).not.toBeNull(); expect(replacement.token).not.toBe(stale.token);
           const run = { kind: stale.phase, sessionId: s.id, branch: "main", claim: stale, createdAt: consolidationAt };
           const rejected = stale.phase === "noting" ? store.commitNotingRun({ run, facts: [], entryIds: [entry.id] })
-            : store.commitConsolidationRun({ run, operations: [], consolidated: store.consolidationBatch(s.id, "main", t.id).map(f => f.id) });
+            : store.commitConsolidationRun({ path: target, run: dreamRun, operations: [] });
           expect(rejected.ok).toBe(false);
+          if (!rejected.ok) expect(rejected.problems.join(" ")).toMatch(/claim|range/i);
           expect(store.releaseClaim(stale)).toBe(false);
           expect(store.getClaim(s.id, stale.phase)!.token).toBe(replacement.token);
           expect(store.releaseClaim(replacement)).toBe(true);

@@ -1,6 +1,6 @@
-// Ticket 72 "CC executor checks Consolidation and Dreaming only when armed": completes 69's
+// Ticket 72's commit-sensitive signal survives C retirement: completes 69's
 // `Store.progressSignal` — a cheap composite that changes exactly when a commit could change
-// `consolidationBatch`, `duePools` or the footer's cached counts. This covers the two inputs 69's own
+// historical fact processing, `duePools` or the footer's cached counts. This covers the two inputs 69's own
 // signal missed (a knowledge-budget edit, another session's current-path cursor) plus a third Pi's
 // review found while implementing this ticket (a non-append rewrite of a current path's membership
 // under an unchanged cursor), and asserts a pure Raw append re-arms nothing.
@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Store } from "../../../src/core/store/index.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 
 const time = "2026-09-23T00:00:00Z";
@@ -52,9 +53,9 @@ test("85: settling a Dreaming range changes the signal through processing record
   const noted = store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time },
     facts: [{ turnId, entryIds: [entry.id], category: "observation", actor: "user", text: "a fact", source: [`T${turnId}#E1`], createdAt: time }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const consolidated = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, branch: "main", createdAt: time },
+  const consolidated = commitNoterKnowledge(store, { run: { sessionId, branch: "main", createdAt: time },
     operations: [{ op: "create", handle: "$k", author: "test", text: "a durable rule that is long enough to carry weight", category: "constraint",
-      scope: "session", supports: [noted.facts[0]!.id], topics: [], reason: "evidence", createdAt: time }], consolidated: [noted.facts[0]!.id] });
+      scope: "session", supports: [noted.facts[0]!.id], topics: [], reason: "evidence", createdAt: time }] });
   if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
   const path = { sessionId, branch: "main", headTurnId: turnId };
   const claim = store.acquireClaim(path, "dreaming", "ticket-72-test")!;

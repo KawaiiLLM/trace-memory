@@ -33,7 +33,7 @@ test("72: sending a message (a forward head) reuses the cached counts, no facts/
     const facts = vi.spyOn(Store.prototype, "listBranchFacts"), knowledge = vi.spyOn(Store.prototype, "currentKnowledge");
     try {
       const after = memory.progress(sessionId, "main", nextTurn); // a forward head: descends from `turnId`
-      expect(after).toMatchObject({ facts: before.facts, unconsolidated: before.unconsolidated, knowledge: before.knowledge, changedKnowledge: before.changedKnowledge });
+      expect(after).toMatchObject({ facts: before.facts, knowledge: before.knowledge, changedKnowledge: before.changedKnowledge });
       expect(facts).not.toHaveBeenCalled();
       expect(knowledge).not.toHaveBeenCalled();
     } finally { facts.mockRestore(); knowledge.mockRestore(); }

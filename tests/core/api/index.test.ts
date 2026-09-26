@@ -28,28 +28,27 @@ test("opens a store at the given path and applies default config", () => {
   expect(memory.store).toBeDefined();
   expect(memory.config).toEqual(DEFAULT_CONFIG);
   expect(DEFAULT_CONFIG.noting.forkModeDefault).toBe(false);
-  expect(DEFAULT_CONFIG.consolidation.forkModeDefault).toBe(false);
+  expect(DEFAULT_CONFIG).not.toHaveProperty("consolidation");
 });
 
 test.each([
-  [{}, false, false],
-  [{ noting: { forkModeDefault: true } }, true, false],
-  [{ consolidation: { forkModeDefault: true } }, false, true],
-  [{ noting: { branchModeDefault: true } }, true, false],
-  [{ noting: { forkModeDefault: false }, consolidation: { forkModeDefault: true } }, false, true],
-] satisfies [ConfigOverride, boolean, boolean][])("mode defaults apply only to omitted configuration (%j)", (override, noting, consolidation) => {
+  [{}, false],
+  [{ noting: { forkModeDefault: true } }, true],
+  [{ noting: { branchModeDefault: true } }, true],
+  [{ noting: { forkModeDefault: false } }, false],
+] satisfies [ConfigOverride, boolean][])("N mode defaults apply only to omitted configuration (%j)", (override, noting) => {
   const before = structuredClone(override);
   const config = validateConfig(override);
   expect(config.noting.forkModeDefault).toBe(noting);
-  expect(config.consolidation.forkModeDefault).toBe(consolidation);
+  expect(config).not.toHaveProperty("consolidation");
   expect(config.noting).not.toHaveProperty("branchModeDefault");
   expect(override).toEqual(before);
 });
 
 test("a partial config overrides only the sections given, keeping the rest default", () => {
   const dir2 = mkdtempSync(join(tmpdir(), "trace-memory-api-"));
-  const other = sourceSeededMemory(join(dir2, "t.sqlite"), neverCalledRunAgent, { consolidation: { triggerTokens: 10 } });
-  expect(other.config.consolidation).toEqual({ forkModeDefault: false, triggerTokens: 10, batchTokens: 10_000, maxToolRounds: 0 });
+  const other = sourceSeededMemory(join(dir2, "t.sqlite"), neverCalledRunAgent, { dreaming: { triggerTokens: 10 } });
+  expect(other.config.dreaming).toEqual({ ...DEFAULT_CONFIG.dreaming, triggerTokens: 10 });
   expect(other.config.render).toEqual(DEFAULT_CONFIG.render);
   expect(other.config.noting).toEqual(DEFAULT_CONFIG.noting);
   other.close();

@@ -30,20 +30,17 @@ function knowledge(f: ReturnType<typeof base>, scope: "project" | "global" | "se
   const result = f.store.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, operations: [
     { op: "create", handle: "$1", author: "test", text: "pending knowledge ".repeat(30), category: "constraint", scope,
       supports: [evidence.id], topics: [], reason: "test", createdAt: "now" },
-  ], consolidated: [evidence.id] });
+  ] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.committed[0]!;
 }
 
-for (const phase of ["noting", "consolidation"] as const) {
+for (const phase of ["noting"] as const) {
   test(`64c/49: declaration still rejects ${phase} at its configured threshold without flushing`, () => {
-    const f = base(phase === "noting");
-    if (phase === "consolidation") fact(f);
+    const f = base(true);
     const measured = f.memory.pendingTokens(phase, f.path).tokens!;
     expect(measured).toBeGreaterThan(0);
     f.memory.config[phase].triggerTokens = measured;
-    if (phase !== "noting") f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
-    if (phase !== "consolidation") f.memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
     expect(() => f.memory.declareProject(f.session.id, `blocked-${phase}`, "mark", f.path))
       .toThrow(new RegExp(`${phase} is due`));
     f.memory.config[phase].triggerTokens = measured - 1;
@@ -55,11 +52,11 @@ for (const phase of ["noting", "consolidation"] as const) {
   });
 }
 
-test("49: material below all three thresholds moves without an automatic flush", () => {
+test("49: material below N/D thresholds moves without an automatic flush", () => {
   const f = base(true);
   knowledge(f);
   const pendingFact = fact(f);
-  for (const phase of ["noting", "consolidation"] as const) {
+  for (const phase of ["noting"] as const) {
     const measured = f.memory.pendingTokens(phase, f.path).tokens!;
     expect(measured).toBeGreaterThan(0);
     f.memory.config[phase].triggerTokens = measured + 1;
@@ -83,18 +80,18 @@ test("49: declaration uses the host-selected rewind path and accepts material be
   const laterTokens = f.memory.pendingTokens("noting", laterPath).tokens!;
   expect(laterTokens).toBeGreaterThan(selectedTokens);
   f.memory.config.noting.triggerTokens = selectedTokens + 1;
-  f.memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
   expect(f.memory.declareProject(f.session.id, "rewind-target", "mark", f.path)).toContain("rewind-target");
   expect(f.memory.pendingTokens("noting", laterPath).tokens).toBe(laterTokens);
 });
 
-test("64c/49: disabled enrollment does not mask the preserved Consolidation declaration guard", () => {
-  const f = base(false), pending = fact(f);
-  f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
-  f.memory.config.consolidation.triggerTokens = f.memory.pendingTokens("consolidation", f.path).tokens!;
+test("64c/49: disabled enrollment does not mask the Noting declaration guard or clear historical facts", () => {
+  const f = base(true), pending = fact(f);
+  const measured = f.memory.pendingTokens("noting", f.path).tokens!;
+  f.memory.config.noting.triggerTokens = measured;
   f.store.setEnrollment(f.session.id, false);
-  expect(f.memory.taskEligibility("consolidation", f.path).due).toBe(false);
-  expect(() => f.memory.declareProject(f.session.id, "disabled-target", "mark", f.path)).toThrow(/consolidation is due/);
+  expect(f.memory.taskEligibility("noting", f.path).due).toBe(false);
+  expect(() => f.memory.declareProject(f.session.id, "disabled-target", "mark", f.path)).toThrow(/noting is due/);
+  expect(f.memory.pendingTokens("noting", f.path).tokens).toBe(measured);
   expect(f.store.consolidationBatch(f.session.id, "main", f.turn.id).map(value => value.id)).toContain(pending.id);
 });
 
@@ -124,7 +121,6 @@ test.each(["project", "global"] as const)("86: declaring session's Dreamer block
 test.each(["global", "project", "session"] as const)("86: declaring session's %s Dreamer backlog blocks declaration", scope => {
   const f = base(false), item = knowledge(f, scope);
   f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
-  f.memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
   f.memory.config.dreaming.triggerTokens = 1;
   const pool = scope === "global" ? "global" : scope === "project" ? `project:${f.own.id}` : `session:${f.session.id}`;
   expect(f.store.pendingVersions(pool, f.path).map(value => value.revisionId)).toContain(item.commit);
@@ -145,15 +141,14 @@ test("86: marking the same project is a metadata no-op even with a claim or back
 test("86: explicit redeclaration checks backlog even after the session was previously marked", () => {
   const f = base(false);
   f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
-  f.memory.config.consolidation.triggerTokens = Number.MAX_SAFE_INTEGER;
   expect(f.memory.declareProject(f.session.id, "first", "mark", f.path)).toContain("first");
-  fact(f);
-  f.memory.config.consolidation.triggerTokens = 1;
-  expect(() => f.memory.declareProject(f.session.id, "second", "mark", f.path)).toThrow(/consolidation is due/);
+  knowledge(f);
+  f.memory.config.dreaming.triggerTokens = 1;
+  expect(() => f.memory.declareProject(f.session.id, "second", "mark", f.path)).toThrow(/dreaming is due/);
   expect(f.store.findProjectByName("second")).toBeNull();
 });
 
-test.each(["noting", "consolidation", "dreaming"] as const)("86: %s live claim blocks declaration", phase => {
+test.each(["noting", "dreaming"] as const)("86: %s live claim blocks declaration", phase => {
   const f = base(true); fact(f);
   if (phase === "dreaming") knowledge(f);
   const held = f.store.acquireClaim(f.path, phase, "worker");
@@ -246,7 +241,7 @@ test("49: reopening an expired Dreamer target cannot reserve the seat owned by a
   expect(f.store.acquireClaim(f.b, "dreaming", "third-executor")).not.toBeNull();
 });
 
-test("49: reserved Dreamer takeover keeps its token and blocks peers; Noting and Consolidation remain independent", () => {
+test("49: reserved Dreamer takeover keeps its token and blocks peers; Noting remains independent", () => {
   const f = claimFixture(); storesForClaims.push(f.store);
   const old = f.store.acquireClaim(f.a, "dreaming", "old-executor")!;
   f.store.reopenSession(f.a.sessionId, "new-executor");
@@ -262,7 +257,7 @@ test("49: reserved Dreamer takeover keeps its token and blocks peers; Noting and
     role: "user", text: "raw", raw: "{}", calls: [] });
   const notingTarget = { ...f.b, headTurnId: pendingTurn.id };
   expect(f.store.acquireClaim(notingTarget, "noting", "peer")).not.toBeNull();
-  expect(f.store.acquireClaim(f.b, "consolidation", "peer")).not.toBeNull();
+  expect(f.store.getClaim(f.a.sessionId, "dreaming")).toEqual(takeover);
 });
 
 const storesForClaims: Store[] = [];

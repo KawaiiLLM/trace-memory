@@ -74,15 +74,20 @@ test("32c: borrowed failures continue across executors, disable only the target 
   // Other target-phase work remains claimed while the third failure is settled.
   const fact = second.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
     { turnId: target.headTurnId, category: "decision", actor: "user", text: "retained fact", source: [`T${target.headTurnId}#user`], createdAt: "now" }] });
-  expect(fact.ok).toBe(true);
-  const claim = second.store.acquireClaim(target, "consolidation", "another-process", true)!;
+  if (!fact.ok) throw Error(fact.problems.join("; "));
+  const knowledge = second.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, operations: [{
+    op: "create", handle: "$1", author: "test", text: "pending maintenance", category: "constraint", scope: "session",
+    supports: [fact.facts[0]!.id], reason: "evidence", topics: [], createdAt: "now",
+  }] });
+  if (!knowledge.ok) throw Error(knowledge.problems.join("; "));
+  const claim = second.store.acquireClaim(target, "dreaming", "another-process")!;
   expect(claim).not.toBeNull();
   const result = await note(first, target, options);
   expect(result.automaticOff).toContain(`S${target.sessionId} noting`);
   expect(first.store.enabled(target.sessionId)).toBe(false);
   expect(first.store.enabled(executor.sessionId)).toBe(true);
   expect(first.store.enabled(other.sessionId)).toBe(true);
-  expect(second.store.getClaim(target.sessionId, "consolidation")!.expiresAt).toBe(0);
+  expect(second.store.getClaim(target.sessionId, "dreaming")!.expiresAt).toBe(0);
   expect(first.store.listSessionFacts(target.sessionId)).toHaveLength(1);
   expect(first.pendingEntries(target.sessionId, target.branch, target.headTurnId)).not.toEqual([]);
   expect(streaks(first)[0]!.count).toBe(3);
@@ -92,27 +97,62 @@ test("32c: borrowed failures continue across executors, disable only the target 
   expect(streaks(first)).toEqual([]);
 });
 
-test("32c: third failure closes and aborts locally owned work for that target without touching another target", async () => {
-  let phase: "fail" | "hold" = "fail";
-  const inputs: NotingAgentInput[] = [];
-  const m = open(":memory:", async raw => {
-    const input = raw as NotingAgentInput; inputs.push(input);
-    if (phase === "hold" && input.kind !== "noting") return new Promise(resolve => input.signal!.addEventListener("abort", () => resolve({ outcome: "cancelled", output: "aborted", request }), { once: true }));
+test("92: N auto-off fences late D writes, settles skips and own output, and preserves untouched pending", async () => {
+  let scenario!: (input: DreamingAgentInput) => ReturnType<RunAgent>;
+  let dreamCalls = 0;
+  const m = open(":memory:", raw => {
+    const input = raw as NotingAgentInput | DreamingAgentInput;
+    if (input.kind === "dreaming") { dreamCalls++; return scenario(input); }
     return failed(raw);
   });
-  const target = seed(m);
+  const target = seed(m), other = seed(m);
   await note(m, target); await note(m, target);
-  m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
-    { turnId: target.headTurnId, category: "decision", actor: "user", text: "pending consolidation", source: [`T${target.headTurnId}#user`], createdAt: "now" }] });
-  phase = "hold";
-  const held = m.consolidate({ ...target, model: "fake", mode: "subagent" });
-  const running = inputs.at(-1)!;
-  expect(running.kind).toBe("consolidation");
-  expect(running.signal?.aborted).toBe(false);
+  const noted = m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
+    { turnId: target.headTurnId, category: "decision", actor: "user", text: "retained evidence", source: [`T${target.headTurnId}#user`], createdAt: "now" }] });
+  if (!noted.ok) throw Error(noted.problems.join("; "));
+  const created = m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, path: target, operations: [1, 2, 3].map(n => ({
+    op: "create", handle: `$${n}`, author: "test", text: `pending maintenance ${n}`, category: "constraint", scope: "session",
+    supports: [noted.facts[0]!.id], reason: "evidence", topics: [], createdAt: "now",
+  })) });
+  if (!created.ok) throw Error(created.problems.join("; "));
+  const [first, second, untouched] = created.committed;
+  const manual = m.tools({ kind: "manual", ...target, currentTurnId: target.headTurnId }).find(t => t.name === "note")!;
+  let late!: () => string, own = 0;
+  scenario = input => {
+    const tool = input.tools.find(t => t.name === "memory")!;
+    const update = { operations: [{ op: "update", id: `K${first!.knowledgeId}#${m.store.versionTag(first!.knowledgeId, first!.commit)}`,
+      text: "maintained rule", category: "constraint", scope: "session", supports: [], reason: "maintenance", topics: [] }], skipped: [] };
+    expect(tool.execute(update)).not.toContain("rejected:");
+    own = m.store.currentCommit(first!.knowledgeId, target)[0]!.id;
+    expect(own).not.toBe(first!.commit);
+    expect(tool.execute({ operations: [], skipped: [{ knowledge: `K${second!.knowledgeId}@v1`, because: "reviewed unchanged" }] })).not.toContain("rejected:");
+    const claim = m.store.getClaim(target.sessionId, "dreaming")!;
+    late = () => tool.execute(update);
+    expect(input.signal?.aborted).toBe(false);
+    return new Promise(resolve => input.signal!.addEventListener("abort", () => {
+      expect(m.store.getClaim(target.sessionId, "dreaming")).toEqual(claim);
+      expect(late()).toContain("rejected:");
+      expect(manual.execute({ facts: [{ text: "late note", source: [`T${target.headTurnId}#E1`] }] })).toContain("Disabled");
+      resolve({ outcome: "cancelled", output: "aborted", request });
+    }, { once: true }));
+  };
+  m.config.dreaming.triggerTokens = 1;
+  const held = m.dream({ ...target, model: "fake" });
   expect((await note(m, target)).automaticOff).toBeTruthy();
-  expect(running.signal?.aborted).toBe(true);
-  expect((await held).outcome).toBe("cancelled");
-  expect(streaks(m).filter(r => r.phase === "consolidation")).toEqual([]);
+  const cancelled = await held;
+  expect(cancelled.outcome, JSON.stringify(cancelled)).toBe("cancelled");
+  expect(late()).toContain("rejected:");
+  expect(m.store.openDreamingRange(target.sessionId, target.branch)).toBeNull();
+  expect(m.store.getClaim(target.sessionId, "dreaming")).toBeNull();
+  const processed = m.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool=? ORDER BY revision_id").all(`session:${target.sessionId}`).map(row => Number(row.revision_id));
+  expect(processed).toEqual([second!.commit, own].sort((a, b) => a - b));
+  expect(m.store.pendingVersions(`session:${target.sessionId}`, target).map(r => r.revisionId)).toEqual([untouched!.commit]);
+  expect(m.store.listSessionFacts(target.sessionId)).toHaveLength(1);
+  expect(m.store.enabled(other.sessionId)).toBe(true);
+  expect(streaks(m).filter(r => r.phase === "dreaming")).toEqual([]);
+  expect(await m.dream(target)).toEqual({ outcome: "dropped" });
+  expect(await note(m, target)).toEqual({ outcome: "dropped" });
+  expect(dreamCalls).toBe(1);
 });
 
 test.each([false, true])("92: corrected refusal resets only after atomic terminal publication (audit failure: %s)", async auditFailure => {
@@ -162,23 +202,18 @@ test.each([false, true])("92: corrected refusal resets only after atomic termina
   expect(m.store.db.prepare("SELECT head FROM task_failures").get()!.head).toBe(head);
 });
 
-test("32c: Consolidation uses the selected oldest fact, not the smallest F id or leaf", async () => {
+test("92: Noting failure identity stays at the oldest pending entry while the live leaf advances", async () => {
   const m = open(), target = seed(m);
-  const next = m.store.appendTurn({ sessionId: target.sessionId, parentTurnId: target.headTurnId, kind: "turn", userPrompt: "later", startedAt: "later" });
-  const add = (turnId: number) => m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
-    { turnId, category: "decision", actor: "user", text: "pending", source: [`T${turnId}#user`], createdAt: "now" }] });
-  add(next.id); add(target.headTurnId); // F2 belongs to the older Turn
-  // Exercise the selection seam in nonnumeric order: the key follows selection, not Math.min.
-  const selected = m.store.consolidationBatch(target.sessionId, "main", next.id).reverse();
-  vi.spyOn(m.store, "consolidationBatch").mockImplementation(() => selected);
-  expect(selected.map(f => f.id)).toEqual([2, 1]);
+  const oldest = m.pendingEntries(target.sessionId, target.branch, target.headTurnId)[0]!.id;
+  let head = target.headTurnId;
   for (let i = 1; i <= 3; i++) {
-    const result = await m.consolidate({ ...target, headTurnId: next.id, model: "fake", mode: "subagent" });
+    head = m.store.appendTurn({ sessionId: target.sessionId, parentTurnId: head, kind: "turn", userPrompt: `later ${i}`, startedAt: "later" }).id;
+    const result = await note(m, { ...target, headTurnId: head });
     expect(!!result.automaticOff).toBe(i === 3);
-    expect(streaks(m)[0]!.head).toBe(2);
+    expect(streaks(m)[0]!.head).toBe(oldest);
     expect(streaks(m)[0]!.count).toBe(i);
   }
-  expect(m.store.consolidationBatch(target.sessionId, "main", next.id).map(f => f.id)).toEqual([2, 1]);
+  expect(m.pendingEntries(target.sessionId, target.branch, head)[0]!.id).toBe(oldest);
 });
 
 test("68: Dreamer terminal outcomes consume accepted skips; a later range settles independently", async () => {
@@ -271,21 +306,22 @@ test("86: three Dreamer failures on one unchanged pending revision turn memory o
   expect(streaks(m).filter(row => Number(row.count) > 0)).toMatchObject([{ phase: "dreaming", head: second.commit, count: 1 }]);
 });
 
-test("32c: successful Consolidation accounting resets its own task in the commit transaction", () => {
-  const m = open(), target = seed(m);
-  const f = m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
-    { turnId: target.headTurnId, category: "decision", actor: "user", text: "evidence", source: [`T${target.headTurnId}#user`], createdAt: "now" }] });
-  if (!f.ok) throw Error("fixture failed");
-  const factId = f.facts[0]!.id, task = { sessionId: target.sessionId, phase: "consolidation" as const, head: factId };
-  const previous = m.store.beginExecution(task);
-  const failed = m.store.recordRun({ kind: "consolidation", sessionId: target.sessionId, executionId: previous, outcome: "failure", createdAt: "now" });
-  m.settleExecution(previous, "failure", failed.id, "unresolved refusal");
-  const id = m.store.beginExecution(task);
-  const result = m.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: target.sessionId, executionId: id, createdAt: "now" },
-    path: target, operations: [], consolidated: [factId] });
-  expect(result.ok).toBe(true);
-  expect(m.store.taskFailures(target.sessionId)).toMatchObject([{ phase: "consolidation", head: factId, count: 0 }]);
-  expect(m.store.consolidationBatch(target.sessionId, "main", target.headTurnId)).toEqual([]);
+test("92: successful N publication resets its own task in the terminal transaction", async () => {
+  let succeed = false;
+  const m = open(":memory:", async raw => {
+    if (!succeed) return failed(raw);
+    const input = raw as NotingAgentInput;
+    expect(input.tools.find(t => t.name === "note")!.execute({ facts: [] })).not.toContain("rejected:");
+    expect(input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).not.toContain("rejected:");
+    return { outcome: "success", output: "done", request };
+  }), target = seed(m);
+  const oldest = m.pendingEntries(target.sessionId, target.branch, target.headTurnId)[0]!.id;
+  expect((await note(m, target)).outcome).toBe("failure");
+  expect(m.store.taskFailures(target.sessionId)).toMatchObject([{ phase: "noting", head: oldest, count: 1 }]);
+  succeed = true;
+  expect((await note(m, target)).outcome).toBe("success");
+  expect(m.store.taskFailures(target.sessionId)).toMatchObject([{ phase: "noting", head: oldest, count: 0 }]);
+  expect(m.pendingEntries(target.sessionId, "main", target.headTurnId)).toEqual([]);
 });
 
 test("32c: failed off transaction rolls back the outcome and count; claim cleanup cannot undo a committed off", async () => {

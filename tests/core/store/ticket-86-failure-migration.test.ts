@@ -62,11 +62,17 @@ function legacyDatabase() {
     store.completeKnowledgePoolRange(successRun, "success", processed.range.eventIds);
     store.settleExecution(successExecution, "success", store.dreamingRunId(successRun)!);
     store.releaseClaim(processed.claim);
-    for (const phase of ["noting", "consolidation"] as const) {
-      const executionId = store.beginExecution({ sessionId: session.id, phase, head: phase === "noting" ? entry.id : fact.facts[0]!.id });
-      const run = store.recordRun({ kind: phase, sessionId: session.id, executionId, outcome: "failure", createdAt: "now" });
-      store.settleExecution(executionId, "failure", run.id, `preserved ${phase} failure`);
-    }
+    const executionId = store.beginExecution({ sessionId: session.id, phase: "noting", head: entry.id });
+    const run = store.recordRun({ kind: "noting", sessionId: session.id, executionId, outcome: "failure", createdAt: "now" });
+    store.settleExecution(executionId, "failure", run.id, "preserved noting failure");
+    // Pre-retirement C audit is persisted history, not newly admitted live work.
+    const historical = store.recordRun({ kind: "consolidation", sessionId: session.id, outcome: "failure", createdAt: "legacy" });
+    store.db.prepare(`INSERT INTO task_executions(id,session_id,phase,head,outcome,terminal_run,reason,updated_at)
+      VALUES ('legacy-c',?,'consolidation',?,'failure',?,'preserved consolidation failure','legacy')`)
+      .run(session.id, fact.facts[0]!.id, historical.id);
+    store.db.prepare("INSERT INTO execution_runs VALUES (?, 'legacy-c')").run(historical.id);
+    store.db.prepare("INSERT INTO task_failures VALUES (?,'consolidation',?,1,'preserved consolidation failure',?,'legacy')")
+      .run(session.id, fact.facts[0]!.id, historical.id);
     // The pre-86 database had identical execution tables but no application-version marker.
     store.db.exec("PRAGMA user_version = 0");
     return { file, path, pool, budget, disabledId: disabled.id, nextRevision: second!.commit,

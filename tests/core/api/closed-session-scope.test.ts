@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { sourceSeededMemory, validateConfig, type ClosedSessionScope, type NotingAgentInput } from "../../source-fixture.ts";
 
 const at = "2026-09-09T00:00:00Z";
-/** Explicit scripted empty N output uses both tools. C still needs no submission. */
+/** Explicit scripted empty N output uses both tools. */
 const submitted = (raw: unknown) => {
   const input = raw as NotingAgentInput;
   if (input.kind === "noting") {
@@ -44,7 +44,7 @@ test("closedSessionScope defaults to project and validates atomically at load an
   } finally { memory.close(); }
 });
 
-test.each(["noting", "consolidation"] as const)("%s discovery filters project/global/off without changing pending work", phase => {
+test.each(["noting"] as const)("%s discovery filters project/global/off without changing pending work", phase => {
   const { memory, active, same, other } = setup();
   try {
     const list = (scope: ClosedSessionScope) => memory.store.closedTasks(phase, active.sessionId, scope).map(t => t.sessionId);
@@ -61,11 +61,11 @@ test.each(["noting", "consolidation"] as const)("%s discovery filters project/gl
   } finally { memory.close(); }
 });
 
-test.each(["noting", "consolidation"] as const)("%s admission rechecks the project, requires an executor, and global permits foreign tails", async phase => {
+test.each(["noting"] as const)("%s admission rechecks the project, requires an executor, and global permits foreign tails", async phase => {
   let dispatched = 0;
   const { memory, active, same, other } = setup("project", async raw => { dispatched++; submitted(raw); return { outcome: "success", output: "", request: {} }; });
-  const run = (target: typeof same, executorSessionId?: number) => phase === "noting"
-    ? memory.noting({ ...target, borrowed: true, executorSessionId }) : memory.consolidate({ ...target, borrowed: true, executorSessionId });
+  const run = (target: typeof same, executorSessionId?: number) =>
+    memory.noting({ ...target, borrowed: true, executorSessionId });
   try {
     expect((await run(other, active.sessionId)).outcome).toBe("dropped");
     expect((await run(same)).outcome).toBe("dropped");
@@ -78,7 +78,7 @@ test.each(["noting", "consolidation"] as const)("%s admission rechecks the proje
     expect(dispatched).toBe(1);
     memory.configure({ closedSessionScope: "off" });
     expect((await run(same, active.sessionId)).outcome).toBe("dropped");
-    const own = phase === "noting" ? await memory.noting(active) : await memory.consolidate(active);
+    const own = await memory.noting(active);
     expect(own.outcome).toBe("success"); // off affects borrowing, not active-session work/manual catchup
   } finally { memory.close(); }
 });
@@ -100,7 +100,7 @@ test.each(["project", "global"] as const)("%s is frozen for a running task when 
   } finally { memory.close(); }
 });
 
-test.each(["noting", "consolidation"] as const)("%s rechecks a closed executor at commit without advancing progress", async phase => {
+test.each(["noting"] as const)("%s rechecks a closed executor at commit without advancing progress", async phase => {
   let finish!: () => void;
   const { memory, active, same } = setup("project", async raw => {
     await new Promise<void>(resolve => { finish = resolve; });
@@ -109,7 +109,7 @@ test.each(["noting", "consolidation"] as const)("%s rechecks a closed executor a
   });
   try {
     const input = { ...same, borrowed: true, executorSessionId: active.sessionId };
-    const pending = phase === "noting" ? memory.noting(input) : memory.consolidate(input);
+    const pending = memory.noting(input);
     memory.store.closeSession(active.sessionId);
     finish();
     expect((await pending).outcome).not.toBe("success");

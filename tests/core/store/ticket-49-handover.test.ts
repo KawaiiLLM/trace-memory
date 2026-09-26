@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { commitNoterKnowledge, historicalConsolidation } from "../../noting-knowledge-fixture.ts";
 import { Store, type KnowledgeOperationInput, type KnowledgePath, type TaskTarget } from "../../../src/core/store/index.ts";
 
 const stores: Store[] = [], dirs: string[] = [];
@@ -26,8 +27,9 @@ function create(store: Store, owner: ReturnType<typeof session>, text: string, s
   const operation: KnowledgeOperationInput = { op: "create", handle: "$1", author: "test", text, category: "constraint", scope,
     supports: [owner.fact.id], topics: [], reason: "test", createdAt: "now" };
   const result = store.commitConsolidationRun({ path: owner.path, run: { kind: "manual", sessionId: owner.value.id, createdAt: "now" },
-    operations: [operation], consolidated: [owner.fact.id] });
+    operations: [operation] });
   if (!result.ok) throw new Error(result.problems.join("; "));
+  historicalConsolidation(store, owner.value.id, [owner.fact.id]);
   return result.committed[0]!;
 }
 
@@ -126,7 +128,7 @@ test("86: moved current revision becomes pending, while another writer's process
   const original = create(store, author, "first author original text");
   const pool = `project:${target.id}`;
   processPool(store, author.path, pool);
-  const revised = store.commitConsolidationRun({ path: moving.path, run: { kind: "consolidation", sessionId: moving.value.id, branch: "main", createdAt: "now" }, operations: [
+  const revised = commitNoterKnowledge(store, { path: moving.path, run: { sessionId: moving.value.id, branch: "main", createdAt: "now" }, operations: [
     { op: "update", knowledgeId: original.knowledgeId, baseCommit: original.commit, text: "second author revised text",
       category: "constraint", scope: "project", supports: [moving.fact.id], topics: [], reason: "new evidence", createdAt: "now" },
   ] });

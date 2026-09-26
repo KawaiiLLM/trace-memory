@@ -1,8 +1,8 @@
 import { expect, test, vi } from "vitest";
 import { sourceSeededMemory , hydrate } from "../../source-fixture.ts";
-import { renderEntry, renderFact, renderFactGroups, tokens } from "../../../src/core/render/index.ts";
+import { renderEntry, tokens } from "../../../src/core/render/index.ts";
 
-test("pending token projection shares joined entries and grouped facts with exact trigger eligibility", () => {
+test("N pending token projection shares joined entries with exact trigger eligibility", () => {
   const agent = vi.fn();
   const memory = sourceSeededMemory(":memory:", agent);
   try {
@@ -19,10 +19,9 @@ test("pending token projection shares joined entries and grouped facts with exac
       if (!noted.ok) throw Error(noted.problems.join());
     }
     const expectedRaw = tokens(hydrate(store.pendingEntries(session.id, "main", b.id), store).map(e => renderEntry(e, memory.config.render, memory.resultText).content).join("\n\n"));
-    const facts = store.consolidationBatch(session.id, "main", b.id);
-    const expectedFacts = tokens(renderFactGroups(facts, f => renderFact(f, store.listFactRelations(f.id)), store.factTurnTimes(facts)).join("\n"));
-    expect(expectedFacts).toBeGreaterThan(tokens(facts.map(f => renderFact(f, store.listFactRelations(f.id))).join("\n"))); // group framing counts
-    for (const [phase, expected] of [["noting", expectedRaw], ["consolidation", expectedFacts]] as const) {
+    // Historical facts remain stored but no longer contribute to a live C trigger.
+    expect(store.consolidationBatch(session.id, "main", b.id)).toHaveLength(2);
+    for (const [phase, expected] of [["noting", expectedRaw]] as const) {
       expect(memory.pendingTokens(phase, target).tokens).toBe(expected);
       for (const threshold of [expected + 1, expected, expected - 1]) {
         memory.config[phase].triggerTokens = threshold;

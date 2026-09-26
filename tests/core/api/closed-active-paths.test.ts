@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { sourceSeededMemory, type RunAgent, type NotingAgentInput } from "../../source-fixture.ts";
 
 const at = "2026-09-25T00:00:00Z";
-type Phase = "noting" | "consolidation";
+type Phase = "noting";
 function fixture(db = ":memory:") {
   let requests = 0;
   const agent: RunAgent = async raw => {
@@ -43,13 +43,12 @@ function fixture(db = ":memory:") {
   store.setCurrentPath(target, "left", left.id, "one");
   store.closeSession(target);
   const candidates = (phase: Phase) => store.closedTasks(phase, executor, "project");
-  const run = (phase: Phase, branch: string, headTurnId: number) => phase === "noting"
-    ? memory.noting({ sessionId: target, branch, headTurnId, borrowed: true, executorSessionId: executor })
-    : memory.consolidate({ sessionId: target, branch, headTurnId, borrowed: true, executorSessionId: executor });
+  const run = (_phase: Phase, branch: string, headTurnId: number) =>
+    memory.noting({ sessionId: target, branch, headTurnId, borrowed: true, executorSessionId: executor });
   return { memory, store, executor, target, root, left, later, right, facts, candidates, run, get requests() { return requests; } };
 }
 
-test.each(["noting", "consolidation"] as const)("%s selects active ancestors, rewound exact head, retained lineages and reactivation", async phase => {
+test.each(["noting"] as const)("%s selects active ancestors, rewound exact head, retained lineages and reactivation", async phase => {
   const f = fixture();
   try {
     const target = (branch: string, headTurnId: number) => ({ sessionId: f.target, branch, headTurnId });
@@ -75,7 +74,7 @@ test.each(["noting", "consolidation"] as const)("%s selects active ancestors, re
   } finally { f.memory.close(); }
 });
 
-test.each(["noting", "consolidation"] as const)("%s no-cursor compatibility and invalid cursor fail the whole scan", phase => {
+test.each(["noting"] as const)("%s no-cursor compatibility and invalid cursor fail the whole scan", phase => {
   const f = fixture();
   try {
     f.store.db.prepare("DELETE FROM session_lineage_cursors WHERE session_id = ?").run(f.target);
@@ -87,7 +86,7 @@ test.each(["noting", "consolidation"] as const)("%s no-cursor compatibility and 
   } finally { f.memory.close(); }
 });
 
-test.each(["noting", "consolidation"] as const)("%s rejects a candidate moved through another connection before admission", async phase => {
+test.each(["noting"] as const)("%s rejects a candidate moved through another connection before admission", async phase => {
   const dir = mkdtempSync(join(tmpdir(), "tm-89-cursor-"));
   const path = join(dir, "memory.db");
   const f = fixture(path);

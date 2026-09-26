@@ -1,5 +1,5 @@
 // Ticket 69 "Pi foreground stalls": `progress` splits into a live half (`entries`, what an ingested
-// entry alone can change) and a cached half (`facts`, `unconsolidated`, `knowledge`,
+// entry alone can change) and a cached half (`facts`, `knowledge`,
 // `changedKnowledge`, what only a committed run can change), invalidated by `Store.progressSignal` — a
 // cheap composite that changes exactly when a commit could change one of them, for ANY connection to
 // the database file, not only this one.
@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory } from "../../../src/core/api/index.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
 
 const time = "2026-09-09T00:00:00Z";
@@ -62,24 +63,27 @@ test("ticket 69: the cache invalidates on a commit made through a second Store c
     if (!committed.ok) throw new Error(committed.problems.join("; "));
     const after = memory.progress(sessionId, "main", turnId);
     expect(after.facts).toBe(1);
-    expect(after.unconsolidated).toBe(1);
+    expect(after).not.toHaveProperty("unconsolidated");
+    expect(observer.store.consolidationBatch(sessionId, "main", turnId)).toHaveLength(1);
   } finally { memory.close(); observer.close(); }
 });
 
-test("ticket 69: the cache invalidates on a Consolidation and a Dreamer commit, each through its own connection", () => {
-  const { memory, store, sessionId, turnId } = seeded();
+test("ticket 69: the cache invalidates on N knowledge publication and D settlement through another connection", () => {
+  const { memory, sessionId, turnId } = seeded();
+  const store = new Store(dbPath);
   try {
     const noted = store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time },
       facts: [{ turnId, category: "observation", actor: "user", text: "fact one", source: ["T" + turnId + "#user"], createdAt: time }] });
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const primed = memory.progress(sessionId, "main", turnId);
-    expect(primed).toMatchObject({ facts: 1, unconsolidated: 1, knowledge: 0 });
-    const consolidated = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, branch: "main", createdAt: time },
+    expect(primed).toMatchObject({ facts: 1, knowledge: 0 });
+    const consolidated = commitNoterKnowledge(store, { run: { sessionId, branch: "main", createdAt: time },
       operations: [{ op: "create", handle: "$k", author: "test", text: "durable rule", category: "constraint", scope: "session",
-        supports: [noted.facts[0]!.id], topics: [], reason: "evidence", createdAt: time }], consolidated: [noted.facts[0]!.id] });
+        supports: [noted.facts[0]!.id], topics: [], reason: "evidence", createdAt: time }] });
     if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
     const afterConsolidation = memory.progress(sessionId, "main", turnId);
-    expect(afterConsolidation).toMatchObject({ facts: 1, unconsolidated: 0, knowledge: 1, changedKnowledge: 1 });
+    expect(afterConsolidation).toMatchObject({ facts: 1, knowledge: 1, changedKnowledge: 1 });
+    expect(store.consolidationBatch(sessionId, "main", turnId)).toHaveLength(1);
     // A Dreamer commit against this pool, run through the ordinary claim/range/execution pipeline.
     const path = { sessionId, branch: "main", headTurnId: turnId };
     const claim = store.acquireClaim(path, "dreaming", "ticket-69-test")!;
@@ -89,8 +93,8 @@ test("ticket 69: the cache invalidates on a Consolidation and a Dreamer commit, 
     store.completeKnowledgePoolRange(run, "success", range.eventIds); // reviewed, no operation needed
     store.releaseClaim(claim);
     const afterDreaming = memory.progress(sessionId, "main", turnId);
-    expect(afterDreaming).toMatchObject({ facts: 1, unconsolidated: 0, knowledge: 1, changedKnowledge: 0 });
-  } finally { memory.close(); }
+    expect(afterDreaming).toMatchObject({ facts: 1, knowledge: 1, changedKnowledge: 0 });
+  } finally { store.close(); memory.close(); }
 });
 
 test("ticket 69: merging another project into this session's project invalidates the cached knowledge count", () => {
