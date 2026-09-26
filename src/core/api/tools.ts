@@ -203,11 +203,10 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   // One synchronous call/pass only: corrections and terminal validation must reread sources.
   const resolvedSources = new Map<string, SourceResolution[]>();
   const hydratedSources = new Map<number, SourceEntry>();
-  const validateFact = (raw: unknown, index: number, earlier: (slot: number) => boolean): FactCommitInput => {
+  const validateFact = (raw: unknown, index: number, earlier: (slot: number) => boolean,
+    sourcePath: ReturnType<Store["sourcePath"]> = initialPath): FactCommitInput => {
     const errors: string[] = [];
     const fact = validateNotingFact(`facts[${index}]`, raw, errors);
-    const sourcePath = context.kind === "noting" ? initialPath : context.kind === "manual" && context.entryIds
-      ? manualEntries : store.sourcePath(session.id, context.branch, path.headTurnId!);
     const candidates = context.kind === "noting" ? sourcePath.filter(entry => frozenIds.has(entry.id)) : sourcePath;
     let first = 0;
     const cited: SourceResolution[] = [];
@@ -255,9 +254,13 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     if (!Array.isArray(input.facts) || Object.keys(input).some((k) => k !== "facts")) {
       problems = ["note expects {facts: [...]} only"]; return `rejected: ${problems[0]}`;
     }
+    // Manual validation shares one current path within this synchronous submission only.
+    // A later call reads it again; Noting's callback instead retains its frozen initial path.
+    const sourcePath = input.facts.length ? manualEntryIds ? manualEntries
+      : store.sourcePath(session.id, context.branch, path.headTurnId!) : [];
     const commits: FactCommitInput[] = [];
     const results = input.facts.map((raw, index) => {
-      try { commits.push(validateFact(raw, index + 1, slot => slot >= 1 && slot <= index)); return "ok"; }
+      try { commits.push(validateFact(raw, index + 1, slot => slot >= 1 && slot <= index, sourcePath)); return "ok"; }
       catch (error) { return `rejected: ${error instanceof Error ? error.message : String(error)}`; }
     });
     problems = results.filter((r) => r.startsWith("rejected:"));
