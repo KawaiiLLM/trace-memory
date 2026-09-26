@@ -229,8 +229,15 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     for (const definition of task.tools) {
       const captured = tools.find(t => t.name === definition.name);
       if (!captured) throw new NotForkable(`captured payload omits the ${definition.name} tool`);
+      // Pi's non-strict Anthropic serializer emits only these three root schema fields.
+      // Compare against that exact wire form as well as the full schema; never discard
+      // nested constraints or change the captured definitions used by the prefix gate.
+      const parameters = serialize(stripCacheControl(captured.parameters));
+      const expected = definition.parameters;
+      const compatible = parameters === serialize(expected) || (api === "anthropic-messages" &&
+        parameters === serialize({ type: "object", properties: expected.properties ?? {}, required: expected.required ?? [] }));
       if (task.reportToolRejection && (definition.name === "note" || definition.name === "memory") &&
-          (captured.description !== definition.description || serialize(stripCacheControl(captured.parameters)) !== serialize(definition.parameters)))
+          (captured.description !== definition.description || !compatible))
         throw new NotForkable(`captured ${definition.name} definition is incompatible with the current Noter protocol; refresh foreground tools or use subagent mode`);
     }
 
