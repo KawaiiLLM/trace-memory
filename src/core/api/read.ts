@@ -492,7 +492,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const fields = new Set(options.fields!);
       // Freeze identity, links, status and version metadata in this same snapshot. A cursor
       // formats these values only; it must not consult a later database state.
-      const knowledgeBody = (value: KnowledgeWithRevision, parents: KnowledgeRevision[], children: KnowledgeRevision[], status?: string) => {
+      const knowledgeBody = (value: KnowledgeWithRevision, parents: KnowledgeRevision[], children: KnowledgeRevision[], status?: string, historyLine = false) => {
         const { knowledge, revision } = value;
         const grounds = [...store.revisionGrounds(revision)].sort((a, b) => a - b);
         const labels = new Map([revision, ...parents, ...children].map(r => [r.id,
@@ -502,13 +502,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         const shown = (r: KnowledgeRevision) => r.id === revision.id ? tag : labels.get(r.id)!;
         const plain = (r: KnowledgeRevision) => r.id === revision.id ? `K${knowledge.id}` : labels.get(r.id)!;
         return (): string | TaggedBody => {
-          const full = renderKnowledgeTrace(value, parents, children, Infinity, grounds, fields, false, status, shown, labels.get(revision.id));
+          const full = renderKnowledgeTrace(value, parents, children, Infinity, grounds, fields, historyLine, status, shown, labels.get(revision.id));
           if (!fields.has("text") || tokens(full) > profile.entryTokens)
-            return renderKnowledgeTrace(value, parents, children, profile.entryTokens, grounds, fields, false, status, plain, labels.get(revision.id));
+            return renderKnowledgeTrace(value, parents, children, profile.entryTokens, grounds, fields, historyLine, status, plain, labels.get(revision.id));
           return { lines: full.split("\n"), taggedHeader, plainHeader, tag };
         };
       };
-      const named = (target: string, status?: string): (() => string | TaggedBody | (string | TaggedBody)[]) => {
+      const named = (target: string, status?: string, historyLine = false): (() => string | TaggedBody | (string | TaggedBody)[]) => {
         const s = /^S([1-9]\d*)$/.exec(target);
         if (s) {
           const id = Number(s[1]);
@@ -548,7 +548,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         if (exact && exact.to === undefined && (exact.tag || exact.ordinal)) {
           const commit = exact.tag ? store.resolveVersionTag(exact.id, exact.tag) : store.resolveVersionOrdinal(exact.id, exact.from!);
           const revision = store.getKnowledgeRevision(exact.id, commit)!;
-          return knowledgeBody({ knowledge: store.getKnowledge(exact.id)!, revision }, store.commitParents(revision), store.commitChildren(revision), status);
+          return knowledgeBody({ knowledge: store.getKnowledge(exact.id)!, revision }, store.commitParents(revision), store.commitChildren(revision), status, historyLine);
         }
         return prepare(target, { ...options, profile });
       };
@@ -563,7 +563,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           const revisions = target.endsWith("..") ? history
             : options.versions === "current" ? selection.representatives(history)
             : history.filter(r => selection.matches(r) && (options.versions === "all" || selection.graph.applicable.has(r.id)));
-          return revisions.length ? revisions.map(revision => ({ render: named(`K${id}@v${store.versionOrdinal(id, revision.id)}`, selection.status(revision)) }))
+          return revisions.length ? revisions.map(revision => ({ render: named(`K${id}@v${store.versionOrdinal(id, revision.id)}`, selection.status(revision),
+            target.endsWith("..") || options.versions !== "current") }))
             : [{ render: named(target) }];
         }
         if (!range) return [{ render: named(target) }];

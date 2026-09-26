@@ -598,9 +598,8 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
     ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`\n  status: ${r.op} ${r.createdAt}${r.actorRole ? `; actor ${r.actorRole}; run R${r.runId}${!r.supports.length ? "; maintenance judgment" : ""}` : ""}`] : []),
     ...(fields.has("status") && pathStatus ? [`\n  status: ${pathStatus}`] : []),
-    ...(address && fields.has("reason") ? [`\n  reason: ${r.reason}`] : []),
     ...(fields.has("links") ? [`\n  parents: ${addresses(parents)}`, `\n  children: ${addresses(children)}`] : []),
-    ...(historyLine ? [`\n${selectedCommitLine(r, fields, address ? `K${r.knowledgeId}` : undefined)}`] : []),
+    ...(historyLine ? [`\n${selectedCommitLine(r, fields, versionLabel ?? (address ? `K${r.knowledgeId}` : undefined))}`] : []),
   ].join("");
   if (!fields.has("text")) return `${address ? `[K${value.knowledge.id}]` : `[${shown(r)}]`}${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}]` + suffix;
   const rendered = renderSemantic(prefix, r.text, suffix, cap);
