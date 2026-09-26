@@ -33,7 +33,7 @@ function fixture(label = "lifecycle") {
 }
 function enableSyntheticWorker(f: ReturnType<typeof fixture>): void {
   const configured = resolveCcHostConfig({ ...f.config, notingModel: "synthetic", notingThinking: "medium",
-    consolidationModel: "synthetic", consolidationThinking: "medium", "dreaming.model": "synthetic", "dreaming.thinking": "medium",
+    "dreaming.model": "synthetic", "dreaming.thinking": "medium",
     worker: { claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 }, cwd: f.dir,
       responseOriginTimeoutMs: 20 } });
   Object.assign(f.config, configured);
@@ -124,7 +124,7 @@ test("control socket routes catchup to the live executor and never creates an op
   const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "must not run" }));
   let calls = 0;
   const server = await startControlServer(f.config, binding, memory, undefined, undefined, {
-    catchup: async () => { calls++; return { state: "waiting", phase: "noting", entriesDone: 0, entriesTotal: 2, factsDone: 0, factsTotal: 0 }; },
+    catchup: async () => { calls++; return { state: "waiting", phase: "noting", entriesDone: 0, entriesTotal: 2 }; },
     beforeCancel: () => {},
     holdImport: () => () => {},
   });
@@ -145,10 +145,10 @@ test("off fences again after a contended disable before acknowledging", async ()
   const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "must not run" }));
   let cancellations = 0;
   const before = { sessionId: 1, phase: "noting" as const, executionId: "before-disable" };
-  const during = { sessionId: 1, phase: "consolidation" as const, executionId: "during-disable" };
+  const during = { sessionId: 1, phase: "dreaming" as const, executionId: "during-disable" };
   const cancel = vi.spyOn(memory, "cancelTasks").mockReturnValueOnce([before]).mockReturnValueOnce([before, during]);
   const server = await startControlServer(f.config, binding, memory, undefined, undefined, {
-    catchup: async () => ({ state: "completed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0 }),
+    catchup: async () => ({ state: "completed", entriesDone: 0, entriesTotal: 0 }),
     beforeCancel: () => { cancellations++; },
     holdImport: () => () => {},
   });

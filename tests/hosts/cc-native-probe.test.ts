@@ -68,7 +68,6 @@ function loopbackEnvironment(configDir: string, baseUrl: string): NodeJS.Process
 function workerConfig(cwd: string, executable = fencedClaude) {
   return resolveCcHostConfig({ dbPath: join(cwd, "memory.sqlite"), stateDir: join(cwd, "state"),
     notingModel: "sonnet", notingThinking: "medium",
-    consolidationModel: "sonnet", consolidationThinking: "medium",
     "dreaming.model": "sonnet", "dreaming.thinking": "medium",
     worker: { claudeExecutable: executable, claudeVersion: CLAUDE_VERSION, contextWindows: { "sonnet": 200_000 }, cwd } });
 }

@@ -8,7 +8,7 @@ import { noteAndMemory, fixture, say, submitted, worker } from "./native-fixture
 
 type Host = ReturnType<typeof host>;
 const at = "2026-09-09T00:00:00.000Z";
-const config = { "noting.forkModeDefault": false, "noting.triggerTokens": 30, "consolidation.triggerTokens": 1_000_000_000 };
+const config = { "noting.forkModeDefault": false, "noting.triggerTokens": 30 };
 const command = (h: Host, args: string) => h.commands.get("trace").handler(args, h.ctx);
 const notingRuns = (h: Host) => h.memory.store.listRuns(1).filter(r => r.kind === "noting");
 const disabled = (h: Host) => h.notices.filter(n => n.includes("off after three failures"));
@@ -129,7 +129,7 @@ test("32c replaces 26a: off preserves committed facts and reads, blocks both pha
     expect(h.memory.store.listRuns(1)).toHaveLength(count);
     const target = { sessionId: 1, branch: "main", headTurnId: h.memory.store.listTurns(1).at(-1)!.id };
     expect(h.memory.taskEligibility("noting", target).due).toBe(false);
-    expect(h.memory.taskEligibility("consolidation", target).due).toBe(false);
+    expect(h.memory.taskEligibility("dreaming", target).due).toBe(false);
     await command(h, "on");
     expect(h.memory.store.db.prepare("SELECT * FROM task_failures").all()).toEqual([]);
     h.provider(async c => emptyNote(c) ?? reply("Done.")); await tick(h);

@@ -21,8 +21,8 @@ const until = async (condition: () => boolean, timeoutMs = 3_000) => {
   while (!condition()) { if (Date.now() > deadline) throw new Error("condition not met in time"); await sleep(10); }
 };
 const sample: CcStatusFile = { version: 1, nativeSessionId: "s1", executorId: "e1", pid: process.pid, token: "tok",
-  updatedAt: "2026-01-01T00:00:00Z", enabled: true, running: { noting: false, consolidation: false, dreaming: false },
-  counts: { entries: 24, facts: 102, unconsolidated: 9, changedKnowledge: 252, knowledge: 306 }, cost: 0.12 };
+  updatedAt: "2026-01-01T00:00:00Z", enabled: true, running: { noting: false, dreaming: false },
+  counts: { entries: 24, facts: 102, changedKnowledge: 252, knowledge: 306 }, cost: 0.12 };
 
 // --- status.ts: the atomic writer/reader -----------------------------------------------------------
 
@@ -50,7 +50,7 @@ test("readCcStatus returns null for a missing file and removeCcStatus is idempot
 // --- scheduler.ts: notify at admission and at settlement --------------------------------------------
 
 const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-75.db", stateDir: "/tmp/unused-75",
-  notingModel: "synthetic", notingThinking: "medium", consolidationModel: "synthetic", consolidationThinking: "medium",
+  notingModel: "synthetic", notingThinking: "medium",
   "dreaming.model": "synthetic", "dreaming.thinking": "medium",
   worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } }).worker;
 const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
@@ -61,11 +61,11 @@ test("scheduler notifies admission and settlement, and a failing notify never bl
   const tick = () => new Promise<void>(resolve => setImmediate(resolve));
   let release!: (value: unknown) => void;
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
-    store: { enabled: () => true, pendingEntryIds: () => [1, 2], consolidationBatch: () => [], getClaim: () => null, closedTasks: () => [],
+    store: { enabled: () => true, pendingEntryIds: () => [1, 2], getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "s0" },
     taskEligibility: vi.fn((phase: string) => ({ due: phase === "noting" })),
     noting: vi.fn(async () => { await new Promise(resolve => { release = resolve; }); return { outcome: "success", facts: [] }; }),
-    consolidate: vi.fn(async () => ({ outcome: "success" })), dream: vi.fn(async () => ({ outcome: "success" })) };
+    dream: vi.fn(async () => ({ outcome: "success" })) };
   const calls: string[] = [];
   const scheduler = new CcTaskScheduler(memory as any, worker, () => {}, reason => { calls.push(reason); });
   scheduler.reconcile(projection);
@@ -79,10 +79,10 @@ test("scheduler notifies admission and settlement, and a failing notify never bl
 test("a throwing notify never prevents admission or settlement (fault isolation)", async () => {
   const tick = () => new Promise<void>(resolve => setImmediate(resolve));
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
-    store: { enabled: () => true, pendingEntryIds: () => [1, 2], consolidationBatch: () => [], getClaim: () => null, closedTasks: () => [],
+    store: { enabled: () => true, pendingEntryIds: () => [1, 2], getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "s0" },
     taskEligibility: vi.fn((phase: string) => ({ due: phase === "noting" })),
-    noting: vi.fn(async () => ({ outcome: "success", facts: [] })), consolidate: vi.fn(), dream: vi.fn() };
+    noting: vi.fn(async () => ({ outcome: "success", facts: [] })), dream: vi.fn() };
   const scheduler = new CcTaskScheduler(memory as any, worker, () => {}, () => { throw new Error("publish exploded"); });
   scheduler.reconcile(projection);
   await tick(); await tick();
@@ -93,15 +93,13 @@ test("a throwing notify never prevents admission or settlement (fault isolation)
 
 function fixture(label: string, overrides: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), `tm75-cc-${label}-`)); dirs.push(dir);
-  // Short and absolute (not under macOS's long per-user tmpdir()): the control socket path
-  // (stateDir/control/<token>.sock) has a 100-byte Unix-domain-path ceiling.
-  const stateDir = mkdtempSync(`/tmp/tm75-${label}-`); dirs.push(stateDir);
+  // Short basename keeps the control socket below 100 bytes with a task-local TMPDIR.
+  const stateDir = mkdtempSync(join(tmpdir(), "s")); dirs.push(stateDir);
   const transcriptPath = join(dir, "native.jsonl"), nativeSessionId = `native-${label}`;
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
     pollIntervalMs: 20, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2,
-    notingModel: "synthetic", notingThinking: "medium", consolidationModel: "synthetic", consolidationThinking: "medium",
+    notingModel: "synthetic", notingThinking: "medium",
     "dreaming.model": "synthetic", "dreaming.thinking": "medium", "noting.triggerTokens": 1,
-    "consolidation.triggerTokens": 1_000_000_000,
     worker: { claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 }, cwd: dir,
       responseOriginTimeoutMs: 20 },
     ...overrides });
@@ -137,12 +135,12 @@ test("attach and the first reconcile publish; admission and settlement publish t
     let status = readCcStatus(f.stateDir, f.nativeSessionId)!;
     expect(status).toMatchObject({ nativeSessionId: f.nativeSessionId, executorId: executor.executorId, pid: executor.pid,
       token: executor.token, enabled: true });
-    expect(status.counts).toEqual({ entries: 2, facts: 0, unconsolidated: 0, changedKnowledge: 0, knowledge: 0 });
-    expect(status.running).toEqual({ noting: true, consolidation: false, dreaming: false }); // admitted, not settled yet
+    expect(status.counts).toEqual({ entries: 2, facts: 0, changedKnowledge: 0, knowledge: 0 });
+    expect(status.running).toEqual({ noting: true, dreaming: false }); // admitted, not settled yet
 
     await until(() => calls.includes("noting settled")); // the missing executable fails fast
     status = readCcStatus(f.stateDir, f.nativeSessionId)!;
-    expect(status.running).toEqual({ noting: false, consolidation: false, dreaming: false });
+    expect(status.running).toEqual({ noting: false, dreaming: false });
 
     // A stat wake-up with nothing appended and the same path/state changes nothing: no new publish.
     calls.length = 0;
@@ -155,7 +153,7 @@ test("attach and the first reconcile publish; admission and settlement publish t
 });
 
 test("off/on transitions publish through the reconcile the binding watch already triggers", async () => {
-  const f = fixture("onoff", { pollIntervalMs: 60_000, "noting.triggerTokens": 1_000_000_000 });
+  const f = fixture("onoff", { pollIntervalMs: 60_000, "noting.triggerTokens": 10_000 });
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, "2026-01-01T00:00:00.000Z");
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
   try {
@@ -182,7 +180,7 @@ test("an automatic off recorded only in the Store publishes off, never the bindi
   // Production S136: three failed Noting runs switched the core session off (executions.ts), which
   // never touches the CC binding. The status file kept publishing the binding's `choice: true` while
   // every reconcile imported nothing because the session was off.
-  const f = fixture("autooff", { pollIntervalMs: 60_000, "noting.triggerTokens": 1_000_000_000 });
+  const f = fixture("autooff", { pollIntervalMs: 60_000, "noting.triggerTokens": 10_000 });
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, "2026-01-01T00:00:00.000Z");
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
   try {
@@ -247,7 +245,7 @@ test("a superseded executor's shutdown never deletes a newer executor's file", a
 });
 
 test("a superseded executor's late publish never overwrites a newer executor's file", async () => {
-  const f = fixture("publish-superseded", { pollIntervalMs: 60_000, "noting.triggerTokens": 1_000_000_000 });
+  const f = fixture("publish-superseded", { pollIntervalMs: 60_000, "noting.triggerTokens": 10_000 });
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, "2026-01-01T00:00:00.000Z");
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
   try {
@@ -271,7 +269,7 @@ test("a superseded executor's late publish never overwrites a newer executor's f
 // --- fault injection: progress/cost/write failures never touch task, control or shutdown outcomes --
 
 test("a failing progress or cost read renders ? and logs a diagnostic; the reconcile itself is unaffected", async () => {
-  const f = fixture("fault-read", { pollIntervalMs: 60_000, "noting.triggerTokens": 1_000_000_000 });
+  const f = fixture("fault-read", { pollIntervalMs: 60_000, "noting.triggerTokens": 10_000 });
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, "2026-01-01T00:00:00.000Z");
   const diagnostics: string[] = [];
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostics.push(message));
@@ -295,7 +293,7 @@ test("a failing progress or cost read renders ? and logs a diagnostic; the recon
 });
 
 test("a failing status write is a diagnostic, never a fault: task and shutdown outcomes are unaffected", async () => {
-  const f = fixture("fault-write", { pollIntervalMs: 60_000, "noting.triggerTokens": 1_000_000_000 });
+  const f = fixture("fault-write", { pollIntervalMs: 60_000, "noting.triggerTokens": 10_000 });
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, "2026-01-01T00:00:00.000Z");
   const diagnostics: string[] = [];
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostics.push(message));
@@ -322,7 +320,7 @@ test("control off/on acknowledgement latency is unaffected even when publishing 
   // control.ts never calls the publisher: `off`/`on` acknowledge over the socket before any reconcile
   // (and therefore any publish) runs. Proven directly, at any scale, by making publish itself slow and
   // showing the control round trip does not inherit that cost.
-  const f = fixture("control-latency", { pollIntervalMs: 60_000, "noting.triggerTokens": 1_000_000_000 });
+  const f = fixture("control-latency", { pollIntervalMs: 60_000, "noting.triggerTokens": 10_000 });
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, "2026-01-01T00:00:00.000Z");
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
   try {
@@ -375,9 +373,9 @@ test("unbound session (no status file): prints nothing", async () => {
 test("bound and alive: the formatted line, painted with the shared formatter's roles", async () => {
   const f = statusFixture("alive");
   seedBinding(f.stateDir, "s1", { token: "tok" });
-  writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: process.pid, running: { noting: true, consolidation: false, dreaming: false } });
+  writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: process.pid, running: { noting: true, dreaming: false } });
   const out = await runCommand(f.configPath, { session_id: "s1" });
-  expect(out).toBe("🧠 \x1b[36m●\x1b[0m \x1b[2mnotes: 24->102 memory: 9->252/306 cost: $0.12\x1b[0m\n");
+  expect(out).toBe("🧠 \x1b[36m●\x1b[0m \x1b[2mnotes: 24->102 memory: 252/306 cost: $0.12\x1b[0m\n");
 });
 
 test("off: the compact line", async () => {
@@ -387,12 +385,10 @@ test("off: the compact line", async () => {
   expect(await runCommand(f.configPath, { session_id: "s1" })).toBe("🧠 \x1b[2m○ off\x1b[0m\n");
 });
 
-test("consolidation and dreaming paint success/customMessageLabel", async () => {
+test("dreaming paints customMessageLabel", async () => {
   const f = statusFixture("phases");
   seedBinding(f.stateDir, "s1", { token: "tok" });
-  writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: process.pid, running: { noting: false, consolidation: true, dreaming: false } });
-  expect(await runCommand(f.configPath, { session_id: "s1" })).toContain("\x1b[32m●\x1b[0m");
-  writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: process.pid, running: { noting: false, consolidation: false, dreaming: true } });
+  writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: process.pid, running: { noting: false, dreaming: true } });
   expect(await runCommand(f.configPath, { session_id: "s1" })).toContain("\x1b[35m●\x1b[0m");
 });
 
@@ -400,17 +396,17 @@ test("dead executor pid: every count and cost render ?, idle ○, never a stale 
   const f = statusFixture("dead");
   seedBinding(f.stateDir, "s1", { token: "tok" });
   // A pid essentially guaranteed not to exist.
-  writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: 2_000_000_000, running: { noting: true, consolidation: false, dreaming: false } });
+  writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: 2_000_000_000, running: { noting: true, dreaming: false } });
   const out = await runCommand(f.configPath, { session_id: "s1" });
-  expect(out).toBe("🧠 \x1b[2m○\x1b[0m \x1b[2mnotes: ?->? memory: ?->?/? cost: $?\x1b[0m\n");
+  expect(out).toBe("🧠 \x1b[2m○\x1b[0m \x1b[2mnotes: ?->? memory: ?/? cost: $?\x1b[0m\n");
 });
 
 test("binding now names another executor: rendered exactly like a dead one", async () => {
   const f = statusFixture("stale-owner");
   seedBinding(f.stateDir, "s1", { token: "someone-else" });
-  writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: process.pid, running: { noting: true, consolidation: false, dreaming: false } });
+  writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: process.pid, running: { noting: true, dreaming: false } });
   const out = await runCommand(f.configPath, { session_id: "s1" });
-  expect(out).toBe("🧠 \x1b[2m○\x1b[0m \x1b[2mnotes: ?->? memory: ?->?/? cost: $?\x1b[0m\n");
+  expect(out).toBe("🧠 \x1b[2m○\x1b[0m \x1b[2mnotes: ?->? memory: ?/? cost: $?\x1b[0m\n");
 });
 
 test("malformed stdin, missing session_id, or a malformed status file: prints nothing and never throws", async () => {
@@ -423,6 +419,28 @@ test("malformed stdin, missing session_id, or a malformed status file: prints no
   await expect(runCommand(f.configPath, { session_id: "s1" })).resolves.toBe("");
   // Bad argv/config likewise prints nothing rather than throwing.
   await expect(runCcStatusCommand({ argv: [], readStdin: async () => "{}" })).resolves.toBeUndefined();
+});
+
+test("92: historical C spend remains in the real coordinator total without a live C row", async () => {
+  const f = fixture("historical", { pollIntervalMs: 60_000, "noting.triggerTokens": 10_000 });
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, "2026-01-01T00:00:00.000Z");
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  try {
+    await coordinator.start();
+    const sessionId = readBinding(f.config, f.nativeSessionId)!.coreSessionId!;
+    const store = new Store(f.config.dbPath);
+    try {
+      const run = store.recordRun({ kind: "consolidation", sessionId, branch: "main", createdAt: new Date().toISOString(), outcome: "success",
+        response: JSON.stringify({ nativeLog: "/historical/consolidator.jsonl", usage: { input: 100, output: 20, cost: { total: 0.5 } } }) });
+      writeFileSync(f.transcriptPath, readFileSync(f.transcriptPath, "utf8") + `${JSON.stringify({ uuid: "u2", parentUuid: "a1", type: "user",
+        timestamp: "2026-01-01T00:00:02.000Z", promptId: "p2", promptSource: "sdk", userType: "external", message: { role: "user", content: "more" } })}\n`);
+      await coordinator.requestReconcile("new completed entry");
+      expect(readCcStatus(f.stateDir, f.nativeSessionId)).toMatchObject({ cost: 0.5, running: { noting: false, dreaming: false } });
+      expect(readCcStatus(f.stateDir, f.nativeSessionId)!.running).not.toHaveProperty("consolidation");
+      expect(store.getRun(run.id)).toMatchObject({ kind: "consolidation", outcome: "success" });
+      expect(JSON.parse(store.getRun(run.id)!.response!).nativeLog).toBe("/historical/consolidator.jsonl");
+    } finally { store.close(); }
+  } finally { await coordinator.shutdown("test"); }
 });
 
 test("the status command opens no database: an impossible dbPath is never touched", async () => {

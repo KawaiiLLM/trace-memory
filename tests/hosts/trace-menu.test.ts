@@ -56,10 +56,10 @@ test("context: a partial estimate marks the heading, not a footnote paragraph", 
   expect(context.localHeading).toBe("Estimated usage by category (partial) (local)");
 });
 
-test("pending: Noting/Consolidation/Dreaming rows with compact ratios and whole-number percentages", () => {
+test("pending: Noting/Dreaming rows with compact ratios and whole-number percentages", () => {
   const { pending } = buildTraceMenu(TRACE_MENU_FIXTURE);
   expect(pending.noting).toEqual({ label: "Noting", tokens: 3_200, trigger: 10_000, ratio: 0.32, percent: "32%", amount: "3.2k / 10k" });
-  expect(pending.consolidation).toEqual({ label: "Consolidation", tokens: 400, trigger: 5_000, ratio: 0.08, percent: "8%", amount: "400 / 5k" });
+  expect(pending).not.toHaveProperty("consolidation");
   expect(pending.dreaming.global).toEqual({ label: "global", tokens: 0, trigger: 4_000, ratio: 0, percent: "0%", amount: "0 / 4k" });
   expect(pending.dreaming.project).toEqual({ label: "project", tokens: 1_500, trigger: 5_000, ratio: 0.3, percent: "30%", amount: "1.5k / 5k" });
   expect(pending.dreaming.session).toEqual({ label: "session", tokens: 319, trigger: 1_000, ratio: 0.319, percent: "32%", amount: "319 / 1k" });
@@ -107,7 +107,7 @@ test("settings: budgets derive the knowledge window and max input from the code 
   expect(budgets.derivedLine).toBe("→ knowledge window 20,000 + shared allowance 10,000 = 30,000 max input");
 });
 
-test("settings: the mode column shows on Pi's fixture (Noter/Consolidator carry a mode, Dreamer never does) and hides on CC's (no worker does)", () => {
+test("settings: the mode column shows on Pi's fixture (Noter carries a mode, Dreamer never does) and hides on CC's (no worker does)", () => {
   expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE).workers.showModeColumn).toBe(true);
   expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE_CC).workers.showModeColumn).toBe(false);
 });

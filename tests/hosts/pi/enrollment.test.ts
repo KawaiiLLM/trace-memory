@@ -77,7 +77,7 @@ test("18a 2026-09-08: historical import and pause resume use native identities w
   await command(h, "on"); expect(h.memory.store.listTurns(1)).toHaveLength(4);
   expect(h.memory.pendingEntries(1, "main", state(h).head)).toHaveLength(8); expect(h.requests).toEqual([]);
   await h.answer("eligible completion"); await h.drain();
-  // 26a: one Noting run, two requests — the one that submits the batch and its closing reply.
+  // Joint N explicitly examines facts and knowledge, then terminates normally.
   expect(h.requests).toHaveLength(3); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
 });
 
@@ -108,12 +108,12 @@ test("18a 2026-09-08: core gates admissions and late commits through another fac
     expect(binding.find(t => t.name === "note")!.execute({ facts: [] })).toContain("/trace on");
     expect(binding.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).toContain("/trace on");
     expect(await h.memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
-    expect(await h.memory.consolidate({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
+    expect(await h.memory.dream({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
     expect(() => h.memory.appendEntry({ ...hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)[0]!, nativeId: "blocked" })).toThrow("/trace on");
     const run = { kind: "noting" as const, sessionId: 1, branch: "main", createdAt: "now" };
     const entries = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
     expect(h.memory.store.commitNotingRun({ run, facts: [], entryIds: entries.map(e => e.id) }).ok).toBe(false);
-    expect(h.memory.store.commitConsolidationRun({ run: { ...run, kind: "consolidation" }, operations: [], consolidated: [] }).ok).toBe(false);
+    expect(h.memory.store.commitConsolidationRun({ run: { ...run, kind: "manual" }, operations: [] }).ok).toBe(false);
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)).toEqual(entries);
     expect(h.memory.inject(1)).toBe("");
     other.store.setEnrollment(1, true);
@@ -138,12 +138,12 @@ test.each([true, false])("18a 2026-09-08: disable during Noting provider call re
 test.each([true, false])("34c: automatic material ignores the Noter mode (%s); disable preserves work and on rechecks evidence coverage", async (noting) => {
   const h = setup({ "noting.forkModeDefault": noting });
   await h.turn();
-  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
-    operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"] }], skipped: [] } }] } : h.memory.store.listSessionFacts(1).length ? reply("No new facts") : notingFact(c));
-  // The public facade shares this host's durable queues; normal completions drive both workers.
-  writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { "noting.triggerTokens": 1, "consolidation.triggerTokens": 1 } }));
-  await h.emit("session_start");
-  await h.answer("tick"); await h.drain();
+  // This enrollment/delivery case uses the real immediate manual bindings for committed setup.
+  // Live N publication is exercised separately by the host atomic and scheduler tests.
+  const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
+  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Shared rule", source: ["T1#E1"] }] })).toContain("ok:");
+  expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission",
+    text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
   expect((await h.prompt("no receipts"))?.message?.content ?? "").not.toContain("<noted>");
   await h.answer(); await h.emit("agent_settled"); await h.answer("consolidation opportunity"); await h.drain();
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1);
@@ -158,16 +158,13 @@ test.each([true, false])("34c: automatic material ignores the Noter mode (%s); d
   expect(await h.prompt("again")).toBeUndefined();
 });
 
-test("18a/24b, as 29e left it: Settings shows each phase's three preferences with their effective source and masked layers, and displaying them writes nothing", async () => {
-  // 24b supersedes 18a's read-only view of every key: the menu edits each phase's mode, model and
-  // thinking level plus the borrowing scope, while advanced values keep living in the settings files
-  // (and keep being validated — the case below). 25 amendment 2 withdrew the Consolidator mode; 29e
-  // restored it on the same select-and-write path, so the two phases show the same three lines.
+test("92: Settings shows N/D preferences with effective sources and masked layers; displaying them writes nothing", async () => {
+  // N exposes mode/model/thinking; D exposes model/thinking only. Advanced settings remain file-owned.
   const h = setup({ "noting.triggerTokens": 33 });
   const globalPath = join(h.dir, "agent", "settings.json"), projectPath = join(h.dir, ".pi", "settings.json");
   mkdirSync(join(h.dir, ".pi"));
-  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": false, "consolidation.forkModeDefault": true, consolidationModel: "fake/test", "render.entryTokens": 222 } }));
-  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true, "consolidation.forkModeDefault": false, "render.entryTokens": 333 } }));
+  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": false, "dreaming.model": "fake/test", "render.entryTokens": 222 } }));
+  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true, "render.entryTokens": 333 } }));
   const before = [readFileSync(globalPath), readFileSync(projectPath)];
   await h.emit("session_start"); h.ctx.hasUI = true;
   h.answers.push("Settings…", undefined); await command(h, ""); // opened, then cancelled: inert
@@ -176,9 +173,7 @@ test("18a/24b, as 29e left it: Settings shows each phase's three preferences wit
     "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
     "Noter mode: fork (Project setting — this edit will not take effect)",
     "Noter model: follow foreground", "Noter thinking: inherit",
-    "Consolidator mode: subagent (Project setting — this edit will not take effect)",
-    "Consolidator model: fake/test", "Consolidator thinking: inherit",
-    "Dreamer model: follow foreground", "Dreamer thinking: inherit", "Closed sessions: project",
+    "Dreamer model: fake/test", "Dreamer thinking: inherit", "Closed sessions: project",
   ]);
   expect(h.dialogs.at(-1)!.title).toContain(join(h.dir, "trace.db"));
   expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + shared allowance 10,000 = 30,000 max input");
@@ -187,13 +182,11 @@ test("18a/24b, as 29e left it: Settings shows each phase's three preferences wit
   // The advanced keys the menu no longer displays are still loaded and still validated by name.
   writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "render.entryTokens": "not a number" } }));
   await expect(h.emit("session_start")).rejects.toThrow("Invalid render.entryTokens");
-  // 25 amendment 2 / 29e: a settings file that still carries the retired inverse Consolidator-mode key
-  // fails the load by name — either value — instead of being read as the restored key, whose polarity
-  // is the opposite one.
+  // The obsolete inverse C key is still an explicit load error, never mapped onto N.
   for (const saved of [true, false]) {
     writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "consolidation.subagentModeDefault": saved } }));
     await expect(h.emit("session_start")).rejects
-      .toThrow("Removed setting consolidation.subagentModeDefault: use consolidation.forkModeDefault (the inverse boolean: true means fork)");
+      .toThrow("Removed setting consolidation.subagentModeDefault: Consolidation is retired; remove this key");
     expect(JSON.parse(readFileSync(projectPath, "utf8"))["trace-memory"]).toEqual({ "consolidation.subagentModeDefault": saved }); // refused, never rewritten
   }
   writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "render.entryTokens": DEFAULT_CONFIG.render.entryTokens } }));
@@ -230,7 +223,7 @@ test.each(["2099-02-30T00:00:00Z", "2099", "2099-01-01", 4070908800000])("18a 20
 
 test("18a 2026-09-08: all count/token keys and masked layers validate by key", async () => {
   const h = setup();
-  for (const section of ["render", "noting", "consolidation"] as const) for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
+  for (const section of ["render", "noting", "dreaming"] as const) for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
     if (typeof value !== "number" || key === "nearThreshold" || key === "maxToolRounds") continue;
     for (const invalid of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Infinity]) {
       expect(() => TraceMemory(":memory:", async () => reply("") as never, { [section]: { [key]: invalid } })).toThrow(`${section}.${key}`);
@@ -286,7 +279,7 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
   expect((await once(child, "exit"))[0]).toBe(0);
   const run = { kind: "noting" as const, sessionId: 1, branch: "main", createdAt: "now" };
   expect(h.memory.store.commitNotingRun({ run, facts: [], entryIds: hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.id) }).ok).toBe(false);
-  expect(h.memory.store.commitConsolidationRun({ run: { ...run, kind: "consolidation" }, operations: [], consolidated: [1] }).ok).toBe(false);
+  expect(h.memory.store.commitConsolidationRun({ run: { ...run, kind: "manual" }, operations: [] }).ok).toBe(false);
   expect(h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id)).toEqual([1]);
   expect(h.memory.store.listRuns(1).slice(0, before.length)).toEqual(before);
   expect(h.memory.trace("F1")).toContain("Already committed");
@@ -295,22 +288,24 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
   expect(() => h.memory.selectEntries(1, "main", [])).toThrow("/trace on");
 });
 
-test.each([true, false])("18a 2026-09-08: disable during Consolidation rejects late %s submission and leaves facts pending", async submit => {
-  const h = setup({ "consolidation.triggerTokens": 1, "consolidation.maxToolRounds": 1 }); await h.turn();
-  const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(t => t.name === "note")!;
-  note.execute({ facts: [{ text: "Pending knowledge", source: ["T1#E1"] }] });
+test.each([true, false])("92: disable during D rejects late %s mutation and preserves the pending revision", async submit => {
+  const h = setup({ "dreaming.triggerTokens": 1 }); await h.turn();
+  const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
+  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Pending knowledge", source: ["T1#E1"] }] })).toContain("ok: F1");
+  expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: "Retain rule", category: "constraint",
+    scope: "session", topics: [], supports: ["F1"], reason: "Seed pending D revision" }], skipped: [] })).not.toContain("rejected:");
+  const original = h.memory.store.listKnowledgeRevisions()[0]!;
   let release!: (value: ReturnType<typeof reply>) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
-  await h.answer("consolidation opportunity"); await h.drain(); expect(h.requests).toHaveLength(1);
-  await command(h, "off");
-  h.provider(async () => reply("Stopped"));
-  release(submit ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: { operations: [], skipped: [] } }] } : reply("No knowledge"));
+  await h.answer("D opportunity"); await h.drain(); expect(h.requests).toHaveLength(1);
+  await command(h, "off"); h.provider(async () => reply("Stopped"));
+  release(submit ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
+    operations: [{ op: "archive", id: `K${original.knowledgeId}#${h.memory.store.versionTag(original.knowledgeId, original.id)}`, supports: [], reason: "Late mutation" }], skipped: [],
+  } }] } : reply("No mutation"));
   await h.drain();
-  expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(1);
-  expect(h.memory.store.listVisibleKnowledge(1, 1)).toEqual([]);
-  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
-  expect(runs).toHaveLength(1);
-  expect(runs[0]!.outcome).not.toBe("success");
+  expect(h.memory.store.listKnowledgeRevisions()).toEqual([original]);
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["cancelled"]);
+  expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(1); // historical backlog untouched
 });
 
 

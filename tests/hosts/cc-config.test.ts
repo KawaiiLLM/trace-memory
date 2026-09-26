@@ -77,20 +77,19 @@ test.each([null, "", "relative.sqlite"])("an explicit invalid database path %j d
 
 function executableConfig(home: string): CcHostConfig {
   return { stateDir: join(home, "state"), notingModel: "sonnet", notingThinking: "high",
-    consolidationModel: "opus", consolidationThinking: "medium", "dreaming.model": "opus", "dreaming.thinking": "xhigh",
+    "dreaming.model": "opus", "dreaming.thinking": "xhigh",
     worker: { claudeExecutable: join(home, "claude"), claudeVersion: "2.1.280", cwd: home,
       contextWindows: { sonnet: 200_000, opus: 300_000 } } };
 }
 
-test("CC resolves one immutable execution setting per phase from the six flat Pi keys", () => {
+test("CC resolves one immutable execution setting per phase from the four flat Pi keys", () => {
   const f = fixture(), config = resolveCcHostConfig(executableConfig(f.home));
   expect(config.worker?.phases).toEqual({
     noting: { model: "sonnet", thinking: "high", capacity: { inputTokens: 190_000, prefixTokens: 0 } },
-    consolidation: { model: "opus", thinking: "medium", capacity: { inputTokens: 290_000, prefixTokens: 0 } },
     dreaming: { model: "opus", thinking: "xhigh", capacity: { inputTokens: 290_000, prefixTokens: 0 } },
   });
-  expect(config).toMatchObject({ notingModel: "sonnet", notingThinking: "high", consolidationModel: "opus",
-    consolidationThinking: "medium", "dreaming.model": "opus", "dreaming.thinking": "xhigh" });
+  expect(config).toMatchObject({ notingModel: "sonnet", notingThinking: "high",
+    "dreaming.model": "opus", "dreaming.thinking": "xhigh" });
 });
 
 test("CC retry configuration is a native count only and preserves omission", () => {
@@ -107,10 +106,10 @@ test("CC retry configuration is a native count only and preserves omission", () 
 test("CC validates flat phase controls once and propagates them through the importer", () => {
   const f = fixture();
   const config = resolveCcHostConfig({ ...f.input, closedSessionScope: "global",
-    "noting.triggerTokens": 11_111, "consolidation.triggerTokens": 2_222,
+    "noting.triggerTokens": 11_111,
     "dreaming.triggerTokens": 3_333, "dreaming.timeoutMs": 44_444 });
   expect(config.coreConfig).toMatchObject({ closedSessionScope: "global", noting: { triggerTokens: 11_111 },
-    consolidation: { triggerTokens: 2_222 }, dreaming: { triggerTokens: 3_333, timeoutMs: 44_444 } });
+    dreaming: { triggerTokens: 3_333, timeoutMs: 44_444 } });
   mkdirSync(dirname(config.dbPath), { recursive: true });
   const importer = new CcImporter(config, { version: 1, nativeSessionId: "config-propagation",
     transcriptPath: join(f.home, "absent.jsonl"), dbPath: config.dbPath, nativeCreatedAt: null,
@@ -118,15 +117,15 @@ test("CC validates flat phase controls once and propagates them through the impo
     branch: "main", selectedLeafUuid: null, executor: null, lastClose: null });
   try {
     expect(importer.memory.config).toMatchObject({ closedSessionScope: "global", noting: { triggerTokens: 11_111 },
-      consolidation: { triggerTokens: 2_222 }, dreaming: { triggerTokens: 3_333, timeoutMs: 44_444 } });
+      dreaming: { triggerTokens: 3_333, timeoutMs: 44_444 } });
   } finally { importer.close(); }
 });
 
-test("CC keeps ingestion-only configuration valid but requires all six phase keys with a worker", () => {
+test("CC keeps ingestion-only configuration valid but requires all four phase keys with a worker", () => {
   const f = fixture();
   expect(resolveCcHostConfig(f.input).worker).toBeUndefined();
   const configured = executableConfig(f.home);
-  for (const key of ["notingModel", "notingThinking", "consolidationModel", "consolidationThinking", "dreaming.model", "dreaming.thinking"] as const) {
+  for (const key of ["notingModel", "notingThinking", "dreaming.model", "dreaming.thinking"] as const) {
     const missing = { ...configured } as Record<string, unknown>; delete missing[key];
     expect(() => resolveCcHostConfig(missing as unknown as CcHostConfig)).toThrow(key);
   }
@@ -142,7 +141,7 @@ test.each([
   ["legacy worker model", (value: any) => { value.worker.model = "sonnet"; }, /Legacy CC worker.model/],
   ["legacy worker effort", (value: any) => { value.worker.effort = "high"; }, /Legacy CC worker.effort/],
   ["legacy worker capacity", (value: any) => { value.worker.contextWindow = 200_000; }, /Legacy CC worker.contextWindow/],
-  ["parallel phase hierarchy", (value: any) => { value.worker.noting = { model: "sonnet" }; }, /six flat host keys/],
+  ["parallel phase hierarchy", (value: any) => { value.worker.noting = { model: "sonnet" }; }, /four flat host keys/],
 ] as const)("CC rejects %s without fallback", (_label, mutate, message) => {
   const f = fixture(), value = executableConfig(f.home); mutate(value);
   expect(() => resolveCcHostConfig(value)).toThrow(message);

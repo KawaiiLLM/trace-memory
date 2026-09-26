@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { TraceMemory, type TaskTarget, type NotingAgentInput, type ConsolidationAgentInput } from "../../src/core/api/index.ts";
+import { TraceMemory, type TaskTarget, type NotingAgentInput } from "../../src/core/api/index.ts";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { host, reply, type Reply } from "./pi/test-host.ts";
@@ -13,7 +13,7 @@ function closedTarget(memory: ReturnType<typeof TraceMemory>, projectId: number,
     role: "user", text: "Closed evidence", raw: "Closed evidence", calls: [] });
   store.publishSourcePath(session.id, "active", [entry.id], turn.id, "closed");
   const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "active", createdAt: at },
-    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "Closed rule", source: [`T${turn.id}#user`], createdAt: at }] });
+    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "Closed rule", source: [`T${turn.id}#E1`], createdAt: at }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   store.closeSession(session.id);
   if (invalid) store.db.prepare("UPDATE session_lineage_cursors SET branch = 'missing' WHERE session_id = ?").run(session.id);
@@ -29,7 +29,7 @@ function abandonedSibling(memory: ReturnType<typeof TraceMemory>, target: TaskTa
   const rootEntries = store.sourcePath(target.sessionId, target.branch, target.headTurnId).map(value => value.id);
   store.publishSourcePath(target.sessionId, "abandoned", [...rootEntries, entry.id], turn.id, "closed");
   const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, branch: "abandoned", createdAt: at },
-    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "ABANDONED_SIBLING", source: [`T${turn.id}#user`], createdAt: at }] });
+    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "ABANDONED_SIBLING", source: [`T${turn.id}#E1`], createdAt: at }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   store.setCurrentPath(target.sessionId, target.branch, target.headTurnId, "closed");
   return { turn, entry, fact: noted.facts[0]! };
@@ -38,18 +38,17 @@ function abandonedSibling(memory: ReturnType<typeof TraceMemory>, target: TaskTa
 function expectConsumedOnlySibling(memory: ReturnType<typeof TraceMemory>, sessionId: number, sibling: ReturnType<typeof abandonedSibling>) {
   const store = memory.store;
   const runs = store.listRuns(sessionId).filter(run => run.kind !== "manual" && run.branch === "abandoned");
-  expect(runs).toHaveLength(2);
-  expect(runs.every(run => run.outcome === "success")).toBe(true);
-  const noting = runs.find(run => run.kind === "noting")!;
-  const consolidation = runs.find(run => run.kind === "consolidation")!;
-  expect(store.db.prepare("SELECT entry_id FROM noted_entries WHERE run_id = ?").all(noting.id).map(row => Number(row.entry_id))).toEqual([sibling.entry.id]);
-  expect(store.listConsolidatedFacts(consolidation.id).map(fact => fact.id)).toEqual([sibling.fact.id]);
+  expect(runs).toHaveLength(1);
+  expect(runs[0]).toMatchObject({ kind: "noting", outcome: "success" });
+  expect(store.db.prepare("SELECT entry_id FROM noted_entries WHERE run_id = ?").all(runs[0]!.id).map(row => Number(row.entry_id))).toEqual([sibling.entry.id]);
   expect(store.pendingEntries(sessionId, "abandoned", sibling.turn.id)).toEqual([]);
-  expect(store.consolidationBatch(sessionId, "abandoned", sibling.turn.id)).toEqual([]);
+  // C retirement does not clear or replay historical unprocessed facts.
+  expect(store.consolidationBatch(sessionId, "abandoned", sibling.turn.id).map(fact => fact.id))
+    .toEqual(store.listSessionFacts(sessionId).map(fact => fact.id).sort((a, b) => a - b));
 }
 
 test("89: Pi borrows only active paths and consumes reactivated backlog at the next ordinary opportunity", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000 });
+  const h = host({ "noting.triggerTokens": 1_000_000 });
   try {
     await h.turn();
     const store = h.memory.store;
@@ -57,11 +56,12 @@ test("89: Pi borrows only active paths and consumes reactivated backlog at the n
     const sibling = abandonedSibling(h.memory, target);
     await h.prompt("executor opportunity"); await h.answer(); await h.drain();
     const runs = store.listRuns(target.sessionId).filter(run => run.kind !== "manual");
-    expect(runs).toHaveLength(2);
-    expect(new Set(runs.map(run => run.kind))).toEqual(new Set(["noting", "consolidation"]));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.kind).toBe("noting");
     expect(runs.every(run => run.branch === target.branch && run.outcome === "success")).toBe(true);
     expect(store.pendingEntries(target.sessionId, "abandoned", sibling.turn.id).map(value => value.id)).toEqual([sibling.entry.id]);
-    expect(store.consolidationBatch(target.sessionId, "abandoned", sibling.turn.id).map(value => value.id)).toEqual([sibling.fact.id]);
+    expect(store.consolidationBatch(target.sessionId, "abandoned", sibling.turn.id).map(value => value.id))
+      .toEqual(store.listSessionFacts(target.sessionId).map(fact => fact.id).sort((a, b) => a - b));
     expect(JSON.stringify(h.conversations)).not.toContain("ABANDONED_SIBLING");
     const requestCount = h.requests.length;
     store.setCurrentPath(target.sessionId, "abandoned", sibling.turn.id, "closed");
@@ -73,14 +73,15 @@ test("89: Pi borrows only active paths and consumes reactivated backlog at the n
 });
 
 const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-89.db", stateDir: "/tmp/unused-89",
-  notingModel: "synthetic", notingThinking: "medium", consolidationModel: "synthetic", consolidationThinking: "medium",
+  notingModel: "synthetic", notingThinking: "medium",
   "dreaming.model": "synthetic", "dreaming.thinking": "medium",
   worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } }).worker;
 
 test("89: CC borrows only active paths and consumes reactivated backlog at the next ordinary opportunity", async () => {
-  const inputs: (NotingAgentInput | ConsolidationAgentInput)[] = [];
+  const inputs: NotingAgentInput[] = [];
   const memory = TraceMemory(":memory:", async raw => {
-    const input = raw as NotingAgentInput | ConsolidationAgentInput;
+    const input = raw as NotingAgentInput;
+    expect(input.kind).toBe("noting");
     inputs.push(input);
     input.reportRequest({ offline: true });
     if (input.kind === "noting") {
@@ -88,7 +89,7 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
       input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     }
     return { outcome: "success", output: "No new knowledge.", request: { offline: true } };
-  }, { noting: { triggerTokens: 1_000_000 }, consolidation: { triggerTokens: 1_000_000 } });
+  }, { noting: { triggerTokens: 1_000_000 } });
   try {
     const store = memory.store;
     const project = store.createProject({ name: "89-active", declaredBy: "mark" });
@@ -111,24 +112,25 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
       selectedEntryIds: [...ownEntries], selectedCount: ownEntries.length, selectedTailId: ownEntries.at(-1)!,
       selectedAppendedEntryIds: appended, appendedEntryIds: appended, problems: [], snapshot: {} as never });
     opportunity([first]); await scheduler.settle();
-    expect(inputs).toHaveLength(2);
-    expect(new Set(inputs.map(input => input.kind))).toEqual(new Set(["noting", "consolidation"]));
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]!.kind).toBe("noting");
     expect(inputs.every(input => input.sessionId === target.sessionId && input.branch === "active")).toBe(true);
     expect(inputs.every(input => !input.text.includes("ABANDONED_SIBLING"))).toBe(true);
     expect(store.pendingEntries(target.sessionId, "abandoned", sibling.turn.id).map(entry => entry.id)).toEqual([sibling.entry.id]);
-    expect(store.consolidationBatch(target.sessionId, "abandoned", sibling.turn.id).map(fact => fact.id)).toEqual([sibling.fact.id]);
+    expect(store.consolidationBatch(target.sessionId, "abandoned", sibling.turn.id).map(fact => fact.id))
+      .toEqual(store.listSessionFacts(target.sessionId).map(fact => fact.id).sort((a, b) => a - b));
     store.setCurrentPath(target.sessionId, "abandoned", sibling.turn.id, "closed");
     opportunity([]); await scheduler.settle();
-    expect(inputs).toHaveLength(2);
+    expect(inputs).toHaveLength(1);
     opportunity([append()]); await scheduler.settle();
-    expect(inputs).toHaveLength(4);
-    expect(inputs.slice(2).every(input => input.sessionId === target.sessionId && input.branch === "abandoned")).toBe(true);
+    expect(inputs).toHaveLength(2);
+    expect(inputs.slice(1).every(input => input.sessionId === target.sessionId && input.branch === "abandoned")).toBe(true);
     expectConsumedOnlySibling(memory, target.sessionId, sibling);
     expect(diagnostics).toEqual([]);
   } finally { memory.close(); }
 });
 
-test("89: CC reports a real invalid cursor, discards the whole borrowed scan, and admits its own N/C/D", async () => {
+test("89: CC reports a real invalid cursor, discards the whole borrowed scan, and admits its own N/D", async () => {
   const memory = TraceMemory(":memory:", async () => { throw new Error("scheduler fixture must not call a model"); });
   try {
     const store = memory.store;
@@ -140,34 +142,33 @@ test("89: CC reports a real invalid cursor, discards the whole borrowed scan, an
     const good = closedTarget(memory, own.projectId);
     const bad = closedTarget(memory, own.projectId, true);
     const diagnostics: string[] = [];
-    // Exercise the real closed scan; isolate its failure from the three own workers' execution.
+    // Exercise the real closed scan; isolate its failure from the two own workers' execution.
     const starts: { phase: string; target: Pick<TaskTarget, "sessionId" | "branch"> }[] = [];
     const record = (phase: string) => async (target: Pick<TaskTarget, "sessionId" | "branch">) => { starts.push({ phase, target }); return { outcome: "dropped" as const }; };
     vi.spyOn(memory, "taskEligibility").mockReturnValue({ due: true });
     vi.spyOn(memory, "noting").mockImplementation(record("noting"));
-    vi.spyOn(memory, "consolidate").mockImplementation(record("consolidation"));
     vi.spyOn(memory, "dream").mockImplementation(record("dreaming"));
     const scheduler = new CcTaskScheduler(memory, worker, value => diagnostics.push(value));
     scheduler.reconcile({ state: "ready", coreSessionId: own.id, branch: "main", headTurnId: turn.id,
       selectedEntryIds: [entry.id], selectedCount: 1, selectedTailId: entry.id,
       selectedAppendedEntryIds: [entry.id], appendedEntryIds: [entry.id], problems: [], snapshot: {} as never });
     await scheduler.settle();
-    expect(diagnostics.filter(value => value.includes("closed-session scan failed"))).toHaveLength(2);
-    expect(starts.map(value => value.phase)).toEqual(["noting", "consolidation", "dreaming"]);
+    expect(diagnostics.filter(value => value.includes("closed-session scan failed"))).toHaveLength(1);
+    expect(starts.map(value => value.phase)).toEqual(["noting", "dreaming"]);
     expect(starts.every(value => value.target.sessionId === own.id)).toBe(true);
     for (const target of [good, bad]) expect(store.listRuns(target.sessionId).filter(run => run.kind !== "manual")).toEqual([]);
   } finally { memory.close(); vi.restoreAllMocks(); }
 });
 
-test("89: Pi reports a real invalid cursor while its own due N/C/D all reach their workers", async () => {
+test("89: Pi reports a real invalid cursor while its own due N/D both reach their workers", async () => {
   const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1,
-    "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1 });
+    "dreaming.triggerTokens": 1 });
   try {
     await h.turn();
     const store = h.memory.store;
     const own = store.getSession(1)!;
     const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: own.id, branch: "main", createdAt: at },
-      facts: [{ turnId: 1, category: "decision", actor: "user", text: "Own rule", source: ["T1#user"], createdAt: at }] });
+      facts: [{ turnId: 1, category: "decision", actor: "user", text: "Own rule", source: ["T1#E1"], createdAt: at }] });
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const knowledge = store.commitConsolidationRun({ run: { kind: "manual", sessionId: own.id, branch: "main", createdAt: at },
       operations: [{ op: "create", handle: "$own", author: "test", text: "Own knowledge", category: "constraint", scope: "session",
@@ -180,10 +181,10 @@ test("89: Pi reports a real invalid cursor while its own due N/C/D all reach the
     h.provider(async () => new Promise<Reply>(() => {}));
     h.persist(reply("one ordinary scheduling opportunity"));
     await h.emit("agent_end");
-    await vi.waitFor(() => expect(h.conversations.length - before).toBe(3));
+    await vi.waitFor(() => expect(h.conversations.length - before).toBe(2));
     expect(h.notices.some(value => value.includes("noting closed-session scan failed"))).toBe(true);
-    expect(h.notices.some(value => value.includes("consolidation closed-session scan failed"))).toBe(true);
-    for (const phase of ["noting", "consolidation", "dreaming"] as const) {
+    expect(h.notices.some(value => value.includes("consolidation closed-session scan failed"))).toBe(false);
+    for (const phase of ["noting", "dreaming"] as const) {
       expect(store.getClaim(own.id, phase)?.borrowed).toBe(false);
       expect(store.getClaim(good.sessionId, phase)).toBeNull();
       expect(store.getClaim(bad.sessionId, phase)).toBeNull();

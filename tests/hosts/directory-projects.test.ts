@@ -101,8 +101,7 @@ test("store: one recorded project joins, none or several allocate the own projec
   const path = { sessionId: b.id, branch: "main", headTurnId: turn.id };
   const other = s.declareProject(b.id, "other", "mark", { path, atTrigger: phase => phase === "noting"
     ? s.pendingEntryIds(b.id, path.branch, path.headTurnId).length > 0
-    : phase === "consolidation" ? s.consolidationBatch(b.id, path.branch, path.headTurnId).length > 0
-      : s.duePools(path, 1).length > 0 });
+    : s.duePools(path, 1).length > 0 });
   expect(new Set(s.directoryProjects(f.root))).toEqual(new Set([a.projectId, other.id]));
   const third = directoryAllocation(s, f.repo, own, f.options);
   expect(third).toMatchObject({ projectDeclaration: "undeclared", directory: f.root });

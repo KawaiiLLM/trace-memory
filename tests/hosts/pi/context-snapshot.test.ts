@@ -10,7 +10,7 @@ import extension from "../../../src/hosts/pi/index.ts";
 import { host } from "./test-host.ts";
 import { tokens } from "../../../src/core/api/index.ts";
 
-const quiet = { "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000 };
+const quiet = { "noting.triggerTokens": 1_000_000_000 };
 
 function request(h: ReturnType<typeof host>) {
   return requestCurrentContextSnapshot(h.eventBus);
@@ -72,8 +72,7 @@ function seedMaterial(h: ReturnType<typeof host>) {
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const knowledge = store.commitConsolidationRun({
     path: { sessionId: 1, branch: "main", headTurnId: 1 },
-    run: { kind: "consolidation", sessionId: 1, branch: "main", createdAt: "seed" },
-    consolidated: [noted.facts[0]!.id],
+    run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "seed" },
     operations: [{ op: "create", handle: "$k", topics: [], reason: "Initial admission.", author: "fixture",
       text: "SNAPSHOT_KNOWLEDGE", category: "constraint", scope: "session", supports: [noted.facts[0]!.id], createdAt: "seed" }],
   });
@@ -208,7 +207,7 @@ test("branch switches select exact source membership and returned snapshots do n
 }, 30_000);
 
 test("73: an over-budget allocator truncates rather than refusing, and starts no worker or native fallback", async () => {
-  const f = await fixture({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 20, "dreaming.triggerTokens": 1,
+  const f = await fixture({ "noting.triggerTokens": 20, "dreaming.triggerTokens": 1,
     "compaction.factsTokens": 1, "compaction.rawTokens": 1, "compaction.sharedAllowanceTokens": 1 });
   try {
     // The scripted worker makes no note commit, so pending Raw remains after ordinary admission.

@@ -52,6 +52,6 @@ test("malformed persisted notice fails explicitly, rather than displaying an inv
 
 test("a catchup still syncing its transcript says so and points to /trace for progress", async () => {
   const { ccCatchupNotice } = await import("../../src/hosts/cc/menu.ts");
-  expect(ccCatchupNotice({ state: "starting", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0, diagnostic: "syncing the transcript" }))
+  expect(ccCatchupNotice({ state: "starting", entriesDone: 0, entriesTotal: 0, diagnostic: "syncing the transcript" }))
     .toBe("Catchup: starting (syncing the transcript); reopen /trace for progress");
 });

@@ -1,8 +1,8 @@
 import { expect, test, vi } from "vitest";
 import type { JsonObject } from "@earendil-works/pi-ai";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
-import { host, reply, type Reply } from "./test-host.ts";
-import { readFileSync } from "node:fs";
+import { host, reply, emptyNote, type Reply } from "./test-host.ts";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
@@ -12,7 +12,7 @@ const call = (id: string, name: string, args: unknown): Reply => ({ ...reply("")
 // 59: a scripted Dreamer accounts for the supplied handles it leaves untouched with one explicit skip batch.
 const skip = (...handles: string[]): Reply => call("skip", "memory", { operations: [], skipped: handles.map(knowledge => ({ knowledge, because: "reviewed; no operation needed" })) });
 async function seeded(config: Record<string, unknown> = {}, text = "Keep the user constraint") {
-  const h = host({ "noting.triggerTokens": 1000000, "consolidation.triggerTokens": 1000000, "dreaming.triggerTokens": 1, ...config });
+  const h = host({ "noting.triggerTokens": 1000000, "dreaming.triggerTokens": 1, ...config });
   await h.emit("session_start"); await h.turn();
   const store = h.memory.store;
   const f = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, facts: [{ turnId: 1, source: ["T1#user"], actor: "user", category: "decision", text, createdAt: "now" }] });
@@ -180,18 +180,26 @@ test("64c native host: a fitting residual ends successfully without a repair rou
   } finally { await h.dispose(); }
 });
 
-test("32d native host: Consolidator and Dreamer occupy independent seats", async () => {
-  const { h, store, item } = await seeded({ "consolidation.triggerTokens": 1 });
+test("32d native host: Noter and Dreamer occupy independent seats", async () => {
+  const { h, store, item } = await seeded();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   try {
     const phases = new Set<string>();
     let dreamerRequests = 0;
-    h.provider(async c => { const dreamer = c.systemPrompt!.startsWith("# Dreamer"); phases.add(dreamer ? "D" : "C"); await held;
-      return dreamer && ++dreamerRequests === 1 ? skip(`K${item.knowledgeId}@v1`) : reply("Done"); }, { autoStop: false });
+    h.memory.configure({ noting: { triggerTokens: 1 } });
+    // The host owns a separate facade; apply the trigger at its ordinary Settings reload boundary.
+    const settings = JSON.parse(readFileSync(join(h.dir, "agent", "settings.json"), "utf8"));
+    settings["trace-memory"]["noting.triggerTokens"] = 1;
+    writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify(settings));
+    await h.emit("session_start");
+    h.provider(async c => { const dreamer = c.systemPrompt!.startsWith("# Dreamer"); phases.add(dreamer ? "D" : "N"); await held;
+      if (!dreamer) return emptyNote(c) ?? reply("Done");
+      if (++dreamerRequests > 2) throw new Error("Unexpected Dreamer continuation");
+      return dreamerRequests === 1 ? skip(`K${item.knowledgeId}@v1`) : reply("Done"); }, { autoStop: false });
     await h.turn();
-    await vi.waitFor(() => expect([...phases].sort()).toEqual(["C", "D"]));
-    expect(store.getClaim(1, "dreaming")).not.toBeNull(); expect(store.getClaim(1, "consolidation")).not.toBeNull();
+    await vi.waitFor(() => expect([...phases].sort()).toEqual(["D", "N"]));
+    expect(store.getClaim(1, "dreaming")).not.toBeNull(); expect(store.getClaim(1, "noting")).not.toBeNull();
     release(); await h.drain();
     expect((await terminal(h)).outcome).toBe("success");
   } finally { release(); await h.dispose(); }

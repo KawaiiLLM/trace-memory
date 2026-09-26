@@ -59,7 +59,7 @@ async function fullChain(entries: number, due: boolean) {
   const transcriptPath = join(dir, "native.jsonl"), nativeSessionId = "performance";
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "s"),
     baseline: "2025-01-01T00:00:00Z", pollIntervalMs: 60_000, finalSyncTimeoutMs: 100, finalSyncStablePolls: 2,
-    notingModel: "synthetic", notingThinking: "medium", consolidationModel: "synthetic", consolidationThinking: "medium",
+    notingModel: "synthetic", notingThinking: "medium",
     "dreaming.model": "synthetic", "dreaming.thinking": "medium", worker: { cwd: dir, claudeExecutable: "/missing/claude",
       claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } });
   seedKnowledge(config.dbPath, due);

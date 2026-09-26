@@ -67,8 +67,8 @@ test("persisted hook lifecycle: repeat, N/C, 117 knowledge commits, small turns 
     expect(afterNoting.summary).not.toBe(first.summary);
     expect(await compact()).toEqual(afterNoting);
     const fact = store.listSessionFacts(1)[0]!;
-    const consolidated = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, branch: "main", createdAt: "seed" },
-      consolidated: [fact.id], operations: Array.from({ length: 117 }, (_, i) => ({ op: "create" as const,
+    const consolidated = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "seed" },
+      operations: Array.from({ length: 117 }, (_, i) => ({ op: "create" as const,
         handle: `$k${i}`, topics: [], reason: "Initial admission.", author: "fixture", text: `Durable knowledge ${i}`,
         category: "constraint" as const, scope: "global" as const, supports: [fact.id], createdAt: "seed" })) });
     if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));

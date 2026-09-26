@@ -18,7 +18,7 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
     const executable = join(directory, "fixture-version");
     writeFileSync(executable, "#!/bin/sh\nprintf '2.1.280 (Claude Code)\\n'\n"); chmodSync(executable, 0o700);
     const config = resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
-      notingModel: "test", notingThinking: "medium", consolidationModel: "test", consolidationThinking: "medium",
+      notingModel: "test", notingThinking: "medium",
       "dreaming.model": "test", "dreaming.thinking": "medium", worker: { claudeExecutable: executable, claudeVersion: "2.1.280",
         contextWindows: { test: 200_000 }, cwd: directory } });
     const replies: string[] = [];

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { TraceMemory, toolDefinitions, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult, type TaskTarget, type ToolDefinition } from "../../src/core/api/index.ts";
+import { TraceMemory, toolDefinitions, type NotingAgentInput, type RunAgentResult, type TaskTarget, type ToolDefinition } from "../../src/core/api/index.ts";
 import { resolveCcHostConfig, CC_CONTEXT_HEADROOM } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, CcResponseOrigins, ccNativeTranscriptPath, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
 import { installCcNativeRejectionGuard } from "../../src/hosts/cc/native-rejection.ts";
@@ -35,7 +35,6 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 function workerConfig(directory: string, claudeExecutable = "/opt/homebrew/bin/claude") {
   return resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "claude-sonnet-4-5", notingThinking: "medium",
-    consolidationModel: "claude-sonnet-4-5", consolidationThinking: "medium",
     "dreaming.model": "claude-sonnet-4-5", "dreaming.thinking": "medium",
     worker: { claudeExecutable, claudeVersion: "2.1.280", contextWindows: { "claude-sonnet-4-5": 200_000 },
       cwd: directory, responseOriginTimeoutMs: 20 } });
@@ -49,7 +48,7 @@ function loopbackEnvironment(configDir: string) {
 
 function phaseWorkerConfig(directory: string) {
   return resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
-    notingModel: "sonnet", notingThinking: "low", consolidationModel: "opus-c", consolidationThinking: "high",
+    notingModel: "sonnet", notingThinking: "low",
     "dreaming.model": "opus-d", "dreaming.thinking": "max", worker: { claudeExecutable: "/opt/homebrew/bin/claude",
       claudeVersion: "2.1.280", contextWindows: { sonnet: 120_000, "opus-c": 220_000, "opus-d": 320_000 }, cwd: directory } });
 }
@@ -240,28 +239,37 @@ test("Dreamer retains assistant usage received after the last completed result w
   });
 });
 
-test("CC worker counts more than fifty simulated native assistant events with unlimited rounds (not real tool execution)", async () => {
+test("CC worker dispatches fifty-one read calls through simulated MCP with unlimited rounds (not native CLI)", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-unlimited-rounds-")); dirs.push(directory);
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
-  const fakeQuery = (() => {
+  const execute = vi.fn(() => "read result");
+  const definition: ToolDefinition = { name: "trace", description: "read", parameters: { type: "object", properties: {} }, execute };
+  const fakeQuery = ((request: { options: Record<string, any> }) => {
     const stream = (async function* () {
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
+      const client = new Client({ name: "round-worker-test", version: "1" }); await client.connect(clientTransport);
       yield { type: "system", subtype: "init", session_id: "long-child", claude_code_version: "2.1.280", cwd: directory,
-        tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
-      // Round accounting only: use read calls, not undispatched writes that N must reject.
-      for (let round = 1; round <= 51; round++) yield { type: "assistant", session_id: "long-child", message: { id: `response-${round}`,
-        content: [{ type: "tool_use", id: `tool-${round}`, name: "trace", input: { address: "T1" } }], usage: { input_tokens: 1, output_tokens: 1,
-          cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
+        tools: ["mcp__trace_memory__trace"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      for (let round = 1; round <= 51; round++) {
+        yield { type: "assistant", session_id: "long-child", message: { id: `response-${round}`,
+          content: [{ type: "tool_use", id: `tool-${round}`, name: "trace", input: {} }], usage: { input_tokens: 1, output_tokens: 1,
+            cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
+        await client.callTool({ name: "trace", arguments: {}, _meta: { "claudecode/toolUseId": `tool-${round}` } });
+      }
       yield { type: "result", subtype: "success", session_id: "long-child", is_error: false, result: "done", errors: [],
         usage: { input_tokens: 51, output_tokens: 51, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+      await client.close();
     })() as any;
     stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
     return stream;
   }) as any;
-  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [definition], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
   expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 0)).toMatchObject({
     outcome: "success", output: "done", verification: { rounds: 51 }, usage: { input: 51, output: 51 },
   });
+  expect(execute).toHaveBeenCalledTimes(51);
 });
 
 test("CC Noter rejects an observed write without a handler dispatch or correlated refusal", () => {
@@ -276,14 +284,14 @@ test("simultaneous phase workers keep model and thinking selection isolated", as
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const config = resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
-    notingModel: "sonnet", notingThinking: "low", consolidationModel: "opus-c", consolidationThinking: "high",
+    notingModel: "sonnet", notingThinking: "low",
     "dreaming.model": "opus-d", "dreaming.thinking": "max", worker: { claudeExecutable: executable,
       claudeVersion: "2.1.280", contextWindows: { sonnet: 120_000, "opus-c": 220_000, "opus-d": 320_000 }, cwd: directory } });
   const observed: { model: string; effort: string }[] = [];
   let arrivals = 0, release!: () => void; const barrier = new Promise<void>(resolve => { release = resolve; });
   const fakeQuery = ((request: { options: Record<string, any> }) => {
     const model = request.options.model as string, effort = request.options.extraArgs.effort as string;
-    observed.push({ model, effort }); if (++arrivals === 3) release();
+    observed.push({ model, effort }); if (++arrivals === 2) release();
     const stream = (async function* () {
       await barrier;
       yield { type: "system", subtype: "init", session_id: model, claude_code_version: "2.1.280", cwd: directory,
@@ -295,18 +303,17 @@ test("simultaneous phase workers keep model and thinking selection isolated", as
     return stream;
   }) as any;
   const worker = new CcAgentWorker(config, { query: fakeQuery });
-  const task = (kind: "noting" | "consolidation" | "dreaming", model: string, thinking: string) => ({ kind, model,
+  const task = (kind: "noting" | "dreaming", model: string, thinking: string) => ({ kind, model,
     subagentThinkingLevel: thinking, text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
     ...(kind === "dreaming" ? { reportRounds: vi.fn(), passEnd: vi.fn(() => undefined) } : {}) }) as unknown as CcAgentTask;
   const results = await Promise.all([
     worker.run(task("noting", "sonnet", "low"), 0),
-    worker.run(task("consolidation", "opus-c", "high"), 0),
     worker.run(task("dreaming", "opus-d", "max"), 0),
   ]);
   expect(results.map(result => result.thinking)).toEqual([
-    { requested: "low", effective: "low" }, { requested: "high", effective: "high" }, { requested: "max", effective: "max" },
+    { requested: "low", effective: "low" }, { requested: "max", effective: "max" },
   ]);
-  expect(new Set(observed.map(value => `${value.model}/${value.effort}`))).toEqual(new Set(["sonnet/low", "opus-c/high", "opus-d/max"]));
+  expect(new Set(observed.map(value => `${value.model}/${value.effort}`))).toEqual(new Set(["sonnet/low", "opus-d/max"]));
 });
 
 test("worker rejects runtime metadata that does not support the selected phase thinking", async () => {
@@ -610,7 +617,7 @@ test("production MCP preserves non-default trace and search cursors through real
   memory.close();
 });
 
-test.each([false, true])("production MCP Consolidation commits its first valid batch (invalid first=%s) and records native audit unavailability", async invalidFirst => {
+test.each([false, true])("production MCP N corrects its held batch (invalid first=%s), publishes at termination and records native audit unavailability", async invalidFirst => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-consolidation-")); dirs.push(directory);
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
@@ -624,22 +631,24 @@ test.each([false, true])("production MCP Consolidation commits its first valid b
       const client = new Client({ name: "consolidation-worker-test", version: "1" }); await client.connect(clientTransport);
       const listed = await client.listTools();
       const memorySchema = (listed.tools.find(tool => tool.name === "memory") as any).inputSchema.properties.operations.items;
-      // 76: the Consolidator also updates and archives; id is present but forbidden for create (the
-      // invalidFirst submission below still exercises that).
+      // Joint N creates/updates/archives. Invalid replacement is corrected by its stable slot.
       expect(memorySchema.properties.op.enum).toEqual(["create", "update", "archive"]);
-      expect(memorySchema.properties).not.toHaveProperty("absorb");
+      expect(listed.tools.find(tool => tool.name === "memory")!.inputSchema)
+        .toEqual(toolDefinitions.find(tool => tool.name === "memory")!.parameters);
       yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
         tools: listed.tools.map(tool => `mcp__trace_memory__${tool.name}`), plugins: [], skills: [], slash_commands: [],
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       let ordinal = 0;
       const submit = async function* (arguments_: Record<string, unknown>) {
         const id = `memory-${++ordinal}`;
-        yield assistant(id, [id]);
+        yield assistant(id, ordinal === 1 ? ["note-empty", id] : [id]);
+        if (ordinal === 1) await client.callTool({ name: "note", arguments: { facts: [] }, _meta: { "claudecode/toolUseId": "note-empty" } });
         const result = await client.callTool({ name: "memory", arguments: arguments_, _meta: { "claudecode/toolUseId": id } });
         receipts.push((result.content as { type: string; text: string }[])[0]!.text);
       };
-      if (invalidFirst) yield* submit({ operations: [{ ...valid.operations[0], id: "K1@1" }], skipped: [] });
-      yield* submit(valid);
+      if (invalidFirst) yield* submit({ operations: [{ ...valid.operations[0], id: "K1#abcd" }], skipped: [] });
+      yield* submit(invalidFirst ? { operations: [{ ...valid.operations[0], slot: "M1" }], skipped: [] } : valid);
+      expect(memory.store.currentKnowledge()).toHaveLength(0); // held, not a partial publication
       yield { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: ordinal,
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
         modelUsage: {}, total_cost_usd: 0 };
@@ -650,20 +659,20 @@ test.each([false, true])("production MCP Consolidation commits its first valid b
   }) as any;
   const worker = new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
   const memory = TraceMemory(join(directory, "memory.sqlite"), task => worker.run(task as CcAgentTask, 2),
-    { consolidation: { triggerTokens: 1 } });
+    { noting: { triggerTokens: 1 } });
   const project = memory.store.createProject({ name: "core", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
   const target = append(memory, session.id, "source", "Durable CC evidence");
-  const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: "now" },
-    entryIds: [target.entry.id], facts: [{ turnId: target.turn.id, category: "observation", actor: "user", text: "Durable CC evidence",
-      source: [`T${target.turn.id}#user`], createdAt: "now" }] });
+  const noted = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" },
+    facts: [{ turnId: target.turn.id, text: "Durable CC evidence", entryIds: [target.entry.id],
+      source: [`T${target.turn.id}#E1`], createdAt: "now" }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const result = await memory.consolidate({ sessionId: session.id, branch: "main", headTurnId: target.turn.id,
+  const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: target.turn.id,
     triggerEntryId: target.entry.id, mode: "subagent", model: "claude-sonnet-4-5" });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
   expect(memory.store.currentKnowledge()).toHaveLength(1);
   if (invalidFirst) expect(receipts[0]).toContain("rejected:");
-  expect(receipts.at(-1)).toContain('"committed"');
+  expect(receipts.at(-1)).toContain('"held"');
   const run = memory.store.getRun((result as { runId: number }).runId)!;
   expect(run.request).toBeNull();
   expect(JSON.parse(run.response!).audit).toEqual({ available: false,
@@ -956,8 +965,8 @@ test("CC worker config requires explicit finite capacity and resolves no guessed
   const config = workerConfig(directory);
   expect(config.worker?.phases.noting.capacity.inputTokens).toBe(190_000);
   expect(config.worker?.responseOriginTimeoutMs).toBe(20);
-  expect(config.worker?.phases.consolidation.capacity.inputTokens).toBe(190_000);
-  expect(() => resolveCcHostConfig({ dbPath: join(directory, "a"), stateDir: join(directory, "b"), notingModel: "m", notingThinking: "medium", consolidationModel: "m", consolidationThinking: "medium",
+  expect(config.worker?.phases.dreaming.capacity.inputTokens).toBe(190_000);
+  expect(() => resolveCcHostConfig({ dbPath: join(directory, "a"), stateDir: join(directory, "b"), notingModel: "m", notingThinking: "medium",
     "dreaming.model": "m", "dreaming.thinking": "medium", worker: {
     claudeExecutable: "/opt/homebrew/bin/claude", claudeVersion: "2.1.280",
     contextWindows: { m: CC_CONTEXT_HEADROOM }, cwd: directory } })).toThrow("must exceed");
@@ -1029,7 +1038,7 @@ function append(memory: ReturnType<typeof TraceMemory>, sessionId: number, nativ
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
-test("scheduler reserves independent N/C slots and worker completion does not drain another batch", async () => {
+test("scheduler reserves independent N/D slots and failed worker completion does not drain another batch", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-scheduler-")); dirs.push(directory);
   const starts: string[] = [], admissions: Record<string, unknown>[] = [], releases = new Map<string, () => void>();
   const runner = async (raw: unknown): Promise<RunAgentResult> => {
@@ -1039,37 +1048,39 @@ test("scheduler reserves independent N/C slots and worker completion does not dr
     return { outcome: "failure", output: "synthetic failure", audit: { available: false, reason: "test" } };
   };
   const memory = TraceMemory(join(directory, "memory.sqlite"), runner,
-    { noting: { triggerTokens: 1 }, consolidation: { triggerTokens: 1 } });
+    { noting: { triggerTokens: 1 }, dreaming: { triggerTokens: 1 } });
   const project = memory.store.createProject({ name: "scheduler", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:scheduler", projectId: project.id,
     startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
   const seed = append(memory, session.id, "seed", "A pending raw source.");
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: seed.turn.id });
   expect(manual.find(value => value.name === "note")!.execute({ facts: [{
-    text: "A separate pending fact.", source: [`T${seed.turn.id}#E1`] }] })).toContain("ok: F");
-  const diagnostics: string[] = [], notingAdmission = vi.spyOn(memory, "noting"), consolidationAdmission = vi.spyOn(memory, "consolidate");
+    text: "A separate pending fact.", source: [`T${seed.turn.id}#E1`] }] })).toContain("ok: F1");
+  expect(manual.find(value => value.name === "memory")!.execute({ operations: [{ op: "create", text: "Pending maintenance", category: "constraint",
+    scope: "session", topics: [], supports: ["F1"], reason: "Seed D pool" }], skipped: [] })).not.toContain("rejected:");
+  const diagnostics: string[] = [], notingAdmission = vi.spyOn(memory, "noting"), dreamingAdmission = vi.spyOn(memory, "dream");
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, message => diagnostics.push(message));
   const reconcile = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: seed.turn.id,
     selectedEntryIds: seed.ids, appendedEntryIds: [seed.entry.id], problems: [], snapshot: {} as any };
   scheduler.reconcile(reconcile);
   scheduler.reconcile(reconcile);
   await tick();
-  expect(new Set(starts)).toEqual(new Set(["noting", "consolidation"]));
+  expect(new Set(starts)).toEqual(new Set(["noting", "dreaming"]));
   expect(starts).toHaveLength(2);
-  expect(new Set(scheduler.running())).toEqual(new Set(["noting", "consolidation"]));
+  expect(new Set(scheduler.running())).toEqual(new Set(["noting", "dreaming"]));
   expect(notingAdmission.mock.calls[0]?.[0]).toMatchObject({ capacity: { inputTokens: 110_000, prefixTokens: 0 } });
-  expect(consolidationAdmission.mock.calls[0]?.[0]).toMatchObject({ capacity: { inputTokens: 210_000, prefixTokens: 0 } });
+  expect(dreamingAdmission.mock.calls[0]?.[0]).toMatchObject({ capacity: { inputTokens: 310_000, prefixTokens: 0 } });
   expect(admissions.map(task => ({ kind: task.kind, model: task.model, thinking: task.subagentThinkingLevel })))
     .toEqual(expect.arrayContaining([
       { kind: "noting", model: "sonnet", thinking: "low" },
-      { kind: "consolidation", model: "opus-c", thinking: "high" },
+      { kind: "dreaming", model: "opus-d", thinking: "max" },
     ]));
-  releases.get("noting")!(); releases.get("consolidation")!();
+  releases.get("noting")!(); releases.get("dreaming")!();
   await scheduler.settle();
   await tick();
   expect(starts).toHaveLength(2);
   expect(diagnostics).toEqual(expect.arrayContaining([
-    expect.stringContaining("noting worker failure"), expect.stringContaining("consolidation worker failure")]));
+    expect.stringContaining("noting worker failure"), expect.stringContaining("dreaming worker failure")]));
   expect(memory.pendingEntries(session.id, "main", seed.turn.id)).toHaveLength(1);
   memory.close();
 });
@@ -1092,40 +1103,37 @@ test("manual catchup drains bounded Noting but leaves below-threshold facts and 
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-")); dirs.push(directory);
   const phases: string[] = [], admissions: { kind: string; model: string; thinking?: string }[] = [];
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
-    const input = raw as NotingAgentInput | ConsolidationAgentInput; phases.push(input.kind);
+    const input = raw as NotingAgentInput; phases.push(input.kind);
+    expect(input.kind).toBe("noting");
     admissions.push({ kind: input.kind, model: input.model, thinking: input.subagentThinkingLevel });
     if (input.kind === "noting") {
       const facts = input.material.entries.map((entry, index) => ({ text: `Observed catchup item ${entry.id}.`, source: [entry.view.match(/\[T\d+#E\d+/)![0].slice(1)] }));
       const note = input.tools.find(tool => tool.name === "note")!, batch = { facts };
       note.execute(batch);
       input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
-    } else {
-      const batch = { operations: [], skipped: input.range.facts.map(fact => ({ fact: `F${fact.id}`, because: "Synthetic test fact." })) };
-      const write = input.tools.find(tool => tool.name === "memory")!;
-      write.execute(batch);
     }
     return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
-  }, { noting: { triggerTokens: 1_000_000, batchTokens: 20 }, consolidation: { triggerTokens: 1_000_000, batchTokens: 10_000 } });
+  }, { noting: { triggerTokens: 1_000_000, batchTokens: 20 } });
   const project = memory.store.createProject({ name: "catchup", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:catchup", projectId: project.id, startedAt: "2026-01-01T00:00:00Z",
     firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
   const first = append(memory, session.id, "c1", "first catchup source with enough text for one bounded batch");
   const second = append(memory, session.id, "c2", "second catchup source with enough text for another bounded batch");
-  const notingAdmission = vi.spyOn(memory, "noting"), consolidationAdmission = vi.spyOn(memory, "consolidate");
+  const notingAdmission = vi.spyOn(memory, "noting"), dreamingAdmission = vi.spyOn(memory, "dream");
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   const projection = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: second.turn.id,
     selectedEntryIds: second.ids, appendedEntryIds: [], problems: [], snapshot: {} as any };
   expect(scheduler.startCatchup(projection).state).toBe("running");
   const late = append(memory, session.id, "late", "late input must remain outside the frozen catchup boundary");
   for (let i = 0; i < 100 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
-  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesDone: 2, entriesTotal: 2, factsDone: 0, factsTotal: 2 });
+  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesDone: 2, entriesTotal: 2 });
   expect(phases.filter(phase => phase === "noting")).toHaveLength(2);
   expect(phases.filter(phase => phase === "consolidation")).toHaveLength(0);
   expect(admissions).toEqual(expect.arrayContaining([
     { kind: "noting", model: "sonnet", thinking: "low" },
   ]));
   expect(notingAdmission.mock.calls.every(call => call[0].capacity?.inputTokens === 110_000)).toBe(true);
-  expect(consolidationAdmission).not.toHaveBeenCalled();
+  expect(dreamingAdmission).not.toHaveBeenCalled();
   expect(phases).not.toContain("dreaming");
   expect(memory.pendingEntries(session.id, "main", late.turn.id).map(entry => entry.id)).toEqual([late.entry.id]);
   expect(scheduler.startCatchup({ ...projection, headTurnId: late.turn.id, selectedEntryIds: late.ids }))
@@ -1143,15 +1151,14 @@ test("86: a bounced N retries the frozen entry before checking other phases afte
     expect(input.kind).toBe("noting");
     const note = input.tools.find(tool => tool.name === "note")!;
     if (++attempts === 1) {
-      expect(note.execute({ facts: [{ text: "Rejected.",
-        source: ["T99999#E1"] }] })).toContain("rejected:");
+      expect(note.execute({ facts: [{ text: "Rejected.", source: ["T99999#E1"] }] })).toContain("rejected:");
     } else {
       expect(attempts).toBe(2);
       expect(note.execute({ facts: [] })).toContain('"held"');
     }
     input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
-  }, { noting: { triggerTokens: 1_000_000 }, consolidation: { triggerTokens: 1 } });
+  }, { noting: { triggerTokens: 1_000_000 } });
   const project = memory.store.createProject({ name: "fixed-n", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:fixed-n", projectId: project.id,
     startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
@@ -1166,7 +1173,7 @@ test("86: a bounced N retries the frozen entry before checking other phases afte
       .toEqual(["bounced", "success"]);
     expect(attempts).toBe(2);
     expect(checks.mock.calls.map(([phase]) => phase)).toEqual([
-      "consolidation", "dreaming", "consolidation", "dreaming", "consolidation", "dreaming"]);
+      "dreaming", "dreaming", "dreaming"]);
     expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesDone: 1, entriesTotal: 1 });
     expect(memory.store.enabled(session.id)).toBe(true);
   } finally { scheduler.stop(); await scheduler.settle(); memory.close(); }
@@ -1186,7 +1193,7 @@ test("86: rejected uncorrected N submissions bounce and retry without C/D checks
     input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     // The worker ends without correcting this rejected tool call.
     return { outcome: "success", output: "I will not correct it.", audit: { available: false, reason: "test" } };
-  }, { noting: { triggerTokens: 1_000_000 }, consolidation: { triggerTokens: 1 } });
+  }, { noting: { triggerTokens: 1_000_000 } });
   const project = memory.store.createProject({ name: "bounced-n", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:bounced-n", projectId: project.id,
     startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
@@ -1201,55 +1208,40 @@ test("86: rejected uncorrected N submissions bounce and retry without C/D checks
     expect(runs.map(run => run.outcome))
       .toEqual(["bounced", "bounced", "bounced"]);
     expect(attempts).toBe(3);
-    expect(checks.mock.calls.map(([phase]) => phase)).toEqual(["consolidation", "dreaming"]);
+    expect(checks.mock.calls.map(([phase]) => phase)).toEqual(["dreaming"]);
     expect(memory.store.enabled(session.id)).toBe(false);
     expect(memory.store.listSessionFacts(session.id)).toEqual([]);
     expect(scheduler.catchupStatus()).toMatchObject({ state: "stopped" });
   } finally { scheduler.stop(); await scheduler.settle(); memory.close(); }
 });
 
-test("86: catchup retries C after a committed write without rolling back its knowledge", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-partial-c-")); dirs.push(directory);
+test("92: catchup retries failed N without publishing held facts or knowledge twice", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-atomic-n-")); dirs.push(directory);
+  let attempts = 0;
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
-    const input = raw as NotingAgentInput | ConsolidationAgentInput;
-    if (input.kind === "noting") {
-      const entry = input.material.entries[0]!;
-      const batch = { facts: [{ text: "A durable synthetic observation.",
-        source: [entry.view.match(/\[T\d+#E\d+/)![0].slice(1)] }] };
-      const note = input.tools.find(tool => tool.name === "note")!;
-      note.execute(batch);
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
-    } else {
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create",
-        text: "Committed before terminal failure.", category: "reference", scope: "session", topics: [],
-        supports: input.range.facts.map(fact => `F${fact.id}`), reason: "Synthetic durable reference." }], skipped: [] });
-    }
-    return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
-  }, { noting: { triggerTokens: 1_000_000, batchTokens: 1000 }, consolidation: { triggerTokens: 1 } });
-  const project = memory.store.createProject({ name: "partial-c", declaredBy: "mark" });
-  const session = memory.store.createSession({ host: "cc:partial-c", projectId: project.id, startedAt: "2026-01-01T00:00:00Z",
-    firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
-  const source = append(memory, session.id, "partial", "The committed knowledge must survive its worker's later failure.");
-  const consolidate = memory.consolidate;
-  let calls = 0;
-  const failure = vi.spyOn(memory, "consolidate").mockImplementation(async options => {
-    const result = await consolidate(options);
-    if (++calls !== 1) return result;
-    expect(result.outcome).toBe("success");
-    if (result.outcome !== "success") throw new Error("fixture C did not commit");
-    return { outcome: "failure", runId: result.runId, problems: ["terminal failure after commit"] };
-  });
-  const dream = vi.spyOn(memory, "dream");
+    const input = raw as NotingAgentInput;
+    expect(input.kind).toBe("noting"); attempts++;
+    expect(memory.store.listSessionFacts(input.sessionId)).toEqual([]);
+    expect(memory.store.currentKnowledge()).toEqual([]);
+    const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Durable evidence", source: [source] }] })).toContain("held");
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text: "Durable reference", category: "reference",
+      scope: "session", topics: [], supports: ["$1"], reason: "Supported" }], skipped: [] })).toContain("held");
+    return { outcome: attempts === 1 ? "failure" : "success", output: "terminal", audit: { available: false, reason: "test" } };
+  }, { noting: { triggerTokens: 1_000_000 } });
+  const project = memory.store.createProject({ name: "atomic-n", declaredBy: "mark" });
+  const session = memory.store.createSession({ host: "cc:atomic-n", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
+  const source = append(memory, session.id, "atomic", "Both layers await normal termination");
   const scheduler = new CcTaskScheduler(memory, workerConfig(directory).worker, () => {});
   try {
     scheduler.startCatchup({ state: "ready", coreSessionId: session.id, branch: "main", headTurnId: source.turn.id,
       selectedEntryIds: source.ids, appendedEntryIds: [], problems: [], snapshot: {} as any });
     for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
-    expect(scheduler.catchupStatus()).toMatchObject({ state: "completed" });
-    expect(memory.store.db.prepare("SELECT text FROM knowledge_revisions").all()).toEqual([
-      { text: "Committed before terminal failure." }]);
-    expect(dream).not.toHaveBeenCalled();
-    await tick(); expect(failure).toHaveBeenCalledTimes(2);
+    expect(scheduler.catchupStatus().state).toBe("completed"); expect(attempts).toBe(2);
+    expect(memory.store.listRuns(session.id).map(run => run.outcome)).toEqual(["failure", "success"]);
+    expect(memory.store.listSessionFacts(session.id)).toHaveLength(1);
+    expect(memory.store.currentKnowledge()).toHaveLength(1);
+    expect(memory.pendingEntries(session.id, "main", source.turn.id)).toEqual([]);
   } finally { scheduler.stop(); await scheduler.settle(); memory.close(); }
 });
 
@@ -1260,7 +1252,7 @@ test("manual catchup reports waiting on a foreign claim and resumes only on a la
     store: { enabled: () => true, pendingEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [],
       getClaim: () => foreign ? ({ executorId: "foreign", expiresAt: Date.now() + 60_000 }) : null, progressSignal: () => "sig" },
     noting: async () => { calls.push("noting"); pending = false; return { outcome: "success", facts: [] }; },
-    consolidate: async () => ({ outcome: "success" }), dream: async () => ({ outcome: "success" }),
+    dream: async () => ({ outcome: "success" }),
     taskEligibility: () => ({ due: false }) } as any;
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-wait-")); dirs.push(directory);
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
@@ -1279,30 +1271,23 @@ test("manual catchup reports waiting on a foreign claim and resumes only on a la
   expect(calls).toEqual(["noting"]);
 });
 
-test("stop discards held Noting output; restart publishes the batch without forcing its below-threshold C tail", async () => {
+test("92: stop discards held N output; restart processes the same pending Raw atomically", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-resume-")); dirs.push(directory);
-  let noted!: () => void; const held = new Promise<void>(resolve => { noted = resolve; });
-  let attempts = 0;
+  let noted!: () => void, attempts = 0; const held = new Promise<void>(resolve => { noted = resolve; });
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
-    const input = raw as NotingAgentInput | ConsolidationAgentInput;
-    if (input.kind === "noting") {
-      const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
-      expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [{
-        text: "The source is published only at normal termination.", source: [source] }] })).toContain('"held"');
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
-      if (++attempts === 1) {
-        noted();
-        await new Promise<void>(resolve => input.signal!.addEventListener("abort", () => resolve(), { once: true }));
-        return { outcome: "cancelled", output: "stopped", audit: { available: false, reason: "test" } };
-      }
-      expect(attempts).toBe(2);
-      return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
+    const input = raw as NotingAgentInput;
+    expect(input.kind).toBe("noting");
+    const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Held until terminal success", source: [source] }] })).toContain('"held"');
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    if (++attempts === 1) {
+      noted();
+      await new Promise<void>(resolve => input.signal!.addEventListener("abort", () => resolve(), { once: true }));
+      return { outcome: "cancelled", output: "stopped", audit: { available: false, reason: "test" } };
     }
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const batch = { operations: [], skipped: input.range.facts.map(fact => ({ fact: `F${fact.id}`, because: "Synthetic test fact." })) };
-    write.execute(batch);
+    expect(attempts).toBe(2);
     return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
-  }, { noting: { triggerTokens: 1_000_000 }, consolidation: { triggerTokens: 1_000_000 } });
+  }, { noting: { triggerTokens: 1_000_000 } });
   const project = memory.store.createProject({ name: "resume", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:resume", projectId: project.id, startedAt: "2026-01-01T00:00:00Z",
     firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
@@ -1315,13 +1300,14 @@ test("stop discards held Noting output; restart publishes the batch without forc
   scheduler.stopCatchup(); memory.cancelTasks();
   for (let i = 0; i < 20 && scheduler.running().length; i++) await tick();
   expect(memory.pendingEntries(session.id, "main", source.turn.id).map(entry => entry.id)).toEqual([source.entry.id]);
-  expect(memory.store.consolidationBatch(session.id, "main", source.turn.id)).toHaveLength(0);
+  expect(memory.store.listSessionFacts(session.id)).toEqual([]);
   expect(scheduler.catchupStatus().state).toBe("stopped");
   scheduler.startCatchup(projection);
   for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
-  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesTotal: 1, entriesDone: 1, factsTotal: 1, factsDone: 0 });
+  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesTotal: 1, entriesDone: 1 });
   expect(memory.pendingEntries(session.id, "main", source.turn.id)).toEqual([]);
   expect(memory.store.listSessionFacts(session.id)).toHaveLength(1);
+  expect(memory.store.listRuns(session.id).map(run => run.outcome)).toEqual(["cancelled", "success"]);
   memory.close();
 });
 
@@ -1332,7 +1318,7 @@ test("manual catchup fences pre-admission cancellation, concurrent status, dropp
     cancelTasks: () => { cancelled++; return []; },
     store: { enabled: () => true, pendingEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [], getClaim: () => null, progressSignal: () => "sig" },
     noting: async () => { calls.push("noting"); if (!dropped) pending = false; return { outcome: dropped ? "dropped" : "success", facts: [] }; },
-    consolidate: async () => ({ outcome: "success" }), dream: async () => ({ outcome: "success" }),
+    dream: async () => ({ outcome: "success" }),
     taskEligibility: () => ({ due: false }) } as any;
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-races-")); dirs.push(directory);
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
@@ -1367,7 +1353,7 @@ test("stop before the reservation microtask fences all ordinary phases and later
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
     taskEligibility: () => ({ due: true }), cancelTasks: vi.fn(() => []),
     store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
-    noting: result("noting"), consolidate: result("consolidation"), dream: result("dreaming") } as any;
+    noting: result("noting"), dream: result("dreaming") } as any;
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedEntryIds: [1], appendedEntryIds: [1], problems: [], snapshot: {} as any };
@@ -1379,7 +1365,7 @@ test("stop before the reservation microtask fences all ordinary phases and later
 
   scheduler.reconcile(projection);
   await scheduler.settle(); await tick();
-  expect(new Set(calls)).toEqual(new Set(["noting", "consolidation", "dreaming"]));
+  expect(new Set(calls)).toEqual(new Set(["noting", "dreaming"]));
 });
 
 test("scheduler reserves a distinct Dreaming slot without completion-driven draining", async () => {
@@ -1391,18 +1377,18 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
   };
   const memory = { config: { closedSessionScope: "project" }, taskEligibility: () => ({ due: true }),
     store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
-    noting: phase("noting"), consolidate: phase("consolidation"), dream: phase("dreaming") } as any;
+    noting: phase("noting"), dream: phase("dreaming") } as any;
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   const reconcile = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedEntryIds: [1], appendedEntryIds: [1], problems: [], snapshot: {} as any };
   scheduler.reconcile(reconcile); scheduler.reconcile(reconcile); await tick();
-  expect(new Set(starts)).toEqual(new Set(["noting", "consolidation", "dreaming"]));
-  expect(new Set(scheduler.running())).toEqual(new Set(["noting", "consolidation", "dreaming"]));
+  expect(new Set(starts)).toEqual(new Set(["noting", "dreaming"]));
+  expect(new Set(scheduler.running())).toEqual(new Set(["noting", "dreaming"]));
   expect(admissions.find(value => value.kind === "dreaming")).toMatchObject({ model: "opus-d",
     thinkingLevel: "max", subagentThinkingLevel: "max", capacity: { inputTokens: 310_000, prefixTokens: 0 } });
   for (const release of releases.values()) release();
   await scheduler.settle(); await tick();
-  expect(starts).toHaveLength(3);
+  expect(starts).toHaveLength(2);
 });
 
 test("scheduler diagnoses resolved bounced and successful-but-problemed results", async () => {
@@ -1410,7 +1396,7 @@ test("scheduler diagnoses resolved bounced and successful-but-problemed results"
   const memory = { config: { closedSessionScope: "project" }, taskEligibility: () => ({ due: true }),
     store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: async () => ({ outcome: "bounced", runId: 7, problems: ["candidate rejected"] }),
-    consolidate: async () => ({ outcome: "success", runId: 8, diagnostics: [], committed: [], problems: ["post-commit warning"] }) } as any;
+    dream: async () => ({ outcome: "success", runId: 8, diagnostics: [], committed: [], problems: ["post-commit warning"] }) } as any;
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-diagnostics-")); dirs.push(directory);
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, message => diagnostics.push(message));
   scheduler.reconcile({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 1,
@@ -1418,7 +1404,7 @@ test("scheduler diagnoses resolved bounced and successful-but-problemed results"
   await scheduler.settle();
   expect(diagnostics).toEqual(expect.arrayContaining([
     "noting worker bounced for S1 R7: candidate rejected",
-    "consolidation worker success for S1 R8: post-commit warning"]));
+    "dreaming worker success for S1 R8: post-commit warning"]));
 });
 
 test("scheduler checks each newly imported foreground entry with its own persisted trigger", async () => {
@@ -1429,16 +1415,14 @@ test("scheduler checks each newly imported foreground entry with its own persist
     taskEligibility: (phase: string, target: TaskTarget) => { eligibility.push({ phase, triggerEntryId: target.triggerEntryId, headTurnId: target.headTurnId });
       return { due: target.triggerEntryId === 2 }; },
     store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: id === 1 ? 10 : 11 }), progressSignal: () => "sig" },
-    noting: run("noting"), consolidate: run("consolidation"), dream: run("dreaming") } as any;
+    noting: run("noting"), dream: run("dreaming") } as any;
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   scheduler.reconcile({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 11,
     selectedEntryIds: [1, 2], appendedEntryIds: [1, 2, 99], problems: [], snapshot: {} as any });
   await scheduler.settle();
   expect(eligibility.filter(value => value.phase === "noting").map(value => [value.triggerEntryId, value.headTurnId]))
     .toEqual([[1, 10], [2, 11]]);
-  // Ticket 72: entry 1's not-due Consolidation/Dreaming disarms both, so entry 2 (in the same
-  // opportunity batch, nothing having re-armed between them) evaluates Noting only — only Noting keeps
-  // its own per-entry independent trigger; C and D are armed/disarmed state, not per-entry.
+  // Entry 1 disarms D, so entry 2 evaluates N only; D waits for a re-arming event.
   expect(new Set(started.map(value => `${value.phase}:${value.triggerEntryId}`))).toEqual(new Set(["noting:2"]));
   // A normal unchanged importer projection carries no appended entries and grants no second chance.
   scheduler.reconcile({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 11,
@@ -1447,21 +1431,20 @@ test("scheduler checks each newly imported foreground entry with its own persist
   expect(started).toHaveLength(1);
 });
 
-test("scheduler borrows closed Noting and Consolidation work but never a closed Dreamer target", async () => {
+test("scheduler borrows closed Noting work but never a closed Dreamer target", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-no-dreamer-borrow-")); dirs.push(directory);
   const queried: string[] = [], started: string[] = [];
   const memory = { config: { closedSessionScope: "project" }, taskEligibility: () => ({ due: false }),
     store: { enabled: () => true, getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig",
       closedTasks: (phase: string) => { queried.push(phase); return [{ sessionId: 2, branch: "closed", headTurnId: 2, triggerEntryId: 20 }]; } },
     noting: async () => { started.push("noting"); return { outcome: "success" }; },
-    consolidate: async () => { started.push("consolidation"); return { outcome: "success" }; },
     dream: async () => { started.push("dreaming"); return { outcome: "success" }; } } as any;
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   scheduler.reconcile({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedEntryIds: [1], appendedEntryIds: [1], problems: [], snapshot: {} as any });
   await scheduler.settle();
-  expect(queried).toEqual(["noting", "consolidation"]);
-  expect(new Set(started)).toEqual(new Set(["noting", "consolidation"]));
+  expect(queried).toEqual(["noting"]);
+  expect(started).toEqual(["noting"]);
 });
 
 test("scheduler borrows an eligible closed target only at an executor entry-completion opportunity", async () => {
