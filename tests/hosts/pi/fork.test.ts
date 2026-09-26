@@ -1,63 +1,27 @@
 import { expect, test } from "vitest";
 import * as fork from "../../../src/hosts/pi/fork.ts";
-import { host as createHost, reply, notingFact, consolidationReply } from "./test-host.ts";
+import { host as createHost, notingFact } from "./test-host.ts";
 
-// 19c: the request-copy runner is gone, and with it every test that drove it through a mocked
-// `complete`. What is left here is the gate module's own unit coverage plus the two host rules that
-// are runner-independent: the run's model is frozen at launch, and a fork with no usable capture
-// falls back to a fresh-context child for Consolidation with one warning.
-
-const consolidationOutput = consolidationReply();
-
-test("64a: a model switch during Consolidation does not redirect the admitted run", async () => {
-  const h = createHost({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false });
+// The legacy request-copy runner is gone. The independent model-freeze rule belongs to N now.
+test("92: a model switch during Noting does not redirect its admitted run", async () => {
+  const h = createHost({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  let release!: () => void;
   try {
     await h.emit("session_start");
-    let release!: () => void;
+    let held = false;
     h.provider(async c => {
-      const last = String(c.messages.at(-1)!.content);
-      if (/Range: F/.test(last)) await new Promise<void>(resolve => { release = resolve; });
-      if (c.messages.filter(m => m.role === "toolResult").length >= 1) return reply("Done.");
-      if (/Range: F/.test(last) || /NEAR:/.test(last)) return consolidationOutput;
+      if (!held) { held = true; await new Promise<void>(resolve => { release = resolve; }); }
       return notingFact(c);
     }, { autoStop: false });
-    await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
-    // N's terminal checkpoint already admitted C; do not create a second, unrelated N/C task.
+    await h.prompt(); await h.answer(); await h.emit("agent_settled");
+    await h.drain();
     expect(typeof release).toBe("function");
-    h.ctx.model = { ...h.ctx.model!, id: "next" }; // The user switches the session model mid-consolidation.
+    h.ctx.model = { ...h.ctx.model!, id: "next" };
     release(); await h.drain();
-    const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
+    const runs = h.memory.store.listRuns(1).filter(r => r.kind === "noting");
     expect(runs.map(r => [r.model, r.outcome])).toEqual([["fake/test", "success"]]);
-    // Every request of that run went to the frozen model.
-    const requests = h.requests.filter((_, index) => h.conversations[index]!.systemPrompt?.includes("You are the Consolidator:"));
-    expect(requests).toHaveLength(2);
-    expect(requests.map(r => (r as { model: string }).model)).toEqual(["test", "test"]);
-  } finally { await h.dispose(); }
-});
-
-// 25b withdrew this phase's fork preference, so there is no capture to be missing and no fallback to
-// announce: Consolidation runs in a fresh child on the configured model, with no notice.
-test("64a: consolidation runs one submission in a fresh child on its own model, with nothing to fall back from", async () => {
-  const h = createHost({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, notingModel: "fake/noter", consolidationModel: "fake/Consolidator" });
-  try {
-    // Ticket 69: Noting's own completion in `h.turn()` below now admits this due Consolidation
-    // immediately rather than waiting for the second prompt, so its reply must skip whichever facts
-    // that particular admission's batch actually holds — the static `consolidationOutput` names only
-    // F1 and would loop forever resubmitting an unrecognized skip if a later admission's batch differs.
-    h.provider(async c => c.systemPrompt!.includes("Consolidation (knowledge extraction)") ? consolidationReply(c) : notingFact(c));
-    await h.turn();
-    await h.prompt(); // the noting's facts reach the conversation first
-    await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-    const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
-    // Ticket 69: the first admission, right after h.turn()'s own Noting commit, and a second once
-    // the follow-up prompt's Noting run commits again — each still one fresh subagent submission.
-    expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["subagent", "fake/Consolidator", "success"], ["subagent", "fake/Consolidator", "success"]]);
-    for (const run of runs) {
-      expect(JSON.parse(run.response!).fallbackReason).toBeUndefined(); // nothing was requested and refused
-      expect(JSON.parse(run.response!).toolCalls).toHaveLength(1);
-    }
-    expect(h.notices.filter(n => n.includes("consolidation fell back"))).toEqual([]);
-  } finally { await h.dispose(); }
+    expect(h.requests.map(r => (r as { model: string }).model)).toEqual(["test", "test"]);
+  } finally { release?.(); await h.dispose(); }
 });
 
 test("19a ruling 2026-09-08: the fork gate ignores cache_control placement and no other difference", () => {

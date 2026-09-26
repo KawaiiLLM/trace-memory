@@ -1,19 +1,12 @@
 import { expect, test } from "vitest";
 import { host, reply } from "./test-host.ts";
 
-const cases = (["noting", "consolidation"] as const).flatMap(phase =>
-  (["unknown", "capacity"] as const).map(route => ({ phase, route })));
+const cases = (["unknown", "capacity"] as const).map(route => ({ phase: "noting" as const, route }));
 
-async function pending(phase: "noting" | "consolidation") {
-  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": phase === "noting" ? 20 : 1e9,
-    "consolidation.triggerTokens": 1, "consolidation.forkModeDefault": true,
-    [`${phase}Model`]: "fake/test-thinking", [`${phase}Thinking`]: "high" });
+async function pending() {
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20,
+    notingModel: "fake/test-thinking", notingThinking: "high" });
   await h.emit("session_start");
-  if (phase === "consolidation") {
-    await h.prompt("seed"); await h.answer("seed reply");
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
-      .find(tool => tool.name === "note")!.execute({ facts: [{ text: "A pending fact", source: ["T1#E1"] }] });
-  }
   h.setThinkingLevel("high");
   h.ctx.model = { ...h.ctx.model!, contextWindow: 50_000 };
   await h.prompt("word ".repeat(200));
@@ -27,7 +20,7 @@ async function pending(phase: "noting" | "consolidation") {
 }
 
 test.each(cases)("$phase $route preflight preserves first-admission thinking", async ({ phase, route }) => {
-  const { h, start } = await pending(phase);
+  const { h, start } = await pending();
   try {
     h.ctx.getContextUsage = () => {
       // This callback runs after admission freezes policy, before either host preflight refusal.
@@ -47,7 +40,7 @@ test.each(cases)("$phase $route preflight preserves first-admission thinking", a
 
 test.each(cases.flatMap(value => (["stop", "off", "shutdown"] as const).map(cancel => ({ ...value, cancel }))))(
   "$phase $route preflight cannot continue after $cancel", async ({ phase, route, cancel }) => {
-    const { h, start } = await pending(phase);
+    const { h, start } = await pending();
     try {
       let cancelled: Promise<unknown> | undefined, cancelling = false;
       const cancelNow = () => {

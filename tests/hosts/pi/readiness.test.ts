@@ -72,7 +72,7 @@ test("64c: persisted assistant and tool-result entries each grant one mid-turn s
 });
 
 test("64c: Pi does not borrow a due closed-session Dreamer target", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000 });
+  const h = host({ "noting.triggerTokens": 1_000_000 });
   try {
     await h.turn();
     const store = h.memory.store, projectId = store.getSession(1)!.projectId;
@@ -95,8 +95,8 @@ test("64c: Pi does not borrow a due closed-session Dreamer target", async () => 
     await h.prompt("one executor opportunity");
     await h.answer("completed");
     await h.drain();
-    expect(h.conversations.some(conversation => conversation.systemPrompt?.includes("You are the Consolidator:"))).toBe(true);
     expect(h.conversations.some(conversation => conversation.systemPrompt?.startsWith("# Dreamer"))).toBe(false);
+    expect(h.memory.store.listRuns(closed.id).filter(run => run.kind === "consolidation")).toEqual([]);
     expect(store.listRuns(closed.id).filter(run => run.kind === "dreaming")).toEqual([]);
   } finally { await h.dispose(); }
 });

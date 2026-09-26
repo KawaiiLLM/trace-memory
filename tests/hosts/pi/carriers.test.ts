@@ -128,9 +128,10 @@ test("26c0 native fixture: the message the hook returned is persisted through th
     // 29d: that commit reaches no prompt on its own, so the message this case needs is the one
     // automatic carrier that is left — the initial knowledge block.
     const store = f.h.memory.store, fact = store.listSessionFacts(1)[0]!;
-    store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: "now" }, operations: [{
+    const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{
       op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture",
       text: "Carried knowledge", category: "constraint", scope: "global", supports: [fact.id], createdAt: "now" }] });
+    expect(created.ok, created.problems?.join("; ")).toBe(true);
     // 92: retained Raw no longer substitutes for a knowledge body; source bindings stay intact.
     await f.turn("第二个问题");
     const manager = f.manager();

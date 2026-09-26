@@ -1113,12 +1113,12 @@ test("manual catchup drains bounded Noting but leaves below-threshold facts and 
       input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     }
     return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
-  }, { noting: { triggerTokens: 1_000_000, batchTokens: 20 } });
+  }, { noting: { triggerTokens: 1_000_000, batchTokens: 150 } });
   const project = memory.store.createProject({ name: "catchup", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:catchup", projectId: project.id, startedAt: "2026-01-01T00:00:00Z",
     firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
-  const first = append(memory, session.id, "c1", "first catchup source with enough text for one bounded batch");
-  const second = append(memory, session.id, "c2", "second catchup source with enough text for another bounded batch");
+  const first = append(memory, session.id, "c1", "first catchup source " + "word ".repeat(95));
+  const second = append(memory, session.id, "c2", "second catchup source " + "word ".repeat(95));
   const notingAdmission = vi.spyOn(memory, "noting"), dreamingAdmission = vi.spyOn(memory, "dream");
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   const projection = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: second.turn.id,
