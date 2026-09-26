@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { readHandle } from "../../read-handle-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { renderKnowledgeChange, wordLevelDiff } from "../../../src/core/render/index.ts";
 import { canonicalFlatConfig, REMOVED_SETTINGS, sourceSeededMemory, validateConfig, type ConsolidationAgentInput } from "../../source-fixture.ts";
@@ -31,13 +32,16 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
     const facts = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
       entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id),
       facts: [
-        { turnId: turn.id, category: "observation", actor: "user", text: "beta.5 is current", source: [`T${turn.id}#user`], createdAt: time },
-        { turnId: turn.id, category: "observation", actor: "user", text: "a second independent fact", source: [`T${turn.id}#user`], createdAt: time },
-        { turnId: turn.id, category: "observation", actor: "user", text: "a third independent fact", source: [`T${turn.id}#user`], createdAt: time },
+        { turnId: turn.id, entryIds: memory.store.listSourceEntries(session.id, turn.id).map(entry => entry.id), text: "beta.5 is current", source: [`T${turn.id}#E1`], createdAt: time },
+        { turnId: turn.id, entryIds: memory.store.listSourceEntries(session.id, turn.id).map(entry => entry.id), text: "a second independent fact", source: [`T${turn.id}#E1`], createdAt: time },
+        { turnId: turn.id, entryIds: memory.store.listSourceEntries(session.id, turn.id).map(entry => entry.id), text: "a third independent fact", source: [`T${turn.id}#E1`], createdAt: time },
       ] });
     if (!facts.ok) throw new Error(facts.problems.join("; "));
     return { session, turn, fact: facts.facts[0]!.id, fact2: facts.facts[1]!.id, fact3: facts.facts[2]!.id };
   }
+
+  const history = (item: { knowledgeId: number; commit: number }) =>
+    `K${item.knowledgeId}@v${memory.store.versionOrdinal(item.knowledgeId, item.commit)}`;
 
   /** A direct low-level Consolidation write, bypassing the model round-trip. */
   function writeC(sessionId: number, operations: unknown[]) {
@@ -98,8 +102,8 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       expect(schema.properties).toHaveProperty("id");
       expect(schema.properties).not.toHaveProperty("absorb");
       for (const operation of [
-        { op: "merge", id: "K1@1", absorb: ["K2@2"] },
-        { op: "split", id: "K1@1" },
+        { op: "merge", id: "K1#aaaa", absorb: ["K2#bbbb"] },
+        { op: "split", id: "K1#aaaa" },
       ]) {
         const receipt = definition.execute({ operations: [{ ...created(f.fact, "new").operations[0], ...operation }], skipped: [] });
         expect(receipt).toContain("Dreamer");
@@ -163,7 +167,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "seed", startedAt: time });
     const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
       entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id),
-      facts: [{ turnId: turn.id, category: "observation", actor: "user", text: "seed", source: [`T${turn.id}#user`], createdAt: time }] });
+      facts: [{ turnId: turn.id, entryIds: memory.store.listSourceEntries(session.id, turn.id).map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const fact = noted.facts[0]!.id;
     const created0 = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time },
@@ -187,14 +191,14 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       const write = input.tools.find(tool => tool.name === "memory")!;
       // D's operation on the frozen (now stale) base is refused; nothing else happens to it — no
       // fallback conversion, no automatic retry against the new base.
-      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: `K${k5.knowledgeId}@${k5.commit}`, text: "D's edit",
+      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(input.tools, history(k5)), text: "D's edit",
         category: "reference", scope: "project", topics: [], supports: [`F${fact}`], reason: "D edit." }], skipped: [] }));
       expect(receipt.results[0]).toContain("base is not the latest effective applicable revision");
-      expect(receipt.results[0]).toContain(`K${k5.knowledgeId}@${cMoved.commit}`);
+      expect(receipt.results[0]).toContain(history(cMoved));
       // D finishes the run through its own separate, valid submission (the per-item discipline: one
       // rejection's blast radius stays one item).
       const closed = JSON.parse(write.execute({ operations: [], skipped: [
-        { knowledge: `K${trigger.knowledgeId}@${trigger.commit}`, because: "No maintenance needed for the explicit fixture trigger." }] }));
+        { knowledge: history(trigger), because: "No maintenance needed for the explicit fixture trigger." }] }));
       expect(closed.committed).toEqual([]);
       return { outcome: "success", output: "D saw the refusal", request: {} };
     });
@@ -213,7 +217,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
     memory.selectEntries(f.session.id, "main", memory.store.listSourceEntries(f.session.id).map(entry => entry.id));
     const childFacts = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: f.session.id, branch: "main", createdAt: time },
       entryIds: memory.store.sourcePath(f.session.id, "main", childTurn.id).map(entry => entry.id),
-      facts: [{ turnId: childTurn.id, category: "observation", actor: "user", text: "child-only evidence", source: [`T${childTurn.id}#user`], createdAt: time }] });
+      facts: [{ turnId: childTurn.id, entryIds: memory.store.listSourceEntries(f.session.id, childTurn.id).map(entry => entry.id), text: "child-only evidence", source: [`T${childTurn.id}#E1`], createdAt: time }] });
     if (!childFacts.ok) throw new Error(childFacts.problems.join("; "));
     const childFact = childFacts.facts[0]!.id;
     const created0 = writeC(f.session.id, [{ op: "create", handle: "$p", author: "consolidation", text: "v1", category: "reference",
@@ -260,7 +264,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       .toEqual([updated.committed[0]!.commit]);
   });
 
-  test("reads: an update of the version a refusal named, without reading it, is refused by the read rule; after trace it commits; a refusal never carries a body or names an invisible version", async () => {
+  test("92 tagged bases need no read ledger; stale refusal names history without a body or tag, and a current tag commits", async () => {
     const fallback = async () => ({ outcome: "success" as const, output: "unused", request: { unused: true } });
     const scenarios = new AdmittedDreamerScenarios(fallback);
     memory = sourceSeededMemory(":memory:", scenarios.agent);
@@ -272,7 +276,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
     const triggerEntryId = selectedEntries.at(-1)!.id;
     const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
       entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id), facts: [{ turnId: turn.id,
-        category: "decision", actor: "user", text: "rule", source: [`T${turn.id}#user`], createdAt: time }] });
+        entryIds: selectedEntries.map(entry => entry.id), text: "rule", source: [`T${turn.id}#E1`], createdAt: time }] });
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const fact = noted.facts[0]!.id;
     const createdRun = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time }, operations: [{
@@ -294,18 +298,19 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       const request = { fixture: "reads" };
       input.reportRequest(request);
       const memoryTool = input.tools.find(tool => tool.name === "memory")!;
-      // D never received K@base's body (it was superseded before this run), and never reads it: an
-      // update naming the stale address is refused by the read rule, with no body and no invisible name.
-      const blind = memoryTool.execute({ operations: [{ op: "update", id: `K${base.knowledgeId}@${base.commit}`, text: "blind edit",
+      // Inject an exact tag without a trace call: authority depends on the current base, not read history.
+      const staleTag = `K${base.knowledgeId}#${memory.store.versionTag(base.knowledgeId, base.commit)}`;
+      const currentTag = `K${current.knowledgeId}#${memory.store.versionTag(current.knowledgeId, current.commit)}`;
+      const blind = memoryTool.execute({ operations: [{ op: "update", id: staleTag, text: "blind edit",
         category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: "Blind." }], skipped: [] });
-      expect(blind).toContain("was not read as visible and active");
+      expect(blind).toContain("base is not the latest effective applicable revision");
+      expect(blind).toContain(history(current));
+      expect(blind).not.toContain(currentTag);
       expect(blind).not.toContain("base rule");
       expect(blind).not.toContain("moved rule");
-      const trace = input.tools.find(tool => tool.name === "trace")!;
-      expect(trace.execute({ address: `K${current.knowledgeId}@${current.commit}`, itemBudget: null })).toContain("moved rule");
-      const corrected = memoryTool.execute({ operations: [{ op: "update", id: `K${current.knowledgeId}@${current.commit}`, text: "corrected rule",
+      const corrected = memoryTool.execute({ operations: [{ op: "update", id: currentTag, text: "corrected rule",
         category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: "Correct." },
-        { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${fact}`], reason: "Retire the explicit fixture trigger." }], skipped: [] });
+        { op: "archive", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the explicit fixture trigger." }], skipped: [] });
       expect(corrected).toContain('"committed"');
       return { outcome: "success", output: "scenario complete", request };
     });
@@ -342,7 +347,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
     const otherTurn = memory.store.appendTurn({ sessionId: otherSession.id, kind: "turn", userPrompt: "elsewhere", startedAt: time });
     const otherFacts = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: otherSession.id, branch: "main", createdAt: time },
       entryIds: memory.store.sourcePath(otherSession.id, "main", otherTurn.id).map(entry => entry.id),
-      facts: [{ turnId: otherTurn.id, category: "observation", actor: "user", text: "elsewhere evidence", source: [`T${otherTurn.id}#user`], createdAt: time }] });
+      facts: [{ turnId: otherTurn.id, entryIds: memory.store.listSourceEntries(otherSession.id, otherTurn.id).map(entry => entry.id), text: "elsewhere evidence", source: [`T${otherTurn.id}#E1`], createdAt: time }] });
     if (!otherFacts.ok) throw new Error(otherFacts.problems.join("; "));
     const otherFact = otherFacts.facts[0]!.id;
     const scoped = writeC(otherSession.id, [{ op: "update", knowledgeId: g1.knowledgeId, baseCommit: g1.commit, text: "private replacement",
@@ -448,7 +453,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       const triggerEntryId = selectedEntries.at(-1)!.id;
       const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
         entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id),
-        facts: [{ turnId: turn.id, category: "observation", actor: "user", text: "seed", source: [`T${turn.id}#user`], createdAt: time }] });
+        facts: [{ turnId: turn.id, entryIds: selectedEntries.map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
       if (!noted.ok) throw new Error(noted.problems.join("; "));
       const fact = noted.facts[0]!.id;
       const createdRun = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time }, operations: [{
@@ -462,8 +467,8 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       const dreamed = await scenarios.run(memory, path, input => {
         input.reportRequest({});
         const write = input.tools.find(tool => tool.name === "memory")!;
-        const receipt = JSON.parse(write.execute({ operations: [{ op: "archive", id: `K${item.knowledgeId}@${item.commit}`, supports: [`F${fact}`], reason: "D retires it." },
-          { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
+        const receipt = JSON.parse(write.execute({ operations: [{ op: "archive", id: readHandle(input.tools, history(item)), supports: [`F${fact}`], reason: "D retires it." },
+          { op: "archive", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
         expect(receipt.committed).toHaveLength(2);
         return { outcome: "success", output: "D archived it", request: {} };
       });
@@ -485,7 +490,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       const triggerEntryId = selectedEntries.at(-1)!.id;
       const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
         entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id),
-        facts: [{ turnId: turn.id, category: "observation", actor: "user", text: "seed", source: [`T${turn.id}#user`], createdAt: time }] });
+        facts: [{ turnId: turn.id, entryIds: selectedEntries.map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
       if (!noted.ok) throw new Error(noted.problems.join("; "));
       const fact = noted.facts[0]!.id;
       const createdRun = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time }, operations: [{
@@ -504,13 +509,12 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
 
       const dreamed = await scenarios.run(memory, path, input => {
         input.reportRequest({});
-        // The archive's rendering in the frozen material already registers both the archive version
-        // and the body it removed as read (76): revoke it with an update, no trace needed first.
+        // Archive history is inspectable, but only its own exact tag can revive the current archive.
         expect(input.material.changed).toContain("revivable body");
         const write = input.tools.find(tool => tool.name === "memory")!;
-        const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: `K${archiveCommit.knowledgeId}@${archiveCommit.commit}`,
+        const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(input.tools, history(archiveCommit)),
           text: "revived body", category: "reference", scope: "project", topics: [], supports: [`F${fact}`], reason: "Revived." },
-          { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
+          { op: "archive", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
         expect(receipt.committed).toHaveLength(2);
         return { outcome: "success", output: "revived", request: {} };
       });
@@ -543,7 +547,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       const pending = memory.store.pendingVersions(pool, path);
       // Only the latest current version (v3) is pending; v2 was superseded and never got its own record.
       expect(pending.map(p => p.revisionId)).toEqual([v3.commit]);
-      expect(pending[0]!.material).toContain(`from @${v1.commit}`);
+      expect(pending[0]!.material).toContain(`from ${history(v1)}`);
       expect(pending[0]!.material).toContain("gamma"); // the shared tail survives the cumulative diff
       expect(pending[0]!.material).toContain("[-beta-]");
       expect(pending[0]!.material).toContain("{+epsilon+}");
@@ -561,7 +565,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
       const pool = `project:${f.session.projectId}`;
       const pending = memory.store.pendingVersions(pool, path)[0]!;
-      expect(pending.material.startsWith(`New K${v1.knowledgeId}@${updated.committed[0]!.commit}:`)).toBe(true);
+      expect(pending.material.startsWith(`New ${history(updated.committed[0]!)}:`)).toBe(true);
       expect(pending.material).toContain("v2");
       expect(pending.tokens).toBeGreaterThan(3); // the whole rendered item, not a small diff
     });
@@ -630,7 +634,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
         category: "reference", scope: "global", topics: [], supports: [f.fact2], reason: "Now global.", createdAt: time }]);
       if (!updated.ok) throw new Error(updated.problems.join("; "));
       const globalPending = memory.store.pendingVersions("global", path)[0]!;
-      expect(globalPending.material.startsWith(`New K${v1.knowledgeId}@${updated.committed[0]!.commit}:`)).toBe(true);
+      expect(globalPending.material.startsWith(`New ${history(updated.committed[0]!)}:`)).toBe(true);
     });
 
     test("the version address never counts: two revisions differing only in K@commit find no change", () => {
@@ -640,7 +644,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "seed", startedAt: time });
       const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
         entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(e => e.id),
-        facts: [{ turnId: turn.id, category: "observation", actor: "user", text: "seed", source: [`T${turn.id}#user`], createdAt: time }] });
+        facts: [{ turnId: turn.id, entryIds: memory.store.listSourceEntries(session.id, turn.id).map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
       if (!noted.ok) throw new Error(noted.problems.join("; "));
       const fact = noted.facts[0]!.id;
       const c1 = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time },
@@ -684,15 +688,15 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
     });
   });
 
-  test("manual memory exposes and enforces create/archive only", () => {
+  test("manual memory shares the N schema but enforces immediate create/archive only", () => {
     const f = fixture(() => {});
     const tools = memory.tools({ kind: "manual", sessionId: f.session.id, branch: "main", currentTurnId: f.turn.id });
     const memoryTool = tools.find(tool => tool.name === "memory")!;
-    expect((memoryTool.parameters.properties as any).operations.items.properties.op.enum).toEqual(["create", "archive"]);
+    expect((memoryTool.parameters.properties as any).operations.items.properties.op.enum).toEqual(["create", "update", "archive"]);
     expect(memoryTool.execute(created(f.fact, "manual item"))).toContain('"committed"');
-    tools.find(tool => tool.name === "trace")!.execute({ address: "K1@1" });
-    expect(memoryTool.execute({ operations: [{ ...created(f.fact, "changed").operations[0], op: "update", id: "K1@1" }], skipped: [] })).toContain("Dreamer");
-    expect(memoryTool.execute({ operations: [{ op: "archive", id: "K1@1", supports: [`F${f.fact}`], reason: "Retired." }], skipped: [] })).toContain('"committed"');
+    const tag = readHandle(tools, "K1");
+    expect(memoryTool.execute({ operations: [{ ...created(f.fact, "changed").operations[0], op: "update", id: tag }], skipped: [] })).toContain("Dreamer");
+    expect(memoryTool.execute({ operations: [{ op: "archive", id: tag, supports: [`F${f.fact}`], reason: "Retired." }], skipped: [] })).toContain('"committed"');
   });
 
   test("prompt and material contain no second-round cues", async () => {

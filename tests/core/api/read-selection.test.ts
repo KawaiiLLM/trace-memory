@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory } from "../../source-fixture.ts";
+import { readHandle } from "../../read-handle-fixture.ts";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 import { wholeTrace } from "../../trace-pages.ts";
 import { toolDefinitions, tokens, type ListingOptions } from "../../../src/core/api/index.ts";
 import type { KnowledgeCategory, KnowledgeScope } from "../../../src/core/model/index.ts";
@@ -7,10 +9,12 @@ import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-d
 
 const time = "2026-09-15T00:00:00Z";
 
-function fullRead(tool: { execute(input: unknown): string }, address: string) {
-  let page = tool.execute({ address, full: true, itemBudget: null });
-  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1])
-    page = tool.execute({ address: `cursor=${cursor}`, itemBudget: null });
+function history(version: { knowledgeId: number; commit: number }) {
+  return `K${version.knowledgeId}@v${memory.store.versionOrdinal(version.knowledgeId, version.commit)}`;
+}
+function committedVersion(item: { knowledgeId: number; version: string }) {
+  const ordinal = Number(/@v(\d+)$/.exec(item.version)![1]);
+  return { knowledgeId: item.knowledgeId, commit: memory.store.resolveVersionOrdinal(item.knowledgeId, ordinal) };
 }
 let memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerScenarios;
 beforeEach(() => {
@@ -27,8 +31,8 @@ function owner(name: string, projectId = memory.store.createProject({ name, decl
   memory.selectEntries(session.id, "main", [entry.id]);
   const path = { sessionId: session.id, headTurnId: turn.id, branch: "main", triggerEntryId: entry.id };
   const run = { kind: "manual" as const, sessionId: session.id, branch: "main", createdAt: time };
-  const noted = memory.store.commitNotingRun({ run, facts: [{ turnId: turn.id, text: `needle ${name} fact`, category: "decision", actor: "user",
-    source: [`T${turn.id}#user`], createdAt: time }] });
+  const noted = memory.store.commitNotingRun({ run, facts: [{ turnId: turn.id, entryIds: [entry.id], text: `needle ${name} fact`,
+    source: [`T${turn.id}#E1`], createdAt: time }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const supports = [noted.facts[0]!.id];
   const put = async (text: string, scope: KnowledgeScope = "project", topics: string[] = [], base?: { knowledgeId: number; commit: number }, category: KnowledgeCategory = "reference") => {
@@ -42,15 +46,13 @@ function owner(name: string, projectId = memory.store.createProject({ name, decl
     let changed!: { knowledgeId: number; commit: number };
     const dreamed = await scenarios.run(memory, path, input => {
       const request = { fixture: "read selection revision" }; input.reportRequest(request);
-      const trace = input.tools.find(tool => tool.name === "trace")!;
-      const baseAddress = `K${base.knowledgeId}@${base.commit}`, triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`;
-      fullRead(trace, baseAddress);
-      const supplied = new Set(input.material.changed.match(/K\d+@\d+/g) ?? []); supplied.delete(baseAddress); supplied.delete(triggerAddress);
+      const baseAddress = readHandle(input.tools, history(base)), triggerAddress = readHandle(input.tools, history(trigger));
+      const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(history(base)); supplied.delete(history(trigger));
       const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [
         { op: "update", id: baseAddress, text, scope, category, topics, supports: supports.map(id => `F${id}`), reason: `Reason ${text}` },
         { op: "archive", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit selection trigger." },
       ], skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied fixture item." })) }));
-      changed = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === base.knowledgeId)!;
+      changed = committedVersion(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === base.knowledgeId)!);
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
       return { outcome: "success", output: "selection revision complete", request };
     });
@@ -98,7 +100,7 @@ test("41 unbound discovery, missing contexts and obsolete input are explicit", a
   expect(() => memory.search("", undefined, { ...own, cursor, where: "all" } as ListingOptions)).toThrow("where is removed");
   expect(tools[1]!.execute({ query: "", cursor, scope: "project" })).toContain("cursor scope is frozen");
   expect(tools[1]!.execute({ query: "", cursor, scope: "global" })).not.toContain("rejected:");
-  const trace = tools[0]!.execute({ address: "K1@1", cap: 1 });
+  const trace = tools[0]!.execute({ address: "K1@v1", cap: 1 });
   const traceCursor = /cursor=(\S+)/.exec(trace)![1];
   expect(tools[0]!.execute({ address: `cursor=${traceCursor}`, where: "all" })).toContain("rejected: unexpected parameter");
   expect(() => memory.trace(`cursor=${traceCursor}`, { ...own, where: "all" } as ListingOptions)).toThrow("where is removed");
@@ -224,27 +226,26 @@ test("41 archives and merged-away identities have no current body but remain his
   let result!: { knowledgeId: number; commit: number };
   const dreamed = await scenarios.run(memory, who, input => {
     input.reportRequest({ fixture: "lifecycle merge and archive" });
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-    for (const address of [`K${survivor.knowledgeId}@${survivor.commit}`, `K${absorbed.knowledgeId}@${absorbed.commit}`])
-      fullRead(trace, address);
-    const merged = JSON.parse(write.execute({ operations: [{ op: "merge", id: `K${survivor.knowledgeId}@${survivor.commit}`,
-      absorb: [`K${absorbed.knowledgeId}@${absorbed.commit}`], text: "needle combined", scope: "project", category: "reference",
+    const write = input.tools.find(tool => tool.name === "memory")!;
+    const survivorTag = readHandle(input.tools, history(survivor)), absorbedTag = readHandle(input.tools, history(absorbed));
+    const merged = JSON.parse(write.execute({ operations: [{ op: "merge", id: survivorTag,
+      absorb: [absorbedTag], text: "needle combined", scope: "project", category: "reference",
       topics: [], supports: who.supports.map(id => `F${id}`), reason: "Merge" }], skipped: [] }));
-    result = merged.committed[0];
+    result = committedVersion(merged.committed[0]);
     expect(identities(memory.search("needle", "knowledge", who))).toEqual([`K${result.knowledgeId}@${result.commit}`]);
     expect(memory.search("absorbed", "knowledge", { ...who, versions: "history" })).toContain(`superseded on this path by K${result.knowledgeId}@${result.commit}`);
-    fullRead(trace, `K${result.knowledgeId}@${result.commit}`);
-    write.execute({ operations: [{ op: "archive", id: `K${result.knowledgeId}@${result.commit}`, supports: who.supports.map(id => `F${id}`), reason: "Archive" },
-      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: who.supports.map(id => `F${id}`), reason: "Retire the explicit lifecycle trigger." }], skipped: [] });
+    const resultTag = readHandle(input.tools, history(result));
+    write.execute({ operations: [{ op: "archive", id: resultTag, supports: who.supports.map(id => `F${id}`), reason: "Archive" },
+      { op: "archive", id: readHandle(input.tools, history(trigger)), supports: who.supports.map(id => `F${id}`), reason: "Retire the explicit lifecycle trigger." }], skipped: [] });
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "lifecycle complete", request: { fixture: "lifecycle merge and archive" } };
   });
-  expect(dreamed.outcome).toBe("success");
+  expect(dreamed.outcome, JSON.stringify(dreamed)).toBe("success");
   expect(identities(memory.search("", "knowledge", who))).toEqual([]);
-  const history = memory.search("", "knowledge", { ...who, versions: "history" });
-  expect(identities(history)).toHaveLength(3);
-  expect(history).toContain(`[K${trigger.knowledgeId}@`);
-  expect(history).toContain("archived on this path");
+  const historyText = memory.search("", "knowledge", { ...who, versions: "history" });
+  expect(identities(historyText)).toHaveLength(3);
+  expect(historyText).toContain(`[K${trigger.knowledgeId}@`);
+  expect(historyText).toContain("archived on this path");
   expect(wholeTrace(memory, "lifecycle", { ...who, versions: "all" }).match(/^\[K\d+@\d+\]/gm)).toHaveLength(3);
   expect(wholeTrace(memory, `R${memory.store.listRuns(who.sessionId).at(-1)!.id}`, who)).toContain("Archive");
 });
@@ -261,18 +262,27 @@ test("41 collection knowledge status spends the item ceiling and all receipts sp
   expect(tokens(knowledge)).toBeLessThanOrEqual(100);
 });
 
-test("41 collections grant no complete reads and history references do not certify old bodies", async () => {
+test("92 complete collections expose tags, metadata and history references do not; tags never override writer authority", async () => {
   const who = owner("authority");
   const old = await who.put("old body"), current = await who.put("new body", "project", [], old);
   const tools = memory.tools({ kind: "manual", sessionId: who.sessionId, currentTurnId: who.turn.id, branch: who.branch });
-  const update = (commit: number) => JSON.parse(tools[3]!.execute({ operations: [{ op: "update", id: `K1@${commit}`,
+  const currentTag = `K1#${memory.store.versionTag(1, current.commit)}`;
+  const oldTag = `K1#${memory.store.versionTag(1, old.commit)}`;
+  const collection = tools[0]!.execute({ address: "authority", full: true });
+  expect(collection).toContain("new body");
+  expect(collection).toContain(currentTag);
+  expect(tools[0]!.execute({ address: "K1", fields: ["supports"] })).not.toMatch(/K1#[a-z]+/);
+  const historyText = tools[0]!.execute({ address: "K1", versions: "history", full: true });
+  expect(historyText).toContain("[K1@v1]");
+  expect(historyText).toContain(oldTag);
+  const historyMetadata = tools[0]!.execute({ address: "K1", versions: "history", fields: ["status", "supports"] });
+  expect(historyMetadata).toContain("K1@v1");
+  expect(historyMetadata).not.toMatch(/K1#[a-z]+/);
+  const update = JSON.parse(tools[3]!.execute({ operations: [{ op: "update", id: currentTag,
     text: "edited", category: "reference", scope: "project", supports: [`F${who.factId}`], topics: [], reason: "Edit" }], skipped: [] }));
-  expect(tools[0]!.execute({ address: "authority", full: true })).toContain("new body");
-  expect(update(current.commit).results[0]).toContain("knowledge was not read");
-  tools[0]!.execute({ address: "K1", fields: ["supports"] });
-  expect(update(current.commit).results[0]).toContain("knowledge was not read");
-  const history = tools[0]!.execute({ address: "K1", versions: "history", full: true });
-  expect(history).toContain(`K1@${old.commit} create`);
-  expect(update(old.commit).results[0]).toContain("knowledge was not read");
-  expect(update(current.commit).results[0]).toContain("update belongs to the Dreamer");
+  expect(update.results[0]).toContain("update belongs to the Dreamer");
+  const archive = (id: string) => JSON.parse(tools[3]!.execute({ operations: [{ op: "archive", id,
+    supports: [`F${who.factId}`], reason: "Retire" }], skipped: [] }));
+  expect(archive(oldTag).results[0]).toContain("base is not the latest effective applicable revision");
+  expect(archive(currentTag).committed).toHaveLength(1);
 });
