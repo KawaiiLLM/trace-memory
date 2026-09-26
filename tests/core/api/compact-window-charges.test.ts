@@ -43,7 +43,7 @@ test("73: windows with no room even for a bare receipt emit nothing — no title
       entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id),
       facts: [{ turnId: turn.id, text: "fact ".repeat(300), category: "observation", actor: "user", source: [`T${turn.id}#user`], createdAt: at }] });
     if (!noted.ok) throw new Error(JSON.stringify(noted));
-    const created = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: at },
+    const created = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: at },
       operations: [{ op: "create", handle: "$k", author: "test", text: "knowledge", category: "constraint", scope: "project", topics: [],
         supports: [noted.facts[0]!.id], reason: "fixture", createdAt: at }] });
     if (!created.ok) throw new Error(JSON.stringify(created));

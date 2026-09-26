@@ -129,8 +129,8 @@ test("Sol 3: mixed supplied/visible material has one body, a full identity index
     while (low < high) { const mid = Math.floor((low + high) / 2); try { probe(mid); high = mid; } catch { low = mid + 1; } }
     expect(probe(low).prepared!.text).toBe(prepared.text);
     expect(() => probe(low - 1)).toThrow("Noting capacity");
-    const cramped = { ...f.m.config, render: { ...f.m.config.render, episodicBlockTokens: actual - 1 } };
-    expect(() => freezeNoting(f.m.store, { ...input, boundary }, cramped)).toThrow("episodicBlockTokens");
+    // The retired Noter-only episodic limit no longer gates the shared compact material;
+    // the exact frozen membership still faces the model's hard input limit above.
     // A shorter frozen prefix must not relabel its final assistant as the captured missing reply.
     const prefix = freezeNoting(f.m.store, { ...input, boundary: { maxEntryId: early.id } }, f.m.config).prepared!;
     expect(prefix.material.head).toBeNull();

@@ -55,7 +55,7 @@ test("33: automatic semantic bodies remain complete beyond the trace item defaul
     const target = { sessionId, branch: "main", headTurnId: turn };
     const lines = renderFactGroups([fact], f => renderFact(f, []), memory.store.factTurnTimes([fact])).join("\n");
     expect(tokens(lines)).toBeGreaterThan(2000);
-    expect(memory.pendingTokens("consolidation", target).tokens).toBe(tokens(lines));
+    expect(lines).toContain(text); // the complete stored body survives automatic fact rendering
     expect(memory.trace(`F${fact.id}`, { pageBudget: null })).toContain("characters truncated");
     expect(memory.trace(`F${fact.id}`, { full: true, pageBudget: null })).toContain(text);
     const compact = memory.compact(sessionId, "main", turn);

@@ -194,9 +194,9 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   expect(created.ok).toBe(true);
   const second = turn(first.id, 1), resolve = deferred(), pending = noting(second.id);
   expect(calls[1]).not.toHaveProperty("readKnowledgeCommits");
-  // 03 removes read registration; this legacy N material still supplies no knowledge block until 06.
-  expect(calls[1]!.material.knowledge).toBeUndefined();
-  expect(calls[1]!.text).not.toContain("[K1@1]");
+  // Fresh N now receives current visible knowledge through the shared compact renderer, without a read grant.
+  expect(calls[1]!.material.knowledge!.map(group => group.text).join("\n")).toContain(`[K1#${memory.store.versionTag(1, 1)}]`);
+  expect(calls[1]!.text).toContain(memories.knowledge);
   expect(commitNoterKnowledge(memory.store, { run: { sessionId, createdAt: time }, operations: [
     { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: 1, baseCommit: 1, category: "understanding", scope: "project", text: memories.editedKnowledge, supports: [1], createdAt: time },
   ] }).ok).toBe(true);

@@ -2,7 +2,7 @@
 // and for receipts too. Reduce the task and re-freeze, or leave it pending with a capacity error; never
 // receipt an overage and run anyway.
 import { expect, test } from "vitest";
-import { sourceSeededMemory, tokens, renderEntry, type ConsolidationAgentInput, type NotingAgentInput , hydrate } from "../../source-fixture.ts";
+import { sourceSeededMemory, tokens, renderEntry, type NotingAgentInput , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { renderFact } from "../../../src/core/render/index.ts";
 import { budgetMaterial, notingText, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
@@ -10,9 +10,9 @@ import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 function seeded(config: Record<string, unknown> = {}) {
-  const calls: (ConsolidationAgentInput | NotingAgentInput)[] = [];
+  const calls: NotingAgentInput[] = [];
   // 26a: a Noting run completes its batch by submitting; an empty one is `{facts: []}`.
-  const fallback = async (raw: unknown) => { const input = raw as ConsolidationAgentInput | NotingAgentInput; calls.push(input);
+  const fallback = async (raw: unknown) => { const input = raw as NotingAgentInput; calls.push(input);
     if (input.kind === "noting") {
       input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
       input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
@@ -29,21 +29,20 @@ function seeded(config: Record<string, unknown> = {}) {
   return { m, calls, s, t, note, knowledge, scenarios };
 }
 
-test("Consolidation framing over the episodic budget reduces the batch oldest-first and leaves excluded facts pending", async () => {
+test("92: fresh N has separate fact and knowledge windows without reviving C progress", async () => {
   const f = seeded();
   try {
     expect(f.note("Original evidence")).toContain("ok: F1");
-    for (let i = 0; i < 20; i++) expect(f.knowledge(`Rule ${i}: ` + "word ".repeat(1000))).toContain("committed");
-    // F2 negates F1, which twenty knowledge items cite. With 64a's review cues removed, that
-    // knowledge no longer consumes the episodic allowance and both facts fit in one batch.
-    expect(f.note("Withdraw the original evidence " + "word ".repeat(1000), { negate: [["F1", "strong"]] })).toContain("ok: F2");
-    const r = await f.m.consolidate({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
+    for (let i = 0; i < 20; i++) expect(f.knowledge(`Rule ${i}: ` + "word ".repeat(900))).toContain("committed");
+    expect(f.note("Withdraw the original evidence " + "word ".repeat(900), { negate: [["F1", "strong"]] })).toContain("ok: F2");
+    const r = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
     expect(r.outcome).toBe("success");
-    const input = f.calls[0] as ConsolidationAgentInput;
-    expect(input.range.facts.map(fact => fact.id)).toEqual([1, 2]);
-    expect(tokens(input.text)).toBeLessThanOrEqual(30000);
+    const input = f.calls[0] as NotingAgentInput;
+    expect(input.material.facts.join("\n")).toContain("Withdraw the original evidence");
+    expect(input.material.knowledge!.map(group => group.text).join("\n")).toContain("Rule 19:");
     expect(input.material.receipts.some(receipt => receipt.includes("overage"))).toBe(false);
-    expect(f.m.store.consolidationBatch(f.s.id, "main", f.t.id)).toEqual([]);
+    expect(input.material.facts.length).toBeGreaterThan(0);
+    expect(f.m.pendingEntries(f.s.id, "main", f.t.id)).toEqual([]);
   } finally { f.m.close(); }
 });
 

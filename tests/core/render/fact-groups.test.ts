@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { budgetFacts, charge, renderFact, renderFactGroups } from "../../../src/core/render/index.ts";
-import { sourceSeededMemory, type ConsolidationAgentInput, type NotingAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
 
 const fact = (id: number, turnId: number, text = `claim ${id}`): Fact => ({ id, turnId, text,
   category: "observation", actor: "user", quote: null, source: [`T${turnId}#user`], createdAt: "recorded time" });
@@ -55,10 +55,10 @@ test("history selection keeps its priority prefix, charges a heading once, then 
   }
 });
 
-test("carry, compact, Noter history and the Consolidator range share the one fact-group renderer", async () => {
-  const calls: (NotingAgentInput | ConsolidationAgentInput)[] = [];
+test("carry, compact and fresh Noter history share the one fact-group renderer", async () => {
+  const calls: NotingAgentInput[] = [];
   const m = sourceSeededMemory(":memory:", async input => {
-    calls.push(input as NotingAgentInput | ConsolidationAgentInput);
+    calls.push(input as NotingAgentInput);
     return { outcome: "failure", output: "leave work pending", request: {} };
   });
   try {
@@ -82,48 +82,7 @@ test("carry, compact, Noter history and the Consolidator range share the one fac
     expect(compact.text).toContain(`Recent facts (by Turn):\n\n${expected}\n\nRaw:`);
     await m.noting({ sessionId: s.id, branch: "main", headTurnId: b.id, mode: "subagent" });
     expect((calls.at(-1)! as NotingAgentInput).material.facts.join("\n")).toBe(expected);
-    await m.consolidate({ sessionId: s.id, branch: "main", headTurnId: b.id, mode: "subagent" });
-    const input = calls.at(-1)! as ConsolidationAgentInput;
-    expect(input.material.rangeFacts.join("\n")).toBe(expected);
-    expect(input.range.facts.map(f => f.id)).toEqual([1, 2, 3]); // selection/progress stay arrival-ordered
-    expect(m.store.consolidationBatch(s.id, "main", b.id).map(f => f.id)).toEqual([1, 2, 3]); // failure advances nothing
-    const integrated = m.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: late },
-      operations: [], consolidated: [1, 2, 3] });
-    expect(integrated.ok).toBe(true);
-    expect(m.store.listConsolidatedProjectFacts(projectId).map(f => f.id)).toEqual([1, 3, 2]); // history selection is newest-first
-    const next = m.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: late },
-      facts: [{ ...fact(4, b.id, "next fact"), createdAt: late }] });
-    expect(next.ok).toBe(true);
-    await m.consolidate({ sessionId: s.id, branch: "main", headTurnId: b.id, mode: "subagent" });
-    // 25a: the Consolidator receives no already-consolidated history block at all; F1–F3 are stored,
-    // consolidated and readable, and only the newly pending F4 is supplied as its range.
-    const later = calls.at(-1)! as ConsolidationAgentInput, next4 = [m.store.getFact(4)!];
-    expect(later.material.rangeFacts.join("\n")).toBe(renderFactGroups(next4, f => m.trace(`F${f.id}`), m.store.factTurnTimes(next4)).join("\n"));
-    expect("facts" in later.material).toBe(false);
-    expect(later.text).not.toContain(expected);
+    expect(m.store.listSessionFacts(s.id).map(f => f.id)).toEqual([1, 3, 2]); // owning Turn time, then F-id
     expect(m.trace("F2")).not.toContain("(selected facts)"); // explicit single-fact reads stay unchanged
-  } finally { m.close(); }
-});
-
-test("Consolidation dispatches its oldest fact even when grouped framing exceeds the soft batch ceiling", async () => {
-  let dispatched = false;
-  const m = sourceSeededMemory(":memory:", async raw => {
-    dispatched = true;
-    expect((raw as ConsolidationAgentInput).range.facts.map(f => f.id)).toEqual([1]);
-    return { outcome: "failure", output: "deliberate worker failure", request: {} };
-  });
-  try {
-    const projectId = m.store.createProject({ name: "p", declaredBy: "mark" }).id;
-    const s = m.store.createSession({ host: "fake", projectId, startedAt: early, firstReplyAt: early, enrollmentChoice: true });
-    const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "question", assistantText: "answer", startedAt: early });
-    const write = m.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: early },
-      facts: [{ ...fact(1, t.id), createdAt: early }] });
-    if (!write.ok) throw new Error(write.problems.join("; "));
-    m.config.consolidation.batchTokens = charge([m.trace("F1")]);
-    expect(charge(renderFactGroups(write.facts, f => m.trace(`F${f.id}`), m.store.factTurnTimes(write.facts))))
-      .toBeGreaterThan(m.config.consolidation.batchTokens);
-    expect((await m.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("failure");
-    expect(dispatched).toBe(true);
-    expect(m.store.consolidationBatch(s.id, "main", t.id).map(f => f.id)).toEqual([1]);
   } finally { m.close(); }
 });

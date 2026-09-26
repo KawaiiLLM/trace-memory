@@ -39,9 +39,9 @@ function noting(sessionId: number, turnId: number, text = fixture.base, branch =
 }
 function knowledge(sessionId: number, factId: number, category: "constraint" | "open" | "goal" | "understanding" | "reference" = "constraint",
   scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time, topics: string[] = [], historicalManual = false) {
-  const result = memory.store.commitConsolidationRun({ run: { sessionId, branch: "main", kind: historicalManual ? "manual" : "consolidation", createdAt: time },
+  const result = memory.store.commitConsolidationRun({ run: { sessionId, branch: "main", kind: "manual", createdAt: time },
     operations: [{ op: "create", topics, reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
-    consolidated: memory.store.getSession(sessionId)!.projectId === memory.store.getSession(memory.store.getTurn(memory.store.getFact(factId)!.turnId)!.sessionId)!.projectId ? [factId] : [] });
+  });
   if (!result.ok) throw new Error(JSON.stringify(result));
   return result.committed[0]!.knowledgeId;
 }
@@ -380,9 +380,7 @@ test("64c: a tight derived allowance bounds consolidated history", () => {
   // the pending facts a required window must hold whole.
   for (let i = 0; i < 15; i++) noting(s.id, t.id, `history ${i} ` + "word ".repeat(800));
   const facts = memory.store.listSessionFacts(s.id);
-  memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "consolidation", createdAt: time },
-    operations: [], consolidated: facts.map(f => f.id) });
-  expect(memory.store.consolidationBatch(s.id, "main", t.id)).toHaveLength(0);
+  // Historical C processing is irrelevant to the now-independent facts window.
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store)).toHaveLength(0);
   // No pending Raw: the refill may use the whole spare, and all of it fits inside the envelope.
   const roomy = memory.compact(s.id, "main", t.id);
@@ -594,7 +592,7 @@ test("status reports attribution, counts, every watermark and last runs, and no 
   const status = memory.status(s.id);
   expect(status).not.toContain("Watermark");
   expect(status).not.toContain("Pending deliveries"); // 29d: the queue-only status field went with the queue
-  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Last noting: run 3 success", "Last consolidation: run 2 success"]) expect(status).toContain(text);
+  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Last noting: run 3 success", "Last dreaming: none"]) expect(status).toContain(text);
 });
 
 test("project mark merges an undeclared own project, relabels facts and knowledge, and beats later marker reports", () => {
@@ -779,18 +777,13 @@ function pendingFacts(sessionId: number, turnId: number, texts: string[], branch
   return result.facts;
 }
 /** Mark facts consolidated on this path, which is what makes them refill (a) candidates. */
-function consolidate(sessionId: number, ids: number[], branch = "main") {
-  const result = memory.store.commitConsolidationRun({ run: { sessionId, branch, kind: "consolidation", createdAt: time },
-    operations: [], consolidated: ids });
-  if (!result.ok) throw new Error(JSON.stringify(result));
-}
+
 const entry = (sessionId: number, turnId: number, nativeId: string, text: string) =>
   memory.appendEntry({ sessionId, nativeLineage: "x", nativeId, turnId, role: "assistant", text, raw: "", calls: [] });
 
-test("73: 18k knowledge, 14k facts and 6k Raw fit one shared allowance without a worker", () => {
+test("92: knowledge and Raw share the allowance, but facts are independently capped at 10k", () => {
   const s = session(), t = turn(s.id, "head");
   const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
-  consolidate(s.id, [seed.id]);
   for (let i = 0; i < 9; i++) for (let part = 0; part < 2; part++)
     knowledge(s.id, seed.id, "constraint", "project", `K${i} part ${part} ` + "word ".repeat(970), `202${i}`);
   const facts = pendingFacts(s.id, t.id, [...Array(14)].map((_, i) => `FACT_${i} ` + "word ".repeat(990)));
@@ -798,14 +791,15 @@ test("73: 18k knowledge, 14k facts and 6k Raw fit one shared allowance without a
   const result = memory.compact(s.id, "main", t.id);
   expect("native" in result).toBe(false); // 38k of demand inside the 50k envelope
   const windows = charged(result), text = compacted(result);
-  // 73: facts is served past its 10,000-token baseline by borrowing the shared allowance Raw left it,
-  // since Raw and Knowledge each fit their own base here and borrow nothing.
-  expect(windows.facts).toBeGreaterThan(10_000);
+  // The historical 14k fact corpus is no longer permitted to borrow shared allowance.
+  expect(windows.facts).toBeLessThanOrEqual(10_000);
+  expect(text).toContain("older facts; expand:");
   expect(windows.knowledge).toBeGreaterThan(17_000);
   expect(windows.raw).toBeGreaterThan(5_000);
   expect(windows.envelope).toBe(50_000);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
-  for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
+  expect(facts.some(fact => text.includes(`[F${fact.id}]`))).toBe(true);
+  expect(facts.some(fact => !text.includes(`[F${fact.id}]`))).toBe(true);
   for (let i = 0; i < 3; i++) expect(text).toContain(`RAW_${i}`);
   for (let i = 0; i < 9; i++) expect(text).toContain(`K${i} `);
   expect(calls).toBe(0);
@@ -815,7 +809,6 @@ test("73: knowledge borrows the shared allowance first, even when it leaves pend
   setSharedAllowance(memory, 15_000);
   const s = session(), t = turn(s.id, "head");
   const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
-  consolidate(s.id, [seed.id]);
   // A knowledge corpus far past its own window (borrows and still overflows), 7k of pending facts
   // (fits its own base) and enough pending Raw that its base alone cannot hold it.
   for (let i = 0; i < 20; i++) for (let part = 0; part < 2; part++)
@@ -853,8 +846,6 @@ test("28a acceptance 3 and 30 cases 10-12: the two refills are whole, recent, pa
   // Refill (a)'s candidates: consolidated facts of the path, and one of a sibling branch that is not.
   const history = pendingFacts(s.id, t.id, [`HISTORY_OLD ${pad}`, `HISTORY_NEW ${pad}`]);
   const elsewhere = pendingFacts(s.id, sibling.id, [`SIBLING_HISTORY ${pad}`], "sibling");
-  consolidate(s.id, history.map(f => f.id));
-  consolidate(s.id, elsewhere.map(f => f.id), "sibling");
   const pending = pendingFacts(s.id, selected.id, ["PENDING_FACT"])[0]!;
   // Refill (b)'s candidates: already-extracted entries of the path. The Turn prompts are entries too.
   entry(s.id, t.id, "old", `EXTRACTED_OLD ${pad}`);
@@ -918,7 +909,6 @@ test("28a: refill (a) takes the most recent consolidated facts first, whole, and
   const s = session(), t = turn(s.id, "head");
   const older = pendingFacts(s.id, t.id, ["OLDEST " + "word ".repeat(400)])[0]!;
   const newer = pendingFacts(s.id, t.id, ["NEWEST " + "word ".repeat(400)])[0]!;
-  consolidate(s.id, [older.id, newer.id]);
   expect(newer.id).toBeGreaterThan(older.id);
   const measured = charged(memory.compact(s.id, "main", t.id));
   // Both facts are consolidated (processed), so neither may borrow the allowance: a facts base sized

@@ -335,9 +335,10 @@ test("30: the shipped profile is 2000/100/100, the retired keys fail by name, an
     const ceiling = open({ [key]: 1_000 });
     try { expect(ceiling.config.render[key as "toolInputTokens"]).toBe(1_000); } finally { ceiling.close(); }
   }
-  // An explicit `E` is honoured as written, never halved or rewritten (30 "Configuration").
-  const explicit = open({ entryTokens: 10_000 });
-  try { expect(explicit.config.render.entryTokens).toBe(10_000); } finally { explicit.close(); }
+  // Lower explicit limits are honoured; the fixed 2k entry-view ceiling rejects larger profiles.
+  const explicit = open({ entryTokens: 1_500 });
+  try { expect(explicit.config.render.entryTokens).toBe(1_500); } finally { explicit.close(); }
+  expect(() => open({ entryTokens: 2_001 })).toThrow("Invalid render.entryTokens: at most 2000");
   for (const value of [0, -1, 1.5, NaN, Infinity]) for (const key of ["entryTokens", "toolInputTokens", "toolResultTokens"]) {
     expect(() => open({ [key]: value })).toThrow("Invalid render.");
   }
