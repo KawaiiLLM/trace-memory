@@ -131,7 +131,7 @@ test("26c0 native fixture: the message the hook returned is persisted through th
     const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{
       op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture",
       text: "Carried knowledge", category: "constraint", scope: "global", supports: [fact.id], createdAt: "now" }] });
-    expect(created.ok, created.problems?.join("; ")).toBe(true);
+    if (!created.ok) throw new Error(created.problems.join("; "));
     // 92: retained Raw no longer substitutes for a knowledge body; source bindings stay intact.
     await f.turn("第二个问题");
     const manager = f.manager();
