@@ -137,9 +137,9 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
     const value = input.worker;
     if (!value || typeof value !== "object") throw new Error("Invalid CC worker: expected an object");
     const legacy = ["model", "effort", "contextWindow"].filter(key => Object.hasOwn(value, key));
-    if (legacy.length) throw new Error(`Legacy CC worker.${legacy.join("/worker.")} is unsupported; migrate to the six root phase keys and worker.contextWindows`);
+    if (legacy.length) throw new Error(`Legacy CC worker.${legacy.join("/worker.")} is unsupported; migrate to the four root phase keys and worker.contextWindows`);
     const parallel = ["noting", "consolidation", "dreaming"].filter(key => Object.hasOwn(value, key));
-    if (parallel.length) throw new Error(`Invalid CC worker.${parallel[0]}: phase settings use the six flat host keys, not a worker phase hierarchy`);
+    if (parallel.length) throw new Error(`Invalid CC worker.${parallel[0]}: phase settings use the four flat host keys, not a worker phase hierarchy`);
     if (typeof value.claudeExecutable !== "string" || !isAbsolute(value.claudeExecutable))
       throw new Error("Invalid CC worker.claudeExecutable: expected an absolute path");
     if (typeof value.cwd !== "string" || !isAbsolute(value.cwd))
