@@ -9,10 +9,9 @@ CC uses the same flat phase-setting keys as Pi. The shipped defaults are:
 | Phase | Model key | Default | Thinking key | Default |
 | --- | --- | --- | --- | --- |
 | Noter | `notingModel` | `sonnet` | `notingThinking` | `high` |
-| Consolidator | `consolidationModel` | `opus` | `consolidationThinking` | `high` |
 | Dreamer | `dreaming.model` | `opus` | `dreaming.thinking` | `high` |
 
-These are top-level JSON keys, including the literal dots in the Dreamer keys. CC and Pi store their values separately: this file neither reads nor changes Pi settings. CC does not inherit the foreground selection, so `session` and `inherit` fail explicitly. Its adapter converts each thinking setting to the SDK's effort and verifies native model support; unsupported settings are not silently replaced. All six settings are required when `worker` is present. Omit `worker` only for ingestion/read-only operation.
+These are top-level JSON keys, including the literal dots in the Dreamer keys. CC and Pi store their values separately: this file neither reads nor changes Pi settings. CC does not inherit the foreground selection, so `session` and `inherit` fail explicitly. Its adapter converts each thinking setting to the SDK's effort and verifies native model support; unsupported settings are not silently replaced. All four settings are required when `worker` is present. Omit `worker` only for ingestion/read-only operation.
 
 A phase uses its selected model, thinking level and capacity consistently for admission, execution and run records, including borrowed work and catchup. Capacity is looked up by model name, not copied from another phase. The local `/trace` Settings screen saves edits to this file and applies them to subsequent tasks on the running executor. It reports file save and executor apply separately; already admitted tasks retain their settings. Manual edits outside that command still require a restart.
 
@@ -21,13 +20,13 @@ Core phase bounds use optional top-level keys in the same file:
 | Key | Default | Meaning |
 | --- | ---: | --- |
 | `noting.triggerTokens` | 10,000 | Ordinary Noter trigger; catchup still drains below it |
-| `consolidation.triggerTokens` | 5,000 | Consolidator trigger |
 | `dreaming.triggerTokens` | 5,000 | Pending-trigger cap; each pool uses `min(cap, pool budget)` |
 | `dreaming.timeoutMs` | 600,000 | Dreamer wall-clock bound; no tool-round ceiling |
-| `compaction.sharedAllowanceTokens` | 10,000 | Shared allowance Knowledge borrows first, then unprocessed Raw, then unprocessed facts (73) |
+| `compaction.sharedAllowanceTokens` | 10,000 | Shared allowance Knowledge borrows first, then unprocessed Raw |
 
-The shared material allowance is this one configured value, not derived from the N, C or D triggers
-and unaffected by their changes (73). Database pool budgets still size pools and cap Dreamer batches.
+The shared material allowance is this configured value, not derived from the N or D triggers.
+Noter publishes facts and knowledge together; facts have no later processing queue. Database pool
+budgets still size pools and cap Dreamer batches.
 
 Optional `retry: { "maxRetries": 2 }` configures the native request retry count. Omission preserves
 Claude Code's native default; zero disables those retries. Timing, backoff and eligible errors remain
@@ -51,11 +50,21 @@ other Claude Code session, because they sit one level under its own `projects` r
 logs under the retired `<stateDir>/workers/` are untouched by this — nothing moves, imports, or
 rewrites them.
 
-**Upgrade from the single-model configuration:** remove `worker.model`, `worker.effort` and `worker.contextWindow`; set the six phase keys above and register each selected model's capacity in `worker.contextWindows`. The retired fields are rejected rather than used as a shared fallback. The file is the only mutable plugin configuration surface and must not contain credentials.
+**Upgrade from the single-model configuration:** remove `worker.model`, `worker.effort` and `worker.contextWindow`; set the four phase keys above and register each selected model's capacity in `worker.contextWindows`. The retired fields are rejected rather than used as a shared fallback. The file is the only mutable plugin configuration surface and must not contain credentials.
 
 Omit `dbPath` to use `~/.trace-memory/trace.db`, the same default as Pi. An existing database is opened in place, never replaced or copied by installation; an absent database is created on first use. Set an explicit absolute `dbPath` only to use another database (or to match a customized Pi path). Database reuse includes the existing Store's normal schema migration checks; it does not reset facts, knowledge, or enrollment. A new session on either host joins the project its repository directory (the git repository root, or the real cwd outside a repository) already has when that is exactly one project; the home directory and temporary directories are excluded, and `project <name>` overrides.
 
-The plugin registers 24 SessionStart command slots (each inline result stays at or below 10,000 UTF-16 code units), one SessionEnd Hook, one stdio MCP server and a local function-hooks `/trace` command. A small reader uses input-addressed staged results; an elected cache miss performs the lifecycle and renders once, while other slots read their own independently identified slice. Empty slots print nothing. If the native inline capacity cannot hold every whole item, a receipt names omitted items; `/clear` still warns about unprocessed Raw/Facts. The original single-envelope carrier remains readable for retained history. Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in Claude Code's process environment or its settings `env` block before starting Claude Code. The command requires pinned Claude Code 2.1.280; a mismatch disables it with a visible status message. With function hooks disabled, `/trace` is unavailable: there is no model-invoked fallback skill. Installation does not run a package manager. This repository never edits personal Claude Code settings or the user's status-line script.
+For startup, resume and clear, SessionStart uses 24 command slots, each at most 10,000 UTF-16 code units. An elected producer freezes one rendering; the other slots read their independently identified parts. Empty slots print nothing. Whole items that do not fit are named in omission receipts. The original single-envelope carrier remains readable. The plugin also registers SessionEnd, a stdio MCP server and the function-hooks `/trace` command.
+
+### Enable function hooks
+
+Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the **Claude Code process environment** before launching it. An interactive installation can set the variable in Claude Code settings' `env` block. SDK-launched processes and fresh `CLAUDE_CONFIG_DIR` directories do not necessarily inherit those personal settings: pass the variable explicitly to the CC child process. `claude plugin validate` checks the module; it does not prove runtime loading. Use `--debug` to confirm that the hooks module loaded. A disabled module may be reported only in the debug log, not stream-json output.
+
+With the function module loaded, `session.compact` waits for native compaction, then calculates missing exact knowledge versions from the carriers actually retained in its returned messages. It uses the existing knowledge budget and stores each new carrier's complete rendered Knowledge cost. `SessionStart(compact)` does not also inject. A failed or cancelled supplement leaves the native compaction result unchanged and records no delivery; a failure of native compaction itself retains its original failure semantics.
+
+If the function module is not loaded, the next `UserPromptSubmit` is the recovery opportunity: it calculates missing bodies from actual retained carriers, not from staged output or an assumed empty context. **After automatic compaction, the rest of that same turn can lack knowledge until the next user submission.** This recovery does not provide another knowledge window, and already retained bodies are not delivered twice. It does not make `/trace` available without function hooks; there is no model-invoked fallback skill.
+
+The function module requires pinned Claude Code 2.1.280. Installation does not run a package manager or edit personal Claude Code settings or the user's status-line script.
 
 ## Status line
 
@@ -90,19 +99,19 @@ The direct CLI accepts the following existing verbs:
 | --- | --- |
 | `on` | Enable memory for this session; does not start a catchup. |
 | `off` | Stop this executor's work and disable memory. |
-| `catchup` | Start one finite Noting drain with threshold-driven C/D checks, or report the active drain. |
+| `catchup` | Start one finite Noting drain with ordinary Dreamer threshold checks, or report the active drain. |
 | `stop` | Stop this executor's work without disabling memory. |
 | `project <name>` | Declare this session's shared project. |
 
 The former model-invoked `trace` skill is removed so its bare alias cannot conflict with the local command. The direct CLI remains available from a trusted shell; it does not silently fall back to a model turn when function hooks are disabled.
 
-`catchup` requires an enabled session and its live MCP executor. It reconciles the current path and freezes the pending Raw boundary. Noting drains it in bounded subagent batches, ignoring only N's trigger threshold; later Raw does not extend the drain. One checkpoint at start and after every successful catchup-owned N, C or D completion checks all three phases. C and D use ordinary pending thresholds; excess pool size alone does not make D due. No new foreground message or intervening N batch is needed. Completion requires exhausted frozen Raw, neither C nor D due, and all owned work settled. Empty/dropped results do not re-arm the loop. A failed catchup step immediately retries the same phase and boundary without checking other phases. Three consecutive failures of one logical task turn memory off and end the drain; cancellation also ends it.
+`catchup` requires an enabled session and its live MCP executor. It reconciles the current path and freezes the pending Raw boundary. Noting drains it in bounded subagent batches, ignoring only N's trigger threshold; later Raw does not extend the drain. One checkpoint at start and after every successful catchup-owned N or D completion checks both phases. D uses ordinary pending thresholds; excess pool size alone does not make D due. No new foreground message or intervening N batch is needed. Completion requires exhausted frozen Raw, D not due, and all owned work settled. Empty/dropped results do not re-arm the loop. A failed catchup step immediately retries the same phase and boundary without checking other phases. Three consecutive failures of one logical task turn memory off and end the drain; cancellation also ends it.
 
-Catchup uses ordinary slots and claims: N and C may overlap, at most one of each per session; D has one database-wide seat and one pool per run. A busy completion trigger is skipped, not retained or retried on slot release. Low-threshold tails may remain when catchup finishes. Repeating the command reports the active drain. Acknowledgement is not completion; `stop`, `off`, path changes and shutdown fence further launches while retaining committed work.
+Catchup uses ordinary slots and claims: at most one N per session; D has one database-wide seat and one pool per run. A busy completion trigger is skipped, not retained or retried on slot release. Low-threshold tails may remain when catchup finishes. Repeating the command reports the active drain. Acknowledgement is not completion; `stop`, `off`, path changes and shutdown fence further launches while retaining committed work.
 
 Historical bootstrap that actually imports new selected entries publishes the complete path and checks that final path once, never replaying thousands of historical scheduling opportunities. Restart/restore alone creates no trigger: fully imported history, or a zero-append executor scan after the Hook already imported it, waits for the next live entry or explicit catchup. Later live selected entries retain their individual checks; sibling-only imports and unchanged polling start no task. A failed attachment discards its resources even when cleanup throws, reports the original error rather than readiness, and retries from fresh resources only on the next existing wake.
 
-Changing project ownership requires the declaring session to have no running N/C/D and no reached N/C/D trigger, including all applicable knowledge pools. Refusal names the phase and starts nothing. Other sessions do not block the change, but their in-flight writes retain ordinary authority checks. Moved project versions keep their identity and lose only their destination processing records, so return moves become pending again.
+Changing project ownership requires the declaring session to have no running N/D and no reached N/D trigger, including all applicable knowledge pools. Refusal names the phase and starts nothing. Other sessions do not block the change, but their in-flight writes retain ordinary authority checks. Moved project versions keep their identity and lose only their destination processing records, so return moves become pending again.
 
 A non-`clear` SessionEnd closes its native lineage without waiting for the MCP executor to exit or the transcript tail to import. Another live clear lineage keeps the shared core session open. MCP shutdown alone never closes it. SessionStart records the invoking native process identity from the existing `CLAUDE_PID` mechanism, fencing late SessionEnd hooks from an older process; unavailable identity is reported explicitly, not guessed. Remaining transcript entries can be imported on reopening.
 
