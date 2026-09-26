@@ -18,9 +18,9 @@ const oldTools = await moduleAt("src/core/api/tools.ts") as typeof import("../..
 const oldStore = await moduleAt("src/core/store/index.ts") as typeof import("../../src/core/store/index.ts");
 const oldSource = await moduleAt("src/hosts/pi/source.ts") as typeof import("../../src/hosts/pi/source.ts");
 const size = (text: string) => ({ bytes: Buffer.byteLength(text), tokens: tokens(text) });
-const prompts = Object.fromEntries(["noting", "consolidation", "dreaming"].map(role => [role, {
+const prompts = Object.fromEntries((["noting", "consolidation", "dreaming"] as const).map(role => [role, {
   before: size(readFileSync(resolve(baseline, `src/core/prompts/${role}.md`), "utf8")),
-  after: size(loadPrompt(`${role}.md` as "noting.md" | "consolidation.md" | "dreaming.md")),
+  after: role === "consolidation" ? { retired: true } : size(loadPrompt(`${role}.md`)),
 }]));
 const metadata = (tools: typeof toolDefinitions) => size(JSON.stringify(tools));
 const samples = [];

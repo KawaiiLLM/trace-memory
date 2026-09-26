@@ -40,7 +40,7 @@ export interface ForkRefusal {
   reason: string;
   /** The frozen batch, so the re-admission selects the same evidence: 18b's task boundary, the
    * mechanism a manual catchup already freezes its target with. 27d (parent 27 amendment 6) and 29e:
-   * the exact ids of this phase's own members — Noting's entries, Consolidation's facts — never an
+   * the exact ids of Noting's entries — never an
    * upper bound and never a manual catchup's larger allowable set, both of which prevent additions
    * but permit a smaller batch. */
   boundary?: { exactEntryIds?: number[] };

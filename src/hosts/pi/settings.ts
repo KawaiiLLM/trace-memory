@@ -37,7 +37,7 @@ function settings(cwd: string, agentDir = agentDirectory()) {
 // (default since 24c: `<Pi agent directory>/sessions/trace-memory`). 19c deleted `nativeRunner`:
 // the native runner is the only runner, so the key no longer selects anything and 18a's unknown-key
 // rule rejects it like any other misspelling instead of silently accepting a setting that does nothing.
-// 26d added `notingThinking`/`consolidationThinking`: each phase's configured worker thinking level,
+// Each live phase has its own configured worker thinking level,
 // `inherit` (the default) or one of Pi's own levels. Subagent execution only — a fork keeps
 // inheriting the foreground level 26b freezes, so its request prefix still matches the parent's.
 const phaseSettingKeys = Object.values(PHASE_SETTING_KEYS).flatMap(keys => [keys.model, keys.thinking]);
@@ -134,10 +134,8 @@ export function writeGlobal(settingsFile: string, key: string, value: string | b
 
 // ---- 24b: the preferences the Settings view offers, and how each one reads ----------------------
 // Global preferences: the existing mode/model keys plus the closed-session borrowing scope.
-// No advanced editor or second scheduling mechanism. Ticket 25 amendment 2 withdrew 24b's
-// Consolidator-mode entry; 29e restores it on the same select-and-write path, so each phase now shows
-// the same three lines.
-// 26d added each phase's thinking level beside its model, on the same select-and-write path.
+// N exposes mode/model/thinking; D is always fresh and exposes model/thinking.
+// No advanced editor or second scheduling mechanism.
 export type Preference = { name: string; key: string } & ({ phase: "noting"; kind: "mode" | "model" | "thinking" } | { phase: "dreaming"; kind: "model" | "thinking" } | { phase?: never; kind: "scope" });
 export const preferences: Preference[] = [
   { name: "Noter mode", key: "noting.forkModeDefault", phase: "noting", kind: "mode" },
@@ -147,8 +145,7 @@ export const preferences: Preference[] = [
   { name: "Dreamer thinking", key: PHASE_SETTING_KEYS.dreaming.thinking, phase: "dreaming", kind: "thinking" },
   { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
 ];
-// Each phase stores "runs in fork mode": one preference reads that boolean without inventing a second
-// spelling of the same choice. Both phases default to subagent; each reads its own config section.
+// Noting stores one fork-mode preference; Dreaming has no inherited execution mode.
 export const modeName = (value: boolean) => value ? "fork" : "subagent";
 const preferenceDefault = (p: Preference) => p.kind === "scope" ? DEFAULT_CONFIG.closedSessionScope
   : p.kind === "model" ? "session" : p.kind === "thinking" ? "inherit" : p.kind === "mode" ? DEFAULT_CONFIG[p.phase].forkModeDefault : false;

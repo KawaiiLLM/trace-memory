@@ -26,7 +26,7 @@ import { memoryStatusLine } from "../status-line.ts";
  * and the subtraction of the model's declared maximum output are gone from both guards, and
  * `model.maxTokens` is read by neither. Admission hands core `contextWindow - CONTEXT_HEADROOM` as
  * its input allowance; the last check before every round applies the same subtraction to Pi's own
- * measure of the child's context. Generation limits, `noting.batchTokens`, `consolidation.batchTokens`,
+ * measure of the child's context. Generation limits, `noting.batchTokens`,
  * the render block budgets and foreground compaction are untouched by it. */
 export const CONTEXT_HEADROOM = 10_000;
 const now = () => new Date().toISOString();
@@ -153,7 +153,7 @@ export default function (pi: ExtensionAPI) {
     const registry = callContext.modelRegistry;
     const slash = input.model.indexOf("/");
     // The model is frozen with the run (a fork run freezes the session model at launch), so a
-    // model switch during a two-round consolidation cannot redirect its final round.
+    // model switch during a worker run cannot redirect its later rounds.
     const current = callContext.model;
     const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
       : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
@@ -330,9 +330,7 @@ export default function (pi: ExtensionAPI) {
     if (requested !== "fork") return;
     const suppression = suppressed();
     if (suppression) return latchReason(suppression);
-    // 29e (parent 29 "Phase-specific evidence"): the Raw rule below is the Noter's alone. Consolidation
-    // processes facts, and its own material carries the complete body of every selected fact the child
-    // cannot already see (29b), so inherited Raw is neither a prerequisite nor extra citation authority.
+    // Only Noting can fork and therefore requires inherited Raw coverage.
     if (task?.kind !== "noting") return;
     const view = visible(binding());
     if (!view.raw.size) return rawUnavailable([]);
@@ -401,10 +399,9 @@ export default function (pi: ExtensionAPI) {
   /** Ticket 24 "Footer counts and cost" and "Indicator semantics" (24a), scope and colours revised by
    * ticket 51. One status item, one line:
    *
-   *     🧠 ● notes: 24->102 memory: 9->252/306 cost: $0.12
+   *     🧠 ● notes: 24->102 memory: 252/306 cost: $0.12
    *
-   * The arrows are stage inputs and outputs, not percentages: `notes` is the entries still to note
-   * over every applicable committed fact; `memory` is the facts still to consolidate over the
+   * `notes` is the entries still to note over every applicable committed fact; `memory` is the
    * changed current Knowledge versions followed by all current Knowledge versions. Changed counts
    * are scheduling backlog, not a partition by knowledge validity. `cost` is today's memory spend across the whole
    * database — every session's runs created since local midnight (51) — the memory share of the
@@ -419,7 +416,7 @@ export default function (pi: ExtensionAPI) {
    * memory identity there is nothing to count at all.
    *
    * The indicator is Pi theme roles, never a literal colour: one role per running phase — Noting
-   * `accent`, Consolidation `success`, Dreaming `customMessageLabel` (teal, green, purple in both
+   * `accent`, Dreaming `customMessageLabel` (teal, purple in both
    * bundled themes) — in that precedence when phases overlap; idle and off are `dim`. A retry, a
    * failure or a warning does not colour it: the foreground notify reports those (51). It describes
    * this executor, including while it works on a borrowed target. */
@@ -513,7 +510,7 @@ export default function (pi: ExtensionAPI) {
       // A configuration error, not a transient wait: a manual catchup must fail on it, never retry (review 2026-09-08).
       return Promise.resolve({ outcome: "dropped", permanent } as const);
     }
-    // Both phases negotiate capacity before selection (gate 4; review 2026-09-08 for Consolidation).
+    // Capacity is checked before selection.
     // 27a: a fork's inherited prefix is Pi's own measure of this session's context, read once here
     // and frozen with the task beside the model and the thinking level — the real usage of the latest
     // valid reply on the path plus Pi's estimate of the messages after it. It already holds the
@@ -580,9 +577,6 @@ export default function (pi: ExtensionAPI) {
     // is re-admitted instead of leaving feasible work pending. Only this refusal: any other admission
     // failure (a `noting.batchTokens` overflow, a store error) is reported as itself, and if the
     // subagent admission refuses the batch too, that refusal is what the caller reports.
-    // 29e: the same two re-admissions for a Consolidation fork, told apart by that phase's own
-    // capacity string. Nothing else about the path differs, which is the point of restoring the mode
-    // rather than giving this phase a second fallback mechanism.
     return admitted.catch(error => error instanceof Error && error.cause === "task admission"
       && error.message.startsWith(NOTING_CAPACITY)
       ? reroute({ reason: error.message.replace(/; left pending$/, "") }) : Promise.reject(error))
@@ -1158,7 +1152,7 @@ export default function (pi: ExtensionAPI) {
         { borrowed: false, automatic: phase !== "noting", ...(boundary ? { boundary } : {}) });
       slot.result = promise.catch(() => undefined);
       let checkpoint = false, retry = false;
-      // A failure may retain partial commits. Arm ordinary C/D for the next entry, but do not
+      // A failed D may retain partial commits. Arm ordinary D for the next entry, but do not
       // check either phase at failure: retry this phase after its slot is released. A successful
       // completion drives the full catchup checkpoint instead of racing an ordinary check.
       let completed = false;
@@ -1198,7 +1192,7 @@ export default function (pi: ExtensionAPI) {
     if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
     if (catchup && !catchup.outcome) {
       // A waiting/idle drain (nothing drain-owned active) has no in-process completion left to wake it
-      // (e.g. a C/D admission dropped by a foreign claim). A repeated command is that recovery. A
+      // (e.g. a D admission dropped by a foreign claim). A repeated command is that recovery. A
       // running drain is only reported, never duplicated.
       if (!catchup.active.size) driveCatchup(true);
       ctx.ui.notify(catchupLine()!, "info"); return;
@@ -1489,7 +1483,7 @@ export default function (pi: ExtensionAPI) {
     // fork task only through its fallback child. Pi clamps a level the worker model cannot do.
     if (p.kind === "thinking") {
       const choice = await ctx.ui.select(`${p.name} — inherit: the foreground level frozen at admission; otherwise this phase's subagent runs think at the chosen level` +
-        (configuredMode(flat, p.phase) === "fork" ? `, and ${p.phase === "noting" ? "Noting" : "Consolidation"} is configured for fork mode, whose child keeps inheriting the foreground level` : "") +
+        (configuredMode(flat, p.phase) === "fork" ? `, and Noting is configured for fork mode, whose child keeps inheriting the foreground level` : "") +
         ". Applies to tasks admitted from now on; running tasks keep their level.", thinkingChoices);
       if (choice === undefined) return;
       saveGlobal(p, choice);
@@ -1499,7 +1493,7 @@ export default function (pi: ExtensionAPI) {
     const models = availableModels();
     if (!models.length) { ctx.ui.notify(`Trace Memory: ${p.name} unchanged — Pi's model registry lists no available model.`, "warning"); return; }
     const title = configuredMode(flat, p.phase) === "fork"
-      ? `${p.name} — ${p.phase === "noting" ? "Noting" : "Consolidation"} is configured for fork mode, which inherits the foreground model ${foregroundModel()}; this choice is used by subagent runs`
+      ? `${p.name} — Noting is configured for fork mode, which inherits the foreground model ${foregroundModel()}; this choice is used by subagent runs`
       : `${p.name} — used by this phase's subagent runs`;
     const choice = await ctx.ui.select(title, [follow, ...models]);
     if (choice === undefined) return;

@@ -46,7 +46,7 @@ export interface CcPersistedCall {
 }
 
 const unavailableRunner = async () => ({ outcome: "failure" as const,
-  output: "CC worker configuration is required for Noting and Consolidation admission",
+  output: "CC worker configuration is required for Noting and Dreaming admission",
   audit: { available: false as const, reason: "Claude Agent SDK worker was not configured" } });
 const provisionalEnabled = (binding: CcSessionBinding) => binding.enrollment.choice ?? binding.enrollment.defaultEnabled;
 

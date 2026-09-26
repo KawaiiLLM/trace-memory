@@ -38,7 +38,7 @@ export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dream
 
 
 
-// ---- Flat config, defaults in one place (spec.md: render budgets, noting/consolidation triggers and modes) ----
+// ---- Flat config: render budgets, N/D triggers and Noting mode ----
 
 export interface TraceMemoryConfig {
   closedSessionScope: ClosedSessionScope;
@@ -292,15 +292,9 @@ export interface RunAgentResult {
  * warns nothing, because the user who cancelled asked for no further work, not for a notice. */
 export const CANCELLED_BEFORE_FALLBACK = "cancelled before fallback";
 
-/** A frozen target, in two meanings the field names now separate (29e, parent 29 "Capacity, fallback
- * and audit"). The *allowable* set is a manual catchup's snapshot: `maxEntryId` bounds Noting to
- * entries allocated no later than its freeze instant, `allowedFactIds` bounds Consolidation to the
- * pending-plus-produced fact set it froze. Both permit a smaller batch — that is what a drain does.
- * Absent, selection is the ordinary unbounded pending set (18b).
- *
- * The *exact* target is what a fork fallback re-admits on: `exactEntryIds` (27d, parent 27
- * amendment 6) and `exactFactIds` (29e). Under either, the freeze takes exactly those members or the
- * task stays pending — a smaller batch would be a membership change made after execution started. */
+/** A manual catchup's maxEntryId allows bounded batches inside its frozen backlog.
+ * A refused fork's exactEntryIds admits the original members together or leaves them pending.
+ * Without either, selection uses the ordinary pending set. */
 export interface TaskBoundary { maxEntryId?: number; exactEntryIds?: number[] }
 export interface TaskOptions {
   /** Durable execution shared only with a refused attempt's fallback. */
@@ -386,7 +380,7 @@ export interface TraceMemory {
   readonly resultText: ResultExtractor;
   taskEligibility(phase: Phase, target: TaskTarget): { due: boolean };
   /** On-demand, read-only trigger material estimates; no admission, grants or cache writes. Covers
-   * Noting and Consolidation only — Dreaming's Knowledge pools trigger independently, so its
+   * Noting only — Dreaming's Knowledge pools trigger independently, so its
    * projection is `dreamingPending`. With `upToTrigger`, Noting is counted only up to its trigger
    * (maintainer, 2026-09-25, for the `/trace` menus): a larger backlog reports `atLeast` with its
    * exact pending entry count, because rendering every entry of a long backlog took seconds. */
@@ -418,8 +412,8 @@ export interface TraceMemory {
   setKnowledgeBudget(field: import("../store/processing.ts").KnowledgeBudgetField, value: number): ReturnType<Store["setKnowledgeBudget"]>;
   /** Ticket 24 amendment 2: the one runtime configuration surface. A saved global preference must
    * reach tasks admitted afterwards without a reload, and admission reads its execution mode from
-   * this configuration. Only each phase's `forkModeDefault` and `closedSessionScope` may be replaced
-   * here (29e restored Consolidation's, which 25b had retired), validated like the load path. Other keys are refused: this is not a second configuration source
+   * this configuration. Only Noting's `forkModeDefault` and `closedSessionScope` may be replaced
+   * here, validated like the load path. Other keys are refused: this is not a second configuration source
    * and reloads nothing. Admitted tasks retain their frozen mode and borrowing scope. */
   configure(settings: ConfigOverride): void;
   close(): void;
@@ -806,9 +800,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       : store.duePools(target, cfg.dreaming.triggerTokens).length > 0 };
   };
   const execute = async (phase: Phase, input: NotingInput): Promise<NotingResult | DreamingResult> => {
-    // 29e (parent 29, superseding 25b): both phases have two execution modes again, so no mode is
-    // refused here by name. What stays subagent stays subagent where it is decided — borrowed work
-    // and manual catchup request it explicitly, and ticket 28's recovery workers will too.
+    // Noting may fork; borrowed work and manual catchup explicitly request fresh context.
+    // Dreaming always enters through dream(), which fixes subagent mode.
     if (stopping || store.closed || !store.enabled(input.sessionId)) return { outcome: "dropped" };
     // 27d repair 4 (parent 27 line 83): "User cancellation, stop, shutdown, claim loss or disabled
     // enrollment must not launch fallback work." A task cancelled between its refusal and this

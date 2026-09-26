@@ -15,7 +15,6 @@ import { join } from "node:path";
 import { generate, nativeAncestry, countSourceReads, countGraphResolutions, countRunBodies, runAudit, searchCorpus, type Fixture } from "./fixture.ts";
 import { TraceMemory, noVisibility, renderEntry, toolDefinitions, tokens, type EntryProfile, type SourceEntry } from "../../src/core/api/index.ts";
 import { freezeNoting } from "../../src/core/noting/index.ts";
-import { freezeConsolidation } from "../../src/core/consolidation/index.ts";
 import { freezeDreaming } from "../../src/core/dreaming/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { host } from "../hosts/pi/test-host.ts";
@@ -240,7 +239,7 @@ async function hostReconciliation(size: string, entries: number): Promise<Sample
   return samples;
 }
 
-/** Ticket 22d, hotspot family 6: the Noting and Consolidation freezes under a model allowance. The
+/** Ticket 22d, hotspot family 6: the Noting freeze under a model allowance. The
  * copy has its Noting progress removed, so the whole history is pending and a freeze selects a real
  * batch. Three allowances: none (the natural freeze), one below the fixed instruction and tool cost
  * (impossible — no candidate material can ever bring the price under it), and one just under the
@@ -255,7 +254,7 @@ async function capacityScenarios(fixture: Fixture, size: string, main: ReturnTyp
   prepared.close();
   const memory = TraceMemory(copy, async () => { throw new Error("the performance suite must not call a model"); });
   const store = memory.store, samples: Sample[] = [];
-  const instructions = (file: "noting.md" | "consolidation.md" | "dreaming.md") => tokens(loadPrompt(file));
+  const instructions = (file: "noting.md" | "dreaming.md") => tokens(loadPrompt(file));
   const toolCost = tokens(JSON.stringify(toolDefinitions));
   const rejected = (name: string, note: string, run: () => unknown) => samples.push(measure(name, () => {
     try { run(); } catch (error) { if (/capacity/.test(String(error))) return; throw error; }
@@ -284,12 +283,6 @@ async function capacityScenarios(fixture: Fixture, size: string, main: ReturnTyp
       `${fixture.pendingEntryCount} pending entries on the untouched fixture, allowance 2,000`,
       () => freezeNoting(main.store, { ...target, capacity: { inputTokens: 2_000, prefixTokens: 0 } }, main.config, main.resultText));
 
-    const consolidation = instructions("consolidation.md");
-    const batch = store.consolidationBatch(fixture.sessionId, fixture.branch, fixture.headTurnId).length;
-    samples.push(measure("consolidation freeze (no allowance)", () => freezeConsolidation(store, target, memory.config), `${batch} pending facts`));
-    rejected("consolidation freeze (impossible 2,000-token allowance)",
-      `instructions ${consolidation} + tools ${toolCost} = ${consolidation + toolCost} mandatory tokens, allowance 2,000`,
-      () => freezeConsolidation(store, { ...target, capacity: { inputTokens: 2_000, prefixTokens: 0 } }, memory.config));
   } finally { memory.close(); rmSync(copy, { force: true }); }
   return samples;
 }

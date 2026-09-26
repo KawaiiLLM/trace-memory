@@ -179,11 +179,15 @@ export function generate(dbPath: string, options: FixtureOptions = {}): Fixture 
       for (let i = 0; i < 20; i++) {
         const supports = cite(i);
         if (supports.length < 2) break;
-        const run = { kind: "consolidation" as const, sessionId, branch, createdAt: "2026-01-01T02:00:00Z" };
+        const run = { kind: "manual" as const, sessionId, branch, createdAt: "2026-01-01T02:00:00Z" };
         const operations = [{ op: "create" as const, handle: `perf-${i}`, author: "perf", text: `${pick(LATIN)} ${pick(CJK)} K${i}`,
           category: "understanding" as const, scope: "session" as const, supports, reason: "perf fixture", topics: [pick(LATIN)], createdAt: "2026-01-01T02:00:00Z" }];
-        const committed = store.commitConsolidationRun({ path, run, operations, consolidated: i < 10 ? supports : [] });
+        const committed = store.commitConsolidationRun({ path, run, operations });
         if (!committed.ok) throw new Error(committed.problems.join("; "));
+        // Import historical C provenance and progress; this is not a live retired-stage invocation.
+        store.db.prepare("UPDATE runs SET kind='consolidation' WHERE id=?").run(committed.runId);
+        store.db.prepare("UPDATE knowledge_revisions SET actor_role='consolidation' WHERE run_id=?").run(committed.runId);
+        for (const factId of i < 10 ? supports : []) store.markConsolidated(factId, committed.runId, projectId);
         knowledgeCount += committed.committed.length;
         if (i === 0) { firstKnowledge = committed.committed[0]!.knowledgeId; firstCommit = committed.committed[0]!.commit; }
         if (i === 1) { secondKnowledge = committed.committed[0]!.knowledgeId; secondCommit = committed.committed[0]!.commit; }
@@ -235,7 +239,7 @@ export function countPathSnapshots(): { snapshots: () => number; reset: () => vo
   const prototype = Store.prototype as { pathSnapshot: Store["pathSnapshot"] };
   const original = prototype.pathSnapshot;
   let count = 0;
-  prototype.pathSnapshot = function (this: Store, path) { count++; return original.call(this, path); };
+  prototype.pathSnapshot = function (this: Store, ...args) { count++; return original.apply(this, args); };
   return { snapshots: () => count, reset: () => { count = 0; }, restore: () => { prototype.pathSnapshot = original; } };
 }
 
@@ -329,7 +333,7 @@ export interface SearchCorpus { query: string; revisions: number; historical: nu
  * query, on top of an existing long-history fixture, so applicability is decided against real facts
  * and Turns. Every fifth commit opens a new knowledge; the rest are explicitly imported historical
  * Dreamer updates, preserving the immutable revision graph without pretending that a current
- * Consolidator lifecycle may update. Every tenth knowledge ends in two imported updates grounded in
+ * manual writer may update. Every tenth knowledge ends in two imported updates grounded in
  * two sibling Turns of the head instead of one: two tips of the same base that no single path carries
  * together — the divergent revisions, which read as "another branch" from main. */
 export function searchCorpus(dbPath: string, options: { revisions: number; sessionId: number; branch: string; headTurnId: number }): SearchCorpus {
@@ -357,7 +361,7 @@ export function searchCorpus(dbPath: string, options: { revisions: number; sessi
       };
       const forks = [fork("corpusC"), fork("corpusD")];
       const create = (i: number) => {
-        const run = store.bindRunOrigin({ kind: "consolidation" as const, sessionId, branch, createdAt: time }, store.triggerOrigin(path));
+        const run = store.bindRunOrigin({ kind: "manual" as const, sessionId, branch, createdAt: time }, store.triggerOrigin(path));
         const done = store.commitConsolidationRun({ path, run, operations: [{ op: "create", handle: `corpus-${i}`, author: "perf",
           text: `${query} conclusion ${i}`, category: "understanding", scope: "session", supports, reason: "search corpus",
           topics: [i % 3 ? "corpus" : query], createdAt: time }] });
@@ -365,7 +369,7 @@ export function searchCorpus(dbPath: string, options: { revisions: number; sessi
         return done.committed[0]!;
       };
       // This workload deliberately needs immutable history which current APIs correctly refuse to
-      // author through the create-only Consolidator. Import only those old update rows, just as a
+      // author through manual create/archive authority. Import only those old update rows, just as a
       // migrated database preserves them. Reusing the root's real run preserves session ownership;
       // no Dreamer success or processing record is fabricated.
       const importHistoricalUpdate = (knowledgeId: number, parentId: number, originRunId: number, text: string, evidence: number[]) =>

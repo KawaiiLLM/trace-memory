@@ -6,7 +6,7 @@ import { MEMORY_PHASES, type MemoryPhase } from "./phase-settings.ts";
  * implementation to drift from. This module is host-neutral: it does no I/O, opens nothing, and knows
  * nothing about a theme or an ANSI code — each host paints the returned abstract colour roles itself.
  *
- * The indicator is one role per running phase — Noting `accent`, Consolidation `success`, Dreaming
+ * The indicator is one role per running phase — Noting `accent`, Dreaming
  * `customMessageLabel` — in that precedence when phases overlap; idle is `dim`. Off collapses the
  * whole line to one `dim` segment, `○ off`, matching Pi's compact form exactly (not two segments
  * joined by a space, which would insert an extra paint boundary a host's `paint` wrapper does not
