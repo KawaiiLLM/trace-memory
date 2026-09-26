@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, type NotingAgentInput, type DreamingAgentInput } from "../../source-fixture.ts";
 
 // Exercise both explicit N tools and real terminal publication.
 async function checkMemoryBatch(output: unknown | ((tag: (id: number) => string) => unknown)) {
@@ -8,11 +8,13 @@ async function checkMemoryBatch(output: unknown | ((tag: (id: number) => string)
     const p = memory.store.createProject({ name: "validation", declaredBy: "mark" });
     const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
     const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", assistantText: "evidence", startedAt: "now" });
-    memory.store.commitNotingRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
+    const noted = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
       facts: Array.from({ length: 6 }, (_, i) => ({ turnId: t.id, category: "observation" as const, actor: "agent" as const, text: `Evidence ${i}`, source: [`T${t.id}#assistant`], createdAt: "now" })),
       entryIds: [] });
-    memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    const seeded = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
       operations: Array.from({ length: 10 }, (_, i) => ({ op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category: "understanding" as const, scope: "project" as const, text: `Seed ${i}`, supports: [1], createdAt: "now" })) });
+    if (!seeded.ok) throw new Error(seeded.problems.join("; "));
     const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
     const run = memory.store.listRuns(s.id).at(-1)!;
     const audit = JSON.parse(run.response!);
@@ -99,8 +101,37 @@ describe("checkMemoryBatch", async () => {
   });
 
   test("rejects a merge whose absorb list holds a non-knowledge-id", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: "K1", absorb: ["not-an-id"], text: "x", scope: "project", category: "understanding", supports: ["F1"] }], skipped: [] });
-    expect(problems.some((p) => p.includes("Dreamer"))).toBe(true);
+    let reached = false;
+    const memory = sourceSeededMemory(":memory:", async raw => {
+      const input = raw as DreamingAgentInput;
+      expect(input.kind).toBe("dreaming");
+      expect(memory.store.getClaim(1, "dreaming")).not.toBeNull();
+      expect(memory.store.openDreamingRange(1, "main")).not.toBeNull();
+      const tag = `K1#${memory.store.versionTag(1, 1)}`;
+      expect(input.tools.find(tool => tool.name === "trace")!.execute({ address: "K1", itemBudget: null })).toContain(tag);
+      const before = memory.store.listKnowledgeRevisions();
+      const receipt = input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "merge", id: tag,
+        absorb: ["not-an-id"], text: "Merged rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Merge duplicate." }], skipped: [] });
+      expect(JSON.parse(receipt).results).toEqual(["rejected: not-an-id: supply an exact K#tag version; not-an-id: knowledge version does not exist"]);
+      expect(memory.store.listKnowledgeRevisions()).toEqual(before);
+      reached = true;
+      input.reportRequest({});
+      return { outcome: "success", output: "refused", request: {} };
+    }, { dreaming: { triggerTokens: 1 } });
+    try {
+      const project = memory.store.createProject({ name: "merge-shape", declaredBy: "mark" });
+      const session = memory.store.createSession({ projectId: project.id, host: "pi:test", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+      const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", startedAt: "now" });
+      const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
+      expect(tools[2]!.execute({ facts: [{ text: "Rule", source: [`T${turn.id}#E1`] }] })).toContain("F1");
+      expect(JSON.parse(tools[3]!.execute({ operations: [{ op: "create", text: "Rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Seed" }], skipped: [] })).committed).toHaveLength(1);
+      const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: turn.id });
+      expect(result.outcome, JSON.stringify(result)).toBe("failure");
+      if (result.outcome !== "failure") throw new Error("expected refused D batch");
+      expect(result.problems).toEqual(["rejected: not-an-id: supply an exact K#tag version; not-an-id: knowledge version does not exist"]);
+      expect(reached).toBe(true);
+      expect(memory.store.listKnowledgeRevisions()).toHaveLength(1);
+    } finally { memory.close(); }
   });
 
   test("N rejects retired fact-processing skips", async () => {

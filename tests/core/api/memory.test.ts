@@ -1,5 +1,5 @@
 import { readHandle } from "../../read-handle-fixture.ts";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 let memory: ReturnType<typeof sourceSeededMemory>, admittedScenarios: AdmittedDreamerScenarios, triggerEntryId: number;
@@ -171,6 +171,28 @@ test("N terminal success-audit failure rolls back facts, knowledge and Raw progr
   expect(memory.pendingEntries(1, "main", 1)).toEqual([]);
 });
 
+test("N post-success claim-release failure reports cleanup without undoing terminal publication", async () => {
+  setup(async input => {
+    input.reportRequest({ exact: "terminal request" });
+    input.tools[2]!.execute({ facts: [{ text: "New evidence", source: ["T1#E1"] }] });
+    input.tools[3]!.execute({ operations: [{ ...create, supports: ["$1"] }], skipped: [] });
+    return success();
+  });
+  const release = vi.spyOn(memory.store, "releaseClaim").mockImplementation(() => { throw new Error("cleanup unavailable"); });
+  try {
+    const result = await integrate();
+    expect(result.outcome).toBe("success");
+    if (result.outcome !== "success") throw new Error("expected durable success");
+    expect(result.problems).toEqual(["claim release failed: Error: cleanup unavailable"]);
+    expect(release).toHaveBeenCalledOnce();
+    expect(memory.store.listSessionFacts(1)).toHaveLength(2);
+    expect(memory.store.currentCommit(1)[0]!.supports).toEqual([2]);
+    expect(memory.pendingEntries(1, "main", 1)).toEqual([]);
+    expect(memory.store.getRun(result.runId)!.outcome).toBe("success");
+    expect(memory.store.db.prepare("SELECT outcome FROM task_executions").all()).toEqual([{ outcome: "success" }]);
+  } finally { release.mockRestore(); }
+});
+
 // ---- 21a 2026-09-08: one evidence list per knowledge commit, with a reason as its message ----
 
 test("21a 2026-09-08: create, update, merge and archive all carry nonempty supports and a reason", async () => {
@@ -192,6 +214,33 @@ test("21a 2026-09-08: create, update, merge and archive all carry nonempty suppo
   // The archive keeps its own evidence and inherits category and scope from the parent revision.
   expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", text: "", supports: [1],
     reason: "The user withdrew the rule.", category: "constraint", scope: "project" });
+});
+
+for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D ${mode} after an immediate update preserves the committed revision`, async () => {
+  const manual = setup(async () => success());
+  expect(JSON.parse(manual.execute(batch)).committed).toHaveLength(1);
+  createDreamerTrigger(memory, dreamPath(), 1, 1, "project");
+  const result = await admittedScenarios.run(memory, dreamPath(), input => {
+    input.reportRequest({ exact: "D request" });
+    const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
+      ...create, op: "update", id: read(1), text: "Use pnpm and its lockfile", reason: "Clarified rule",
+    }], skipped: [] }));
+    expect(receipt.committed).toHaveLength(1);
+    expect(memory.store.currentCommit(1)[0]!.text).toBe("Use pnpm and its lockfile");
+    if (mode === "throw" || mode === "abort") {
+      const error = new Error("provider stopped after D commit");
+      if (mode === "abort") error.name = "AbortError";
+      throw error;
+    }
+    return { outcome: mode, output: "provider stopped after D commit", request: { exact: "D request" } };
+  });
+  expect(result.outcome).toBe(mode === "cancelled" || mode === "abort" ? "cancelled" : "failure");
+  expect(memory.store.listKnowledgeRevisions(1)).toHaveLength(2);
+  const revision = memory.store.currentCommit(1)[0]!;
+  expect(revision.text).toBe("Use pnpm and its lockfile");
+  expect(memory.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? AND revision_id = ?")
+    .get("project:1", revision.id)).toEqual({ revision_id: revision.id });
+  expect(memory.store.getClaim(1, "dreaming")).toBeNull();
 });
 
 test("21a 2026-09-08: an omitted, wrongly typed or empty reason or supports rejects the whole batch", () => {

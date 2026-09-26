@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult, type ConfigOverride, renderEntry , hydrate } from "../../source-fixture.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
-import { knowledgeBlock } from "../../../src/core/render/material.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import fixture from "../../fixtures/noting/turns.json";
 import memories from "../../fixtures/noting/facts.json";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
@@ -188,7 +188,7 @@ test("an explicit empty submission notings the range; compactions cannot acquire
 
 test("read knowledge revisions and exact provider request are recorded, even when a knowledge item moves", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
-  const created = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [
+  const created = commitNoterKnowledge(memory.store, { run: { sessionId, createdAt: time }, operations: [
     { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", category: "understanding", scope: "project", text: memories.knowledge, supports: [1], createdAt: time },
   ] });
   expect(created.ok).toBe(true);
@@ -197,9 +197,9 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   // 03 removes read registration; this legacy N material still supplies no knowledge block until 06.
   expect(calls[1]!.material.knowledge).toBeUndefined();
   expect(calls[1]!.text).not.toContain("[K1@1]");
-  memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [
+  expect(commitNoterKnowledge(memory.store, { run: { sessionId, createdAt: time }, operations: [
     { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: 1, baseCommit: 1, category: "understanding", scope: "project", text: memories.editedKnowledge, supports: [1], createdAt: time },
-  ] });
+  ] }).ok).toBe(true);
   resolve(success([])); const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
   const run = memory.store.getRun(result.runId)!;
@@ -264,35 +264,31 @@ test("86: an oldest entry exceeding the batch envelope still reaches the Noter",
   expect(hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store).length).toBeLessThan(before.length);
 });
 
-// 25a moved this scenario from the Noter to the Consolidator: the Noter has no knowledge block to
-// cap any more, so the cap is pinned where the automatic block still is. The rule is unchanged.
+// The retired C cap used the shared renderer. Pin it through foreground injection until 06
+// integrates that renderer into fresh-N material; omission never removes trace access.
 test("64c: no knowledge category bypasses the cap, newer commits are kept, and omitted items stay traceable", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const categories = ["constraint", "open", "goal", "understanding", "reference"] as const;
-  memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: categories.map((category, i) => ({
+  expect(commitNoterKnowledge(memory.store, { run: { sessionId, createdAt: time }, operations: categories.map((category, i) => ({
     op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const,
-    text: `${memories.knowledge} ${"word ".repeat(800)}`, supports: [1], createdAt: time,
-  })) });
+    text: `${memories.knowledge} ${"word ".repeat(600)}`, supports: [1], createdAt: time,
+  })) }).ok).toBe(true);
   const item = (id: number) => renderKnowledge(memory.store.currentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!, `K${id}#${memory.store.versionTag(id, id)}`);
-  const consolidate = () => memory.consolidate({ sessionId, branch: "main", mode: "subagent" });
   // With five admitted categories instead of seven, a 3k window still forces
   // whole-item omission. Use the real capacity policy rather than empty knowledge.
   memory.close(); open();
   setKnowledgeCapacity(memory, 3_000);
   const cap = 3_000;
-  script.push(async () => ({ outcome: "success", output: "Done.", request }));
-  expect((await consolidate()).outcome).toBe("success");
-  const material = calls.at(-1)!.material as unknown as { knowledge: { category: string; text: string }[]; receipts: string[] };
-  const block = knowledgeBlock(material as unknown as Parameters<typeof knowledgeBlock>[0]);
-  const text = material.knowledge.map(g => g.text).join("\n");
+  const injection = memory.injection({ sessionId, branch: "main", headTurnId: first.id });
+  const text = injection.text;
   const kept = [...text.matchAll(/\[K(\d+)#[a-z]+\]/g)].map(match => Number(match[1]));
   expect(kept.length).toBeGreaterThan(0);
   expect(kept.length).toBeLessThan(categories.length); // the cap really binds
   expect(kept).toEqual(categories.map((_, index) => index + 1).slice(-kept.length)); // one chronological list, newest retained
-  expect(text).toBe(kept.map(item).join("\n")); // complete tagged bodies, never rewritten
-  const receipts = material.receipts.filter(r => r.includes(" knowledge; expand: "));
-  expect(receipts).toHaveLength(categories.length - kept.length);
-  expect(tokens(block) + tokens(receipts.join("\n"))).toBeLessThanOrEqual(cap);
+  for (const id of kept) expect(text).toContain(item(id)); // complete tagged bodies, never rewritten
+  expect(text).toContain("omitted");
+  for (let id = 1; id <= categories.length; id++) expect(memory.trace(`K${id}`)).toContain("word word");
+  expect(tokens(text)).toBeLessThanOrEqual(cap);
 });
 
 test("selected historical facts display by Turn time rather than insertion id", async () => {

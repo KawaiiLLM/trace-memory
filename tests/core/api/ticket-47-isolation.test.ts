@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { noVisibility, TraceMemory, type ConsolidationAgentInput, type DreamingAgentInput, type NotingAgentInput } from "../../../src/core/api/index.ts";
+import { TraceMemory, type DreamingAgentInput, type NotingAgentInput } from "../../../src/core/api/index.ts";
 import type { KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -24,7 +24,7 @@ function completeRead(tool: { execute(input: unknown): string }, address: string
     page = tool.execute({ address: `cursor=${cursor}`, itemBudget: null });
 }
 
-test("47: head and rewind N/C material and eligibility ignore sibling-only and terminal-only state", async () => {
+test("47: head and rewind N material and eligibility ignore sibling-only and terminal-only state", async () => {
   const captures = new Map<string, Capture>();
   let key = "", source = "";
   const scenarios = new AdmittedDreamerScenarios(async raw => {
@@ -33,14 +33,10 @@ test("47: head and rewind N/C material and eligibility ignore sibling-only and t
       const note = input.tools.find(tool => tool.name === "note")!;
       const receipt = note.execute({ facts: [{ text: "shared durable rule", source: [source] }] });
       expect(receipt).toContain("held:");
-      captures.set(`${key}:N`, { text: input.text, material: structuredClone(input.material), hasReviewFeedback: "reviewFeedback" in input });
-      return cancelled;
-    }
-    if ((raw as { kind: string }).kind === "consolidation") {
-      const input = raw as ConsolidationAgentInput;
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
       const memory = input.tools.find(tool => tool.name === "memory")!;
       const operation = ((memory.parameters.properties as any).operations.items as any);
-      captures.set(`${key}:C`, {
+      captures.set(`${key}:N`, {
         text: input.text,
         material: structuredClone(input.material),
         hasReviewFeedback: "reviewFeedback" in input,
@@ -53,7 +49,7 @@ test("47: head and rewind N/C material and eligibility ignore sibling-only and t
     throw new Error("unexpected Dreamer call outside an admitted fixture scenario");
   });
   const memory = TraceMemory(":memory:", scenarios.agent, {
-    noting: { triggerTokens: 1 }, consolidation: { triggerTokens: 1 },
+    noting: { triggerTokens: 1 },
   });
   memories.push(memory);
   const store = memory.store;
@@ -94,20 +90,16 @@ test("47: head and rewind N/C material and eligibility ignore sibling-only and t
     head: { sessionId: session.id, branch: "main", headTurnId: headTurn.id },
     rewind: rootPath,
   };
-  const visible = noVisibility();
-  visible.knowledgeCommitIds.add(maintained.commit);
   store.setCurrentPath(session.id, rootPath.branch, rootPath.headTurnId, "test-lineage");
 
   const capture = async (stage: "before" | "after") => {
     const result: Record<string, unknown> = {};
     for (const [name, target] of Object.entries(targets)) {
-      result[`${name}:eligibility`] = ["noting", "consolidation"].map(phase =>
-        memory.taskEligibility(phase as "noting" | "consolidation", target));
+      result[`${name}:eligibility`] = memory.taskEligibility("noting", target);
       key = `${stage}:${name}`;
       source = `T${rootTurn.id}#E${rootPending.entryOrdinal}`;
       expect((await memory.noting({ ...target, mode: "subagent" })).outcome).toBe("cancelled");
-      expect((await memory.consolidate({ ...target, mode: "fork", visible })).outcome).toBe("cancelled");
-      for (const phase of ["N", "C"] as const) result[`${name}:${phase}`] = captures.get(`${key}:${phase}`);
+      result[`${name}:N`] = captures.get(`${key}:N`);
     }
     return result;
   };
@@ -115,15 +107,12 @@ test("47: head and rewind N/C material and eligibility ignore sibling-only and t
   const before = await capture("before");
   for (const name of Object.keys(targets)) {
     const notingCapture = captures.get(`before:${name}:N`)!;
-    const consolidationCapture = captures.get(`before:${name}:C`)!;
     expect(notingCapture.hasReviewFeedback).toBe(false);
-    expect(consolidationCapture.text).toContain("<knowledge>");
-    expect(consolidationCapture.text).not.toMatch(/\b(?:NEAR|CLOSER)\b/);
-    expect(consolidationCapture.hasReviewFeedback).toBe(false);
-    // 76: the Consolidator also updates and archives; id is present (forbidden for create by allOf).
-    expect(consolidationCapture.operationEnum).toEqual(["create", "update", "archive"]);
-    expect(consolidationCapture.hasId).toBe(true);
-    expect(consolidationCapture.hasAbsorb).toBe(false);
+    expect(notingCapture.text).not.toMatch(/\b(?:NEAR|CLOSER)\b/);
+    // N owns the same three knowledge operations; fresh-N K assembly is integrated in 06.
+    expect(notingCapture.operationEnum).toEqual(["create", "update", "archive"]);
+    expect(notingCapture.hasId).toBe(true);
+    expect(notingCapture.hasAbsorb).toBe(true); // Shared public shape does not grant N merge authority.
   }
 
   const siblingTurn = store.appendTurn({ sessionId: session.id, parentTurnId: rootTurn.id, kind: "turn", userPrompt: "sibling", startedAt: "sibling" });

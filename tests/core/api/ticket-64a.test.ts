@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
+import type { KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { renderKnowledgeChange, wordLevelDiff } from "../../../src/core/render/index.ts";
-import { canonicalFlatConfig, REMOVED_SETTINGS, sourceSeededMemory, validateConfig, type ConsolidationAgentInput } from "../../source-fixture.ts";
+import { canonicalFlatConfig, REMOVED_SETTINGS, sourceSeededMemory, validateConfig, type NotingAgentInput } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
-// This file was 64a's ("Consolidator creates only"); ticket 76 supersedes that ruling and its tests
-// (64a's create-only pins are removed here, not merely extended) — the Consolidator now creates,
-// updates and archives, and the Dreamer reviews every change as a diff against the version it last
-// confirmed. See .scratch/v1/issues/76-consolidator-updates-and-archives-dreamer-reviews.md.
+// Ticket 92 transfers ticket 76's create/update/archive authority from C to N.
+// N publishes held operations terminally; D still reviews the diff against its processed baseline.
+// Store-only graph/accounting fixtures use the shared N terminal helper; worker tests use real admission.
 
 const time = "2026-09-23T00:00:00Z";
 const created = (fact: number, text: string, reason = "New durable conclusion.") => ({
@@ -16,21 +17,21 @@ const created = (fact: number, text: string, reason = "New durable conclusion.")
   skipped: [],
 });
 
-describe("76 Consolidator updates and archives; Dreamer reviews", () => {
+describe("76/92 Noter updates and archives; Dreamer reviews", () => {
   let memory: ReturnType<typeof sourceSeededMemory>;
   afterEach(() => memory?.close());
 
-  function fixture(agent: (input: ConsolidationAgentInput) => Promise<void> | void) {
+  function fixture(agent: (input: NotingAgentInput) => Promise<void> | void) {
     memory = sourceSeededMemory(":memory:", async raw => {
-      const input = raw as ConsolidationAgentInput;
+      const input = raw as NotingAgentInput;
+      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
       await agent(input);
       return { outcome: "success", output: "done", request: { one: "request" } };
     });
     const project = memory.store.createProject({ name: "p", declaredBy: "mark" });
     const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "beta.5 is current", startedAt: time });
-    const facts = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
-      entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id),
+    const facts = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time },
       facts: [
         { turnId: turn.id, entryIds: memory.store.listSourceEntries(session.id, turn.id).map(entry => entry.id), text: "beta.5 is current", source: [`T${turn.id}#E1`], createdAt: time },
         { turnId: turn.id, entryIds: memory.store.listSourceEntries(session.id, turn.id).map(entry => entry.id), text: "a second independent fact", source: [`T${turn.id}#E1`], createdAt: time },
@@ -43,64 +44,64 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
   const history = (item: { knowledgeId: number; commit: number }) =>
     `K${item.knowledgeId}@v${memory.store.versionOrdinal(item.knowledgeId, item.commit)}`;
 
-  /** A direct low-level Consolidation write, bypassing the model round-trip. */
-  function writeC(sessionId: number, operations: unknown[]) {
-    return memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, branch: "main", createdAt: time },
-      operations: operations as never });
+  /** N terminal Store publication for graph/accounting cases, without manufacturing Raw progress. */
+  function publishN(sessionId: number, operations: KnowledgeOperationInput[]) {
+    return commitNoterKnowledge(memory.store, { run: { sessionId, branch: "main", createdAt: time }, operations });
   }
 
-  test("the first valid submission commits and a later call is rejected", async () => {
+  test("N holds editable operations and publishes the final replacement at terminal success", async () => {
     let calls = 0;
     const f = fixture(input => {
       calls++;
       input.reportRequest({ one: "request" });
       const memoryTool = input.tools.find(tool => tool.name === "memory")!;
       const receipt = memoryTool.execute(created(f.fact, "beta.5 is current"));
-      expect(receipt).toContain('"committed"');
-      expect(receipt).not.toContain("feedback");
-      expect(memoryTool.execute(created(f.fact, "duplicate"))).toContain("already committed");
+      expect(receipt).toContain('"held"');
+      expect(memory.store.currentKnowledge()).toEqual([]);
+      expect(memoryTool.execute({ operations: [{ ...created(f.fact, "corrected").operations[0], slot: "M1" }], skipped: [] })).toContain("held");
     });
-    const result = await memory.consolidate({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
-    expect(result).toMatchObject({ outcome: "success", committed: [{ op: "create" }] });
+    const result = await memory.noting({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
+    expect(result.outcome).toBe("success");
+    expect(memory.store.currentCommit(1)[0]!.text).toBe("corrected");
     expect(calls).toBe(1);
     const run = memory.store.getRun((result as { runId: number }).runId)!;
     expect(JSON.parse(run.request!)).toEqual({ one: "request" });
-    expect(JSON.parse(run.response!).toolCalls).toHaveLength(2);
+    expect(JSON.parse(run.response!).toolCalls).toHaveLength(3);
   });
 
-  test("C's authority: a batch commits create, update and archive; merge and split are rejected with Dreamer guidance", () => {
+  test("N terminal Store authority permits create/update/archive and rejects merge/split", () => {
     const f = fixture(() => {});
-    const base = writeC(f.session.id, [{ op: "create", handle: "$base", author: "consolidation", text: "beta.4 is current",
+    const base = publishN(f.session.id, [{ op: "create", handle: "$base", author: "noting", text: "beta.4 is current",
       category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!base.ok) throw new Error(base.problems.join("; "));
     const baseCommit = base.committed[0]!;
-    const updated = writeC(f.session.id, [{ op: "update", knowledgeId: baseCommit.knowledgeId, baseCommit: baseCommit.commit,
+    const updated = publishN(f.session.id, [{ op: "update", knowledgeId: baseCommit.knowledgeId, baseCommit: baseCommit.commit,
       text: "beta.5 is current", category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Version bumped.", createdAt: time }]);
     expect(updated.ok).toBe(true);
     if (!updated.ok) return;
-    const archived = writeC(f.session.id, [{ op: "archive", knowledgeId: baseCommit.knowledgeId, baseCommit: updated.committed[0]!.commit,
+    const archived = publishN(f.session.id, [{ op: "archive", knowledgeId: baseCommit.knowledgeId, baseCommit: updated.committed[0]!.commit,
       supports: [f.fact2], reason: "Retired.", createdAt: time }]);
     expect(archived.ok).toBe(true);
 
     for (const forbidden of [
       { op: "merge", intoKnowledgeId: baseCommit.knowledgeId, intoBaseCommit: baseCommit.commit, absorb: [{ knowledgeId: 99, baseCommit: 99 }],
-        category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "x", createdAt: time },
+        text: "merged", category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "x", createdAt: time },
       { op: "split", knowledgeId: baseCommit.knowledgeId, baseCommit: baseCommit.commit, children: [
         { text: "a", category: "reference", topics: [] }, { text: "b", category: "reference", topics: [] }], supports: [f.fact], reason: "x", createdAt: time },
-    ]) {
-      const rejected = writeC(f.session.id, [forbidden]);
+    ] satisfies KnowledgeOperationInput[]) {
+      const rejected = publishN(f.session.id, [forbidden]);
       expect(rejected.ok).toBe(false);
-      if (!rejected.ok) expect(rejected.problems.join(" ")).toContain("Dreamer");
+      if (!rejected.ok) expect(rejected.problems.join(" ")).toBe("Noter permits create, update and archive only");
     }
   });
 
-  test("C's schema exposes create, update and archive; merge and split are absent", async () => {
+  test("shared N schema advertises create/update/archive and runtime rejects D-only operations", async () => {
     const f = fixture(input => {
       const definition = input.tools.find(tool => tool.name === "memory")!;
       const schema = (definition.parameters.properties as any).operations.items;
       expect(schema.properties.op.enum).toEqual(["create", "update", "archive"]);
       expect(schema.properties).toHaveProperty("id");
-      expect(schema.properties).not.toHaveProperty("absorb");
+      expect(schema.properties).toHaveProperty("absorb"); // Shared writer shape; N enforces operation permissions.
       for (const operation of [
         { op: "merge", id: "K1#aaaa", absorb: ["K2#bbbb"] },
         { op: "split", id: "K1#aaaa" },
@@ -109,52 +110,54 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
         expect(receipt).toContain("Dreamer");
       }
     });
-    const result = await memory.consolidate({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
-    expect(result.outcome).toBe("bounced");
+    const result = await memory.noting({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
+    expect(result.outcome, JSON.stringify(result)).toBe("bounced");
   });
 
-  test("refusal without fallback: a stale base names the current version; C resubmits as update in the same run and commits; nothing converts automatically; a later submission after commit is rejected", () => {
+  test("N converts a legitimately advanced base to a new identity, while current-base updates stay on the original identity", () => {
     const f = fixture(() => {});
-    const base = writeC(f.session.id, [{ op: "create", handle: "$base", author: "consolidation", text: "v1",
+    const base = publishN(f.session.id, [{ op: "create", handle: "$base", author: "noting", text: "v1",
       category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!base.ok) throw new Error(base.problems.join("; "));
     const first = base.committed[0]!;
     // Someone else moves the identity forward first (K@1 -> K@2).
-    const moved = writeC(f.session.id, [{ op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit,
+    const moved = publishN(f.session.id, [{ op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit,
       text: "v2", category: "reference", scope: "project", topics: [], supports: [f.fact2], reason: "Moved.", createdAt: time }]);
     if (!moved.ok) throw new Error(moved.problems.join("; "));
     const second = moved.committed[0]!;
 
-    // A batch that still targets the stale K@1 is refused whole, naming K@2 as current. (The write-time
-    // DAG check, shared with every writer including the Dreamer, already names the current version for
-    // ordinary same-branch supersession; baseProblem's own improved wording — asserted elsewhere in this
-    // file — covers the archived/inapplicable/scope-mismatch cases it alone decides.)
-    const stale = writeC(f.session.id, [{ op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit,
+    // The N-only conversion creates a separately pending identity, never an effective fork.
+    const stale = publishN(f.session.id, [{ op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit,
       text: "v1-stale-edit", category: "reference", scope: "project", topics: [], supports: [f.fact3], reason: "Stale.", createdAt: time }]);
-    expect(stale.ok).toBe(false);
-    if (!stale.ok) expect(stale.problems.join(" ")).toBe(
-      `K${first.knowledgeId}@${first.commit}: base is not the latest effective applicable revision; current: K${first.knowledgeId}@${second.commit}`);
-    // Nothing converted the refused update into a create: the identity still has exactly two commits.
+    expect(stale.ok).toBe(true);
+    if (!stale.ok) throw new Error(stale.problems.join("; "));
+    const converted = stale.committed[0]!;
+    expect(converted.knowledgeId).not.toBe(first.knowledgeId);
+    expect(converted.op).toBe("create");
+    expect(memory.store.knowledgeRevision(converted.commit)!.text).toContain(`K${first.knowledgeId}#${memory.store.versionTag(first.knowledgeId, first.commit)}`);
+    expect(memory.store.knowledgeRevision(converted.commit)!.supports).toEqual([f.fact3]);
     expect(memory.store.listKnowledgeRevisions(first.knowledgeId)).toHaveLength(2);
 
-    // Resubmit in the same run, this time against the named current version — it commits.
-    const resubmitted = writeC(f.session.id, [{ op: "update", knowledgeId: first.knowledgeId, baseCommit: second.commit,
+    // A later N publication against the current version extends the original identity.
+    const resubmitted = publishN(f.session.id, [{ op: "update", knowledgeId: first.knowledgeId, baseCommit: second.commit,
       text: "v3", category: "reference", scope: "project", topics: [], supports: [f.fact3], reason: "Correct base.", createdAt: time }]);
     expect(resubmitted.ok).toBe(true);
     if (!resubmitted.ok) return;
     const third = resubmitted.committed[0]!;
 
-    // A later submission after a successful commit against the now-stale K@2 is still refused.
-    const late = writeC(f.session.id, [{ op: "update", knowledgeId: first.knowledgeId, baseCommit: second.commit,
+    // A subsequent publication with a newly stale base converts independently.
+    const late = publishN(f.session.id, [{ op: "update", knowledgeId: first.knowledgeId, baseCommit: second.commit,
       text: "v4", category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Late.", createdAt: time }]);
-    expect(late.ok).toBe(false);
-    if (!late.ok) expect(late.problems.join(" ")).toBe(
-      `K${first.knowledgeId}@${second.commit}: base is not the latest effective applicable revision; current: K${first.knowledgeId}@${third.commit}`);
+    expect(late.ok).toBe(true);
+    if (!late.ok) throw new Error(late.problems.join("; "));
+    expect(late.committed[0]!.op).toBe("create");
+    expect(late.committed[0]!.knowledgeId).not.toBe(first.knowledgeId);
+    expect(memory.store.currentCommit(first.knowledgeId)[0]!.id).toBe(third.commit);
   });
 
-  test("D refused, nothing else: C updates K@5 while D holds it frozen; D's operation is refused, K@5 is not pending afterwards, and C's version is pending for the next D run", async () => {
+  test("D stale writes still refuse after N advances the frozen base; N's new version remains pending", async () => {
     const f = fixture(() => {});
-    const base = writeC(f.session.id, [{ op: "create", handle: "$base", author: "consolidation", text: "frozen base",
+    const base = publishN(f.session.id, [{ op: "create", handle: "$base", author: "noting", text: "frozen base",
       category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!base.ok) throw new Error(base.problems.join("; "));
     const first = base.committed[0]!;
@@ -170,7 +173,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       facts: [{ turnId: turn.id, entryIds: memory.store.listSourceEntries(session.id, turn.id).map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const fact = noted.facts[0]!.id;
-    const created0 = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time },
+    const created0 = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
       operations: [{ op: "create", handle: "$base", author: "consolidation", text: "frozen base", category: "reference", scope: "project",
         topics: [], supports: [fact], reason: "Initial.", createdAt: time }] });
     if (!created0.ok) throw new Error(created0.problems.join("; "));
@@ -178,12 +181,12 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
     const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     const trigger = createDreamerTrigger(memory, path, fact, 1);
 
-    // D holds the seat and freezes K@5 before C moves it; D updates it inside the run after C moves it.
+    // D freezes the base before N publishes its successor; the D tool must refuse the old base.
     let cMoved: { knowledgeId: number; commit: number } | undefined;
     const dreamed = await scenarios.run(memory, path, input => {
       input.reportRequest({});
-      // C moves the base after D has already frozen this pool's material.
-      const moved = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time },
+      // N advances the base after D has frozen its material.
+      const moved = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
         operations: [{ op: "update", knowledgeId: k5.knowledgeId, baseCommit: k5.commit, text: "C moved it", category: "reference",
           scope: "project", topics: [], supports: [fact], reason: "C moved it.", createdAt: time }] });
       if (!moved.ok) throw new Error(moved.problems.join("; "));
@@ -203,14 +206,14 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       return { outcome: "success", output: "D saw the refusal", request: {} };
     });
     expect(dreamed.outcome).toBe("success");
-    // K@5 (the frozen version) is superseded and no longer pending; C's new version is pending.
+    // The frozen predecessor is superseded; N's new version remains pending.
     const pool = `project:${session.projectId}`;
     const pending = memory.store.pendingVersions(pool, path).map(v => v.revisionId);
     expect(pending).not.toContain(k5.commit);
     expect(pending).toContain(cMoved!.commit);
   });
 
-  test("scope and applicability: a project-scope C update is visible across the project's sessions and follows its own facts, not its parent's", () => {
+  test("scope and applicability: a project-scope N update is visible across the project's sessions and follows its own facts, not its parent's", () => {
     const f = fixture(() => {});
     const rootTurn = f.turn;
     const childTurn = memory.store.appendTurn({ sessionId: f.session.id, parentTurnId: rootTurn.id, kind: "turn", userPrompt: "child", startedAt: time });
@@ -220,12 +223,12 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       facts: [{ turnId: childTurn.id, entryIds: memory.store.listSourceEntries(f.session.id, childTurn.id).map(entry => entry.id), text: "child-only evidence", source: [`T${childTurn.id}#E1`], createdAt: time }] });
     if (!childFacts.ok) throw new Error(childFacts.problems.join("; "));
     const childFact = childFacts.facts[0]!.id;
-    const created0 = writeC(f.session.id, [{ op: "create", handle: "$p", author: "consolidation", text: "v1", category: "reference",
+    const created0 = publishN(f.session.id, [{ op: "create", handle: "$p", author: "noting", text: "v1", category: "reference",
       scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!created0.ok) throw new Error(created0.problems.join("; "));
     const first = created0.committed[0]!;
     const childPath = { sessionId: f.session.id, branch: "main", headTurnId: childTurn.id };
-    const updated = memory.store.commitConsolidationRun({ path: childPath, run: { kind: "consolidation", sessionId: f.session.id, branch: "main", createdAt: time },
+    const updated = commitNoterKnowledge(memory.store, { path: childPath, run: { sessionId: f.session.id, branch: "main", createdAt: time },
       operations: [{ op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, text: "v2", category: "reference",
         scope: "project", topics: [], supports: [childFact], reason: "Its own update.", createdAt: time }] });
     if (!updated.ok) throw new Error(updated.problems.join("; "));
@@ -248,13 +251,13 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
     expect(memory.store.currentCommit(first.knowledgeId, otherPath).map(r => r.id)).toEqual([second.commit]);
   });
 
-  test("scope and applicability: a global-scope C update is visible from every session", () => {
+  test("scope and applicability: a global-scope N update is visible from every session", () => {
     const f = fixture(() => {});
-    const created0 = writeC(f.session.id, [{ op: "create", handle: "$g", author: "consolidation", text: "global v1", category: "reference",
+    const created0 = publishN(f.session.id, [{ op: "create", handle: "$g", author: "noting", text: "global v1", category: "reference",
       scope: "global", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!created0.ok) throw new Error(created0.problems.join("; "));
     const first = created0.committed[0]!;
-    const updated = writeC(f.session.id, [{ op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, text: "global v2",
+    const updated = publishN(f.session.id, [{ op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, text: "global v2",
       category: "reference", scope: "global", topics: [], supports: [f.fact2], reason: "Updated.", createdAt: time }]);
     if (!updated.ok) throw new Error(updated.problems.join("; "));
     const other = memory.store.createSession({ host: "test", projectId: memory.store.createProject({ name: "elsewhere", declaredBy: "mark" }).id,
@@ -279,13 +282,13 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
         entryIds: selectedEntries.map(entry => entry.id), text: "rule", source: [`T${turn.id}#E1`], createdAt: time }] });
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const fact = noted.facts[0]!.id;
-    const createdRun = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time }, operations: [{
+    const createdRun = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time }, operations: [{
       op: "create", handle: "$base", author: "consolidation", text: "base rule", category: "constraint", scope: "project",
       supports: [fact], topics: [], reason: "Initial rule.", createdAt: time,
     }] });
     if (!createdRun.ok) throw new Error(createdRun.problems.join("; "));
     const base = createdRun.committed[0]!;
-    const moved = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time }, operations: [{
+    const moved = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time }, operations: [{
       op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, text: "moved rule", category: "constraint", scope: "project",
       supports: [fact], topics: [], reason: "Moved.", createdAt: time,
     }] });
@@ -318,27 +321,27 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
     expect(memory.store.currentCommit(base.knowledgeId, path)[0]?.text).toBe("corrected rule");
   });
 
-  test("a refusal never names a version invisible to the writer; a visible current version is still named", () => {
+  test("N converts only visible concurrent advancement and refuses an invisible successor without leaking it", () => {
     const f = fixture(() => {});
 
-    // Visible case: an ordinary same-project stale base still names the address the writer can see.
-    const visBase = writeC(f.session.id, [{ op: "create", handle: "$v", author: "consolidation", text: "visible v1",
+    // Visible same-project advancement is the only conflict that N may convert.
+    const visBase = publishN(f.session.id, [{ op: "create", handle: "$v", author: "consolidation", text: "visible v1",
       category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!visBase.ok) throw new Error(visBase.problems.join("; "));
     const visFirst = visBase.committed[0]!;
-    const visMoved = writeC(f.session.id, [{ op: "update", knowledgeId: visFirst.knowledgeId, baseCommit: visFirst.commit,
+    const visMoved = publishN(f.session.id, [{ op: "update", knowledgeId: visFirst.knowledgeId, baseCommit: visFirst.commit,
       text: "visible v2", category: "reference", scope: "project", topics: [], supports: [f.fact2], reason: "Moved.", createdAt: time }]);
     if (!visMoved.ok) throw new Error(visMoved.problems.join("; "));
     const visSecond = visMoved.committed[0]!;
-    const visStale = writeC(f.session.id, [{ op: "update", knowledgeId: visFirst.knowledgeId, baseCommit: visFirst.commit,
+    const visStale = publishN(f.session.id, [{ op: "update", knowledgeId: visFirst.knowledgeId, baseCommit: visFirst.commit,
       text: "stale edit", category: "reference", scope: "project", topics: [], supports: [f.fact3], reason: "Stale.", createdAt: time }]);
-    expect(visStale.ok).toBe(false);
-    if (!visStale.ok) expect(visStale.problems.join(" ")).toBe(
-      `K${visFirst.knowledgeId}@${visFirst.commit}: base is not the latest effective applicable revision; current: K${visFirst.knowledgeId}@${visSecond.commit}`);
+    expect(visStale.ok).toBe(true);
+    if (!visStale.ok) throw new Error(visStale.problems.join("; "));
+    expect(visStale.committed[0]!.op).toBe("create");
+    expect(memory.store.currentCommit(visFirst.knowledgeId)[0]!.id).toBe(visSecond.commit);
 
-    // Invisible case (76 review repro): a global item is later scoped down to a different project by
-    // that project's own Consolidator; the version resolved there is invisible to the original writer.
-    const global0 = writeC(f.session.id, [{ op: "create", handle: "$g", author: "consolidation", text: "public claim",
+    // Invisible case: another project's N scopes the global item down; that successor cannot authorize conversion.
+    const global0 = publishN(f.session.id, [{ op: "create", handle: "$g", author: "consolidation", text: "public claim",
       category: "reference", scope: "global", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!global0.ok) throw new Error(global0.problems.join("; "));
     const g1 = global0.committed[0]!;
@@ -350,7 +353,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       facts: [{ turnId: otherTurn.id, entryIds: memory.store.listSourceEntries(otherSession.id, otherTurn.id).map(entry => entry.id), text: "elsewhere evidence", source: [`T${otherTurn.id}#E1`], createdAt: time }] });
     if (!otherFacts.ok) throw new Error(otherFacts.problems.join("; "));
     const otherFact = otherFacts.facts[0]!.id;
-    const scoped = writeC(otherSession.id, [{ op: "update", knowledgeId: g1.knowledgeId, baseCommit: g1.commit, text: "private replacement",
+    const scoped = publishN(otherSession.id, [{ op: "update", knowledgeId: g1.knowledgeId, baseCommit: g1.commit, text: "private replacement",
       category: "reference", scope: "project", topics: [], supports: [otherFact], reason: "Scoped elsewhere.", createdAt: time }]);
     if (!scoped.ok) throw new Error(scoped.problems.join("; "));
     const g2 = scoped.committed[0]!;
@@ -359,7 +362,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
     // and K@1 is no longer the current effective revision.
     expect(memory.store.currentCommit(g1.knowledgeId, path)).toEqual([]);
 
-    const staleGlobal = writeC(f.session.id, [{ op: "update", knowledgeId: g1.knowledgeId, baseCommit: g1.commit, text: "stale global update",
+    const staleGlobal = publishN(f.session.id, [{ op: "update", knowledgeId: g1.knowledgeId, baseCommit: g1.commit, text: "stale global update",
       category: "reference", scope: "global", topics: [], supports: [f.fact2], reason: "Stale.", createdAt: time }]);
     expect(staleGlobal.ok).toBe(false);
     if (!staleGlobal.ok) {
@@ -371,16 +374,16 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
   });
 
   describe("archives", () => {
-    test("a C archive is pending with the weight of the removed body, and pool size excludes it", () => {
+    test("an N archive is pending with the weight of the removed body, and pool size excludes it", () => {
       const f = fixture(() => {});
-      const created0 = writeC(f.session.id, [{ op: "create", handle: "$a", author: "consolidation", text: "removable body",
+      const created0 = publishN(f.session.id, [{ op: "create", handle: "$a", author: "noting", text: "removable body",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const first = created0.committed[0]!;
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
       const pool = `project:${f.session.projectId}`;
       const beforeSize = memory.store.knowledgePools(path).find(p => p.pool === pool)!.tokens;
-      const archived = writeC(f.session.id, [{ op: "archive", knowledgeId: first.knowledgeId, baseCommit: first.commit,
+      const archived = publishN(f.session.id, [{ op: "archive", knowledgeId: first.knowledgeId, baseCommit: first.commit,
         supports: [f.fact2], reason: "No longer holds.", createdAt: time }]);
       if (!archived.ok) throw new Error(archived.problems.join("; "));
       const pools = memory.store.knowledgePools(path);
@@ -395,13 +398,13 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       expect(pending[0]!.tokens).toBeLessThanOrEqual(beforeSize);
     });
 
-    test("case A: C creates then archives before D ever processes it shows the archived body whole, with no diff", () => {
+    test("case A: N creates then archives before D ever processes it shows the archived body whole, with no diff", () => {
       const f = fixture(() => {});
-      const created0 = writeC(f.session.id, [{ op: "create", handle: "$a", author: "consolidation", text: "case A body",
+      const created0 = publishN(f.session.id, [{ op: "create", handle: "$a", author: "noting", text: "case A body",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const first = created0.committed[0]!;
-      const archived = writeC(f.session.id, [{ op: "archive", knowledgeId: first.knowledgeId, baseCommit: first.commit,
+      const archived = publishN(f.session.id, [{ op: "archive", knowledgeId: first.knowledgeId, baseCommit: first.commit,
         supports: [f.fact2], reason: "Never confirmed.", createdAt: time }]);
       if (!archived.ok) throw new Error(archived.problems.join("; "));
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
@@ -412,9 +415,9 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       expect(pending.material).not.toContain("[-");
     });
 
-    test("case B: D confirmed A, C changed A to B, then archived B: shows B whole with the diff A -> B", () => {
+    test("case B: D confirmed A, N changed A to B, then archived B: shows B whole with the diff A -> B", () => {
       const f = fixture(() => {});
-      const created0 = writeC(f.session.id, [{ op: "create", handle: "$b", author: "consolidation", text: "state A",
+      const created0 = publishN(f.session.id, [{ op: "create", handle: "$b", author: "noting", text: "state A",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const stateA = created0.committed[0]!;
@@ -422,11 +425,11 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       const pool = `project:${f.session.projectId}`;
       // D confirms state A (the baseline this case needs) without a full admitted run.
       markProcessed(memory, pool, stateA.commit);
-      const updated = writeC(f.session.id, [{ op: "update", knowledgeId: stateA.knowledgeId, baseCommit: stateA.commit, text: "state B",
+      const updated = publishN(f.session.id, [{ op: "update", knowledgeId: stateA.knowledgeId, baseCommit: stateA.commit, text: "state B",
         category: "reference", scope: "project", topics: [], supports: [f.fact2], reason: "Changed.", createdAt: time }]);
       if (!updated.ok) throw new Error(updated.problems.join("; "));
       const stateB = updated.committed[0]!;
-      const archived = writeC(f.session.id, [{ op: "archive", knowledgeId: stateB.knowledgeId, baseCommit: stateB.commit,
+      const archived = publishN(f.session.id, [{ op: "archive", knowledgeId: stateB.knowledgeId, baseCommit: stateB.commit,
         supports: [f.fact3], reason: "Retired.", createdAt: time }]);
       if (!archived.ok) throw new Error(archived.problems.join("; "));
       const pending = memory.store.pendingVersions(pool, path)[0]!;
@@ -456,7 +459,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
         facts: [{ turnId: turn.id, entryIds: selectedEntries.map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
       if (!noted.ok) throw new Error(noted.problems.join("; "));
       const fact = noted.facts[0]!.id;
-      const createdRun = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time }, operations: [{
+      const createdRun = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time }, operations: [{
         op: "create", handle: "$x", author: "consolidation", text: "to be archived by D", category: "reference", scope: "project",
         topics: [], supports: [fact], reason: "Initial.", createdAt: time,
       }] });
@@ -493,13 +496,13 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
         facts: [{ turnId: turn.id, entryIds: selectedEntries.map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
       if (!noted.ok) throw new Error(noted.problems.join("; "));
       const fact = noted.facts[0]!.id;
-      const createdRun = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time }, operations: [{
+      const createdRun = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time }, operations: [{
         op: "create", handle: "$r", author: "consolidation", text: "revivable body", category: "reference", scope: "project",
         topics: [], supports: [fact], reason: "Initial.", createdAt: time,
       }] });
       if (!createdRun.ok) throw new Error(createdRun.problems.join("; "));
       const item = createdRun.committed[0]!;
-      const cArchived = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time },
+      const cArchived = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
         operations: [{ op: "archive", knowledgeId: item.knowledgeId, baseCommit: item.commit, supports: [fact], reason: "C retires it.", createdAt: time }] });
       if (!cArchived.ok) throw new Error(cArchived.problems.join("; "));
       const archiveCommit = cArchived.committed[0]!;
@@ -527,20 +530,20 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
   });
 
   describe("diff material and weight", () => {
-    test("two consecutive C updates show one cumulative diff against the last-processed baseline", () => {
+    test("two consecutive N updates show one cumulative diff against the last-processed baseline", () => {
       const f = fixture(() => {});
-      const created0 = writeC(f.session.id, [{ op: "create", handle: "$c", author: "consolidation", text: "alpha beta gamma",
+      const created0 = publishN(f.session.id, [{ op: "create", handle: "$c", author: "noting", text: "alpha beta gamma",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
       const pool = `project:${f.session.projectId}`;
       markProcessed(memory, pool, v1.commit); // D confirmed K@5.
-      const v2Run = writeC(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "alpha delta gamma",
+      const v2Run = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "alpha delta gamma",
         category: "reference", scope: "project", topics: [], supports: [f.fact2], reason: "First edit.", createdAt: time }]);
       if (!v2Run.ok) throw new Error(v2Run.problems.join("; "));
       const v2 = v2Run.committed[0]!;
-      const v3Run = writeC(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v2.commit, text: "alpha delta epsilon",
+      const v3Run = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v2.commit, text: "alpha delta epsilon",
         category: "reference", scope: "project", topics: [], supports: [f.fact3], reason: "Second edit.", createdAt: time }]);
       if (!v3Run.ok) throw new Error(v3Run.problems.join("; "));
       const v3 = v3Run.committed[0]!;
@@ -555,11 +558,11 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
 
     test("no processed ancestor: an update is shown whole as New, exactly as a create is", () => {
       const f = fixture(() => {});
-      const created0 = writeC(f.session.id, [{ op: "create", handle: "$n", author: "consolidation", text: "v1",
+      const created0 = publishN(f.session.id, [{ op: "create", handle: "$n", author: "noting", text: "v1",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
-      const updated = writeC(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "v2",
+      const updated = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "v2",
         category: "reference", scope: "project", topics: [], supports: [f.fact2], reason: "Edit.", createdAt: time }]);
       if (!updated.ok) throw new Error(updated.problems.join("; "));
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
@@ -582,7 +585,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
 
     test("a Changed item shows the current revision's full topics and supports beside the diff, not only what changed", () => {
       const f = fixture(() => {});
-      const created0 = writeC(f.session.id, [{ op: "create", handle: "$t", author: "consolidation", text: "use red tiles",
+      const created0 = publishN(f.session.id, [{ op: "create", handle: "$t", author: "noting", text: "use red tiles",
         category: "reference", scope: "project", topics: ["ui", "theme"], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
@@ -591,7 +594,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       markProcessed(memory, pool, v1.commit);
       // The topics and supports are untouched by this edit, so the diff's own added/removed lines say
       // nothing about them (76 review repro: a fresh D that only saw the diff wiped the real topics).
-      const updated = writeC(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "use blue tiles",
+      const updated = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "use blue tiles",
         category: "reference", scope: "project", topics: ["ui", "theme"], supports: [f.fact], reason: "Color only.", createdAt: time }]);
       if (!updated.ok) throw new Error(updated.problems.join("; "));
       const material = memory.store.pendingVersions(pool, path)[0]!.material;
@@ -602,7 +605,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
 
     test("metadata-only change (a scope change with unchanged body) weighs its change: more than zero, far less than the item", () => {
       const f = fixture(() => {});
-      const created0 = writeC(f.session.id, [{ op: "create", handle: "$m", author: "consolidation", text: "same body throughout, unchanged and reasonably sized so its whole render dwarfs one field's diff",
+      const created0 = publishN(f.session.id, [{ op: "create", handle: "$m", author: "noting", text: "same body throughout, unchanged and reasonably sized so its whole render dwarfs one field's diff",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
@@ -610,7 +613,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       const pool = `project:${f.session.projectId}`;
       markProcessed(memory, pool, v1.commit);
       const rendered = memory.store.knowledgeRevision(v1.commit)!;
-      const updated = writeC(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: rendered.text,
+      const updated = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: rendered.text,
         category: rendered.category, scope: "global", topics: rendered.topics, supports: [f.fact2], reason: "Scope only.", createdAt: time }]);
       if (!updated.ok) throw new Error(updated.problems.join("; "));
       // Global has no processing baseline (this identity only ever lived in the project pool there), so
@@ -623,14 +626,14 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
 
     test("without a baseline in this pool: a project item changed to global weighs the whole item there", () => {
       const f = fixture(() => {});
-      const created0 = writeC(f.session.id, [{ op: "create", handle: "$s", author: "consolidation", text: "scoped body",
+      const created0 = publishN(f.session.id, [{ op: "create", handle: "$s", author: "noting", text: "scoped body",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
       const pool = `project:${f.session.projectId}`;
       markProcessed(memory, pool, v1.commit);
-      const updated = writeC(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "scoped body",
+      const updated = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "scoped body",
         category: "reference", scope: "global", topics: [], supports: [f.fact2], reason: "Now global.", createdAt: time }]);
       if (!updated.ok) throw new Error(updated.problems.join("; "));
       const globalPending = memory.store.pendingVersions("global", path)[0]!;
@@ -647,12 +650,12 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
         facts: [{ turnId: turn.id, entryIds: memory.store.listSourceEntries(session.id, turn.id).map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
       if (!noted.ok) throw new Error(noted.problems.join("; "));
       const fact = noted.facts[0]!.id;
-      const c1 = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time },
+      const c1 = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
         operations: [{ op: "create", handle: "$k", author: "consolidation", text: "identical text", category: "reference", scope: "project",
           topics: [], supports: [fact], reason: "Initial.", createdAt: time }] });
       if (!c1.ok) throw new Error(c1.problems.join("; "));
       const v1 = memory.store.knowledgeRevision(c1.committed[0]!.commit)!;
-      const c2 = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: time },
+      const c2 = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
         operations: [{ op: "update", knowledgeId: c1.committed[0]!.knowledgeId, baseCommit: c1.committed[0]!.commit, text: "identical text",
           category: "reference", scope: "project", topics: [], supports: [fact], reason: "No real change.", createdAt: time }] });
       if (!c2.ok) throw new Error(c2.problems.join("; "));
@@ -665,7 +668,7 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
 
     test("create is full size; update is the changed tokens; archive is the removed body", () => {
       const f = fixture(() => {});
-      const created0 = writeC(f.session.id, [{ op: "create", handle: "$w", author: "consolidation", text: "a body long enough that its whole size clearly exceeds one small edit's weight",
+      const created0 = publishN(f.session.id, [{ op: "create", handle: "$w", author: "noting", text: "a body long enough that its whole size clearly exceeds one small edit's weight",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
@@ -673,14 +676,14 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       const pool = `project:${f.session.projectId}`;
       const createWeight = memory.store.pendingVersions(pool, path)[0]!.tokens;
       markProcessed(memory, pool, v1.commit);
-      const edited = writeC(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit,
+      const edited = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit,
         text: "a body long enough that its whole size clearly exceeds one small change's weight", category: "reference", scope: "project",
         topics: [], supports: [f.fact2], reason: "One-word edit.", createdAt: time }]);
       if (!edited.ok) throw new Error(edited.problems.join("; "));
       const updateWeight = memory.store.pendingVersions(pool, path)[0]!.tokens;
       expect(updateWeight).toBeGreaterThan(0);
       expect(updateWeight).toBeLessThan(createWeight); // a one-word edit barely moves the trigger
-      const archived = writeC(f.session.id, [{ op: "archive", knowledgeId: v1.knowledgeId, baseCommit: edited.committed[0]!.commit,
+      const archived = publishN(f.session.id, [{ op: "archive", knowledgeId: v1.knowledgeId, baseCommit: edited.committed[0]!.commit,
         supports: [f.fact3], reason: "Retired.", createdAt: time }]);
       if (!archived.ok) throw new Error(archived.problems.join("; "));
       const archiveWeight = memory.store.pendingVersions(pool, path)[0]!.tokens;
@@ -704,14 +707,14 @@ describe("76 Consolidator updates and archives; Dreamer reviews", () => {
       expect(input.prompt).not.toContain("Second-round user message");
       expect(input.prompt).not.toContain("NEAR");
       expect(input.prompt).not.toContain("CLOSER");
-      expect(input.prompt).not.toContain("create only");
+      expect(input.prompt).toContain("create, update or archive knowledge");
       expect(input.text).not.toContain("Negated-evidence reminder");
       expect("reminders" in input.material).toBe(false);
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [{ fact: `F${f.fact}`, because: "Not durable." }] });
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     });
-    expect(loadPrompt("consolidation.md")).not.toContain("Second-round user message");
-    expect(loadPrompt("consolidation.md")).not.toContain("create only");
-    await memory.consolidate({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
+    expect(loadPrompt("noting.md")).not.toContain("Second-round user message");
+    expect(loadPrompt("noting.md")).toContain("create, update or archive knowledge");
+    expect((await memory.noting({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id })).outcome).toBe("success");
   });
 
   test("removed consolidation nearThreshold fails explicitly in flat and nested configuration", () => {
