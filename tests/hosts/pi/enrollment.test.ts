@@ -78,7 +78,7 @@ test("18a 2026-09-08: historical import and pause resume use native identities w
   expect(h.memory.pendingEntries(1, "main", state(h).head)).toHaveLength(8); expect(h.requests).toEqual([]);
   await h.answer("eligible completion"); await h.drain();
   // 26a: one Noting run, two requests — the one that submits the batch and its closing reply.
-  expect(h.requests).toHaveLength(2); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
+  expect(h.requests).toHaveLength(3); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
 });
 
 test("18a 2026-09-08: historical tree and newer clone never overwrite the current shared switch", async () => {
@@ -276,7 +276,7 @@ test("18a 2026-09-08: concurrent first initialization and restart keep one atomi
 test("18a 2026-09-08: another process disables before the transaction; prior success survives", async () => {
   const h = setup(); await h.turn();
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ category: "observation", actor: "user", text: "Already committed", source: ["T1#user"] }] })).toContain("ok: F1");
+  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Already committed", source: ["T1#E1"] }] })).toContain("ok: F1");
   const before = h.memory.store.listRuns(1);
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
     import { TraceMemory } from ${JSON.stringify(new URL("../../../src/core/api/index.ts", import.meta.url).href)};
@@ -298,7 +298,7 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
 test.each([true, false])("18a 2026-09-08: disable during Consolidation rejects late %s submission and leaves facts pending", async submit => {
   const h = setup({ "consolidation.triggerTokens": 1, "consolidation.maxToolRounds": 1 }); await h.turn();
   const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(t => t.name === "note")!;
-  note.execute({ facts: [{ category: "observation", actor: "user", text: "Pending knowledge", source: ["T1#user"] }] });
+  note.execute({ facts: [{ text: "Pending knowledge", source: ["T1#E1"] }] });
   let release!: (value: ReturnType<typeof reply>) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.answer("consolidation opportunity"); await h.drain(); expect(h.requests).toHaveLength(1);

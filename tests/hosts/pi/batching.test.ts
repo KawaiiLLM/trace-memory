@@ -38,8 +38,8 @@ test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed
     const entries = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
     const head = h.memory.store.listTurns(1).at(-1)!.id;
     expect(tokens(entries.map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBe(size);
-    // 26a: a launched Noting run sends two requests — the one that submits the batch and its closing reply.
-    expect(h.requests).toHaveLength(size === 10000 ? 2 : 0);
+    // The default script explicitly calls note, then memory, then ends normally.
+    expect(h.requests).toHaveLength(size === 10000 ? 3 : 0);
     expect(hydrate(h.memory.pendingEntries(1, "main", head), h.memory.store)).toHaveLength(size === 10000 ? 0 : entries.length);
   } finally { await h.dispose(); }
 });
@@ -66,14 +66,14 @@ test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): olde
       const ids: number[] = JSON.parse(run.response!).entryAudit.entries.map((e: { id: number }) => e.id);
       const all = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
       expect(ids).toEqual(all.slice(previous, previous + ids.length).map(e => e.id));
-      const sent = batchText(h.conversations[2 * batch]!.messages[0]!.content as string); // 26a: two requests per run
+      const sent = batchText(h.conversations[3 * batch]!.messages[0]!.content as string); // note, memory, terminal reply
       expect(sent).toBe(ids.map(id => renderEntry(h.memory.store.getSourceEntry(id)!, h.memory.config.render).content).join("\n\n"));
       expect(tokens(sent)).toBeLessThanOrEqual(cap);
       if (batch < 2) expect(tokens(sent + "\n\n" + renderEntry(all[previous + ids.length]!, h.memory.config.render).content)).toBeGreaterThan(cap);
       previous += ids.length;
       expect(new Set(ids.map(id => h.memory.store.getSourceEntry(id)!.turnId)).size)[severalTurns ? "toBeGreaterThan" : "toBe"](1);
       await h.emit("agent_settled"); await h.drain();
-      expect(h.conversations).toHaveLength(2 * (batch + 1)); // settling and completion of the worker start nothing
+      expect(h.conversations).toHaveLength(3 * (batch + 1)); // settling and completion of the worker start nothing
       if (batch < 2) { h.persist(reply(`completion ${batch}`)); await h.emit("agent_end"); await h.drain(); }
     }
     expect(hydrate(h.memory.pendingEntries(1, "main", head), h.memory.store)).toEqual([]);
@@ -93,7 +93,7 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     // Production headroom, triggers and material windows remain unchanged.
     h.ctx.model = { ...h.ctx.model!, contextWindow: 19000 };
     h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
+    expect(h.requests).toHaveLength(3); // note, memory, terminal reply
     expect(JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit.entries).toHaveLength(1);
     // 27a, replacing the whole-body estimate plus output reserve: what the child really sent had to
     // satisfy the one rule, measured as Pi measures the child's context — its messages, with no
@@ -103,7 +103,7 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     // The 7,000-token input allowance fits fixed instructions/tools but not those plus the oldest view.
     h.ctx.model = { ...h.ctx.model!, contextWindow: 17000 };
     h.persist(reply("next completion")); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toHaveLength(2); // the refused admission adds none
+    expect(h.requests).toHaveLength(3); // the refused admission adds none
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).slice(0, pending.length)).toEqual(pending);
     expect(h.notices.join("\n")).toContain("Noting capacity: selected evidence cannot fit the model context");
   } finally { await h.dispose(); }
@@ -117,7 +117,7 @@ test("20b 2026-09-08 scenario 6: many short facts below the trigger wait, the to
   const trigger = DEFAULT_CONFIG.consolidation.triggerTokens; // 5,000 rendered fact tokens, not fifty facts
   try {
     await h.turn();
-    const write = (n: number, size = 1) => h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: Array.from({ length: n }, (_, i) => ({ category: "observation", actor: "user", text: `claim ${i} ` + "word ".repeat(size), source: ["T1#user"] })) });
+    const write = (n: number, size = 1) => h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: Array.from({ length: n }, (_, i) => ({ text: `claim ${i} ` + "word ".repeat(size), source: ["T1#E1"] })) });
     write(50); // fifty facts under 17b's rule; far below 5,000 rendered tokens
     const rendered = () => tokens(h.memory.store.consolidationBatch(1, "main", 1).map(f => h.memory.trace(`F${f.id}`)).join("\n"));
     expect(rendered()).toBeLessThan(trigger);
@@ -140,7 +140,7 @@ test("17b 2026-09-08: lifecycle hooks launch neither phase and preserve both pen
   try {
     h.persist({ role: "user", content: "word ".repeat(20000), timestamp: 1 }); h.persist(reply("pending"));
     await h.emit("session_start");
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: Array.from({ length: 50 }, (_, i) => ({ category: "observation", actor: "user", text: `claim ${i}`, source: ["T1#user"] })) });
+    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: Array.from({ length: 50 }, (_, i) => ({ text: `claim ${i}`, source: ["T1#E1"] })) });
     const pending = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
     const summary = await h.emit("session_before_tree");
     expect(summary.summary.summary).toBe(h.memory.branchSummary(1, "main", 1));
@@ -203,7 +203,7 @@ test.each(["user", "toolResult"])("17b 2026-09-08: stale branch capture falls ba
       h.persist(reply("word ".repeat(100))); await h.emit("agent_end");
     }
     await h.drain();
-    expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
+    expect(h.requests).toHaveLength(3); // note, memory, terminal reply
     const sent = h.conversations[0]!.messages[0]!.content as string;
     expect(sent).toContain(role === "user" ? "NEW USER EVIDENCE" : "NEW TOOL EVIDENCE");
     const run = h.memory.store.listRuns(1)[0]!;
@@ -232,7 +232,7 @@ test("86: the oldest entry crosses the soft batch budget", async () => {
     const all = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
     const runs = h.memory.store.listRuns(1).filter(run => run.kind === "noting");
     expect(runs).toHaveLength(1);
-    expect(h.requests).toHaveLength(2);
+    expect(h.requests).toHaveLength(3);
     expect(JSON.parse(runs[0]!.response!).entryAudit.entries.map((entry: { id: number }) => entry.id)).toEqual([all[0]!.id]);
     expect(tokens(renderEntry(all[0]!, h.memory.config.render).content)).toBeGreaterThan(1000);
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.id)).toEqual(all.slice(1).map(e => e.id));
@@ -249,7 +249,7 @@ test("17b 2026-09-08: capture after compaction does not claim the persisted orig
     await h.emit("session_compact", { compactionEntry: entry });
     await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: compact }] } });
     h.persist(reply("word ".repeat(800))); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
+    expect(h.requests).toHaveLength(3); // note, memory, terminal reply
     expect(h.conversations[0]!.messages[0]!.content).toContain("old pending evidence");
     const run = h.memory.store.listRuns(1)[0]!;
     expect(run.mode).toBe("subagent");
@@ -266,7 +266,10 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
   const runner = TraceMemory(join(h.dir, "trace.db"), async raw => {
     const input = raw as NotingAgentInput;
     input.reportRequest({ exact: true });
-    if (input.kind === "noting") input.tools[2]!.execute({ facts: [{ category: "observation", actor: "user", text: "partial source fact", source: ["T1#user"] }] });
+    if (input.kind === "noting") {
+      input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "partial source fact", source: ["T1#E1"] }] });
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    }
     return { outcome: "success", output: "", request: { exact: true } };
   }, { noting: { batchTokens: 100, forkModeDefault: false } });
   try {
@@ -331,7 +334,7 @@ test("review 2026-09-08: Consolidation negotiates the model's real capacity like
   try {
     await h.turn();
     const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(t => t.name === "note")!;
-    expect(note.execute({ facts: [{ category: "observation", actor: "user", text: "Large evidence " + "word ".repeat(6000), source: ["T1#user"] }] })).toContain("ok: F1");
+    expect(note.execute({ facts: [{ text: "Large evidence " + "word ".repeat(6000), source: ["T1#E1"] }] })).toContain("ok: F1");
     h.ctx.model = { ...h.ctx.model!, contextWindow: 2000, maxTokens: 64 };
     h.persist(reply("new completion")); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(0); // the oldest fact cannot fit a 2,000-token window: pending, not sent

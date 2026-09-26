@@ -85,8 +85,11 @@ test("ticket 69: a Consolidation completion that makes a pool due admits Dreamin
         operations: [{ op: "create", topics: [], reason: "Admit supported conclusion", text: "Use pnpm, never npm",
           category: "constraint", scope: "session", supports: facts }], skipped: [] } }] };
     }
-    if (c.systemPrompt?.includes("# Dreamer")) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "d1", name: "memory",
-      arguments: { operations: [], skipped: [{ knowledge: "K1@1", because: "reviewed; retain" }] } }] };
+    if (c.systemPrompt?.includes("# Dreamer")) {
+      if (c.messages.some(m => m.role === "toolResult")) throw new Error("Dreamer must end after its one successful skip; unexpected continuation");
+      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "d1", name: "memory",
+        arguments: { operations: [], skipped: [{ knowledge: "K1@v1", because: "reviewed; retain" }] } }] };
+    }
     return notingFact(c);
   });
   await h.turn();

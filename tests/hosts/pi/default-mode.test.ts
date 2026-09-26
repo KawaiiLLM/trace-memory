@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fixture, call, say, worker, submitted, toolResults, noteBatch, memoryBatch, settled } from "./native-fixture.ts";
+import { fixture, call, noteAndMemory, say, worker, submitted, toolResults, noteBatch, memoryBatch, settled } from "./native-fixture.ts";
 import { recorded } from "../../source-fixture.ts";
 
 const cases = (["noting", "consolidation"] as const).flatMap(phase =>
@@ -28,7 +28,7 @@ test.each(cases)("native $phase with saved $key=$value preserves user settings a
     f.h.ctx.hasUI = false;
     f.script(body => worker(body, "Consolidation")
       ? toolResults(body) >= 2 ? say("Integrated.") : call(`m${toolResults(body)}`, "memory", memoryBatch)
-      : worker(body) ? submitted(body) ? say("Done.") : call("n", "note", noteBatch) : say("好的。"));
+      : worker(body) ? submitted(body) ? say("Done.") : noteAndMemory("n", noteBatch) : say("好的。"));
     await f.turn();
     if (phase === "consolidation") {
       f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })

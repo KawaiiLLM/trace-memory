@@ -83,7 +83,10 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
     const input = raw as NotingAgentInput | ConsolidationAgentInput;
     inputs.push(input);
     input.reportRequest({ offline: true });
-    if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    if (input.kind === "noting") {
+      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    }
     return { outcome: "success", output: "No new knowledge.", request: { offline: true } };
   }, { noting: { triggerTokens: 1_000_000 }, consolidation: { triggerTokens: 1_000_000 } });
   try {

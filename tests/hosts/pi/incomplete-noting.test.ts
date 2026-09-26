@@ -2,8 +2,8 @@
 // native-child and session-isolation scenarios under the persisted three-failure rule.
 import { expect, test, vi } from "vitest";
 import { NOTING_INCOMPLETE } from "../../../src/core/api/index.ts";
-import { host, reply, emptyNoteReply, type Reply } from "./test-host.ts";
-import { call, fixture, say, submitted, worker } from "./native-fixture.ts";
+import { host, reply, emptyNote, type Reply } from "./test-host.ts";
+import { noteAndMemory, fixture, say, submitted, worker } from "./native-fixture.ts";
 
 type Host = ReturnType<typeof host>;
 const at = "2026-09-09T00:00:00.000Z";
@@ -50,7 +50,7 @@ test("32c replaces 26a: a successful submission resets its key; a successfully p
   const h = host(config);
   try {
     silent(h); await h.turn(); const first = head(h);
-    h.provider(async () => emptyNoteReply()); await tick(h);
+    h.provider(async c => emptyNote(c) ?? reply("Done.")); await tick(h);
     expect(notingRuns(h).at(-1)!.outcome).toBe("success");
     expect(h.memory.store.db.prepare("SELECT count FROM task_failures WHERE head = ?").get(first)?.count).toBe(0);
     silent(h); await tick(h); const second = head(h);
@@ -96,7 +96,7 @@ test("32c replaces 26a: off preserves committed facts and reads, blocks both pha
     silent(h); await h.turn();
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
     expect(tools.find(t => t.name === "note")!.execute({ facts: [
-      { category: "observation", actor: "user", text: "Retained claim", source: ["T1#user"] }] })).toContain("ok: F1");
+      { text: "Retained claim", source: ["T1#E1"] }] })).toContain("ok: F1");
     await tick(h); await tick(h);
     expect(disabled(h)).toHaveLength(1);
     expect(tools.find(t => t.name === "trace")!.execute({ address: "F1" })).toContain("Retained claim");
@@ -109,7 +109,7 @@ test("32c replaces 26a: off preserves committed facts and reads, blocks both pha
     expect(h.memory.taskEligibility("consolidation", target).due).toBe(false);
     await command(h, "on");
     expect(h.memory.store.db.prepare("SELECT * FROM task_failures").all()).toEqual([]);
-    h.provider(async () => emptyNoteReply()); await tick(h);
+    h.provider(async c => emptyNote(c) ?? reply("Done.")); await tick(h);
     expect(notingRuns(h).at(-1)!.outcome).toBe("success");
   } finally { await h.dispose(); }
 }, 30000);
@@ -124,7 +124,7 @@ test("32c replaces 26a: reopening resets neither an enabled streak nor disabled 
     await h.emit("session_start"); await tick(h);
     expect(h.memory.store.enabled(1)).toBe(false);
     expect(notingRuns(h)).toHaveLength(count);
-    await command(h, "on"); h.provider(async () => emptyNoteReply()); await tick(h);
+    await command(h, "on"); h.provider(async c => emptyNote(c) ?? reply("Done.")); await tick(h);
     expect(notingRuns(h).at(-1)!.outcome).toBe("success");
   } finally { await h.dispose(); }
 }, 20000);
@@ -143,7 +143,7 @@ test("32c replaces 26a: real native fork children disable on the third incomplet
     await f.turn("disabled opportunity " + "word ".repeat(400));
     expect(notingRuns(f.h)).toHaveLength(3);
     await command(f.h, "on");
-    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : call("t1", "note", { facts: [] }));
+    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", { facts: [] }));
     await f.turn("enabled opportunity " + "word ".repeat(400));
     await vi.waitFor(() => expect(notingRuns(f.h).filter(r => r.outcome === "success")).toHaveLength(1), { timeout: 5000 });
   } finally { await f.dispose(); }

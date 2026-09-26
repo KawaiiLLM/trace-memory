@@ -13,7 +13,7 @@ import { expect, test } from "vitest";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { tokens } from "../../../src/core/api/index.ts";
 import { host, reply, usage } from "./test-host.ts";
-import { forkFixture, say, submitted, usage as wireUsage, worker, call, noteBatch, settled, type Body } from "./native-fixture.ts";
+import { forkFixture, say, submitted, usage as wireUsage, worker, noteAndMemory, noteBatch, settled, type Body } from "./native-fixture.ts";
 
 /** Base64-looking payload data of a given length: a deterministic pseudo-random run over the base64
  * alphabet, so the withdrawn text estimator prices it as it priced the live failure's images (about
@@ -166,7 +166,7 @@ test("27a 2026-09-10: a 300,000-token parent measure with a small increment fork
     // inline limit before the request, and the captured-payload case above pins that image data
     // changes neither the measure nor the verdict.
     f.script((body, index) => index === 0 ? say("好的。", wireUsage(300_000, 2))
-      : worker(body) && !submitted(body) ? call("t1", "note", noteBatch) : say("Done."));
+      : worker(body) && !submitted(body) ? noteAndMemory("t1", noteBatch) : say("Done."));
     const image = { type: "image" as const, data: base64(925_248), mimeType: "image/png" };
     await f.h.emit("before_agent_start", { prompt: "用 pnpm，不要 npm" });
     const at = f.sent.length;
@@ -196,7 +196,7 @@ test("27a 2026-09-10: the fork measure is read once at admission, and a later fo
     // run that re-read the measure anywhere after admission could not have sent anything.
     (f.h.ctx as unknown as { getContextUsage: () => unknown }).getContextUsage = () =>
       ({ tokens: reads++ === 0 ? 1_000 : 10_000_000, contextWindow: 200_000, percent: 1 });
-    f.script((body: Body) => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script((body: Body) => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn();
     const run = await settled(f);
     expect(reads).toBe(1);
@@ -228,7 +228,7 @@ test("27b 2026-09-10: an unknown context measure is not a fork base — the task
     expect(h.notices.join("\n")).toContain("no fork base");
     // The fresh material was frozen for that model, sent, and its evidence committed exactly once.
     expect(h.requests.length).toBeGreaterThan(0);
-    expect(h.conversations[0]!.systemPrompt).toContain("Noting (fact extraction)");
+    expect(h.conversations[0]!.systemPrompt).toContain("Noting (facts and knowledge)");
     // Only the reply that arrived after this batch was frozen is still pending.
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.nativeId)).toEqual(["e2"]);
     // No latch, no persisted mode change: the next task requests fork again.

@@ -240,7 +240,7 @@ test("Dreamer retains assistant usage received after the last completed result w
   });
 });
 
-test("full CC worker accepts more than fifty native assistant rounds when the core round cap is unlimited", async () => {
+test("CC worker counts more than fifty simulated native assistant events with unlimited rounds (not real tool execution)", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-unlimited-rounds-")); dirs.push(directory);
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
@@ -248,8 +248,9 @@ test("full CC worker accepts more than fifty native assistant rounds when the co
     const stream = (async function* () {
       yield { type: "system", subtype: "init", session_id: "long-child", claude_code_version: "2.1.280", cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      // Round accounting only: use read calls, not undispatched writes that N must reject.
       for (let round = 1; round <= 51; round++) yield { type: "assistant", session_id: "long-child", message: { id: `response-${round}`,
-        content: [{ type: "tool_use", id: `tool-${round}`, name: "memory", input: {} }], usage: { input_tokens: 1, output_tokens: 1,
+        content: [{ type: "tool_use", id: `tool-${round}`, name: "trace", input: { address: "T1" } }], usage: { input_tokens: 1, output_tokens: 1,
           cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
       yield { type: "result", subtype: "success", session_id: "long-child", is_error: false, result: "done", errors: [],
         usage: { input_tokens: 51, output_tokens: 51, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
@@ -571,6 +572,8 @@ test("production MCP preserves non-default trace and search cursors through real
       }
       yield assistant(`note-${++id}`, [`note-${id}`]);
       await call(`note-${id}`, `note-${id}`, "note", { facts: [] });
+      yield assistant(`memory-${++id}`, [`memory-${id}`]);
+      await call(`memory-${id}`, `memory-${id}`, "memory", { operations: [], skipped: [] });
       yield { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: id,
         usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 5, cache_creation_input_tokens: 3 },
         modelUsage: {}, total_cost_usd: 0.125 };
@@ -1035,8 +1038,8 @@ test("scheduler reserves independent N/C slots and worker completion does not dr
     startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
   const seed = append(memory, session.id, "seed", "A pending raw source.");
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: seed.turn.id });
-  manual.find(value => value.name === "note")!.execute({ facts: [{ category: "observation", actor: "user",
-    text: "A separate pending fact.", source: [`T${seed.turn.id}#user`] }] });
+  expect(manual.find(value => value.name === "note")!.execute({ facts: [{
+    text: "A separate pending fact.", source: [`T${seed.turn.id}#E1`] }] })).toContain("ok: F");
   const diagnostics: string[] = [], notingAdmission = vi.spyOn(memory, "noting"), consolidationAdmission = vi.spyOn(memory, "consolidate");
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, message => diagnostics.push(message));
   const reconcile = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: seed.turn.id,
@@ -1133,12 +1136,13 @@ test("86: a bounced N retries the frozen entry before checking other phases afte
     expect(input.kind).toBe("noting");
     const note = input.tools.find(tool => tool.name === "note")!;
     if (++attempts === 1) {
-      expect(note.execute({ facts: [{ category: "observation", actor: "user", text: "Rejected.",
-        source: ["T99999#user"] }] })).toContain("rejected:");
+      expect(note.execute({ facts: [{ text: "Rejected.",
+        source: ["T99999#E1"] }] })).toContain("rejected:");
     } else {
       expect(attempts).toBe(2);
-      expect(note.execute({ facts: [] })).toContain("factIds");
+      expect(note.execute({ facts: [] })).toContain('"held"');
     }
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
   }, { noting: { triggerTokens: 1_000_000 }, consolidation: { triggerTokens: 1 } });
   const project = memory.store.createProject({ name: "fixed-n", declaredBy: "mark" });
@@ -1169,9 +1173,10 @@ test("86: rejected uncorrected N submissions bounce and retry without C/D checks
     expect(input.kind).toBe("noting");
     attempts++;
     if (attempts > 3) throw new Error("N retried beyond automatic off");
-    const result = input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "observation",
-      actor: "user", text: "Rejected source.", source: ["T99999#user"] }] });
+    const result = input.tools.find(tool => tool.name === "note")!.execute({ facts: [{
+      text: "Rejected source.", source: ["T99999#E1"] }] });
     expect(result).toContain("rejected:");
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     // The worker ends without correcting this rejected tool call.
     return { outcome: "success", output: "I will not correct it.", audit: { available: false, reason: "test" } };
   }, { noting: { triggerTokens: 1_000_000 }, consolidation: { triggerTokens: 1 } });
@@ -1267,18 +1272,24 @@ test("manual catchup reports waiting on a foreign claim and resumes only on a la
   expect(calls).toEqual(["noting"]);
 });
 
-test("stop preserves a partial Noting commit without forcing its below-threshold C tail on restart", async () => {
+test("stop discards held Noting output; restart publishes the batch without forcing its below-threshold C tail", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-resume-")); dirs.push(directory);
-  let noted!: () => void; const committed = new Promise<void>(resolve => { noted = resolve; });
+  let noted!: () => void; const held = new Promise<void>(resolve => { noted = resolve; });
+  let attempts = 0;
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
     const input = raw as NotingAgentInput | ConsolidationAgentInput;
     if (input.kind === "noting") {
       const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
-      input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "observation", actor: "user",
-        text: "A committed fact survives stop.", source: [source] }] });
-      noted();
-      await new Promise<void>(resolve => input.signal!.addEventListener("abort", () => resolve(), { once: true }));
-      return { outcome: "cancelled", output: "stopped", audit: { available: false, reason: "test" } };
+      expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [{
+        text: "The source is published only at normal termination.", source: [source] }] })).toContain('"held"');
+      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+      if (++attempts === 1) {
+        noted();
+        await new Promise<void>(resolve => input.signal!.addEventListener("abort", () => resolve(), { once: true }));
+        return { outcome: "cancelled", output: "stopped", audit: { available: false, reason: "test" } };
+      }
+      expect(attempts).toBe(2);
+      return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
     }
     const write = input.tools.find(tool => tool.name === "memory")!;
     const batch = { operations: [], skipped: input.range.facts.map(fact => ({ fact: `F${fact.id}`, because: "Synthetic test fact." })) };
@@ -1288,19 +1299,22 @@ test("stop preserves a partial Noting commit without forcing its below-threshold
   const project = memory.store.createProject({ name: "resume", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:resume", projectId: project.id, startedAt: "2026-01-01T00:00:00Z",
     firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
-  const source = append(memory, session.id, "resume", "source whose fact commits before cancellation");
+  const source = append(memory, session.id, "resume", "source whose held fact is cancelled before publication");
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   const projection = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: source.turn.id,
     selectedEntryIds: source.ids, appendedEntryIds: [], problems: [], snapshot: {} as any };
-  scheduler.startCatchup(projection); await committed;
+  scheduler.startCatchup(projection); await held;
+  expect(memory.store.listSessionFacts(session.id)).toEqual([]);
   scheduler.stopCatchup(); memory.cancelTasks();
   for (let i = 0; i < 20 && scheduler.running().length; i++) await tick();
-  expect(memory.pendingEntries(session.id, "main", source.turn.id)).toEqual([]);
-  expect(memory.store.consolidationBatch(session.id, "main", source.turn.id)).toHaveLength(1);
+  expect(memory.pendingEntries(session.id, "main", source.turn.id).map(entry => entry.id)).toEqual([source.entry.id]);
+  expect(memory.store.consolidationBatch(session.id, "main", source.turn.id)).toHaveLength(0);
   expect(scheduler.catchupStatus().state).toBe("stopped");
   scheduler.startCatchup(projection);
   for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
-  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesTotal: 0, factsTotal: 1, factsDone: 0 });
+  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesTotal: 1, entriesDone: 1, factsTotal: 1, factsDone: 0 });
+  expect(memory.pendingEntries(session.id, "main", source.turn.id)).toEqual([]);
+  expect(memory.store.listSessionFacts(session.id)).toHaveLength(1);
   memory.close();
 });
 
@@ -1449,6 +1463,7 @@ test("scheduler borrows an eligible closed target only at an executor entry-comp
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
     const task = raw as NotingAgentInput; targets.push(task.sessionId); admissions.push(task);
     task.tools.find(value => value.name === "note")!.execute({ facts: [] });
+    task.tools.find(value => value.name === "memory")!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
   }, { noting: { triggerTokens: 20 }, closedSessionScope: "project" });
   const project = memory.store.createProject({ name: "borrow", declaredBy: "mark" });

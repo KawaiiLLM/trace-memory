@@ -2,6 +2,7 @@ import { expect, test, vi } from "vitest";
 import type { JsonObject } from "@earendil-works/pi-ai";
 import { host, reply, notingFact, consolidationReply, type Reply } from "./test-host.ts";
 import { Store } from "../../../src/core/store/index.ts";
+import { readHandle } from "../../read-handle-fixture.ts";
 
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
 const phase = (c: { systemPrompt?: string }) => c.systemPrompt?.startsWith("# Dreamer") ? "D"
@@ -35,8 +36,9 @@ for (const stop of [false, true]) test(`68: N and C overlap; successful checkpoi
           category: "constraint", scope: cCalls === 1 ? "global" : "session", supports: ["F1"] }], skipped: [] });
       }
       dCalls++;
+      if (c.messages.some(m => m.role === "toolResult")) throw new Error("Unexpected Dreamer continuation after frozen-range skip");
       const changed = JSON.stringify(c.messages.at(-1));
-      const handle = changed.match(/New (K\d+@\d+)/)?.[1];
+      const handle = changed.match(/New (K\d+@v\d+)/)?.[1];
       if (!handle) throw new Error(`fixture could not identify changed Dreamer handle: ${changed}`);
       return call("memory", { operations: [], skipped: [{ knowledge: handle, because: "Reviewed; retain" }] });
     });
@@ -151,19 +153,19 @@ test("86: ordinary D partial commit survives terminal failure without a C/D comp
   try {
     await h.turn(); h.memory.setKnowledgeBudget("session", 1000);
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user",
-      text: "Maintain this conclusion.", source: ["T1#user"] }] })).toContain("ok: F1");
+    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Maintain this conclusion.", source: ["T1#E1"] }] })).toContain("ok: F1");
     expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", topics: [],
       reason: "Seed version.", text: "Initial rule " + "word ".repeat(230), category: "constraint",
       scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
     const store = h.memory.store;
     const initial = store.listKnowledgeRevisions().at(-1)!;
+    const initialHandle = readHandle(tools, `K${initial.knowledgeId}`);
     const eligible = vi.spyOn(h.memory, "taskEligibility");
     h.provider(async c => {
       if (phase(c) !== "D") return phase(c) === "N" ? notingFact(c) : consolidationReply(c);
       if (!writeSubmitted) {
         writeSubmitted = true;
-        return call("memory", { operations: [{ op: "update", id: `K${initial.knowledgeId}@${initial.id}`,
+        return call("memory", { operations: [{ op: "update", id: initialHandle,
           text: "Maintained rule " + "word ".repeat(230), category: "constraint", scope: "session",
           supports: [], topics: [], reason: "Update before worker failure" }], skipped: [] });
       }
@@ -281,8 +283,9 @@ test("67: a global Dreamer seat conflict discards C's opportunity; release alone
       if (phase(c) === "C") return call("memory", { operations: [{ op: "create", topics: [], reason: "Admit supported conclusion",
         text: "constraint ".repeat(250), category: "constraint", scope: "session", supports: [`F${store.listSessionFacts(1)[0]!.id}`] }], skipped: [] });
       dreams++;
+      if (c.messages.some(m => m.role === "toolResult")) throw new Error("Unexpected Dreamer continuation after its single skip");
       const r = store.listKnowledgeRevisions().at(-1)!;
-      return call("memory", { operations: [], skipped: [{ knowledge: `K${r.knowledgeId}@${r.id}`, because: "Reviewed; retain" }] });
+      return call("memory", { operations: [], skipped: [{ knowledge: `K${r.knowledgeId}@v1`, because: "Reviewed; retain" }] });
     });
     await command(h, "catchup"); await settle(h);
     expect(store.listRuns(1).filter(r => r.kind === "consolidation" && r.outcome === "success")).toHaveLength(1);
@@ -321,8 +324,9 @@ test("68: a repeated catchup command re-checks a waiting idle drain and recovers
       if (phase(c) === "C") return call("memory", { operations: [{ op: "create", topics: [], reason: "Admit supported conclusion",
         text: "constraint ".repeat(250), category: "constraint", scope: "session", supports: [`F${store.listSessionFacts(1)[0]!.id}`] }], skipped: [] });
       dreams++;
+      if (c.messages.some(m => m.role === "toolResult")) throw new Error("Unexpected Dreamer continuation after its single skip");
       const r = store.listKnowledgeRevisions().at(-1)!;
-      return call("memory", { operations: [], skipped: [{ knowledge: `K${r.knowledgeId}@${r.id}`, because: "Reviewed; retain" }] });
+      return call("memory", { operations: [], skipped: [{ knowledge: `K${r.knowledgeId}@v1`, because: "Reviewed; retain" }] });
     });
     await command(h, "catchup"); await settle(h);
     expect(dreams).toBe(0);
@@ -349,11 +353,12 @@ test("86: a bounced N retries the frozen entry before checking C/D after correct
     const checksAtAdmission: number[] = [];
     h.provider(async c => {
       if (phase(c) !== "N") throw new Error("No other phase should run in this fixture");
-      if (c.messages.some(m => m.role === "toolResult")) return reply("Done.");
+      if (c.messages.some(m => m.role === "toolResult" && m.toolName === "memory")) return reply("Done.");
+      if (c.messages.some(m => m.role === "toolResult")) return call("memory", { operations: [], skipped: [] });
       attempts++;
       checksAtAdmission.push(eligibility.mock.calls.length);
-      if (attempts === 1) return call("note", { facts: [{ category: "observation", actor: "user",
-        text: "Rejected source.", source: ["T99999#user"] }] });
+      if (attempts === 1) return call("note", { facts: [{
+        text: "Rejected source.", source: ["T99999#E1"] }] });
       if (attempts === 2) return call("note", { facts: [] });
       throw new Error("N retried beyond correction");
     });
@@ -378,12 +383,12 @@ test("86: rejected uncorrected N submissions bounce and retry without a C/D chec
     const checksAtAdmission: number[] = [];
     h.provider(async c => {
       if (phase(c) !== "N") throw new Error("A bounced N must not check or admit C/D");
-      if (c.messages.some(m => m.role === "toolResult")) return reply("I will not correct the rejected submission.");
+      if (c.messages.some(m => m.role === "toolResult" && m.toolName === "memory")) return reply("I will not correct the rejected submission.");
+      if (c.messages.some(m => m.role === "toolResult")) return call("memory", { operations: [], skipped: [] });
       attempts++;
       checksAtAdmission.push(eligibility.mock.calls.length);
       if (attempts > 3) throw new Error("N retried beyond automatic off");
-      return call("note", { facts: [{ category: "observation", actor: "user",
-        text: "Rejected source.", source: ["T99999#user"] }] });
+      return call("note", { facts: [{ text: "Rejected source.", source: ["T99999#E1"] }] });
     });
     await command(h, "catchup"); await settle(h);
     const runs = h.memory.store.listRuns(1).filter(run => run.kind === "noting");
@@ -450,8 +455,7 @@ test("86: D retries the same pending revision and three business failures turn m
   try {
     await h.turn(); h.memory.setKnowledgeBudget("session", 1000);
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user",
-      text: "Keep this conclusion.", source: ["T1#user"] }] })).toContain("ok: F1");
+    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Keep this conclusion.", source: ["T1#E1"] }] })).toContain("ok: F1");
     expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", topics: [],
       reason: "Seed one unchanged revision.", text: "constraint ".repeat(250), category: "constraint",
       scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
@@ -480,8 +484,7 @@ test.each(["stop", "path"] as const)("86: Pi %s fences catchup retry despite a l
   try {
     await h.turn(); h.memory.setKnowledgeBudget("session", 1000);
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user",
-      text: "Retain this rule.", source: ["T1#user"] }] })).toContain("ok: F1");
+    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Retain this rule.", source: ["T1#E1"] }] })).toContain("ok: F1");
     expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", topics: [],
       reason: "Seed revision.", text: "constraint ".repeat(230), category: "constraint", scope: "session",
       supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");

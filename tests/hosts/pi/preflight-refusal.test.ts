@@ -12,8 +12,7 @@ async function pending(phase: "noting" | "consolidation") {
   if (phase === "consolidation") {
     await h.prompt("seed"); await h.answer("seed reply");
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
-      .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user",
-        text: "A pending fact", source: ["T1#user"] }] });
+      .find(tool => tool.name === "note")!.execute({ facts: [{ text: "A pending fact", source: ["T1#E1"] }] });
   }
   h.setThinkingLevel("high");
   h.ctx.model = { ...h.ctx.model!, contextWindow: 50_000 };

@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { host as createHost, reply, notingFact, noteCommitted, consolidationReply, usage, type Reply } from "./test-host.ts";
+import { host as createHost, reply, notingFact, noteHeld, consolidationReply, usage, type Reply } from "./test-host.ts";
 import { compacted } from "../../source-fixture.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -758,14 +758,15 @@ test("29d: a queued user message mid-run finds no receipt to carry and no confir
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1); // the commit itself is untouched
 });
 
-test("a run that committed and then hit a provider failure is reported as a warning, not an error, and stays success", async () => {
+test("a Noter provider failure after holding both tools publishes nothing and reports failure", async () => {
   const h = host({ "noting.triggerTokens": 30 });
-  h.provider(async c => { if (noteCommitted(c)) throw new Error("offline after commit"); return notingFact(c); }, { autoStop: false });
+  h.provider(async c => { if (noteHeld(c)) throw new Error("offline after staging"); return notingFact(c); }, { autoStop: false });
   await h.turn(); await h.drain();
   const run = h.memory.store.listRuns(1)[0]!;
-  expect(run.outcome).toBe("success"); expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
-  expect(h.notices.some(n => n.includes("committed with problems") && n.includes("after commit"))).toBe(true);
-  expect(h.notices.some(n => n.startsWith("Error:"))).toBe(false);
+  expect(run.outcome).toBe("failure"); expect(h.memory.store.listSessionFacts(1)).toHaveLength(0);
+  expect(h.memory.store.listSourceEntries(1).some(entry => h.memory.store.entryNoted(entry.id))).toBe(false);
+  expect(h.notices.some(n => n.includes("offline after staging"))).toBe(true);
+  expect(h.notices.some(n => n.includes("committed with problems"))).toBe(false);
 });
 
 test("64b/16b: Pi tree switch drives injection and prompt delivery", async () => {
@@ -902,19 +903,21 @@ test("a branch forked from an earlier point inherits the nearest recorded ancest
   expect(h.memory.store.getTurn(3)!.parentTurnId).toBe(1);
 });
 
-test("the footer indicator follows activity: accent while noting runs, error after a failed run, warning after a committed-with-problems run, dim idle", async () => {
+test("the footer indicator is accent while N runs and dim after terminal success or failure, including after staging", async () => {
   const h = host({ "noting.triggerTokens": 30 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <accent>●<\/accent> /); // noting in flight
+  h.provider(async c => notingFact(c));
   release(notingFact(h.conversations[0]!)); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
   h.provider(async () => { throw new Error("offline"); });
   await h.turn(); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /); // 51: failures do not colour the indicator
-  h.provider(async c => { if (noteCommitted(c)) throw new Error("offline after commit"); return notingFact(c); }, { autoStop: false });
+  h.provider(async c => { if (noteHeld(c)) throw new Error("offline after staging"); return notingFact(c); }, { autoStop: false });
   await h.turn(); await h.drain();
+  expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("failure");
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
 });
 
@@ -960,7 +963,7 @@ test("a dropped duplicate Consolidation trigger neither ends the running indicat
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
 });
 
-test("a stream that dies mid-reply is a failure carrying the provider's error, commits nothing, and a later stream death after a commit is a problem on a success", async () => {
+test("a stream that dies before or after N stages tools reports the provider error and publishes nothing", async () => {
   const h = host({ "noting.triggerTokens": 30 });
   h.provider(async () => ({ ...reply("partial tex"), stopReason: "error", errorMessage: "stream reset by peer" }));
   await h.turn();
@@ -970,15 +973,16 @@ test("a stream that dies mid-reply is a failure carrying the provider's error, c
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(0);
   expect(h.memory.store.listSourceEntries(1).some(e => h.memory.store.entryNoted(e.id))).toBe(false);
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /); // 51
-  h.provider(async c => noteCommitted(c) ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : notingFact(c), { autoStop: false });
+  h.provider(async c => noteHeld(c) ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after staging" } : notingFact(c), { autoStop: false });
   await h.turn(); await h.drain();
   run = h.memory.store.listRuns(1).at(-1)!;
-  expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.response!).problems[0]).toContain("stream reset after commit");
+  expect(run.outcome).toBe("failure");
+  expect(JSON.parse(run.response!).problems[0]).toContain("stream reset after staging");
   const selected: { id: number }[] = JSON.parse(run.response!).entryAudit.entries;
   expect(selected.length).toBeGreaterThan(0);
-  expect(selected.every(e => h.memory.store.entryNoted(e.id))).toBe(true);
-  expect(h.memory.pendingEntries(1, "main", 2).every(e => !selected.some(s => s.id === e.id))).toBe(true);
+  expect(selected.every(e => !h.memory.store.entryNoted(e.id))).toBe(true);
+  expect(h.memory.store.listSessionFacts(1)).toEqual([]);
+  expect(selected.every(e => h.memory.pendingEntries(1, "main", 2).some(s => s.id === e.id))).toBe(true);
 });
 
 test("consolidation progress does not count on a fork when a manual fact beyond the fork point was consolidated in the same run", async () => {

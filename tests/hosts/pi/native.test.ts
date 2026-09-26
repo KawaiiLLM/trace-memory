@@ -5,7 +5,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "../../../src/hosts/pi/fork.ts";
 import { addUsage, placeholderUsage, runNative } from "../../../src/hosts/pi/native.ts";
 import { NOTING_INCOMPLETE, recorded } from "../../source-fixture.ts";
-import { broken, call, fixture, forkFixture, memoryBatch, noteBatch, say, settled, sse, submitted, toolResults, usage, worker, type Body } from "./native-fixture.ts";
+import { broken, call, noteAndMemory, fixture, forkFixture, memoryBatch, noteBatch, say, settled, sse, submitted, toolResults, usage, worker, type Body } from "./native-fixture.ts";
 
 for (const [label, make] of [["subagent", fixture], ["fork", forkFixture]] as const) test(`92: native ${label} Noter submits optional relations without NEAR feedback`, async () => {
   const f = await make({ "noting.triggerTokens": 1 });
@@ -44,7 +44,7 @@ test("92: a native held receipt is neither rejected nor marked as committed", as
 test("19a 2026-09-08: the native child's first request passes prefix verification against the captured parent request", async () => {
   const f = await forkFixture();
   try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn();
     const run = await settled(f);
     const response = JSON.parse(run.response!);
@@ -59,7 +59,7 @@ test("19a 2026-09-08: the native child's first request passes prefix verificatio
     // name the same body.
     expect(JSON.parse(run.request!)).toEqual(f.sent.at(-1));
     // The production Noter prompt and the production tool definitions really went out.
-    expect(String(JSON.stringify(f.sent[1]!.messages.at(-1)))).toContain("Noting (fact extraction)");
+    expect(String(JSON.stringify(f.sent[1]!.messages.at(-1)))).toContain("Noting (facts and knowledge)");
     expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["read", "trace", "search", "note", "memory"]);
     expect(f.sent[1]!.tools).toEqual(f.sent[0]!.tools);
     // The gate, recomputed here over the same two bodies with nothing excluded from the comparison.
@@ -67,7 +67,7 @@ test("19a 2026-09-08: the native child's first request passes prefix verificatio
     const gate = verifyNativeRequest(f.sent[0]!, f.sent[1]!, "openai-completions", f.sent[1]![key].slice(f.sent[0]![key].length));
     expect(gate.passed).toBe(true);
     expect(gate.appendedMessages).toHaveLength(2); // the head assistant reply, then the task
-    expect(JSON.stringify(gate.appendedMessages.at(-1))).toContain("Noting (fact extraction)");
+    expect(JSON.stringify(gate.appendedMessages.at(-1))).toContain("Noting (facts and knowledge)");
   } finally { await f.dispose(); }
 });
 
@@ -117,7 +117,7 @@ test("19a ruling 2026-09-08: the anthropic-messages child passes the gate with c
 test("19a 2026-09-08: a child run leaves the parent file, id and tree position byte-identical and logs under the runs directory", async () => {
   const f = await fixture();
   try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     const captured = await f.turn();
     const run = await settled(f);
     // The foreground manager still points at its own file and id after a whole native run.
@@ -167,12 +167,12 @@ test("19a 2026-09-08: the child copies the selected ancestry only, not a sibling
 test("19a 2026-09-08: a Noting write commits through native tool execution", async () => {
   const f = await fixture();
   try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Noted.") : call("t1", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Noted.") : noteAndMemory("t1", noteBatch));
     await f.turn();
     const run = await settled(f);
     expect(run.outcome).toBe("success");
     expect(JSON.parse(run.response!).output).toBe("Noted.");
-    expect(JSON.parse(run.response!).toolCalls.map((c: Body) => c.name)).toEqual(["note"]);
+    expect(JSON.parse(run.response!).toolCalls.map((c: Body) => c.name)).toEqual(["note", "memory"]);
     const facts = f.h.memory.store.listSessionFacts(1);
     expect(facts.map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
     expect(f.h.memory.store.sourcePath(1, "main", 1).every(e => f.h.memory.store.entryNoted(e.id))).toBe(true);
@@ -183,7 +183,7 @@ test("19a 2026-09-08: a source entry outside the frozen range is rejected althou
   const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.")
-      : call("t1", "note", { facts: [{ ...noteBatch.facts[0], source: ["T9#user"] }] }));
+      : noteAndMemory("t1", { facts: [{ ...noteBatch.facts[0], source: ["T9#E1"] }] }));
     await f.turn();
     const run = await settled(f);
     expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
@@ -193,32 +193,26 @@ test("19a 2026-09-08: a source entry outside the frozen range is rejected althou
   } finally { await f.dispose(); }
 });
 
-test("19a 2026-09-08: a provider error after the commit keeps the commit and records the problem", async () => {
+test("19a/92: a provider error after both held tools publishes nothing and records the problem", async () => {
   const f = await fixture();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   try {
     f.script(async body => {
       if (!worker(body)) return say("Done.");
-      if (!toolResults(body)) return call("t1", "note", noteBatch);
+      if (!toolResults(body)) return noteAndMemory("t1", noteBatch);
       await held;
       return broken();
     });
     await f.turn();
-    // A committed response exists before the held provider reply completes: settled is not a terminal-audit wait.
-    const interim = await settled(f);
-    expect(interim.outcome).toBe("success");
-    expect(JSON.parse(interim.response!).problems).toEqual([]);
-    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(noteBatch.facts.map(fact => fact.text));
+    await vi.waitFor(() => expect(f.sent.filter(body => worker(body)).some(body => toolResults(body) === 2)).toBe(true));
+    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
+    expect(f.h.memory.store.sourcePath(1, "main", 1).every(e => !f.h.memory.store.entryNoted(e.id))).toBe(true);
     release();
-    const run = await vi.waitFor(() => {
-      const final = f.h.memory.store.getRun(interim.id)!;
-      expect(JSON.parse(final.response!).problems.join(" ")).toContain("provider failed after commit");
-      return final;
-    }, { timeout: 5000 });
-    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
-    expect(run.outcome).toBe("success");
-    expect(JSON.parse(run.response!).problems.join(" ")).toContain("provider failed after commit");
+    const run = await settled(f);
+    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
+    expect(run.outcome).toBe("failure");
+    expect(JSON.parse(run.response!).problems.join(" ")).toContain("provider exploded");
   } finally { release(); await f.dispose(); }
 });
 
@@ -230,7 +224,7 @@ test("64a: Consolidation's first valid submission commits natively in a fork", a
       : toolResults(body) >= 1 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
     await f.turn();
     f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
-      .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
+      .find(t => t.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] });
     recorded(f.h.memory, 1, "main", 1); // T1 recorded: F1 may enter the Consolidation batch
     await f.turn("tick"); // a second real parent turn is the opportunity that admits the phase
     const run = await settled(f, "consolidation");
@@ -247,7 +241,7 @@ test("64a: Consolidation's first valid submission commits natively in a fork", a
 test("19a 2026-09-08: copied plugin custom state activates no extension and starts no worker", async () => {
   const f = await forkFixture();
   try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn();
     const run = await settled(f);
     const child = readFileSync(JSON.parse(run.response!).nativeLog, "utf8");
@@ -287,7 +281,7 @@ test("19a 2026-09-08: usage counts the child's new responses only, including a f
     let attempt = 0;
     f.script(body => !worker(body) ? say("好的。", usage(777, 555))
       : body.messages?.some((m: Body) => m.role === "tool") ? say("Done.", usage(30, 4))
-      : attempt++ === 0 ? broken() : call("t1", "note", noteBatch, usage(20, 3)));
+      : attempt++ === 0 ? broken() : noteAndMemory("t1", noteBatch, usage(20, 3)));
     await f.turn();
     const run = await settled(f);
     const response = JSON.parse(run.response!);
@@ -316,7 +310,7 @@ test("19a 2026-09-08: each child response's reported cache read is recorded as a
   const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.", usage(30, 4, 0))
-      : call("t1", "note", noteBatch, usage(20, 3, 12)));
+      : noteAndMemory("t1", noteBatch, usage(20, 3, 12)));
     await f.turn();
     const run = await settled(f);
     const response = JSON.parse(run.response!);
@@ -331,7 +325,7 @@ test("19a 2026-09-08: each child response's reported cache read is recorded as a
 test("19b 2026-09-08: an explicit subagent task runs in a fresh native child with only the memory tools and no legacy loop", async () => {
   const f = await fixture({ "noting.forkModeDefault": false });
   try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn();
     const run = await settled(f);
     expect(run.mode).toBe("subagent");
@@ -342,7 +336,7 @@ test("19b 2026-09-08: an explicit subagent task runs in a fresh native child wit
     // The fresh child: core's domain prompt as its system prompt and only the four memory tools.
     const child = f.sent[1]!;
     expect(child.messages[0].role).toBe("system");
-    expect(String(child.messages[0].content)).toContain("Noting (fact extraction)");
+    expect(String(child.messages[0].content)).toContain("Noting (facts and knowledge)");
     expect(child.tools.map((t: Body) => t.function.name)).toEqual(["trace", "search", "note", "memory"]);
     expect(String(JSON.stringify(child.messages[1]))).toContain("Raw:"); // the full fresh-context material
     // Its own private session in the runs directory, not a fork of the parent file.
@@ -360,7 +354,7 @@ test("19b 2026-09-08: an explicit subagent task runs in a fresh native child wit
 test("19b 2026-09-08: an unforkable branch task falls back to the native subagent and records requested and actual mode", async () => {
   const f = await forkFixture();
   try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn("用 pnpm，不要 npm", { capture: false }); // no captured parent body: the fork cannot be prepared
     const run = await settled(f);
     expect(run.mode).toBe("subagent");
@@ -382,7 +376,7 @@ test("19b 2026-09-08: the fresh child activates no inherited extension", async (
     mkdirSync(join(f.agentDir, "extensions"), { recursive: true });
     writeFileSync(join(f.agentDir, "extensions", "probe.js"),
       `import { writeFileSync } from "node:fs";\nexport default function (pi) { writeFileSync(${JSON.stringify(marker)}, "loaded"); pi.registerTool({ name: "probe", label: "probe", description: "probe", parameters: {}, execute: async () => ({ content: [], details: {} }) }); }\n`);
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn();
     const run = await settled(f);
     expect(run.outcome).toBe("success");
@@ -399,7 +393,7 @@ test("64a: Consolidation's first valid submission commits in the fresh child", a
       : toolResults(body) >= 1 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
     await f.turn();
     f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
-      .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
+      .find(t => t.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] });
     recorded(f.h.memory, 1, "main", 1);
     await f.turn("tick");
     const run = await settled(f, "consolidation");
@@ -444,26 +438,26 @@ test("19c 2026-09-08: cancelling one native child disposes only that child; a si
   } finally { await f.dispose(); }
 }, 20000);
 
-test("19c 2026-09-08: /trace stop cancels the running child after its commit and starts no fresh extraction", async () => {
+test("19c/92: /trace stop cancels the child after staging without publication or fresh extraction", async () => {
   const f = await forkFixture();
   let release: () => void = () => {};
   try {
     const held = new Promise<void>(resolve => { release = resolve; });
     f.script(async (body: Body) => !worker(body) ? say("好的。")
-      : toolResults(body) ? (await held, say("Done.")) : call("t1", "note", noteBatch));
+      : toolResults(body) ? (await held, say("Done.")) : noteAndMemory("t1", noteBatch));
     await f.turn();
-    // The batch is committed; the child is waiting for its trailing reply when the user stops.
-    await vi.waitFor(() => expect(f.h.memory.store.listSessionFacts(1)).toHaveLength(1), { timeout: 5000 });
+    // Both tools were held; the child is waiting for the normal terminal reply when the user stops.
+    await vi.waitFor(() => expect(f.sent.filter(body => worker(body)).some(body => toolResults(body) === 2)).toBe(true));
+    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
     const parentLeaf = f.manager().getLeafId(), parentBytes = readFileSync(f.original.file);
     await f.h.commands.get("trace").handler("stop", f.h.ctx);
     release();
-    // Wait for the run record the run itself completed, not the one its commit created.
-    const run = await vi.waitFor(() => { const r = f.h.memory.store.listRuns(1)[0]!; expect(JSON.parse(r.response ?? "{}").problems?.length).toBeTruthy(); return r; }, { timeout: 5000 });
-    expect(run.outcome).toBe("success"); // a committed batch is never turned into a failure
+    const run = await settled(f);
+    expect(run.outcome).toBe("cancelled");
     expect(run.mode).toBe("fork");
-    expect(JSON.parse(run.response!).problems.join(" ")).toContain("cancelled after commit");
-    expect(f.h.memory.store.listRuns(1)).toHaveLength(1); // no re-extraction because the reply died
-    expect(f.h.memory.store.listSessionFacts(1)).toHaveLength(1);
+    expect(f.h.memory.store.listRuns(1)).toHaveLength(1); // stopping never re-extracts
+    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
+    expect(f.h.memory.store.sourcePath(1, "main", 1).every(e => !f.h.memory.store.entryNoted(e.id))).toBe(true);
     expect(f.manager().getSessionId()).toBe(f.original.id);
     expect(f.manager().getLeafId()).toBe(parentLeaf);
     expect(readFileSync(f.original.file)).toEqual(parentBytes);
@@ -477,7 +471,7 @@ test("19c 2026-09-08: /trace stop cancels the running child after its commit and
 test("19c 2026-09-08: no legacy loop remains: a fork that cannot be prepared runs in a fresh native child, not a hand-built request", async () => {
   const f = await forkFixture();
   try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn("用 pnpm，不要 npm", { capture: false }); // no capture: the fork cannot be prepared
     const run = await settled(f);
     const response = JSON.parse(run.response!);
@@ -491,7 +485,7 @@ test("19c 2026-09-08: no legacy loop remains: a fork that cannot be prepared run
     expect(existsSync(log)).toBe(true);
     const worker0 = f.sent.find(body => worker(body))!;
     expect(worker0.messages[0].role).toBe("system");
-    expect(String(worker0.messages[0].content)).toContain("Noting (fact extraction)");
+    expect(String(worker0.messages[0].content)).toContain("Noting (facts and knowledge)");
     expect(worker0.tools.map((t: Body) => t.function.name)).toEqual(["trace", "search", "note", "memory"]);
     expect(JSON.parse(readFileSync(log, "utf8").split("\n")[0]!)).toBeTruthy(); // the child really wrote its session
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
@@ -503,7 +497,7 @@ test("19c 2026-09-08: every fork round is verified against the previous request 
   try {
     f.script(body => !worker(body) ? say("好的。")
       : toolResults(body) === 0 ? call("t1", "trace", { address: "T1" })
-      : toolResults(body) === 1 ? call("t2", "note", noteBatch) : say("Done."));
+      : toolResults(body) === 1 ? noteAndMemory("t2", noteBatch) : say("Done."));
     await f.turn();
     const run = await settled(f);
     const response = JSON.parse(run.response!);
@@ -519,7 +513,7 @@ test("19c 2026-09-08: every fork round is verified against the previous request 
       expect(bodies[i]!.messages.slice(0, bodies[i - 1]!.messages.length)).toEqual(bodies[i - 1]!.messages);
     }
     expect(JSON.parse(run.request!)).toEqual(bodies.at(-1)); // the last request embeds every earlier round
-    expect(response.toolCalls.map((c: { name: string }) => c.name)).toEqual(["trace", "note"]);
+    expect(response.toolCalls.map((c: { name: string }) => c.name)).toEqual(["trace", "note", "memory"]);
   } finally { await f.dispose(); }
 }, 20000);
 
@@ -581,7 +575,7 @@ test("review 2026-09-08: provider retries never spend the tool-round cap; the ca
   const f = await fixture({ "noting.forkModeDefault": false, "noting.maxToolRounds": 1, retry: { maxRetries: 3, baseDelayMs: 1 } });
   try {
     let attempt = 0;
-    f.script(body => !worker(body) ? say("好的。") : attempt++ < 2 ? broken() : toolResults(body) ? say("Done.") : call("n", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : attempt++ < 2 ? broken() : toolResults(body) ? say("Done.") : noteAndMemory("n", noteBatch));
     await f.turn();
     const run = await settled(f);
     // Two failed attempts, one tool round within the cap of one, then the final reply.
@@ -641,7 +635,7 @@ test("review 2026-09-08: a failed response's partial tool call never spends a to
           setTimeout(() => controller.error(new Error("Connection error.")), 15);
         } }), { headers: { "content-type": "text/event-stream" } });
       }
-      return toolResults(body) ? say("Done.") : call("good", "note", noteBatch);
+      return toolResults(body) ? say("Done.") : noteAndMemory("good", noteBatch);
     });
     await f.turn();
     const run = await settled(f);
@@ -656,7 +650,7 @@ test("review 2026-09-08: a failed response's partial tool call never spends a to
 test("21a 2026-09-08: the memory schema the child re-registers requires reason, offers no because, and still passes the gate", async () => {
   const f = await forkFixture();
   try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn();
     const run = await settled(f);
     expect(JSON.parse(run.response!).verification.passed).toBe(true);

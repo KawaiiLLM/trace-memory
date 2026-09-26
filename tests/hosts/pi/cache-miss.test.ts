@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import { host, reply } from "./test-host.ts";
 import { cacheMinimum, cacheObservation, runNative } from "../../../src/hosts/pi/native.ts";
 // Cache observations require an explicitly requested fork, not the product's subagent default.
-import { broken, call, forkFixture as fixture, memoryBatch, noteBatch, say, settled, toolResults, usage, worker } from "./native-fixture.ts";
+import { broken, call, noteAndMemory, forkFixture as fixture, memoryBatch, noteBatch, say, settled, toolResults, usage, worker } from "./native-fixture.ts";
 import { recorded } from "../../source-fixture.ts";
 
 // 19c cache-miss latch (ticket 19 gate 3 and "Cache-miss fallback"), under the user rulings of
@@ -23,7 +23,7 @@ const downgrades = (h: ReturnType<typeof host>) => h.notices.filter(n => n === D
 test("19c 2026-09-08/09: two consecutive zero-cache fork responses downgrade the session once and neither replay the task nor relabel its mode", async () => {
   const f = await fixture();
   try {
-    f.script(body => !worker(body) ? say("好的。", small()) : toolResults(body) ? say("Done.", big()) : call("t1", "note", noteBatch, big()));
+    f.script(body => !worker(body) ? say("好的。", small()) : toolResults(body) ? say("Done.", big()) : noteAndMemory("t1", noteBatch, big()));
     await f.turn();
     const run = await settled(f);
     // The task that observed the miss finished its own write protocol in its own native session.
@@ -48,7 +48,7 @@ test("19c 2026-09-08/09: two consecutive zero-cache fork responses downgrade the
 test("19c 2026-09-08: while the latch is set a requested fork is admitted as a subagent with the cache-miss reason", async () => {
   const f = await fixture();
   try {
-    f.script(body => !worker(body) ? say("好的。", small()) : toolResults(body) ? say("Done.", big()) : call("t1", "note", noteBatch, big()));
+    f.script(body => !worker(body) ? say("好的。", small()) : toolResults(body) ? say("Done.", big()) : noteAndMemory("t1", noteBatch, big()));
     await f.turn();
     await vi.waitFor(() => expect(f.h.memory.store.forkSuppression(1)).toBeTruthy(), { timeout: 5000 });
     const at = f.h.memory.store.forkSuppression(1)!.at;
@@ -174,7 +174,7 @@ test("19c 2026-09-08, as 25b left it: only the Noter forks, so the Consolidator 
       : say("Nothing to note.", ++notings === 1 ? small() : big()));
     await f.turn();
     f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
-      .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
+      .find(t => t.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] });
     recorded(f.h.memory, 1, "main", 1);
     const before = new Set(f.h.memory.store.listRuns(1).map(r => r.id)); // the manual note and its receipt
     await f.turn("tick " + long); // one opportunity, both phases due: one fork task and one subagent task

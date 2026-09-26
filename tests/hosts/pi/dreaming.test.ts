@@ -5,6 +5,7 @@ import { host, reply, type Reply } from "./test-host.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
+import { readHandle } from "../../read-handle-fixture.ts";
 
 const workflowHeadings = (JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as { promptOrder: string[] }).promptOrder;
 const call = (id: string, name: string, args: unknown): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id, name, arguments: args as JsonObject }] });
@@ -20,7 +21,9 @@ async function seeded(config: Record<string, unknown> = {}, text = "Keep the use
   const c = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
   if (!c.ok) throw Error(c.problems.join());
   const path = store.knowledgePath(1);
-  const item = c.committed[0]!;
+  const created = c.committed[0]!;
+  const item = { ...created, tagged: readHandle(h.memory.tools({ kind: "manual", sessionId: 1,
+    branch: "main", currentTurnId: path.headTurnId! }), `K${created.knowledgeId}`) };
   const renderedTokens = store.pendingVersions(`project:${store.getSession(1)!.projectId}`, path)
     .find(value => value.revisionId === item.commit)!.tokens;
   const pool = `project:${store.getSession(1)!.projectId}`;
@@ -82,7 +85,7 @@ test("32d native host: entry completion starts a fresh Dreamer and records its f
   try {
     let requests = 0;
     h.provider(async c => { expect(c.systemPrompt).toContain("# Dreamer"); expect(c.tools?.map(t => t.name)).toEqual(["trace", "search", "check", "memory"]);
-      return ++requests === 1 ? skip(`K${item.knowledgeId}@${item.commit}`) : reply("Reviewed without changes"); }, { autoStop: false });
+      return ++requests === 1 ? skip(`K${item.knowledgeId}@v1`) : reply("Reviewed without changes"); }, { autoStop: false });
     await h.turn();
     const run = await terminal(h);
     expect(run.outcome).toBe("success"); expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test-thinking");
@@ -108,7 +111,7 @@ test("32d native host: pass ends after all intermediate tool turns; first memory
     let requests = 0;
     h.provider(async () => {
       requests++;
-      if (requests === 1) return call("archive", "memory", { operations: [{ op: "archive", id: `K${item.knowledgeId}@${item.commit}`, supports: [], reason: "Retire redundant active rule; history preserved" }], skipped: [] });
+      if (requests === 1) return call("archive", "memory", { operations: [{ op: "archive", id: item.tagged, supports: [], reason: "Retire redundant active rule; history preserved" }], skipped: [] });
       expect(store.currentKnowledge(store.knowledgePath(1))).toEqual([]);
       expect(processedIn(store, pool, store.listKnowledgeRevisions().at(-1)!.id)).toBe(false);
       if (requests === 2) return call("read", "trace", { address: `K${item.knowledgeId}` });
@@ -185,7 +188,7 @@ test("32d native host: Consolidator and Dreamer occupy independent seats", async
     const phases = new Set<string>();
     let dreamerRequests = 0;
     h.provider(async c => { const dreamer = c.systemPrompt!.startsWith("# Dreamer"); phases.add(dreamer ? "D" : "C"); await held;
-      return dreamer && ++dreamerRequests === 1 ? skip(`K${item.knowledgeId}@${item.commit}`) : reply("Done"); }, { autoStop: false });
+      return dreamer && ++dreamerRequests === 1 ? skip(`K${item.knowledgeId}@v1`) : reply("Done"); }, { autoStop: false });
     await h.turn();
     await vi.waitFor(() => expect([...phases].sort()).toEqual(["C", "D"]));
     expect(store.getClaim(1, "dreaming")).not.toBeNull(); expect(store.getClaim(1, "consolidation")).not.toBeNull();
@@ -201,7 +204,7 @@ test("64c native host: stop after a commit records the frozen range and own comm
   try {
     let requests = 0;
     h.provider(async () => {
-      if (++requests === 1) return call("update", "memory", { operations: [{ op: "update", id: `K${item.knowledgeId}@${item.commit}`, text: "Keep the user's exact constraint", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "clarify without new facts" }], skipped: [] });
+      if (++requests === 1) return call("update", "memory", { operations: [{ op: "update", id: item.tagged, text: "Keep the user's exact constraint", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "clarify without new facts" }], skipped: [] });
       await held; return reply("late reply");
     }, { autoStop: false });
     await h.turn();
@@ -228,7 +231,7 @@ test("64c native host: provider overflow keeps the archive and consumes the fail
   try {
     let requests = 0;
     h.provider(async () => ++requests === 1
-      ? call("archive", "memory", { operations: [{ op: "archive", id: `K${item.knowledgeId}@${item.commit}`, supports: [], reason: "Deliberate budget retirement" }], skipped: [] })
+      ? call("archive", "memory", { operations: [{ op: "archive", id: item.tagged, supports: [], reason: "Deliberate budget retirement" }], skipped: [] })
       : { ...reply(""), stopReason: "error", errorMessage: "maximum context length exceeded" }, { autoStop: false });
     await h.turn(); const run = await terminal(h);
     expect(run.outcome).toBe("failure"); expect(requests).toBe(2);

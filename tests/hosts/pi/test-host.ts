@@ -122,9 +122,7 @@ function releaseAgentDir(agentDir: string) {
   borrowedAgentDir = undefined;
 }
 
-/** 26a: the default worker reply of a Noting run. A batch is completed only by a `note` call, so a
- * worker with nothing to record submits the explicit empty batch instead of stopping on prose (which
- * is now incomplete). Every other conversation, Consolidation included, keeps the old text reply. */
+/** An explicit note-only reply. It does not complete N without a separate memory call. */
 export const emptyNoteReply = (): Reply => ({ ...reply(""), stopReason: "toolUse",
   content: [{ type: "toolCall", id: "note-empty", name: "note", arguments: { facts: [] } }] });
 const latestNoteResult = (conversation: Conversation) => conversation.messages
@@ -136,8 +134,8 @@ const parsedNoteResult = (conversation: Conversation): Record<string, unknown> |
     return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
   } catch { return undefined; }
 };
-/** A NEAR review receipt is a successful tool result but not a business commit. */
-export const noteCommitted = (conversation: Conversation): boolean => Array.isArray(parsedNoteResult(conversation)?.factIds);
+/** Held output is private until normal terminal publication; never treat a tool receipt as committed. */
+export const noteHeld = (conversation: Conversation): boolean => Array.isArray(parsedNoteResult(conversation)?.held);
 const memoryUsed = (conversation: Conversation) => conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "memory");
 const emptyMemoryReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-empty", name: "memory", arguments: { operations: [], skipped: [] } }] });
 export const emptyNote = (conversation: Conversation): Reply | undefined =>
@@ -237,7 +235,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     requests.push(structuredClone(body));
     inflight++; activity++;
     try {
-      if (autoStop && conversation.tools?.some(t => t.name === "note") && noteCommitted(conversation)) return responseOf(reply("Done."));
+      if (autoStop && conversation.tools?.some(t => t.name === "note") && noteHeld(conversation) && memoryUsed(conversation)) return responseOf(reply("Done."));
       if (autoStop && conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "memory" && ((m as { content: { text: string }[] }).content[0]!.text.includes('"committed"')))) return responseOf(reply("Done."));
       // A held reply is a request in flight: cancelling the child must end it, as a real one would.
       const signal = init.signal as AbortSignal | undefined;
@@ -377,16 +375,17 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     setThinkingLevel: (level: ThinkingLevel) => { thinkingLevel = level; }, getThinkingLevel: () => thinkingLevel, dialogs, answers, dispose, dir, dbPath, signals, ctx, eventBus, entries, allEntries, persist, compaction, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean; ignoreAbort?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; ignoreAbort = options.ignoreAbort ?? false; } };
 }
+/** Explicit successful Noter script: one fact plus empty knowledge in the same assistant message. */
 export function notingFact(conversation: Conversation) {
   const input = String(conversation.messages[0]!.content);
   const address = /S(\d+)\/T(\d+)/.exec(input)!;
-  const source = /\[(T\d+#E\d+@text)\] (?:user|assistant):/.exec(input)?.[1] ?? `T${address[2]}#E1`;
+  const source = /\[(T\d+#E\d+)@text\] (?:user|assistant):/.exec(input)?.[1] ?? `T${address[2]}#E1`;
   const previous = latestNoteResult(conversation);
   if (previous) return memoryUsed(conversation) ? reply("Done.") : emptyMemoryReply();
   return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const,
     id: previous ? "note-2" : "note-1", name: "note", arguments: { facts: [
       { text: "用 pnpm，不要 npm", source: [source] },
-    ] } }] };
+    ] } }, { type: "toolCall" as const, id: "memory-empty", name: "memory", arguments: { operations: [], skipped: [] } }] };
 }
 
 export const consolidationBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };

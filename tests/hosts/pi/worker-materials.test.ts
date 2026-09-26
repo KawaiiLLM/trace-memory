@@ -4,7 +4,7 @@
 // prompt and the production tool definitions.
 import { expect, test, vi } from "vitest";
 // Pin fork for inherited-material cases; the fresh-material case explicitly overrides it.
-import { call, forkFixture as fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
+import { noteAndMemory, forkFixture as fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -16,7 +16,7 @@ const script = (f: Fixture) => {
   f.script(body => {
     if (!worker(body)) return say("好的。");
     if (toolResults(body)) return say("Done.");
-    return ++workers === 1 ? call("t1", "note", noteBatch) : say("Done.");
+    return noteAndMemory(`n${++workers}`, workers === 1 ? noteBatch : { facts: [] });
   });
 };
 /** The task message of a worker request: the last message, which is what core's text was placed in. */
@@ -57,7 +57,7 @@ test("29b 2026-09-10: the Noter fork's captured request repeats no visible Raw a
     expect(run.mode).toBe("fork");
     const increment = task(child);
     // Mandatory framing, whatever the data delta is: instruction, range, head reply, source index.
-    expect(increment).toContain("Noting (fact extraction)");
+    expect(increment).toContain("Noting (facts and knowledge)");
     expect(increment).toContain("Range: ");
     expect(increment).toContain("Sources:");
     expect(increment).not.toContain("<knowledge>"); // 25a: no knowledge block in either Noter mode
@@ -76,7 +76,7 @@ test("25a 2026-09-09: the same task in subagent mode carries full history and ti
     const { run, child } = await thirdPrompt(f);
     expect(run.mode).toBe("subagent");
     // A fresh child: core's prompt as the system message, the whole fresh material as the task.
-    expect(String(child.messages[0].content)).toContain("Noting (fact extraction)");
+    expect(String(child.messages[0].content)).toContain("Noting (facts and knowledge)");
     const body = text(child.messages.at(-1)!);
     expect(body).toContain("Recent facts (by Turn):");
     expect(body).toContain("[F1]"); // Both modes must supply this missing fact history.
@@ -104,6 +104,6 @@ test("25a 2026-09-09: a fork that cannot be prepared sends the complete subagent
     expect(fresh).toContain("Recent facts (by Turn):");
     expect(fresh).toContain("Raw:");
     expect(fresh).not.toContain("<knowledge>");
-    expect(String(child.messages[0].content)).toContain("Noting (fact extraction)"); // a fresh child, not a fork
+    expect(String(child.messages[0].content)).toContain("Noting (facts and knowledge)"); // a fresh child, not a fork
   } finally { await f.dispose(); }
 });

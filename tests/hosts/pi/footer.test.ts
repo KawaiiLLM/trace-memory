@@ -8,7 +8,7 @@
 // commit, that the indicator is one Pi theme role per running phase (51) while routine text stays dim,
 // and that a refresh loads no Raw, rendered Knowledge or run audit body and builds one path snapshot.
 import { afterEach, expect, test, vi } from "vitest";
-import { host as createHost, reply, notingFact, noteCommitted, type Reply } from "./test-host.ts";
+import { host as createHost, reply, notingFact, noteHeld, type Reply } from "./test-host.ts";
 import { countPathBuilds, countRunBodies, countSourceReads } from "../../perf/fixture.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
@@ -143,7 +143,7 @@ test("footer chains facts to consolidate, changed current Knowledge and all curr
   expect(h.requests).toEqual([]); // nothing here called a model
 });
 
-test("24a: an in-flight batch is still pending, a failed run advances nothing, a commit moves both queues and a post-commit failure restores nothing", async () => {
+test("24a/92: N stays pending through staging, only normal termination moves queues, and failure after staging advances nothing", async () => {
   const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1_000_000_000 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
@@ -153,6 +153,7 @@ test("24a: an in-flight batch is still pending, a failed run advances nothing, a
   expect(admitted.status).toMatch(/^🧠 <accent>●<\/accent> <dim>notes: .*<\/dim>$/);
   expect(admitted).toMatchObject(enumerated(h));
 
+  h.provider(async c => notingFact(c));
   release(notingFact(h.conversations[0]!)); await h.drain();
   // The business commit is what moves both queues: the entries are noted and the fact is now pending
   // for Consolidation. Noting decreasing one queue while increasing the other is the ordinary case.
@@ -168,20 +169,19 @@ test("24a: an in-flight batch is still pending, a failed run advances nothing, a
   expect(Number(failed.entries)).toBeGreaterThan(0); // the new turn's entries stayed pending
   expect(failed.facts).toBe("1");
 
-  // A provider failure after the commit keeps the progress: it is a problem on a success, and the
-  // committed work is not restored to the pending queue.
+  // A provider failure after staging publishes no new work; the earlier successful batch survives.
   const pendingBefore = Number(footer(h).entries);
-  h.provider(async c => noteCommitted(c) ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : notingFact(c), { autoStop: false });
+  h.provider(async c => noteHeld(c) ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after staging" } : notingFact(c), { autoStop: false });
   // 29d: no trailing extra reply here. Without the retired delivery pause a small trailing entry no
   // longer joins the previous batch, and would start a further run this case is not about.
   await h.turn(); await h.drain();
   const after = footer(h);
-  expect(after.role).toBe("dim"); // committed with problems: the notify carries the warning (51)
+  expect(after.role).toBe("dim"); // the notify carries failure; the idle indicator stays dim (51)
   expect(after.status).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: .*<\/dim>$/);
-  expect(Number(after.entries)).toBeLessThan(pendingBefore);
-  expect(Number(after.facts)).toBeGreaterThan(1);
+  expect(Number(after.entries)).toBeGreaterThanOrEqual(pendingBefore);
+  expect(Number(after.facts)).toBe(1);
   expect(after).toMatchObject(enumerated(h));
-  expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("success");
+  expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("failure");
 });
 
 test("24a: a cancelled batch advances nothing, and another connection's commits appear at the next refresh", async () => {

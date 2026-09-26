@@ -19,6 +19,13 @@ export const say = (text: string, tokens = usage()) => sse([
   { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: "stop" }], usage: tokens }]);
 export const call = (id: string, name: string, args: unknown, tokens = usage()) => sse([
   { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: "tool_calls" }], usage: tokens }]);
+/** Explicit successful Noter script: both tools execute, then the caller must return a normal terminal reply. */
+export const noteAndMemory = (id: string, args: unknown, tokens = usage()) => sse([
+  { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0,
+    delta: { role: "assistant", tool_calls: [
+      { index: 0, id, type: "function", function: { name: "note", arguments: JSON.stringify(args) } },
+      { index: 1, id: `${id}-memory`, type: "function", function: { name: "memory", arguments: JSON.stringify({ operations: [], skipped: [] }) } },
+    ] }, finish_reason: "tool_calls" }], usage: tokens }]);
 export const broken = () => new Response(JSON.stringify({ error: { message: "provider exploded" } }), { status: 500, headers: { "content-type": "application/json" } });
 
 /** Tell the child's requests from the parent's by the production prompt they carry. */

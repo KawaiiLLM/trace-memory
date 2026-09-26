@@ -6,11 +6,11 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, w
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { call, fixture, forkFixture, noteBatch, say, settled, toolResults, worker } from "./native-fixture.ts";
+import { noteAndMemory, fixture, forkFixture, noteBatch, say, settled, toolResults, worker } from "./native-fixture.ts";
 import { host } from "./test-host.ts";
 
 const notingRun = (body: Record<string, any>) =>
-  !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch);
+  !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch);
 const lines = (file: string) => readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
 const assistants = (file: string) => lines(file).filter(entry => entry.type === "message" && entry.message.role === "assistant");
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
@@ -180,7 +180,7 @@ test.skipIf(!reader)("24c: the external daily reader charges every new worker re
     // Every worker reply is the same three words, so identical text cannot be what tells two
     // responses apart.
     // 26a: a Noting worker completes its batch by submitting; with nothing to record it sends `{facts: []}`.
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", { facts: [] }));
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", { facts: [] }));
     await f.turn();                        // the parent's own reply, then a fork noting run
     await settled(f);
     await f.turn("tick", { capture: false });  // a second parent reply, too small to trigger anything
