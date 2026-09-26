@@ -1,6 +1,7 @@
 // 32c supersedes the 26a pause. These regressions retain its admission, cancellation,
 // native-child and session-isolation scenarios under the persisted three-failure rule.
 import { expect, test, vi } from "vitest";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { NOTING_INCOMPLETE } from "../../../src/core/api/index.ts";
 import { host, reply, emptyNote, type Reply } from "./test-host.ts";
 import { noteAndMemory, fixture, say, submitted, worker } from "./native-fixture.ts";
@@ -31,9 +32,9 @@ test.each(["note", "memory"] as const)("92: an explicit %s-only worker ends with
     h.provider(async c => {
       if (++requests > 2) throw new Error("single-tool failure script repeated a request");
       if (c.messages.some(message => message.role === "toolResult")) return reply("Done.");
-      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `only-${name}`, name,
-        arguments: name === "note" ? { facts: [{ text: "User prefers pnpm", source: ["T1#E1"] }] }
-          : { operations: [], skipped: [] } }] };
+      const arguments_: JsonObject = name === "note"
+        ? { facts: [{ text: "User prefers pnpm", source: ["T1#E1"] }] } : { operations: [], skipped: [] };
+      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `only-${name}`, name, arguments: arguments_ }] };
     }, { autoStop: false });
     await h.turn();
     expect(requests).toBe(2);

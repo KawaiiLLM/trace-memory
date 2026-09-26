@@ -22,8 +22,8 @@ test("64a: a model switch during Consolidation does not redirect the admitted ru
       return notingFact(c);
     }, { autoStop: false });
     await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
-    await h.prompt(); // the noting's facts reach the conversation
-    await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
+    // N's terminal checkpoint already admitted C; do not create a second, unrelated N/C task.
+    expect(typeof release).toBe("function");
     h.ctx.model = { ...h.ctx.model!, id: "next" }; // The user switches the session model mid-consolidation.
     release(); await h.drain();
     const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");

@@ -597,7 +597,7 @@ test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes
   expect(h.requests).toHaveLength(4); // each worker sends both tools in one message, then ends; no NEAR round
   expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(false);
   await h.answer(); await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(8); // the third worker reviews too; neither adds a foreground receipt
+  expect(h.requests).toHaveLength(6); // three terminal batches, two requests each; no NEAR or foreground receipt
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: "S1/T3", rangeTo: "S1/T3" });
 });
 
@@ -761,7 +761,8 @@ test("29d: a queued user message mid-run finds no receipt to carry and no confir
 
 test("a Noter provider failure after holding both tools publishes nothing and reports failure", async () => {
   const h = host({ "noting.triggerTokens": 30 });
-  h.provider(async c => { if (noteHeld(c)) throw new Error("offline after staging"); return notingFact(c); }, { autoStop: false });
+  h.provider(async c => noteHeld(c)
+    ? { ...reply(""), stopReason: "error", errorMessage: "offline after staging" } : notingFact(c), { autoStop: false });
   await h.turn(); await h.drain();
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("failure"); expect(h.memory.store.listSessionFacts(1)).toHaveLength(0);
