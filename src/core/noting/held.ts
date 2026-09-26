@@ -23,6 +23,16 @@ class Slots<T> {
         (input.drop !== undefined && (!Array.isArray(input.drop) || input.drop.some(id => typeof id !== "string"))) ||
         (field === "operations" && (!Array.isArray(input.skipped) || input.skipped.length))) {
       this.error = `${field === "facts" ? "note" : "memory"} expects ${field}, optional drop${field === "operations" ? ", and skipped: []" : ""}`;
+      // A refused envelope still withdraws explicitly named replacement values. Do not
+      // allocate append slots or apply drops from a call whose structure was refused.
+      for (const item of Array.isArray(input?.[field]) ? input[field] as unknown[] : []) {
+        if (!item || typeof item !== "object" || Array.isArray(item) || !("slot" in item)) continue;
+        let id: number;
+        try { id = this.id(item.slot); }
+        catch { continue; } // Unknown handles have no accepted value to invalidate.
+        const { slot: _slot, ...content } = item;
+        this.rows.set(id, { raw: structuredClone(content), error: this.error });
+      }
       return `rejected: ${this.error}`;
     }
     // Only a structurally valid call clears a top-level error. It cannot clear slot errors.

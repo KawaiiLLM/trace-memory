@@ -102,9 +102,9 @@ for (const failure of ["slot", "top", "knowledge", "missing note", "missing memo
     expect(f.entries.some(entry => f.memory.store.entryNoted(entry.id))).toBe(false);
   });
 
-test("04: both explicit empties can advance, valid call clears only a top-level error", async () => {
+for (const kind of ["note", "memory"] as const) test(`04: explicit empties recover ${kind} top-level errors without targets`, async () => {
   const f = fixture(task => {
-    call(task, "note", { bad: true }); call(task, "note", { facts: [] }); emptyMemory(task);
+    call(task, kind, { bad: true }); call(task, "note", { facts: [] }); emptyMemory(task);
   });
   expect((await f.run()).outcome).toBe("success");
   expect(f.entries.every(entry => f.memory.store.entryNoted(entry.id))).toBe(true);
@@ -157,6 +157,45 @@ test("04: duplicate native refusal IDs allocate one rejected append slot; emptie
   expect((await f.run()).outcome).toBe("success");
   expect(f.memory.store.listSessionFacts(f.session.id)).toHaveLength(3);
 });
+
+for (const kind of ["note", "memory"] as const)
+  for (const defect of ["unexpected", "drop", ...(kind === "memory" ? ["skipped"] : [])])
+    for (const native of [false, true]) for (const recovery of ["empty", "replace", "drop"] as const)
+      test(`04: ${kind} top-level ${defect}, native=${native}, recovery=${recovery}`, async () => {
+        const f = fixture(task => {
+          call(task, "note", { facts: [fact("original one"), fact("original two"), fact("sibling")] });
+          call(task, "memory", { operations: kind === "memory" ? [knowledge(), knowledge(), { ...knowledge(), text: "sibling" }] : [], skipped: [] });
+          const prefix = kind === "note" ? "$" : "M";
+          const field = kind === "note" ? "facts" : "operations";
+          const value = (text: string) => kind === "note" ? fact(text) : { ...knowledge(), text };
+          const base = kind === "note" ? {} : { skipped: [] };
+          const refused = { ...base, [field]: [...[1, 2].map(id => ({ slot: `${prefix}${id}`, ...value("refused") })), value("refused append")],
+            [defect]: defect === "unexpected" ? true : defect === "drop" ? [42] : [{ fact: "F1", because: "not allowed in N" }] };
+          if (native) for (let i = 0; i < 2; i++) task.reportToolRejection("same-envelope", kind, refused, "native refusal");
+          else expect(call(task, kind, refused)).toContain("rejected:");
+          const inspected = JSON.parse(call(task, kind, { ...base, [field]: [] }));
+          expect(inspected.held).toEqual([`${prefix}3`]);
+          expect(Object.keys(inspected.rejected)).toEqual([`${prefix}1`, `${prefix}2`]);
+          if (recovery === "replace") {
+            expect(call(task, kind, { ...base, [field]: [1, 2].map(id => ({ slot: `${prefix}${id}`, ...value(`corrected ${id}`) })) })).toContain(`held: ${prefix}2`);
+          } else if (recovery === "drop") {
+            expect(call(task, kind, { ...base, [field]: [], drop: [`${prefix}1`, `${prefix}2`] })).toContain(`dropped: ${prefix}2`);
+          }
+          if (recovery !== "empty") {
+            // A repeated host callback after correction/drop must not reapply the refusal.
+            if (native) task.reportToolRejection("same-envelope", kind, refused, "native refusal");
+            const appended = JSON.parse(call(task, kind, { ...base, [field]: [value("appended")] }));
+            expect(appended.results).toContain(`held: ${prefix}4`);
+            expect(appended.rejected).toEqual({});
+          }
+        });
+        expect((await f.run()).outcome).toBe(recovery === "empty" ? "bounced" : "success");
+        const texts = kind === "note" ? f.memory.store.listSessionFacts(f.session.id).map(row => row.text)
+          : f.memory.store.currentKnowledge(f.path).map(row => row.revision.text);
+        expect(texts.sort()).toEqual(recovery === "empty" ? [] : recovery === "replace"
+          ? ["appended", "corrected 1", "corrected 2", "sibling"] : ["appended", "sibling"]);
+        expect(f.entries.some(entry => f.memory.store.entryNoted(entry.id))).toBe(recovery !== "empty");
+      });
 
 function seedKnowledge(f: ReturnType<typeof fixture>, scope: "session" | "project" | "global" = "session") {
   const note = f.memory.tools({ kind: "manual", ...f.path, currentTurnId: f.turn.id }).find(tool => tool.name === "note")!;

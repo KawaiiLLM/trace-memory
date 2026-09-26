@@ -96,6 +96,56 @@ for (const obsolete of [false, true]) test(`04: real Pi fork shared schemas pres
   } finally { memory.close(); await f.dispose(); }
 });
 
+for (const kind of ["note", "memory"] as const)
+  for (const defect of ["unexpected", "drop", ...(kind === "memory" ? ["skipped"] : [])])
+    for (const corrected of [false, true]) test(`04: Pi top-level ${kind} ${defect}; corrected=${corrected}`, async () => {
+      const f = await fixture();
+      let refusals = 0;
+      const memory = sourceSeededMemory(join(f.h.dir, "envelope.sqlite"), raw => {
+        const task = raw as NotingAgentInput;
+        return runWorker({ ...task, reportToolRejection: (...args) => {
+          refusals++; task.reportToolRejection(...args); task.reportToolRejection(...args);
+        } }, { model: f.model as never, checkCapacity: () => {}, tools: task.tools, runsDir: f.runsDir, cwd: f.h.dir,
+          agentDir: f.agentDir, maxToolRounds: 0, onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
+      });
+      try {
+        const project = memory.store.createProject({ name: "envelope-pi", declaredBy: "mark" });
+        const session = memory.store.createSession({ projectId: project.id, host: "pi:envelope", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+        const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", assistantText: "Explanation", startedAt: "now" });
+        const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+        const fact = (text: string) => ({ text, source: ["T1#E1"] });
+        const value = (text: string) => kind === "note" ? fact(text) : { op: "create", text, category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "rule" };
+        const field = kind === "note" ? "facts" : "operations", prefix = kind === "note" ? "$" : "M";
+        const base = kind === "note" ? {} : { skipped: [] };
+        let round = 0;
+        f.script(body => {
+          round++;
+          if (round === 1) return call("facts", "note", { facts: kind === "note" ? [value("original"), value("sibling")] : [fact("evidence")] });
+          if (round === 2) return call("memory", "memory", { operations: kind === "memory" ? [value("original"), value("sibling")] : [], skipped: [] });
+          if (round === 3) return call("invalid-envelope", kind, { ...base, [field]: [{ slot: `${prefix}1`, ...value("refused") }],
+            [defect]: defect === "unexpected" ? true : defect === "drop" ? [42] : "wrong" });
+          if (round === 4) return call("inspect", kind, { ...base, [field]: [] });
+          if (round === 5) {
+            const receipt = JSON.parse(body.messages.findLast((message: any) => message.role === "tool").content);
+            expect(receipt.held).toEqual([`${prefix}2`]);
+            expect(Object.keys(receipt.rejected)).toEqual([`${prefix}1`]);
+            if (corrected) return call("correct", kind, { ...base, [field]: [{ slot: `${prefix}1`, ...value("corrected") }, value("appended")] });
+          }
+          return say("Done");
+        });
+        const result = await memory.noting({ ...path, mode: "subagent" });
+        expect(refusals).toBe(1); // exercised SDK refusal, not merely bound core execution
+        expect(result.outcome, JSON.stringify(result)).toBe(corrected ? "success" : "bounced");
+        const texts = kind === "note" ? memory.store.listSessionFacts(session.id).map(row => row.text)
+          : memory.store.currentKnowledge(path).map(row => row.revision.text);
+        expect(texts.sort()).toEqual(corrected ? ["appended", "corrected", "sibling"] : []);
+        if (!("runId" in result)) throw new Error("missing run");
+        const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
+        expect(audit.toolCalls.filter((item: any) => item.input?.[field]?.[0]?.text === "refused")).toHaveLength(1);
+        if (corrected) expect(audit.toolCalls.at(-1).result).toContain(`held: ${prefix}3`);
+      } finally { memory.close(); await f.dispose(); }
+    });
+
 for (const [kind, corrected] of [["note", false], ["note", true], ["trace", false]] as const) test(`04: native Pi ${kind} schema rejection; corrected=${corrected}`, async () => {
   const f = await fixture();
   const memory = sourceSeededMemory(join(f.h.dir, "schema.sqlite"), raw => {

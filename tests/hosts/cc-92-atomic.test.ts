@@ -10,7 +10,8 @@ import { CcAgentWorker, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
-for (const ending of ["success", "error", "cancel", "native rejection", "corrected native rejection", "direct rejection", "corrected direct rejection", "unreported rejection"] as const)
+for (const ending of ["success", "error", "cancel", "native rejection", "corrected native rejection", "direct rejection", "corrected direct rejection", "unreported rejection",
+  "native envelope rejection", "corrected native envelope rejection", "native memory envelope rejection", "corrected native memory envelope rejection"] as const)
   test(`04: real CC MCP/worker adapter holds note and memory through ${ending} terminal`, async () => {
     const directory = mkdtempSync(join(tmpdir(), "tm-92-cc-held-")); dirs.push(directory);
     // This is a fixture shell, not the native CC CLI. No provider or native executable runs.
@@ -45,8 +46,11 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
             expect(memory.store.currentKnowledge(target.path)).toEqual([]);
           }
           if (ending.includes("rejection")) {
-            const args = { facts: [{ slot: "$1", source: ["T1#E1"] }] };
-            yield { type: "assistant", message: { id: "invalid-response", content: [{ type: "tool_use", id: "invalid-note", name: "mcp__trace_memory__note", input: args }] } };
+            const kind = ending.includes("memory") ? "memory" : "note";
+            const field = kind === "note" ? "facts" : "operations", slot = kind === "note" ? "$1" : "M1";
+            const base = kind === "note" ? {} : { skipped: [] };
+            const args = { ...base, [field]: [{ slot, source: ["T1#E1"] }], ...(ending.includes("envelope") ? { unexpected: true } : {}) };
+            yield { type: "assistant", message: { id: "invalid-response", content: [{ type: "tool_use", id: "invalid-note", name: `mcp__trace_memory__${kind}`, input: args }] } };
             if (ending.includes("direct")) {
               const refused = await client.callTool({ name: "note", arguments: args, _meta: { "claudecode/toolUseId": "invalid-note" } });
               expect(refused.isError).toBe(true); // original MCP schema is advertised, but core validates raw arguments
@@ -54,10 +58,18 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
               const refusal = { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "invalid-note", is_error: true, content: "native argument validation refused" }] } };
               yield refusal; yield refusal; // duplicate native observation must not create another rejected slot
             }
+            if (ending.includes("envelope")) {
+              const inspect = { ...base, [field]: [] };
+              yield { type: "assistant", message: { id: "inspect-response", content: [{ type: "tool_use", id: "inspect", name: kind, input: inspect }] } };
+              const inspected = await client.callTool({ name: kind, arguments: inspect, _meta: { "claudecode/toolUseId": "inspect" } });
+              expect(JSON.stringify(inspected)).toContain(slot);
+            }
             if (ending.startsWith("corrected")) {
-              const corrected = { facts: [{ slot: "$1", text: "Corrected rule", source: ["T1#E1"] }] };
-              yield { type: "assistant", message: { id: "corrected-response", content: [{ type: "tool_use", id: "corrected-note", name: "note", input: corrected }] } };
-              expect((await client.callTool({ name: "note", arguments: corrected, _meta: { "claudecode/toolUseId": "corrected-note" } })).isError).not.toBe(true);
+              const value = kind === "note" ? { text: "Corrected rule", source: ["T1#E1"] }
+                : { op: "create", text: "Corrected rule", category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "User requirement" };
+              const corrected = { ...base, [field]: [{ slot, ...value }] };
+              yield { type: "assistant", message: { id: "corrected-response", content: [{ type: "tool_use", id: "corrected-note", name: kind, input: corrected }] } };
+              expect((await client.callTool({ name: kind, arguments: corrected, _meta: { "claudecode/toolUseId": "corrected-note" } })).isError).not.toBe(true);
             }
           }
           if (ending === "cancel") memory.cancelTasks();
