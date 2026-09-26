@@ -155,8 +155,8 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     for (const slot of slots) slot.items = slot.items.filter(item => item.kind !== "receipt" || item.knowledge === false);
   const transportWarning = pendingRaw || pendingFacts ? `Trace Memory: inline transport omitted ${[
     ...(pendingRaw ? [`${pendingRaw} pending Raw ${pendingRaw === 1 ? "entry" : "entries"}`] : []),
-    ...(pendingFacts ? [`${pendingFacts} unconsolidated ${pendingFacts === 1 ? "fact" : "facts"} (${pendingFactTokens} tokens)`] : []),
-  ].join(" and ")}; they remain pending for Noting and Consolidation.` : "";
+    ...(pendingFacts ? [`${pendingFacts} ${pendingFacts === 1 ? "fact" : "facts"} (${pendingFactTokens} tokens)`] : []),
+  ].join(" and ")}${pendingRaw ? "; omitted Raw remains pending for Noting." : "."}` : "";
   const notice = [warning, transportWarning].filter(Boolean).join(" ");
   return slots.map((slot, index) => {
     // The existing segment number plus local position establishes one logical chronology,

@@ -44,10 +44,18 @@ test("66 warning-only clear still emits one foreground notice, without pretendin
 test("66 omitted pending Raw is not delivered and warns in slot one", () => {
   const slices = sliceCcInjection(binding, [{ kind: "raw", entryId: 90, address: "T9#E1", pending: true,
     text: `[T9#E1@text] user: ${"y".repeat(12_000)}` }]);
-  expect(slices[0]?.systemMessage).toContain("1 pending Raw entry");
+  expect(slices[0]?.systemMessage).toBe("Trace Memory: inline transport omitted 1 pending Raw entry; omitted Raw remains pending for Noting.");
   expect(slices.filter(item => item?.systemMessage)).toHaveLength(1);
   expect(slices.filter(Boolean).flatMap(item => decodeCcInjection(item!.hookSpecificOutput.additionalContext, binding)?.entryIds ?? [])).toEqual([]);
   expect(slices.filter(Boolean).map(item => item!.hookSpecificOutput.additionalContext).join(" ")).toContain("expand: T9#E1");
+});
+
+test("92 fact-only transport omission preserves its count without promising extraction", () => {
+  const text = `[F90] ${"y".repeat(12_000)}`;
+  const slices = sliceCcInjection(binding, [{ kind: "fact", factId: 90, pending: true, text }]);
+  expect(slices[0]?.systemMessage).toBe(`Trace Memory: inline transport omitted 1 fact (${tokens(text)} tokens).`);
+  expect(slices.filter(item => item?.systemMessage)).toHaveLength(1);
+  expect(slices.filter(Boolean).flatMap(item => decodeCcInjection(item!.hookSpecificOutput.additionalContext, binding)?.factIds ?? [])).toEqual([]);
 });
 
 test("66 legacy oversized omission receipt keeps its actual bounded expansion", () => {

@@ -81,7 +81,8 @@ test("73: many tiny entries over the Raw window truncate to the newest span rath
     await h.emit("session_compact", { compactionEntry: entry });
     const warning = h.notices.find(n => n.includes("compaction omitted"));
     expect(warning).toContain("pending Raw");
-    expect(warning).toContain("pending for Noting and Consolidation");
+    expect(warning).toContain("omitted Raw remains pending for Noting.");
+    expect(warning).not.toMatch(/Consolidation|unconsolidated/);
     // Compact itself never runs a worker (with or without recovery) and never touches progress.
     expect(h.memory.store.listRuns(1)).toHaveLength(runsBefore);
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pendingBefore);

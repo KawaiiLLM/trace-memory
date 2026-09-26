@@ -79,7 +79,6 @@ function buildPendingSection(input) {
   return {
     heading: "Pending / trigger",
     noting: pendingRow("Noting", input.noting),
-    consolidation: pendingRow("Consolidation", input.consolidation),
     dreamingHeading: "Dreaming",
     dreaming: {
       global: pendingRow("global", input.dreaming.global),
@@ -149,7 +148,7 @@ function buildSettingsChoices(input) {
     label: `${budgetRows[i].label} Knowledge budget: ${budgetRows[i].value}`
   }));
   const workers = input.workers.flatMap((w) => {
-    const phase = w.phase === "Noter" ? "noting" : w.phase === "Consolidator" ? "consolidation" : "dreaming";
+    const phase = w.phase === "Noter" ? "noting" : "dreaming";
     return [
       ...w.mode !== void 0 ? [{ id: `${phase}.mode`, label: `${w.phase} mode: ${w.mode}`, source: w.sources?.mode }] : [],
       { id: `${phase}.model`, label: `${w.phase} model: ${w.model}`, source: w.sources?.model ?? w.source },
@@ -187,7 +186,6 @@ var TRACE_MENU_FIXTURE = {
   },
   pending: {
     noting: { tokens: 3200, trigger: 1e4 },
-    consolidation: { tokens: 400, trigger: 5e3 },
     dreaming: {
       global: { tokens: 0, trigger: 4e3 },
       project: { tokens: 1500, trigger: 5e3 },
@@ -213,7 +211,6 @@ var TRACE_SETTINGS_FIXTURE = {
   budgets: { global: 4e3, project: 15e3, session: 1e3, sharedAllowanceTokens: 1e4 },
   workers: [
     { phase: "Noter", mode: "subagent", model: "follow foreground", thinking: "inherit" },
-    { phase: "Consolidator", mode: "subagent", model: "claude-sonnet-5", thinking: "medium" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" }
   ],
   closedSessionScope: "project"
@@ -222,7 +219,6 @@ var TRACE_SETTINGS_FIXTURE_CC = {
   ...TRACE_SETTINGS_FIXTURE,
   workers: [
     { phase: "Noter", model: "claude-sonnet-5", thinking: "medium" },
-    { phase: "Consolidator", model: "claude-sonnet-5", thinking: "medium" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" }
   ]
 };
@@ -385,7 +381,6 @@ function renderTraceMenu(input, cc) {
     pendingHeading: model.pending.heading,
     pendingLines: [
       pendingLine("Noting", model.pending.noting),
-      pendingLine("Consolidation", model.pending.consolidation),
       "  Dreaming",
       pendingLine("global", model.pending.dreaming.global, "    "),
       pendingLine("project", model.pending.dreaming.project, "    "),

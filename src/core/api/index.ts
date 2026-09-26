@@ -74,15 +74,13 @@ export interface TraceMemoryConfig {
    * uses the bound database policy's base sum; the maximum envelope adds all three bases and the
    * shared allowance below. */
   compaction: {
-    /** The facts window: the pending facts on the path, then the consolidated refill (28a items 1, 4). */
+    /** The facts window: newest path facts not wholly covered by the retained Raw span; no borrowing. */
     factsTokens: number;
     /** The Raw window: the pending entry views, then the already-extracted refill (28a items 1, 5). */
     rawTokens: number;
-    /** 73: one fixed allowance shared by Knowledge, Facts and Raw — a configuration value, not derived
-     * from the Noting/Consolidation/Dreaming triggers. Knowledge borrows first, for any effective
-     * knowledge above its base; Facts and Raw borrow only for material Noting or Consolidation has not
-     * processed yet. It is not a compaction-only overflow: injection and the Consolidator/Dreamer
-     * knowledge capacities spend it too. */
+    /** One fixed allowance, independent of N/D triggers. Knowledge borrows first; pending Raw may
+     * borrow the remainder, while facts stay within their base. Injection and N/D Knowledge windows
+     * use the same allowance, so it is not a compaction-only overflow. */
     sharedAllowanceTokens: number;
   };
 }

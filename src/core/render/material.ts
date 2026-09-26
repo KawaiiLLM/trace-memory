@@ -8,36 +8,15 @@
 // rather than replaced: there is no generic builder or provider-strategy framework here, only one
 // function per consumer over the shared parts.
 //
-// Block order (ticket 20 "Material order and cache scope", as ticket 25a corrected it):
-//   Noter                  historical facts -> range -> selected Raw -> receipts
-//   Consolidator           knowledge -> range -> selected pending facts -> negation reminders ->
-//                          receipts
-//   Main-agent injection   knowledge -> receipts
-//   Main-agent compact     knowledge -> historical facts -> pending Raw -> receipts
+// 92: fresh Noter material names its target/range, then reuses the batch-end compact layout:
+// Knowledge -> facts -> exact pending Raw -> receipts, with processed-Raw refill disabled. A fork
+// keeps its inherited parent and receives only its instruction, range, head reply and source index;
+// it gets no additional Knowledge or historical facts. Foreground injection is Knowledge -> receipts.
 //
-// Ticket 25a supersedes ticket 20's leading knowledge block for the Noter in both modes, and the
-// Consolidator's already-consolidated history block: a Noter reads knowledge explicitly when it needs
-// it and never receives it automatically, and a Consolidator's automatic material is the active
-// knowledge plus the pending facts it must integrate. Nothing here removes knowledge a fork already
-// inherited from the foreground; explicit reads are unchanged for both.
-//
-// Stable prefix: the leading knowledge block carries no task range, no entry id of the new batch, no
-// timestamp, no run id and no omission count, so two tasks with the same selected knowledge render
-// the same leading bytes. That is a byte-layout rule, not a cache claim: knowledge is revised,
-// archived and dropped under budget, and the Consolidator and the main agent have different
-// instructions and are not one shared cache chain.
-//
-// Ruling 2026-09-06 08:53: an inherited-context run carries only its instruction, the range, the
-// head reply and the frozen source index, because the raw turns, the facts delivered after earlier
-// runs and the injected knowledge are already in that conversation. That is the domain increment,
-// and it comes from the same frozen task as the full text.
-//
-// Ticket 29b ("One material-selection mechanism") replaces that pair of fixed layouts with ONE per
-// phase. There is no `fresh`/`inherited` choice any more: a task carries the material its child does
-// not already hold, and a fresh child — whose visible view is empty — is the case where that is the
-// whole thing. What a fork used to get by layout (no Raw, no history, a source index) it now gets by
-// subtraction: every block below renders exactly what the phase's builder kept after removing what
-// the child's own context proves visible, and the mandatory framing stays whatever the data delta is.
+// Stable Knowledge bytes contain no task range, entry id, timestamp, run id or omission count. This
+// is a layout guarantee, not a shared provider cache: current versions and budget selection can
+// change, and foreground and worker instructions differ. Actual retained carriers, not receipts or
+// offered material, establish delivery; the frozen selection remains the processing target.
 import { createHash } from "node:crypto";
 import type { Fact } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";

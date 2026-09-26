@@ -1329,9 +1329,9 @@ export default function (pi: ExtensionAPI) {
       // entry to size it would read the whole omitted backlog on every compaction. Facts keep both.
       const parts = [
         ...(raw ? [`${raw.entries} pending Raw ${raw.entries === 1 ? "entry" : "entries"}`] : []),
-        ...(facts ? [`${facts.count} unconsolidated ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens)`] : []),
+        ...(facts ? [`${facts.count} ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens)`] : []),
       ];
-      context.ui.notify(`Trace Memory: compaction omitted ${parts.join(" and ")}; they remain pending for Noting and Consolidation.`, "warning");
+      context.ui.notify(`Trace Memory: compaction omitted ${parts.join(" and ")}${raw ? "; omitted Raw remains pending for Noting." : "."}`, "warning");
     }
     if (enabled() && state.sessionId) {
       const turn = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: state.head, kind: "compaction", assistantText: entry.summary, startedAt: now(), endedAt: now() });

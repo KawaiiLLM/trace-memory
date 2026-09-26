@@ -124,8 +124,8 @@ async function prepareBoundClear(config: ResolvedCcHostConfig, input: CcHookInpu
     // 79 item 4 (ruled): Raw is an exact count only, never a token figure -- the Pi warning's twin.
     const systemMessage = omitted ? `Trace Memory: compaction omitted ${[
       ...(omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : []),
-      ...(omitted.facts ? [`${omitted.facts.count} unconsolidated ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []),
-    ].join(" and ")}; they remain pending for Noting and Consolidation.` : undefined;
+      ...(omitted.facts ? [`${omitted.facts.count} ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []),
+    ].join(" and ")}${omitted.raw ? "; omitted Raw remains pending for Noting." : "."}` : undefined;
     const visibleBinding: CcVisibleBinding = { db: databaseIdentity(config.dbPath), nativeSession: childId, coreSession: core };
     const output: CcHookOutput | null = injection.text
       ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },

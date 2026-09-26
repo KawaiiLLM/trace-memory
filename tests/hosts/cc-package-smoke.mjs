@@ -22,13 +22,14 @@ try {
   const defaults = JSON.parse(readFileSync(join(plugin, "cc.config.json"), "utf8"));
   for (const [modelKey, thinkingKey, model] of [
     ["notingModel", "notingThinking", "sonnet"],
-    ["consolidationModel", "consolidationThinking", "opus"],
     ["dreaming.model", "dreaming.thinking", "opus"],
   ]) {
     assert.equal(defaults[modelKey], model);
     assert.equal(defaults[thinkingKey], "high");
     assert.equal(defaults.worker.contextWindows[model], null, "each model capacity requires explicit preparation");
   }
+  for (const key of Object.keys(defaults))
+    assert.equal(key.startsWith("consolidation"), false, `retired C setting ${key} must not ship`);
   for (const retired of ["model", "effort", "contextWindow"])
     assert.equal(Object.hasOwn(defaults.worker, retired), false, `retired shared worker.${retired} must not ship`);
   assert.equal(Object.hasOwn(defaults, "dbPath"), false, "CC shares Pi's default database without sharing model preferences");
@@ -37,8 +38,10 @@ try {
   assert.equal(existsSync(join(plugin, "skills/trace/SKILL.md")), false, "the model-invoked skill must not shadow /trace");
   assert.match(readFileSync(join(plugin, "dist/cc.cjs"), "utf8"), /Trace Memory CC requires Node >=24\.6\.0/);
   assert.equal(readFileSync(join(plugin, "dist/cc.cjs"), "utf8").includes(root), false, "bundle must not contain a checkout path");
-  for (const phrase of ["You are the Noter", "You are the Consolidator", "You are the Dreamer"])
+  for (const phrase of ["You are the Noter", "You are the Dreamer"])
     assert.ok(readFileSync(join(plugin, "dist/cc.cjs"), "utf8").includes(phrase), `missing bundled prompt: ${phrase}`);
+  assert.equal(readFileSync(join(plugin, "dist/cc.cjs"), "utf8").includes("You are the Consolidator"), false,
+    "retired C prompt must not ship");
   const hooks = JSON.parse(readFileSync(join(plugin, "hooks/hooks.json"), "utf8"));
   assert.deepEqual(hooks.modules, ["./menu.tsx"]);
   // 66: SessionStart is 24 slice readers, one per slot; only an elected producer launches cc.cjs.

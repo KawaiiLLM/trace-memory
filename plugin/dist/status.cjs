@@ -5,10 +5,10 @@ var import_node_fs2 = require("node:fs");
 var import_node_path2 = require("node:path");
 
 // src/hosts/phase-settings.ts
-var MEMORY_PHASES = ["noting", "consolidation", "dreaming"];
+var MEMORY_PHASES = ["noting", "dreaming"];
 
 // src/hosts/status-line.ts
-var INDICATOR_ROLE = { noting: "accent", consolidation: "success", dreaming: "customMessageLabel" };
+var INDICATOR_ROLE = { noting: "accent", dreaming: "customMessageLabel" };
 function memoryStatusLine(input) {
   if (!input.enabled) return [{ role: "dim", text: "\u25CB off" }];
   const runningPhase = MEMORY_PHASES.find((phase) => input.running[phase]);
@@ -16,7 +16,7 @@ function memoryStatusLine(input) {
   const glyph = runningPhase ? "\u25CF" : "\u25CB";
   const value = (count) => count === void 0 ? "?" : String(count);
   const c = input.counts ?? {};
-  const text = `notes: ${value(c.entries)}->${value(c.facts)} memory: ${value(c.unconsolidated)}->${value(c.changedKnowledge)}/${value(c.knowledge)} cost: ${input.cost === void 0 ? "$?" : `$${input.cost.toFixed(2)}`}`;
+  const text = `notes: ${value(c.entries)}->${value(c.facts)} memory: ${value(c.changedKnowledge)}/${value(c.knowledge)} cost: ${input.cost === void 0 ? "$?" : `$${input.cost.toFixed(2)}`}`;
   return [{ role, text: glyph }, { role: "dim", text }];
 }
 
@@ -82,7 +82,7 @@ async function runCcStatusCommand(io = {}) {
     const alive = owned && executorAlive(status.pid);
     const segments = memoryStatusLine({
       enabled: status.enabled,
-      running: alive ? status.running : { noting: false, consolidation: false, dreaming: false },
+      running: alive ? status.running : { noting: false, dreaming: false },
       counts: alive ? status.counts : void 0,
       cost: alive ? status.cost : void 0
     });

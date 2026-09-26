@@ -21,7 +21,7 @@ const promptLoader = {
     // runtime uses (Node strips the types), so the bundle needs no prompt files and cannot drift.
     build.onLoad({ filter: /src\/core\/prompts\/load\.ts$/ }, async () => {
       const { loadPrompt } = await import(pathToFileURL(resolve(root, "src/core/prompts/load.ts")).href);
-      const prompts = Object.fromEntries(["noting.md", "consolidation.md", "dreaming.md"].map(file => [file, loadPrompt(file)]));
+      const prompts = Object.fromEntries(["noting.md", "dreaming.md"].map(file => [file, loadPrompt(file)]));
       return { contents: `const PROMPTS = ${JSON.stringify(prompts)};\nexport function loadPrompt(file) { const prompt = PROMPTS[file]; if (prompt === undefined) throw new Error("unknown prompt " + file); return prompt; }\n`, loader: "ts" };
     });
   },

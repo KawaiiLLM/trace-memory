@@ -22,7 +22,7 @@ test("old binding has no notice; exact warning bytes survive binding reads and c
   await recordSessionStart(config, input, null);
   const path = bindingPath(config, input.session_id);
   expect(readBinding(config, input.session_id)!.lastCompactionNotice).toBeUndefined();
-  const warning = "Trace Memory: compaction omitted 2 pending Raw entries and 1 unconsolidated fact (12 tokens); they remain pending for Noting and Consolidation.";
+  const warning = "Trace Memory: compaction omitted 2 pending Raw entries and 1 fact (12 tokens); omitted Raw remains pending for Noting.";
   await updateBinding(config, input.session_id, current => ({ ...current!, lastCompactionNotice: warning }));
   expect(readBinding(config, input.session_id)!.lastCompactionNotice).toBe(warning);
   expect(JSON.parse(readFileSync(path, "utf8")).lastCompactionNotice).toBe(warning);

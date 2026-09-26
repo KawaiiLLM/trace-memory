@@ -68,11 +68,11 @@ export interface TopicGroups {
 /** Ticket 73 "Shared allowance": what compact can produce for one frozen read snapshot. The one
  * outcome is the complete custom replacement the host hands to Pi — knowledge fills its base and
  * borrows the shared allowance first, then the newest contiguous Raw span (pending entries borrowing
- * what knowledge left, already-noted entries filling only the Raw base), then the newest facts before
- * that span (unconsolidated facts borrowing, consolidated only within the facts base). Compact never
- * falls back: material Noting or Consolidation has not yet processed is truncated — newest kept,
- * oldest omitted with a receipt — rather than escalated to a native delegation, and it stays pending
- * in the store either way. `native` remains only for a host-caught error unrelated to capacity (a
+ * what knowledge left, already-noted entries filling only the Raw base), then the newest facts not
+ * wholly covered by that span, within their own base without borrowing. Compact never falls back:
+ * over-budget material is truncated — newest kept, oldest omitted with a receipt — rather than
+ * escalated to a native delegation. Omitted pending Raw stays pending for Noting; fact omission
+ * creates no extraction work. `native` remains only for a host-caught error unrelated to capacity (a
  * store error, an invalid path); core itself never constructs it.
  *
  * 29a "Renderers return what they kept": beside the replacement text, the identities it actually
@@ -82,9 +82,8 @@ export interface TopicGroups {
 export type CompactResult = { text: string; material?: SharedMaterial; supplied: SuppliedMaterial; knowledgeAllowance?: number; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt }
   | { native: true; reason: string };
 
-/** 73 "Truncation is announced in the foreground": whenever compact omits unprocessed material —
- * pending Raw entries or unconsolidated facts — the counts and tokens omitted per kind, so a host can
- * warn its user. Absent when nothing unprocessed was omitted. */
+/** Foreground truncation notice for omitted pending Raw and facts. Facts are context omissions,
+ * not work for a retired extraction stage; only pending Raw is still processed by Noting. */
 /** 79 item 4 (ruled): Raw carries no token figure -- an exact count only, since rendering every
  * omitted entry to size it reads the whole omitted backlog on every compaction. Fact rows are
  * small, so facts keep both a count and a token figure. */

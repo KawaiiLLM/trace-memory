@@ -189,7 +189,8 @@ test("73: clear truncates the Raw window rather than falling back, and warns in 
   // The foreground truncation warning: a top-level `systemMessage` beside `additionalContext`.
   expect(output!.systemMessage).toContain("compaction omitted");
   expect(output!.systemMessage).toContain("pending Raw");
-  expect(output!.systemMessage).toContain("pending for Noting and Consolidation");
+  expect(output!.systemMessage).toContain("omitted Raw remains pending for Noting.");
+  expect(output!.systemMessage).not.toMatch(/Consolidation|unconsolidated/);
   expect(output!.systemMessage!.length).toBeLessThan(4_000);
   // The child binding records exactly the warning issued by the same successful clear Hook.
   expect(child.lastCompactionNotice).toBe(output!.systemMessage);

@@ -36,7 +36,7 @@ test("menu opens neither small nor grown native transcript, including the actual
     { text: "<knowledge>\nFresh retained memory\n</knowledge>", knowledgeCommitIds: [] });
   const snapshot: CcContextSnapshot = { session, messages: [{ role: "user", content: [{ type: "text",
     text: `<system-reminder>\nSessionStart hook additional context: ${original}\n</system-reminder>` }] }] };
-  const warning = "Trace Memory: compaction omitted 1 pending Raw entry; they remain pending for Noting and Consolidation.";
+  const warning = "Trace Memory: compaction omitted 1 pending Raw entry; omitted Raw remains pending for Noting.";
   writeFileSync(bindingPath(config, session), JSON.stringify({ ...readBinding(config, session), lastCompactionNotice: warning }));
   writeFileSync(transcript, '{"type":"progress","data":"old"}\n');
   monitor.path = transcript;
