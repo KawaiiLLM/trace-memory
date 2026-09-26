@@ -315,10 +315,12 @@ test("92: three downstream D failures disable memory and fence the in-flight N b
       expect(noterHeld).toBe(true);
       expect(store.listRuns(1).filter(run => run.kind === "dreaming" && run.outcome === "failure")).toHaveLength(3);
     });
+    expect(store.enabled(1), "D failure settlement must disable memory before the held N reply is released").toBe(false);
+    expect(store.listSessionFacts(1), JSON.stringify({ runs: store.listRuns(1), requests: h.requests })).toEqual(facts);
     release(); await settle(h);
     expect(dreams).toBe(3);
     expect(store.enabled(1)).toBe(false);
-    expect(store.listSessionFacts(1)).toEqual(facts);
+    expect(store.listSessionFacts(1), JSON.stringify({ runs: store.listRuns(1), requests: h.requests })).toEqual(facts);
     expect(h.memory.pendingEntries(1, "main", head).map(entry => entry.id)).toEqual(pending);
     expect(store.listRuns(1).filter(run => run.kind === "noting").map(run => run.outcome)).toEqual(["cancelled"]);
     expect(h.notices.some(notice => notice.includes("off after three failures"))).toBe(true);
