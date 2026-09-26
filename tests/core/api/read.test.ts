@@ -589,10 +589,12 @@ test("opaque cursors continue search snapshots and trace session, comma, revisio
 
 test("status reports attribution, counts, every watermark and last runs, and no delivery queue (29d)", () => {
   const { s, t } = populated(); noting(s.id, t.id, fixture.observation, "side");
+  // A historical audit row is readable without invoking the retired stage.
+  const historical = memory.store.recordRun({ kind: "consolidation", sessionId: s.id, branch: "main", createdAt: time, outcome: "success" });
   const status = memory.status(s.id);
   expect(status).not.toContain("Watermark");
   expect(status).not.toContain("Pending deliveries"); // 29d: the queue-only status field went with the queue
-  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Last noting: run 3 success", "Last dreaming: none"]) expect(status).toContain(text);
+  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Last noting: run 3 success", `Last consolidation: run ${historical.id} success`, "Last dreaming: none"]) expect(status).toContain(text);
 });
 
 test("project mark merges an undeclared own project, relabels facts and knowledge, and beats later marker reports", () => {
@@ -776,8 +778,6 @@ function pendingFacts(sessionId: number, turnId: number, texts: string[], branch
   if (!result.ok) throw new Error(result.problems.join("\n"));
   return result.facts;
 }
-/** Mark facts consolidated on this path, which is what makes them refill (a) candidates. */
-
 const entry = (sessionId: number, turnId: number, nativeId: string, text: string) =>
   memory.appendEntry({ sessionId, nativeLineage: "x", nativeId, turnId, role: "assistant", text, raw: "", calls: [] });
 

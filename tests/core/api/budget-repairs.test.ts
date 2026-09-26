@@ -5,7 +5,7 @@ import { expect, test } from "vitest";
 import { sourceSeededMemory, tokens, renderEntry, type NotingAgentInput , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { renderFact } from "../../../src/core/render/index.ts";
-import { budgetMaterial, notingText, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
+import { budgetMaterial, compactText, injectionText, notingText, rawWindowTokens, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -41,7 +41,13 @@ test("92: fresh N has separate fact and knowledge windows without reviving C pro
     expect(input.material.facts.join("\n")).toContain("Withdraw the original evidence");
     expect(input.material.knowledge!.map(group => group.text).join("\n")).toContain("Rule 19:");
     expect(input.material.receipts.some(receipt => receipt.includes("overage"))).toBe(false);
-    expect(input.material.facts.length).toBeGreaterThan(0);
+    expect(input.supplied.factIds).toEqual([1, 2]);
+    const factReceipts = input.material.receipts.filter(receipt => receipt.includes(" older facts; expand:"));
+    const knowledgeReceipts = input.material.receipts.filter(receipt => receipt.includes(" knowledge; expand:"));
+    expect(tokens(compactText({ facts: input.material.facts, receipts: factReceipts }))).toBeLessThanOrEqual(f.m.config.compaction.factsTokens);
+    expect(tokens(injectionText({ knowledge: input.material.knowledge, receipts: knowledgeReceipts })))
+      .toBeLessThanOrEqual(f.m.knowledgeBudgets().injection + f.m.config.compaction.sharedAllowanceTokens);
+    expect(rawWindowTokens(input.material.entries.map(entry => entry.view), [])).toBeLessThanOrEqual(f.m.config.noting.batchTokens);
     expect(f.m.pendingEntries(f.s.id, "main", f.t.id)).toEqual([]);
   } finally { f.m.close(); }
 });
