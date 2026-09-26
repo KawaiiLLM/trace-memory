@@ -694,15 +694,24 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = [],
       transport = false, options: { endpointEntryId?: number; processedRawRefill?: boolean;
         /** Internal: views from this synchronous freeze under this exact profile/extractor. */
-        renderedEntries?: ReadonlyMap<number, EntryView> } = {}): CompactResult => {
+        renderedEntries?: ReadonlyMap<number, EntryView>;
+        /** Internal: authoritative ordered metadata and processing state of this same freeze. */
+        preparedSources?: { path: KnowledgePath; entries: readonly SourceEntryMeta[]; pending: readonly SourceEntryMeta[] } } = {}): CompactResult => {
       if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
-      const snapshot = store.pathSnapshot(path, options.endpointEntryId); // one exact membership, knowledge and facts alike
+      const prepared = options.preparedSources;
+      if (prepared && (prepared.path.sessionId !== path.sessionId || prepared.path.branch !== path.branch))
+        throw new Error("Prepared compact source path does not match its reader");
+      const snapshot = store.pathSnapshot(path, options.endpointEntryId, prepared?.entries); // exact membership for this endpoint
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
       const sourceSnapshot = head === path.headTurnId ? snapshot : head === undefined ? undefined
         : store.pathSnapshot({ sessionId, branch, headTurnId: head });
-      const sourced = head === undefined ? [] : store.sourcePath(sessionId, branch, head, sourceSnapshot);
-      const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head, sourceSnapshot);
+      const onEndpoint = (entry: SourceEntryMeta) => snapshot.turns.has(entry.turnId)
+        && (!snapshot.entries || snapshot.entries.ids.has(entry.id));
+      const sourced = prepared ? prepared.entries.filter(onEndpoint)
+        : head === undefined ? [] : store.sourcePath(sessionId, branch, head, sourceSnapshot);
+      const pending = prepared ? prepared.pending.filter(onEndpoint)
+        : head === undefined ? [] : store.pendingEntries(sessionId, branch, head, sourceSnapshot);
       const pendingIds = new Set(pending.map(e => e.id));
       const knowledge = store.currentKnowledge(path, {}, snapshot);
       const visible = Array.isArray(retainedView) ? noVisibility() : retainedView as VisibleView;

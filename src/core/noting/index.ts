@@ -158,8 +158,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   let snapshot = pendingAll ? undefined : store.pathSnapshot(path);
-  const { exact, pending } = notingPending(store, { ...input, sessionId: session.id },
-    pendingAll ?? store.pendingEntries(session.id, input.branch, input.headTurnId, snapshot));
+  const allPending = pendingAll ?? store.pendingEntries(session.id, input.branch, input.headTurnId, snapshot);
+  const { exact, pending } = notingPending(store, { ...input, sessionId: session.id }, allPending);
   if (exact && pending.length !== exact.length)
     throw new Error(`${NOTING_MEMBERSHIP}entries ${exact.filter((id: number) => !pending.some(e => e.id === id)).join(", ")} of the frozen batch ${exact.join(", ")} are no longer pending; nothing was re-processed`);
   const mode = input.mode ?? (config.noting.forkModeDefault ? "fork" : "subagent");
@@ -187,7 +187,11 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   if (exact && entries.length !== pending.length)
     throw new Error(`${NOTING_CAPACITY}the frozen batch of ${pending.length} entries exceeds noting.batchTokens (${config.noting.batchTokens}); left pending`);
   snapshot ??= store.pathSnapshot(path);
-  const headEntryId = store.sourceHeadEntryId(session.id, input.branch, input.headTurnId, snapshot);
+  // Reuse the same authoritative ordered metadata for the head and every endpoint assembly.
+  // This replaces sourceHeadEntryId's metadata read, not a new per-node cache.
+  const source = store.sourcePath(session.id, input.branch, input.headTurnId, snapshot);
+  const headEntryId = source.at(-1)?.id;
+  const preparedSources = { path, entries: source, pending: allPending };
   const ancestry = [...new Set(entries.map(entry => entry.turnId))].map(id => store.getTurn(id)!);
   const calls = new Map<number, ReturnType<Store["listToolCalls"]>>();
   const toolCalls = (turnId: number) => {
@@ -221,7 +225,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const assembled = readFacade(store, { ...config, compaction: { ...config.compaction,
       rawTokens: config.noting.batchTokens, factsTokens: history } }, undefined, resultText)
       .compact(session.id, input.branch, endpoint.turnId, [], false,
-        { endpointEntryId: endpoint.id, processedRawRefill: false, renderedEntries: rendered });
+        { endpointEntryId: endpoint.id, processedRawRefill: false, renderedEntries: rendered, preparedSources });
     if ("native" in assembled || !assembled.material) throw new Error("Noting material assembly produced no material");
     if (assembled.supplied.entries.length !== entries.length
       || assembled.supplied.entries.some((entry, index) => entry.id !== entries[index]!.id))

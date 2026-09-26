@@ -5,7 +5,8 @@ import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
 import { freezeDreaming } from "../../../src/core/dreaming/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
-import { validateConfig } from "../../../src/core/api/index.ts";
+import { validateConfig, toolDefinitions } from "../../../src/core/api/index.ts";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
 
 const memories: ReturnType<typeof sourceSeededMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -77,13 +78,39 @@ test("ticket92material preparation loads only selected Raw, never the processed 
     { path: f.target, endpoint: undefined }, { path: f.target, endpoint: frozen.entries[0]!.id },
   ]);
   const pathBuilds = statements.mock.calls.filter(([sql]) => sql.includes("SELECT j.position, j.entry_id, e.id AS owned_id"));
-  expect(pathBuilds).toHaveLength(1); // one appended suffix read, reused by the endpoint snapshot
+  expect(pathBuilds).toHaveLength(1); // one complete cold path view, reused by the endpoint snapshot
+  const metadataReads = () => statements.mock.calls.filter(([sql]) => sql.startsWith("SELECT id, session_id, native_lineage, native_id, turn_id, entry_ordinal, addresses, digest FROM source_entries"));
+  expect(metadataReads()).toHaveLength(2); // pending discovery and ordered metadata, reused by compact
   const secondRaw = raw.mock.calls.length;
   snapshots.mockClear(); statements.mockClear(); raw.mockClear();
   freezeNoting(f.store, { ...f.target, mode: "subagent" }, f.memory.config);
   expect(statements.mock.calls.filter(([sql]) => sql.includes("SELECT j.position, j.entry_id, e.id AS owned_id"))).toHaveLength(0);
   expect(raw.mock.calls).toHaveLength(secondRaw);
+  expect(metadataReads()).toHaveLength(2);
   console.info(JSON.stringify({ materialPreparationMs: elapsed, priorEntries: older.length, rawReads: raw.mock.calls.length, turnReads: turns.mock.calls.length }));
+});
+
+test("ticket92material capacity shrinking reuses metadata and Raw views but rebinds each endpoint", () => {
+  const f = fixture();
+  for (let index = 0; index < 6; index++) seedSourceEntry(f.memory, f.turn.id, "assistant", `entry-${index} ${"words ".repeat(80)}`);
+  f.select();
+  const config = { ...f.memory.config, compaction: { ...f.memory.config.compaction, factsTokens: 1 } };
+  const complete = freezeNoting(f.store, { ...f.target, mode: "subagent" }, config);
+  const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(toolDefinitions));
+  const raw = vi.spyOn(f.store, "getSourceEntry"), snapshots = vi.spyOn(f.store, "pathSnapshot");
+  const statements = vi.spyOn(f.store.db, "prepare");
+  const reduced = freezeNoting(f.store, { ...f.target, mode: "subagent", capacity: {
+    inputTokens: fixed + tokens(complete.prepared!.text) - 80, prefixTokens: 0 } }, config);
+  expect(reduced.entries.length).toBeLessThan(complete.entries.length);
+  expect(reduced.entries.length).toBeGreaterThan(0);
+  expect(reduced.prepared!.selectedEntryIds).toEqual(reduced.entries.map(entry => entry.id));
+  expect(raw.mock.calls.map(([id]) => id)).toEqual(complete.entries.map(entry => entry.id));
+  expect(new Set(raw.mock.calls.map(([id]) => id)).size).toBe(raw.mock.calls.length);
+  const endpoints = snapshots.mock.calls.map(([, endpoint]) => endpoint).filter(id => id !== undefined);
+  expect(endpoints[0]).toBe(complete.entries.at(-1)!.id);
+  expect(endpoints.at(-1)).toBe(reduced.entries.at(-1)!.id);
+  expect(reduced.prepared!.text).not.toContain("entry-5");
+  expect(statements.mock.calls.filter(([sql]) => sql.startsWith("SELECT id, session_id, native_lineage, native_id, turn_id, entry_ordinal, addresses, digest FROM source_entries"))).toHaveLength(2);
 });
 
 test("ticket92material hard input capacity rejects before invoking the worker and leaves Raw pending", async () => {

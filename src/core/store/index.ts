@@ -3018,7 +3018,7 @@ export class Store {
         return head;
   }
 
-  pathSnapshot(path: KnowledgePath, endpointEntryId?: number): PathSnapshot {
+  pathSnapshot(path: KnowledgePath, endpointEntryId?: number, preparedSources?: readonly SourceEntryMeta[]): PathSnapshot {
     if (path.branch && path.headTurnId != null) {
       const view = this.pathView(path.sessionId, path.branch);
       if (view) {
@@ -3043,17 +3043,16 @@ export class Store {
       if (!path.branch || path.headTurnId == null) throw new Error("Material endpoint requires a branch and Turn head");
       // Preserve sourcePath's existing no-stored-path compatibility. Locate by sequence position,
       // never numeric ID; a stored empty or malformed native path cannot reach this branch.
-      const sequence = this.pathSourceMeta(path.sessionId, path.branch, path.headTurnId,
-        { turns, entries: null, consolidatedRuns: new Map() });
+      const sequence = preparedSources ? preparedSources.filter(entry => turns.has(entry.turnId))
+        : this.pathSourceMeta(path.sessionId, path.branch, path.headTurnId, { turns, entries: null, consolidatedRuns: new Map() });
       const endpoint = sequence.findIndex(entry => entry.id === endpointEntryId);
       if (endpoint < 0) throw new Error("Material endpoint is not on the selected source path");
-      const ids = new Set(sequence.slice(0, endpoint + 1).map(entry => entry.id));
+      const prefix = sequence.slice(0, endpoint + 1), ids = new Set(prefix.map(entry => entry.id));
       const addresses = new Map<number, Set<string>>();
-      for (const row of this.db.prepare("SELECT turn_id, addresses FROM source_entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...ids]))) {
-        const turn = Number(row.turn_id);
-        let values = addresses.get(turn);
-        if (!values) addresses.set(turn, values = new Set());
-        for (const address of JSON.parse(String(row.addresses)) as string[]) values.add(address);
+      for (const entry of prefix) {
+        let values = addresses.get(entry.turnId);
+        if (!values) addresses.set(entry.turnId, values = new Set());
+        for (const address of entry.addresses) values.add(address);
       }
       return { turns, entries: { ids, addresses: turn => addresses.get(turn) ?? new Set() }, consolidatedRuns: new Map() };
     }
