@@ -3,8 +3,14 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
+// Capture before stdin or lock waits. A reader never renews the producer's reuse window.
+const startedAt = Date.now(), deadline = startedAt + 55_000;
+const remaining = () => {
+  const ms = deadline - Date.now();
+  if (ms <= 0) throw new Error('SessionStart stage deadline exceeded');
+  return ms;
+};
 const [, , configPath, slotText] = process.argv;
 const slot = Number(slotText);
 if (!Number.isInteger(slot) || slot < 0 || slot >= 24) throw new Error('SessionStart slice slot must be 0..23');
@@ -13,12 +19,6 @@ for await (const chunk of process.stdin) raw += chunk;
 const input = JSON.parse(raw);
 if (input.hook_event_name !== 'SessionStart' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(input.session_id))
   throw new Error('slice reader requires a valid SessionStart native session');
-const deadline = Date.now() + 55_000;
-const remaining = () => {
-  const ms = deadline - Date.now();
-  if (ms <= 0) throw new Error('SessionStart stage deadline exceeded');
-  return ms;
-};
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
 if (!config.stateDir?.startsWith('/')) throw new Error('slice reader needs an absolute stateDir');
 const dbPath = config.dbPath ?? join(process.env.HOME, '.trace-memory', 'trace.db');
@@ -28,146 +28,109 @@ const version = JSON.parse(readFileSync(join(pluginRoot, '.claude-plugin', 'plug
 const state = join(config.stateDir, 'session-start', input.session_id);
 const stat = path => { try { const s = statSync(path); return [s.dev, s.ino, s.size, s.mtimeMs]; }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
-const binding = name => { try { return JSON.parse(readFileSync(join(config.stateDir, 'bindings', `${name}.json`), 'utf8')); }
+const readOptional = path => { try { return JSON.parse(readFileSync(path, 'utf8')); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
-const relevant = value => value && ({ coreSessionId: value.coreSessionId, projectId: value.projectId,
-  enrollment: value.enrollment, branch: value.branch, selectedLeafUuid: value.selectedLeafUuid,
-  nativeProcess: value.nativeProcess, lastClose: value.lastClose,
-  clearedFrom: value.clearedFrom && { nativeSessionId: value.clearedFrom.nativeSessionId,
-    compactionTurnId: value.clearedFrom.compactionTurnId, at: value.clearedFrom.at,
-    inheritedLength: value.clearedFrom.inheritedEntryIds.length,
-    inheritedTail: value.clearedFrom.inheritedEntryIds.at(-1) ?? null },
-  transcriptPath: value.transcriptPath, dbPath: value.dbPath, cwd: value.cwd });
-const nativeSession = () => { const pid = process.env.CLAUDE_PID; if (!pid || !/^\d+$/.test(pid)) return null;
-  try { return JSON.parse(readFileSync(join(config.stateDir, 'native-sessions', `${pid}.json`), 'utf8')); }
-  catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
-const openDb = () => {
-  const connection = new DatabaseSync(dbPath, { readOnly: true });
-  connection.exec(`PRAGMA busy_timeout=${Math.min(5000, remaining())}`);
-  return connection;
+const transcriptStat = stat(input.transcript_path);
+const inputs = JSON.stringify({ version, session: input.session_id, source: input.source,
+  transcript: input.transcript_path, transcriptStat: transcriptStat?.slice(2) ?? null });
+const keyOf = value => createHash('sha256').update(value).digest('hex');
+const key = keyOf(inputs), lock = join(state, `${key}.lock`);
+// Identity checks are independent of database freshness. Ownership, enrollment and database
+// watermarks in the renderer's snapshot describe its bodies, not admission of later consumers.
+const identity = () => {
+  const own = readOptional(join(config.stateDir, 'bindings', `${input.session_id}.json`));
+  const pid = process.env.CLAUDE_PID;
+  const record = pid && /^\d+$/.test(pid) ? readOptional(join(config.stateDir, 'native-sessions', `${pid}.json`)) : null;
+  return JSON.stringify({ db: stat(dbPath)?.slice(0, 2) ?? null, transcriptStat: stat(input.transcript_path),
+    own: own && { nativeSessionId: own.nativeSessionId, coreSessionId: own.coreSessionId,
+      nativeProcess: own.nativeProcess, transcriptPath: own.transcriptPath, dbPath: own.dbPath,
+      branch: own.branch, selectedLeafUuid: own.selectedLeafUuid, lastClose: own.lastClose },
+    native: record && { pid: record.pid, startedAt: record.startedAt, nativeSessionId: record.nativeSessionId,
+      transcriptPath: record.transcriptPath, source: record.source } });
 };
-let db = existsSync(dbPath) ? openDb() : null;
-try {
-  const metadata = () => {
-    if (!db && existsSync(dbPath)) db = openDb();
-    if (db) db.exec(`PRAGMA busy_timeout=${Math.min(5000, remaining())}`);
-    if (db) db.exec('BEGIN');
-    try {
-    const own = relevant(binding(input.session_id));
-    const record = nativeSession();
-    const native = record && { pid: record.pid, startedAt: record.startedAt, nativeSessionId: record.nativeSessionId,
-      transcriptPath: record.transcriptPath, source: record.source };
-    const parent = input.source === 'clear' && native?.nativeSessionId ? relevant(binding(native.nativeSessionId)) : null;
-    const dbStat = stat(dbPath)?.slice(0, 2) ?? null;
-    const watermarks = db ? db.prepare(`SELECT
-      (SELECT IFNULL(MAX(id),0) FROM facts) f,
-      (SELECT IFNULL(MAX(rowid),0) FROM consolidated_facts) cf,
-      (SELECT IFNULL(MAX(rowid),0) FROM noted_entries) ne,
-      (SELECT IFNULL(MAX(id),0) FROM knowledge_revisions) kr,
-      (SELECT IFNULL(MAX(rowid),0) FROM knowledge_processed) kp,
-      (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) pa,
-      (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) pm,
-      (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id=1) bp,
-      (SELECT IFNULL(MAX(version),0) FROM session_lineage_cursors) cv,
-      (SELECT IFNULL(MAX(version),0) FROM source_paths) sv`).get() : null;
-    const ownerOf = value => db && value?.coreSessionId ? db.prepare(`SELECT project_id, enrollment_default, enrollment_choice
-      FROM sessions WHERE id=?`).get(value.coreSessionId) : null;
-    const owner = ownerOf(own), parentOwner = ownerOf(parent);
-    const header = db && own?.coreSessionId && own.branch ? db.prepare(`SELECT length, tail_entry_id, version, hwm_entry_id
-      FROM source_paths WHERE session_id=? AND branch=?`).get(own.coreSessionId, own.branch) : null;
-    const cursor = db && own?.coreSessionId ? db.prepare(`SELECT branch, head_turn_id, version FROM session_lineage_cursors
-      WHERE session_id=? AND lineage=?`).get(own.coreSessionId, input.session_id) : null;
-    return JSON.stringify({ version, config, dbStat, watermarks, header, cursor, owner, own, native, parent,
-      parentOwner, parentTranscriptStat: parent?.transcriptPath ? stat(parent.transcriptPath) : null,
-      session: input.session_id, source: input.source, transcript: input.transcript_path,
-      transcriptStat: stat(input.transcript_path) });
-    } finally { if (db) db.exec('COMMIT'); }
-  };
-  const keyOf = value => createHash('sha256').update(value).digest('hex');
-  const initial = metadata(), key = keyOf(initial);
-  mkdirSync(state, { recursive: true });
-  const reference = join(state, `${key}.ref`), lock = `${reference}.lock`;
+mkdirSync(state, { recursive: true });
+// Immutable generations, rather than an overwritten reference, also serve eligible old waiters
+// after a later invocation has published. Each owns [windowStart, deadline); subsequent windows
+// start no earlier than the previous deadline. No Hook can wait longer than its own 55 seconds.
+const generations = () => readdirSync(state).filter(file => /^[a-f0-9]{64}\.\d+\.json$/.test(file));
+const reusable = () => {
+  const file = generations().filter(file => file.startsWith(`${key}.`) && Number(file.split('.')[1]) > startedAt)
+    .sort((a, b) => Number(a.split('.')[1]) - Number(b.split('.')[1]))[0];
+  if (!file) return null;
+  const { digest, ...result } = JSON.parse(readFileSync(join(state, file), 'utf8'));
+  if (digest !== keyOf(JSON.stringify(result)) || result.inputs !== inputs ||
+    result.deadline !== Number(file.split('.')[1]) || !Number.isFinite(result.windowStart) ||
+    result.windowStart >= result.deadline)
+    throw new Error('invalid SessionStart stage generation');
+  if (startedAt < result.windowStart)
+    throw new Error('Hook start precedes the available SessionStart producer window');
+  return result;
+};
+const publish = value => {
+  const previousDeadline = Math.max(0, ...generations().filter(file => file.startsWith(`${key}.`))
+    .map(file => Number(file.split('.')[1])));
+  // For the first producer, only still-live Hooks can precede its start. A later producer may
+  // not adopt earlier-window readers even when those readers have not observed publication yet.
+  const windowStart = Math.max(previousDeadline, startedAt - 55_000);
+  const result = { inputs, windowStart, deadline, ...value };
+  const resultPath = join(state, `${key}.${deadline}.json`), temporary = `${resultPath}.${process.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify({ digest: keyOf(JSON.stringify(result)), ...result }), { flag: 'wx', mode: 0o600 });
+  renameSync(temporary, resultPath);
+};
+let staged;
+while (!staged) {
+  remaining();
+  staged = reusable();
+  if (staged) break;
   let acquired = false;
   try { mkdirSync(lock); acquired = true; }
   catch (error) { if (error.code !== 'EEXIST') throw error; }
-  if (acquired) {
-    try {
-      let finalKey = key;
-      const cached = existsSync(reference) ? readFileSync(reference, 'utf8') : null;
-      const cachedPath = cached && /^[a-f0-9]{64}$/.test(cached) ? join(state, `${cached}.json`) : null;
-      const reusable = cachedPath && existsSync(cachedPath) &&
-        JSON.parse(readFileSync(cachedPath, 'utf8')).inputs === initial;
-      if (reusable) finalKey = cached;
-      else {
-      // Lifecycle is never retried: clear freezes its material and binding before pure selection.
-      const invoke = command => {
-        return spawnSync(process.execPath, [join(pluginRoot, 'dist', 'cc.cjs'), command, '--config', configPath],
-          { input: raw, encoding: 'utf8', timeout: remaining(), maxBuffer: 16 * 1024 * 1024 });
-      };
-      const prepared = invoke('hook-prepare');
-      if (prepared.error || prepared.status !== 0)
-        throw new Error(`SessionStart prepare failed: ${prepared.error?.message ?? prepared.stderr}`);
-      let selection, snapshot, slices, stable, before;
-      do {
-        before = metadata();
-        const result = invoke('hook-slices');
-        if (result.error || result.status !== 0)
-          throw new Error(`SessionStart render failed: ${result.error?.message ?? result.stderr}`);
-        ({ selection, snapshot, slices } = JSON.parse(result.stdout));
-        if (!/^[a-f0-9]{64}$/.test(selection) || !Array.isArray(slices) || slices.length !== 24)
-          throw new Error('SessionStart renderer returned an invalid selection or slot count');
-        stable = metadata();
-        const expected = JSON.parse(before);
-        if (snapshot && JSON.stringify(snapshot) !== JSON.stringify({ watermarks: expected.watermarks,
-          owner: expected.owner, header: expected.header, cursor: expected.cursor, own: expected.own }))
-          stable = '';
-        // A concurrent commit cannot relabel an older selected body as the newer input. Only
-        // this read-only phase is retried; clear's frozen selection is never recreated.
-      } while (before !== stable && Date.now() < deadline);
-      if (before !== stable) throw new Error('SessionStart input changed during pure rendering');
-      if (JSON.parse(initial).transcriptStat?.join(':') !== JSON.parse(stable).transcriptStat?.join(':'))
-        throw new Error('native transcript changed during SessionStart rendering');
-      finalKey = keyOf(`${stable}:${selection}`);
-      const resultPath = join(state, `${finalKey}.json`);
-      const serialized = JSON.stringify({ final: finalKey, inputs: stable, selection, snapshot, producerSlot: slot, slices });
-      if (existsSync(resultPath)) {
-        const previous = JSON.parse(readFileSync(resultPath, 'utf8'));
-        if (JSON.stringify(previous.slices) !== JSON.stringify(slices))
-          throw new Error('same SessionStart input produced different rendered slices');
-      } else {
-        const temporary = `${resultPath}.${process.pid}.tmp`;
-        writeFileSync(temporary, serialized, { flag: 'wx', mode: 0o600 });
-        renameSync(temporary, resultPath);
-      }
-      }
-      const temporaryRef = `${reference}.${process.pid}.tmp`;
-      writeFileSync(temporaryRef, finalKey, { flag: 'wx', mode: 0o600 });
-      renameSync(temporaryRef, reference);
-      // Keep a few recent results, but never delete a file an active reader might still need.
-      const files = readdirSync(state).filter(file => /^[a-f0-9]{64}\.json$/.test(file))
-        .map(file => ({ file, mtime: statSync(join(state, file)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
-      for (const old of files.slice(3)) if (Date.now() - old.mtime > 120_000) {
-        const oldKey = old.file.slice(0, -5);
-        const refs = readdirSync(state).filter(file => /^[a-f0-9]{64}\.ref$/.test(file) &&
-          readFileSync(join(state, file), 'utf8') === oldKey);
-        if (refs.some(file => existsSync(join(state, `${file}.lock`)))) continue;
-        for (const file of refs) rmSync(join(state, file));
-        rmSync(join(state, old.file));
-      }
-    } finally { rmSync(lock, { recursive: true, force: true }); }
-  } else {
-    while (existsSync(lock)) {
-      if (Date.now() >= deadline) throw new Error('timed out waiting for SessionStart stage');
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
-    if (!existsSync(reference)) throw new Error('SessionStart stage producer failed before publication');
+  if (!acquired) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    continue;
   }
-  const finalKey = readFileSync(reference, 'utf8');
-  if (!/^[a-f0-9]{64}$/.test(finalKey)) throw new Error('invalid SessionStart stage reference');
-  const staged = JSON.parse(readFileSync(join(state, `${finalKey}.json`), 'utf8'));
-  if (staged.final !== finalKey || staged.inputs !== metadata() ||
-    finalKey !== keyOf(`${staged.inputs}:${staged.selection}`))
-    throw new Error('SessionStart input changed before its staged slice was read');
-  const slice = staged.slices[slot];
-  if (slice) process.stdout.write(`${JSON.stringify(slice)}\n`);
-} finally { db?.close(); }
+  try {
+    staged = reusable();
+    if (staged) break;
+    try {
+      const invoke = command => {
+        const result = spawnSync(process.execPath, [join(pluginRoot, 'dist', 'cc.cjs'), command, '--config', configPath],
+          { input: raw, encoding: 'utf8', timeout: remaining(), maxBuffer: 16 * 1024 * 1024 });
+        if (result.error || result.status !== 0)
+          throw new Error(`SessionStart ${command} failed: ${result.error?.message ?? result.stderr}`);
+        return result;
+      };
+      // Lifecycle is never retried. Clear's frozen material remains owned by its preparation.
+      invoke('hook-prepare');
+      const before = identity();
+      const { selection, snapshot, slices } = JSON.parse(invoke('hook-slices').stdout);
+      if (!/^[a-f0-9]{64}$/.test(selection) || !Array.isArray(slices) || slices.length !== 24)
+        throw new Error('SessionStart renderer returned an invalid selection or slot count');
+      if (before !== identity() || JSON.stringify(transcriptStat) !== JSON.stringify(stat(input.transcript_path)))
+        throw new Error('native identity or transcript changed during SessionStart rendering');
+      remaining();
+      // hook-slices captures snapshot and bodies in one read transaction. Never replace its
+      // descriptor with current database metadata, or rerender because another writer committed.
+      publish({ identity: before, selection, snapshot, producerSlot: slot, slices });
+    } catch (error) {
+      // Other Hooks in this window see the same failure, not a second lifecycle preparation.
+      publish({ error: error.message });
+      throw error;
+    }
+    staged = reusable();
+  } finally {
+    try {
+      // Successes and failures have the same bounded retention. An active Hook has at most
+      // 55 seconds, so these old generations cannot belong to a still-eligible reader.
+      for (const file of generations()) if (Date.now() - Number(file.split('.')[1]) > 120_000)
+        rmSync(join(state, file), { force: true });
+    } finally { rmSync(lock, { recursive: true, force: true }); }
+  }
+}
+remaining();
+if (staged.inputs !== inputs || startedAt < staged.windowStart || startedAt >= staged.deadline)
+  throw new Error('invalid SessionStart stage generation');
+if (staged.error) throw new Error(`SessionStart stage producer failed: ${staged.error}`);
+if (staged.identity !== identity()) throw new Error('native identity or transcript changed before its staged slice was read');
+const slice = staged.slices[slot];
+if (slice) process.stdout.write(`${JSON.stringify(slice)}\n`);

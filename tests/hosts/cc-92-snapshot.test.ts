@@ -1,0 +1,228 @@
+import { afterEach, expect, test } from "vitest";
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { TraceMemory } from "../../src/core/api/index.ts";
+import { ccVisibleView, databaseIdentity, decodeCcInjection } from "../../src/hosts/cc/injection.ts";
+
+const dirs: string[] = [];
+const children: ChildProcess[] = [];
+afterEach(() => {
+  for (const child of children.splice(0)) if (child.exitCode === null) child.kill();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+const epoch = Date.parse("2026-09-26T10:00:00Z");
+const read = (path: string) => JSON.parse(readFileSync(path, "utf8"));
+const put = (path: string, value: unknown) => {
+  writeFileSync(`${path}.tmp`, JSON.stringify(value)); renameSync(`${path}.tmp`, path);
+};
+async function until(path: string) {
+  const end = performance.now() + 15_000;
+  while (!existsSync(path)) {
+    if (performance.now() > end) throw new Error(`test barrier timed out: ${path}`);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+function fixture(real = false) {
+  // All artifacts belong to this checkout; no native CLI, installed plugin or shared cache.
+  const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
+  const dir = mkdtempSync(join(scratch, "92-snapshot-")); dirs.push(dir);
+  const plugin = join(dir, "plugin"), stateDir = join(dir, "state"), dbPath = join(dir, "db.sqlite");
+  mkdirSync(join(plugin, ".claude-plugin"), { recursive: true }); mkdirSync(join(plugin, "dist"));
+  put(join(plugin, ".claude-plugin/plugin.json"), { version: "92-snapshot" });
+  const configPath = join(plugin, "cc.config.json");
+  put(configPath, { dbPath, stateDir, baseline: "2025-01-01T00:00:00.000Z" });
+  const transcript = join(dir, "native.jsonl");
+  writeFileSync(transcript, JSON.stringify({ uuid: "first-user", parentUuid: null, type: "user",
+    timestamp: "2026-01-02T00:00:00.000Z", promptSource: "typed", message: { role: "user", content: "hello" } }) + "\n");
+  const stageDir = join(stateDir, "session-start", "snapshot-test");
+  const script = real
+    ? `import(${JSON.stringify(pathToFileURL(resolve("src/hosts/cc/index.ts")).href)}).then(m => m.runCcCommand()).catch(e => {console.error(e);process.exitCode=1;});`
+    : `const fs = require('node:fs'); const path = require('node:path');
+const config = JSON.parse(fs.readFileSync(process.argv.at(-1), 'utf8'));
+const log = path.join(path.dirname(process.argv.at(-1)), 'calls.jsonl');
+fs.appendFileSync(log, JSON.stringify({command:process.argv[2],now:Date.now()})+'\\n');
+if (process.argv[2] === 'hook-slices') {
+  if (fs.existsSync(path.join(path.dirname(log),'fail'))) throw new Error('fixture producer failure');
+  if (fs.existsSync(path.join(path.dirname(log),'mutate-transcript'))) {
+    const input = JSON.parse(fs.readFileSync(0, 'utf8')); fs.appendFileSync(input.transcript_path, 'changed');
+  }
+  process.stdout.write(JSON.stringify({selection:'a'.repeat(64),snapshot:{at:Date.now()},
+    slices:Array.from({length:24},(_,slot)=>({hookSpecificOutput:{hookEventName:'SessionStart', additionalContext:Date.now()+':'+slot}}))}));
+}`;
+  writeFileSync(join(plugin, "dist/cc.cjs"), script);
+  let sequence = 0;
+  function run(slot: number, now: number, options: { pauseReader?: boolean; pauseSnapshot?: boolean; holdInput?: boolean } = {}) {
+    const control = join(dir, `control-${sequence++}.json`); put(control, { now, ...options });
+    const child = spawn(process.execPath, ["--import", resolve("tests/hosts/snapshot-stage-preload.mjs"),
+      resolve("plugin/hooks/slice.mjs"), configPath, String(slot)], {
+      stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, CLAUDE_PID: "", TM_SNAPSHOT_CONTROL: control,
+        NODE_OPTIONS: `--import=${pathToFileURL(resolve("tests/hosts/snapshot-stage-preload.mjs")).href}` },
+    });
+    children.push(child);
+    let stdout = "", stderr = "";
+    child.stdout.on("data", data => { stdout += data; }); child.stderr.on("data", data => { stderr += data; });
+    const result = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      child.on("error", reject); child.on("close", code => resolve({ code, stdout, stderr }));
+    });
+    const input = JSON.stringify({ hook_event_name: "SessionStart", source: "startup", session_id: "snapshot-test", transcript_path: transcript });
+    if (!options.holdInput) child.stdin.end(input);
+    return { control, result, input: () => child.stdin.end(input),
+      time: (now: number) => put(control, { ...read(control), now }),
+      resume: () => writeFileSync(`${control}.resume`, "continue") };
+  }
+  const stages = () => readdirSync(stageDir).filter(file => file.endsWith(".json")).map(file => read(join(stageDir, file)));
+  const calls = () => readFileSync(join(plugin, "calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  return { dir, plugin, stageDir, stateDir, dbPath, transcript, run, stages, calls };
+}
+
+test("92: real staging renders once across an external mid-snapshot commit and 24 permuted consumers", async () => {
+  const f = fixture(true);
+  const memory = TraceMemory(f.dbPath, async () => { throw new Error("offline only"); });
+  try {
+    const project = memory.store.createProject({ name: "fixture", declaredBy: "mark" });
+    const session = memory.store.createSession({ enrollmentChoice: true, host: "fixture", projectId: project.id,
+      startedAt: "2026-01-01T00:00:00.000Z", firstReplyAt: "2026-01-01T00:00:00.000Z" });
+    const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: "now", userPrompt: "a rule" });
+    const noted = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" },
+      facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "Rule evidence", source: [`T${turn.id}#user`], createdAt: "now" }] });
+    if (!noted.ok) throw new Error(noted.problems.join(";"));
+    const content = { author: "fixture", topics: [], reason: "fixture", supports: [noted.facts[0]!.id],
+      createdAt: "now", category: "constraint" as const, scope: "global" as const };
+    const created = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" },
+      operations: Array.from({ length: 24 }, (_, n) => ({ ...content, op: "create" as const, handle: `$${n}`,
+        text: `Original rule ${n}: ${"x".repeat(6000)}` })) });
+    if (!created.ok) throw new Error(created.problems.join(";"));
+    memory.store.db.exec("UPDATE knowledge_budget_policy SET global_tokens=100000");
+    const oldIds = created.committed.map(commit => commit.commit);
+    const producer = f.run(0, epoch, { pauseSnapshot: true });
+    await until(`${producer.control}.snapshot`);
+    const changed = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, createdAt: "later" },
+      operations: [{ ...content, op: "update", knowledgeId: created.committed[0]!.knowledgeId, baseCommit: oldIds[0]!,
+        text: "NEW concurrent rule" }] });
+    if (!changed.ok) throw new Error(changed.problems.join(";"));
+    const newId = changed.committed[0]!.commit;
+    // A real eligible waiter starts while the renderer still holds its original read snapshot.
+    const waiter = f.run(23, epoch + 54_999);
+    await until(`${waiter.control}.checked`);
+    waiter.time(epoch + 55_001); // After producer deadline, still before waiter's own deadline.
+    producer.resume();
+    const first = await producer.result;
+    expect(first.code, first.stderr).toBe(0);
+    const waited = await waiter.result;
+    expect(waited.code, waited.stderr).toBe(0);
+    const order = Array.from({ length: 22 }, (_, n) => (n * 7) % 22 + 1);
+    const rest = await Promise.all(order.map(slot => f.run(slot, epoch + 1).result));
+    for (const result of rest) expect(result.code, result.stderr).toBe(0);
+    const stage = f.stages(); expect(stage).toHaveLength(1);
+    expect(stage[0].snapshot.watermarks.kr).toBe(oldIds.at(-1));
+    expect(memory.store.db.prepare("SELECT MAX(id) n FROM knowledge_revisions").get()!.n).toBe(newId);
+    const outputs = [first, waited, ...rest].map(result => JSON.parse(result.stdout));
+    expect(outputs).toHaveLength(24);
+    const visible = { db: databaseIdentity(f.dbPath), nativeSession: "snapshot-test", coreSession: null };
+    const decoded = outputs.map(output => decodeCcInjection(output.hookSpecificOutput.additionalContext, visible)!);
+    const delivered = decoded.sort((a, b) => a.slice![0] - b.slice![0]).flatMap(value => value.commits);
+    expect(delivered).toEqual(oldIds); expect(delivered).not.toContain(newId);
+    for (const output of outputs) {
+      const slot = decodeCcInjection(output.hookSpecificOutput.additionalContext, visible)!.slice![0];
+      expect(output).toEqual(stage[0].slices[slot]);
+    }
+    // Staging is not delivery: a discarded/failed carrier contributes no IDs. 05's new exact
+    // ordinary-prompt delta is intentionally not implemented or asserted here.
+    const records = [{ uuid: "user", parentUuid: null, type: "user", promptSource: "typed",
+      message: { role: "user", content: "hello" } }, ...outputs.slice(1).map((output, n) => ({
+        uuid: `carrier-${n}`, parentUuid: n ? `carrier-${n - 1}` : "user", type: "attachment",
+        sessionId: visible.nativeSession, attachment: { type: "hook_additional_context", hookEvent: "SessionStart",
+          hookName: "SessionStart", content: [output.hookSpecificOutput.additionalContext] },
+      }))];
+    const retained = ccVisibleView(records, visible).knowledgeCommitIds;
+    expect(retained.size).toBe(23); expect(retained).not.toContain(oldIds[0]);
+    expect(retained).not.toContain(newId);
+    expect(stage[0].slices.filter(Boolean)).toHaveLength(24);
+  } finally { memory.store.close(); }
+}, 30_000);
+
+test("92: deadline is exclusive; old delayed reader keeps its generation after the next one publishes", async () => {
+  const f = fixture();
+  expect((await f.run(0, epoch).result).code).toBe(0);
+  const old = f.run(5, epoch + 54_999, { pauseReader: true });
+  await until(`${old.control}.paused`);
+  const next = await f.run(0, epoch + 55_000).result;
+  expect(next.code, next.stderr).toBe(0);
+  old.time(epoch + 55_001); old.resume();
+  const delayed = await old.result;
+  expect(delayed.code, delayed.stderr).toBe(0);
+  expect(delayed.stdout).toContain(`${epoch}:5`);
+  expect(next.stdout).toContain(`${epoch + 55_000}:0`);
+  const stages = f.stages().sort((a, b) => a.deadline - b.deadline);
+  expect(stages).toHaveLength(2); expect(stages[1].windowStart).toBe(stages[0].deadline);
+  expect(f.calls().map(call => call.command)).toEqual(["hook-prepare", "hook-slices", "hook-prepare", "hook-slices"]);
+  // If an old generation is unavailable, an old reader must not join the later producer.
+  const earlier = f.run(3, epoch + 54_999, { pauseReader: true });
+  await until(`${earlier.control}.paused`);
+  const oldFile = readdirSync(f.stageDir).find(file => file.endsWith(`.${epoch + 55_000}.json`))!;
+  rmSync(join(f.stageDir, oldFile)); earlier.resume();
+  const rejected = await earlier.result;
+  expect(rejected.code).not.toBe(0); expect(rejected.stderr).toContain("precedes the available");
+});
+
+test("92: Hook start precedes stdin waiting; its own exhausted deadline fails even with a staged result", async () => {
+  const f = fixture(); expect((await f.run(0, epoch).result).code).toBe(0);
+  const old = f.run(4, epoch + 1, { holdInput: true });
+  await until(`${old.control}.input`);
+  old.time(epoch + 55_001); old.input();
+  const result = await old.result;
+  expect(result.code).not.toBe(0); expect(result.stderr).toContain("deadline exceeded");
+  expect(f.stages()).toHaveLength(1);
+});
+
+test("92: a producer that leaves its lock cannot make another Hook wait beyond its own deadline", async () => {
+  const f = fixture(); expect((await f.run(0, epoch).result).code).toBe(0);
+  const key = readdirSync(f.stageDir).find(file => file.endsWith(".json"))!.split(".")[0]!;
+  mkdirSync(join(f.stageDir, `${key}.lock`));
+  const waiting = f.run(0, epoch + 55_000);
+  await until(`${waiting.control}.checked`);
+  waiting.time(epoch + 110_000);
+  const result = await waiting.result;
+  expect(result.code).not.toBe(0); expect(result.stderr).toContain("deadline exceeded");
+  expect(result.stdout).toBe(""); expect(f.calls()).toHaveLength(2);
+});
+
+test("92: producer failure is shared only for its window; later invocation retries preparation", async () => {
+  const f = fixture(); writeFileSync(join(f.plugin, "fail"), "fail");
+  const first = await f.run(0, epoch).result;
+  expect(first.code).not.toBe(0); expect(first.stderr).toContain("fixture producer failure");
+  rmSync(join(f.plugin, "fail"));
+  const eligible = await f.run(2, epoch + 54_999).result;
+  expect(eligible.code).not.toBe(0); expect(eligible.stderr).toContain("stage producer failed");
+  expect(f.calls()).toHaveLength(2);
+  const next = await f.run(2, epoch + 55_000).result;
+  expect(next.code, next.stderr).toBe(0); expect(f.calls()).toHaveLength(4);
+  writeFileSync(join(f.plugin, "fail"), "fail");
+  const laterFailure = await f.run(2, epoch + 200_000).result;
+  expect(laterFailure.code).not.toBe(0);
+  expect(f.stages().some(stage => stage.deadline === epoch + 55_000)).toBe(false);
+});
+
+test("92: transcript mutation during selection fails without retrying lifecycle or publishing carriers", async () => {
+  const f = fixture(); writeFileSync(join(f.plugin, "mutate-transcript"), "change");
+  const result = await f.run(0, epoch).result;
+  expect(result.code).not.toBe(0); expect(result.stderr).toContain("native identity or transcript changed");
+  expect(result.stdout).toBe(""); expect(f.calls()).toHaveLength(2);
+  expect(f.stages()).toHaveLength(1); expect(f.stages()[0].slices).toBeUndefined();
+});
+
+test("92: carrier corruption and native identity replacement still fail closed", async () => {
+  const f = fixture(); expect((await f.run(0, epoch).result).code).toBe(0);
+  const file = join(f.stageDir, readdirSync(f.stageDir).find(file => file.endsWith(".json"))!);
+  const original = readFileSync(file, "utf8");
+  const corrupted = read(file); corrupted.slices[0].hookSpecificOutput.additionalContext = "wrong body"; put(file, corrupted);
+  const invalid = await f.run(0, epoch + 1).result;
+  expect(invalid.code).not.toBe(0); expect(invalid.stderr).toContain("invalid SessionStart stage generation");
+  writeFileSync(file, original);
+  mkdirSync(join(f.stateDir, "bindings"), { recursive: true });
+  put(join(f.stateDir, "bindings/snapshot-test.json"), { nativeSessionId: "other" });
+  const replaced = await f.run(0, epoch + 1).result;
+  expect(replaced.code).not.toBe(0); expect(replaced.stderr).toContain("native identity or transcript changed");
+});
