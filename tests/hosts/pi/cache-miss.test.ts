@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import { host, reply } from "./test-host.ts";
 import { cacheMinimum, cacheObservation, runNative } from "../../../src/hosts/pi/native.ts";
 // Cache observations require an explicitly requested fork, not the product's subagent default.
-import { broken, call, noteAndMemory, forkFixture as fixture, memoryBatch, noteBatch, say, settled, toolResults, usage, worker } from "./native-fixture.ts";
+import { broken, call, noteAndMemory, stableForkFixture as fixture, memoryBatch, noteBatch, say, settled, toolResults, usage, worker } from "./native-fixture.ts";
 import { recorded } from "../../source-fixture.ts";
 
 // 19c cache-miss latch (ticket 19 gate 3 and "Cache-miss fallback"), under the user rulings of

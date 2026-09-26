@@ -2317,12 +2317,17 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
   expect(squeezed).toContain(`omitted 2 older facts; expand: F${onPath}, F${shared}`); // manual bindings remain eligible
   defaultWindows();
 
-  // --- the Noter's freeze: the same list in the same order, from one snapshot. The write-tool
-  // binding builds its own later, which is a different operation, so the freeze is measured directly.
+  // 92 uses distinct full-path selection and exact-entry material scopes. This legacy fixture
+  // counts wrappers; ticket92material pins native cold/warm builds, metadata and Raw work.
   const target = { sessionId: s.id, branch: "C", headTurnId: selected.id, mode: "subagent" as const };
   snapshots.reset();
+  const scopes = vi.spyOn(store, "pathSnapshot");
   const frozen = freezeNoting(store, target, memory.config);
-  expect(snapshots.snapshots()).toBe(1);
+  expect(scopes.mock.calls.map(([path, endpoint]) => ({ path, endpoint }))).toEqual([
+    { path, endpoint: undefined }, { path, endpoint: frozen.entries.at(-1)!.id },
+  ]);
+  expect(snapshots.snapshots()).toBe(2);
+  scopes.mockRestore();
   snapshots.restore();
   expect(frozen.prepared!.supplied.factIds).toEqual([onPath, shared]);
 

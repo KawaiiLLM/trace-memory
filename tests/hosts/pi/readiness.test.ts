@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import { host, reply } from "./test-host.ts";
 import { checkpointReadiness } from "../../../src/hosts/pi/native.ts";
 // The native cases exercise fork checkpoint readiness; the ordinary host case runs fresh.
-import { noteAndMemory, forkFixture as fixture, noteBatch, say, submitted, toolResults, worker, type Body } from "./native-fixture.ts";
+import { noteAndMemory, stableForkFixture as fixture, noteBatch, say, submitted, toolResults, worker, type Body } from "./native-fixture.ts";
 import { hydrate } from "../../source-fixture.ts";
 
 // 19c "Entry readiness and fallback": the scheduling thresholds keep their own authority (17b), and a

@@ -4,7 +4,7 @@
 // prompt and the production tool definitions.
 import { expect, test, vi } from "vitest";
 // Pin fork for inherited-material cases; the fresh-material case explicitly overrides it.
-import { noteAndMemory, forkFixture as fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
+import { noteAndMemory, stableForkFixture as fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -32,8 +32,8 @@ const nthRun = async (f: Fixture, n: number) =>
   }, { timeout: 5000 });
 
 /** One run writes F1 without delivering it to the foreground. The next prompt advances the native
- * conversation; the third prompt is the task under test. Its fork inherits Raw, but missing fact
- * history must be supplied as worker material. Returns the requests sent for that third prompt. */
+ * conversation; the third prompt is the task under test. Its fork inherits Raw without an extra
+ * preceding-fact block; a fresh child receives those facts. Returns the third prompt's requests. */
 async function thirdPrompt(f: Fixture, options: { capture?: boolean } = {}) {
   script(f);
   await f.turn("用 pnpm，不要 npm", options);
@@ -45,12 +45,9 @@ async function thirdPrompt(f: Fixture, options: { capture?: boolean } = {}) {
   return { run, child: f.sent.slice(before).find(body => worker(body))! };
 }
 
-/** 29b (cases 10 and 12), superseding 25a's "no history in a fork": the fork's material is built by
- * the same builder as a fresh child's, from the visible view this host really derived from its own
- * selected context. Every target entry is a retained conversation entry there, so no Raw body is
- * repeated; the earlier run's facts were never delivered to the foreground, so the missing
- * applicable history is supplied inside its own allowance. */
-test("29b 2026-09-10: the Noter fork's captured request repeats no visible Raw and carries the missing history", async () => {
+/** 92 supersedes the old missing-history supplement: the fork inherits its stable parent.
+ * Retained target entries are not repeated, and historical facts are a fresh-child input only. */
+test("92: the Noter fork inherits its stable parent without a Raw or preceding-fact supplement", async () => {
   const f = await fixture({ "noting.triggerTokens": 1 });
   try {
     const { run, child } = await thirdPrompt(f);
@@ -62,8 +59,8 @@ test("29b 2026-09-10: the Noter fork's captured request repeats no visible Raw a
     expect(increment).toContain("Sources:");
     expect(increment).not.toContain("<knowledge>"); // 25a: no knowledge block in either Noter mode
     expect(increment).not.toContain("Raw:"); // the target entries are visible in the inherited context
-    expect(increment).toContain("Recent facts (by Turn):");
-    expect(increment).toContain("[F1]"); // the history the child cannot prove it holds
+    expect(increment).not.toContain("Recent facts (by Turn):");
+    expect(increment).not.toContain("[F1]"); // 92: fork adds no preceding-fact supplement
     // Worker completion creates neither foreground delivery nor a legacy queue table.
     expect(f.h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.id)).toEqual([1]);

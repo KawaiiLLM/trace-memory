@@ -190,7 +190,7 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
     });
     try { await noting.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); }
     finally { noting.close(); }
-    expect(sent.split("Recent facts (by Turn):\n\n")[1]!.split("\n\nRange: ")[0]).toBe(grouped);
+    expect(sent.split("Recent facts (by Turn):\n\n")[1]!.split("\n\nRaw:")[0]).toBe(grouped); // N now uses compact's layout
   } finally { await h.dispose(); }
 });
 

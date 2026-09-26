@@ -13,7 +13,7 @@ import { expect, test } from "vitest";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { tokens } from "../../../src/core/api/index.ts";
 import { host, reply, usage } from "./test-host.ts";
-import { forkFixture, say, submitted, usage as wireUsage, worker, noteAndMemory, noteBatch, settled, type Body } from "./native-fixture.ts";
+import { stableForkFixture as forkFixture, say, submitted, usage as wireUsage, worker, noteAndMemory, noteBatch, settled, type Body } from "./native-fixture.ts";
 
 /** Base64-looking payload data of a given length: a deterministic pseudo-random run over the base64
  * alphabet, so the withdrawn text estimator prices it as it priced the live failure's images (about
@@ -173,7 +173,7 @@ test("27a 2026-09-10: a 300,000-token parent measure with a small increment fork
     await f.parent.prompt("用 pnpm，不要 npm", { images: [image, image] });
     const captured = f.sent[at]!;
     await f.h.emit("before_provider_request", { payload: captured });
-    await f.h.emit("agent_settled");
+    // Capacity under a stable parent; a competing settled leaf change is a separate gate case.
     await f.h.drain();
 
     const measure = (f.h.ctx as unknown as { getContextUsage(): { tokens: number | null } }).getContextUsage().tokens!;

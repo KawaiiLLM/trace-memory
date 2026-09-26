@@ -29,7 +29,8 @@ test.each(cases)("native $phase with saved $key=$value preserves user settings a
     f.script(body => worker(body, "Consolidation")
       ? toolResults(body) >= 2 ? say("Integrated.") : call(`m${toolResults(body)}`, "memory", memoryBatch)
       : worker(body) ? submitted(body) ? say("Done.") : noteAndMemory("n", noteBatch) : say("好的。"));
-    await f.turn();
+    // Test configured execution against a stable parent, not a competing settled event.
+    await f.turn(undefined, { settled: phase !== "noting" || expected !== "fork" });
     if (phase === "consolidation") {
       f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
         .find(t => t.name === "note")!.execute(noteBatch);

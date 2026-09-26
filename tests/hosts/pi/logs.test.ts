@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, w
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { noteAndMemory, fixture, forkFixture, noteBatch, say, settled, toolResults, worker } from "./native-fixture.ts";
+import { noteAndMemory, fixture, stableForkFixture as forkFixture, noteBatch, say, settled, toolResults, worker } from "./native-fixture.ts";
 import { host } from "./test-host.ts";
 
 const notingRun = (body: Record<string, any>) =>

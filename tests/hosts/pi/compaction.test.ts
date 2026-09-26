@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { host, reply, notingFact, type Reply } from "./test-host.ts";
-import { noteAndMemory, forkFixture, noteBatch, say, toolResults, worker } from "./native-fixture.ts";
+import { noteAndMemory, stableForkFixture as forkFixture, noteBatch, say, toolResults, worker } from "./native-fixture.ts";
 
 // Ticket 20c — compaction and post-compaction worker mode, at the host boundary. Core decides between
 // the custom replacement and the native delegation over its own frozen snapshot (core/api/read.test.ts);

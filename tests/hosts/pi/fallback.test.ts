@@ -25,7 +25,7 @@ import { expect, test, vi } from "vitest";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { host, reply } from "./test-host.ts";
 // This suite explicitly requests forks to exercise their refusal and re-admission paths.
-import { forkFixture as fixture, say, call, noteAndMemory, worker, submitted, memoryBatch, noteBatch, settled, toolResults, usage as wireUsage, type Body } from "./native-fixture.ts";
+import { stableForkFixture as fixture, say, call, noteAndMemory, worker, submitted, memoryBatch, noteBatch, settled, toolResults, usage as wireUsage, type Body } from "./native-fixture.ts";
 import { recorded , hydrate } from "../../source-fixture.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
 import { forkable, runNative } from "../../../src/hosts/pi/native.ts";

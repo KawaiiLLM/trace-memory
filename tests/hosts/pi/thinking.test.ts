@@ -11,7 +11,7 @@ import { expect, test, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { host, reply, notingFact, consolidationReply } from "./test-host.ts";
-import { call, noteAndMemory, fixture, forkFixture, memoryBatch, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
+import { call, noteAndMemory, fixture, stableForkFixture as forkFixture, memoryBatch, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { recorded } from "../../source-fixture.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 

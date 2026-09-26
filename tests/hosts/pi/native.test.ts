@@ -5,7 +5,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "../../../src/hosts/pi/fork.ts";
 import { addUsage, placeholderUsage, runNative } from "../../../src/hosts/pi/native.ts";
 import { NOTING_INCOMPLETE, recorded } from "../../source-fixture.ts";
-import { broken, call, noteAndMemory, fixture, forkFixture, memoryBatch, noteBatch, say, settled, sse, submitted, toolResults, usage, worker, type Body } from "./native-fixture.ts";
+import { broken, call, noteAndMemory, fixture, stableForkFixture as forkFixture, memoryBatch, noteBatch, say, settled, sse, submitted, toolResults, usage, worker, type Body } from "./native-fixture.ts";
 
 for (const [label, make] of [["subagent", fixture], ["fork", forkFixture]] as const) test(`92: native ${label} Noter submits optional relations without NEAR feedback`, async () => {
   const f = await make({ "noting.triggerTokens": 1 });
