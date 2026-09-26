@@ -1,40 +1,40 @@
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory } from "../../../src/core/api/index.ts";
-import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
-import { renderKnowledge, renderKnowledgeBlock, tokens, wholeKnowledge } from "../../../src/core/render/index.ts";
-import { budgetKnowledge } from "../../../src/core/render/index.ts";
+import { freezeNoting, NOTING_CAPACITY } from "../../../src/core/noting/index.ts";
+import { renderKnowledge, renderKnowledgeBlock, tokens, wholeKnowledge, budgetKnowledge } from "../../../src/core/render/index.ts";
+import { recorded, seedSourceEntry, sourceSeededMemory } from "../../source-fixture.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 
-const memories: ReturnType<typeof TraceMemory>[] = [];
+const memories: ReturnType<typeof sourceSeededMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 
 function fixture(texts: (string | { text: string; category: "constraint" | "open" | "reference" })[], pendingText: string | string[] = "target batch alpha") {
-  const memory = TraceMemory(":memory:", async () => { throw new Error("freeze tests do not run a model"); });
+  const memory = sourceSeededMemory(":memory:", async () => { throw new Error("freeze tests do not run a model"); });
   memories.push(memory);
   const project = memory.store.createProject({ name: "capacity", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "test", enrollmentChoice: true, projectId: project.id,
     startedAt: "2026-09-16T00:00:00Z", firstReplyAt: "2026-09-16T00:00:00Z" });
-  const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence",
+  const evidence = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence",
     startedAt: "2026-09-16T00:00:00Z" });
   const noted = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{
-    turnId: turn.id, category: "decision", actor: "user", text: "knowledge evidence", source: [`T${turn.id}#user`], createdAt: "now",
+    turnId: evidence.id, text: "knowledge evidence", source: [`T${evidence.id}#E1`], entryIds: [memory.store.sourcePath(session.id, "main", evidence.id)[0]!.id], createdAt: "now",
   }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
+  // These pre-existing manually seeded bodies may exceed the 1k cap on NEW N writes.
   const created = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: texts.map((value, index) => ({
     op: "create" as const, handle: `$e${index + 1}`, author: "test", text: typeof value === "string" ? value : value.text,
     category: typeof value === "string" ? "constraint" as const : value.category,
     scope: "project" as const, topics: [], supports: [noted.facts[0]!.id], reason: "Capacity fixture", createdAt: "2026-09-16T00:00:00Z",
   })) });
   if (!created.ok) throw new Error(created.problems.join("; "));
-  const watermark = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [], consolidated: [noted.facts[0]!.id] });
-  if (!watermark.ok) throw new Error(watermark.problems.join("; "));
-  const pending = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "later" }, facts: (Array.isArray(pendingText) ? pendingText : [pendingText]).map(text => ({
-    turnId: turn.id, category: "decision" as const, actor: "user" as const, text, source: [`T${turn.id}#user`], createdAt: "later",
-  })) });
-  if (!pending.ok) throw new Error(pending.problems.join("; "));
+  recorded(memory, session.id, "main", evidence.id);
+  const pending = Array.isArray(pendingText) ? pendingText : [pendingText];
+  const turn = memory.store.appendTurn({ sessionId: session.id, parentTurnId: evidence.id, kind: "turn", userPrompt: pending[0]!, startedAt: "2026-09-16T00:01:00Z" });
+  for (const text of pending.slice(1)) seedSourceEntry(memory, turn.id, "user", text);
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, mode: "subagent" as const };
-  return { memory, target, values: memory.store.currentKnowledge(memory.store.knowledgePath(session.id, "main", turn.id)),
-    commits: created.committed.map(value => value.commit) };
+  const freeze = (capacity?: number) => freezeNoting(memory.store,
+    { ...target, ...(capacity === undefined ? {} : { capacity: { inputTokens: capacity, prefixTokens: 0 } }) }, memory.config);
+  return { memory, target, freeze, values: memory.store.currentKnowledge(memory.store.knowledgePath(session.id, "main", turn.id)),
+    commits: created.committed.map(value => value.commit), pending: memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id) };
 }
 
 test("45: a whole applicable pool fitting its exact rendered capacity has no omission receipt", () => {
@@ -42,110 +42,73 @@ test("45: a whole applicable pool fitting its exact rendered capacity has no omi
   const exact = wholeKnowledge(f.values, value => renderKnowledge(value, `K${value.knowledge.id}#${f.memory.store.versionTag(value.knowledge.id, value.revision.id)}`)).cost;
   expect(exact).toBeGreaterThanOrEqual(5_000);
   setKnowledgeCapacity(f.memory, exact);
-  const frozen = freezeConsolidation(f.memory.store, f.target, f.memory.config);
-  expect(frozen.knowledgeCapacity).toBe(exact);
-  expect(tokens(renderKnowledgeBlock(frozen.prepared!.material.knowledge))).toBeLessThanOrEqual(exact);
+  const frozen = f.freeze();
+  expect(tokens(renderKnowledgeBlock(frozen.prepared!.material.knowledge!))).toBeLessThanOrEqual(exact);
   expect(frozen.prepared!.supplied.knowledgeCommitIds).toEqual(f.commits);
   expect(frozen.prepared!.text).toContain(`K1#${f.memory.store.versionTag(1, f.commits[0]!)}`);
   expect(frozen.prepared).not.toHaveProperty("readKnowledgeCommits");
   expect(frozen.prepared!.material.receipts.filter(receipt => receipt.includes(" knowledge; expand:"))).toEqual([]);
+  setKnowledgeCapacity(f.memory, exact - 1);
+  const omitted = f.freeze();
+  expect(omitted.prepared!.supplied.knowledgeCommitIds).toEqual([]);
+  expect(omitted.prepared!.material.receipts).toContain("omitted 1 constraint knowledge; expand: K1");
+  expect(omitted.prepared!.text).not.toContain(`K1#${f.memory.store.versionTag(1, f.commits[0]!)}`);
 });
 
-test("45: model-capacity negotiation drops the optional knowledge block whole before pending evidence", () => {
-  const f = fixture([
-    "large applicable alpha " + "one ".repeat(1_800),
-    "large applicable beta " + "two ".repeat(1_800),
-    "large applicable gamma " + "three ".repeat(1_800),
-  ]);
-  expect(f.memory.knowledgeBudgets().injection).toBe(20_000);
-  const full = freezeConsolidation(f.memory.store, f.target, f.memory.config);
-  expect(full.prepared!.supplied.knowledgeCommitIds).toEqual(f.commits);
-
-  // Find the exact host capacity floor for the mandatory one-fact request. At that floor the
-  // existing negotiation must remove all optional knowledge, not lower its own frozen allowance.
-  const at = (inputTokens: number) => freezeConsolidation(f.memory.store,
-    { ...f.target, capacity: { inputTokens, prefixTokens: 0 } }, f.memory.config);
-  let low = 0, high = 100_000;
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    try { at(middle); high = middle; } catch { low = middle + 1; }
-  }
-  const trimmed = at(high);
-  expect(trimmed.rangeFacts).toHaveLength(1);
-  expect(trimmed.prepared!.supplied.knowledgeCommitIds).toEqual([]);
-  expect(trimmed.prepared!.material.receipts).toEqual([
-    `omitted all ${f.commits.length} current knowledge items; the model context left no room for the knowledge block; expand: trace K<n>`,
-  ]);
-  expect(trimmed.prepared!.text).toContain("target batch alpha");
-});
-
-test("45: receipt-only optional knowledge is dropped before mandatory fact membership shrinks", () => {
+test("92: N keeps knowledge omissions and exact pending membership under hard model capacity", () => {
   const f = fixture([
     { category: "constraint", text: "oversized constraint " + "word ".repeat(6_000) },
     { category: "open", text: "oversized open " + "word ".repeat(6_000) },
     { category: "reference", text: "oversized reference " + "word ".repeat(6_000) },
-  ], ["first mandatory fact", "second mandatory fact"]);
+  ], ["first pending entry", "second pending entry"]);
   setKnowledgeCapacity(f.memory, 5_000);
-  const receiptOnly = freezeConsolidation(f.memory.store, f.target, f.memory.config);
-  expect(receiptOnly.rangeFacts).toHaveLength(2);
-  expect(receiptOnly.prepared!.material.knowledge.every(group => !group.text)).toBe(true);
-  expect(receiptOnly.prepared!.material.receipts).toEqual([
+  const full = f.freeze();
+  expect(full.entries.map(entry => entry.id)).toEqual(f.pending);
+  expect(full.prepared!.selectedEntryIds).toEqual(f.pending);
+  expect(full.prepared!.material.knowledge!.every(group => !group.text)).toBe(true);
+  expect(full.prepared!.material.receipts).toEqual([
     "omitted 1 constraint knowledge; expand: K1",
     "omitted 1 open knowledge; expand: K2",
     "omitted 1 reference knowledge; expand: K3",
   ]);
-
-  const at = (inputTokens: number) => freezeConsolidation(f.memory.store,
-    { ...f.target, capacity: { inputTokens, prefixTokens: 0 } }, f.memory.config);
-  let low = 0, high = 100_000;
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    try {
-      if (at(middle).rangeFacts.length === 2) high = middle;
-      else low = middle + 1;
-    } catch { low = middle + 1; }
-  }
-  const fitted = at(high);
-  expect(fitted.rangeFacts).toHaveLength(2);
-  expect(fitted.prepared!.material.receipts).toEqual([
-    "omitted all 3 current knowledge items; the model context left no room for the knowledge block; expand: trace K<n>",
-  ]);
-  expect(tokens(fitted.prepared!.text)).toBeLessThan(tokens(receiptOnly.prepared!.text));
+  expect(full.prepared!.text).not.toContain(`K1#${f.memory.store.versionTag(1, f.commits[0]!)}`);
+  const fitted = f.freeze(100_000);
+  expect(fitted.prepared!.selectedEntryIds).toEqual(f.pending);
+  // Even the oldest selected entry alone cannot overrun a tiny host window: no progress is written.
+  expect(() => f.freeze(1)).toThrow(NOTING_CAPACITY);
+  expect(f.memory.pendingEntries(f.target.sessionId, "main", f.target.headTurnId).map(entry => entry.id)).toEqual(f.pending);
 });
 
-test("64c: shortening the fact range keeps the newest knowledge while the admitted policy stays frozen", () => {
-  const f = fixture([
-    "alpha " + "alpha ".repeat(3_000),
-    "beta " + "beta ".repeat(3_000),
-  ], ["alpha", "beta ".repeat(6_000)]);
+test("64c/92: shortened N batch keeps newer knowledge; frozen selection survives a later budget update", () => {
+  const f = fixture(["alpha " + "alpha ".repeat(3_000), "beta " + "beta ".repeat(3_000)],
+    ["first pending entry", "second pending entry " + "word ".repeat(1_000)]);
   setKnowledgeCapacity(f.memory, 5_000);
-  const full = freezeConsolidation(f.memory.store, f.target, f.memory.config);
-  expect(full.rangeFacts).toHaveLength(2);
+  const full = f.freeze();
+  expect(full.prepared!.selectedEntryIds).toEqual(f.pending);
   expect(full.prepared!.supplied.knowledgeCommitIds).toEqual([f.commits[1]]);
-
-  const at = (inputTokens: number) => freezeConsolidation(f.memory.store,
-    { ...f.target, capacity: { inputTokens, prefixTokens: 0 } }, f.memory.config);
   let low = 0, high = 100_000;
   while (low < high) {
     const middle = Math.floor((low + high) / 2);
     try {
-      if (at(middle).rangeFacts.length === 2) high = middle;
+      if (f.freeze(middle).entries.length === 2) high = middle;
       else low = middle + 1;
     } catch { low = middle + 1; }
   }
-  const shortened = at(high - 1);
-  expect(shortened.rangeFacts.map(fact => fact.text)).toEqual(["alpha"]);
+  const shortened = f.freeze(high - 1);
+  expect(shortened.entries.map(entry => entry.id)).toEqual([f.pending[0]]);
+  expect(shortened.prepared!.selectedEntryIds).toEqual([f.pending[0]]);
   expect(shortened.prepared!.supplied.knowledgeCommitIds).toEqual([f.commits[1]]);
+  expect(f.memory.pendingEntries(f.target.sessionId, "main", f.target.headTurnId).map(entry => entry.id)).toEqual(f.pending);
 
+  const before = structuredClone(full.prepared);
   setKnowledgeCapacity(f.memory, 10_000);
-  expect(full.knowledgeCapacity).toBe(5_000);
-  expect(full.prepared!.supplied.knowledgeCommitIds).toEqual([f.commits[1]]);
-  const later = freezeConsolidation(f.memory.store, f.target, f.memory.config);
-  expect(later.knowledgeCapacity).toBe(10_000);
+  expect(full.prepared).toEqual(before);
+  const later = f.freeze();
+  expect(later.prepared!.selectedEntryIds).toEqual(f.pending);
   expect(later.prepared!.supplied.knowledgeCommitIds).toEqual(f.commits);
 });
 
-test("64c/92: over-cap Consolidation retains newer commits and renders tags only for kept bodies", () => {
+test("64c/92: over-cap N knowledge retains newer commits and tags only kept bodies", () => {
   const f = fixture([
     "unrelated archive geometry " + "plain ".repeat(1_800),
     "target batch alpha " + "relevant ".repeat(1_800),
@@ -154,8 +117,8 @@ test("64c/92: over-cap Consolidation retains newer commits and renders tags only
   const cap = 5_000;
   expect(budgetKnowledge(f.values, cap).commits).toEqual([f.commits[1], f.commits[2]]);
   setKnowledgeCapacity(f.memory, cap);
-  const first = freezeConsolidation(f.memory.store, f.target, f.memory.config);
-  const second = freezeConsolidation(f.memory.store, f.target, f.memory.config);
+  const first = f.freeze();
+  const second = f.freeze();
   expect(first.prepared).toEqual(second.prepared);
   expect(first.prepared!.supplied.knowledgeCommitIds).toEqual([f.commits[1], f.commits[2]]);
   for (const value of f.values.slice(1)) expect(first.prepared!.text)
