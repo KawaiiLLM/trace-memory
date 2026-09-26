@@ -17,22 +17,25 @@ if (!Number.isInteger(slot) || slot < 0 || slot >= 24) throw new Error('SessionS
 let raw = '';
 for await (const chunk of process.stdin) raw += chunk;
 const input = JSON.parse(raw);
-if (input.hook_event_name !== 'SessionStart' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(input.session_id))
-  throw new Error('slice reader requires a valid SessionStart native session');
+if (!['SessionStart', 'UserPromptSubmit'].includes(input.hook_event_name) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(input.session_id))
+  throw new Error('slice reader requires a valid native session');
+const promptDelta = input.hook_event_name === 'UserPromptSubmit';
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
 if (!config.stateDir?.startsWith('/')) throw new Error('slice reader needs an absolute stateDir');
 const dbPath = config.dbPath ?? join(process.env.HOME, '.trace-memory', 'trace.db');
 if (!dbPath.startsWith('/')) throw new Error('slice reader needs an absolute database path');
 const pluginRoot = dirname(configPath);
 const version = JSON.parse(readFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), 'utf8')).version;
-const state = join(config.stateDir, 'session-start', input.session_id);
+const state = join(config.stateDir, promptDelta ? 'prompt-delta' : 'session-start', input.session_id);
 const stat = path => { try { const s = statSync(path); return [s.dev, s.ino, s.size, s.mtimeMs]; }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 const readOptional = path => { try { return JSON.parse(readFileSync(path, 'utf8')); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 const transcriptStat = stat(input.transcript_path);
 const inputs = JSON.stringify({ version, session: input.session_id, source: input.source,
-  transcript: input.transcript_path, transcriptStat: transcriptStat?.slice(2) ?? null });
+  transcript: input.transcript_path, transcriptStat: transcriptStat?.slice(2) ?? null,
+  ...(promptDelta ? { prompt: input.prompt, event: input.hook_event_name } : {}) });
 const keyOf = value => createHash('sha256').update(value).digest('hex');
 const key = keyOf(inputs), lock = join(state, `${key}.lock`);
 // Identity checks are independent of database freshness. Ownership, enrollment and database
@@ -101,11 +104,11 @@ while (!staged) {
         return result;
       };
       // Lifecycle is never retried. Clear's frozen material remains owned by its preparation.
-      invoke('hook-prepare');
+      invoke(promptDelta ? 'hook-delta-prepare' : 'hook-prepare');
       const before = identity();
-      const { selection, snapshot, slices } = JSON.parse(invoke('hook-slices').stdout);
-      if (!/^[a-f0-9]{64}$/.test(selection) || !Array.isArray(slices) || slices.length !== 24)
-        throw new Error('SessionStart renderer returned an invalid selection or slot count');
+      const { selection, snapshot, slices } = JSON.parse(invoke(promptDelta ? 'hook-delta' : 'hook-slices').stdout);
+      if (!promptDelta && !/^[a-f0-9]{64}$/.test(selection) || !Array.isArray(slices) || slices.length !== 24)
+        throw new Error('CC renderer returned an invalid selection or slot count');
       if (before !== identity() || JSON.stringify(transcriptStat) !== JSON.stringify(stat(input.transcript_path)))
         throw new Error('native identity or transcript changed during SessionStart rendering');
       remaining();
@@ -133,4 +136,6 @@ if (staged.inputs !== inputs || startedAt < staged.windowStart || startedAt >= s
 if (staged.error) throw new Error(`SessionStart stage producer failed: ${staged.error}`);
 if (staged.identity !== identity()) throw new Error('native identity or transcript changed before its staged slice was read');
 const slice = staged.slices[slot];
-if (slice) process.stdout.write(`${JSON.stringify(slice)}\n`);
+if (slice) process.stdout.write(`${JSON.stringify(promptDelta
+  ? { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: slice.hookSpecificOutput.additionalContext } }
+  : slice)}\n`);

@@ -306,7 +306,7 @@ function validateNotingFact(path, raw, problems) {
   };
 }
 
-// node_modules/diff/libesm/diff/base.js
+// ../../../resume-integration-worktree/node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options = {}) {
     let callback;
@@ -508,7 +508,7 @@ var Diff = class {
   }
 };
 
-// node_modules/diff/libesm/diff/array.js
+// ../../../resume-integration-worktree/node_modules/diff/libesm/diff/array.js
 var ArrayDiff = class extends Diff {
   tokenize(value) {
     return value.slice();
@@ -10009,7 +10009,7 @@ var import_node_os3 = require("node:os");
 var import_node_path5 = require("node:path");
 var import_node_util = require("node:util");
 
-// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../resume-integration-worktree/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -30807,7 +30807,7 @@ function query({
   return queryInstance;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -30881,7 +30881,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// node_modules/zod/v4/core/util.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -31560,7 +31560,7 @@ var Class2 = class {
   }
 };
 
-// node_modules/zod/v4/core/errors.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -31626,7 +31626,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -31706,7 +31706,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// node_modules/zod/v4/core/regexes.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -31863,7 +31863,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// node_modules/zod/v4/core/checks.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -32411,7 +32411,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -32447,14 +32447,14 @@ var Doc2 = class {
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -34425,7 +34425,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -34534,7 +34534,7 @@ function en_default3() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -34582,7 +34582,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/api.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -35386,7 +35386,7 @@ function _stringFormat(Class3, format2, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -35738,7 +35738,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -36214,7 +36214,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -36383,7 +36383,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// node_modules/zod/v4/classic/checks.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -36417,7 +36417,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// node_modules/zod/v4/classic/iso.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -36458,7 +36458,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -36498,7 +36498,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -36512,7 +36512,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -37591,22 +37591,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// node_modules/zod/v4/classic/compat.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// node_modules/zod/v4/classic/from-json-schema.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// node_modules/zod/v4/classic/external.js
+// ../../../resume-integration-worktree/node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../resume-integration-worktree/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -41683,7 +41683,8 @@ function legacyKnowledgeTokens(text, diagnose = console.warn) {
 }
 
 // src/hosts/cc/injection.ts
-var BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
+var CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
+var BEGIN = CC_INJECTION_BEGIN;
 var CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
 var END = "TRACE MEMORY KNOWLEDGE END";
 var digest = (text) => (0, import_node_crypto14.createHash)("sha256").update(text, "utf8").digest("hex");
@@ -41770,7 +41771,7 @@ ${CC_INJECTION_HEADER}`.length);
   return digest(header.knowledgeTokens === void 0 ? body : JSON.stringify([header.knowledgeTokens, body])) === header.sha256 ? header : null;
 }
 var attachmentContents = (record3) => {
-  if (record3.type !== "attachment" || record3.isSidechain === true || !object6(record3.attachment) || record3.attachment.type !== "hook_additional_context" || record3.attachment.hookEvent !== "SessionStart" || !Array.isArray(record3.attachment.content)) return [];
+  if (record3.type !== "attachment" || record3.isSidechain === true || !object6(record3.attachment) || record3.attachment.type !== "hook_additional_context" || !["SessionStart", "UserPromptSubmit"].includes(String(record3.attachment.hookEvent)) || !Array.isArray(record3.attachment.content)) return [];
   return record3.attachment.content;
 };
 function compactPreserved(record3) {
@@ -41780,6 +41781,16 @@ function compactPreserved(record3) {
   if (!messages || !Array.isArray(messages.uuids) || !messages.uuids.every((id) => typeof id === "string" && id))
     throw new Error(`native compact boundary ${String(record3.uuid)} has invalid preservedMessages`);
   return messages.uuids;
+}
+function rebuiltCompactSegment(selected, index) {
+  const boundary = selected.records[index];
+  if (boundary.type !== "system" || boundary.subtype !== "compact_boundary") return null;
+  const metadata = object6(boundary.compactMetadata) ? boundary.compactMetadata : null;
+  if (!metadata || Object.hasOwn(metadata, "preservedMessages") || Object.hasOwn(metadata, "preservedSegment")) return null;
+  const summary = selected.records[index + 1];
+  if (!summary || summary.type !== "user" || summary.isCompactSummary !== true || summary.isVisibleInTranscriptOnly !== true || summary.parentUuid !== boundary.uuid || typeof summary.promptId !== "string" || !summary.promptId)
+    throw new Error(`native compact boundary ${String(boundary.uuid)} has unknown preservation metadata`);
+  return selected.records.slice(index);
 }
 function nativePreservation(record3, byId) {
   if (record3.type !== "system" || record3.subtype !== "compact_boundary" || typeof record3.uuid !== "string") return null;
@@ -41816,7 +41827,7 @@ function selectedRetentionPath(records) {
   return { leafUuid: selected.leafUuid, records: selected.records.map((record3) => byId.get(record3.uuid)) };
 }
 var hasKnowledgeAttachment = (record3) => attachmentContents(record3).length > 0;
-function retainedTail(records, roots, after) {
+function retainedTail(records, roots, after, carrier2 = hasKnowledgeAttachment) {
   const positions = /* @__PURE__ */ new Map();
   records.forEach((record3, index) => {
     if (typeof record3.uuid === "string" && record3.uuid) positions.set(record3.uuid, index);
@@ -41828,7 +41839,7 @@ function retainedTail(records, roots, after) {
   }
   const carrierPaths = [];
   for (const record3 of eligible.values()) {
-    if (!hasKnowledgeAttachment(record3)) continue;
+    if (!carrier2(record3)) continue;
     const path = [], seen = /* @__PURE__ */ new Set();
     let current = record3;
     while (current && typeof current.uuid === "string" && !roots.has(current.uuid)) {
@@ -41894,6 +41905,14 @@ function selectedCcVisibleRecords(records) {
     }
   });
   const selectedIds = new Set(selected.records.map((record3) => record3.uuid));
+  const latestBoundary = selected.records.map((record3) => record3.type === "system" && record3.subtype === "compact_boundary").lastIndexOf(true);
+  if (latestBoundary >= 0 && object6(selected.records[latestBoundary].compactMetadata) && !Object.hasOwn(selected.records[latestBoundary].compactMetadata, "preservedMessages") && !Object.hasOwn(selected.records[latestBoundary].compactMetadata, "preservedSegment")) {
+    const segment = rebuiltCompactSegment(selected, latestBoundary);
+    const ids = new Set(segment.map((record3) => record3.uuid));
+    const promptId = segment[1].promptId;
+    for (const id of retainedTail(records, ids, positions.get(selected.leafUuid), (record3) => hasKnowledgeAttachment(record3) || isRebuiltCarrier(record3, promptId))) ids.add(id);
+    return records.filter((record3) => typeof record3.uuid === "string" && ids.has(record3.uuid));
+  }
   const preservation = selectedPreservation(records, selected, byId);
   const retained = /* @__PURE__ */ new Set();
   if (preservation) {
@@ -41905,24 +41924,53 @@ function selectedCcVisibleRecords(records) {
   for (const id of tail) retained.add(id);
   return records.filter((record3) => typeof record3.uuid === "string" && retained.has(record3.uuid));
 }
+function isRebuiltCarrier(record3, promptId) {
+  return record3.type === "user" && !classifySourceRecord(record3) && record3.isSidechain !== true && record3.isMeta !== true && record3.promptSource === void 0 && record3.origin === void 0 && record3.promptId === promptId && record3.message?.role === "user" && typeof record3.message.content === "string" && record3.message.content.startsWith(BEGIN);
+}
+function rebuiltCarrier(records, index) {
+  const boundary = records.slice(0, index).map((item) => item.type === "system" && item.subtype === "compact_boundary" && object6(item.compactMetadata) && !Object.hasOwn(item.compactMetadata, "preservedMessages")).lastIndexOf(true);
+  const summary = boundary >= 0 ? records[boundary + 1] : null;
+  const record3 = records[index];
+  return summary && index > boundary + 1 && isRebuiltCarrier(record3, summary.promptId) ? record3.message.content : null;
+}
+function addKnowledgeCarrier(view, content, binding, uuid5) {
+  const envelope = decodeCcInjection(content, binding);
+  if (!envelope) throw new Error(`native compact carrier ${uuid5} has invalid Knowledge envelope`);
+  const headerEnd = content.indexOf("\n", `${BEGIN}
+${CC_INJECTION_HEADER}`.length);
+  const body = content.slice(headerEnd + 1, -`
+${END}`.length);
+  view.knowledgeTokens = (view.knowledgeTokens ?? 0) + (envelope.knowledgeTokens ?? legacyKnowledgeTokens(body));
+  for (const commit of envelope.commits) view.knowledgeCommitIds.add(commit);
+  for (const state of envelope.states) (view.knowledgeStates ??= /* @__PURE__ */ new Set()).add(knowledgeStateKey(state));
+}
+function ccRetainedMessageView(records, binding, messages) {
+  const view = noVisibility();
+  view.knowledgeTokens = 0;
+  const visible = selectedCcVisibleRecords(records);
+  const byId = new Map(visible.map((record3) => [record3.uuid, record3]));
+  for (const message of messages) {
+    if (message.role !== "user" || !message.handle || !message.text.startsWith(BEGIN)) continue;
+    const record3 = byId.get(message.handle);
+    if (!record3 || record3.type !== "user" || record3.promptSource !== void 0 || record3.origin !== void 0 || record3.isSidechain === true || record3.isMeta === true || record3.message?.role !== "user" || record3.message.content !== message.text || classifySourceRecord(record3)) continue;
+    if (rebuiltCarrier(visible, visible.indexOf(record3)) !== message.text) continue;
+    addKnowledgeCarrier(view, message.text, binding, message.handle);
+  }
+  return view;
+}
 function ccVisibleView(records, binding) {
   const view = noVisibility();
   view.knowledgeTokens = 0;
-  for (const record3 of selectedCcVisibleRecords(records)) {
+  const visible = selectedCcVisibleRecords(records);
+  for (let index = 0; index < visible.length; index++) {
+    const record3 = visible[index];
     const source = classifySourceRecord(record3);
     if (source && source.kind !== "compaction") view.raw.set(source.nativeId, "source");
     for (const content of attachmentContents(record3)) {
-      const envelope = decodeCcInjection(content, binding);
-      if (!envelope) continue;
-      const text = content;
-      const headerEnd = text.indexOf("\n", `${BEGIN}
-${CC_INJECTION_HEADER}`.length);
-      const body = text.slice(headerEnd + 1, -`
-${END}`.length);
-      view.knowledgeTokens += envelope.knowledgeTokens ?? legacyKnowledgeTokens(body);
-      for (const commit of envelope.commits) view.knowledgeCommitIds.add(commit);
-      for (const state of envelope.states) (view.knowledgeStates ??= /* @__PURE__ */ new Set()).add(knowledgeStateKey(state));
+      if (decodeCcInjection(content, binding)) addKnowledgeCarrier(view, content, binding, record3.uuid);
     }
+    const rebuilt = rebuiltCarrier(visible, index);
+    if (rebuilt) addKnowledgeCarrier(view, rebuilt, binding, record3.uuid);
   }
   return view;
 }
@@ -41979,6 +42027,22 @@ async function ccSessionStartInjection(config3, input) {
   });
   return output;
 }
+async function ccCompactInjection(config3, input, retained) {
+  return prepareSessionStartInjection(config3, input, false, void 0, retained);
+}
+function ccPromptContextReady(transcriptPath) {
+  const snapshot2 = readCompleteTranscript(transcriptPath);
+  if (snapshot2.problem || snapshot2.incompleteBytes)
+    throw new Error(snapshot2.problem ?? `native transcript has ${snapshot2.incompleteBytes} incomplete trailing bytes`);
+  if (!snapshot2.exists) return false;
+  const selected = selectedNativePath(snapshot2.records);
+  if (selected.problem) throw new Error(selected.problem);
+  return selected.leafUuid !== null;
+}
+async function ccPromptInjection(config3, input) {
+  if (!ccPromptContextReady(input.transcript_path)) return null;
+  return prepareSessionStartInjection(config3, input);
+}
 async function ccPreparedSessionStartInjection(config3, input) {
   let snapshot2;
   const output = await prepareSessionStartInjection(config3, input, true, (db, binding) => {
@@ -42023,7 +42087,7 @@ async function ccPreparedSessionStartInjection(config3, input) {
   if (!snapshot2 && output) throw new Error("prepared SessionStart did not capture its input snapshot");
   return { output, snapshot: snapshot2 ?? null };
 }
-async function prepareSessionStartInjection(config3, input, prepared = false, onSnapshot) {
+async function prepareSessionStartInjection(config3, input, prepared = false, onSnapshot, retained) {
   if (!input.source || !["startup", "resume", "clear", "compact"].includes(input.source))
     throw new Error("SessionStart source must be startup, resume, clear or compact");
   const initial = readBinding(config3, input.session_id);
@@ -42055,6 +42119,10 @@ async function prepareSessionStartInjection(config3, input, prepared = false, on
       if (projected.state === "not-ready")
         throw new Error(projected.problems.join("; ") || "native source projection is not ready");
     }
+    if (input.source === "compact" && !retained) {
+      if (prepared) memory.store.db.exec("COMMIT");
+      return null;
+    }
     const snapshot2 = readCompleteTranscript(binding.transcriptPath);
     if (snapshot2.problem || snapshot2.incompleteBytes)
       throw new Error(snapshot2.problem ?? `native transcript has ${snapshot2.incompleteBytes} incomplete trailing bytes`);
@@ -42079,7 +42147,7 @@ async function prepareSessionStartInjection(config3, input, prepared = false, on
       target = { sessionId: core, branch: binding.branch, headTurnId };
     }
     const visibleBinding = { db: databaseIdentity(config3.dbPath), nativeSession: binding.nativeSessionId, coreSession: core };
-    const visible = ccVisibleView(snapshot2.records, visibleBinding);
+    const visible = retained ? ccRetainedMessageView(snapshot2.records, visibleBinding, retained) : ccVisibleView(snapshot2.records, visibleBinding);
     const injection = memory.injection(target, visible, true);
     if (prepared) memory.store.db.exec("COMMIT");
     if (!injection.text) return null;
@@ -42469,7 +42537,7 @@ function publishFrozenClear(path, output) {
 var import_node_fs12 = require("node:fs");
 var import_node_path10 = require("node:path");
 
-// node_modules/@earendil-works/pi-tui/dist/terminal-image.js
+// ../../../resume-integration-worktree/node_modules/@earendil-works/pi-tui/dist/terminal-image.js
 function getPngDimensions(base64Data) {
   try {
     const buffer = Buffer.from(base64Data, "base64");
@@ -42703,6 +42771,9 @@ function ccContextEvidence(binding, dbPath, snapshot2) {
       const amount = estimateBlock(block2, snapshot2.model);
       if (amount === null) return unavailable("unsupported Messages content or image dimensions/model");
       estimatedMessagesTokens += amount;
+      if (message.role === "user" && block2.type === "text" && typeof block2.text === "string" && block2.text.startsWith(`${CC_INJECTION_BEGIN}
+${CC_INJECTION_HEADER}`))
+        return unavailable("native function carrier provenance unavailable in Messages snapshot");
       if (message.role !== "user" || block2.type !== "text" || typeof block2.text !== "string" || !block2.text.startsWith(HOOK_CONTEXT) || !block2.text.includes(CC_INJECTION_HEADER)) continue;
       let current;
       try {
@@ -42856,7 +42927,7 @@ var import_node_fs13 = require("node:fs");
 var import_node_path11 = require("node:path");
 var import_node_crypto15 = require("node:crypto");
 
-// node_modules/jsonc-parser/lib/esm/impl/scanner.js
+// ../../../resume-integration-worktree/node_modules/jsonc-parser/lib/esm/impl/scanner.js
 function createScanner(text, ignoreTrivia = false) {
   const len = text.length;
   let pos = 0, value = "", tokenOffset = 0, token = 16, lineNumber = 0, lineStartOffset = 0, tokenLineStartOffset = 0, prevTokenLineStartOffset = 0, scanError = 0;
@@ -43277,7 +43348,7 @@ var CharacterCodes;
   CharacterCodes2[CharacterCodes2["tab"] = 9] = "tab";
 })(CharacterCodes || (CharacterCodes = {}));
 
-// node_modules/jsonc-parser/lib/esm/impl/string-intern.js
+// ../../../resume-integration-worktree/node_modules/jsonc-parser/lib/esm/impl/string-intern.js
 var cachedSpaces = new Array(20).fill(0).map((_, index) => {
   return " ".repeat(index);
 });
@@ -43308,7 +43379,7 @@ var cachedBreakLinesWithSpaces = {
 };
 var supportedEols = ["\n", "\r", "\r\n"];
 
-// node_modules/jsonc-parser/lib/esm/impl/format.js
+// ../../../resume-integration-worktree/node_modules/jsonc-parser/lib/esm/impl/format.js
 function format(documentText, range, options) {
   let initialIndentLevel;
   let formatText;
@@ -43544,7 +43615,7 @@ function isEOL(text, offset) {
   return "\r\n".indexOf(text.charAt(offset)) !== -1;
 }
 
-// node_modules/jsonc-parser/lib/esm/impl/parser.js
+// ../../../resume-integration-worktree/node_modules/jsonc-parser/lib/esm/impl/parser.js
 var ParseOptions;
 (function(ParseOptions2) {
   ParseOptions2.DEFAULT = {
@@ -43966,7 +44037,7 @@ function getNodeType(value) {
   }
 }
 
-// node_modules/jsonc-parser/lib/esm/impl/edit.js
+// ../../../resume-integration-worktree/node_modules/jsonc-parser/lib/esm/impl/edit.js
 function setProperty(text, originalPath, value, options) {
   const path = originalPath.slice();
   const errors = [];
@@ -44110,7 +44181,7 @@ function applyEdit(text, edit) {
   return text.substring(0, edit.offset) + edit.content + text.substring(edit.offset + edit.length);
 }
 
-// node_modules/jsonc-parser/lib/esm/main.js
+// ../../../resume-integration-worktree/node_modules/jsonc-parser/lib/esm/main.js
 var ScanError;
 (function(ScanError2) {
   ScanError2[ScanError2["None"] = 0] = "None";
@@ -44496,11 +44567,54 @@ async function readStdin() {
 }
 async function runCcCommand(argv = process.argv.slice(2)) {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "cli" || configFlag !== "--config" || !configPath)
+  if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "hook-delta-prepare" && command !== "cli" || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
   const config3 = readConfig(configPath);
   if (command === "mcp") {
     await runCcStdioMcp(config3);
+    return;
+  }
+  if (command === "hook-delta" || command === "hook-delta-prepare") {
+    const input = JSON.parse(await readStdin());
+    validateNativeSessionId(input.session_id);
+    const binding = readBinding(config3, input.session_id);
+    if (!binding || input.transcript_path !== void 0 && input.transcript_path !== binding.transcriptPath)
+      throw new Error("CC delta native session or transcript binding is unavailable");
+    if (command === "hook-delta-prepare") {
+      if (input.hook_event_name !== "UserPromptSubmit") throw new Error("CC prompt preparation requires UserPromptSubmit");
+      if (!ccPromptContextReady(binding.transcriptPath)) {
+        console.error("Trace Memory prompt delta: native context not established; startup owns initial injection");
+        return;
+      }
+      await ccPrepareSessionStartInjection(config3, {
+        hook_event_name: "SessionStart",
+        source: "resume",
+        session_id: input.session_id,
+        transcript_path: binding.transcriptPath,
+        cwd: binding.cwd
+      });
+      return;
+    }
+    if (input.messages !== void 0 && (!Array.isArray(input.messages) || input.hook_event_name !== "session.compact"))
+      throw new Error("CC compact delta requires returned messages");
+    if (input.messages === void 0 && input.hook_event_name !== "UserPromptSubmit")
+      throw new Error("CC prompt delta requires UserPromptSubmit");
+    const event = {
+      hook_event_name: "SessionStart",
+      source: input.messages ? "compact" : "resume",
+      session_id: input.session_id,
+      transcript_path: binding.transcriptPath,
+      cwd: binding.cwd
+    };
+    const output = input.messages ? await ccCompactInjection(config3, event, input.messages) : await ccPromptInjection(config3, event);
+    const visible = {
+      db: databaseIdentity(config3.dbPath),
+      nativeSession: input.session_id,
+      coreSession: readBinding(config3, input.session_id)?.coreSessionId ?? null
+    };
+    const slices = sliceCcInjection(visible, output?.transportItems ?? [], void 0, output?.transportKnowledgeAllowance);
+    process.stdout.write(`${JSON.stringify({ slices })}
+`);
     return;
   }
   if (command === "hook" || command === "hook-prepare" || command === "hook-slices") {

@@ -101,10 +101,21 @@ test("conversation, tool input/results, thinking and quoted lookalikes are count
     { type: "thinking", thinking: "careful" }, { type: "tool_use", id: "call", name: "read", input: { path: "a" } },
     { type: "text", text: f.rendered },
   ] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: [{ type: "text", text: f.rendered }] },
-    { type: "text", text: quote }, { type: "text", text: f.original }] });
+    { type: "text", text: quote }] });
   const result = ccContextEvidence(f.binding, f.db, f.snapshot);
-  expect(result.estimatedMessagesTokens).toBe(3 * tokens(f.rendered) + tokens("careful") + tokens("read" + JSON.stringify({ path: "a" })) + tokens(quote) + tokens(f.original));
+  expect(result.estimatedMessagesTokens).toBe(3 * tokens(f.rendered) + tokens("careful") + tokens("read" + JSON.stringify({ path: "a" })) + tokens(quote));
   expect(memoryTotal(result)).toBe(tokens(f.rendered));
+});
+
+test.each(["function output", "verbatim user copy"])("unattributed bare user envelope leaves memory classification unavailable (%s)", source => {
+  const f = fixture(body);
+  const snapshot: CcContextSnapshot = { session: f.binding.nativeSessionId, messages: [{ role: "user",
+    content: [{ type: "text", text: f.original }] }] };
+  const result = ccContextEvidence(f.binding, f.db, snapshot);
+  expect(result).toMatchObject({ presence: "unavailable", reason: "native function carrier provenance unavailable in Messages snapshot" });
+  expect(result.memory).toBeUndefined();
+  // The API Messages snapshot has identical role/content for both cases; it cannot prove origin.
+  expect(source).toBeTruthy();
 });
 
 test.each([false, true])("database, current native identity, core identity and digest must verify (preview=%s)", preview => {

@@ -8,7 +8,8 @@ import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessio
 import { CcProjection } from "./importer.ts";
 import { ccSourceBlocks, classifySourceRecord, nativeParentId, readCompleteTranscript, selectedNativePath, type CcNativeRecord } from "./transcript.ts";
 
-const BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
+export const CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
+const BEGIN = CC_INJECTION_BEGIN;
 export const CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
 const END = "TRACE MEMORY KNOWLEDGE END";
 const digest = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
@@ -119,7 +120,8 @@ export function decodeCcInjection(content: unknown, binding: CcVisibleBinding): 
 
 const attachmentContents = (record: CcNativeRecord): unknown[] => {
   if (record.type !== "attachment" || record.isSidechain === true || !object(record.attachment) ||
-      record.attachment.type !== "hook_additional_context" || record.attachment.hookEvent !== "SessionStart" ||
+      record.attachment.type !== "hook_additional_context" ||
+      !["SessionStart", "UserPromptSubmit"].includes(String(record.attachment.hookEvent)) ||
       !Array.isArray(record.attachment.content)) return [];
   return record.attachment.content;
 };
@@ -131,6 +133,22 @@ function compactPreserved(record: CcNativeRecord): string[] | null {
   if (!messages || !Array.isArray(messages.uuids) || !messages.uuids.every((id: unknown) => typeof id === "string" && id))
     throw new Error(`native compact boundary ${String(record.uuid)} has invalid preservedMessages`);
   return messages.uuids;
+}
+
+/** A function hook returning rewritten messages makes CC 2.1.280 rebuild the entire compacted
+ * segment. It writes a summary immediately after the boundary and gives every returned user
+ * message a new UUID; copied native prompts keep their promptSource. No old UUID is authority here. */
+function rebuiltCompactSegment(selected: NativeSelection, index: number): CcNativeRecord[] | null {
+  const boundary = selected.records[index]!;
+  if (boundary.type !== "system" || boundary.subtype !== "compact_boundary") return null;
+  const metadata = object(boundary.compactMetadata) ? boundary.compactMetadata : null;
+  if (!metadata || Object.hasOwn(metadata, "preservedMessages") || Object.hasOwn(metadata, "preservedSegment")) return null;
+  const summary = selected.records[index + 1];
+  if (!summary || summary.type !== "user" || summary.isCompactSummary !== true ||
+      summary.isVisibleInTranscriptOnly !== true || summary.parentUuid !== boundary.uuid ||
+      typeof summary.promptId !== "string" || !summary.promptId)
+    throw new Error(`native compact boundary ${String(boundary.uuid)} has unknown preservation metadata`);
+  return selected.records.slice(index);
 }
 
 interface NativeSelection { leafUuid: string | null; records: CcNativeRecord[]; problem?: string }
@@ -187,7 +205,8 @@ const hasKnowledgeAttachment = (record: CcNativeRecord): boolean => attachmentCo
 
 /** Extend an authoritative source path only through the one retained Hook-carrier tail. A physical
  * suffix or a shared ancestor is not branch authority. */
-function retainedTail(records: readonly CcNativeRecord[], roots: Set<string>, after: number): Set<string> {
+function retainedTail(records: readonly CcNativeRecord[], roots: Set<string>, after: number,
+  carrier: (record: CcNativeRecord) => boolean = hasKnowledgeAttachment): Set<string> {
   const positions = new Map<string, number>();
   records.forEach((record, index) => { if (typeof record.uuid === "string" && record.uuid) positions.set(record.uuid, index); });
   const eligible = new Map<string, CcNativeRecord>();
@@ -197,7 +216,7 @@ function retainedTail(records: readonly CcNativeRecord[], roots: Set<string>, af
   }
   const carrierPaths: string[][] = [];
   for (const record of eligible.values()) {
-    if (!hasKnowledgeAttachment(record)) continue;
+    if (!carrier(record)) continue;
     const path: string[] = [], seen = new Set<string>();
     let current: CcNativeRecord | undefined = record;
     while (current && typeof current.uuid === "string" && !roots.has(current.uuid)) {
@@ -271,6 +290,19 @@ export function selectedCcVisibleRecords(records: readonly CcNativeRecord[]): Cc
     if (typeof record.uuid === "string" && record.uuid) { positions.set(record.uuid, index); byId.set(record.uuid, record); }
   });
   const selectedIds = new Set(selected.records.map(record => record.uuid as string));
+  const latestBoundary = selected.records.map(record => record.type === "system" && record.subtype === "compact_boundary").lastIndexOf(true);
+  if (latestBoundary >= 0 && object(selected.records[latestBoundary]!.compactMetadata) &&
+      !Object.hasOwn(selected.records[latestBoundary]!.compactMetadata as object, "preservedMessages") &&
+      !Object.hasOwn(selected.records[latestBoundary]!.compactMetadata as object, "preservedSegment")) {
+    const segment = rebuiltCompactSegment(selected, latestBoundary)!;
+    // The returned segment is authoritative, but a subsequent Hook or function carrier can be
+    // appended below its selected source leaf before the next source record is persisted.
+    const ids = new Set(segment.map(record => record.uuid as string));
+    const promptId = segment[1]!.promptId;
+    for (const id of retainedTail(records, ids, positions.get(selected.leafUuid)!, record =>
+      hasKnowledgeAttachment(record) || isRebuiltCarrier(record, promptId))) ids.add(id);
+    return records.filter(record => typeof record.uuid === "string" && ids.has(record.uuid));
+  }
   const preservation = selectedPreservation(records, selected, byId);
   const retained = new Set<string>();
   if (preservation) {
@@ -283,22 +315,66 @@ export function selectedCcVisibleRecords(records: readonly CcNativeRecord[]): Cc
   return records.filter(record => typeof record.uuid === "string" && retained.has(record.uuid));
 }
 
+function isRebuiltCarrier(record: CcNativeRecord, promptId: unknown): boolean {
+  return record.type === "user" && !classifySourceRecord(record) && record.isSidechain !== true &&
+    record.isMeta !== true && record.promptSource === undefined && record.origin === undefined &&
+    record.promptId === promptId && record.message?.role === "user" &&
+    typeof record.message.content === "string" && record.message.content.startsWith(BEGIN);
+}
+
+function rebuiltCarrier(records: readonly CcNativeRecord[], index: number): string | null {
+  const boundary = records.slice(0, index).map(item => item.type === "system" && item.subtype === "compact_boundary" &&
+    object(item.compactMetadata) && !Object.hasOwn(item.compactMetadata as object, "preservedMessages")).lastIndexOf(true);
+  const summary = boundary >= 0 ? records[boundary + 1] : null;
+  const record = records[index]!;
+  return summary && index > boundary + 1 && isRebuiltCarrier(record, summary.promptId)
+    ? record.message!.content as string : null;
+}
+
+function addKnowledgeCarrier(view: VisibleView, content: string, binding: CcVisibleBinding, uuid: string): void {
+  const envelope = decodeCcInjection(content, binding);
+  if (!envelope) throw new Error(`native compact carrier ${uuid} has invalid Knowledge envelope`);
+  const headerEnd = content.indexOf("\n", `${BEGIN}\n${CC_INJECTION_HEADER}`.length);
+  const body = content.slice(headerEnd + 1, -(`\n${END}`).length);
+  view.knowledgeTokens = (view.knowledgeTokens ?? 0) + (envelope.knowledgeTokens ?? legacyKnowledgeTokens(body));
+  for (const commit of envelope.commits) view.knowledgeCommitIds.add(commit);
+  for (const state of envelope.states) (view.knowledgeStates ??= new Set()).add(knowledgeStateKey(state));
+}
+
+/** Before native persistence, the function hook's returned messages are the sole retention
+ * authority. Their handles must resolve to an already selected, reconstructed native carrier;
+ * native user prompts and mere copies in tool/assistant text are never delivery evidence. */
+export function ccRetainedMessageView(records: readonly CcNativeRecord[], binding: CcVisibleBinding,
+  messages: readonly { role: string; text: string; handle?: string }[]): VisibleView {
+  const view = noVisibility();
+  view.knowledgeTokens = 0;
+  const visible = selectedCcVisibleRecords(records);
+  const byId = new Map(visible.map(record => [record.uuid, record]));
+  for (const message of messages) {
+    if (message.role !== "user" || !message.handle || !message.text.startsWith(BEGIN)) continue;
+    const record = byId.get(message.handle);
+    if (!record || record.type !== "user" || record.promptSource !== undefined || record.origin !== undefined ||
+        record.isSidechain === true || record.isMeta === true || record.message?.role !== "user" ||
+        record.message.content !== message.text || classifySourceRecord(record)) continue;
+    if (rebuiltCarrier(visible, visible.indexOf(record)) !== message.text) continue;
+    addKnowledgeCarrier(view, message.text, binding, message.handle);
+  }
+  return view;
+}
+
 export function ccVisibleView(records: readonly CcNativeRecord[], binding: CcVisibleBinding): VisibleView {
   const view = noVisibility();
   view.knowledgeTokens = 0;
-  for (const record of selectedCcVisibleRecords(records)) {
+  const visible = selectedCcVisibleRecords(records);
+  for (let index = 0; index < visible.length; index++) {
+    const record = visible[index]!;
     const source = classifySourceRecord(record);
     if (source && source.kind !== "compaction") view.raw.set(source.nativeId, "source");
     for (const content of attachmentContents(record)) {
-      const envelope = decodeCcInjection(content, binding);
-      if (!envelope) continue;
-      const text = content as string;
-      const headerEnd = text.indexOf("\n", `${BEGIN}\n${CC_INJECTION_HEADER}`.length);
-      const body = text.slice(headerEnd + 1, -(`\n${END}`).length);
-      view.knowledgeTokens += envelope.knowledgeTokens ?? legacyKnowledgeTokens(body);
-      for (const commit of envelope.commits) view.knowledgeCommitIds.add(commit);
-      for (const state of envelope.states) (view.knowledgeStates ??= new Set()).add(knowledgeStateKey(state));
+      if (decodeCcInjection(content, binding)) addKnowledgeCarrier(view, content as string, binding, record.uuid as string);
     }
+    const rebuilt = rebuiltCarrier(visible, index);
+    if (rebuilt) addKnowledgeCarrier(view, rebuilt, binding, record.uuid as string);
   }
   return view;
 }
@@ -360,6 +436,26 @@ export async function ccSessionStartInjection(config: ResolvedCcHostConfig, inpu
   return output;
 }
 
+export async function ccCompactInjection(config: ResolvedCcHostConfig, input: CcHookInput,
+  retained: readonly { role: string; text: string; handle?: string }[]): Promise<CcHookOutput | null> {
+  return prepareSessionStartInjection(config, input, false, undefined, retained);
+}
+
+export function ccPromptContextReady(transcriptPath: string): boolean {
+  const snapshot = readCompleteTranscript(transcriptPath);
+  if (snapshot.problem || snapshot.incompleteBytes)
+    throw new Error(snapshot.problem ?? `native transcript has ${snapshot.incompleteBytes} incomplete trailing bytes`);
+  if (!snapshot.exists) return false;
+  const selected = selectedNativePath(snapshot.records);
+  if (selected.problem) throw new Error(selected.problem);
+  return selected.leafUuid !== null;
+}
+
+export async function ccPromptInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<CcHookOutput | null> {
+  if (!ccPromptContextReady(input.transcript_path)) return null;
+  return prepareSessionStartInjection(config, input);
+}
+
 export async function ccPreparedSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput):
   Promise<{ output: CcHookOutput | null; snapshot: object | null }> {
   let snapshot: object | undefined;
@@ -396,7 +492,8 @@ export async function ccPreparedSessionStartInjection(config: ResolvedCcHostConf
 }
 
 async function prepareSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput,
-  prepared = false, onSnapshot?: (db: import("node:sqlite").DatabaseSync, binding: CcSessionBinding) => void): Promise<CcHookOutput | null> {
+  prepared = false, onSnapshot?: (db: import("node:sqlite").DatabaseSync, binding: CcSessionBinding) => void,
+  retained?: readonly { role: string; text: string; handle?: string }[]): Promise<CcHookOutput | null> {
   if (!input.source || !(["startup", "resume", "clear", "compact"] as const).includes(input.source))
     throw new Error("SessionStart source must be startup, resume, clear or compact");
   const initial = readBinding(config, input.session_id);
@@ -420,6 +517,10 @@ async function prepareSessionStartInjection(config: ResolvedCcHostConfig, input:
       if (projected.state === "disabled") return null;
       if (projected.state === "not-ready")
         throw new Error(projected.problems.join("; ") || "native source projection is not ready");
+    }
+    if (input.source === "compact" && !retained) {
+      if (prepared) memory.store.db.exec("COMMIT");
+      return null;
     }
     const snapshot = readCompleteTranscript(binding.transcriptPath);
     if (snapshot.problem || snapshot.incompleteBytes)
@@ -447,7 +548,8 @@ async function prepareSessionStartInjection(config: ResolvedCcHostConfig, input:
     const visibleBinding = { db: databaseIdentity(config.dbPath), nativeSession: binding.nativeSessionId, coreSession: core };
     // The event name is not a retained compaction boundary. Native preservation metadata selects
     // actual context, including any surviving carriers; an offered compact never clears delivery.
-    const visible = ccVisibleView(snapshot.records, visibleBinding);
+    const visible = retained ? ccRetainedMessageView(snapshot.records, visibleBinding, retained)
+      : ccVisibleView(snapshot.records, visibleBinding);
     const injection = memory.injection(target, visible, true);
     if (prepared) memory.store.db.exec("COMMIT");
     if (!injection.text) return null;

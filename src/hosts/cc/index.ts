@@ -8,7 +8,7 @@ import { assertOperatorBinding, readBinding, recordSessionStart, updateBinding, 
 import { nativeCreatedAt, readCompleteTranscript } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
-import { ccPrepareSessionStartInjection, ccPreparedSessionStartInjection, ccSessionStartInjection, databaseIdentity, type CcHookOutput } from "./injection.ts";
+import { ccCompactInjection, ccPrepareSessionStartInjection, ccPreparedSessionStartInjection, ccPromptContextReady, ccPromptInjection, ccSessionStartInjection, databaseIdentity, type CcHookOutput } from "./injection.ts";
 import { sliceCcInjection } from "./slices.ts";
 import { declareCcProject, operateCcSession } from "./operator.ts";
 import { followNativeSession, processAncestors, publishNativeSession, type CcNativeSessionFollower } from "./native-session.ts";
@@ -181,10 +181,41 @@ async function readStdin(): Promise<string> {
 
 export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "cli") || configFlag !== "--config" || !configPath)
+  if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "hook-delta-prepare" && command !== "cli") || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config); return; }
+  if (command === "hook-delta" || command === "hook-delta-prepare") {
+    const input = JSON.parse(await readStdin()) as { session_id: string; transcript_path?: string;
+      messages?: { role: string; text: string; handle?: string }[]; hook_event_name?: string };
+    validateNativeSessionId(input.session_id);
+    const binding = readBinding(config, input.session_id);
+    if (!binding || input.transcript_path !== undefined && input.transcript_path !== binding.transcriptPath)
+      throw new Error("CC delta native session or transcript binding is unavailable");
+    if (command === "hook-delta-prepare") {
+      if (input.hook_event_name !== "UserPromptSubmit") throw new Error("CC prompt preparation requires UserPromptSubmit");
+      if (!ccPromptContextReady(binding.transcriptPath)) {
+        console.error("Trace Memory prompt delta: native context not established; startup owns initial injection");
+        return;
+      }
+      await ccPrepareSessionStartInjection(config, { hook_event_name: "SessionStart", source: "resume",
+        session_id: input.session_id, transcript_path: binding.transcriptPath, cwd: binding.cwd });
+      return;
+    }
+    if (input.messages !== undefined && (!Array.isArray(input.messages) || input.hook_event_name !== "session.compact"))
+      throw new Error("CC compact delta requires returned messages");
+    if (input.messages === undefined && input.hook_event_name !== "UserPromptSubmit")
+      throw new Error("CC prompt delta requires UserPromptSubmit");
+    const event = { hook_event_name: "SessionStart" as const, source: input.messages ? "compact" as const : "resume" as const,
+      session_id: input.session_id, transcript_path: binding.transcriptPath, cwd: binding.cwd };
+    const output = input.messages ? await ccCompactInjection(config, event, input.messages)
+      : await ccPromptInjection(config, event);
+    const visible = { db: databaseIdentity(config.dbPath), nativeSession: input.session_id,
+      coreSession: readBinding(config, input.session_id)?.coreSessionId ?? null };
+    const slices = sliceCcInjection(visible, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance);
+    process.stdout.write(`${JSON.stringify({ slices })}\n`);
+    return;
+  }
   if (command === "hook" || command === "hook-prepare" || command === "hook-slices") {
     const input = JSON.parse(await readStdin()) as CcHookInput;
     const selected = command === "hook-slices" && !(input.source === "clear" && readBinding(config, input.session_id)?.clearedFrom)

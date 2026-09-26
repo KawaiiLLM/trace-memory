@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { tokens } from "../../core/render/tokens.ts";
 import { measureRetainedMemoryText } from "../../core/render/material.ts";
-import { CC_INJECTION_HEADER, databaseIdentity, decodeCcInjection, decodeCcInjectionHeader, type CcVisibleBinding } from "./injection.ts";
+import { CC_INJECTION_BEGIN, CC_INJECTION_HEADER, databaseIdentity, decodeCcInjection, decodeCcInjectionHeader, type CcVisibleBinding } from "./injection.ts";
 import { estimateCcImageTokens } from "./image-tokens.ts";
 import type { CcSessionBinding } from "./binding.ts";
 
@@ -92,6 +92,11 @@ export function ccContextEvidence(binding: Pick<CcSessionBinding, "nativeSession
       const amount = estimateBlock(block, snapshot.model);
       if (amount === null) return unavailable("unsupported Messages content or image dimensions/model");
       estimatedMessagesTokens += amount;
+      // A function-added user message has no provenance in the API snapshot. A user can paste
+      // the same valid envelope; role/content alone cannot authorize Knowledge classification.
+      if (message.role === "user" && block.type === "text" && typeof block.text === "string" &&
+          block.text.startsWith(`${CC_INJECTION_BEGIN}\n${CC_INJECTION_HEADER}`))
+        return unavailable("native function carrier provenance unavailable in Messages snapshot");
       if (message.role !== "user" || block.type !== "text" || typeof block.text !== "string" ||
           !block.text.startsWith(HOOK_CONTEXT) || !block.text.includes(CC_INJECTION_HEADER)) continue;
       let current: ReturnType<typeof carrier>;

@@ -24,7 +24,7 @@ async function until(path: string) {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
-function fixture(real = false) {
+function fixture(real = false, prompt = false) {
   // All artifacts belong to this checkout; no native CLI, installed plugin or shared cache.
   const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
   const dir = mkdtempSync(join(scratch, "92-snapshot-")); dirs.push(dir);
@@ -36,14 +36,14 @@ function fixture(real = false) {
   const transcript = join(dir, "native.jsonl");
   writeFileSync(transcript, JSON.stringify({ uuid: "first-user", parentUuid: null, type: "user",
     timestamp: "2026-01-02T00:00:00.000Z", promptSource: "typed", message: { role: "user", content: "hello" } }) + "\n");
-  const stageDir = join(stateDir, "session-start", "snapshot-test");
+  const stageDir = join(stateDir, prompt ? "prompt-delta" : "session-start", "snapshot-test");
   const script = real
     ? `import(${JSON.stringify(pathToFileURL(resolve("src/hosts/cc/index.ts")).href)}).then(m => m.runCcCommand()).catch(e => {console.error(e);process.exitCode=1;});`
     : `const fs = require('node:fs'); const path = require('node:path');
 const config = JSON.parse(fs.readFileSync(process.argv.at(-1), 'utf8'));
 const log = path.join(path.dirname(process.argv.at(-1)), 'calls.jsonl');
 fs.appendFileSync(log, JSON.stringify({command:process.argv[2],now:Date.now()})+'\\n');
-if (process.argv[2] === 'hook-slices') {
+if (['hook-slices', 'hook-delta'].includes(process.argv[2])) {
   if (fs.existsSync(path.join(path.dirname(log),'fail'))) throw new Error('fixture producer failure');
   if (fs.existsSync(path.join(path.dirname(log),'mutate-transcript'))) {
     const input = JSON.parse(fs.readFileSync(0, 'utf8')); fs.appendFileSync(input.transcript_path, 'changed');
@@ -66,7 +66,8 @@ if (process.argv[2] === 'hook-slices') {
     const result = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
       child.on("error", reject); child.on("close", code => resolve({ code, stdout, stderr }));
     });
-    const input = JSON.stringify({ hook_event_name: "SessionStart", source: "startup", session_id: "snapshot-test", transcript_path: transcript });
+    const input = JSON.stringify({ hook_event_name: prompt ? "UserPromptSubmit" : "SessionStart", source: "startup",
+      session_id: "snapshot-test", transcript_path: transcript, ...(prompt ? { prompt: "next prompt" } : {}) });
     if (!options.holdInput) child.stdin.end(input);
     return { control, result, input: () => child.stdin.end(input),
       time: (now: number) => put(control, { ...read(control), now }),
@@ -225,6 +226,18 @@ test("92: transcript mutation during selection fails without retrying lifecycle 
   expect(result.code).not.toBe(0); expect(result.stderr).toContain("native identity or transcript changed");
   expect(result.stdout).toBe(""); expect(f.calls()).toHaveLength(2);
   expect(f.stages()).toHaveLength(1); expect(f.stages()[0].slices).toBeUndefined();
+});
+
+test("92: prompt fallback rejects a native transcript append during rendering without publishing a carrier", async () => {
+  const f = fixture(false, true);
+  writeFileSync(join(f.plugin, "mutate-transcript"), "append");
+  const result = await f.run(0, epoch).result;
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain("native identity or transcript changed");
+  expect(result.stdout).toBe("");
+  expect(f.calls().map(call => call.command)).toEqual(["hook-delta-prepare", "hook-delta"]);
+  expect(f.stages()).toHaveLength(1);
+  expect(f.stages()[0].slices).toBeUndefined();
 });
 
 test("92: carrier corruption and native identity replacement still fail closed", async () => {

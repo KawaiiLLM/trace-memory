@@ -7,7 +7,7 @@ import { TraceMemory, noVisibility, type Injection } from "../../src/core/api/in
 import { Store } from "../../src/core/store/index.ts";
 import { bindingMutexPath, bindingPath, recordSessionStart, readBinding, updateBinding } from "../../src/hosts/cc/binding.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
-import { ccSessionStartInjection, ccVisibleView, decodeCcInjection, encodeCcInjection, handleCcHook, readCompleteTranscript,
+import { ccRetainedMessageView, ccSessionStartInjection, ccVisibleView, decodeCcInjection, encodeCcInjection, handleCcHook, readCompleteTranscript,
   selectedCcVisibleRecords } from "../../src/hosts/cc/index.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
@@ -188,6 +188,94 @@ test("43d repeated compactions replace rather than union retained pre-boundary b
   expect(commits).not.toContain(11);
 });
 
+test("92 rebuilt native compact segment recognizes only intact hook-generated carriers, including retained handles", () => {
+  const body = (id: number) => encodeCcInjection(binding, { ...injection(`body ${id}`, [id]), knowledgeTokens: id });
+  const boundary = (id: string, parent: string, prompt: string): CcNativeRecord[] => [
+    { uuid: id, parentUuid: null, logicalParentUuid: parent, type: "system", subtype: "compact_boundary",
+      compactMetadata: { trigger: "manual", preTokens: 15, postTokens: 300 } },
+    { uuid: `${id}-summary`, parentUuid: id, type: "user", isCompactSummary: true,
+      isVisibleInTranscriptOnly: true, promptId: prompt, message: { role: "user", content: "native summary" } },
+  ];
+  const records: CcNativeRecord[] = [
+    user("old", null, "earlier"), assistant("old-reply", "old", "earlier reply"), attachment("old-hook", "old-reply", body(10)),
+    ...boundary("first", "old-hook", "p1"),
+    { uuid: "first-hook", parentUuid: "first-summary", type: "user", promptId: "p1", message: { role: "user", content: body(11) } },
+    user("real-copied", "first-hook", body(12)),
+    { uuid: "tool-copied", parentUuid: "real-copied", type: "user", promptId: "p1",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: body(13) }] } },
+    assistant("answer", "tool-copied", "reply"),
+    ...boundary("second", "answer", "p2"),
+    // CC 2.1.280 rewrites a retained handle to a new UUID and current promptId, even when
+    // the old handle named first-hook. A copied user prompt retains its native promptSource.
+    { uuid: "retained-hook", parentUuid: "second-summary", type: "user", promptId: "p2",
+      message: { role: "user", content: body(11) } },
+    { uuid: "retained-user", parentUuid: "retained-hook", type: "user", promptId: "p2", promptSource: "sdk",
+      message: { role: "user", content: [{ type: "text", text: body(12) }] } },
+    { uuid: "real-new", parentUuid: "retained-user", type: "user", promptId: "p3", promptSource: "sdk",
+      message: { role: "user", content: [{ type: "text", text: body(14) }] } },
+    assistant("last", "real-new", "done"),
+  ];
+  expect(selectedCcVisibleRecords(records).map(record => record.uuid)).toEqual(records.slice(9).map(record => record.uuid));
+  expect([...ccVisibleView(records, binding).knowledgeCommitIds]).toEqual([11]);
+  expect(ccVisibleView(records, binding).knowledgeTokens).toBe(11);
+  expect([...ccVisibleView(records, binding).raw.keys()]).toEqual(["retained-user", "real-new", "last"]);
+  const beforeSecond = records.slice(0, 9);
+  expect([...ccRetainedMessageView(beforeSecond, binding, [
+    { role: "user", handle: "first-hook", text: body(11) },
+    { role: "user", handle: "real-copied", text: body(12) },
+    { role: "assistant", handle: "answer", text: body(11) },
+  ]).knowledgeCommitIds]).toEqual([11]);
+  expect(ccRetainedMessageView(beforeSecond, binding, []).knowledgeCommitIds.size).toBe(0);
+  const tampered = structuredClone(records);
+  (tampered.find(record => record.uuid === "retained-hook")!.message as { content: string }).content = body(11).replace("body 11", "body 99");
+  expect(() => ccVisibleView(tampered, binding)).toThrow("invalid Knowledge envelope");
+  const unknown = structuredClone(records);
+  unknown.find(record => record.uuid === "second-summary")!.isCompactSummary = false;
+  expect(() => ccVisibleView(unknown, binding)).toThrow("unknown preservation metadata");
+  const broken = structuredClone(records);
+  (broken.find(record => record.uuid === "second")!.compactMetadata as Record<string, unknown>).preservedMessages = { uuids: ["missing"] };
+  expect(() => ccVisibleView(broken, binding)).toThrow();
+});
+
+test("92 rebuilt source path includes only its strict post-source carrier tail, not sibling copies", () => {
+  const body = (id: number) => encodeCcInjection(binding, { ...injection(`body ${id}`, [id]), knowledgeTokens: id });
+  const records: CcNativeRecord[] = [
+    user("prior", null, "prior"),
+    { uuid: "boundary", parentUuid: null, logicalParentUuid: "prior", type: "system", subtype: "compact_boundary",
+      compactMetadata: { trigger: "manual", preTokens: 12, postTokens: 5 } },
+    { uuid: "summary", parentUuid: "boundary", type: "user", promptId: "compact-prompt", isCompactSummary: true,
+      isVisibleInTranscriptOnly: true, message: { role: "user", content: "summary" } },
+    assistant("source", "summary", "reply"),
+    { uuid: "intermediate", parentUuid: "source", type: "attachment" },
+    { uuid: "carrier", parentUuid: "intermediate", type: "user", promptId: "compact-prompt",
+      message: { role: "user", content: body(27) } },
+  ];
+  expect(selectedCcVisibleRecords(records).map(record => record.uuid)).toEqual([
+    "boundary", "summary", "source", "intermediate", "carrier"]);
+  expect([...ccVisibleView(records, binding).knowledgeCommitIds]).toEqual([27]);
+  expect(ccVisibleView(records, binding).knowledgeTokens).toBe(27);
+  const sibling = { uuid: "sibling", parentUuid: "intermediate", type: "user", promptId: "compact-prompt",
+    message: { role: "user", content: body(28) } };
+  expect(() => selectedCcVisibleRecords([...records, sibling])).toThrow("ambiguous Hook-carrier tails");
+  expect([...ccVisibleView([...records, { ...sibling, parentUuid: "prior" }], binding).knowledgeCommitIds]).toEqual([27]);
+  const copied = { ...sibling, parentUuid: "carrier", promptSource: "sdk",
+    message: { role: "user", content: [{ type: "text", text: body(28) }] } };
+  expect([...ccVisibleView([...records, copied], binding).knowledgeCommitIds]).toEqual([27]);
+  const tampered = structuredClone(records);
+  (tampered.at(-1)!.message as { content: string }).content = body(27).replace("body 27", "body 99");
+  expect(() => ccVisibleView(tampered, binding)).toThrow("invalid Knowledge envelope");
+});
+
+test("92 Prompt Hook attachments count each selected occurrence, not identical user text", () => {
+  const content = encodeCcInjection(binding, { ...injection("prompt body", [19]), knowledgeTokens: 7 });
+  const promptAttachment = { ...attachment("prompt-hook", "u", content), attachment: {
+    type: "hook_additional_context", hookEvent: "UserPromptSubmit", content: [content] } };
+  const records = [user("u", null, "input"), promptAttachment, attachment("startup-hook", "prompt-hook", content),
+    user("quoted", "startup-hook", content)];
+  expect([...ccVisibleView(records, binding).knowledgeCommitIds]).toEqual([19]);
+  expect(ccVisibleView(records, binding).knowledgeTokens).toBe(14);
+});
+
 test("66 carries exact Fact and Raw membership while decoding legacy carriers", () => {
   const binding = { db: "/d", nativeSession: "n", coreSession: 1 };
   const body = { text: "whole item", knowledgeCommitIds: [8], factIds: [13], entryIds: [21] };
@@ -234,7 +322,7 @@ test("43d a one-character body change in the only retained Hook copy has zero co
   const altered = await hookFixture();
   const alteredInput = { hook_event_name: "SessionStart" as const, source: "resume" as const,
     session_id: altered.nativeSession, transcript_path: altered.transcriptPath };
-  const first = await handleCcHook(altered.config, { ...alteredInput, source: "compact" });
+  const first = await handleCcHook(altered.config, alteredInput);
   const complete = first!.hookSpecificOutput.additionalContext;
   const changed = complete.replace("hook knowledge", "hook knowledgf");
   expect([...changed].filter((character, index) => character !== complete[index])).toHaveLength(1);
@@ -249,11 +337,11 @@ test("43d a one-character body change in the only retained Hook copy has zero co
   const coreSession = readBinding(altered.config, altered.nativeSession)!.coreSessionId;
   const view = ccVisibleView(snapshot.records, { db: `${stat.dev}:${stat.ino}`, nativeSession: altered.nativeSession, coreSession });
   expect([...view.knowledgeCommitIds]).toEqual([]);
-  expect((await handleCcHook(altered.config, { ...alteredInput, source: "compact" }))?.hookSpecificOutput.additionalContext).toBe(complete);
+  expect((await handleCcHook(altered.config, alteredInput))?.hookSpecificOutput.additionalContext).toBe(complete);
 
   const valid = await hookFixture();
   const validInput = { ...alteredInput, session_id: valid.nativeSession, transcript_path: valid.transcriptPath };
-  const validFirst = await handleCcHook(valid.config, { ...validInput, source: "compact" });
+  const validFirst = await handleCcHook(valid.config, validInput);
   writeFileSync(valid.transcriptPath, retainedTranscript(valid.records, validFirst!.hookSpecificOutput.additionalContext, valid.nativeSession).map(line).join(""));
   expect(await handleCcHook(valid.config, validInput)).toBeNull();
 });
@@ -275,7 +363,7 @@ test("43d Hook-first and MCP-first compact projection are idempotent and preserv
     const input = { hook_event_name: "SessionStart" as const, source: "compact" as const,
       session_id: f.nativeSession, transcript_path: f.transcriptPath };
     const first = await handleCcHook(f.config, input);
-    expect(first?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
+    expect(first).toBeNull(); // Compact's SessionStart retains lifecycle, not delivery.
     expect(readBinding(f.config, f.nativeSession)).toMatchObject({ selectedLeafUuid: "compact-one", executor });
     expect(store.getClaim(sessionId, "noting")).toEqual(claimBefore);
     expect(store.getSession(sessionId)!.closedAt).toBe(closedBefore);
@@ -288,8 +376,7 @@ test("43d Hook-first and MCP-first compact projection are idempotent and preserv
     expect(store.listSourceEntries(sessionId)).toHaveLength(afterHook);
     expect(store.db.prepare("SELECT COUNT(*) AS count FROM native_turns WHERE session_id = ? AND native_lineage = ? AND native_id = ?")
       .get(sessionId, f.nativeSession, "compact-one")).toEqual({ count: 1 });
-    expect((await handleCcHook(f.config, input))?.hookSpecificOutput.additionalContext)
-      .toBe(first!.hookSpecificOutput.additionalContext);
+    expect(await handleCcHook(f.config, input)).toBeNull();
 
     appendFileSync(f.transcriptPath, compactBoundary("compact-two", "a", 7).map(line).join(""));
     const mcpFirst = await stale.reconcile();
@@ -297,7 +384,7 @@ test("43d Hook-first and MCP-first compact projection are idempotent and preserv
     const durablePath = store.selectedSourceEntryIds(sessionId, mcpFirst.branch);
     const afterMcp = store.listSourceEntries(sessionId).length;
     const afterMcpHook = await handleCcHook(f.config, input);
-    expect(afterMcpHook?.hookSpecificOutput.additionalContext).toBe(first!.hookSpecificOutput.additionalContext);
+    expect(afterMcpHook).toBeNull();
     expect(store.selectedSourceEntryIds(sessionId, readBinding(f.config, f.nativeSession)!.branch)).toEqual(durablePath);
     expect(store.listSourceEntries(sessionId)).toHaveLength(afterMcp);
     expect(store.getClaim(sessionId, "noting")).toEqual(claimBefore);
@@ -320,7 +407,8 @@ test("43d Hook projection failure leaves committed records retryable without pub
   expect(readBinding(f.config, f.nativeSession)!.selectedLeafUuid).toBe(before.selectedLeafUuid);
   const store = new Store(f.config.dbPath);
   expect(store.findNativeTurn(before.coreSessionId!, f.nativeSession, "retry-compact")?.kind).toBe("compaction");
-  expect((await handleCcHook(f.config, input))?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
+  expect(await handleCcHook(f.config, input)).toBeNull();
+  expect((await handleCcHook(f.config, { ...input, source: "resume" }))?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
   expect(readBinding(f.config, f.nativeSession)!.selectedLeafUuid).toBe("retry-compact");
   expect(store.db.prepare("SELECT COUNT(*) AS count FROM native_turns WHERE native_lineage = ? AND native_id = ?")
     .get(f.nativeSession, "retry-compact")).toEqual({ count: 1 });
@@ -343,16 +431,19 @@ test("43d projection-only Hook preserves a pre-existing closed session", async (
   store.closeSession(binding.coreSessionId!, closedAt);
   appendFileSync(f.transcriptPath, compactBoundary("closed-compact", "a", 8).map(line).join(""));
   try {
-    expect((await handleCcHook(f.config, { hook_event_name: "SessionStart", source: "compact",
+    expect(await handleCcHook(f.config, { hook_event_name: "SessionStart", source: "compact",
+      session_id: f.nativeSession, transcript_path: f.transcriptPath })).toBeNull();
+    expect((await handleCcHook(f.config, { hook_event_name: "SessionStart", source: "resume",
       session_id: f.nativeSession, transcript_path: f.transcriptPath }))?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
     expect(store.getSession(binding.coreSessionId!)!.closedAt).toBe(closedAt);
   } finally { store.close(); }
 });
 
-test("92 SessionStart delivery follows retained context, not a compact event name", async () => {
+test("92 compact SessionStart leaves delivery to the post-compact selector and retained context", async () => {
   const f = await hookFixture();
   const input = { hook_event_name: "SessionStart" as const, source: "resume" as const, session_id: f.nativeSession, transcript_path: f.transcriptPath };
-  const first = await handleCcHook(f.config, { ...input, source: "compact" });
+  expect(await handleCcHook(f.config, { ...input, source: "compact" })).toBeNull();
+  const first = await handleCcHook(f.config, input);
   expect(first?.hookSpecificOutput.hookEventName).toBe("SessionStart");
   expect(first?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
   expect(first!.hookSpecificOutput.additionalContext.length).toBeGreaterThan(10_000);
@@ -363,8 +454,8 @@ test("92 SessionStart delivery follows retained context, not a compact event nam
   expect(await handleCcHook(f.config, { ...input, source: "compact" })).toBeNull();
   // A retained boundary really removes the old carrier: only the native answer survives.
   appendFileSync(f.transcriptPath, compactBoundary("actual-compact", "a", 10).map(line).join(""));
-  const compact = await handleCcHook(f.config, { ...input, source: "compact" });
-  expect(compact?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
+  expect(await handleCcHook(f.config, { ...input, source: "compact" })).toBeNull();
+  expect((await handleCcHook(f.config, input))?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
 
   const memory = TraceMemory(f.config.dbPath, async () => { throw new Error("offline"); });
   memory.store.setEnrollment(readBinding(f.config, f.nativeSession)!.coreSessionId!, false); memory.close();
@@ -375,7 +466,7 @@ test("92 compact events do not waive unknown native retention metadata", async (
   const f = await hookFixture();
   appendFileSync(f.transcriptPath, line({ uuid: "unknown-retention", parentUuid: null, logicalParentUuid: "a",
     type: "system", subtype: "compact_boundary", timestamp: time(11) }));
-  await expect(handleCcHook(f.config, { hook_event_name: "SessionStart", source: "compact",
+  await expect(handleCcHook(f.config, { hook_event_name: "SessionStart", source: "resume",
     session_id: f.nativeSession, transcript_path: f.transcriptPath })).rejects.toThrow("invalid preservedMessages");
 });
 
@@ -464,7 +555,9 @@ test("43d projection-only Hook teardown performs no executor invalidation on dis
   invalidate.mockClear();
   const output = await handleCcHook(enabled.config, { hook_event_name: "SessionStart", source: "compact",
     session_id: enabled.nativeSession, transcript_path: enabled.transcriptPath });
-  expect(output?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
+  expect(output).toBeNull();
+  expect((await handleCcHook(enabled.config, { hook_event_name: "SessionStart", source: "resume",
+    session_id: enabled.nativeSession, transcript_path: enabled.transcriptPath }))?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
   appendFileSync(enabled.transcriptPath, "{not-json}\n");
   await expect(handleCcHook(enabled.config, { hook_event_name: "SessionStart", source: "resume",
     session_id: enabled.nativeSession, transcript_path: enabled.transcriptPath })).rejects.toThrow("invalid completed transcript record");
@@ -568,7 +661,7 @@ test("73: SessionStart injection reads the resolved configuration, not the defau
     importer.close();
     // `ccSessionStartInjection` directly, not `handleCcHook`: the latter re-resolves its config input
     // from scratch, and a flat override does not survive resolving an already-resolved config twice.
-    const output = await ccSessionStartInjection(config, { hook_event_name: "SessionStart", source: "compact", session_id: nativeSession, transcript_path: transcriptPath });
+    const output = await ccSessionStartInjection(config, { hook_event_name: "SessionStart", source: "resume", session_id: nativeSession, transcript_path: transcriptPath });
     return output?.hookSpecificOutput.additionalContext;
   };
   expect(await build()).toContain("config knowledge"); // default allowance (10,000): fits
