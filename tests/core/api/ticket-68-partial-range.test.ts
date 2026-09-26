@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { readHandle } from "../../read-handle-fixture.ts";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 
 const opened: ReturnType<typeof TraceMemory>[] = [];
@@ -23,7 +24,7 @@ function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, tri
   };
   return { memory, store, create, session, pool: `project:${project.id}`, target: { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id } };
 }
-const handles = (task: DreamingAgentInput) => [...task.material.changed.matchAll(/\b(K\d+@v\d+)\b/g)].map(match => match[1]!);
+const handles = (task: DreamingAgentInput) => suppliedHandles(task.material.changed);
 
 test.each([
   ["global", 4000], ["project", 5000], ["session", 1000],

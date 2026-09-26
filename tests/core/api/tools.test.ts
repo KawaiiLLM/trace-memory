@@ -104,6 +104,14 @@ test("malformed items still produce results for every item, and reject the entir
 
 test("tools freeze the N range, reject sibling sources, and keep no read ledger", async () => {
   memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, assistantText: "sibling", startedAt: "later" });
+  const context: ToolContext = { kind: "noting", sessionId: 1, branch: "main",
+    range: { from: "S1/T1", to: "S1/T1" }, entryIds: memory.store.sourcePath(1, "main", 1).map(entry => entry.id) };
+  const bound = memory.tools(context)[2]!;
+  context.range.to = "S1/T2"; context.branch = "mutated";
+  context.entryIds!.push(...memory.store.listSourceEntries(1).filter(entry => entry.turnId === 2).map(entry => entry.id));
+  expect(bound.execute({ facts: [fact("T2#E1")] })).toContain("invalid source");
+  expect(bound.execute({ facts: [fact("T1#E1", { slot: "$1" })] })).toContain("held: $1");
+  expect(memory.store.listSessionFacts(1)).toEqual([]); // standalone tools still hold privately
   agent = async raw => {
     const input = raw as NotingAgentInput;
     expect(input.tools[2]!.execute({ facts: [fact("T2#E1")] })).toContain("rejected:");

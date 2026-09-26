@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory } from "../../source-fixture.ts";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 import fixture from "../../fixtures/trace.json";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -57,7 +58,7 @@ async function consolidation(...operations: Operation[]) {
       return operation;
     });
     const triggerAddress = exact(trigger.knowledgeId, trigger.commit);
-    const supplied = new Set(input.material.changed.match(/K\d+@v\d+/g) ?? []); for (const address of addressed) supplied.delete(address);
+    const supplied = new Set(suppliedHandles(input.material.changed)); for (const address of addressed) supplied.delete(address);
     const receipt = JSON.parse(write.execute({ operations: [...converted, { op: "archive", id: triggerAddress, supports: [`F${triggerFact}`], reason: "Retire the explicit trace trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied item." })) }));
     committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)

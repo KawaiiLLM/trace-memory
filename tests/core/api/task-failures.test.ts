@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -185,7 +186,7 @@ test("68: Dreamer terminal outcomes consume accepted skips; a later range settle
   const m = open(":memory:", async raw => {
     const input = raw as DreamingAgentInput;
     if (input.kind !== "dreaming") return { outcome, output: outcome, request };
-    const handles = [...new Set([...input.material.changed.matchAll(/K\d+@v\d+/g)].map(match => match[0]))];
+    const handles = suppliedHandles(input.material.changed);
     input.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
       skipped: handles.map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
     return { outcome, output: outcome, request };
@@ -230,7 +231,7 @@ test("86: three Dreamer failures on one unchanged pending revision turn memory o
     const input = raw as DreamingAgentInput;
     if (skip && input.kind === "dreaming") {
       input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [
-        { knowledge: /K\d+@v\d+/.exec(input.material.changed)![0], because: "Reviewed without a change" },
+        { knowledge: suppliedHandles(input.material.changed)[0], because: "Reviewed without a change" },
       ] });
       return { outcome: "success", output: "processed", request };
     }

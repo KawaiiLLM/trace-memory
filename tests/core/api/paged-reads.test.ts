@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory } from "../../source-fixture.ts";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 import { countSourceReads, countGraphResolutions } from "../../perf/fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -132,7 +133,7 @@ async function knowledgeCorpus(knowledge: number, revisions: number) {
       tip.commit = store.resolveVersionOrdinal(tip.knowledgeId, j + 1);
     }
     const triggerAddress = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
-    const supplied = new Set(input.material.changed.match(/K\d+@v\d+/g) ?? []); supplied.delete(`K${trigger.knowledgeId}@v1`); for (const address of consumed) supplied.delete(address);
+    const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(`K${trigger.knowledgeId}@v1`); for (const address of consumed) supplied.delete(address);
     write.execute({ operations: [{ op: "archive", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit paged-read trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No further corpus maintenance is needed." })) });
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");

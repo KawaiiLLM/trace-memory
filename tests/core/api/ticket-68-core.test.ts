@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 import { TraceMemory, DEFAULT_CONFIG, validateConfig, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 
 const opened: ReturnType<typeof TraceMemory>[] = [];
@@ -88,7 +89,7 @@ test("68 external cancellation remains cancellation when its native worker coope
 test.each(["success", "failure", "cancelled"] as const)("68 %s consumes an accepted skip but leaves untouched frozen versions pending", async outcome => {
   const f = setup(async task => {
     task.acknowledgeRequest();
-    const handles = [...task.material.changed.matchAll(/K\d+@v\d+/g)].map(match => match[0]);
+    const handles = suppliedHandles(task.material.changed);
     const receipt = task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [{ knowledge: handles[0], because: "already correct" }] });
     expect(receipt).toContain("committed");
     return { outcome, output: outcome, request: exactRequest };
