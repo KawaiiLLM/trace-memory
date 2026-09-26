@@ -376,7 +376,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     provider: (fn: typeof provider, options: { autoStop?: boolean; ignoreAbort?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; ignoreAbort = options.ignoreAbort ?? false; } };
 }
 /** Explicit successful Noter script: one fact plus empty knowledge in the same assistant message. */
-export function notingFact(conversation: Conversation) {
+export function notingFact(conversation: Conversation): Reply {
   const input = String(conversation.messages[0]!.content);
   const address = /S(\d+)\/T(\d+)/.exec(input)!;
   const source = /\[(T\d+#E\d+)@text\] (?:user|assistant):/.exec(input)?.[1] ?? `T${address[2]}#E1`;
