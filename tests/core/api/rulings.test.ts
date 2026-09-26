@@ -2324,7 +2324,7 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
   const frozen = freezeNoting(store, target, memory.config);
   expect(snapshots.snapshots()).toBe(1);
   snapshots.restore();
-  expect(frozen.facts.map(f => f.id)).toEqual([onPath, shared]);
+  expect(frozen.prepared!.supplied.factIds).toEqual([onPath, shared]);
 
   // --- and the history block the subagent actually receives.
   calls.length = 0;

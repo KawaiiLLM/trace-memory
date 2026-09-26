@@ -19,7 +19,10 @@ type Task = NotingAgentInput | DreamingAgentInput;
 /** The model shape Pi's own child session takes, already resolved by the host's registry lookup. */
 export type WorkerModel = NativeForkTask["model"];
 /** Inherited context: the parent state a fork run is launched from, read by the host at launch. */
-export interface ForkLaunch { parentFile: string; parentSessionId: string; checkpoint: string; captured: Body }
+export interface ForkLaunch { parentFile: string; parentSessionId: string; checkpoint: string; captured: Body;
+  /** Recheck the exact parent after asynchronous native preparation, before its first request. */
+  recheck?: () => string | undefined;
+}
 /** The fork gate's result on a run record: the passing verification of a fork run, or — under
  * `native` — the rejected one a fallback still records, with both hashes and the differing path. */
 type RunVerification = Partial<NativeVerification> & { rounds: NativeVerification["rounds"]; native?: NativeVerification };
@@ -170,6 +173,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
         if ("refused" in binding.fork) throw new NotForkable(binding.fork.refused);
         const native = await runNative({ ...common, mode: "fork", parentFile: binding.fork.parentFile,
           parentSessionId: binding.fork.parentSessionId, checkpoint: binding.fork.checkpoint, captured: binding.fork.captured,
+          recheck: binding.fork.recheck,
           task: `${task.prompt}\n\n${task.text}`, onCache: binding.onCache });
         request = native.request ?? request; verification = native.verification;
         // 27b: the one post-attempt refusal. A request the provider rejected for context capacity, in

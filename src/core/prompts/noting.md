@@ -58,7 +58,7 @@ Name the original agent's harness (Pi agent or Claude Code) in both layers, not 
 - **Earlier facts of this session**: the most recent slice, within its own 10,000-token allowance. Older facts may be left out; a receipt says so.
 - **This batch**: the oldest pending whole source entries within their own 10,000-token allowance. A batch may span Turns and a Turn may span batches. Only the listed frozen entries belong to it. You see the current batch and the past, nothing later.
 - **Entry views**: a tool-call part shows at most 100 tokens, a tool-result part at most 100, an entry at most 2,000, labels and markers included; results are cut first, then arguments, then natural language.
-- **No knowledge block.** Knowledge is not supplied; `trace K1` reads an item, `search` finds one. A run inside the live conversation keeps whatever knowledge that conversation already carries.
+- **Visible knowledge**: a fresh run receives current visible versions within the main context's Knowledge base plus shared allowance. A fork inherits the parent's already-published knowledge, without an extra block. Use `trace K1` or `search` for omitted material.
 <!-- include: live -->
 - **Live supplement**: the head turn's final reply is appended because the captured request cannot contain it. The source index lists every frozen entry and the addresses its bounded Raw view exposes, never body previews or every thinking block. Only the selected path's last assistant entry gets this supplement, and only when it belongs to the batch and is not already in Raw.
 

@@ -78,6 +78,8 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   old = `Current pool knowledge outside this range:\n${old}`;
   if (tokens(old) > processedInputCap)
     throw new Error(`Dreaming current reference input exceeds ${processedInputCap} tokens including framing`);
+  if (tokens(changed) > 10_000 || tokens([old, changed].join("\n\n")) > knowledgeCapacity)
+    throw new Error("Dreaming capacity: complete Knowledge rendering exceeds its pending slice or total Knowledge window; left pending");
 
   const frozenValues = due.versions.filter(value => frozenIds.has(value.revision.id));
   // 76: a frozen archive is not among `due.versions` (pool size/versions exclude archives); its own

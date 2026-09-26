@@ -122,6 +122,8 @@ export interface SharedMaterial {
 /** The frozen task material of one Noting run. Task-specific parts: the head reply and the source
  * index an inherited-context run needs. No field is a composed message. */
 export interface NotingMaterial extends SharedMaterial {
+  /** Originating target session, never the worker's host. */
+  harness?: string;
   /** The target entries this run must newly supply: 29b removed the ones the child can already see,
    * so this is a subset of the frozen target and is empty when the whole target is visible. */
   entries: { id: number; view: string }[];
@@ -164,6 +166,11 @@ export const SOURCES_TITLE = "Sources:";
 export const KNOWLEDGE_STATUS_TITLE = "Inherited knowledge status (these commits are not current authority):";
 /** Between blocks, and between a block's title and its body. Entry views use the same separator. */
 export const BLOCK = "\n\n";
+
+/** Complete Raw-window charge shared by oldest-batch admission and compact assembly. */
+export const rawWindowTokens = (views: string[], receipts: string[]): number =>
+  (views.length ? charge([xmlBlock("episodic", ""), RAW_TITLE]) + charge(views) : 0)
+  + (receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0);
 
 const rangeLine = (range: TaskRange): string => `Range: ${range.from}..${range.to}`;
 
@@ -322,14 +329,10 @@ export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TIT
     ...(episodic.length ? [xmlBlock("episodic", block(episodic))] : [])]), receipts: material.receipts });
 };
 
-/** The Noter's one layout (29b): the missing historical facts, the range, the head reply when this
- * run restates it, the Raw of the target entries this run supplies, the source index when some body
- * was withheld, then receipts. 25a: no knowledge block in either Noter mode — a Noter that needs
- * knowledge reads it by address. With an empty visible view every target entry is supplied, `head`
- * is null and `sources` is empty, which is byte for byte the layout a fresh Noter has always had. */
+/** Noting uses shared compact rendering plus its task identity and inherited source index.
+ * Fresh material keeps all selected parts; fork adaptation removes inherited bodies. */
 export const notingText = (material: NotingMaterial, range: TaskRange): string =>
-  finish({ content: block([FACTS_TITLE, material.facts.join("\n"), rangeLine(range),
-    ...(material.head ? [material.head] : []),
-    ...(material.entries.length ? [RAW_TITLE, rawText(material)] : []),
+  block([...(material.harness ? [`Target session agent: ${material.harness}`] : []), rangeLine(range),
+    compactText(material), ...(material.head ? [material.head] : []),
     ...(material.sources.length ? [`${SOURCES_TITLE}\n${material.sources.join("\n")}`] : []),
-  ]), receipts: material.receipts });
+  ].filter(Boolean));

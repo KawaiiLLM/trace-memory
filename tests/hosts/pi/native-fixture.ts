@@ -47,6 +47,8 @@ export async function piSession(options: { extensions: ((pi: ExtensionAPI) => vo
   compaction?: { enabled?: boolean; keepRecentTokens?: number; reserveTokens?: number }; contextWindow?: number;
   /** Foreground tools the session registers, for the trigger that fires between tool rounds (28b). */
   tools?: { name: string; description: string; parameters: unknown; execute: () => Promise<unknown> }[];
+  /** Explicit SDK allowlist, including names registered by the real extension under test. */
+  activeTools?: string[];
   /** Set while the extension factories run, so an extension that reads its configuration from the
    * environment (this host does) is built against this fixture's own database. */
   env?: Record<string, string>;
@@ -85,7 +87,7 @@ export async function piSession(options: { extensions: ((pi: ExtensionAPI) => vo
   const manager = SessionManager.create(dir, join(agentDir, "sessions", "parent"));
   const tools = (options.tools ?? []).map(tool => ({ ...tool, label: tool.name }));
   const { session, extensionsResult } = await createAgentSession({ cwd: dir, agentDir, model, modelRuntime, settingsManager,
-    resourceLoader, sessionManager: manager, noTools: "all", tools: tools.map(t => t.name), customTools: tools as never });
+    resourceLoader, sessionManager: manager, noTools: "all", tools: options.activeTools ?? tools.map(t => t.name), customTools: tools as never });
   for (const [key, value] of Object.entries(previousEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   expect(extensionsResult.errors).toEqual([]); // an inline factory that failed to load would silently drop the hooks
   return { dir, agentDir, session, manager, sent, model,

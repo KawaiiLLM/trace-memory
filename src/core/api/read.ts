@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { knowledgeReadSelection, KNOWLEDGE_REPRESENTATIVE_RECEIPT } from "./knowledge-read.ts";
 import { parseKnowledgeAddress, traceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
-import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, PathSnapshot } from "../store/index.ts";
+import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, SourceEntryMeta, PathSnapshot } from "../store/index.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, knowledgeCategoryGroup, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
 import { budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
-import { injectionText, compactText, measuredMemory, type MemoryComposition, type TransportItem, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
+import { injectionText, compactText, measuredMemory, type MemoryComposition, type SharedMaterial, type TransportItem, rawWindowTokens, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
@@ -79,7 +79,7 @@ export interface TopicGroups {
  * carries — every supplied entry, pending and refilled alike, plus the facts and knowledge commits
  * that survived budgeting. What a budget dropped is absent here. A native delegation supplies
  * nothing, so it has no `supplied` at all. */
-export type CompactResult = { text: string; supplied: SuppliedMaterial; knowledgeAllowance?: number; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt }
+export type CompactResult = { text: string; material?: SharedMaterial; supplied: SuppliedMaterial; knowledgeAllowance?: number; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt }
   | { native: true; reason: string };
 
 /** 73 "Truncation is announced in the foreground": whenever compact omits unprocessed material —
@@ -181,7 +181,7 @@ export function knowledgeStatusNotes(store: Store, current: readonly KnowledgeWi
     note.text.replace(/(superseded by K\d+@(?:v)?\d+)$/, "$1 above"));
 }
 
-export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (address: string, options?: ListingOptions) => (() => string),
+export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (address: string, options?: ListingOptions) => (() => string) = () => { throw new Error("Trace expansion requires its bound reader"); },
   resultText: ResultExtractor = rawResultText) {
   const expand = (address: string, options?: ListingOptions) => prepare(address, options)();
   // 22c: what a listing still owes its caller is kept as hit identities plus the formatter that turns
@@ -688,14 +688,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // 73 "Shared allowance": one allocator, three windows, one pass — Knowledge first (borrowing the
     // whole allowance), then the newest contiguous Raw span (pending entries borrowing what Knowledge
     // left, already-noted entries only within the Raw base), then the newest facts before that span
-    // (unconsolidated facts borrowing what Raw left, consolidated only within the facts base). Nothing
+    // (facts use only their own base, irrespective of historical C processing). Nothing
     // is required any more: every window truncates — newest kept, oldest omitted with a receipt —
     // rather than escalating to a native delegation. Omitted material stays pending in the store.
     compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = [],
-      transport = false): CompactResult => {
+      transport = false, options: { endpointEntryId?: number; processedRawRefill?: boolean;
+        /** Internal: views from this synchronous freeze under this exact profile/extractor. */
+        renderedEntries?: ReadonlyMap<number, EntryView> } = {}): CompactResult => {
       if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
-      const snapshot = store.pathSnapshot(path); // one membership for this operation, knowledge and facts alike
+      const snapshot = store.pathSnapshot(path, options.endpointEntryId); // one exact membership, knowledge and facts alike
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
       const sourceSnapshot = head === path.headTurnId ? snapshot : head === undefined ? undefined
         : store.pathSnapshot({ sessionId, branch, headTurnId: head });
@@ -708,9 +710,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // Ticket 80 item 3: one batched `fact_sources` read for the whole session's facts, not one per fact.
       const sessionFacts = store.listSessionFacts(sessionId);
       const boundEntries = store.factSourceEntries(sessionFacts.map(f => f.id));
-      const applicable = sessionFacts.filter(f => store.factOnPath(f, path, snapshot, undefined, undefined, boundEntries));
-      const pendingFacts = store.unconsolidated(applicable, path, snapshot);
-      const pendingFactIds = new Set(pendingFacts.map(f => f.id));
+      // listSessionFacts already establishes every candidate's owner, as listBranchFacts does.
+      const owners = new Map(sessionFacts.map(fact => [fact.turnId, sessionId]));
+      const applicable = sessionFacts.filter(f => store.factOnPath(f, path, snapshot, undefined, owners, boundEntries));
       const factTurns = store.factTurnTimes(applicable);
       const budgets = store.knowledgeBudgets();
       const sharedAllowance = config.compaction.sharedAllowanceTokens;
@@ -752,8 +754,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // Retained (visible elsewhere in the post-compaction context) excludes an already-noted entry
       // from optional refill; it never excludes a still-pending one (30 case 10) — pending membership
       // is the only thing that decides whether an entry must still be represented here.
-      const candidates = sourced.filter(e => pendingIds.has(e.id) || !retained.has(e.nativeId));
-      interface RawStep { entry: SourceEntry; content: string; receipts: string[]; fromAllowance: number }
+      const candidates = sourced.filter(e => pendingIds.has(e.id) || (options.processedRawRefill !== false && !retained.has(e.nativeId)));
+      interface RawStep { entry: SourceEntryMeta; content: string; receipts: string[]; fromAllowance: number }
       const rawSteps: RawStep[] = [];
       {
         let rawBaseUsed = charge([RAW_TITLE]), allowanceUsed = 0;
@@ -761,9 +763,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           // 79 item 2: newest first, hydrated one candidate at a time — the first that does not fit
           // must still be rendered to know it does not fit (acceptance criteria), but nothing earlier
           // (older) is ever hydrated once that happens.
-          const entry = store.getSourceEntry(candidates[i]!.id)!;
+          const entry = candidates[i]!;
           let rendered: EntryView;
-          try { rendered = view(entry); } catch (error) { if (/capacity/.test(String(error))) break; throw error; }
+          try { rendered = options.renderedEntries?.get(entry.id) ?? view(store.getSourceEntry(entry.id)!); }
+          catch (error) { if (/capacity/.test(String(error))) break; throw error; }
           const cost = tokens(rendered.content) + 1;
           const availableBase = Math.max(0, caps.raw - rawBaseUsed);
           if (pendingIds.has(entry.id)) {
@@ -785,7 +788,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // has entries, each kept entry's own view receipts, and its omission receipt.
       const rawWindowCost = (kept: number, receipt: string[]) => {
         const steps = rawSteps.slice(0, kept);
-        return (kept ? opener(RAW_TITLE) + charge(steps.map(s => s.content)) : 0) + receiptCharge([...steps.flatMap(s => s.receipts), ...receipt]);
+        return rawWindowTokens(steps.map(s => s.content), [...steps.flatMap(s => s.receipts), ...receipt]);
       };
       // Only unprocessed material borrows (73): the whole window — framing and receipts included —
       // may exceed its base by at most what its kept pending entries cost, and never by more than
@@ -798,8 +801,6 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const rawFinalReceipt = rawWindowCost(rawKept, rawReceipt(rawKept)) <= rawLimit(rawKept) ? rawReceipt(rawKept) : [];
       const rawFinalSteps = rawSteps.slice(0, rawKept);
       const rawCharged = rawWindowCost(rawKept, rawFinalReceipt);
-      // What the whole window took beyond its base — receipts and framing included — leaves the allowance.
-      const sharedAfterRaw = sharedAfterKnowledge - Math.max(0, rawCharged - caps.raw);
       // Displayed in source order (30: "display the selected Raw entries in source order").
       const suppliedRaw = [...rawFinalSteps].reverse();
       const rawOmitted = candidates.slice(0, candidates.length - suppliedRaw.length);
@@ -819,42 +820,20 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const factsWindowCost = (kept: number, receipt: string[]) => (kept
         ? (rawKept ? charge([FACTS_TITLE]) : opener(FACTS_TITLE)) + charge(lines(eligibleFacts.slice(0, kept))) : 0) + receiptCharge(receipt);
       const factsTotalCost = (kept: number) => factsWindowCost(kept, omission(eligibleFacts.slice(kept)));
-      let factsKept = 0, factsBaseUsed = 0, factsAllowanceUsed = 0, prevFactsCost = 0;
-      const pendingFactCost: number[] = []; // per kept fact, its marginal cost when unconsolidated, else 0
-      for (const fact of eligibleFacts) {
-        const nextCost = factsWindowCost(factsKept + 1, []);
-        const marginal = nextCost - prevFactsCost;
-        const availableBase = Math.max(0, caps.facts - factsBaseUsed);
-        if (pendingFactIds.has(fact.id)) {
-          const availableAllowance = Math.max(0, sharedAfterRaw - factsAllowanceUsed);
-          if (marginal > availableBase + availableAllowance) break;
-          const fromBase = Math.min(marginal, availableBase);
-          factsBaseUsed += fromBase; factsAllowanceUsed += marginal - fromBase;
-        } else {
-          if (marginal > availableBase) break;
-          factsBaseUsed += marginal;
-        }
-        pendingFactCost.push(pendingFactIds.has(fact.id) ? marginal : 0);
-        factsKept++; prevFactsCost = nextCost;
-      }
-      // As for Raw: the window may exceed its base only by what its kept unconsolidated facts cost.
-      const factsLimit = (kept: number) => caps.facts + Math.min(sharedAfterRaw,
-        pendingFactCost.slice(0, kept).reduce((sum, cost) => sum + cost, 0));
-      while (factsKept > 0 && factsTotalCost(factsKept) > factsLimit(factsKept)) factsKept--;
+      let factsKept = 0;
+      while (factsKept < eligibleFacts.length && factsWindowCost(factsKept + 1, []) <= caps.facts) factsKept++;
+      while (factsKept > 0 && factsTotalCost(factsKept) > caps.facts) factsKept--;
       const finalFacts = eligibleFacts.slice(0, factsKept);
       // With nothing kept, a receipt that does not fit either leaves the facts window empty.
-      const finalFactReceipts = factsTotalCost(factsKept) <= factsLimit(factsKept) ? omission(eligibleFacts.slice(factsKept)) : [];
-      const factsOmittedPending = eligibleFacts.slice(finalFacts.length).filter(f => pendingFactIds.has(f.id));
-      const factsOmittedPendingTokens = factsOmittedPending.length ? charge(lines(factsOmittedPending)) : 0;
+      const finalFactReceipts = factsTotalCost(factsKept) <= caps.facts ? omission(eligibleFacts.slice(factsKept)) : [];
 
       const truncated: TruncationReceipt = {};
       if (rawOmittedPending.length) truncated.raw = { entries: rawOmittedPending.length };
-      if (factsOmittedPending.length) truncated.facts = { count: factsOmittedPending.length, tokens: factsOmittedPendingTokens };
 
       const material = { knowledge: active.groups, facts: lines(finalFacts),
         entries: suppliedRaw.map(s => ({ id: s.entry.id, view: s.content })),
         receipts: [...suppliedRaw.flatMap(s => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...active.receipts, ...noteOmittedReceipt] };
-      return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
+      return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material), material,
         // Transport may repeat K framing, but cannot borrow bases reserved for facts/Raw.
         knowledgeAllowance: knowledgeEnvelope - Math.max(0, rawCharged - caps.raw)
           - Math.max(0, factsWindowCost(finalFacts.length, finalFactReceipts) - caps.facts),
@@ -866,7 +845,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
             address: `K${store.knowledgeRevision(note.receipt.fromCommit)!.knowledgeId}` })),
           ...factGroupLayout(finalFacts, factTurns).map(({ fact, header }) => ({ kind: "fact" as const,
             text: header + factLine(fact.id, factRelations.get(fact.id) ?? []), factId: fact.id,
-            pending: pendingFactIds.has(fact.id) })),
+            pending: false })),
           ...suppliedRaw.map(step => ({ kind: "raw" as const, text: step.content, entryId: step.entry.id,
             address: `T${step.entry.turnId}#E${step.entry.entryOrdinal}`, pending: pendingIds.has(step.entry.id) })),
           ...material.receipts.map(text => ({ kind: "receipt" as const, text,

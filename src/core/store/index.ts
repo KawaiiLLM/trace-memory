@@ -3018,13 +3018,17 @@ export class Store {
         return head;
   }
 
-  pathSnapshot(path: KnowledgePath): PathSnapshot {
+  pathSnapshot(path: KnowledgePath, endpointEntryId?: number): PathSnapshot {
     if (path.branch && path.headTurnId != null) {
       const view = this.pathView(path.sessionId, path.branch);
       if (view) {
         const head = this.pathHead(view, path);
         const turns = pathMembership(head.ids, head.positions, head.ids.length, () => true, true);
-        const count = view.state.count;
+        const endpoint = endpointEntryId === undefined ? undefined : view.positions.get(endpointEntryId);
+        if (endpointEntryId !== undefined && (endpoint === undefined || endpoint >= view.state.count
+          || !turns.has(view.turns.get(endpointEntryId)!))) throw new Error("Material endpoint is not on the selected native path");
+        // A per-read prefix over the existing view, never a cursor move or a second cache.
+        const count = endpoint === undefined ? view.state.count : endpoint + 1;
         const selected = pathMembership(view.ids, view.positions, count, id => turns.has(view.turns.get(id)!));
         return { turns, entries: { ids: selected, addresses: turnId => {
           const addresses = new Set<string>();
@@ -3035,6 +3039,24 @@ export class Store {
       }
     }
     const turns = this.loadPathTurns(path);
+    if (endpointEntryId !== undefined) {
+      if (!path.branch || path.headTurnId == null) throw new Error("Material endpoint requires a branch and Turn head");
+      // Preserve sourcePath's existing no-stored-path compatibility. Locate by sequence position,
+      // never numeric ID; a stored empty or malformed native path cannot reach this branch.
+      const sequence = this.pathSourceMeta(path.sessionId, path.branch, path.headTurnId,
+        { turns, entries: null, consolidatedRuns: new Map() });
+      const endpoint = sequence.findIndex(entry => entry.id === endpointEntryId);
+      if (endpoint < 0) throw new Error("Material endpoint is not on the selected source path");
+      const ids = new Set(sequence.slice(0, endpoint + 1).map(entry => entry.id));
+      const addresses = new Map<number, Set<string>>();
+      for (const row of this.db.prepare("SELECT turn_id, addresses FROM source_entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...ids]))) {
+        const turn = Number(row.turn_id);
+        let values = addresses.get(turn);
+        if (!values) addresses.set(turn, values = new Set());
+        for (const address of JSON.parse(String(row.addresses)) as string[]) values.add(address);
+      }
+      return { turns, entries: { ids, addresses: turn => addresses.get(turn) ?? new Set() }, consolidatedRuns: new Map() };
+    }
     return { turns, entries: null, consolidatedRuns: new Map() };
   }
 
@@ -3731,9 +3753,10 @@ export class Store {
       for (const revision of due.pending) {
         if (reserved.has(revision.revisionId)) continue;
         const candidate = ["Pending current knowledge:", ...selected.map(value => value.material), revision.material].join("\n");
-        if (selected.length && tokens(candidate) > this.poolBudget(pool)) break;
+        if (tokens(candidate) > 10_000) break;
         selected.push(revision);
       }
+      if (!selected.length) throw new Error("Dreaming capacity: oldest pending Knowledge cannot fit the 10000-token slice; left pending");
       const ids = selected.map(revision => revision.revisionId);
       const origin = this.triggerOrigin(target, target.triggerEntryId);
       const id = Number(this.db.prepare(`INSERT INTO dreaming_ranges
@@ -4488,7 +4511,8 @@ export class Store {
   /** The selected path's metadata in persisted branch order; no Raw payload is loaded. */
   private pathSourceMeta(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): SourceEntryMeta[] {
     const turns = prepared?.turns ?? this.pathSnapshot({ sessionId, branch, headTurnId }).turns;
-    return this.listSourceEntries(sessionId, undefined, branch).filter(entry => turns.has(entry.turnId));
+    return this.listSourceEntries(sessionId, undefined, branch).filter(entry => turns.has(entry.turnId)
+      && (!prepared?.entries || prepared.entries.ids.has(entry.id)));
   }
   private pathEntryIds(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number[] {
     return this.pathSourceMeta(sessionId, branch, headTurnId, prepared).map(e => e.id);

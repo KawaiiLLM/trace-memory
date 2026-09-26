@@ -144,7 +144,17 @@ export default function (pi: ExtensionAPI) {
     if (!parentFile) return { refused: "The parent session is not persisted" };
     const checkpoint = context.sessionManager.getLeafId();
     if (!checkpoint) return { refused: "The parent session has no persisted leaf entry" };
-    return { parentFile, parentSessionId: piId, checkpoint, captured: captured.payload };
+    // 06 changes Noter inheritance; the still-live C lifecycle belongs to 07.
+    if (input.kind !== "noting") return { parentFile, parentSessionId: piId, checkpoint, captured: captured.payload };
+    const parentBinding = JSON.stringify(binding());
+    const recheck = () => {
+      if (context.sessionManager.getSessionId() !== piId || context.sessionManager.getLeafId() !== checkpoint
+        || JSON.stringify(binding()) !== parentBinding || state.branch !== input.branch)
+        return "Fork parent changed after admission; the exact native checkpoint is no longer selected";
+      return unpublishedKnowledge({ sessionId: input.sessionId, branch: input.branch, headTurnId: state.head! });
+    };
+    const reason = recheck();
+    return reason ? { refused: reason } : { parentFile, parentSessionId: piId, checkpoint, captured: captured.payload, recheck };
   };
   const memory = TraceMemory(dbPath, async raw => {
     const input = raw as NotingAgentInput | DreamingAgentInput;
@@ -326,12 +336,19 @@ export default function (pi: ExtensionAPI) {
    * availability rule refuses the batch. Undefined means it may fork. Neither refusal is a latch:
    * both are re-decided for every task, and 27c records the reason rather than only its verdict,
    * because the reason is what the run audit and the one warning say. */
+  const unpublishedKnowledge = (target: TaskTarget): string | undefined => {
+    const delta = memory.injection(target, visible(binding()));
+    return delta.knowledgeCommitIds.length || delta.knowledgeStates?.length
+      ? "Knowledge publication: ordinary deliverable material has not landed in the exact parent context" : undefined;
+  };
   const forkRefused = (requested: "fork" | "subagent", task?: ForkTask): string | undefined => {
     if (requested !== "fork") return;
     const suppression = suppressed();
     if (suppression) return latchReason(suppression);
     // Only Noting can fork and therefore requires inherited Raw coverage.
     if (task?.kind !== "noting") return;
+    const unpublished = unpublishedKnowledge(task.target);
+    if (unpublished) return unpublished;
     const view = visible(binding());
     if (!view.raw.size) return rawUnavailable([]);
     // 29c: the target is the batch a freeze of this task would select — the pending set this task's

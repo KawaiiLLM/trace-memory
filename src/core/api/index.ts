@@ -250,6 +250,7 @@ export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
     } else if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "maxToolRounds" ? 0 : 1)) {
       throw new Error(`Invalid ${name}: expected ${key === "maxToolRounds" ? "a nonnegative" : "a positive"} safe integer`);
     }
+    if (name === "render.entryTokens" && (value as number) > 2_000) throw new Error(`Invalid ${name}: at most 2000`);
     if ((key === "toolInputTokens" || key === "toolResultTokens") && (value as number) > TOOL_CALL_CEILING) throw new Error(`Invalid ${name}: at most ${TOOL_CALL_CEILING}`);
   }
   if (cfg.dreaming.maxToolRounds !== 0) throw new Error("Invalid dreaming.maxToolRounds: Dreamer requires 0 (unlimited); use dreaming.timeoutMs for the run bound");

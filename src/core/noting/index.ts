@@ -6,8 +6,9 @@ import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskBoundary, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderFact, renderEntryIndex, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
-import { budgetMaterial, notingText, BLOCK, FACTS_TITLE, RAW_TITLE, SOURCES_TITLE, type NotingMaterial } from "../render/material.ts";
+import { renderEntryIndex, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor } from "../render/index.ts";
+import { notingText, rawWindowTokens, type NotingMaterial, type SharedMaterial } from "../render/material.ts";
+import { readFacade } from "../api/read.ts";
 import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
 import type { NotingDiagnostic } from "./review.ts";
 
@@ -142,7 +143,7 @@ export const notingBatch = (store: Store, pending: readonly SourceEntryMeta[], c
   for (const meta of pending) {
     const entry = store.getSourceEntry(meta.id)!;
     const view = renderEntry(entry, config.render, resultText);
-    if (entries.length && tokens([...views, view.content].join(BLOCK)) > config.noting.batchTokens) break;
+    if (rawWindowTokens([...views, view.content], [...rendered.values(), view].flatMap(value => value.receipts)) > config.noting.batchTokens) break;
     entries.push(entry); views.push(view.content); rendered.set(entry.id, view);
   }
   return { entries, views, rendered };
@@ -153,17 +154,6 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
   if (typeof input.branch !== "string" || !input.branch) throw new Error("noting requires a non-empty branch");
-  const ancestry: Turn[] = [];
-  const seen = new Set<number>();
-  let id: number | null = input.headTurnId;
-  while (id !== null) {
-    if (seen.has(id)) throw new Error("cyclic turn ancestry");
-    seen.add(id);
-    const turn = store.getTurn(id);
-    if (!turn || turn.sessionId !== session.id) throw new Error(`turn T${id} does not belong to S${session.id}`);
-    ancestry.unshift(turn);
-    id = turn.parentTurnId;
-  }
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
     !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
@@ -188,41 +178,24 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
     throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${instructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`}`
       + ` already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
-  const { entries, views, rendered } = notingBatch(store, pending, config, resultText);
+  const { entries, rendered } = notingBatch(store, pending, config, resultText);
+  if (pending.length && !entries.length)
+    throw new Error(`${NOTING_CAPACITY}oldest entry and Raw framing exceed noting.batchTokens (${config.noting.batchTokens}); left pending`);
   // 27d: the same whole-or-nothing rule against the batch ceiling the selection loop above stops at.
   // A membership selected under that ceiling once can only fail this on a configuration change, and
   // then its entries wait together rather than half of them running.
   if (exact && entries.length !== pending.length)
     throw new Error(`${NOTING_CAPACITY}the frozen batch of ${pending.length} entries exceeds noting.batchTokens (${config.noting.batchTokens}); left pending`);
-  // 25a: neither Noter mode receives a knowledge block, but a run still records which commits its
-  // path made current, so an explicit `trace K…` inside the run is judged against a frozen base.
-  snapshot ??= store.pathSnapshot(path); // one membership for this freeze, knowledge and facts alike
+  snapshot ??= store.pathSnapshot(path);
   const headEntryId = store.sourceHeadEntryId(session.id, input.branch, input.headTurnId, snapshot);
-  const knowledge = store.currentKnowledge(path, {}, snapshot);
-  // 26 amendment 2: the history block carries the facts applicable on this freeze's path, never the
-  // whole session's — a sibling branch's fact is not this Noter's history. `listSessionFacts`'s
-  // freshness order is what `budgetFacts` selects by, so it is filtered, not replaced.
-  const facts = store.listSessionFacts(session.id).filter(f => store.factOnPath(f, path, snapshot));
-  const factTurns = store.factTurnTimes(facts);
-  const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot);
-  // The same fact renders the same line for the whole freeze, and one Turn's tool calls are the same
-  // rows on every candidate: both are read and rendered once here rather than inside the loop.
-  const lines = new Map<number, string>();
-  const factLine = (fact: Fact) => {
-    let line = lines.get(fact.id);
-    if (line === undefined) lines.set(fact.id, line = renderFact(fact, relations.get(fact.id) ?? []));
-    return line;
-  };
+  const ancestry = [...new Set(entries.map(entry => entry.turnId))].map(id => store.getTurn(id)!);
   const calls = new Map<number, ReturnType<Store["listToolCalls"]>>();
   const toolCalls = (turnId: number) => {
     let list = calls.get(turnId);
     if (list === undefined) calls.set(turnId, list = store.listToolCalls(turnId));
     return list;
   };
-  // 25a: the Noter's two allowances are independent. The Raw ceiling is reserved out of the episodic
-  // budget whether or not this batch uses it, so history is capped at what remains — 10,000 tokens at
-  // the defaults — and an under-budget Raw batch never enlarges the history block, nor the reverse.
-  const historyCap = Math.max(0, config.render.episodicBlockTokens - config.noting.batchTokens);
+  const historyCap = config.compaction.factsTokens;
   let history = historyCap; // lowered further by the capacity negotiation below
   // 29b "Same builder, different initial state": the one input that separates a fork's material from
   // a fresh child's. The host supplies the view only for a task it will really fork (hosts/pi/index.ts
@@ -231,7 +204,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // complete material. `inheritedTokens` is the measure the fork price below is built on.
   const initial: InitialContext = { visible: inheriting && input.visible ? input.visible : noVisibility(),
     inheritedTokens: inheriting ? input.capacity?.prefixTokens ?? 0 : 0 };
-  let last: { priced: number; episodic: number } | undefined; // what the smallest candidate cost, for the diagnostic
+  let lastPrice = 0;
   while (entries.length) {
     const ids = new Set(entries.map(e => e.turnId));
     const turns = ancestry.filter(t => ids.has(t.id)).map(turn => {
@@ -241,9 +214,19 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
         assistantText: selected.filter(e => e.role === "assistant" && e.text).map(e => e.text).join("\n") || null },
         calls: toolCalls(turn.id).filter(c => ordinals.has(c.ordinal)) };
     });
-    const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], headEntryId, turns, knowledge, facts,
+    const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], headEntryId, turns,
+      harness: session.host.startsWith("pi:") ? "Pi agent" : session.host.startsWith("cc:") ? "Claude Code" : session.host,
       model: input.model ?? "session", mode };
-    const prepared = notingMaterial(frozen, config, entry => rendered.get(entry.id)!, factLine, factTurns, history, initial);
+    const endpoint = entries.at(-1)!;
+    const assembled = readFacade(store, { ...config, compaction: { ...config.compaction,
+      rawTokens: config.noting.batchTokens, factsTokens: history } }, undefined, resultText)
+      .compact(session.id, input.branch, endpoint.turnId, [], false,
+        { endpointEntryId: endpoint.id, processedRawRefill: false, renderedEntries: rendered });
+    if ("native" in assembled || !assembled.material) throw new Error("Noting material assembly produced no material");
+    if (assembled.supplied.entries.length !== entries.length
+      || assembled.supplied.entries.some((entry, index) => entry.id !== entries[index]!.id))
+      throw new Error("Noting material Raw membership differs from its frozen processing batch; left pending");
+    const prepared = notingMaterial(frozen, entry => rendered.get(entry.id)!, assembled.material, assembled.supplied, initial, inheriting);
     const capacity = input.capacity;
     // Gate 4 (ruling 2026-09-08), with ticket 20's "Capacity negotiation": the adapter reports its
     // available material budget before selection; core prices the domain text it prepared for this
@@ -259,14 +242,12 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     // same line at the fresh child's own model capacity, and refuses the batch there if it must.
     const priced = inheriting ? initial.inheritedTokens + instructions + tokens(prepared.text)
       : instructions + tools + tokens(prepared.text);
-    last = { priced, episodic: prepared.over.episodic };
-    // The episodic allowance reduces multi-entry batches; one oldest entry may exceed its soft cap.
-    // The supplied model input capacity remains a hard limit for that entry.
-    const fits = (!prepared.over.episodic || entries.length === 1) && (!capacity || priced <= capacity.inputTokens);
+    lastPrice = priced;
+    const fits = !capacity || priced <= capacity.inputTokens;
     if (fits) return { ...frozen, prepared };
     // Optional history goes first (review 2026-09-08): trim the historical facts by the excess before
     // a selected entry is given up; only when none are left does the batch shrink.
-    if (capacity && !prepared.over.episodic && prepared.material.facts.length) { history = Math.max(0, charge(prepared.material.facts) - (priced - capacity.inputTokens)); continue; }
+    if (capacity && history && prepared.material.facts.length) { history = Math.max(0, Math.min(history - 1, charge(prepared.material.facts) - (priced - capacity.inputTokens))); continue; }
     // 27d (parent 27 amendment 6): under exact membership the batch never shrinks. Optional history
     // is trimmed above, as in any freeze; a batch that still does not fit leaves every frozen entry
     // pending under the diagnostic below, because a smaller batch is a membership change made after
@@ -278,9 +259,9 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // smallest one it was allowed to reach: the oldest entry alone, or, under 27d's exact membership,
   // the whole frozen batch.
   if (pending.length) throw new Error(NOTING_CAPACITY
-    + `${last!.episodic ? `it is ${last!.episodic} tokens over render.episodicBlockTokens (${config.render.episodicBlockTokens})` : `it costs ${last!.priced} tokens`}`
+    + `it costs ${lastPrice} tokens`
     + `${input.capacity ? ` against the ${input.capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
-  return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode, prepared: undefined };
+  return { sessionId: session.id, branch: input.branch, entries, turns: [], model: input.model ?? "session", mode, prepared: undefined };
 }
 
 /** The one Noting material builder (29b, parent 29 "One material-selection mechanism"). The frozen
@@ -288,21 +269,18 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
  * can see — and `initial` is the child's starting point. What is newly supplied is the target minus
  * what that view proves visible at the same identity and representation, and only then does the
  * budget apply: an entry whose native id the view holds as a retained source or as a carrier's bounded
- * view is withheld, a fact the view holds by id is withheld, and the historical facts that remain
- * fill the whole `history` allowance rather than what the visible ones left of it.
+ * view is withheld. A fork supplies no historical facts or Knowledge supplement. Fresh material
+ * uses the common compact selection at the final selected entry.
  *
- * The entry views and the fact lines are supplied by the freeze, which renders each of them once for
- * the whole negotiation (22d): re-freezing a smaller batch changes which of them are used, never what
- * any one of them says. */
-function notingMaterial(frozen: { sessionId: number; headEntryId?: number; entries: SourceEntry[]; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["currentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }) {
-  const { sessionId, entries, turns, knowledge, facts: applicable } = frozen;
+ * Entry views are rendered once per freeze and reused through capacity negotiation (22d). */
+function notingMaterial(frozen: { sessionId: number; harness: string; headEntryId?: number; entries: SourceEntry[]; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[] }, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, assembled: SharedMaterial, selected: SuppliedMaterial, initial: InitialContext, inheriting: boolean) {
+  const { sessionId, entries, turns } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
   // Every entry the map holds is either the retained original or a marked bounded view of ours (29a,
   // 30: one view, and a legacy tier-1 or tier-2 carrier counts as that same view).
   const supplied = entries.filter(entry => !initial.visible.raw.has(entry.nativeId));
   const withheld = entries.length - supplied.length;
-  const facts = applicable.filter(fact => !initial.visible.factIds.has(fact.id));
   const raw = supplied.map(view);
   // Only the selected path's last native reply can be absent from the captured parent request.
   // Earlier assistant entries in the same Turn are already inherited, not head supplements.
@@ -311,36 +289,32 @@ function notingMaterial(frozen: { sessionId: number; headEntryId?: number; entri
   const headView = headEntry ? view(headEntry) : undefined;
   const head = headView?.content || null;
   const sources = withheld ? entries.map(renderEntryIndex) : [];
-  // One budgeting for every consumer of the shared material (ticket 20): the selected Raw is charged
-  // against this phase's own batch ceiling — `noting.batchTokens` — and the titles, the range and the
-  // historical facts against the episodic budget. 25c stopped compact from applying that ceiling to a
-  // foreground backlog, which changes nothing here: a Noter batch is still capped by it, and the
-  // reservation is still what keeps this phase's two allowances independent. 25a: no knowledge
-  // candidates are passed, because neither Noter mode emits a knowledge block.
-  const budgeted = budgetMaterial({ current: raw.map((r) => r.content).join(BLOCK),
-    framing: [FACTS_TITLE, RAW_TITLE, ...(head ? [head] : []), ...(sources.length ? [SOURCES_TITLE, ...sources] : [])], range, facts, factLine, factTurns, history,
-    caps: { episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });
-  const receipts = [...raw.flatMap((r) => r.receipts), ...budgeted.receipts];
+  // Selection is solely the shared assembler's. A fork inherits the parent's ordinary material;
+  // this adapter adds only its exact range/index and missing head reply, never a Knowledge supplement.
+  const receipts = inheriting ? raw.flatMap(r => r.receipts) : assembled.receipts;
   const material: NotingMaterial = {
+    harness: frozen.harness,
     entries: supplied.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
     head,
     // Mandatory framing (parent 29 "Keep mandatory framing"): with a body withheld, the source index
     // is what identifies the target entries exactly and maps them to addresses the child must find in
     // its own context. It covers the whole frozen range, not only what was supplied.
     sources,
-    facts: budgeted.facts,
+    facts: inheriting ? [] : assembled.facts ?? [],
+    ...(inheriting ? {} : { knowledge: assembled.knowledge }),
     receipts,
   };
   // 20a: core owns the block order, the titles and the separators; 29b: there is one layout, and the
   // host only decides which native message carries it.
   const text = notingText(material, range);
   // 29a "Renderers return what they kept": every entry in the Raw block is the one bounded view (30),
-  // and the facts are the ones budgeting actually kept. The Noter emits no knowledge block (25a).
+  // and facts/Knowledge are exactly what the shared assembler kept for the fresh child.
   const carried = [...supplied, ...(headEntry && head ? [headEntry] : [])];
   const suppliedMaterial: SuppliedMaterial = { entries: carried.map(e => ({ id: e.id, nativeId: e.nativeId, view: "bounded" as const })),
-    factIds: budgeted.factIds, knowledgeCommitIds: [] };
+    factIds: inheriting ? [] : selected.factIds, knowledgeCommitIds: inheriting ? [] : selected.knowledgeCommitIds,
+    ...(inheriting ? {} : { knowledgeTokens: selected.knowledgeTokens }) };
   return { range, views: new Map(carried.map(e => [e.id, view(e)])),
-    material, text, supplied: suppliedMaterial, over: budgeted.over };
+    material, text, selectedEntryIds: selected.entries.map(entry => entry.id), supplied: suppliedMaterial };
 }
 
 /** The run audit records every omission marker of every entry it sent (17a). 23c ruling 3 replaced the
@@ -356,7 +330,12 @@ export async function runNoting(
   if (!turns.length || !frozen.prepared) return { outcome: "empty" };
   // The material the freeze priced is the material that runs (review 2026-09-08): re-rendering here
   // would restore the historical facts the capacity negotiation trimmed.
-  const { range, views, material, text, supplied } = frozen.prepared;
+  const { range, views, material, text, supplied, selectedEntryIds } = frozen.prepared;
+  const checkMembership = () => {
+    if (selectedEntryIds.length !== entries.length || selectedEntryIds.some((id, index) => id !== entries[index]!.id))
+      throw new Error("Noting material Raw membership differs from its frozen processing batch; left pending");
+  };
+  checkMembership();
   // 29b: the audit still lists every entry of the frozen target — membership is the processing target,
   // not what was injected — but the omission markers are read from the view this run actually sent.
   // An inherited entry without a head supplement sent no view and has no markers of ours to record.
@@ -406,6 +385,7 @@ export async function runNoting(
   recordAttempt(run, result, mode, { toolCalls: binding.sequence, fetched: binding.fetched, problems });
   try {
     if (result.outcome === "success" && !problems.length) {
+      checkMembership();
       const published = binding.finalize();
       return published.ok ? { outcome: "success", runId: published.runId, facts: published.facts, diagnostics: [] }
         : { outcome: "failure", runId: published.runId, problems: published.problems };

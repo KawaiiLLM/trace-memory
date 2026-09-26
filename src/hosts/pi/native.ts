@@ -71,6 +71,8 @@ export interface NativeForkTask extends NativeCommon {
   checkpoint: string;
   /** The parent provider request this child's first body is checked against. */
   captured: Body;
+  /** Synchronous first-request admission, before request audit or provider dispatch. */
+  recheck?: () => string | undefined;
 }
 /** Fresh context: a private child session with no parent file and no inherited history (19b). Its
  * system prompt is core's domain prompt and its tools are only the memory tools core bound. */
@@ -349,6 +351,13 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
         // removed. Only `cache_control` markers are ignored (verifyForkRequest).
         Object.assign(verification, verifyForkRequest(task.captured, body, api));
         if (!verification.passed) throw new NotForkable(`native prefix mismatch at ${verification.differingPath}`, { ...verification });
+        const reason = task.recheck?.();
+        if (reason) {
+          // This is admission, not a provider error: stop native retries without auditing a request.
+          exceeded = true; failure = reason;
+          void session.abort();
+          throw new NotForkable(reason);
+        }
       } else {
         const checked = verifyForkRequest(previous, body, api); // later rounds: same gate against the previous round
         verification.rounds.push(checked);
