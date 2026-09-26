@@ -17,7 +17,7 @@ exports[`simulation knowledge and strong negation goldens preserve Chinese memor
 "[K1@1] [reference/project] mapC 中 raw terrain 值9（文件内曾标注“荒地”）分化明显：高度处于水位的1993格里1989格运行时被重写为 terrain8（海）；同一raw值但地处高处的488格中380格运行时仍为 terrain9（丘陵），其余转为13/14/8等。
   change supports: F7, F9 · topics: ["地形数据"]
   inherited lineage supports: none
-  status: create consolidation@F50; actor consolidation; run R3
+  status: create consolidation@F50; actor manual; run R3
   parents: none
   children: K1@3"
 `;
