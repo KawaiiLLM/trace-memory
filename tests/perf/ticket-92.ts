@@ -169,6 +169,7 @@ for (const length of lengths) {
   const fixture = generate(db, { entries: 200, facts: 20, resultChars: 256 });
   const seed = new Store(db);
   let head = fixture.headTurnId;
+  const added: number[] = [];
   try {
     const old = seed.pendingEntries(fixture.sessionId, fixture.branch, head);
     if (old.length) {
@@ -197,7 +198,6 @@ for (const length of lengths) {
       });
     }
     const state = seed.sourcePathState(fixture.sessionId, fixture.branch)!;
-    const added: number[] = [];
     for (let i = 0; i < 3; i++) {
       const turn = seed.appendTurn({ sessionId: fixture.sessionId, parentTurnId: head,
         kind: "turn", userPrompt: "identical pending message", startedAt: "2026-09-26T00:00:00Z" });
