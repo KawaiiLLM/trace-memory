@@ -881,17 +881,22 @@ mirroring any of this — and the `session_compact` event's entry id is never ke
 resolves by summary text and hands back the first entry with that text.
 
 `hosts/pi/visible.ts` owns the Pi entry types, binding and parser. It derives core's host-neutral
-`VisibleView` contract from `buildContextEntries()` without reading the database or prose. Runtime
+`VisibleView` contract from `buildContextEntries()` without reading the database. Membership comes
+only from carrier metadata. New `supplied.knowledgeTokens` is bound to the retained text by
+`knowledgeHash`; legacy text is parsed only for cost, with ambiguous content charged in full and
+reported on the host's diagnostic stream. Runtime
 validation covers complete arrays, safe integer identities, source representation, binding and
 legacy generation; any malformed field rejects the entire envelope without donating visibility or
 completion. Valid empty injections and legacy tier markers remain readable. Command generations
 belong to the originating Pi session even when a fork legitimately inherits material bound to the
 same memory session.
 
-`visibility(sessionManager)` (exported from `hosts/pi/index.ts`) memoizes that Pi reader by leaf id,
-entry count and identity binding, so a rewind, new entry, compaction or memory-session allocation
-invalidates it while a streaming token recomputes nothing. Database state is deliberately absent
-from the key: applicability must observe a new fact or commit even when the native leaf has not moved.
+`visibility(sessionManager)` (exported from `hosts/pi/index.ts`) owns one mutable selected-context
+view. An unchanged leaf and identity return it without enumerating entries; an append-only parent
+chain extends it using only new entries. Navigation, compaction and binding changes rebuild it from
+the native selected context. Readers do not mutate this view; actual fork admission copies it once
+before asynchronous work. Database changes do not invalidate delivery: current applicability is
+resolved independently, so an external commit at the same leaf remains observable.
 
 ## Manual catchup and stop (18b)
 

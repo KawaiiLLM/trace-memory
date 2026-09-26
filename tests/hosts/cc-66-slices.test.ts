@@ -3,7 +3,7 @@ import { ccInjectionLength, decodeCcInjection, encodeCcInjection, type CcVisible
 import { transportItemText } from "../../src/core/render/material.ts";
 import { sliceCcInjection, CC_SLICE_COUNT, CC_SLICE_LIMIT, CC_KNOWLEDGE_RECENCY_NOTICE } from "../../src/hosts/cc/slices.ts";
 import type { TransportItem } from "../../src/core/render/material.ts";
-import { renderKnowledgeBlock } from "../../src/core/render/index.ts";
+import { renderKnowledgeBlock, tokens } from "../../src/core/render/index.ts";
 
 const binding: CcVisibleBinding = { db: "unit-db", nativeSession: "native-66", coreSession: 1 };
 const items: TransportItem[] = [
@@ -70,9 +70,12 @@ test("66 slice marker fits its extended host framing bound without changing the 
   const shortFrame = encodeCcInjection(short, { text: transportItemText(base, CC_KNOWLEDGE_RECENCY_NOTICE), knowledgeCommitIds: [1],
     factIds: [], entryIds: [], slice: [0, 24] });
   for (const target of [9999, 10000, 10001]) {
-    const item: TransportItem = { ...base, text: `${"x".repeat(target - shortFrame.length - 2)}😀` };
-    const exact = encodeCcInjection(short, { text: transportItemText(item, CC_KNOWLEDGE_RECENCY_NOTICE), knowledgeCommitIds: [1],
-      factIds: [], entryIds: [], slice: [0, 24] });
+    const item: TransportItem = { ...base, text: `${"x".repeat(target - shortFrame.length - 30)}😀` };
+    const encode = () => { const text = transportItemText(item, CC_KNOWLEDGE_RECENCY_NOTICE);
+      return encodeCcInjection(short, { text, knowledgeTokens: tokens(text), knowledgeCommitIds: [1],
+        factIds: [], entryIds: [], slice: [0, 24] }); };
+    while (encode().length < target) item.text = "x" + item.text;
+    const exact = encode();
     expect(exact.length).toBe(target);
     const slices = sliceCcInjection(short, [item]);
     const contexts = slices.filter(Boolean).map(value => value!.hookSpecificOutput.additionalContext);
@@ -88,10 +91,12 @@ test("92 CC placement prices the final single knowledge list, including exact UT
   const body = (second: TransportItem) => renderKnowledgeBlock([first, second].map(item => ({ category: "items", text: item.text })), CC_KNOWLEDGE_RECENCY_NOTICE);
   const initial = encodeCcInjection(binding, { ...membership, text: body(emptySecond) }).length;
   for (const target of [9999, 10000, 10001]) {
-    const second = { ...emptySecond, text: emptySecond.text + "x".repeat(target - initial - 2) + "😀" };
+    const second = { ...emptySecond, text: emptySecond.text + "x".repeat(target - initial - 30) + "😀" };
+    const encode = () => encodeCcInjection(binding, { ...membership, text: body(second), knowledgeTokens: tokens(body(second)) });
+    while (encode().length < target) second.text = "x" + second.text;
     const text = body(second);
-    expect(ccInjectionLength(binding, membership, text.length)).toBe(target);
-    expect(encodeCcInjection(binding, { ...membership, text: text }).length).toBe(target);
+    expect(ccInjectionLength(binding, { ...membership, knowledgeTokens: tokens(text) }, text.length)).toBe(target);
+    expect(encode().length).toBe(target);
     const outputs = sliceCcInjection(binding, [first, second]);
     const actual = outputs.filter(Boolean).map(value => decodeCcInjection(value!.hookSpecificOutput.additionalContext, binding)!);
     expect(actual.flatMap(header => header.commits)).toEqual([1, 2]);

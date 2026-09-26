@@ -159,7 +159,7 @@ export type TransportItem =
   | { kind: "state"; text: string; address: string; receipt: { fromCommit: number; toCommits: number[] } }
   | { kind: "fact"; text: string; factId: number; pending: boolean }
   | { kind: "raw"; text: string; entryId: number; address: string; pending: boolean }
-  | { kind: "receipt"; text: string };
+  | { kind: "receipt"; text: string; knowledge?: boolean };
 
 /** A whole selected domain item can be independently framed when its transport has several
  * unordered carriers. The host only decides which complete framed items fit each carrier. */

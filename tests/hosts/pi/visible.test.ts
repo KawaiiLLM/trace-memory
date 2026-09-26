@@ -4,6 +4,7 @@ import { expect, test } from "vitest";
 import type { CompactionEntry, CustomMessageEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { host, reply } from "./test-host.ts";
 import { visibility } from "../../../src/hosts/pi/index.ts";
+import { tokens } from "../../../src/core/render/tokens.ts";
 import { tag } from "../../../src/hosts/pi/settings.ts";
 import { visibleView, type Carrier, type ContextEntry, type VisibleBinding } from "../../../src/hosts/pi/visible.ts";
 
@@ -48,7 +49,7 @@ test("29a case 3 (injection identity): the injected message carries exactly the 
     expect(carrierOf(result.message).supplied.knowledgeCommitIds).toEqual([commit]);
     const entry = customMessages(h)[0]!;
     expect(carrierOf(entry).db).toBe(h.dbPath);
-    expect(carrierOf(entry).supplied).toEqual({ entries: [], factIds: [], knowledgeCommitIds: [commit] });
+    expect(carrierOf(entry).supplied).toEqual({ entries: [], factIds: [], knowledgeCommitIds: [commit], knowledgeTokens: tokens(result.message.content) });
     const visible = view(h);
     expect([...visible.knowledgeCommitIds]).toEqual([commit]);
     expect(visible.raw.get(entry.id)).toBeUndefined(); // our own injection is not a source entry
@@ -194,7 +195,7 @@ test("29a case 9 / the memoized view: one computation per context position, and 
     await h.prompt("first"); await h.answer("one"); await h.emit("agent_settled"); await h.drain();
     let built = 0;
     const manager = h.ctx.sessionManager;
-    const visible = visibility({ getLeafId: () => manager.getLeafId(), getEntries: () => manager.getEntries(),
+    const visible = visibility({ getLeafId: () => manager.getLeafId(), getEntry: id => manager.getEntry(id),
       buildContextEntries: () => { built++; return manager.buildContextEntries(); } });
     const binding = bound(h);
     expect([...visible(binding).knowledgeCommitIds]).toEqual([commit]);
@@ -207,11 +208,11 @@ test("29a case 9 / the memoized view: one computation per context position, and 
     seedKnowledge(h, "另一条全局规则");
     expect([...visible(binding).knowledgeCommitIds]).toEqual([commit]);
     expect(built).toBe(1);
-    // A new entry invalidates it; so does the memory session id becoming known.
+    // A real append extends the selected view, without rebuilding historical context.
     await h.prompt("second");
     visible(binding);
-    expect(built).toBe(2);
+    expect(built).toBe(1);
     visible({ ...binding, session: null });
-    expect(built).toBe(3);
+    expect(built).toBe(2);
   } finally { await h.dispose(); }
 });

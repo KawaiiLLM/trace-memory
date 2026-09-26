@@ -128,18 +128,26 @@ test("92: real staging renders once across an external mid-snapshot commit and 2
       const slot = decodeCcInjection(output.hookSpecificOutput.additionalContext, visible)!.slice![0];
       expect(output).toEqual(stage[0].slices[slot]);
     }
-    // Staging is not delivery: a discarded/failed carrier contributes no IDs. 05's new exact
-    // ordinary-prompt delta is intentionally not implemented or asserted here.
-    const records = [{ uuid: "user", parentUuid: null, type: "user", promptSource: "typed",
-      message: { role: "user", content: "hello" } }, ...outputs.slice(1).map((output, n) => ({
-        uuid: `carrier-${n}`, parentUuid: n ? `carrier-${n - 1}` : "user", type: "attachment",
+    // Staging is not delivery. Keep the now-stale first body but discard another segment.
+    const keptOutputs = outputs.filter(output => decodeCcInjection(output.hookSpecificOutput.additionalContext, visible)!.slice![0] !== 23);
+    const records = [{ uuid: "first-user", parentUuid: null, type: "user", promptSource: "typed",
+      timestamp: "2026-01-02T00:00:00.000Z", message: { role: "user", content: "hello" } }, ...keptOutputs.map((output, n) => ({
+        uuid: `carrier-${n}`, parentUuid: n ? `carrier-${n - 1}` : "first-user", type: "attachment",
         sessionId: visible.nativeSession, attachment: { type: "hook_additional_context", hookEvent: "SessionStart",
           hookName: "SessionStart", content: [output.hookSpecificOutput.additionalContext] },
       }))];
-    const retained = ccVisibleView(records, visible).knowledgeCommitIds;
-    expect(retained.size).toBe(23); expect(retained).not.toContain(oldIds[0]);
-    expect(retained).not.toContain(newId);
+    const retainedView = ccVisibleView(records, visible), retained = retainedView.knowledgeCommitIds;
+    expect(retained.size).toBe(23); expect(retained).toContain(oldIds[0]);
+    expect(retained).not.toContain(oldIds[23]); expect(retained).not.toContain(newId);
+    expect(retainedView.knowledgeTokens).toBe(keptOutputs.reduce((sum, output) => sum + decodeCcInjection(output.hookSpecificOutput.additionalContext, visible)!.knowledgeTokens!, 0));
     expect(stage[0].slices.filter(Boolean)).toHaveLength(24);
+    // At the next existing SessionStart (no new prompt hook), both missing exact versions return.
+    writeFileSync(f.transcript, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+    const next = await f.run(0, epoch + 60_000).result;
+    expect(next.code, next.stderr).toBe(0);
+    const nextStage = f.stages().find(value => value.deadline === epoch + 115_000)!;
+    const delta = nextStage.slices.filter(Boolean).flatMap((output: any) => decodeCcInjection(output.hookSpecificOutput.additionalContext, visible)!.commits);
+    expect(delta.sort((a: number, b: number) => a - b)).toEqual([oldIds[23], newId]);
   } finally { memory.store.close(); }
 }, 30_000);
 

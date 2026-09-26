@@ -197,8 +197,17 @@ test("73: clear truncates the Raw window rather than falling back, and warns in 
   await expect(handleCcHook(f.config, { hook_event_name: "SessionStart", source: "compact", session_id: f.childId,
     transcript_path: f.childTranscriptPath })).rejects.toThrow();
   expect(readBinding(f.config, f.childId)!.lastCompactionNotice).toBe(output!.systemMessage);
-  f.writeChild([{ uuid: "child-compact", parentUuid: null, type: "system", subtype: "compact_boundary",
-    timestamp: "2026-01-01T00:10:00.000Z" }]);
+  // 92 reads actual preserved context even on a compact event. Retain the real clear carrier,
+  // not a boundary with missing/unknown retention metadata.
+  f.writeChild([
+    { uuid: "clear-carrier", parentUuid: null, type: "attachment", attachment: { type: "hook_additional_context",
+      hookEvent: "SessionStart", content: [output!.hookSpecificOutput.additionalContext] } },
+    { uuid: "child-compact", parentUuid: null, logicalParentUuid: "clear-carrier", type: "system", subtype: "compact_boundary",
+      timestamp: "2026-01-01T00:10:00.000Z", compactMetadata: {
+        preservedSegment: { headUuid: "clear-carrier", tailUuid: "clear-carrier" },
+        preservedMessages: { anchorUuid: "child-summary", uuids: ["clear-carrier"] } } },
+    { uuid: "child-summary", parentUuid: "child-compact", type: "user", isCompactSummary: true },
+  ]);
   await handleCcHook(f.config, { hook_event_name: "SessionStart", source: "compact", session_id: f.childId,
     transcript_path: f.childTranscriptPath });
   expect(readBinding(f.config, f.childId)!.lastCompactionNotice).toBeNull();

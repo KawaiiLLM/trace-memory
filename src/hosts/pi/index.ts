@@ -13,7 +13,7 @@ import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
 import { TraceMemory, directoryAllocation, enrollmentDefault, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
-import { visibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
+import { visibleView, extendVisibleView, knowledgeAccountingHash, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
 import { CURRENT_CONTEXT_SNAPSHOT_EVENT, type CurrentContextSnapshotResult } from "./context-snapshot.ts";
@@ -52,20 +52,29 @@ export const piResultText: ResultExtractor = (result) => {
   return { text, ...(empty ? {} : { details: JSON.stringify(details) }) };
 };
 
-/** Ticket 29a "One derived view": the visible view of the selected context, computed at most once per
- * context position. The key is the leaf id, the entry count and the identity the view is bound to —
- * three cheap reads, none of which walks the tree — so a rewind, a fork, a new entry, a compaction and
- * the allocation of the memory session id each invalidate it, while a streaming token changes none of
- * them and re-reads the cached value. Database state is deliberately NOT in the key: applicability
- * must observe a new fact or commit even when the native leaf has not moved, so it is answered by its
- * own reads and never memoized with this. */
-export type VisibleSource = Pick<ExtensionContext["sessionManager"], "getLeafId" | "getEntries" | "buildContextEntries">;
+/** One selected-context view. Native parent lookups extend an append; navigation/compaction rebuild.
+ * Even getEntries() copies the entire native history, so the warm path never calls it. Database
+ * applicability remains separate and observes external writes at an unchanged native leaf.
+ * Consumers borrow this mutable view read-only; asynchronous task admission takes one frozen copy. */
+export type VisibleSource = Pick<ExtensionContext["sessionManager"], "getLeafId" | "getEntry" | "buildContextEntries">;
 export function visibility(manager: VisibleSource) {
-  let cached: { key: string; view: VisibleView } | undefined;
+  let cached: { binding: string; leaf: string | null; view: VisibleView } | undefined;
   return (binding: VisibleBinding): VisibleView => {
-    const key = `${binding.db}|${binding.session ?? ""}|${binding.pi}|${manager.getLeafId() ?? ""}|${manager.getEntries().length}`;
-    if (cached?.key !== key) cached = { key, view: visibleView(manager.buildContextEntries() as ContextEntry[], binding) };
-    return cached.view;
+    const identity = JSON.stringify(binding), leaf = manager.getLeafId();
+    if (cached?.binding === identity && cached.leaf === leaf) return cached.view;
+    const appended: ContextEntry[] = [];
+    let parent = leaf;
+    if (cached?.binding === identity) while (parent !== cached.leaf && parent !== null) {
+      const entry = manager.getEntry(parent);
+      if (!entry || entry.type === "compaction" || entry.type === "branch_summary") break;
+      appended.push(entry);
+      parent = entry.parentId;
+    }
+    const view = cached?.binding === identity && parent === cached.leaf
+      ? extendVisibleView(cached.view, appended.reverse(), binding)
+      : visibleView(manager.buildContextEntries() as ContextEntry[], binding);
+    cached = { binding: identity, leaf, view };
+    return view;
   };
 }
 
@@ -284,7 +293,8 @@ export default function (pi: ExtensionAPI) {
    * can never satisfy coverage. `session` is null until the first reply allocates the memory session
    * id; an injection written before that is recognised afterwards through the Pi session id here. */
   const binding = (): VisibleBinding => ({ db: dbPath, session: state.sessionId ?? null, pi: state.piId });
-  const carrier = (supplied: SuppliedMaterial) => ({ traceMemory: { ...binding(), supplied } });
+  const carrier = (supplied: SuppliedMaterial, text: string) => ({ traceMemory: { ...binding(), supplied,
+    ...(supplied.knowledgeTokens === undefined ? {} : { knowledgeHash: knowledgeAccountingHash(text, supplied.knowledgeTokens) }) } });
   /** The task a fork refusal is decided for: its phase, its evidence path and — 27d/18b — the
    * boundary that fixes which pending entries it may take, so 29c checks the batch this task would
    * really select and not a larger set it will never freeze. */
@@ -557,7 +567,7 @@ export default function (pi: ExtensionAPI) {
     // that will run with an inherited context gets one: an explicit subagent and a fork re-admitted as
     // a subagent (`fallbackReason` makes `effective` subagent above) pass none, so core builds the
     // complete fresh material for them, exactly as before.
-    const inherited = effective === "fork" ? visible(binding()) : undefined;
+    const inherited = effective === "fork" ? structuredClone(visible(binding())) : undefined;
     const common = { ...target, ...selection, effectiveMode: effective, thinkingLevel: inheritedThinking,
       ...(inherited ? { visible: inherited } : {}),
       subagentThinkingLevel: subagentThinking,
@@ -928,9 +938,10 @@ export default function (pi: ExtensionAPI) {
     const sameProject = !state.sessionId || memory.store.getSession(state.sessionId)?.projectId === authority.projectId;
     if (!enabled() || !sameBinding || !sameTarget || !sameProject) return;
     const supplied: SuppliedMaterial = { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
+      knowledgeTokens: block.knowledgeTokens,
       ...(block.knowledgeStates?.length ? { knowledgeStates: block.knowledgeStates } : {}) };
     return { message: { customType: tag, content: block.text, display: false,
-      details: { traceMemory: { ...carrier(supplied).traceMemory, composition: block.composition } } } };
+      details: { traceMemory: { ...carrier(supplied, block.text).traceMemory, composition: block.composition } } } };
   });
   pi.on("message_start", (event, context) => {
     ensure(context); reconcile();
@@ -1277,7 +1288,8 @@ export default function (pi: ExtensionAPI) {
           return memory.compact(state.sessionId!, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION));
         });
         const block = memory.injection({ projectId: state.projectId });
-        return { text: block.text, composition: block.composition, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
+        return { text: block.text, composition: block.composition, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
+          knowledgeTokens: block.knowledgeTokens, knowledgeStates: block.knowledgeStates } };
       } catch (error) { return { native: true, reason: String(error) }; } // an unexpected store error is a reason to delegate, never oversized material
     };
     const path = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
@@ -1305,7 +1317,7 @@ export default function (pi: ExtensionAPI) {
     // given once Pi has appended it (\`session_compact\` below). No callback runs between the final
     // reprice above and this return, and a compaction Pi does not append warns about nothing.
     publishedTruncation = result.truncated;
-    return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied).traceMemory, composition: result.composition } } } };
+    return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied, result.text).traceMemory, composition: result.composition } } } };
   });
   pi.on("session_compact", (_event, context) => {
     // Pi 0.85.1 finds its event entry by the first equal summary. Read the actual appended

@@ -15,12 +15,13 @@ const address = (item: TransportItem): string => item.kind === "knowledge" ? ite
  * unchanged texts under the native per-hook limit; never identify members from arbitrary prose.
  * Capacity drops the lowest-priority whole item and names it in a receipt. */
 export function sliceCcInjection(binding: CcVisibleBinding, items: readonly TransportItem[],
-  warning?: string): (CcHookOutput | null)[] {
+  warning?: string, knowledgeAllowance = Infinity): (CcHookOutput | null)[] {
   const slots: { items: TransportItem[] }[] = Array.from({ length: CC_SLICE_COUNT }, () => ({ items: [] }));
   const omitted: string[] = [];
-  let pendingRaw = 0, pendingFacts = 0, pendingFactTokens = 0;
+  let pendingRaw = 0, pendingFacts = 0, pendingFactTokens = 0, omittedKnowledge = false;
   const omit = (item: TransportItem): void => {
     omitted.push(address(item));
+    if (item.kind === "knowledge" || item.kind === "state") omittedKnowledge = true;
     if (item.kind === "raw" && item.pending) pendingRaw++;
     if (item.kind === "fact" && item.pending) { pendingFacts++; pendingFactTokens += tokens(item.text); }
   };
@@ -36,8 +37,8 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     slice: [index, CC_SLICE_COUNT] as [number, number],
   });
   const itemText = (item: TransportItem) => transportItemText(item, CC_KNOWLEDGE_RECENCY_NOTICE);
-  // One exact assembly for both trial size and emitted bytes. Parts reference immutable item
-  // text; trials neither join full bodies nor compute digests. Each carrier has one knowledge list.
+  // One exact assembly for trial character size, Knowledge cost and emitted bytes. Trials do not
+  // compute digests; each final carrier has one knowledge list with its own domain framing.
   const assemble = (items: TransportItem[], index: number) => {
     const members = [...items].sort((a, b) => rank(a) - rank(b) ||
       (a.kind === "knowledge" && b.kind === "knowledge" ? a.commitId - b.commitId : 0));
@@ -48,7 +49,13 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
       ...(knowledge.length ? [knowledge] : []),
       ...members.filter(item => item.kind !== "state" && item.kind !== "knowledge").map(item => [itemText(item)]),
     ];
-    return { membership: membership(members, index), parts: sections.flatMap((section, at) => at ? ["\n\n", ...section] : section) };
+    const knowledgeSections = [
+      ...members.filter(item => item.kind === "state").map(itemText),
+      ...(knowledge.length ? [knowledge.join("")] : []),
+      ...members.filter(item => item.kind === "receipt" && item.knowledge !== false).map(itemText),
+    ];
+    return { membership: { ...membership(members, index), knowledgeTokens: tokens(knowledgeSections.join("\n\n")) },
+      parts: sections.flatMap((section, at) => at ? ["\n\n", ...section] : section) };
   };
   const encode = (members: TransportItem[], index: number) => {
     const assembled = assemble(members, index);
@@ -75,7 +82,8 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     const count = item.text.match(/omitted (\d+)/)?.[1];
     const expansion = item.text.split("expand: ")[1];
     const addresses = expansion?.match(/(?:K\d+(?:@v\d+)?|F\d+|T\d+#E\d+)/g) ?? [];
-    const compact: TransportItem = { kind: "receipt", text: `omitted ${count ?? "1"} ${count ? "items" : "receipt"}; expand: ${expandList(addresses)}` };
+    const compact: TransportItem = { kind: "receipt", knowledge: item.knowledge,
+      text: `omitted ${count ?? "1"} ${count ? "items" : "receipt"}; expand: ${expandList(addresses)}` };
     if (!addresses.length || !tryPlace(compact)) throw new Error("CC core omission receipt has no usable expansion address");
   }
   for (const item of ordered.filter(item => item.kind === "state")) if (!tryPlace(item)) omit(item);
@@ -106,21 +114,45 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     packed.forEach((slot, index) => { slots[index] = slot; });
   }
   for (const item of ordered.filter(item => item.kind === "raw" || item.kind === "fact")) if (!tryPlace(item)) omit(item);
+  const knowledgeCost = () => slots.reduce((sum, slot, index) => sum + assemble(slot.items, index).membership.knowledgeTokens, 0);
+  const remove = (item: TransportItem) => {
+    const slot = slots.find(slot => slot.items.includes(item))!;
+    slot.items.splice(slot.items.indexOf(item), 1);
+    omit(item);
+  };
+  const lowestKnowledge = () => [...ordered].reverse().find(item => (item.kind === "knowledge" || item.kind === "state")
+    && slots.some(slot => slot.items.includes(item)));
+  // Same admission priorities as character packing: remove oldest bodies before state notices.
+  // Final segment framing belongs to K; host JSON framing and Fact/Raw do not.
+  while (knowledgeCost() > knowledgeAllowance) {
+    const item = lowestKnowledge();
+    if (!item) break;
+    remove(item);
+  }
   if (omitted.length) {
     const receipt: TransportItem = { kind: "receipt", text: "" };
     // Last in selection priority, not last in physical slot: first-fit may leave holes.
     while (true) {
       receipt.text = `omitted ${omitted.length} whole items at CC inline capacity; expand: ${expandList(omitted)}`;
-      if (tryPlace(receipt)) break;
-      const retained = [...ordered].reverse().find(item => item.kind !== "receipt" &&
+      receipt.knowledge = omittedKnowledge;
+      const placed = tryPlace(receipt);
+      if (placed && knowledgeCost() <= knowledgeAllowance) break;
+      if (placed) {
+        const slot = slots.find(slot => slot.items.includes(receipt))!;
+        slot.items.splice(slot.items.indexOf(receipt), 1);
+      }
+      const retained = placed ? lowestKnowledge() : [...ordered].reverse().find(item => item.kind !== "receipt" &&
         slots.some(slot => slot.items.includes(item)));
-      if (!retained) throw new Error("CC inline envelope cannot carry its omission receipt");
-      const slot = slots.find(slot => slot.items.includes(retained))!;
-      const position = slot.items.indexOf(retained);
-      slot.items.splice(position, 1);
-      omit(retained);
+      if (!retained) {
+        if (!placed) throw new Error("CC inline envelope cannot carry its omission receipt");
+        break; // No K item remains, and even its omission receipt does not fit this window.
+      }
+      remove(retained);
     }
   }
+  // A window too small even for its pre-existing K receipts emits no K material (73).
+  if (knowledgeCost() > knowledgeAllowance)
+    for (const slot of slots) slot.items = slot.items.filter(item => item.kind !== "receipt" || item.knowledge === false);
   const transportWarning = pendingRaw || pendingFacts ? `Trace Memory: inline transport omitted ${[
     ...(pendingRaw ? [`${pendingRaw} pending Raw ${pendingRaw === 1 ? "entry" : "entries"}`] : []),
     ...(pendingFacts ? [`${pendingFacts} unconsolidated ${pendingFacts === 1 ? "fact" : "facts"} (${pendingFactTokens} tokens)`] : []),

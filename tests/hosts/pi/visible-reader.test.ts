@@ -10,17 +10,17 @@ const supplied = (over: Partial<SuppliedMaterial> = {}): SuppliedMaterial =>
   ({ entries: [], factIds: [], knowledgeCommitIds: [], ...over });
 /** Our injected message: a `custom_message` entry with the carrier on its `details`. */
 const injected = (id: string, over: Partial<Carrier> = {}): ContextEntry =>
-  ({ id, type: "custom_message", customType: "trace-memory", details: { traceMemory: { ...binding, supplied: supplied(), ...over } } });
+  ({ id, type: "custom_message", customType: "trace-memory", content: "", details: { traceMemory: { ...binding, supplied: supplied(), ...over } } });
 /** A custom compaction: the same carrier, on the compaction entry Pi appended for it. */
 const compacted = (id: string, over: Partial<Carrier> = {}): ContextEntry =>
-  ({ id, type: "compaction", details: { traceMemory: { ...binding, supplied: supplied(), ...over } } });
+  ({ id, type: "compaction", summary: "", details: { traceMemory: { ...binding, supplied: supplied(), ...over } } });
 const message = (id: string): ContextEntry => ({ id, type: "message" });
 
 test("29a case 3 (injection identity): an injection carries exactly its supplied commits, is not a Raw source, and an id in its text alone covers nothing", () => {
   const view = visibleView([
     message("e1"),
     // The rendered block names K4@11 and K9@12; only K4@11 was actually kept within the budget, so
-    // only K4@11 is stated. Nothing here parses the content, which is not even read.
+    // only K4@11 is stated. Membership is metadata; parsing text for cost cannot add IDs.
     { ...injected("e2", { supplied: supplied({ knowledgeCommitIds: [11] }) }), type: "custom_message" },
   ], binding);
   expect([...view.knowledgeCommitIds]).toEqual([11]);
@@ -116,7 +116,7 @@ test.each([
   ]),
 ])("malformed persisted carrier %#: reject atomically without throwing", payload => {
   const view = visibleView([{ ...injected("bad"), details: { traceMemory: payload } }], binding);
-  expect(view).toEqual({ raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(), injection: false, suppliedGeneration: 0 });
+  expect(view).toEqual({ raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(), knowledgeTokens: 0, injection: false, suppliedGeneration: 0 });
 });
 
 test.each(["custom", "branch_summary", "model_change", "message", "custom_message"])("foreign container %s donates no plugin coverage", type => {

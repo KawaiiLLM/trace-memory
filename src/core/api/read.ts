@@ -79,7 +79,7 @@ export interface TopicGroups {
  * carries — every supplied entry, pending and refilled alike, plus the facts and knowledge commits
  * that survived budgeting. What a budget dropped is absent here. A native delegation supplies
  * nothing, so it has no `supplied` at all. */
-export type CompactResult = { text: string; supplied: SuppliedMaterial; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt }
+export type CompactResult = { text: string; supplied: SuppliedMaterial; knowledgeAllowance?: number; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt }
   | { native: true; reason: string };
 
 /** 73 "Truncation is announced in the foreground": whenever compact omits unprocessed material —
@@ -96,7 +96,7 @@ export interface TruncationReceipt { raw?: { entries: number }; facts?: { count:
  * may never exceed. Nothing is required any more (73): every window is optional and truncates. */
 export interface ChargedWindows { knowledge: number; facts: number; raw: number; envelope: number }
 /** Foreground Knowledge delivery and the exact body/state identities its carrier may persist. */
-export interface Injection { text: string; knowledgeCommitIds: number[]; knowledgeStates?: KnowledgeStateReceipt[]; transportItems?: TransportItem[]; composition?: MemoryComposition }
+export interface Injection { text: string; knowledgeTokens?: number; knowledgeAllowance?: number; knowledgeCommitIds: number[]; knowledgeStates?: KnowledgeStateReceipt[]; transportItems?: TransportItem[]; composition?: MemoryComposition }
 
 /** 22c "complete snapshot": one search hit whose formatting the query deferred to a later page.
  * Fact relations and Raw entry membership are mutable; the commit records, path and labels selected
@@ -143,7 +143,7 @@ export function knowledgeStateNotes(store: Store, current: readonly KnowledgeWit
     const revision = byCommit.get(id);
     if (!revision) return [];
     const shown = selected.get(revision.knowledgeId);
-    const resolvedIdentity = graph.resolved.filter(candidate => candidate.knowledgeId === revision.knowledgeId);
+    const resolvedIdentity = graph.current.filter(candidate => candidate.knowledgeId === revision.knowledgeId);
     const applicableIdentity = graph.revisions.filter(candidate => candidate.knowledgeId === revision.knowledgeId
       && graph.applicable.has(candidate.id));
     if (!graph.applicable.has(id)) {
@@ -154,20 +154,21 @@ export function knowledgeStateNotes(store: Store, current: readonly KnowledgeWit
           : `K${revision.knowledgeId} no longer applies` }];
     }
     const descendants = graph.descendants(id);
-    // Resolution precedes visibility. A hidden successor still invalidates a retained older body;
-    // the notice names only its immutable address and never renders its body. Competing siblings
-    // are not descendants, so the globally selected revision for this identity is the fallback.
-    const descendantsSelected = graph.resolved.filter(candidate => candidate.id !== id && descendants.has(candidate.id));
+    // Resolve globally, then name only successors visible to this reader (archives included).
+    // An out-of-scope successor invalidates the old body without exposing its identity or version.
+    const descendantsSelected = graph.current.filter(candidate => candidate.id !== id && descendants.has(candidate.id));
     const successors = descendantsSelected.length ? descendantsSelected
       : resolvedIdentity.filter(candidate => candidate.id !== id);
     const directBranches = graph.revisions.filter(candidate => candidate.parentId === id);
     if (shown && shown.id !== id && (directBranches.length > 1 || !descendants.has(shown.id)))
       return [{ receipt: { fromCommit: id, toCommits: [shown.id] }, revisions: [shown],
         text: `${address(revision)} is shown as ${address(shown)}` }];
-    if (!successors.length) return [];
+    if (!successors.length) return [{ receipt: { fromCommit: id, toCommits: [id] }, revisions: [],
+      text: `K${revision.knowledgeId} no longer applies` }];
     const split = graph.revisions.some(r => r.op === "split" && r.parentId === id && graph.applicable.has(r.id));
     if (split) return [{ receipt: { fromCommit: id, toCommits: successors.map(r => r.id) }, revisions: successors,
-      text: knowledgeStateText(revision, successors, address) }];
+      text: successors.length === 1 ? `${address(revision)} is split; visible result: ${address(successors[0]!)}`
+        : knowledgeStateText(revision, successors, address) }];
     return successors.map(successor => ({ receipt: { fromCommit: id, toCommits: [successor.id] }, revisions: [successor],
       text: knowledgeStateText(revision, [successor], address) }));
   });
@@ -350,10 +351,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   // under the existing scope and commit-graph rules. Its block layout lives in core/render/material.ts.
   const applicable = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string) =>
     store.listVisibleKnowledge(sessionId, projectId, headTurnId, branch);
-  /** Ticket 34c: one evidence-aware Knowledge-only predicate at every ordinary foreground prompt.
-   * One path snapshot and one graph resolve applicability, visible historical bodies, current exact
-   * results and state changes. Exact Fact bodies or proven complete source-entry bindings may suppress
-   * a nonempty current support list; empty and partial evidence never do. */
+  /** 92: current visible exact versions minus bodies actually retained on the selected context.
+   * Facts and Raw are evidence, not substitutes for a knowledge publication. */
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility(),
     transport = false): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
@@ -366,46 +365,35 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     if (!store.getProject(projectId)) throw new Error(`project ${projectId} does not exist`);
     const path = id === undefined ? null : typeof target === "object" && "sessionId" in target
       ? target : store.knowledgePath(id);
-    const snapshot = path ? store.pathSnapshot(path) : null;
     // Ticket 80 item 2: injection runs on every ordinary prompt, sharing this session's per-process
     // graph memo with the footer, eligibility and knowledgePools/duePools reads of the same request.
     const input = store.commitGraphInput(undefined, id);
-    const graph = store.commitGraph(path, path ? undefined : projectId, snapshot ?? undefined, input);
+    const graph = store.commitGraph(path, path ? undefined : projectId, undefined, input);
     const records = store.knowledgeRecords(graph.revisions.map(revision => revision.knowledgeId));
     const values = (revisions: readonly KnowledgeRevision[]): KnowledgeWithRevision[] => revisions.map(revision => ({
       knowledge: records.get(revision.knowledgeId)!, revision,
     }));
     const current = values(graph.current.filter(revision => revision.op !== "archive"));
-    const visibleBodies = values(graph.revisions.filter(revision => revision.op !== "archive"
-      && graph.applicable.has(revision.id) && visible.knowledgeCommitIds.has(revision.id)));
     const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? undefined : projectId, graph, true);
 
-    const rawIds = store.visibleSourceEntryIds(path, snapshot, visible.raw, visible.rawEntryIds ?? new Map());
-    const supported = new Set([...current.filter(item => !visible.knowledgeCommitIds.has(item.revision.id)).map(item => item.revision),
-      ...allStates.flatMap(state => state.revisions)].flatMap(revision => revision.supports));
-    const facts = [...supported].flatMap(factId => input.metadata.facts.get(factId)?.fact ?? []);
-    const rawCovered = store.factsCoveredByRaw(facts.filter(fact => !visible.factIds.has(fact.id)), rawIds, input.metadata.facts);
-    const covered = (revision: KnowledgeRevision) => revision.supports.length > 0
-      && revision.supports.every(factId => visible.factIds.has(factId) || rawCovered.has(factId));
-
-    const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id) && !covered(revision));
-    const states = allStates.filter(state => !(visible.knowledgeStates ?? new Set()).has(knowledgeStateKey(state.receipt))
-      && !(state.revisions.length > 0 && state.revisions.every(covered)));
+    const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
+    const states = allStates.filter(state => !(visible.knowledgeStates ?? new Set()).has(knowledgeStateKey(state.receipt)));
     if (!delta.length && !states.length) return empty();
 
-    // Historical applicable bodies still retained in context spend the same configured allowance.
-    // Re-render one coherent visible view with the same category/status framing; do not sum stored
-    // body bytes, averages or candidate counts. Existing acknowledged notices are charged too.
     const line = knowledgeLine;
-    const visibleKnowledge = budgetKnowledge(visibleBodies, Infinity, line);
-    const acknowledged = visible.knowledgeStates ?? new Set<string>();
-    // A retained status notice is independent of its old body: hosts may keep the notice alone.
-    // Reconstruct its current matching transition without granting body coverage or producing a new notice.
-    const acknowledgedSources = [...acknowledged].map(key => Number(key.split(">")[0]));
-    const acknowledgedStateTexts = knowledgeStateNotes(store, current, acknowledgedSources, path, path ? undefined : projectId, graph, true)
-      .filter(state => acknowledged.has(knowledgeStateKey(state.receipt))).map(state => state.text);
-    const visibleText = injectionText({ knowledge: visibleKnowledge.groups, receipts: [] }, acknowledgedStateTexts);
-    const remaining = knowledgeCap - tokens(visibleText);
+    // Hosts account every retained occurrence, including inapplicable bodies, from its carrier.
+    // Only older direct API callers without that measured view need the compatibility projection;
+    // normal publication must not re-render historical bodies just to discard their estimated cost.
+    const unaccountedCost = () => {
+      const bodies = values(graph.revisions.filter(revision => revision.op !== "archive" && visible.knowledgeCommitIds.has(revision.id)));
+      const groups = budgetKnowledge(bodies, Infinity, line).groups;
+      const acknowledged = visible.knowledgeStates ?? new Set<string>();
+      const sources = [...acknowledged].map(key => Number(key.split(">")[0]));
+      const notes = knowledgeStateNotes(store, current, sources, path, path ? undefined : projectId, graph, true)
+        .filter(state => acknowledged.has(knowledgeStateKey(state.receipt))).map(state => state.text);
+      return tokens(injectionText({ knowledge: groups, receipts: [] }, notes));
+    };
+    const remaining = knowledgeCap - (visible.knowledgeTokens ?? unaccountedCost());
     if (remaining <= 0) return empty();
 
     // State transitions retain priority over optional bodies. Then the shared selector preserves
@@ -429,7 +417,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (!stateCount) return empty();
       const material = { knowledge: [], receipts: [] };
       const rendered = measuredMemory(buildStates(stateCount), material);
-      return { ...rendered, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
+      return { ...rendered, knowledgeTokens: tokens(rendered.text), knowledgeAllowance: remaining, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
         ...(transport ? { transportItems: states.slice(0, stateCount).map(transportState) } : {}) };
     }
     const selectedStates = states.slice(0, stateCount);
@@ -446,7 +434,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const { selected, material, text } = build(count);
     if (tokens(text) > remaining || (!selected.commits.length && !selectedStates.length)) return empty();
     const rendered = measuredMemory(text, material);
-    return { ...rendered, knowledgeCommitIds: selected.commits,
+    return { ...rendered, knowledgeTokens: tokens(rendered.text), knowledgeAllowance: remaining, knowledgeCommitIds: selected.commits,
       ...(transport ? { transportItems: [
         ...delta.filter(item => selected.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
           text: knowledgeLine(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
@@ -743,15 +731,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // ---- 1. Knowledge first: required status notices, newest kept, then bodies newest-first. ----
       const knowledgeEnvelope = caps.knowledge + sharedAllowance;
       const allNotes = knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path, undefined, undefined, true)
-        .sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit)
-        .map(note => note.text.replace(/(superseded by K\d+@\d+)$/, "$1 above"));
+        .sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit);
       const noteReceipt = (omitted: number) => omitted
         ? [`omitted ${omitted} older inherited knowledge status lines; knowledge base plus shared allowance is full`] : [];
-      const noteTextCost = (kept: number) => kept ? charge([KNOWLEDGE_STATUS_TITLE, ...allNotes.slice(0, kept)]) : 0;
+      const noteTextCost = (kept: number) => kept ? charge([KNOWLEDGE_STATUS_TITLE, ...allNotes.slice(0, kept).map(note => note.text)]) : 0;
       const noteCost = (kept: number) => noteTextCost(kept) + receiptCharge(noteReceipt(allNotes.length - kept));
       let noteKept = allNotes.length;
       while (noteKept > 0 && noteCost(noteKept) > knowledgeEnvelope) noteKept--;
-      const notes = allNotes.slice(0, noteKept);
+      const notes = allNotes.slice(0, noteKept).map(note => note.text);
       // With nothing kept, a receipt that does not fit either leaves the notices window empty.
       const noteOmittedReceipt = noteCost(noteKept) <= knowledgeEnvelope ? noteReceipt(allNotes.length - noteKept) : [];
       const knowledgeNoticeCost = noteTextCost(noteKept) + receiptCharge(noteOmittedReceipt);
@@ -868,22 +855,30 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         entries: suppliedRaw.map(s => ({ id: s.entry.id, view: s.content })),
         receipts: [...suppliedRaw.flatMap(s => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...active.receipts, ...noteOmittedReceipt] };
       return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
+        // Transport may repeat K framing, but cannot borrow bases reserved for facts/Raw.
+        knowledgeAllowance: knowledgeEnvelope - Math.max(0, rawCharged - caps.raw)
+          - Math.max(0, factsWindowCost(finalFacts.length, finalFactReceipts) - caps.facts),
         ...(transport ? { transportItems: [
           ...knowledge.filter(item => active.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
             text: knowledgeLine(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
             address: `K${item.knowledge.id}@v${store.versionOrdinal(item.knowledge.id, item.revision.id)}` })),
-          ...notes.map(text => ({ kind: "receipt" as const, text })),
+          ...allNotes.slice(0, noteKept).map(note => ({ kind: "state" as const, text: note.text, receipt: note.receipt,
+            address: `K${store.knowledgeRevision(note.receipt.fromCommit)!.knowledgeId}` })),
           ...factGroupLayout(finalFacts, factTurns).map(({ fact, header }) => ({ kind: "fact" as const,
             text: header + factLine(fact.id, factRelations.get(fact.id) ?? []), factId: fact.id,
             pending: pendingFactIds.has(fact.id) })),
           ...suppliedRaw.map(step => ({ kind: "raw" as const, text: step.content, entryId: step.entry.id,
             address: `T${step.entry.turnId}#E${step.entry.entryOrdinal}`, pending: pendingIds.has(step.entry.id) })),
-          ...material.receipts.map(text => ({ kind: "receipt" as const, text })),
+          ...material.receipts.map(text => ({ kind: "receipt" as const, text,
+            knowledge: active.receipts.includes(text) || noteOmittedReceipt.includes(text) })),
         ] } : {}),
         // 29a "Renderers return what they kept": exactly the identities this replacement carries.
         // What a budget left out is absent here (28a item 7) and stays pending in the store.
         supplied: { entries: suppliedRaw.map(s => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" as const })),
-          factIds: finalFacts.map(f => f.id), knowledgeCommitIds: active.commits },
+          factIds: finalFacts.map(f => f.id), knowledgeCommitIds: active.commits,
+          knowledgeTokens: tokens(injectionText({ knowledge: active.groups,
+            receipts: [...active.receipts, ...noteOmittedReceipt] }, notes)),
+          ...(noteKept ? { knowledgeStates: allNotes.slice(0, noteKept).map(note => note.receipt) } : {}) },
         // The per-window accounting beside the text, for the acceptance probe; diagnostics only.
         charged: { knowledge: knowledgeUsed, facts: factsWindowCost(finalFacts.length, finalFactReceipts), raw: rawCharged, envelope },
         ...(Object.keys(truncated).length ? { truncated } : {}) };

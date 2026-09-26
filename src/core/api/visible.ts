@@ -21,6 +21,8 @@ export interface SuppliedMaterial {
   knowledgeCommitIds: number[];
   /** Fully rendered state notices. They establish neither body coverage nor a complete-read handle. */
   knowledgeStates?: KnowledgeStateReceipt[];
+  /** Full Knowledge-window rendering at publication, including notices and framing. */
+  knowledgeTokens?: number;
 }
 
 /** The host-neutral visible material of one selected context. `raw` is keyed by native entry id:
@@ -35,8 +37,10 @@ export interface VisibleView {
   knowledgeCommitIds: Set<number>;
   /** Canonical identities of complete state notices, kept separate from exact body visibility. */
   knowledgeStates?: Set<string>;
+  /** Sum of retained publication costs, including measured legacy text. Only unaccounted API views omit it. */
+  knowledgeTokens?: number;
   /** Legacy visibility metadata retained for worker/fixture compatibility. Foreground eligibility
-   * depends on exact bodies, state notices and evidence, never this initial-injection marker. */
+   * depends on exact bodies and state notices, never this initial-injection marker. */
   injection: boolean;
   /** Highest legacy Ticket 31 generation found. Foreground publication ignores it. */
   suppliedGeneration: number;

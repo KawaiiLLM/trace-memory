@@ -113,6 +113,7 @@ async function prepareBoundClear(config: ResolvedCcHostConfig, input: CcHookInpu
     const compacted = memory.compact(core, synced.branch, headTurnId, [], true);
     if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation unexpectedly: ${compacted.reason}`);
     const injection = { text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
+      knowledgeTokens: compacted.supplied.knowledgeTokens, knowledgeStates: compacted.supplied.knowledgeStates,
       factIds: compacted.supplied.factIds, entryIds: compacted.supplied.entries.map(entry => entry.id),
       composition: compacted.composition };
 
@@ -128,7 +129,7 @@ async function prepareBoundClear(config: ResolvedCcHostConfig, input: CcHookInpu
     const visibleBinding: CcVisibleBinding = { db: databaseIdentity(config.dbPath), nativeSession: childId, coreSession: core };
     const output: CcHookOutput | null = injection.text
       ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },
-        transportItems: compacted.transportItems,
+        transportItems: compacted.transportItems, transportKnowledgeAllowance: compacted.knowledgeAllowance,
         ...(systemMessage ? { systemMessage } : {}) }
       : systemMessage ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }, systemMessage } : null;
     publishFrozenClear(staged, output);

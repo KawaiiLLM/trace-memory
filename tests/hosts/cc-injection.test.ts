@@ -28,6 +28,13 @@ const user = (uuid: string, parentUuid: string | null, text: string): CcNativeRe
 const assistant = (uuid: string, parentUuid: string, text: string): CcNativeRecord => ({ uuid, parentUuid, type: "assistant",
   timestamp: time(2), message: { role: "assistant", content: [{ type: "text", text }] } });
 
+const compactBoundary = (uuid: string, tail: string, second: number): CcNativeRecord[] => [
+  { uuid, parentUuid: null, logicalParentUuid: tail, type: "system", subtype: "compact_boundary", timestamp: time(second),
+    compactMetadata: { preservedSegment: { headUuid: tail, tailUuid: tail },
+      preservedMessages: { anchorUuid: `${uuid}-summary`, uuids: [tail] } } },
+  { uuid: `${uuid}-summary`, parentUuid: uuid, type: "user", isCompactSummary: true },
+];
+
 // Native-derived shape, sanitized. The attachments are deliberately synthetic, matching the approved
 // real-transcript + synthetic-attachment rewind gate rather than claiming native Hook delivery.
 test("43d production codec follows the selected rewind sibling and rejects every incomplete or foreign representation", () => {
@@ -264,8 +271,7 @@ test("43d Hook-first and MCP-first compact projection are idempotent and preserv
       socketPath: join(f.config.stateDir, "live.sock"), startedAt: time(5) };
     await updateBinding(f.config, f.nativeSession, current => ({ ...current!, executor }));
     const closedBefore = store.getSession(sessionId)!.closedAt;
-    appendFileSync(f.transcriptPath, line({ uuid: "compact-one", parentUuid: null, logicalParentUuid: "a",
-      type: "system", subtype: "compact_boundary", timestamp: time(6) }));
+    appendFileSync(f.transcriptPath, compactBoundary("compact-one", "a", 6).map(line).join(""));
     const input = { hook_event_name: "SessionStart" as const, source: "compact" as const,
       session_id: f.nativeSession, transcript_path: f.transcriptPath };
     const first = await handleCcHook(f.config, input);
@@ -285,8 +291,7 @@ test("43d Hook-first and MCP-first compact projection are idempotent and preserv
     expect((await handleCcHook(f.config, input))?.hookSpecificOutput.additionalContext)
       .toBe(first!.hookSpecificOutput.additionalContext);
 
-    appendFileSync(f.transcriptPath, line({ uuid: "compact-two", parentUuid: null, logicalParentUuid: "compact-one",
-      type: "system", subtype: "compact_boundary", timestamp: time(7) }));
+    appendFileSync(f.transcriptPath, compactBoundary("compact-two", "a", 7).map(line).join(""));
     const mcpFirst = await stale.reconcile();
     expect(mcpFirst.appendedEntryIds).toEqual([]);
     const durablePath = store.selectedSourceEntryIds(sessionId, mcpFirst.branch);
@@ -302,8 +307,7 @@ test("43d Hook-first and MCP-first compact projection are idempotent and preserv
 test("43d Hook projection failure leaves committed records retryable without publishing a stale leaf", async () => {
   const f = await hookFixture();
   const before = readBinding(f.config, f.nativeSession)!;
-  appendFileSync(f.transcriptPath, line({ uuid: "retry-compact", parentUuid: null, logicalParentUuid: "a",
-    type: "system", subtype: "compact_boundary", timestamp: time(7) }));
+  appendFileSync(f.transcriptPath, compactBoundary("retry-compact", "a", 7).map(line).join(""));
   const select = Store.prototype.publishSourcePath; let failed = false;
   vi.spyOn(Store.prototype, "publishSourcePath").mockImplementation(function (this: Store,
     ...args: Parameters<Store["publishSourcePath"]>) {
@@ -337,8 +341,7 @@ test("43d projection-only Hook preserves a pre-existing closed session", async (
   const store = new Store(f.config.dbPath);
   const closedAt = time(7);
   store.closeSession(binding.coreSessionId!, closedAt);
-  appendFileSync(f.transcriptPath, line({ uuid: "closed-compact", parentUuid: null, logicalParentUuid: "a",
-    type: "system", subtype: "compact_boundary", timestamp: time(8) }));
+  appendFileSync(f.transcriptPath, compactBoundary("closed-compact", "a", 8).map(line).join(""));
   try {
     expect((await handleCcHook(f.config, { hook_event_name: "SessionStart", source: "compact",
       session_id: f.nativeSession, transcript_path: f.transcriptPath }))?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
@@ -346,7 +349,7 @@ test("43d projection-only Hook preserves a pre-existing closed session", async (
   } finally { store.close(); }
 });
 
-test("43d actual SessionStart Hook emits once, resume recognizes it, and compact intentionally reinjects", async () => {
+test("92 SessionStart delivery follows retained context, not a compact event name", async () => {
   const f = await hookFixture();
   const input = { hook_event_name: "SessionStart" as const, source: "resume" as const, session_id: f.nativeSession, transcript_path: f.transcriptPath };
   const first = await handleCcHook(f.config, { ...input, source: "compact" });
@@ -355,12 +358,25 @@ test("43d actual SessionStart Hook emits once, resume recognizes it, and compact
   expect(first!.hookSpecificOutput.additionalContext.length).toBeGreaterThan(10_000);
   appendFileSync(f.transcriptPath, line(attachment("carrier", "a", first!.hookSpecificOutput.additionalContext, f.nativeSession)));
   expect(await handleCcHook(f.config, input)).toBeNull();
+  expect(await handleCcHook(f.config, { ...input, source: "compact" })).toBeNull();
+  appendFileSync(f.transcriptPath, compactBoundary("kept-compact", "carrier", 10).map(line).join(""));
+  expect(await handleCcHook(f.config, { ...input, source: "compact" })).toBeNull();
+  // A retained boundary really removes the old carrier: only the native answer survives.
+  appendFileSync(f.transcriptPath, compactBoundary("actual-compact", "a", 10).map(line).join(""));
   const compact = await handleCcHook(f.config, { ...input, source: "compact" });
   expect(compact?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
 
   const memory = TraceMemory(f.config.dbPath, async () => { throw new Error("offline"); });
   memory.store.setEnrollment(readBinding(f.config, f.nativeSession)!.coreSessionId!, false); memory.close();
   expect(await handleCcHook(f.config, input)).toBeNull();
+});
+
+test("92 compact events do not waive unknown native retention metadata", async () => {
+  const f = await hookFixture();
+  appendFileSync(f.transcriptPath, line({ uuid: "unknown-retention", parentUuid: null, logicalParentUuid: "a",
+    type: "system", subtype: "compact_boundary", timestamp: time(11) }));
+  await expect(handleCcHook(f.config, { hook_event_name: "SessionStart", source: "compact",
+    session_id: f.nativeSession, transcript_path: f.transcriptPath })).rejects.toThrow("invalid preservedMessages");
 });
 
 test("43d complete transcript reader accepts exact duplicate identities and reports changed bodies", () => {

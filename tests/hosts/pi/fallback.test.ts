@@ -710,7 +710,11 @@ test("29: a Noter forks only when its whole target is available in the inherited
     // A context that holds no conversation entry of ours establishes nothing about what a fork would
     // inherit. Like 27a's unknown context measure, unknown is not "available": it reroutes.
     const build = h.ctx.sessionManager.buildContextEntries.bind(h.ctx.sessionManager);
+    const getEntry = h.ctx.sessionManager.getEntry.bind(h.ctx.sessionManager);
     (h.ctx.sessionManager as { buildContextEntries: () => unknown[] }).buildContextEntries = () => [];
+    // 92's append reader uses native parent lookups. The unknown-context fixture must make
+    // that native surface unavailable too, rather than exposing a contradictory complete path.
+    h.ctx.sessionManager.getEntry = () => undefined;
     await h.prompt("word ".repeat(200)); await h.answer("word ".repeat(200));
     await h.emit("agent_settled"); await h.drain();
     const run = h.memory.store.listRuns(1).filter(r => r.kind === "noting")[0]!;
@@ -720,6 +724,7 @@ test("29: a Noter forks only when its whole target is available in the inherited
     expect(run.model).toBe("fake/test-mini");
     expect(String(response.fallbackReason)).toContain("holds no conversation entry of ours");
     (h.ctx.sessionManager as { buildContextEntries: () => unknown[] }).buildContextEntries = build;
+    h.ctx.sessionManager.getEntry = getEntry;
   } finally { await h.dispose(); }
 });
 

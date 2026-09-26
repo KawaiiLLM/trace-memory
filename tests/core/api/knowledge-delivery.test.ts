@@ -49,20 +49,25 @@ function coldGraph(f: { memory: ReturnType<typeof TraceMemory> }) {
 const view = (over: Partial<VisibleView> = {}): VisibleView => ({ ...noVisibility(), ...over });
 
 async function maintain(f: ReturnType<typeof fixture>, operation: Record<string, unknown>, addresses: string[], needsTrigger = true) {
+  const tag = (address: string) => address.replace(/^K(\d+)@(\d+)$/, (_, id, commit) => `K${id}#${f.memory.store.versionTag(Number(id), Number(commit))}`);
+  const history = (address: string) => address.replace(/^K(\d+)@(\d+)$/, (_, id, commit) => `K${id}@v${f.memory.store.versionOrdinal(Number(id), Number(commit))}`);
+  operation = { ...operation, id: tag(String(operation.id)), ...(Array.isArray(operation.absorb) ? { absorb: operation.absorb.map(tag) } : {}) };
   const factId = f.facts[0]!.id;
   const trigger = needsTrigger ? createDreamerTrigger(f.memory, f.target, factId, f.memory.store.listKnowledgeRevisions().length + 1) : null;
   let committed: { knowledgeId: number; commit: number }[] = [];
   const result = await f.scenarios.run(f.memory, f.target, input => {
     input.reportRequest({ fixture: "knowledge delivery maintenance" });
     const trace = input.tools.find(tool => tool.name === "trace")!;
-    for (const address of addresses) fullRead(trace, address);
+    for (const address of addresses) fullRead(trace, tag(address));
     const triggerAddress = trigger ? `K${trigger.knowledgeId}@${trigger.commit}` : null;
-    const supplied = new Set(input.material.changed.match(/K\d+@\d+/g) ?? []);
-    if (triggerAddress) supplied.delete(triggerAddress); for (const address of addresses) supplied.delete(address);
+    const supplied = new Set(input.material.changed.match(/K\d+@v\d+/g) ?? []);
+    if (triggerAddress) supplied.delete(history(triggerAddress)); for (const address of addresses) supplied.delete(history(address));
     const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [operation,
-      ...(triggerAddress ? [{ op: "archive", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit delivery trigger." }] : [])],
+      ...(triggerAddress ? [{ op: "archive", id: tag(triggerAddress), supports: [`F${factId}`], reason: "Retire the explicit delivery trigger." }] : [])],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied item." })) }));
-    committed = receipt.committed.filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger?.knowledgeId);
+    committed = receipt.committed.filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger?.knowledgeId)
+      .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId,
+        commit: f.memory.store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1])) }));
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "delivery maintenance complete", request: { fixture: "knowledge delivery maintenance" } };
   });
@@ -70,25 +75,24 @@ async function maintain(f: ReturnType<typeof fixture>, operation: Record<string,
   return committed;
 }
 
-test("34c evidence predicate uses complete Fact or proven complete original/bounded Raw coverage", () => {
+test("92 facts and original/bounded Raw do not substitute for missing exact Knowledge bodies", () => {
   const f = fixture();
   const first = f.create("covered by first fact", [f.facts[0]!.id]);
   const both = f.create("requires both facts", f.facts.map(fact => fact.id));
 
   expect(f.memory.injection(f.target).knowledgeCommitIds).toEqual([first.commit, both.commit]);
-  expect(f.memory.injection(f.target, view({ factIds: new Set([f.facts[0]!.id]) })).knowledgeCommitIds).toEqual([both.commit]);
+  expect(f.memory.injection(f.target, view({ factIds: new Set([f.facts[0]!.id]) })).knowledgeCommitIds).toEqual([first.commit, both.commit]);
 
   const original = view({ raw: new Map([["first", "source"]]) });
-  expect(f.memory.injection(f.target, original).knowledgeCommitIds).toEqual([both.commit]);
+  expect(f.memory.injection(f.target, original).knowledgeCommitIds).toEqual([first.commit, both.commit]);
 
   const bounded = view({ raw: new Map([["first", "view"]]), rawEntryIds: new Map([[f.entries[0]!.id, "first"]]) });
-  expect(f.memory.injection(f.target, bounded).knowledgeCommitIds).toEqual([both.commit]);
-  // Identity-level bounded coverage deliberately counts even when its rendered middle omitted the fact.
-  expect(f.memory.injection(f.target, bounded).text).not.toContain("covered by first fact");
+  expect(f.memory.injection(f.target, bounded).knowledgeCommitIds).toEqual([first.commit, both.commit]);
+  expect(f.memory.injection(f.target, bounded).text).toContain("covered by first fact");
 
   const mixedComplete = view({ raw: new Map([["first", "source"]]), factIds: new Set([f.facts[1]!.id]) });
-  expect(f.memory.injection(f.target, mixedComplete).knowledgeCommitIds).toEqual([]);
-  expect(f.memory.injection(f.target, original).knowledgeCommitIds).toEqual([both.commit]); // partial support coverage
+  expect(f.memory.injection(f.target, mixedComplete).knowledgeCommitIds).toEqual([first.commit, both.commit]);
+  expect(f.memory.injection(f.target, original).knowledgeCommitIds).toEqual([first.commit, both.commit]);
 
   // Losing one persisted binding makes Raw proof incomplete and restores eligibility. `fact_sources`
   // is insert-only in production; cold-read after this unsupported mutation.
@@ -125,7 +129,7 @@ test("34c valid database/native pairs from sibling and foreign paths cannot masq
     .toEqual(new Set([sibling.id]));
 });
 
-test("34c recognized bounded Raw may suppress even when truncation removed the evidentiary text", () => {
+test("92 recognized bounded Raw never suppresses an undelivered Knowledge body", () => {
   const f = fixture({ render: { entryTokens: 40, toolInputTokens: 20, toolResultTokens: 20 } });
   const text = "head ".repeat(200) + "EVIDENCE-ONLY-IN-OMITTED-MIDDLE" + " tail".repeat(200);
   const entry = f.memory.appendEntry({ sessionId: f.session.id, turnId: f.turn.id, nativeLineage: "lineage", nativeId: "long",
@@ -140,7 +144,7 @@ test("34c recognized bounded Raw may suppress even when truncation removed the e
   expect(boundedText).toContain("characters truncated");
   expect(boundedText).not.toContain("EVIDENCE-ONLY-IN-OMITTED-MIDDLE");
   const bounded = view({ raw: new Map([[entry.nativeId, "view"]]), rawEntryIds: new Map([[entry.id, entry.nativeId]]) });
-  expect(f.memory.injection(f.target, bounded).knowledgeCommitIds).not.toContain(knowledge.commit);
+  expect(f.memory.injection(f.target, bounded).knowledgeCommitIds).toContain(knowledge.commit);
 });
 
 test("34c empty supports are never evidence-suppressed and only current-change supports are inspected", async () => {
@@ -233,7 +237,7 @@ test("68 untouched frozen and post-freeze versions remain pending without affect
   expect(f.memory.injection(f.target).knowledgeCommitIds).toEqual([processed.commit, unprocessed.commit]);
 });
 
-test("34c archive evidence suppression requires all nonempty current-change supports", () => {
+test("92 archive notices remain eligible even with complete current-change evidence", () => {
   const f = fixture();
   const parent = f.create("retire me", [f.facts[0]!.id]);
   const archive = f.memory.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time },
@@ -246,7 +250,7 @@ test("34c archive evidence suppression requires all nonempty current-change supp
   expect(missing.knowledgeCommitIds).toEqual([]);
   expect(missing.knowledgeStates).toEqual([{ fromCommit: parent.commit, toCommits: [archive.committed[0]!.commit] }]);
   expect(f.memory.injection(f.target, view({ ...visibleParent, factIds: new Set([f.facts[0]!.id]) })).text).toContain("is archived");
-  expect(f.memory.injection(f.target, view({ ...visibleParent, factIds: new Set(f.facts.map(fact => fact.id)) })).text).toBe("");
+  expect(f.memory.injection(f.target, view({ ...visibleParent, factIds: new Set(f.facts.map(fact => fact.id)) })).text).toContain("is archived");
 });
 
 test("34c a retained state-only receipt consumes allowance without granting body visibility", () => {
@@ -286,8 +290,8 @@ test("34c state transitions are whole deterministic prefix items and only select
   const first = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents }));
   expect(first.knowledgeCommitIds).toEqual([]);
   expect(first.knowledgeStates).toEqual([{ fromCommit: parents[0]!.commit, toCommits: [archives[0]!.commit] }]);
-  expect(first.text).toContain(`K${parents[0]!.knowledgeId}@${parents[0]!.commit} is archived`);
-  expect(first.text).not.toContain(`K${parents[1]!.knowledgeId}@${parents[1]!.commit} is archived`);
+  expect(first.text).toContain(`K${parents[0]!.knowledgeId}@v1 is archived`);
+  expect(first.text).not.toContain(`K${parents[1]!.knowledgeId}@v1 is archived`);
   expect(first.text).not.toContain("omitted");
 
   const firstReceipt = knowledgeStateKey(first.knowledgeStates![0]!);
@@ -297,9 +301,9 @@ test("34c state transitions are whole deterministic prefix items and only select
     { fromCommit: parents[1]!.commit, toCommits: [archives[1]!.commit] },
     { fromCommit: parents[2]!.commit, toCommits: [archives[2]!.commit] },
   ]);
-  expect(second.text).not.toContain(`K${parents[0]!.knowledgeId}@${parents[0]!.commit} is archived`);
-  expect(second.text).toContain(`K${parents[1]!.knowledgeId}@${parents[1]!.commit} is archived`);
-  expect(second.text).toContain(`K${parents[2]!.knowledgeId}@${parents[2]!.commit} is archived`);
+  expect(second.text).not.toContain(`K${parents[0]!.knowledgeId}@v1 is archived`);
+  expect(second.text).toContain(`K${parents[1]!.knowledgeId}@v1 is archived`);
+  expect(second.text).toContain(`K${parents[2]!.knowledgeId}@v1 is archived`);
 
   setKnowledgeCapacity(f.memory, visibleCost + tokens(firstOnly.text) - 1);
   const unfit = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents }));
@@ -341,7 +345,7 @@ test("34c merge notices are scoped to visible parents and do not grant the survi
     supports: [`F${f.facts[0]!.id}`], topics: [], reason: "merge" },
   [`K${first.knowledgeId}@${first.commit}`, `K${second.knowledgeId}@${second.commit}`]);
   const offered = f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([second.commit]) }));
-  expect(offered.text).toContain(`K${second.knowledgeId}@${second.commit} is merged into K${first.knowledgeId}@${merge[0]!.commit}`);
+  expect(offered.text).toContain(`K${second.knowledgeId}@v1 is merged into K${first.knowledgeId}@v2`);
   expect(offered.knowledgeStates).toEqual([{ fromCommit: second.commit, toCommits: [merge[0]!.commit] }]);
   expect(offered.knowledgeCommitIds).toEqual([merge[0]!.commit]);
   const noticeOnly = view({ knowledgeCommitIds: new Set([second.commit, merge[0]!.commit]) });
@@ -364,13 +368,40 @@ test("34c split notice names both children while partial budgeting grants body v
     const offered = f.memory.injection(f.target, visible);
     if (offered.knowledgeCommitIds.length === 1 && offered.knowledgeStates?.length === 1) { partial = offered; break; }
   }
-  expect(partial?.text).toContain(`split into K${split[0]!.knowledgeId}@${split[0]!.commit} and K${split[1]!.knowledgeId}@${split[1]!.commit}`);
+  expect(partial?.text).toContain(`split into K${split[0]!.knowledgeId}@v1 and K${split[1]!.knowledgeId}@v1`);
   expect(partial?.knowledgeCommitIds).toHaveLength(1);
   expect(partial?.knowledgeStates).toEqual([{ fromCommit: parent.commit, toCommits: split.map(item => item.commit) }]);
   expect(partial?.knowledgeCommitIds).toEqual([split[1]!.commit]);
   expect(partial?.text).toContain(`omitted 1 constraint knowledge; expand: K${split[0]!.knowledgeId}`);
   expect(partial?.text).not.toContain("first child");
   expect(partial?.text).toContain("second child");
+});
+
+test("92 split notice names only the visible child and never mislabels a partially hidden split as a merge", async () => {
+  const f = fixture({ dreaming: { triggerTokens: 1 } });
+  const parent = f.create("compound parent", [f.facts[0]!.id]);
+  const split = await maintain(f, { op: "split", id: `K${parent.knowledgeId}@${parent.commit}`,
+    supports: [], reason: "separate", children: [
+      { text: "public child", category: "constraint", topics: [] },
+      { text: "child later private", category: "constraint", topics: [] }] }, [`K${parent.knowledgeId}@${parent.commit}`], false);
+  const peer = f.memory.store.createSession({ host: "peer", projectId: f.session.projectId, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
+  const turn = f.memory.store.appendTurn({ sessionId: peer.id, kind: "turn", userPrompt: "Private evidence", startedAt: time });
+  const entry = f.memory.appendEntry({ sessionId: peer.id, turnId: turn.id, nativeLineage: "peer", nativeId: "private", role: "user", text: "Private evidence", raw: "{}", calls: [] });
+  f.memory.selectEntries(peer.id, "main", [entry.id]);
+  const noted = f.memory.store.commitNotingRun({ run: { kind: "manual", sessionId: peer.id, createdAt: time }, facts: [{ turnId: turn.id, entryIds: [entry.id],
+    text: "Private evidence", source: [`T${turn.id}#E${entry.entryOrdinal}`], createdAt: time }] });
+  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const changed = f.memory.store.commitConsolidationRun({ path: { sessionId: peer.id, branch: "main", headTurnId: turn.id },
+    run: { kind: "consolidation", sessionId: peer.id, createdAt: time }, operations: [{ op: "update", knowledgeId: split[1]!.knowledgeId,
+      baseCommit: split[1]!.commit, text: "Private successor", scope: "session", category: "constraint", supports: [noted.facts[0]!.id], topics: [], reason: "private scope", createdAt: time }] });
+  if (!changed.ok) throw new Error(changed.problems.join("; "));
+  const result = f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([parent.commit]), knowledgeTokens: 100 }));
+  expect(result.knowledgeCommitIds).toEqual([split[0]!.commit]);
+  expect(result.knowledgeStates).toEqual([{ fromCommit: parent.commit, toCommits: [split[0]!.commit] }]);
+  expect(result.text).toContain(`is split; visible result: K${split[0]!.knowledgeId}@v1`);
+  expect(result.text).not.toContain(`K${split[1]!.knowledgeId}`);
+  expect(result.text).not.toContain("merged");
+  expect(result.text).not.toContain("Private successor");
 });
 
 test("34c delivery check keeps graph/source work bounded as candidate count grows", () => {

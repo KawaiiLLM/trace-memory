@@ -750,28 +750,27 @@ shared lines, including framing and receipts. Every category obeys the hard cap;
 whole items retain category/time display order, while budget selection omits the oldest optional items first.
 Pass `null` explicitly for legacy null branches.
 
-34c: `injection(target, visible?)` is the common predicate for every enabled ordinary prompt. From one
-snapshot and commit graph it starts with applicable current exact revisions, removes exact Knowledge
-bodies already visible, and then suppresses a candidate only when its nonempty direct supports
-are all visible Facts or all have proven complete Noting bindings to retained original/bounded Raw
-entries. A bounded carrier's database/native pair must name an entry in that exact selected session
-path; a valid row from another or sibling path proves no coverage. Empty supports and missing, partial
-or legacy-unknown bindings fail closed and remain candidates. A recognized bounded Raw identity
-deliberately counts even when truncation removed the actual evidentiary span: this can miss a useful
-Knowledge delivery, while opaque summaries and unknown
-bindings deliberately risk redundant delivery instead of claiming coverage. Applicability and evidence
-are checked on the selected session path; project-only targets use project/global scope and do not
-infer path evidence.
+92 replaces 34c's evidence suppression: `injection(target, visible?)` subtracts actually delivered exact
+versions from the current visible graph. Facts and Raw do not replace missing Knowledge bodies.
+The host reconstructs delivery from its latest retained compact and subsequent actual carriers, never
+from a historical visibility query. Core reuses 88's reader projection; SQLite transactional reads use
+their own graph input. Source coverage still governs compact selection and fork evidence.
 
-Applicable visible Knowledge bodies and persisted state notices are rendered and charged first against
+Every retained carrier occurrence is charged first against
 the Knowledge base plus the shared allowance (30,000 maximum under the default policy). Missing state transitions then fit as complete items in
-their stable prefix order, followed by complete candidate bodies in normal category/time/id order. An
+their stable prefix order, followed by complete candidate bodies in oldest-first revision order. An
 unfit next transition is not skipped for a body; a fitting transition prefix remains publishable. Exact
 fit is accepted; zero or negative remainder and a single unfit item emit nothing, and omission receipts
 alone never create a message. Archive/supersede/merge/split notices have
 stable carrier identities separate from exact body visibility, so persisting a notice never grants a
 replacement body. Fact, Raw, command-generation state and processed/unprocessed status are absent from
-foreground publication. Consolidator references use the same Knowledge capacity, header and
+foreground publication. New carriers retain their complete Knowledge-window cost, including notices,
+framing and Knowledge receipts, bound to their text by integrity validation. Legacy carriers without
+that field are measured individually; ambiguous unescaped delimiters produce a diagnostic and a
+conservative whole-content charge, not an error or a zero. Repeated bodies and inapplicable old bodies
+still consume context. CC checks the sum of final segment Knowledge costs against the remaining
+allowance after packing; repeated domain framing counts, but host JSON and Fact/Raw do not.
+Consolidator references use the same Knowledge capacity, header and
 newer-first capacity selection. The reproducible synthetic method and
 250/1,000-candidate measurements are recorded in [perf-34c.md](perf-34c.md).
 

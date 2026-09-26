@@ -191,7 +191,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
       : await handleCcHook(config, input, command === "hook-prepare");
     if (command === "hook-prepare") return;
     if (command === "hook") {
-      if (output) { const { transportItems: _, ...native } = output; process.stdout.write(`${JSON.stringify(native)}\n`); }
+      if (output) { const { transportItems: _, transportKnowledgeAllowance: _allowance, ...native } = output; process.stdout.write(`${JSON.stringify(native)}\n`); }
       return;
     }
     if (input.hook_event_name !== "SessionStart") throw new Error("hook-slices requires SessionStart");
@@ -200,7 +200,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
     const bound = readBinding(config, input.session_id);
     if (!bound) throw new Error("CC SessionStart has no binding after preparation");
     const slices = sliceCcInjection({ db: databaseIdentity(config.dbPath), nativeSession: input.session_id,
-      coreSession: bound.coreSessionId }, output?.transportItems ?? [], output?.systemMessage);
+      coreSession: bound.coreSessionId }, output?.transportItems ?? [], output?.systemMessage, output?.transportKnowledgeAllowance);
     if (input.source !== "clear" && bound.lastCompactionNotice || input.source === "clear" && bound.clearedFrom &&
       slices[0]?.systemMessage !== bound.lastCompactionNotice) {
       await updateBinding(config, input.session_id, current => {
@@ -210,7 +210,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
       });
     }
     const selection = createHash("sha256").update(JSON.stringify({ material: output?.transportItems ?? [],
-      warning: output?.systemMessage ?? null, frozenClear: input.source === "clear" && bound.clearedFrom
+      warning: output?.systemMessage ?? null, knowledgeAllowance: output?.transportKnowledgeAllowance ?? null, frozenClear: input.source === "clear" && bound.clearedFrom
         ? bound.clearedFrom.compactionTurnId : null })).digest("hex");
     process.stdout.write(`${JSON.stringify({ selection, snapshot: selected?.snapshot ?? null, slices })}\n`);
     return;

@@ -450,9 +450,10 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   seed(peer.id, recorded.facts[0]!.id, ["project"]);
-  // The retained original Raw completely covers the own project's change fact, so 34c suppresses
-  // redundant Knowledge instead of requiring an initial-injection lifecycle.
-  expect((await h.prompt("before"))?.message).toBeUndefined();
+  // 92: retained evidence does not replace either missing exact Knowledge body.
+  const before = (await h.prompt("before"))?.message;
+  expect(before?.content).toContain("用 pnpm，不要 npm");
+  expect(before?.content).toContain("仅当前会话");
   await h.answer();
   await h.commands.get("trace").handler("project named", h.ctx);
   expect(store.getProject(own)!.mergedInto).toBe(target.id);
@@ -1063,12 +1064,12 @@ test("2026-09-07 backfill by consumer — superseded 2026-09-08 and by 25b: the 
   // waited for a receipt; a fresh context reads the pending facts from storage, so it does not.
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "consolidation").map(r => r.mode)).toEqual(["subagent"]);
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1); // the Consolidation did commit
-  // 34c adds no Fact/Raw receipt. The retained original Raw completely covers F1, so its Knowledge
-  // change is redundant and this ordinary prompt carries no plugin message.
+  // 92: even complete retained Raw evidence does not replace this undelivered Knowledge body.
+  // Fact/Raw receipts remain absent and the following unchanged prompt must stay empty.
   const carried = String((await h.prompt("second"))?.message?.content ?? "");
   expect(carried).not.toContain("<noted>");
   expect(carried).not.toContain("<consolidated>");
-  expect(carried).not.toContain("<knowledge>");
+  expect(carried).toContain("<knowledge>");
   await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect((await h.prompt("third"))?.message).toBeUndefined();
   expect(h.memory.trace("F1")).toContain("[F1]"); // the facts stay reachable by explicit read
