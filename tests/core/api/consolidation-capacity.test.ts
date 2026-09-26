@@ -98,6 +98,9 @@ test("64c/92: shortened N batch keeps newer knowledge; frozen selection survives
   expect(shortened.entries.map(entry => entry.id)).toEqual([f.pending[0]]);
   expect(shortened.prepared!.selectedEntryIds).toEqual([f.pending[0]]);
   expect(shortened.prepared!.supplied.knowledgeCommitIds).toEqual([f.commits[1]]);
+  // A re-admitted exact batch cannot take that smaller prefix: all members stay pending.
+  expect(() => freezeNoting(f.memory.store, { ...f.target, boundary: { exactEntryIds: f.pending },
+    capacity: { inputTokens: high - 1, prefixTokens: 0 } }, f.memory.config)).toThrow(NOTING_CAPACITY);
   expect(f.memory.pendingEntries(f.target.sessionId, "main", f.target.headTurnId).map(entry => entry.id)).toEqual(f.pending);
 
   const before = structuredClone(full.prepared);
