@@ -187,8 +187,7 @@ test("32d native host: Noter and Dreamer occupy independent seats", async () => 
   try {
     const phases = new Set<string>();
     let dreamerRequests = 0;
-    h.memory.configure({ noting: { triggerTokens: 1 } });
-    // The host owns a separate facade; apply the trigger at its ordinary Settings reload boundary.
+    // Apply this non-hot setting through the host's ordinary session reload boundary.
     const settings = JSON.parse(readFileSync(join(h.dir, "agent", "settings.json"), "utf8"));
     settings["trace-memory"]["noting.triggerTokens"] = 1;
     writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify(settings));

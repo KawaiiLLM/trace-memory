@@ -72,7 +72,7 @@ async function fullChain(entries: number, due: boolean) {
   const diagnostics: string[] = [], coordinator = new CcCoordinator(config, nativeSessionId, message => diagnostics.push(message));
   let importer!: CcImporter, eligibility = 0, prepares = 0, inputs = 0, admissionAt = 0;
   let schedulerMs = 0, scheduledAt = 0, scheduleFinishedAt = 0;
-  const phases: string[] = [], origins: number[] = [];
+  const phases: string[] = [], origins: number[] = [], checks: Array<[string, number | undefined]> = [];
   const phaseWork: Record<string, { calls: number; prepares: number }> = {};
   let maxWriteHoldMs = 0, maxBeginWaitMs = 0;
   const transaction = Store.prototype.transaction;
@@ -113,6 +113,7 @@ async function fullChain(entries: number, due: boolean) {
     const real = memory.taskEligibility;
     const countEligibility = vi.spyOn(memory, "taskEligibility").mockImplementation((...params) => {
       eligibility++; origins.push(params[1].triggerEntryId!);
+      checks.push([params[0], params[1].triggerEntryId]);
       const before = prepares, counted = phaseWork[params[0]] ??= { calls: 0, prepares: 0 }; counted.calls++;
       try { return real(...params); } finally { counted.prepares += prepares - before; }
     });
@@ -162,10 +163,11 @@ async function fullChain(entries: number, due: boolean) {
     expect(heartbeatSamples).toBeGreaterThan(0);
     const workerAdmissionFromBootstrapMs = admissionAt - start;
     const workerAdmissionAfterSchedulingMs = admissionAt - scheduleFinishedAt;
-    expect(eligibility).toBe(3);
-    expect(origins).toEqual(Array(3).fill(result!.selectedEntryIds.at(-1)));
+    expect(eligibility).toBe(2);
+    expect(origins).toEqual(Array(2).fill(result!.selectedEntryIds.at(-1)));
+    expect(checks).toEqual([["noting", result!.selectedEntryIds.at(-1)], ["dreaming", result!.selectedEntryIds.at(-1)]]);
     expect(inputs).toBe(1);
-    expect(Object.values(phaseWork).map(value => value.calls)).toEqual([1, 1, 1]);
+    expect(Object.entries(phaseWork).map(([phase, value]) => [phase, value.calls])).toEqual([["noting", 1], ["dreaming", 1]]);
     // N's oldest bounded Raw batch does hundreds of entry reads; a 200-prepare total cap
     // would reject necessary batch selection. A 10x history increase must not multiply it.
     expect(phases).toContain("noting");
@@ -175,7 +177,8 @@ async function fullChain(entries: number, due: boolean) {
     const idle = await coordinator.requestReconcile("stat wake-up");
     expect(idle?.appendedEntryIds).toEqual([]);
     expect(idle?.bootstrap).toBe(false);
-    expect(eligibility).toBe(3);
+    expect(eligibility).toBe(2);
+    expect(checks).toEqual([["noting", result!.selectedEntryIds.at(-1)], ["dreaming", result!.selectedEntryIds.at(-1)]]);
     if (writer.connected) writer.send("stop", () => {}); // A child failure already reports its original error through `done`.
     const writerResult = await finished;
     expect(writerResult.error).toBeUndefined();
@@ -234,11 +237,10 @@ test("Hook-first bootstrap and fresh resume validate known records without per-r
     expect(live.bootstrap).toBe(false);
     expect(live.appendedEntryIds).toHaveLength(2);
     scheduler.reconcile(live);
-    // Ticket 72: the scheduler starts armed (attach), so the first of these two appended entries still
-    // checks all three phases; on this empty fixture C and D both come back not due and disarm, so the
-    // second entry evaluates Noting only.
-    expect(eligibility).toHaveBeenCalledTimes(4);
-    expect(eligibility.mock.calls.map(call => call[1].triggerEntryId)).toEqual(
-      [live.appendedEntryIds[0], live.appendedEntryIds[0], live.appendedEntryIds[0], live.appendedEntryIds[1]]);
+    // Attach starts D armed; the first entry disarms its empty pool, then only N checks entry two.
+    expect(eligibility).toHaveBeenCalledTimes(3);
+    expect(eligibility.mock.calls.map(([phase, target]) => [phase, target.triggerEntryId])).toEqual([
+      ["noting", live.appendedEntryIds[0]], ["dreaming", live.appendedEntryIds[0]], ["noting", live.appendedEntryIds[1]],
+    ]);
   } finally { scheduler.stop(); eligibility.mockRestore(); transaction.mockRestore(); importer.close(); rmSync(dir, { recursive: true, force: true }); }
 });
