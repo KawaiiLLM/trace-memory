@@ -14,7 +14,7 @@ function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "tm-entry-upgrade-")); dirs.push(dir);
   const path = join(dir, "test.sqlite"), store = new Store(path);
   const projectId = store.createProject({ name: "upgrade", declaredBy: "mark" }).id;
-  const sessionId = store.createSession({ projectId, host: "test", startedAt: "time", firstReplyAt: "time", enrollmentChoice: true }).id;
+  const sessionId = store.createSession({ projectId, host: "pi:entry-upgrade",  startedAt: "time", firstReplyAt: "time", enrollmentChoice: true }).id;
   const turnId = store.appendTurn({ sessionId, kind: "turn", startedAt: "time" }).id;
   const call = { callId: "private-call-id", ordinal: 7, name: "bash", input: "{}", result: "original result bytes", status: "success" };
   const input = (nativeId: string, content: unknown[], calls = [call]): SourceInput => ({ sessionId, turnId, nativeId, nativeLineage: "private-lineage", role: "assistant",
@@ -67,12 +67,14 @@ test("upgrade isolates recognized malformed rows, preserves evidence and ordinal
       expect(m.store.getSourceEntry(entry.id)).toEqual(entry);
       expect(m.store.db.prepare("SELECT blocks FROM source_entry_raw WHERE entry_id = ?").get(entry.id)!.blocks).toBe("null");
       const note = m.tools({ kind: "manual", sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }).find(t => t.name === "note")!;
-      for (const selector of ["text", "thinking", "private-call-id"]) expect(note.execute({ facts: [{ category: "observation", actor: "agent", text: "No invented fragments", source: [`T1#E${entry.entryOrdinal}@${selector}`] }] })).toContain("invalid source");
+      for (const selector of ["text", "thinking", "private-call-id"]) expect(note.execute({ facts: [{ text: "No invented fragments", source: [`T1#E${entry.entryOrdinal}@${selector}`] }] })).toContain("invalid source");
     }
     expect(m.trace("T1#E3", { full: true })).toContain("legacy projection");
     expect(m.trace("T1#E5", { full: true })).toContain("original result bytes");
     const legacyNote = m.tools({ kind: "manual", sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }).find(t => t.name === "note")!;
-    expect(legacyNote.execute({ facts: [{ category: "observation", actor: "agent", text: "Legacy evidence remains usable", source: ["T1#E3", "T1#t7"] }] })).not.toContain("rejected:");
+    expect(legacyNote.execute({ facts: [{ text: "Legacy evidence remains usable", source: ["T1#E3"] }] })).toContain("ok: F2");
+    expect(legacyNote.execute({ facts: [{ text: "Legacy tool selectors are read-only", source: ["T1#t7"] }] })).toContain("rejected:");
+    expect(m.store.getFact(1)!.source).toEqual(["T1#t7"]);
     expect(m.trace("T1#t7", { full: true })).toContain("bash");
     expect(m.trace("T1#E1@text")).toContain("normal text");
     expect(m.trace("T1#E6@private-call-id")).toContain("bash");

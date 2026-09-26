@@ -188,16 +188,21 @@ test("64b pilot: an admitted Dreamer child uses only its direct foreground suppo
     const dreamed = await scenarios.run(memory, target, input => {
       const request = { fixture: "64b recursive foreground applicability" }; input.reportRequest(request);
       const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-      expect(trace.execute({ address: `K${parent.knowledgeId}@${parent.commit}`, itemBudget: null })).toContain("parent claim");
-      expect(trace.execute({ address: `K${parentForDirectA.knowledgeId}@${parentForDirectA.commit}`, itemBudget: null })).toContain("second parent claim");
-      expect(trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null })).toContain("Fixture trigger 1");
-      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: `K${parent.knowledgeId}@${parent.commit}`,
+      const parentTag = `K${parent.knowledgeId}#${store.versionTag(parent.knowledgeId, parent.commit)}`;
+      const directTag = `K${parentForDirectA.knowledgeId}#${store.versionTag(parentForDirectA.knowledgeId, parentForDirectA.commit)}`;
+      const triggerTag = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
+      expect(trace.execute({ address: parentTag, itemBudget: null })).toContain("parent claim");
+      expect(trace.execute({ address: directTag, itemBudget: null })).toContain("second parent claim");
+      expect(trace.execute({ address: triggerTag, itemBudget: null })).toContain("Fixture trigger 1");
+      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: parentTag,
         text: "child claim", category: "constraint", scope: "global", supports: [`F${childFact.id}`], topics: [], reason: "Child revision." },
-      { op: "update", id: `K${parentForDirectA.knowledgeId}@${parentForDirectA.commit}`,
+      { op: "update", id: directTag,
         text: "child explicitly citing A", category: "constraint", scope: "global", supports: [`F${parentFact.id}`], topics: [], reason: "Direct A support." },
-      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${childFact.id}`], reason: "Retire explicit trigger." }], skipped: [] }));
-      child = receipt.committed.find((value: { knowledgeId: number }) => value.knowledgeId === parent.knowledgeId)!;
-      childCitingA = receipt.committed.find((value: { knowledgeId: number }) => value.knowledgeId === parentForDirectA.knowledgeId)!;
+      { op: "archive", id: triggerTag, supports: [`F${childFact.id}`], reason: "Retire explicit trigger." }], skipped: [] }));
+      const published = receipt.committed.map((value: { knowledgeId: number; version: string }) => ({ knowledgeId: value.knowledgeId,
+        commit: store.resolveVersionOrdinal(value.knowledgeId, Number(/@v(\d+)$/.exec(value.version)![1])) }));
+      child = published.find((value: { knowledgeId: number }) => value.knowledgeId === parent.knowledgeId)!;
+      childCitingA = published.find((value: { knowledgeId: number }) => value.knowledgeId === parentForDirectA.knowledgeId)!;
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
       return { outcome: "success", output: "lineage updated", request };
     });
@@ -257,12 +262,15 @@ test("64b validity pilot: later applicable commit wins independent of restore or
   const dreamed = await scenarios.run(memory, bPath, input => {
     const request = { fixture: "64b validity replacement" }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-    expect(trace.execute({ address: `K${base.knowledgeId}@${base.commit}`, itemBudget: null })).toContain("base body");
-    trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null, pageBudget: 8000 });
-    const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: `K${base.knowledgeId}@${base.commit}`,
+    const baseTag = `K${base.knowledgeId}#${store.versionTag(base.knowledgeId, base.commit)}`;
+    const triggerTag = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
+    expect(trace.execute({ address: baseTag, itemBudget: null })).toContain("base body");
+    trace.execute({ address: triggerTag, itemBudget: null, pageBudget: 8000 });
+    const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: baseTag,
       text: "B replacement", category: "constraint", scope: "global", supports: [`F${bFact.id}`], topics: [], reason: "Replace rewound base." },
-    { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${bFact.id}`], reason: "Retire trigger." }], skipped: [] }));
-    replacement = receipt.committed.find((value: { knowledgeId: number }) => value.knowledgeId === base.knowledgeId)!;
+    { op: "archive", id: triggerTag, supports: [`F${bFact.id}`], reason: "Retire trigger." }], skipped: [] }));
+    const published = receipt.committed.find((value: { knowledgeId: number }) => value.knowledgeId === base.knowledgeId)!;
+    replacement = { knowledgeId: base.knowledgeId, commit: store.resolveVersionOrdinal(base.knowledgeId, Number(/@v(\d+)$/.exec(published.version)![1])) };
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "replaced", request };
   });
@@ -321,6 +329,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
     const ownerFact = writeFact(store, owner.id, "main", ownerNode.turn.id, ownerNode.entry.id, "owner scope evidence");
     const peerFact = writeFact(store, peer.id, "main", peerNode.turn.id, peerNode.entry.id, "peer scope evidence");
     const base = create(store, ownerPath, ownerFact.id, "project", "project body");
+    const tag = (item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`;
     let sequence = 0;
     const update = async (prior: { knowledgeId: number; commit: number }, scope: "session" | "project", text: string) => {
       const trigger = createDreamerTrigger(memory, ownerPath, ownerFact.id, ++sequence, prior === base ? "project" : "session");
@@ -328,14 +337,15 @@ test("64b scope visibility: global current hides older visible revisions, reject
       const dreamed = await scenarios.run(memory, ownerPath, input => {
         const request = { fixture: `64b scope ${scope}` }; input.reportRequest(request);
         const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-        trace.execute({ address: `K${prior.knowledgeId}@${prior.commit}`, itemBudget: null, pageBudget: 8000 });
-        trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null, pageBudget: 8000 });
+        trace.execute({ address: tag(prior), itemBudget: null, pageBudget: 8000 });
+        trace.execute({ address: tag(trigger), itemBudget: null, pageBudget: 8000 });
         const receipt = JSON.parse(write.execute({ operations: [
-          { op: "update", id: `K${prior.knowledgeId}@${prior.commit}`, text, category: "constraint", scope,
+          { op: "update", id: tag(prior), text, category: "constraint", scope,
             supports: [`F${ownerFact.id}`], reason: "Change current visibility.", topics: [] },
-          { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${ownerFact.id}`], reason: "Retire trigger." },
+          { op: "archive", id: tag(trigger), supports: [`F${ownerFact.id}`], reason: "Retire trigger." },
         ], skipped: [] }));
-        changed = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === prior.knowledgeId);
+        const published = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === prior.knowledgeId);
+        changed = { knowledgeId: prior.knowledgeId, commit: store.resolveVersionOrdinal(prior.knowledgeId, Number(/@v(\d+)$/.exec(published.version)![1])) };
         expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
         return { outcome: "success", output: text, request };
       });
@@ -350,24 +360,26 @@ test("64b scope visibility: global current hides older visible revisions, reject
     expect(store.currentCommit(base.knowledgeId, ownerPath).map(item => item.id)).toEqual([narrowed.commit]);
     expect(store.currentCommit(base.knowledgeId, peerPath)).toEqual([]);
     const peerHistory = memory.search("project body", "knowledge", { ...peerPath, versions: "history", fields: ["text", "status"] });
+    // The direct human history API retains commit addresses; foreground notices must not disclose this successor.
     expect(peerHistory).toContain(`superseded on this path by K${base.knowledgeId}@${narrowed.commit}`);
     expect(peerHistory).not.toContain("owner-only body");
     const retained = { raw: new Map<string, "source" | "view">(), factIds: new Set<number>(),
       knowledgeCommitIds: new Set([base.commit]), injection: true, suppliedGeneration: 0 };
     const stateNotice = memory.injection(peerPath, retained).text;
-    expect(stateNotice).toContain(`K${base.knowledgeId}@${base.commit} is superseded by K${base.knowledgeId}@${narrowed.commit}`);
+    expect(stateNotice).toContain(`K${base.knowledgeId} no longer applies`);
+    expect(stateNotice).not.toContain(`K${base.knowledgeId}@v2`);
     expect(stateNotice).not.toContain("owner-only body");
 
     const staleTrigger = createDreamerTrigger(memory, peerPath, peerFact.id, ++sequence, "project");
     const staleRun = await scenarios.run(memory, peerPath, input => {
       const request = { fixture: "64b hidden stale base" }; input.reportRequest(request);
       const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-      trace.execute({ address: `K${base.knowledgeId}@${base.commit}`, itemBudget: null, pageBudget: 8000 });
-      trace.execute({ address: `K${staleTrigger.knowledgeId}@${staleTrigger.commit}`, itemBudget: null, pageBudget: 8000 });
-      expect(write.execute({ operations: [{ op: "update", id: `K${base.knowledgeId}@${base.commit}`, text: "stale peer edit",
+      trace.execute({ address: tag(base), itemBudget: null, pageBudget: 8000 });
+      trace.execute({ address: tag(staleTrigger), itemBudget: null, pageBudget: 8000 });
+      expect(write.execute({ operations: [{ op: "update", id: tag(base), text: "stale peer edit",
         category: "constraint", scope: "project", supports: [`F${peerFact.id}`], reason: "Must remain stale.", topics: [] }], skipped: [] }))
         .toContain("base is not the latest effective applicable revision");
-      write.execute({ operations: [{ op: "archive", id: `K${staleTrigger.knowledgeId}@${staleTrigger.commit}`,
+      write.execute({ operations: [{ op: "archive", id: tag(staleTrigger),
         supports: [`F${peerFact.id}`], reason: "Retire stale probe trigger." }], skipped: [] });
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
       return { outcome: "success", output: "stale hidden base refused", request };
@@ -383,16 +395,16 @@ test("64b scope visibility: global current hides older visible revisions, reject
       const request = { fixture: "64b cross-scope merge" }; input.reportRequest(request);
       const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
       for (const item of [widened, privateParent, mergeTrigger])
-        trace.execute({ address: `K${item.knowledgeId}@${item.commit}`, itemBudget: null, pageBudget: 8000 });
+        trace.execute({ address: tag(item), itemBudget: null, pageBudget: 8000 });
       const before = store.listKnowledgeRevisions().length;
-      expect(write.execute({ operations: [{ op: "merge", id: `K${widened.knowledgeId}@${widened.commit}`,
-        absorb: [`K${privateParent.knowledgeId}@${privateParent.commit}`], text: "illegal cross-scope merge",
+      expect(write.execute({ operations: [{ op: "merge", id: tag(widened),
+        absorb: [tag(privateParent)], text: "illegal cross-scope merge",
         category: "constraint", scope: "project", supports: [`F${ownerFact.id}`], reason: "Must be refused.", topics: [] }], skipped: [] }))
         .toContain(`base belongs to session:${owner.id}, outside Dreamer pool project:${project.id}`);
       expect(store.listKnowledgeRevisions()).toHaveLength(before);
       expect(store.currentCommit(widened.knowledgeId, ownerPath).map(item => item.id)).toEqual([widened.commit]);
       expect(store.currentCommit(privateParent.knowledgeId, ownerPath).map(item => item.id)).toEqual([privateParent.commit]);
-      expect(write.execute({ operations: [{ op: "archive", id: `K${mergeTrigger.knowledgeId}@${mergeTrigger.commit}`,
+      expect(write.execute({ operations: [{ op: "archive", id: tag(mergeTrigger),
         supports: [], reason: "Retire cross-scope probe trigger." }], skipped: [] })).toContain("committed");
       return { outcome: "success", output: "cross-scope merge refused", request };
     });
@@ -404,12 +416,12 @@ test("64b scope visibility: global current hides older visible revisions, reject
       const request = { fixture: "64b merge result scope" }; input.reportRequest(request);
       const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
       for (const item of [widened, projectParent, resultScopeTrigger])
-        trace.execute({ address: `K${item.knowledgeId}@${item.commit}`, itemBudget: null, pageBudget: 8000 });
-      expect(write.execute({ operations: [{ op: "merge", id: `K${widened.knowledgeId}@${widened.commit}`,
-        absorb: [`K${projectParent.knowledgeId}@${projectParent.commit}`], text: "illegal result scope",
+        trace.execute({ address: tag(item), itemBudget: null, pageBudget: 8000 });
+      expect(write.execute({ operations: [{ op: "merge", id: tag(widened),
+        absorb: [tag(projectParent)], text: "illegal result scope",
         category: "constraint", scope: "session", supports: [`F${ownerFact.id}`], reason: "Must be refused.", topics: [] }], skipped: [] }))
         .toContain("merge parents and result must share one scope");
-      expect(write.execute({ operations: [{ op: "archive", id: `K${resultScopeTrigger.knowledgeId}@${resultScopeTrigger.commit}`,
+      expect(write.execute({ operations: [{ op: "archive", id: tag(resultScopeTrigger),
         supports: [], reason: "Retire result-scope probe trigger." }], skipped: [] })).toContain("committed");
       return { outcome: "success", output: "result scope refused", request };
     });

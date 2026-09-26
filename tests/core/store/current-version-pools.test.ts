@@ -322,6 +322,21 @@ test("67: pool reads batch graph, processing history and rendering independently
   } finally { graphInput.mockRestore(); graph.mockRestore(); prepare.mockRestore(); render.mockRestore(); }
 });
 
+test.each(["current", "archive-parent"] as const)("92: pool metadata batching rejects a missing %s version tag", shape => {
+  const f = setup(), item = f.create("global");
+  if (shape === "archive-parent") {
+    const archived = f.store.commitConsolidationRun({ path: f.target,
+      run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" },
+      operations: [{ op: "archive", knowledgeId: item.knowledgeId, baseCommit: item.commit,
+        supports: [f.fact.id], reason: "Retire body", createdAt: "now" }] });
+    expect(archived.ok).toBe(true);
+  }
+  expect(f.store.knowledgePools(f.target).flatMap(pool => pool.pending)).toHaveLength(1);
+  f.store.db.prepare("DELETE FROM knowledge_version_tags WHERE commit_id = ?").run(item.commit);
+  expect(() => f.store.knowledgePools(f.target)).toThrow(`unknown knowledge version K${item.knowledgeId}`);
+  expect(f.store.db.prepare("SELECT * FROM knowledge_version_tags WHERE commit_id = ?").get(item.commit)).toBeUndefined();
+});
+
 test("67: create batches skip writer graphs while consuming operations recheck after prior mutations", () => {
   const f = setup(), graph = vi.spyOn(f.store, "commitGraphInput");
   try {

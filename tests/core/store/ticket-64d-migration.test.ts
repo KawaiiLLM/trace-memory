@@ -47,6 +47,8 @@ function legacyFixture(extension = false, splitInvisible = false) {
 
   const db = new DatabaseSync(path);
   db.exec("PRAGMA foreign_keys=ON");
+  // This fixture predates 03: all legacy revisions must enter the normal one-time tag migration.
+  db.exec("DROP TABLE knowledge_version_tags");
   const child = Number(db.prepare(`INSERT INTO knowledge_revisions
     (knowledge_id,parent_id,text,category,scope,supports,support_semantics,op,reason,topics,run_id,created_at,actor_role)
     VALUES (?,?,?,?,?,'[]','change','update','legacy child','[]',?,?,'dreaming')`)
@@ -108,9 +110,12 @@ test("64d migrates legacy supports, old defaults and real current processing pro
   expect(store.migration64d.remainingEmptyRevisionIds).toContain(fixture.emptyRoot);
   expect(store.migration64d.seeded).toEqual({ global: 1, project: 0, session: 0 });
   for (const table of retired) expect(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)).toBeUndefined();
+  const tags = store.db.prepare("SELECT * FROM knowledge_version_tags ORDER BY commit_id").all();
+  expect(tags).toHaveLength(store.listKnowledgeRevisions().length);
   store.close();
 
   const reopened = new Store(fixture.path);
+  expect(reopened.db.prepare("SELECT * FROM knowledge_version_tags ORDER BY commit_id").all()).toEqual(tags);
   expect(reopened.migration64d).toMatchObject({ legacySchema: false, budgetSource: "current", budgetWasCustom: false });
   expect(reopened.migration64d.backfilledRevisionIds).toEqual([]);
   expect(reopened.migration64d.seeded).toEqual({ global: 0, project: 0, session: 0 });
@@ -179,6 +184,7 @@ test("64d rejects malformed merge ancestry and rolls back backfill and policy to
   const unchanged = new DatabaseSync(fixture.path, { readOnly: true });
   expect(unchanged.prepare("SELECT supports FROM knowledge_revisions WHERE id=?").get(fixture.child)!.supports).toBe("[]");
   expect(unchanged.prepare("SELECT project_tokens FROM knowledge_budget_policy WHERE id=1").get()!.project_tokens).toBe(10000);
+  expect(unchanged.prepare("SELECT 1 FROM sqlite_master WHERE name='knowledge_version_tags'").get()).toBeUndefined();
   unchanged.close();
 });
 

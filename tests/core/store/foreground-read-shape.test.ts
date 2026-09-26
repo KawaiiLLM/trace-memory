@@ -57,7 +57,7 @@ test("71/79: current membership and a path snapshot read source_entries only thr
     const legacyFact = fact(store, owner.id, "main", root.turn.id, `T${root.turn.id}#user`);
     const path: KnowledgePath = { sessionId: owner.id, branch: "main", headTurnId: child.turn.id };
     const consolidation = store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId: owner.id, branch: "main", createdAt: at },
-      operations: [{ op: "create", handle: "$k", author: "test", text: "k", category: "mechanism", scope: "global",
+      operations: [{ op: "create", handle: "$k", author: "test", text: "k", category: "understanding", scope: "global",
         supports: [boundFact.id, legacyFact.id], topics: [], reason: "shape fixture", createdAt: at }] });
     if (!consolidation.ok) throw new Error(consolidation.problems.join("; "));
     const readerPath: KnowledgePath = { sessionId: reader.id, branch: "main", headTurnId: readNode.turn.id };
@@ -166,12 +166,12 @@ test("71: two lineages of one session keep independent membership, not a concate
     const rightFact = fact(store, owner.id, "right", rightChild.turn.id, `T${rightChild.turn.id}#user`, rightChild.entry.id);
     const path: KnowledgePath = { sessionId: owner.id, branch: "left", headTurnId: leftChild.turn.id };
     const leftKnowledge = store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId: owner.id, branch: "left", createdAt: at },
-      operations: [{ op: "create", handle: "$left", author: "test", text: "left", category: "mechanism", scope: "global",
+      operations: [{ op: "create", handle: "$left", author: "test", text: "left", category: "understanding", scope: "global",
         supports: [leftFact.id], topics: [], reason: "two-lineage fixture", createdAt: at }] });
     if (!leftKnowledge.ok) throw new Error(leftKnowledge.problems.join("; "));
     const rightPath: KnowledgePath = { sessionId: owner.id, branch: "right", headTurnId: rightChild.turn.id };
     const rightKnowledge = store.commitConsolidationRun({ path: rightPath, run: { kind: "consolidation", sessionId: owner.id, branch: "right", createdAt: at },
-      operations: [{ op: "create", handle: "$right", author: "test", text: "right", category: "mechanism", scope: "global",
+      operations: [{ op: "create", handle: "$right", author: "test", text: "right", category: "understanding", scope: "global",
         supports: [rightFact.id], topics: [], reason: "two-lineage fixture", createdAt: at }] });
     if (!rightKnowledge.ok) throw new Error(rightKnowledge.problems.join("; "));
 

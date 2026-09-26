@@ -37,7 +37,7 @@ function fact(store: Store, sessionId: number, branch: string, turnId: number, s
 }
 function knowledge(store: Store, path: KnowledgePath, factId: number, label: string) {
   const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
-    operations: [{ op: "create", handle: `$${label}`, author: "test", text: label, category: "mechanism", scope: "global",
+    operations: [{ op: "create", handle: `$${label}`, author: "test", text: label, category: "understanding", scope: "global",
       supports: [factId], topics: [], reason: "membership fixture", createdAt: at }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.committed[0]!;

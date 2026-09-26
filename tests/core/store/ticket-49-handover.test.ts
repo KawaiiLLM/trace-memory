@@ -139,7 +139,7 @@ test("86: moved current revision becomes pending, while another writer's process
     .map(row => Number(row.revision_id))).toEqual([original.commit]);
   const pending = store.pendingVersions(pool, author.path);
   expect(pending.map(item => item.revisionId)).toEqual([current.commit]);
-  expect(pending[0]!.material).toContain(`(from @${original.commit})`); // Existing 76 differential weighting still applies.
+  expect(pending[0]!.material).toContain(`(from K${original.knowledgeId}@v1)`); // Existing 76 differential weighting still applies.
 });
 
 test("86: oldest pending Knowledge with complete framing exceeding its pool budget is retained first", () => {

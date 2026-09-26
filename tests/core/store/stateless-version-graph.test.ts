@@ -5,6 +5,10 @@ import { type KnowledgePath, Store } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const at = "2026-09-21T12:00:00.000Z";
+const tag = (store: Store, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`;
+const history = (store: Store, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}`;
+const publishedCommit = (store: Store, item: { knowledgeId: number; version: string }) =>
+  store.resolveVersionOrdinal(item.knowledgeId, Number(/@v(\d+)$/.exec(item.version)![1]));
 const open: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const memory of open.splice(0)) memory.close(); });
 
@@ -108,14 +112,14 @@ test("64b stateless graph: genuine alternative split operations keep only the op
     const dreamed = await scenarios.run(memory, path, input => {
       const request = { fixture: `alternative split ${sequence}` }; input.reportRequest(request);
       const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-      trace.execute({ address: `K${base.knowledgeId}@${base.commit}`, itemBudget: null, pageBudget: 8000 });
-      trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null, pageBudget: 8000 });
+      trace.execute({ address: tag(store, base), itemBudget: null, pageBudget: 8000 });
+      trace.execute({ address: tag(store, trigger), itemBudget: null, pageBudget: 8000 });
       const receipt = JSON.parse(write.execute({ operations: [
-        { op: "split", id: `K${base.knowledgeId}@${base.commit}`, supports: [`F${support}`], reason: "Alternative atomic split.",
+        { op: "split", id: tag(store, base), supports: [`F${support}`], reason: "Alternative atomic split.",
           children: labels.map(text => ({ text, category: "constraint", topics: [] })) },
-        { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${support}`], reason: "Retire trigger." },
+        { op: "archive", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
       ], skipped: [] }));
-      children = receipt.committed.filter((item: { op: string }) => item.op === "split").map((item: { commit: number }) => item.commit);
+      children = receipt.committed.filter((item: { op: string }) => item.op === "split").map((item: { knowledgeId: number; version: string }) => publishedCommit(store, item));
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
       return { outcome: "success", output: labels.join("/"), request };
     });
@@ -163,14 +167,15 @@ test("64b stateless graph: admitted deep branch defeats a restored sibling from 
     const dreamed = await scenarios.run(memory, path, input => {
       const request = { fixture: `64b deep fork ${sequence}` }; input.reportRequest(request);
       const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-      trace.execute({ address: `K${prior.knowledgeId}@${prior.commit}`, itemBudget: null, pageBudget: 8000 });
-      trace.execute({ address: `K${trigger.knowledgeId}@${trigger.commit}`, itemBudget: null, pageBudget: 8000 });
+      trace.execute({ address: tag(store, prior), itemBudget: null, pageBudget: 8000 });
+      trace.execute({ address: tag(store, trigger), itemBudget: null, pageBudget: 8000 });
       const receipt = JSON.parse(write.execute({ operations: [
-        { op: "update", id: `K${prior.knowledgeId}@${prior.commit}`, text, category: "constraint", scope: "global",
+        { op: "update", id: tag(store, prior), text, category: "constraint", scope: "global",
           supports: [`F${support}`], reason: "Advance the selected branch.", topics: [] },
-        { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${support}`], reason: "Retire trigger." },
+        { op: "archive", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
       ], skipped: [] }));
-      result = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === prior.knowledgeId);
+      const published = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === prior.knowledgeId);
+      result = { knowledgeId: prior.knowledgeId, commit: publishedCommit(store, published) };
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
       return { outcome: "success", output: text, request };
     });
@@ -235,20 +240,20 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     const request = { fixture: "64b restorable sibling branches" }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [scopedParent, survivor, absorbed, splitParent, siblingTrigger])
-      trace.execute({ address: `K${item.knowledgeId}@${item.commit}`, itemBudget: null, pageBudget: 8000 });
+      trace.execute({ address: tag(store, item), itemBudget: null, pageBudget: 8000 });
     const operated = new Set([absorbed, splitParent, siblingTrigger]
-      .map(item => `K${item.knowledgeId}@${item.commit}`));
-    const unchangedSupplied = [...new Set(input.material.changed.match(/K\d+@\d+/g) ?? [])]
+      .map(item => history(store, item)));
+    const unchangedSupplied = [...new Set(input.material.changed.match(/K\d+@v\d+/g) ?? [])]
       .filter(knowledge => !operated.has(knowledge));
     const receipt = JSON.parse(write.execute({ operations: [
-      { op: "update", id: `K${absorbed.knowledgeId}@${absorbed.commit}`, text: "restorable absorbed sibling",
+      { op: "update", id: tag(store, absorbed), text: "restorable absorbed sibling",
         category: "constraint", scope: "global", supports: [`F${cFact.id}`], reason: "Create competing merge sibling.", topics: [] },
-      { op: "update", id: `K${splitParent.knowledgeId}@${splitParent.commit}`, text: "restorable split-source sibling",
+      { op: "update", id: tag(store, splitParent), text: "restorable split-source sibling",
         category: "constraint", scope: "global", supports: [`F${cFact.id}`], reason: "Create competing split sibling.", topics: [] },
-      { op: "archive", id: `K${siblingTrigger.knowledgeId}@${siblingTrigger.commit}`, supports: [`F${aFact.id}`], reason: "Retire first trigger." },
+      { op: "archive", id: tag(store, siblingTrigger), supports: [`F${aFact.id}`], reason: "Retire first trigger." },
     ], skipped: unchangedSupplied.map(knowledge => ({ knowledge, because: "Not part of the sibling construction." })) }));
-    absorbedSibling = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === absorbed.knowledgeId);
-    splitSibling = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === splitParent.knowledgeId);
+    absorbedSibling = { commit: publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === absorbed.knowledgeId)) };
+    splitSibling = { commit: publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === splitParent.knowledgeId)) };
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "siblings created", request };
   });
@@ -262,13 +267,13 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     const request = { fixture: "64b stateless session scope change" }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [scopedParent, sessionTrigger])
-      trace.execute({ address: `K${item.knowledgeId}@${item.commit}`, itemBudget: null, pageBudget: 8000 });
+      trace.execute({ address: tag(store, item), itemBudget: null, pageBudget: 8000 });
     const receipt = JSON.parse(write.execute({ operations: [
-      { op: "update", id: `K${scopedParent.knowledgeId}@${scopedParent.commit}`, text: "global child with B support",
+      { op: "update", id: tag(store, scopedParent), text: "global child with B support",
         category: "constraint", scope: "global", supports: [`F${bFact.id}`], reason: "Direct child evidence changes scope.", topics: [] },
-      { op: "archive", id: `K${sessionTrigger.knowledgeId}@${sessionTrigger.commit}`, supports: [`F${aFact.id}`], reason: "Retire session trigger." },
+      { op: "archive", id: tag(store, sessionTrigger), supports: [`F${aFact.id}`], reason: "Retire session trigger." },
     ], skipped: [] }));
-    scopedChild = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === scopedParent.knowledgeId).commit;
+    scopedChild = publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === scopedParent.knowledgeId));
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "scope changed", request };
   });
@@ -281,17 +286,17 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     const request = { fixture: "64b stateless cross-identity graph" }; input.reportRequest(request);
     const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [survivor, absorbed, splitParent, trigger])
-      trace.execute({ address: `K${item.knowledgeId}@${item.commit}`, itemBudget: null, pageBudget: 8000 });
+      trace.execute({ address: tag(store, item), itemBudget: null, pageBudget: 8000 });
     const receipt = JSON.parse(write.execute({ operations: [
-      { op: "merge", id: `K${survivor.knowledgeId}@${survivor.commit}`, absorb: [`K${absorbed.knowledgeId}@${absorbed.commit}`],
+      { op: "merge", id: tag(store, survivor), absorb: [tag(store, absorbed)],
         text: "merged result with B support", category: "constraint", scope: "global", supports: [`F${bFact.id}`],
         reason: "Merge distinct identities.", topics: [] },
-      { op: "split", id: `K${splitParent.knowledgeId}@${splitParent.commit}`, supports: [`F${bFact.id}`], reason: "Split into atomic results.",
+      { op: "split", id: tag(store, splitParent), supports: [`F${bFact.id}`], reason: "Split into atomic results.",
         children: [{ text: "split result one", category: "constraint", topics: [] }, { text: "split result two", category: "constraint", topics: [] }] },
-      { op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${aFact.id}`], reason: "Retire trigger." },
+      { op: "archive", id: tag(store, trigger), supports: [`F${aFact.id}`], reason: "Retire trigger." },
     ], skipped: [] }));
-    mergeCommit = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === survivor.knowledgeId).commit;
-    splitChildren = receipt.committed.filter((item: { op: string }) => item.op === "split").map((item: { commit: number }) => item.commit);
+    mergeCommit = publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === survivor.knowledgeId));
+    splitChildren = receipt.committed.filter((item: { op: string }) => item.op === "split").map((item: { knowledgeId: number; version: string }) => publishedCommit(store, item));
 
     const admittedRun = commit.mock.calls.at(-1)![0].run;
     store.setCurrentPath(c.id, "main", c1.turn.id, "test-lineage");
@@ -306,7 +311,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "graph maintained", request };
   });
-  expect(result.outcome).toBe("success");
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
   expect(splitChildren).toHaveLength(2);
   compareCommittedGraph(store, bPath);
 
