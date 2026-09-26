@@ -31,6 +31,14 @@ let calls: NotingAgentInput[];
 let admittedScenarios: AdmittedDreamerScenarios;
 const time = "2026-09-06T00:00:00Z";
 const ok = (output: unknown): RunAgentResult => ({ outcome: "success", output: JSON.stringify(output), request: { fake: true } });
+const tagged = (knowledgeId: number, commitId: number) => `K${knowledgeId}#${memory.store.versionTag(knowledgeId, commitId)}`;
+const history = (knowledgeId: number, commitId: number) => `K${knowledgeId}@v${memory.store.versionOrdinal(knowledgeId, commitId)}`;
+/** Public receipts name per-identity history; database assertions resolve it explicitly. */
+const commitOf = (item: { knowledgeId: number; version: string }): number => {
+  const match = /^K([1-9][0-9]*)@v([1-9][0-9]*)$/.exec(item.version);
+  expect(Number(match?.[1])).toBe(item.knowledgeId);
+  return memory.store.resolveVersionOrdinal(item.knowledgeId, Number(match![2]));
+};
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-rulings-"));
@@ -80,7 +88,7 @@ function completeToolRead(trace: { execute(input: Record<string, unknown>): stri
 
 function session() {
   const project = memory.store.createProject({ name: "p", declaredBy: "mark" });
-  const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
+  const s = memory.store.createSession({ enrollmentChoice: true, host: "pi:fixture", startedAt: time, firstReplyAt: time, projectId: project.id });
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "用 pnpm，不要 npm", assistantText: "好的。", startedAt: time });
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command: "pnpm install" }), result: JSON.stringify({ stdout: "done", stderr: "" }), status: "success" });
   return { s, t };
@@ -96,6 +104,7 @@ test("2026-09-24, 86: 'catchup 选A' and '任务失败后不检查' — retry th
     expect(checks.mock.calls.map(([phase]) => phase)).toEqual(["consolidation", "dreaming"]);
     expect(retryMemory.store.taskFailures(target.sessionId).some(row => row.count === 1)).toBe(true);
     task.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     return ok([]);
   });
   const project = retryMemory.store.createProject({ name: "retry", declaredBy: "mark" });
@@ -209,8 +218,8 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
 /** Knowledge to lead the block with: one manually written fact, consolidated by hand into K1. */
 function seededKnowledge(sessionId: number, turnId: number) {
   const tools = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId });
-  tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${turnId}#user`] }] });
-  tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
+  expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: [`T${turnId}#E1`] }] })).toContain("ok: F1");
+  expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain("committed");
 }
 
 // User ruling 2026-09-08 (ticket 20 "Solution"): this explicitly revises 19b's ban on core-composed
@@ -225,7 +234,7 @@ test("20a 2026-09-08: core owns the host-neutral domain text and still builds no
   // Domain text, from core, in core's own order — instructions stay their own field, not a system message.
   expect(input.text).toContain(input.material.entries[0]!.view);
   expect(input.text.startsWith("Recent facts (by Turn):")).toBe(true); // 25a: no leading knowledge block
-  expect(input.prompt).toContain("Noting (fact extraction)");
+  expect(input.prompt).toContain("Noting (facts and knowledge)");
   expect(input.text).not.toContain(input.prompt);
   // What core still does not build: a message sequence, a system slot, a provider body.
   const record = input as unknown as Record<string, unknown>;
@@ -271,7 +280,7 @@ test("20a 2026-09-08, narrowed by 25a: nothing task-specific enters the leading 
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   expect(calls[0]!.text).not.toContain("<knowledge>"); // the fourth consumer no longer
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
+    .execute({ facts: [{ text: "Keep pnpm", source: [`T${t.id}#E1`] }] });
   await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const consolidation = calls.at(-1)! as unknown as import("../../../src/core/api/index.ts").ConsolidationAgentInput;
   const block = consolidation.text.split("\n\nRange: ")[0]!;
@@ -303,8 +312,8 @@ test("2026-09-07: four tools, no other model-facing surface", () => {
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   expect(tools.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
   for (const tool of tools) { expect(tool.parameters.type).toBe("object"); expect(typeof tool.execute).toBe("function"); }
-  expect(tools[2]!.description).toContain("Noting runs are the normal writers");
-  expect(tools[3]!.description).toContain("Consolidation runs create knowledge");
+  expect(tools[2]!.description).toContain("Both note and memory are required in N");
+  expect(tools[3]!.description).toContain("Manual writers may create/archive only");
   expect(tools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion." }, { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion." }], skipped: [] })).toContain("rejected:");
 });
 
@@ -312,7 +321,7 @@ test("2026-09-07: four tools, no other model-facing surface", () => {
 test("2026-09-07: a rejected item writes nothing", () => {
   const { s, t } = session();
   const note = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!;
-  const fact = { category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] };
+  const fact = { text: "Use pnpm", source: [`T${t.id}#E1`] };
   const rejected = JSON.parse(note.execute({ facts: [fact, { ...fact, actor: "tool" }] }));
   expect(rejected.results[0]).toBe("ok"); expect(rejected.results[1]).toContain("rejected:");
   expect(memory.store.listSessionFacts(s.id)).toEqual([]);
@@ -321,27 +330,32 @@ test("2026-09-07: a rejected item writes nothing", () => {
   expect(memory.trace("F2")).toContain("support F1 strong");
 });
 
-// “A Noting run commits at most one batch.”
-test("2026-09-07: one batch per run", async () => {
+// One publication per run still holds; 92 moves it after all held edits and normal termination.
+test("2026-09-07 / 92: one terminal publication per run, not one immediate tool submission", async () => {
   const { s, t } = session(); memory.close();
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
     input.reportRequest({ round: 1 });
     const note = input.tools[2]!;
-    const batch = { facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] }] };
-    expect(note.execute(batch)).toContain("F1");
-    expect(memory.store.getRun(1)?.outcome).toBe("success");
-    expect(JSON.parse(memory.store.getRun(1)!.request!)).toEqual({ round: 1 });
-    expect(hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0);
-    expect(hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
-    expect(note.execute(batch)).toContain("already committed");
+    const fact = { text: "Use pnpm", source: [`T${t.id}#E1`] };
+    expect(note.execute({ facts: [fact] })).toContain("held: $1");
+    expect(memory.store.listSessionFacts(s.id)).toEqual([]);
+    expect(memory.store.listRuns(s.id).some(run => run.outcome === "success")).toBe(false);
+    const entries = memory.store.sourcePath(s.id, "main", t.id);
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.some(entry => memory.store.entryNoted(entry.id))).toBe(false);
+    expect(note.execute({ facts: [{ slot: "$1", ...fact, text: "Use pnpm, not npm" }] })).toContain("held: $1");
+    expect(input.tools[3]!.execute({ operations: [], skipped: [] })).not.toContain("rejected:");
+    expect(memory.store.listSessionFacts(s.id)).toEqual([]);
     return { outcome: "success", output: "Done", request: { round: 2 } };
   });
   expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
-  expect(memory.store.listSessionFacts(s.id)).toHaveLength(1);
-  const run = memory.store.getRun(1)!;
+  expect(memory.store.listSessionFacts(s.id)).toMatchObject([{ text: "Use pnpm, not npm" }]);
+  expect(memory.store.sourcePath(s.id, "main", t.id).every(entry => memory.store.entryNoted(entry.id))).toBe(true);
+  const run = memory.store.listRuns(s.id).at(-1)!;
+  expect(run.outcome).toBe("success");
   expect(JSON.parse(run.request!)).toEqual({ round: 2 });
-  expect(JSON.parse(run.response!).toolCalls.map((c: { result: string }) => c.result)).toHaveLength(2);
+  expect(JSON.parse(run.response!).toolCalls.map((c: { result: string }) => c.result)).toHaveLength(3);
 });
 
 // “a run whose last submission was rejected and never corrected ... is bounced ... watermark does not move”.
@@ -349,7 +363,9 @@ test("2026-09-07: bounced is not empty", async () => {
   const { s, t } = session(); memory.close();
   let reject = true;
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    (raw as NotingAgentInput).tools[2]!.execute({ facts: reject ? [{ category: "invalid" }] : [] });
+    const input = raw as NotingAgentInput;
+    input.tools[2]!.execute({ facts: reject ? [{ category: "invalid" }] : [] });
+    input.tools[3]!.execute({ operations: [], skipped: [] });
     return { outcome: "success", output: "No more text", request: {} };
   });
   const input = { sessionId: s.id, branch: "main", headTurnId: t.id };
@@ -369,7 +385,7 @@ function memoryWriter() {
   memory.selectEntries(s.id, "main", entries.map(entry => entry.id));
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: entries.at(-1)!.id };
   const tools = memory.tools({ kind: "manual", ...path, currentTurnId: t.id });
-  tools[2]!.execute({ facts: ["Use pnpm", "Do not use npm"].map(text => ({ category: "decision", actor: "user", text, source: [`T${t.id}#user`] })) });
+  expect(tools[2]!.execute({ facts: ["Use pnpm", "Do not use npm"].map(text => ({ text, source: [`T${t.id}#E1`] })) })).not.toContain("rejected:");
   recorded(memory, s.id, "main", t.id); // recorded: the facts may enter a Consolidation batch
   const create = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
   const write = (operations: any[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] }));
@@ -378,13 +394,13 @@ function memoryWriter() {
 
 test("2026-09-24, 85: '余量只有一点，几乎必然导致每次C都会触发D' — over budget alone never makes Dreaming due", async () => {
   const { path, create, write } = memoryWriter();
-  const first = write([{ ...create, text: "Durable user constraint ".repeat(150) }]).committed[0];
+  const first = write([{ ...create, text: "Durable user constraint ".repeat(150) }]).committed[0] as { knowledgeId: number; version: string };
   expect(first).toBeTruthy();
   memory.config.dreaming.triggerTokens = 1;
   const finished = await admittedScenarios.run(memory, path, input => {
     input.acknowledgeRequest();
     const result = input.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
-      skipped: [{ knowledge: `K${first.knowledgeId}@${first.commit}`, because: "Reviewed unchanged" }] });
+      skipped: [{ knowledge: first.version, because: "Reviewed unchanged" }] });
     expect(result).toContain("committed");
     return ok([]);
   });
@@ -437,11 +453,11 @@ test("2026-09-07: supports replaces, history keeps the old set", async () => {
   expect(memory.store.getKnowledgeRevision(1, 1)).toMatchObject({ supports: [1], reason: "Initial admission of this conclusion." });
   const trigger = createDreamerTrigger(memory, path, 2, 1);
   const updated = await admittedWrite({ ...path, fact: "F2" }, trigger, [{ ...create, op: "update",
-    reason: "Substantive correction of the recorded conclusion.", id: "K1@1", text: "Avoid npm", supports: ["F2"] }]);
-  const commit = updated.committed[0].commit as number;
+    reason: "Substantive correction of the recorded conclusion.", id: tagged(1, 1), text: "Avoid npm", supports: ["F2"] }]);
+  const commit = commitOf(updated.committed[0]);
   expect(memory.store.getKnowledgeRevision(1, commit)).toMatchObject({ supports: [2], reason: "Substantive correction of the recorded conclusion." });
   expect(memory.store.getKnowledgeRevision(1, 1)?.supports).toEqual([1]);
-  expect(memory.trace(`K1@1..K1@${commit}`)).toContain("F2");
+  expect(memory.trace(`K1@v1..v${memory.store.versionOrdinal(1, commit)}`)).toContain("F2");
   const runs = memory.store.listRuns(s.id);
   expect(runs.at(-1)).toMatchObject({ kind: "dreaming", branch: "main" });
   expect(runs.at(-1)!.id).toBe(memory.store.getKnowledgeRevision(1, commit)!.runId);
@@ -607,7 +623,7 @@ function commitPaths() {
   };
   const writer = (sessionId: number, headTurnId: number, branch: string, triggerEntryId: number) => {
     const tools = memory.tools({ kind: "manual", sessionId, currentTurnId: headTurnId, branch, triggerEntryId });
-    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: branch, source: [`T${headTurnId}#user`] }] }));
+    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ text: branch, source: [`T${headTurnId}#E1`] }] }));
     expect(receipt.results[0]).toMatch(/^ok:/);
     const fact = `F${receipt.factIds[0]}`;
     return { sessionId, headTurnId, branch, triggerEntryId, fact, tools,
@@ -618,13 +634,13 @@ function commitPaths() {
   const publish = (who: typeof root) => memory.store.setCurrentPath(who.sessionId, who.branch, who.headTurnId, "test-lineage");
   publish(root);
   const content = (fact: string, text = "Use blue tiles") => ({ text, category: "constraint", scope: "project", supports: [fact] });
-  expect(root.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }]).committed[0].commit).toBe(1);
+  expect(root.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }]).committed[0].version).toBe("K1@v1");
   const c = node(s.id, t.id, "C"), d = node(s.id, t.id, "D");
   const edit = async (who: typeof root, text: string, trigger: { knowledgeId: number; commit: number }, fact = who.fact) => {
     publish(who);
     const current = memory.store.currentCommit(1, who).at(-1)!;
     return admittedWrite(who, trigger, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
-      id: `K1@${current.id}`, ...content(fact, text) }]);
+      id: tagged(1, current.id), ...content(fact, text) }]);
   };
   const tips = (path: { sessionId: number; headTurnId: number }) => memory.store.currentCommit(1, path).map(r => r.id);
   const peer = (projectId = s.projectId) => {
@@ -638,7 +654,7 @@ async function admittedWrite(
   path: { sessionId: number; headTurnId: number; branch: string; fact: string },
   trigger: { knowledgeId: number; commit: number }, operations: any[], skipped: string[] = [],
 ) {
-  const request = { fixture: "rulings admitted maintenance", trigger: `K${trigger.knowledgeId}@${trigger.commit}` };
+  const request = { fixture: "rulings admitted maintenance", trigger: history(trigger.knowledgeId, trigger.commit) };
   let receipt: any;
   const result = await admittedScenarios.run(memory, path, input => {
     input.reportRequest(request);
@@ -646,11 +662,11 @@ async function admittedWrite(
     const write = input.tools.find(tool => tool.name === "memory")!;
     const exact = new Set<string>();
     for (const operation of operations) {
-      if (typeof operation.id === "string" && /^K\d+@\d+$/.test(operation.id)) exact.add(operation.id);
-      for (const parent of operation.absorb ?? []) if (/^K\d+@\d+$/.test(parent)) exact.add(parent);
+      if (typeof operation.id === "string" && /^K\d+#[a-z]+$/.test(operation.id)) exact.add(operation.id);
+      for (const parent of operation.absorb ?? []) if (/^K\d+#[a-z]+$/.test(parent)) exact.add(parent);
     }
     for (const address of exact) completeToolRead(trace, address);
-    const triggerAddress = `K${trigger.knowledgeId}@${trigger.commit}`;
+    const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
     completeToolRead(trace, triggerAddress);
     receipt = JSON.parse(write.execute({ operations: [...operations, { op: "archive", id: triggerAddress,
       supports: [path.fact], reason: "Retire the explicit fixture trigger." }],
@@ -669,7 +685,7 @@ test("2026-09-07 A: sibling-branch facts are readable but supports requires an a
     expect(rejected.results[0]).toContain("record an adoption fact on this path first");
     expect(memory.store.getKnowledge(2)).toBeNull();
   }
-  const adopted = JSON.parse(c.tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Adopt the other branch's rule", quote: d.fact, source: [`T${c.headTurnId}#user`] }] }));
+  const adopted = JSON.parse(c.tools[2]!.execute({ facts: [{ text: `Adopt the other branch's rule ${d.fact}`, source: [`T${c.headTurnId}#E1`] }] }));
   expect(c.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(`F${adopted.factIds[0]}`) }]).committed).toHaveLength(1);
 });
 
@@ -715,7 +731,7 @@ test("2026-09-07 B: store rechecks every base inside the transaction and rolls b
   const { root, content, edit } = commitPaths();
   const trigger = createDreamerTrigger(memory, root, Number(root.fact.slice(1)), 1);
   const updated = await edit(root, "Use blue tiles", trigger);
-  const successor = updated.committed[0].commit as number;
+  const successor = commitOf(updated.committed[0]);
   const origin = memory.store.triggerOrigin(root, root.triggerEntryId);
   const run = memory.store.bindRunOrigin({ kind: "manual", sessionId: root.sessionId, createdAt: time }, origin);
   const result = memory.store.commitConsolidationRun({ path: root, run, operations: [
@@ -724,7 +740,7 @@ test("2026-09-07 B: store rechecks every base inside the transaction and rolls b
   ] });
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("stale batch committed");
-  expect(result.problems.join(" ")).toContain(`K1@${successor}`);
+  expect(result.problems.join(" ")).toContain(history(1, successor));
   expect(memory.store.getKnowledge(trigger.knowledgeId + 1)).toBeNull();
   expect(memory.store.listKnowledgeRevisions(1)).toHaveLength(2);
 });
