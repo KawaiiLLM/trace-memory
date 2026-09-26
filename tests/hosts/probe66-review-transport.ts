@@ -60,7 +60,8 @@ for (const project of readdirSync(projectDir)) for (const file of readdirSync(jo
           all.facts.length !== 1 ||
           !prepared.factIds.includes(all.facts[0]!) ||
           !prepared.factIds.some(id => !all.facts.includes(id)) ||
-          warnings.length !== 1 || !warnings[0].attachment.content.includes('1 unconsolidated fact') ||
+          warnings.length !== 1 || !warnings[0].attachment.content.includes('1 fact (') ||
+          /unconsolidated|Consolidation/.test(warnings[0].attachment.content) ||
           !successes.some(success => success.command.endsWith(' 0') && success.toolUseID === warnings[0].attachment.toolUseID) ||
           readCcMenu(resolveCcHostConfig(config), native).menu.notices.includes(warnings[0].attachment.content) === false ||
           !context.join('\n').includes('expand: F'))
