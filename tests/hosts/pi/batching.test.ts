@@ -7,13 +7,14 @@ import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { hydrate } from "../../source-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { rawWindowTokens } from "../../../src/core/render/material.ts";
 
 // 30 capped one entry view at `render.entryTokens` (2,000), so the cases below reach a trigger, a
 // batch ceiling or a capacity allowance with several entries or a smaller cap instead of one huge
 // entry. What each pins — the exact threshold, the batch composition, the capacity prefix — is
 // unchanged; only the size one entry may reach is.
 const view = (text: string, nativeId: string, role: "user" | "assistant") => renderEntry({ id: 1, entryOrdinal: role === "user" ? 1 : 2, sessionId: 1, nativeLineage: "pi-test", nativeId, turnId: 1, role, text, raw: "", calls: [], blocks: [{ kind: "text", text }] } as SourceEntry, DEFAULT_CONFIG.render).content;
-const batchText = (input: string) => input.split("Raw:\n\n")[1]!.split("\n\nReceipts:")[0]!;
+const batchText = (input: string) => input.split("Raw:\n\n")[1]!.split("\n</episodic>")[0]!;
 
 test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed tokens (%s)", async size => {
   const h = host({ "noting.forkModeDefault": false });
@@ -42,7 +43,15 @@ test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed
     expect(tokens(entries.map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBe(size);
     // The default script explicitly calls note, then memory, then ends normally.
     expect(h.requests).toHaveLength(size === 10000 ? 3 : 0);
-    expect(hydrate(h.memory.pendingEntries(1, "main", head), h.memory.store)).toHaveLength(size === 10000 ? 0 : entries.length);
+    const pending = hydrate(h.memory.pendingEntries(1, "main", head), h.memory.store);
+    if (size === 9999) expect(pending.map(e => e.id)).toEqual(entries.map(e => e.id));
+    else {
+      const run = h.memory.store.listRuns(1).find(r => r.kind === "noting")!;
+      const processed = JSON.parse(run.response!).entryAudit.entries.map((e: { id: number }) => e.id);
+      expect(processed.length).toBeGreaterThan(0);
+      expect(processed).toEqual(entries.slice(0, processed.length).map(e => e.id));
+      expect(pending.map(e => e.id)).toEqual(entries.slice(processed.length).map(e => e.id));
+    }
   } finally { await h.dispose(); }
 });
 
@@ -213,8 +222,8 @@ test.each(["user", "toolResult"])("17b 2026-09-08: stale branch capture falls ba
 
 // 27b moved the second half of this case — a fork whose inherited prefix does not fit — to
 // `fallback.test.ts`: that batch is no longer left pending but re-admitted once as a subagent.
-// 86 makes the batch cap soft for the oldest entry; model input capacity remains hard.
-test("86: the oldest entry crosses the soft batch budget", async () => {
+// 92 replaces 86's oversized-first exception with a complete-render batch ceiling.
+test("92: an oldest entry over the configured batch ceiling remains pending with an explicit refusal", async () => {
   // 30: one entry view is capped at 2,000 tokens, so the ceiling this entry must exceed is smaller,
   // and the trigger is lowered with it — 2,000 tokens of pending Raw no longer reach the default one.
   const h = host({ "noting.batchTokens": 1000, "noting.triggerTokens": 30 });
@@ -224,11 +233,11 @@ test("86: the oldest entry crosses the soft batch budget", async () => {
     h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
     const all = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
     const runs = h.memory.store.listRuns(1).filter(run => run.kind === "noting");
-    expect(runs).toHaveLength(1);
-    expect(h.requests).toHaveLength(3);
-    expect(JSON.parse(runs[0]!.response!).entryAudit.entries.map((entry: { id: number }) => entry.id)).toEqual([all[0]!.id]);
+    expect(runs).toHaveLength(0);
+    expect(h.requests).toHaveLength(0);
     expect(tokens(renderEntry(all[0]!, h.memory.config.render).content)).toBeGreaterThan(1000);
-    expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.id)).toEqual(all.slice(1).map(e => e.id));
+    expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.id)).toEqual(all.map(e => e.id));
+    expect(h.notices.join("\n")).toMatch(/batch|capacity|1000/i);
   } finally { await h.dispose(); }
 });
 
@@ -302,12 +311,14 @@ test("17b 2026-09-08, on 27a's rule: a round the child's own context cannot hold
 // that fits: an entry that does not fit beside the oldest one is not dropped, and no smaller later
 // entry is pulled forward to fill the space it left.
 test("20b 2026-09-08 scenario 5: a small oldest entry is not joined with a near-ceiling entry, and no smaller later entry jumps the queue", async () => {
-  // 30: the near-ceiling entry is the one the renderer caps at `render.entryTokens` (2,000), so the
-  // batch ceiling this case needs is that cap — the small oldest cannot fit beside it either way.
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30, "noting.batchTokens": 2000 });
+  // Price the complete Raw frame for the bounded large view. It fits alone but not alongside
+  // the small oldest entry; a stored-body-only ceiling would reject even the large view.
+  const large = "BIG " + "word ".repeat(15000);
+  const cap = rawWindowTokens([view(large, "big", "assistant")], []);
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30, "noting.batchTokens": cap });
   try {
     h.persist({ role: "user", content: "small oldest", timestamp: 1 });
-    h.persist(reply("BIG " + "word ".repeat(15000))); // the renderer bounds this at the entry cap
+    h.persist(reply(large)); // the renderer bounds this at the entry cap
     h.persist(reply("small later"));
     await h.emit("session_start");
     const all = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);

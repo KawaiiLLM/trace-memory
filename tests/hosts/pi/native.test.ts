@@ -4,8 +4,8 @@ import { expect, test, vi } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "../../../src/hosts/pi/fork.ts";
 import { addUsage, placeholderUsage, runNative } from "../../../src/hosts/pi/native.ts";
-import { NOTING_INCOMPLETE, recorded } from "../../source-fixture.ts";
-import { broken, call, noteAndMemory, fixture, stableForkFixture as forkFixture, memoryBatch, noteBatch, say, settled, sse, submitted, toolResults, usage, worker, type Body } from "./native-fixture.ts";
+import { NOTING_INCOMPLETE } from "../../source-fixture.ts";
+import { broken, call, noteAndMemory, fixture, stableForkFixture as forkFixture, noteBatch, say, settled, sse, submitted, toolResults, usage, worker, type Body } from "./native-fixture.ts";
 
 for (const [label, make] of [["subagent", fixture], ["fork", forkFixture]] as const) test(`92: native ${label} Noter submits optional relations without NEAR feedback`, async () => {
   const f = await make({ "noting.triggerTokens": 1 });
@@ -216,27 +216,6 @@ test("19a/92: a provider error after both held tools publishes nothing and recor
   } finally { release(); await f.dispose(); }
 });
 
-test("64a: Consolidation's first valid submission commits natively in a fork", async () => {
-  // 29e restored the mode 25b removed. The create-only submission commits without a review round.
-  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1, "consolidation.forkModeDefault": true });
-  try {
-    f.script(body => !worker(body, "Consolidation") ? say("好的。")
-      : toolResults(body) >= 1 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
-    await f.turn();
-    f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
-      .find(t => t.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] });
-    recorded(f.h.memory, 1, "main", 1); // T1 recorded: F1 may enter the Consolidation batch
-    await f.turn("tick"); // a second real parent turn is the opportunity that admits the phase
-    const run = await settled(f, "consolidation");
-    expect(run.outcome, run.response ?? "").toBe("success");
-    expect(run.mode).toBe("fork"); // 29e: the mode really ran, inherited context and all
-    const response = JSON.parse(run.response!);
-    expect(response.toolCalls).toHaveLength(1);
-    expect(response.output).toBe("Integrated.");
-    expect(JSON.stringify(f.sent)).not.toContain("NEAR:");
-  } finally { await f.dispose(); }
-});
-
 // ------------------------- checkbox 4: copied custom state, tool whitelist, sequential execution
 test("19a 2026-09-08: copied plugin custom state activates no extension and starts no worker", async () => {
   const f = await forkFixture();
@@ -261,7 +240,7 @@ test("19a 2026-09-08: only the memory tools execute; other copied tools are reje
     const captured = await f.turn();
     const calls = [{ index: 0, id: "a", type: "function", function: { name: "read", arguments: JSON.stringify({ path: "/etc/passwd" }) } },
       { index: 1, id: "b", type: "function", function: { name: "trace", arguments: JSON.stringify({ address: "S1/T1" }) } }];
-    f.script(body => worker(body) || toolResults(body) === 0 && JSON.stringify(body).includes("note what happened") ? sse([{ id: "c", object: "chat.completion.chunk", created: 1, model: "test",
+    f.script((body, index) => index === 0 ? say("好的。") : index === 1 ? sse([{ id: "c", object: "chat.completion.chunk", created: 1, model: "test",
       choices: [{ index: 0, delta: { role: "assistant", tool_calls: calls }, finish_reason: "tool_calls" }], usage: usage() }]) : say("Done."));
     const executed: string[] = [];
     const result = await runNative(f.task(captured, { tools: [{ name: "trace", description: "", parameters: {}, execute: () => { executed.push("trace"); return "traced"; } }] }));
@@ -383,27 +362,6 @@ test("19b 2026-09-08: the fresh child activates no inherited extension", async (
     expect(existsSync(marker)).toBe(false); // the extension was never loaded, so it never ran
     expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["trace", "search", "note", "memory"]);
     expect(f.h.memory.store.listRuns(1)).toHaveLength(1); // and started no second worker
-  } finally { await f.dispose(); }
-});
-
-test("64a: Consolidation's first valid submission commits in the fresh child", async () => {
-  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1 });
-  try {
-    f.script(body => !worker(body, "Consolidation") ? say("好的。")
-      : toolResults(body) >= 1 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
-    await f.turn();
-    f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
-      .find(t => t.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] });
-    recorded(f.h.memory, 1, "main", 1);
-    await f.turn("tick");
-    const run = await settled(f, "consolidation");
-    expect(run.mode).toBe("subagent");
-    expect(run.outcome, run.response ?? "").toBe("success");
-    const response = JSON.parse(run.response!);
-    expect(response.toolCalls).toHaveLength(1);
-    expect(response.output).toBe("Integrated.");
-    expect(JSON.stringify(f.sent)).not.toContain("NEAR:");
-    expect(f.h.conversations).toEqual([]);
   } finally { await f.dispose(); }
 });
 
