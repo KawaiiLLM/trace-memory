@@ -298,8 +298,9 @@ test.each(["stop", "path", "off", "shutdown"] as const)("86: Pi %s fences catchu
 
 test("92: three downstream D failures disable memory and fence the in-flight N batch", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
-  let release!: () => void, noterHeld = false, dreams = 0;
+  let release!: () => void, releaseThirdDream!: () => void, noterHeld = false, dreams = 0;
   const held = new Promise<void>(resolve => { release = resolve; });
+  const thirdDreamHeld = new Promise<void>(resolve => { releaseThirdDream = resolve; });
   try {
     backlog(h); await h.emit("session_start"); seed(h);
     const store = h.memory.store, head = store.listTurns(1).at(-1)!.id;
@@ -308,19 +309,28 @@ test("92: three downstream D failures disable memory and fence the in-flight N b
     h.provider(async c => {
       if (!dreaming(c)) { noterHeld = true; await held; return notingFact(c); }
       if (++dreams > 3) throw new Error("D retried beyond automatic off");
+      if (dreams === 3) await thirdDreamHeld;
       return { ...reply(""), stopReason: "error", errorMessage: "downstream failure while N is held" };
     }, { ignoreAbort: true });
     await command(h, "catchup");
-    await vi.waitFor(() => {
-      expect(noterHeld).toBe(true);
-      expect(store.listRuns(1).filter(run => run.kind === "dreaming" && run.outcome === "failure")).toHaveLength(3);
-    });
-    expect(store.enabled(1), "D failure settlement must disable memory before the held N reply is released").toBe(false);
-    expect(store.listSessionFacts(1), JSON.stringify({ runs: store.listRuns(1), requests: h.requests })).toEqual(facts);
+    await vi.waitFor(() => { expect(noterHeld).toBe(true); expect(dreams).toBe(3); });
+    const dreamOutcomes = () => store.db.prepare(
+      "SELECT outcome FROM task_executions WHERE session_id = 1 AND phase = 'dreaming' ORDER BY rowid",
+    ).all().map(row => row.outcome);
+    // Admission creates a provisional failure run. It is not a terminal business failure:
+    // releasing N on the third such row used to race D's automatic-off settlement.
+    expect(store.listRuns(1).filter(run => run.kind === "dreaming" && run.outcome === "failure")).toHaveLength(3);
+    expect(dreamOutcomes()).toEqual(["failure", "failure", null]);
+    expect(store.enabled(1)).toBe(true);
+    expect(store.listSessionFacts(1)).toEqual(facts);
+    releaseThirdDream();
+    await vi.waitFor(() => expect(dreamOutcomes()).toEqual(["failure", "failure", "failure"]));
+    expect(store.enabled(1)).toBe(false);
+    expect(store.listSessionFacts(1)).toEqual(facts);
     release(); await settle(h);
     expect(dreams).toBe(3);
     expect(store.enabled(1)).toBe(false);
-    expect(store.listSessionFacts(1), JSON.stringify({ runs: store.listRuns(1), requests: h.requests })).toEqual(facts);
+    expect(store.listSessionFacts(1)).toEqual(facts);
     expect(h.memory.pendingEntries(1, "main", head).map(entry => entry.id)).toEqual(pending);
     expect(store.listRuns(1).filter(run => run.kind === "noting").map(run => run.outcome)).toEqual(["cancelled"]);
     expect(h.notices.some(notice => notice.includes("off after three failures"))).toBe(true);
@@ -328,7 +338,7 @@ test("92: three downstream D failures disable memory and fence the in-flight N b
     const requests = h.requests.length;
     await settle(h); await h.emit("session_tree"); await settle(h);
     expect(h.requests).toHaveLength(requests);
-  } finally { release(); await h.dispose(); }
+  } finally { releaseThirdDream(); release(); await h.dispose(); }
 }, 30000);
 
 test("67: entries persisted after catchup freezes do not extend Noting's boundary", async () => {
