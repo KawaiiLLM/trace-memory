@@ -1,6 +1,5 @@
 // Ticket 24b "Global settings", as tickets 26d and 29e left it: each phase's mode, model and thinking
-// level plus the borrowing scope, on the existing canonical keys — the Consolidator-mode entry 25b
-// withdrew is back, because the mode it chooses is back — written into the
+// level plus the borrowing scope, on the existing canonical N/D keys, written into the
 // resolved agent settings file by a re-read-and-merge write, and applied to tasks admitted afterwards
 // through the façade's `configure` (amendment 2) and the host's own model selection. No new key, no
 // second configuration source, no reload, no credential and no model call to validate a selection.
@@ -32,8 +31,7 @@ const edit = async (h: ReturnType<typeof host>, line: string, value: string | un
   // pre-redesign presentation, not a second Settings protocol.
   const key = line.split(":", 1)[0]!;
   const labels = ["Global Knowledge budget", "Project Knowledge budget", "Session Knowledge budget",
-    "Noter mode", "Noter model", "Noter thinking", "Consolidator mode", "Consolidator model",
-    "Consolidator thinking", "Dreamer model", "Dreamer thinking", "Closed-session scope"];
+    "Noter mode", "Noter model", "Noter thinking", "Dreamer model", "Dreamer thinking", "Closed-session scope"];
   if (!labels.includes(key)) throw new Error(`Unknown editable settings row: ${line}`);
   h.answers.push("Settings…", undefined);
   await command(h, "");
@@ -44,7 +42,7 @@ const edit = async (h: ReturnType<typeof host>, line: string, value: string | un
 };
 
 test("35d/45 retire file-owned knowledge caps and parse exact database-budget input", () => {
-  expect(validateConfig({}).consolidation).not.toHaveProperty("knowledgeTokens");
+  expect(validateConfig({})).not.toHaveProperty("consolidation");
   expect(parseKnowledgeBudgetInput("0", "Global Knowledge budget")).toBe(0);
   expect(parseKnowledgeBudgetInput("15000", "Project Knowledge budget")).toBe(15_000);
   for (const value of ["-1", "1.5", "NaN", "Infinity", "01", " 1", "1 ", "9007199254740992", "1e3", ""])
@@ -62,7 +60,7 @@ test("35d/45 retire file-owned knowledge caps and parse exact database-budget in
   expect(() => h.memory.configure({ consolidation: { knowledgeTokens: 1 } } as never)).toThrow(/Removed setting consolidation\.knowledgeTokens/);
   expect(globalFile(h)["trace-memory"]).toBeUndefined();
   expect(preferences.map(p => p.key)).toEqual(["noting.forkModeDefault", "notingModel", "notingThinking",
-    "consolidation.forkModeDefault", "consolidationModel", "consolidationThinking", "dreaming.model", "dreaming.thinking", "closedSessionScope"]);
+    "dreaming.model", "dreaming.thinking", "closedSessionScope"]);
 });
 
 test("35d Settings edits the bound database row, shows derived diagnostics, and never writes preferences", async () => {
@@ -134,51 +132,26 @@ test("32d: Dreamer preferences reuse Settings with no mode or advanced page", as
   expect(h.requests).toEqual([]);
 });
 
-test("both modes default to subagent in Settings and ordinary execution; saving fork changes only that phase", async () => {
-  const h = setup({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
-  // A fork has no system prompt of its own — it inherits the parent's — so the phase of a forked
-  // child is told from the task text this host appended, not from the Consolidator instructions.
-  // The skipped facts are read out of the batch this run was actually given: this case runs two
-  // Consolidation batches, and a `skipped` entry naming a fact outside the range is rejected.
-  const consolidate = (c: { messages: { content: unknown }[] }) => {
-    const facts = [...c.messages.map(m => String(m.content)).join("\n").matchAll(/\[F(\d+)\]/g)].map(m => `F${m[1]}`);
-    return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: "memory-1", name: "memory",
-      arguments: { operations: [], skipped: [...new Set(facts)].map(fact => ({ fact, because: "Not durable." })) } }] };
-  };
-  h.provider(async c => c.systemPrompt?.includes("You are the Consolidator:")
-    || /Range: F\d+/.test(c.messages.map(m => String(m.content)).join("\n")) ? consolidate(c) : notingFact(c));
+test("Noter defaults to subagent and saving fork changes only future N admissions, not D", async () => {
+  const h = setup({ "noting.triggerTokens": 30 });
+  h.provider(async c => notingFact(c));
   await h.emit("session_start");
   h.ctx.hasUI = true;
   h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Consolidator"))).toEqual([
-    "Consolidator mode: subagent", "Consolidator model: follow foreground", "Consolidator thinking: inherit"]);
-  h.ctx.hasUI = false;
+  expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Consolidator"))).toEqual([]);
   expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Noter"))).toEqual([
     "Noter mode: subagent", "Noter model: follow foreground", "Noter thinking: inherit"]);
-  // Neither mode was configured: both ordinary slots must request subagent, not fall back to it.
-  await h.turn();
-  await h.answer("tick"); await h.emit("agent_settled"); await h.drain();
-  const modes = (kind: string) => h.memory.store.listRuns(1).filter(r => r.kind === kind)
-    .map(r => [JSON.parse(r.response!).requestedMode, r.mode]);
-  expect(modes("noting")).toEqual([["subagent", "subagent"]]);
-  expect(h.memory.store.listRuns(1).every(r => JSON.parse(r.response!).fallbackReason === undefined)).toBe(true);
-  expect(modes("consolidation")).toEqual([["subagent", "subagent"]]); // never asked for anything else, and ran as itself
-  // 29e: saving the restored preference reaches tasks admitted afterwards without a reload, and the
-  // slot then asks only this phase to fork — into the documented fallback in this
-  // fake session, which captures no provider payload to fork from. (A Consolidation fork that really
-  // runs, and the fallback path it shares with Noting, are pinned on the native fixture:
-  // native.test.ts "19a/29e" and fallback.test.ts's 29e cases.)
-  await edit(h, "Consolidator mode: subagent (Default)", "fork");
-  expect(h.notices.at(-1)).toContain(`saved consolidation.forkModeDefault = true (fork) in ${globalPath(h)}`);
-  expect(globalFile(h)["trace-memory"]["consolidation.forkModeDefault"]).toBe(true);
   h.ctx.hasUI = false;
   await h.turn();
-  await h.answer("tick again"); await h.emit("agent_settled"); await h.drain();
-  // Ticket 69: this cycle's own default turn is already enough to make Noting due a second time, so
-  // it commits in two separate batches; each commit is a completion checkpoint that admits
-  // Consolidation immediately (not delayed to the next entry), so it also runs twice here, both fork.
-  expect(modes("consolidation")).toEqual([["subagent", "subagent"], ["fork", "subagent"], ["fork", "subagent"]]);
-  expect(modes("noting").at(-1)).toEqual(["subagent", "subagent"]);
+  const modes = () => h.memory.store.listRuns(1).filter(r => r.kind === "noting")
+    .map(r => [JSON.parse(r.response!).requestedMode, r.mode]);
+  expect(modes()).toEqual([["subagent", "subagent"]]);
+  await edit(h, "Noter mode: subagent (Default)", "fork");
+  expect(globalFile(h)["trace-memory"]["noting.forkModeDefault"]).toBe(true);
+  h.ctx.hasUI = false;
+  await h.turn();
+  expect(modes()).toEqual([["subagent", "subagent"], ["fork", "subagent"]]);
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming")).toEqual([]);
 });
 
 test("24b: each control writes only its canonical key, and every other setting in the file survives", async () => {
@@ -189,7 +162,7 @@ test("24b: each control writes only its canonical key, and every other setting i
   expect(h.notices.at(-1)).toContain(`saved noting.forkModeDefault = false (subagent) in ${globalPath(h)}`);
   expect(h.notices.at(-1)).toContain("applies to memory tasks admitted from now on; running tasks keep the mode and model they started with");
   await edit(h, "Noter model: follow foreground (Default)", "fake/test-mini");
-  await edit(h, "Consolidator model: follow foreground (Default)", "fake/test");
+  await edit(h, "Dreamer model: follow foreground (Default)", "fake/test");
   const file = globalFile(h);
   expect(file["other-extension"]).toEqual({ keep: "me" });          // another extension's section
   expect(file.retry).toMatchObject({ enabled: true });               // Pi's own settings
@@ -197,7 +170,7 @@ test("24b: each control writes only its canonical key, and every other setting i
     "render.entryTokens": 222,
     "noting.forkModeDefault": false,
     notingModel: "fake/test-mini",
-    consolidationModel: "fake/test",
+    "dreaming.model": "fake/test",
   });
   // The values read back exactly as the menu shows them, from the Global layer. 29e: each phase's
   // mode, model and thinking level plus the borrowing scope.
@@ -205,8 +178,7 @@ test("24b: each control writes only its canonical key, and every other setting i
   expect(h.dialogs.at(-1)!.options).toEqual([
     "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
     "Noter mode: subagent", "Noter model: fake/test-mini", "Noter thinking: inherit",
-    "Consolidator mode: subagent", "Consolidator model: fake/test", "Consolidator thinking: inherit",
-    "Dreamer model: follow foreground", "Dreamer thinking: inherit", "Closed sessions: project",
+    "Dreamer model: fake/test", "Dreamer thinking: inherit", "Closed sessions: project",
   ]);
   expect(h.requests).toEqual([]); // editing settings calls no model
 });
@@ -221,24 +193,22 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
   expect(h.dialogs.at(-1)!.title).not.toContain("fork");
   expect(h.notices.at(-1)).toContain(`saved notingThinking = "high" (high) in ${globalPath(h)}`);
   expect(h.notices.at(-1)).toContain("running tasks keep the thinking level they were frozen with");
-  // Consolidation is configured for subagent mode here, so its level always applies and its line
-  // discloses no inheriting mode (29e: it would, were the restored preference set to fork).
-  await edit(h, "Consolidator thinking: inherit (Default)", "minimal");
+  // Dreamer is always a fresh subagent and has its own thinking preference.
+  await edit(h, "Dreamer thinking: inherit (Default)", "minimal");
   expect(h.dialogs.at(-1)!.title).not.toContain("fork");
   const file = globalFile(h);
   expect(file["other-extension"]).toEqual({ keep: "me" });
-  expect(file["trace-memory"]).toEqual({ "render.entryTokens": 222, notingThinking: "high", consolidationThinking: "minimal" });
+  expect(file["trace-memory"]).toEqual({ "render.entryTokens": 222, notingThinking: "high", "dreaming.thinking": "minimal" });
   h.answers.push("Settings…", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
     "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
     "Noter mode: subagent", "Noter model: follow foreground", "Noter thinking: high",
-    "Consolidator mode: subagent", "Consolidator model: follow foreground", "Consolidator thinking: minimal",
-    "Dreamer model: follow foreground", "Dreamer thinking: inherit", "Closed sessions: project",
+    "Dreamer model: follow foreground", "Dreamer thinking: minimal", "Closed sessions: project",
   ]);
   // A level nothing accepts never reaches the file, and the refusal names the key and the list.
   const before = readFileSync(globalPath(h), "utf8");
-  await edit(h, "Consolidator thinking: minimal (Global)", "extreme");
-  expect(h.notices.at(-1)).toContain("Invalid consolidationThinking: expected one of inherit, off, minimal, low, medium, high, xhigh, max");
+  await edit(h, "Dreamer thinking: minimal (Global)", "extreme");
+  expect(h.notices.at(-1)).toContain("Invalid dreaming.thinking: expected one of inherit, off, minimal, low, medium, high, xhigh, max");
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   // The same value in a settings file is refused by the load path itself, by name.
   expect(() => host({ notingThinking: "extreme" })).toThrow("Invalid notingThinking: expected one of inherit, off, minimal, low, medium, high, xhigh, max");
@@ -402,7 +372,7 @@ test("24b: editing a setting starts no worker and does not clear the cache-miss 
   h.memory.store.suppressFork(1, "2026-09-09T00:00:00.000Z");
   const runs = h.memory.store.listRuns(1).length;
   await edit(h, "Noter mode: subagent (Default)", "fork");
-  await edit(h, "Consolidator model: follow foreground (Default)", "fake/test-mini");
+  await edit(h, "Dreamer model: follow foreground (Default)", "fake/test-mini");
   expect(h.memory.store.forkSuppression(1)).toMatchObject({ at: "2026-09-09T00:00:00.000Z" });
   expect(h.memory.store.listRuns(1)).toHaveLength(runs);
   expect(h.requests).toEqual([]);

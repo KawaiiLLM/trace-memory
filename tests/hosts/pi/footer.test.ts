@@ -1,7 +1,7 @@
 // Ticket 24a "Footer counts and indicator" (parent 24, sections "Footer counts and cost" and
 // "Indicator semantics"). The enabled footer is
 //
-//     🧠 <indicator> notes: <pending entries>-><applicable facts> memory: <unconsolidated facts>-><changed current Knowledge>/<current Knowledge> cost: $<today, every session>
+//     🧠 <indicator> notes: <pending entries>-><applicable facts> memory: <changed current Knowledge>/<current Knowledge> cost: $<today, every session>
 //
 // The off footer is the compact `🧠 ○ off`. These
 // cases pin what each number means on a synthetic branch, that work stays pending until its business
@@ -22,17 +22,17 @@ function host(...args: Parameters<typeof createHost>) {
   return h;
 }
 type Host = ReturnType<typeof host>;
-const quiet = { "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000 };
+const quiet = { "noting.triggerTokens": 1_000_000_000 };
 const time = "2026-09-09T00:00:00Z";
 
 const raw = (h: Host) => h.statuses.get("trace-memory") ?? "";
 /** The footer as its reader sees it: theme role, glyph and count strings, preserving unknown `?`. */
 const footer = (h: Host) => {
   const status = raw(h);
-  const parsed = /^🧠 (?:<(\w+)>)?([●○])(?:<\/\w+>)? (?:<dim>)?notes: (\S+)->(\S+) memory: (\S+)->(\S+)\/(\S+) cost: \$(\S+?)(?:<\/dim>)?$/.exec(status);
+  const parsed = /^🧠 (?:<(\w+)>)?([●○])(?:<\/\w+>)? (?:<dim>)?notes: (\S+)->(\S+) memory: (\S+)\/(\S+) cost: \$(\S+?)(?:<\/dim>)?$/.exec(status);
   if (!parsed) throw new Error(`unreadable footer: ${status}`);
   return { status, role: parsed[1], glyph: parsed[2]!, entries: parsed[3]!, facts: parsed[4]!,
-    unconsolidated: parsed[5]!, changedKnowledge: parsed[6]!, knowledge: parsed[7]!, cost: parsed[8]! };
+    changedKnowledge: parsed[5]!, knowledge: parsed[6]!, cost: parsed[7]! };
 };
 /** Independently enumerate the same selected units; exact processed state is checked per version only
  * in this test oracle, while production uses one bounded lookup. */
@@ -42,7 +42,6 @@ const enumerated = (h: Host, branch = "main") => {
   const processed = h.memory.store.processedCurrentVersions(knowledge);
   return { entries: String(h.memory.pendingEntries(1, branch, head).length),
     facts: String(h.memory.store.listBranchFacts(1, branch, head).length),
-    unconsolidated: String(h.memory.store.consolidationBatch(1, branch, head).length),
     changedKnowledge: String(knowledge.length - processed.size), knowledge: String(knowledge.length),
     cost: h.memory.spendSince(midnight()).toFixed(2) };
 };
@@ -80,38 +79,35 @@ function priced(h: Host, sessionId: number, executorSessionId: number, cost: num
   if (!committed.ok) throw new Error(committed.problems.join("; "));
 }
 
-test("footer chains facts to consolidate, changed current Knowledge and all current Knowledge", async () => {
+test("footer reports pending Raw, applicable facts, changed Knowledge, and historical C spend", async () => {
   const h = host(quiet);
   await h.turn(); // one Turn, two source entries, nothing noted and nothing extracted
   expect(footer(h)).toMatchObject({ ...enumerated(h), glyph: "○", role: "dim" });
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->0 memory: 0->0/0 cost: $0.00</dim>");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->0 memory: 0/0 cost: $0.00</dim>");
 
   const written = facts(h, 3);
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->0/0 cost: $0.00</dim>"); // committed facts are immediately eligible
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 0/0 cost: $0.00</dim>"); // committed facts are immediately eligible
   expect(footer(h)).toMatchObject(enumerated(h));
 
-  // Knowledge cites a fact; citing is not consolidating, so the left number does not move.
+  // Knowledge cites a fact without hiding the fact.
   const knowledge = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[3]!
     .execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, never npm",
       category: "constraint", scope: "session", supports: [`F${written[0]!.id}`] }], skipped: [] });
   expect(knowledge).not.toContain("rejected:");
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->1/1 cost: $0.00</dim>");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 1/1 cost: $0.00</dim>");
   processPool(h, `session:${h.memory.store.getSession(1)!.id}`);
   await refresh(h);
   // R1FINAL does not falsely protect an untouched input when a synthetic run commits no output.
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->1/1 cost: $0.00</dim>");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 1/1 cost: $0.00</dim>");
 
-  // A Consolidation commit takes two of the three facts; a Noting commit takes both entries.
-  const taken = h.memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, branch: "main", createdAt: time },
-    operations: [], consolidated: [written[0]!.id, written[1]!.id] });
-  expect(taken.ok).toBe(true);
+  // N's Raw progress is independent of D's Knowledge processing and historical fact rows.
   const noted = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: time },
     facts: [], entryIds: h.memory.store.sourcePath(1, "main", 1).map(e => e.id) });
   expect(noted.ok).toBe(true);
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->3 memory: 1->1/1 cost: $0.00</dim>");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->3 memory: 1/1 cost: $0.00</dim>");
   expect(footer(h)).toMatchObject(enumerated(h));
 
   // 51: the footer's cost is today's spend across the whole database — another session's run made
@@ -123,9 +119,11 @@ test("footer chains facts to consolidate, changed current Knowledge and all curr
   const borrowed = h.memory.store.createSession({ host: "pi:other", startedAt: time, firstReplyAt: time, projectId: 1, enrollmentChoice: true });
   priced(h, borrowed.id, 1, 9.99, today);
   priced(h, 1, 1, 0.25, today);
+  h.memory.store.recordRun({ kind: "consolidation", sessionId: 1, branch: "main", outcome: "success", createdAt: today,
+    response: JSON.stringify({ usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.33 } } }) });
   await refresh(h);
-  expect(footer(h)).toMatchObject({ ...enumerated(h), cost: "10.24" });
-  expect(h.memory.spend(1)).toMatchObject({ cost: 0.37, costs: { noting: 0.37, consolidation: 0, dreaming: 0, manual: 0 }, runs: { noting: 4 } }); // three priced runs and the unpriced facts() run
+  expect(footer(h)).toMatchObject({ ...enumerated(h), cost: "10.57" });
+  expect(h.memory.spend(1)).toMatchObject({ cost: 0.70, costs: { noting: 0.37, consolidation: 0.33, dreaming: 0, manual: 0 }, runs: { noting: 4, consolidation: 1 } });
   expect(h.memory.spend(borrowed.id).cost).toBe(9.99);
   // Current session carries the composition; headless `/trace` prints the same body. Create real
   // pending work, then finish it through the current pool facade with observed Dreamer usage.
@@ -137,15 +135,15 @@ test("footer chains facts to consolidate, changed current Knowledge and all curr
     JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } } }));
   await h.commands.get("trace")!.handler("", h.ctx);
   const panel = h.notices.at(-1)!;
-  expect(panel).toContain("Spend   session $0.87");
-  expect(panel).toMatch(/Noting 4 runs \$0\.37 · Consolidation \d+ run[s]? \$0\.00/);
+  expect(panel).toContain("Spend   session $1.20");
+  expect(panel).toMatch(/Noting 4 runs \$0\.37 · Consolidation 1 run \$0\.33/);
   expect(panel).toMatch(/Dreaming \d+ runs \$0\.50/);
-  expect(panel).toContain("today   $10.74");
+  expect(panel).toContain("today   $11.07");
   expect(h.requests).toEqual([]); // nothing here called a model
 });
 
 test("24a/92: N stays pending through staging, only normal termination moves queues, and failure after staging advances nothing", async () => {
-  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1_000_000_000 });
+  const h = host({ "noting.triggerTokens": 30, "dreaming.triggerTokens": 1_000_000_000 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
@@ -156,9 +154,8 @@ test("24a/92: N stays pending through staging, only normal termination moves que
 
   h.provider(async c => notingFact(c));
   release(notingFact(h.conversations[0]!)); await h.drain();
-  // The business commit is what moves both queues: the entries are noted and the fact is now pending
-  // for Consolidation. Noting decreasing one queue while increasing the other is the ordinary case.
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->1 memory: 1->0/0 cost: $0.00</dim>");
+  // Held facts and knowledge become visible together only after normal N termination.
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->1 memory: 0/0 cost: $0.00</dim>");
 
   // A run that fails before its commit advances nothing at all.
   h.provider(async () => { throw new Error("offline"); });
@@ -186,14 +183,14 @@ test("24a/92: N stays pending through staging, only normal termination moves que
 });
 
 test("24a: a cancelled batch advances nothing, and another connection's commits appear at the next refresh", async () => {
-  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1_000_000_000 });
+  const h = host({ "noting.triggerTokens": 30, "dreaming.triggerTokens": 1_000_000_000 });
   h.provider(async () => new Promise(() => {}), { ignoreAbort: false }); // never answers
   await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
   const running = footer(h);
   expect(running.role).toBe("accent");
   await h.commands.get("trace")!.handler("stop", h.ctx);
   await h.drain();
-  expect(footer(h)).toMatchObject({ entries: running.entries, facts: running.facts, unconsolidated: running.unconsolidated });
+  expect(footer(h)).toMatchObject({ entries: running.entries, facts: running.facts, changedKnowledge: running.changedKnowledge });
   expect(h.memory.store.listSessionFacts(1)).toEqual([]);
 
   // A second connection (the test's own observer façade) commits; the next refresh shows it, because
@@ -202,7 +199,7 @@ test("24a: a cancelled batch advances nothing, and another connection's commits 
   facts(h, 2);
   expect(footer(h).facts).toBe(before); // no refresh has happened yet
   await refresh(h);
-  expect(footer(h)).toMatchObject({ facts: "2", unconsolidated: "2" });
+  expect(footer(h)).toMatchObject({ facts: "2", changedKnowledge: "0" });
 });
 
 test("24a: the counts follow the selected branch, so a sibling entry of the same Turn is neither noted, counted nor applicable here", async () => {
@@ -245,7 +242,7 @@ test("24a: off is the compact line, imports nothing and calls no model; enabled 
   const enabled = footer(h);
   expect(enabled).toMatchObject({ glyph: "○", role: "dim" }); // a nonzero queue below its trigger is idle
   expect(Number(enabled.entries)).toBeGreaterThan(0);
-  expect(Number(enabled.unconsolidated)).toBeGreaterThan(0);
+  expect(enabled.facts).toBe("2");
 
   await h.commands.get("trace")!.handler("off", h.ctx);
   expect(raw(h)).toBe("🧠 <dim>○ off</dim>");
@@ -306,7 +303,7 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   h.setHeaderTimestamp("2099-01-01T00:00:00.000Z");
   await h.emit("session_start");
   expect(h.memory.store.getSession(1)).toBeNull();
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: ?->? memory: ?->?/? cost: $0.00</dim>"); // 51: today's database-wide spend is readable without a session identity
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: ?->? memory: ?/? cost: $0.00</dim>"); // 51: today's database-wide spend is readable without a session identity
   await h.commands.get("trace")!.handler("", h.ctx);
   expect(h.notices.at(-1)).toContain("Trace Memory · No session");
   expect(h.notices.at(-1)).toContain("Noting        Unknown / Unknown");
@@ -317,24 +314,21 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   expect(h.memory.store.getSession(1)).not.toBeNull();
   await h.commands.get("trace")!.handler("", h.ctx);
   expect(h.notices.at(-1)).toContain("Trace Memory · S1");
-  expect(h.notices.at(-1)).toContain("Consolidation ░░░░░░░░░░   0%   0 / 1000M");
+  expect(h.notices.at(-1)).not.toContain("Consolidation ░");
   expect(h.notices.at(-1)).not.toContain("No session");
   expect(h.requests).toEqual([]);
 });
 
-test("24a/51: the indicator is one theme role per running phase, Noting wins over Consolidation, and no colour support prints the same line unpainted", async () => {
-  const h = host({ "noting.triggerTokens": 1, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false });
-  // Ticket 69: this Noting run's own completion immediately admits Consolidation (F1 alone crosses its
-  // trigger) instead of waiting for the next entry, so holding only the Consolidation reply open leaves
-  // it running — not settled — by the time this turn's drain returns.
-  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? new Promise(() => {}) : notingFact(c));
-  await h.turn(); // F1 recorded; its completion admits Consolidation immediately, which stays held at the wire
-  expect(footer(h)).toMatchObject({ glyph: "●", role: "success" });
+test("24a/51: N indicator, idle/off colour and no-theme fallback", async () => {
+  const h = host({ "noting.triggerTokens": 1, "noting.forkModeDefault": false });
+  h.provider(async c => notingFact(c));
+  await h.turn();
+  expect(footer(h)).toMatchObject({ glyph: "○", role: "dim" });
 
-  // A new entry makes Noting due again; hold it too, so both phases are genuinely in flight together.
+  // A new entry makes N due again; hold that request at the wire.
   h.provider(async () => new Promise(() => {}));
   await h.prompt("second"); await h.answer(); await h.emit("agent_settled"); await h.drain();
-  expect(footer(h)).toMatchObject({ glyph: "●", role: "accent" }); // Noting has display priority over Consolidation
+  expect(footer(h)).toMatchObject({ glyph: "●", role: "accent" });
 
   // Off wins over everything, including work still in flight.
   await h.commands.get("trace")!.handler("off", h.ctx);
@@ -344,7 +338,7 @@ test("24a/51: the indicator is one theme role per running phase, Noting wins ove
   // Pi's native fallback: no theme support, the same line without colour.
   delete (h.ctx.ui as { theme?: unknown }).theme;
   await refresh(h);
-  expect(raw(h)).toMatch(/^🧠 [●○] notes: \d+->\d+ memory: \d+->\d+\/\d+ cost: \$\d+\.\d{2}$/);
+  expect(raw(h)).toMatch(/^🧠 [●○] notes: \d+->\d+ memory: \d+\/\d+ cost: \$\d+\.\d{2}$/);
   await h.commands.get("trace")!.handler("off", h.ctx);
   expect(raw(h)).toBe("🧠 ○ off");
 });

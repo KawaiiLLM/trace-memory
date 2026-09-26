@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { host as createHost, reply, notingFact, noteHeld, consolidationReply, usage, type Reply } from "./test-host.ts";
+import { host as createHost, reply, notingFact, noteHeld, usage, type Reply } from "./test-host.ts";
 import { compacted } from "../../source-fixture.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
@@ -115,7 +115,7 @@ test("first prompt injects only global knowledge; project knowledge requires an 
     { turnId: t.id, category: "observation", actor: "user", text: "规则", source: [`T${t.id}#user`], createdAt: "now" },
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
-  const seeded = h.memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: "now" }, operations: [
+  const seeded = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, createdAt: "now" }, operations: [
     { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "项目规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" },
     { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e2", author: "fixture", text: "全局规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" },
   ] });
@@ -227,7 +227,7 @@ test("29d: the knowledge block is offered until the selected context carries it,
   const st = store.appendTurn({ sessionId: seed.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
   const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: seed.id, createdAt: "now" }, facts: [{ turnId: st.id, category: "decision", actor: "user", text: "规则", source: [`T${st.id}#user`], createdAt: "now" }] });
   if (!noted.ok) throw new Error("seed");
-  store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "全局规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" }] });
+  store.commitConsolidationRun({ run: { kind: "manual", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "全局规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" }] });
   // A prompt whose message Pi never persisted leaves no baseline, so the next prompt offers it again.
   const offered = await h.emit("before_agent_start", { prompt: "dropped", systemPrompt: "host" });
   expect(offered?.message?.content).toContain("<knowledge>");
@@ -266,26 +266,16 @@ test("in-flight duplicate is dropped; new raw and branch switches cannot change 
   expect(h.conversations[0]!.messages[0]!.content).not.toContain("later raw");
 });
 
-test("consolidation admits immediately once facts arrive and commits in one tool round", async () => {
-  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, consolidationModel: "fake/Consolidator" });
-  const output = consolidationReply();
-  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? output : notingFact(c));
+test("ordinary N completion does not chain a retired stage or another N without an entry", async () => {
+  const h = host({ "noting.triggerTokens": 30 });
+  h.provider(async c => notingFact(c));
   await h.turn();
-  // Ticket 69: Noting's own completion is a checkpoint that admits the now-due Consolidation
-  // immediately, within this same turn's drain — not deferred to the next entry as it once was.
-  expect(h.requests).toHaveLength(4); // the noting tool loop, then Consolidation's own.
-  await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(4); // nothing further is due
-  const submitted = h.conversations[2]!, completed = h.conversations[3]!;
-  expect(completed.systemPrompt).toBe(submitted.systemPrompt);
-  expect(completed.messages.slice(0, 1)).toEqual(submitted.messages);
-  expect(completed.messages[1]).toMatchObject({ role: "assistant", content: output.content });
-  expect(completed.messages).toHaveLength(3); expect(completed.messages[2]!.role).toBe("toolResult");
-  expect(JSON.stringify(completed.messages)).not.toContain("NEAR:");
-  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
-  expect(runs.map(r => r.outcome)).toEqual(["success"]);
-  expect(runs.map(r => r.model)).toEqual(["fake/Consolidator"]);
-  expect(JSON.parse(runs[0]!.request!)).toEqual(h.requests[3]);
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"]]);
+  const sent = h.requests.length;
+  await h.emit("agent_settled"); await h.emit("session_tree"); await h.drain();
+  expect(h.requests).toHaveLength(sent);
+  expect(h.memory.store.listRuns(1)).toHaveLength(1);
+  expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
 test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) waits for pending runs — superseded 17c 2026-09-08: cancels, launches nothing, and closes the store", async reason => {
@@ -324,23 +314,17 @@ test("provider failures retain captured request and do not advance a watermark",
   expect(h.memory.store.listSourceEntries(1).some(e => h.memory.store.entryNoted(e.id))).toBe(false);
 });
 
-test("consolidation in-flight duplicates cannot erase the single committed submission", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1 });
-  await h.turn(); // allocates S1/T1; nothing is due yet (noting's trigger is out of reach)
-  const committed = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "t" },
-    facts: [{ turnId: 1, category: "observation", actor: "user", text: "seed", source: ["T1#user"], createdAt: "t" }] });
-  if (!committed.ok) throw new Error(committed.problems.join("; "));
-  await h.emit("session_tree"); // ticket 69: a restore/branch-switch arms Consolidation for this out-of-band commit
-  const output = consolidationReply();
+test("duplicate eligible boundaries do not adopt or multiply the running N task", async () => {
+  const h = host({ "noting.triggerTokens": 30 });
   let release!: (value: Reply) => void;
-  h.provider(async c => c.messages.length === 1 ? new Promise(resolve => { release = resolve; }) : output);
-  // Two agent_settled boundaries fire close together over the same due fact; the second finds
-  // Consolidation's slot already busy (held below) and is discarded, not queued or duplicated.
-  h.persist(reply("trigger")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.emit("agent_settled"); await h.drain();
+  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
+  await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(1);
-  release(output); await h.drain();
-  expect(h.requests).toHaveLength(2);
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "consolidation").map(r => r.outcome)).toEqual(["success"]);
+  h.provider(async c => notingFact(c));
+  release(notingFact(h.conversations[0]!)); await h.drain();
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success"]);
+  expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
 test("knowledge is injected once per visible baseline, only once something exists; later prompts carry nothing (29d)", async () => {
@@ -352,7 +336,7 @@ test("knowledge is injected once per visible baseline, only once something exist
   const recorded = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" },
     facts: [{ turnId: t.id, category: "decision", actor: "user", text: "用 pnpm", source: ["T1#user"], createdAt: "2026-09-06T00:00:00Z" }] });
   if (!recorded.ok) throw new Error("setup");
-  h.memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" }, operations: [
+  h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" }, operations: [
     { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
   void p;
   const second = await h.prompt("again");
@@ -435,7 +419,7 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   h.provider(async c => notingFact(c)); await h.turn();
   const store = h.memory.store, own = store.getSession(1)!.projectId;
   const seed = (sessionId: number, fact: number, scopes: ("project" | "session")[]) => {
-    const commit = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: "now" }, operations: scopes.map((scope, i) => ({
+    const commit = store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: "now" }, operations: scopes.map((scope, i) => ({
       op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fixture", text: scope === "project" ? "用 pnpm，不要 npm" : "仅当前会话", supports: [fact],
       createdAt: "now", category: "constraint" as const, scope,
     })) });
@@ -460,7 +444,7 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   expect(store.getProject(own)!.mergedInto).toBe(target.id);
   expect(store.listProjectFacts(own)).toEqual([]);
   expect(store.listProjectFacts(target.id)).toHaveLength(2);
-  // Both duplicate project knowledge are now in the next consolidation's NEAR pool.
+  // Both project versions remain visible pending normal D maintenance; there is no NEAR scan.
   expect(store.getKnowledge(1)!.projectId).toBe(target.id);
   expect(store.getKnowledge(3)!.projectId).toBe(target.id);
   expect(store.listVisibleKnowledge(1, target.id).map(v => v.knowledge.id)).toEqual([1, 2, 3]);
@@ -622,18 +606,16 @@ test("spec overflow policy: a subagent noting fetches cut evidence through the t
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
-test("an consolidation call carries no tools; a noting tool call for a bad address returns an error result and the noting still completes", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, "consolidation.triggerTokens": 1 });
+test("a noting tool call for a bad address returns an error result and N still completes", async () => {
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
   const call = { type: "toolCall" as const, id: "call-2", name: "trace", arguments: { address: "K999" } };
-  const output = consolidationReply();
-  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? output
-    : c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
+  h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.turn();
   const result = h.conversations[1]!.messages[2] as { isError: boolean; content: { text: string }[] };
   expect(result.isError).toBe(true); expect(result.content[0]!.text).toContain("does not exist");
   await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
-  expect(h.conversations.slice(3).map(c => c.tools!.map(t => t.name))).toEqual(Array.from({ length: 2 }, () => ["trace", "search", "note", "memory"]));
-  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["consolidation", "success"]]);
+  expect(h.conversations.every(c => c.tools!.map(t => t.name).join(",") === "trace,search,note,memory")).toBe(true);
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"]]);
 });
 
 test("main facade tools bind each call to the current turn, commit immediately and record raw only at tool_result", async () => {
@@ -707,27 +689,9 @@ test("main trace can fetch historical rejected tool evidence without becoming a 
   expect(h.memory.store.listToolCalls(1).map(c => c.status)).toEqual(["failure", "success"]);
 });
 
-test("18:39: two memory submissions in one reply commit the first and reject the second", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1 });
-  await h.turn(); // allocates S1/T1; nothing is due yet (noting's trigger is out of reach)
-  const committed = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "t" },
-    facts: [{ turnId: 1, category: "observation", actor: "user", text: "seed", source: ["T1#user"], createdAt: "t" }] });
-  if (!committed.ok) throw new Error(committed.problems.join("; "));
-  await h.emit("session_tree"); // ticket 69: a restore/branch-switch arms Consolidation for this out-of-band commit
-  const double = { ...consolidationReply(), content: [consolidationReply().content[0]!, { ...consolidationReply().content[0]!, id: "memory-2" }] } as Reply;
-  h.provider(async c => c.messages.some(m => m.role === "toolResult") ? reply("done") : double);
-  h.persist(reply("trigger")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
-  const completed = h.conversations.find(c => c.messages.filter(m => m.role === "toolResult").length === 2)!.messages;
-  expect(completed.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult"]);
-  const results = completed.filter(m => m.role === "toolResult") as { content: { text: string }[] }[];
-  expect(results[0]!.content[0]!.text).toContain("committed");
-  expect(results[1]!.content[0]!.text).toContain("already committed");
-  const run = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation")[0]!;
-  expect(run.outcome).toBe("success");
-  const calls = JSON.parse(run.response!).toolCalls.map((c: { result: string }) => c.result.slice(0, 40));
-  expect(calls).toHaveLength(2);
-  expect(calls[0]).toContain("committed"); expect(calls[1]).toContain("already committed");
-});
+// Retired C-only contract: a second C memory call after its immediate commit was rejected.
+// N holds both tools and publishes once at terminal completion; the atomic host suite tests that boundary.
+
 
 test("maxToolRounds is a budget: unlimited by default, and a run over an explicit budget fails without committing", async () => {
   const unlimited = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
@@ -869,8 +833,8 @@ test("the plugin's spend is a footer status item updated after every run, and th
   const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c));
   await h.turn();
-  // 24a: idle; nothing left to note, one applicable fact, that fact still to consolidate, no knowledge yet.
-  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: 0->1 memory: 1->0\/0 cost: \$\d+\.\d{2}<\/dim>$/);
+  // 24a: idle; nothing left to note, one applicable fact and no knowledge yet.
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: 0->1 memory: 0\/0 cost: \$\d+\.\d{2}<\/dim>$/);
   const spend = h.memory.spend(1);
   expect(spend.runs).toEqual({ noting: 1, consolidation: 0, dreaming: 0, manual: 0 });
   expect(spend.input + spend.output).toBeGreaterThan(0);
@@ -926,47 +890,13 @@ test("the footer indicator is accent while N runs and dim after terminal success
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
 });
 
-test("a fork sees consolidation progress exactly when every fact of that consolidation lies on its path", async () => {
-  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "consolidation.maxToolRounds": 4 });
-  // The fake Consolidator submits once per round and stops after any rejection instead of resubmitting forever.
-  h.provider(async c => !c.systemPrompt!.includes("You are the Consolidator:") ? notingFact(c)
-    : c.messages.some(m => m.role === "toolResult" && m.toolName === "memory" && (m.content[0] as { text: string }).text.startsWith("rejected")) ? reply("stopped") : consolidationReply());
-  await h.turn(); // T1 → F1
-  const atT1 = [...h.entries];
-  await h.turn(); await h.emit("agent_settled"); await h.drain(); // T2 -> F2; main consolidated F1 while T2 was still being recorded
-  expect(h.memory.store.sourcePath(1, "main", 2).length).toBeGreaterThan(0);
-  expect(h.memory.store.sourcePath(1, "main", 2).every(e => h.memory.store.entryNoted(e.id))).toBe(true);
-  expect(h.memory.store.consolidatedOnPath(1, { sessionId: 1, headTurnId: 2 })).toBe(true);
-  h.entries.splice(0, h.entries.length, ...atT1); h.ctx.sessionManager.getSessionId = () => "forked";
-  await h.emit("session_start");
-  await h.turn(); // T3 under T1
-  const branch = h.memory.store.listRuns(1).at(-1)!.branch!;
-  expect(h.memory.store.sourcePath(1, branch, 3).length).toBeGreaterThan(0);
-  expect(h.memory.store.sourcePath(1, branch, 3).every(e => h.memory.store.entryNoted(e.id))).toBe(true);
-  // main had consolidated only F1, which sits on T1 and so on this path: the progress counts here and F1 is not consolidated again.
-  expect(h.memory.store.consolidatedOnPath(1, { sessionId: 1, headTurnId: 3 })).toBe(true);
-  expect(h.memory.store.consolidationBatch(1, branch, 3).map(f => f.id)).not.toContain(1);
-  expect(h.memory.store.listRuns(1).some(r => r.kind === "consolidation" && r.branch === branch && r.rangeFrom === "F1")).toBe(false);
-  expect(h.memory.store.listBranchFacts(1, branch, 3).map(f => f.id)).toContain(1);
-});
+// Retired C-only per-fact processing progress is not N's atomic Raw progress. Forked N
+// entry progress remains covered above by the two source-path/watermark cases.
 
-test("a dropped duplicate Consolidation trigger neither ends the running indicator nor changes the last outcome", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1 });
-  await h.turn(); // allocates S1/T1; nothing is due yet (noting's trigger is out of reach)
-  const committed = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "t" },
-    facts: [{ turnId: 1, category: "observation", actor: "user", text: "seed", source: ["T1#user"], createdAt: "t" }] });
-  if (!committed.ok) throw new Error(committed.problems.join("; "));
-  await h.emit("session_tree"); // ticket 69: a restore/branch-switch arms Consolidation for this out-of-band commit
-  let release!: (value: Reply) => void, held = false;
-  h.provider(async c => { if (!c.systemPrompt!.includes("You are the Consolidator:")) return notingFact(c);
-    if (held) return consolidationReply(); held = true; return new Promise(resolve => { release = resolve; }); });
-  h.persist(reply("trigger")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain(); // Consolidation starts and waits for the model
-  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <success>●<\/success> /);
-  await h.answer("tick"); await h.emit("agent_settled"); await h.drain(); // fresh completion, duplicate Consolidation drops at once
-  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <success>●<\/success> /); // the first run is still in flight
-  release(consolidationReply()); await h.drain();
-  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
-});
+
+// The retired C duplicate-indicator contract is replaced by the real N duplicate-admission
+// check above and D's independent active-claim/indicator tests in footer and catchup.
+
 
 test("a stream that dies before or after N stages tools reports the provider error and publishes nothing", async () => {
   const h = host({ "noting.triggerTokens": 30 });
@@ -990,25 +920,8 @@ test("a stream that dies before or after N stages tools reports the provider err
   expect(selected.every(e => h.memory.pendingEntries(1, "main", 2).some(s => s.id === e.id))).toBe(true);
 });
 
-test("consolidation progress does not count on a fork when a manual fact beyond the fork point was consolidated in the same run", async () => {
-  const h = host({ "noting.triggerTokens": 1000000000 });
-  h.provider(async c => notingFact(c));
-  await h.turn(); // T1
-  h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "now", rangeFrom: "S1/T1", rangeTo: "S1/T1", outcome: "success" } as never,
-    facts: [{ turnId: 1, category: "decision", actor: "user", text: "F1 on T1", source: ["T1#user"], createdAt: "now" }], entryIds: h.memory.store.sourcePath(1, "main", 1).map(e => e.id) });
-  const atT1 = [...h.entries];
-  await h.prompt("two"); await h.answer(); await h.emit("agent_settled"); // T2 exists, not recorded (threshold 5)
-  h.memory.store.commitNotingRun({ run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "now", rangeFrom: "S1/T2", rangeTo: "S1/T2", outcome: "success" } as never,
-    facts: [{ turnId: 2, category: "decision", actor: "user", text: "F2 manual on T2", source: ["T2#user"], createdAt: "now" }] });
-  expect(h.memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, branch: "main", createdAt: "now" }, operations: [], consolidated: [1, 2] }).ok).toBe(true); // one run consumed F1 and F2 on main
-  h.entries.splice(0, h.entries.length, ...atT1); h.ctx.sessionManager.getSessionId = () => "forked";
-  await h.emit("session_start");
-  const fork = h.entries.filter(e => e.type === "custom").at(-1)!.data;
-  expect(fork).toBeDefined();
-  expect(h.memory.pendingEntries(1, fork.branch, 1)).toEqual([]); // noting progress carries
-  expect(h.memory.store.consolidatedOnPath(1, { sessionId: 1, headTurnId: 1 })).toBe(false); // F2 is off this path: F1 must be consolidated again
-  expect(h.memory.store.consolidationBatch(1, fork.branch, 1).map(f => f.id)).toEqual([1]);
-});
+// Retired C's cross-fork consolidated-fact ledger is historical only, not live N/D eligibility.
+
 
 test("a transient provider error is retried with Pi's policy before the run is failed, and a retry never repeats a committed write", async () => {
   const h = host({ "noting.triggerTokens": 30 });
@@ -1060,26 +973,23 @@ test("51: the footer keeps the running phase's colour while a retry waits; the n
   expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("success");
 });
 
-const knowledgeReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
-  arguments: { operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] } }] });
-
-test("2026-09-07 backfill by consumer — superseded 2026-09-08 and by 25b: the Consolidator subagent gets facts and knowledge changes and waits for no receipt it does not inherit", async () => {
-  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, "consolidation.maxToolRounds": 4 });
-  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? knowledgeReply() : notingFact(c));
-  await h.turn(); // Noting commits F1.
-  h.provider(async c => c.systemPrompt!.includes("You are the Consolidator:") ? knowledgeReply() : reply("No new facts."));
-  await h.answer("tick"); await h.emit("agent_settled"); await h.drain();
-  // The batch is due right after F1 is committed. Before 25b a fork-mode Consolidator would have
-  // waited for a receipt; a fresh context reads the pending facts from storage, so it does not.
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "consolidation").map(r => r.mode)).toEqual(["subagent"]);
-  expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1); // the Consolidation did commit
-  // 92: even complete retained Raw evidence does not replace this undelivered Knowledge body.
-  // Fact/Raw receipts remain absent and the following unchanged prompt must stay empty.
+test("N jointly publishes a fact and knowledge; the next prompt delivers only the missing knowledge body", async () => {
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  h.provider(async c => {
+    if (c.messages.some(m => m.role === "toolResult")) return reply("Done.");
+    const note = notingFact(c).content[0]!;
+    return { ...reply(""), stopReason: "toolUse", content: [note, { type: "toolCall", id: "memory-1", name: "memory",
+      arguments: { operations: [{ op: "create", topics: [], reason: "The user chose pnpm.", text: "Use pnpm, never npm",
+        category: "constraint", scope: "session", supports: ["$1"] }], skipped: [] } }] };
+  });
+  await h.turn();
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"]]);
+  expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
+  expect(h.memory.store.listVisibleKnowledge(1, h.memory.store.getSession(1)!.projectId)).toHaveLength(1);
   const carried = String((await h.prompt("second"))?.message?.content ?? "");
   expect(carried).not.toContain("<noted>");
-  expect(carried).not.toContain("<consolidated>");
   expect(carried).toContain("<knowledge>");
   await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect((await h.prompt("third"))?.message).toBeUndefined();
-  expect(h.memory.trace("F1")).toContain("[F1]"); // the facts stay reachable by explicit read
+  expect(h.memory.trace("F1")).toContain("[F1]");
 });

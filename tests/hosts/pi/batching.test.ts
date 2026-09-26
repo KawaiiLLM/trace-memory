@@ -3,6 +3,7 @@ import { TraceMemory, renderEntry, tokens, toolDefinitions, DEFAULT_CONFIG, type
 import { join } from "node:path";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { conversationOf, host, reply, usage } from "./test-host.ts";
+import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { hydrate } from "../../source-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
@@ -110,29 +111,29 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
   } finally { await h.dispose(); }
 });
 
-// 20b supersedes 17b's "49 facts wait, 50 immediately committed facts trigger": the count is gone and
-// the same test now measures the rendered fact tokens the Consolidator would actually receive. Facts
-// still become eligible immediately, and a still-pending same-Turn source still does not hold them.
-test("20b 2026-09-08 scenario 6: many short facts below the trigger wait, the tokens that reach it start one Consolidation despite pending same-Turn sources", async () => {
-  const h = host({ "noting.forkModeDefault": false });
-  const trigger = DEFAULT_CONFIG.consolidation.triggerTokens; // 5,000 rendered fact tokens, not fifty facts
+// Retired C's rendered-fact trigger has no replacement: N writes knowledge with facts.
+// D's independent due predicate is pending Knowledge, not a count or size of old facts.
+test("D admits a real pending Knowledge pool on an entry without consuming pending Raw", async () => {
+  const h = host({ "noting.triggerTokens": 1_000_000_000 });
   try {
     await h.turn();
-    const write = (n: number, size = 1) => h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: Array.from({ length: n }, (_, i) => ({ text: `claim ${i} ` + "word ".repeat(size), source: ["T1#E1"] })) });
-    write(50); // fifty facts under 17b's rule; far below 5,000 rendered tokens
-    const rendered = () => tokens(h.memory.store.consolidationBatch(1, "main", 1).map(f => h.memory.trace(`F${f.id}`)).join("\n"));
-    expect(rendered()).toBeLessThan(trigger);
-    h.persist(reply("completed entry")); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toEqual([]);
-    write(4, 1000); // four long facts carry more context than the fifty short ones
-    expect(rendered()).toBeGreaterThanOrEqual(trigger);
-    await h.emit("agent_settled"); await h.drain(); expect(h.requests).toEqual([]);
-    h.persist(reply("another entry")); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toHaveLength(1);
-    expect(h.memory.store.listConsolidatedFacts(h.memory.store.listRuns(1).at(-1)!.id)).toHaveLength(54);
-    expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).length).toBeGreaterThan(0);
-    h.persist(reply("later entry")); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toHaveLength(1);
+    const fact = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
+      .execute({ facts: [{ text: "User chose pnpm", source: ["T1#E1"] }] });
+    expect(fact).not.toContain("rejected:");
+    const path = { sessionId: 1, branch: "main", headTurnId: 1 };
+    const trigger = createDreamerTrigger(h.memory, path, 1, 1);
+    expect(h.memory.taskEligibility("dreaming", path).due).toBe(true);
+    h.provider(async c => {
+      if (c.messages.some(m => m.role === "toolResult")) return reply("Done.");
+      const frozen = String(c.messages[0]!.content);
+      const version = frozen.match(/New (K\d+@v\d+)/)?.[1];
+      if (!version || version !== `K${trigger.knowledgeId}@v1`) throw new Error(`unexpected frozen D range: ${frozen.slice(0, 400)}`);
+      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
+        arguments: { operations: [], skipped: [{ knowledge: version, because: "Reviewed; retain" }] } }] };
+    });
+    h.persist(reply("new completed entry")); await h.emit("agent_end"); await h.drain();
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success"]);
+    expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
   } finally { await h.dispose(); }
 });
 
@@ -149,7 +150,7 @@ test("17b 2026-09-08: lifecycle hooks launch neither phase and preserve both pen
     await h.emit("session_shutdown");
     expect(h.requests).toEqual([]);
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)).toEqual(pending);
-    expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(50);
+    expect(h.memory.store.listBranchFacts(1, "main", 1)).toHaveLength(50); // historical fact backlog is not erased
   } finally { await h.dispose(); }
 });
 
@@ -164,23 +165,14 @@ test("17b 2026-09-08 (batch default superseded by 20b): configuration rejects re
   }
 });
 
-// Ticket 20 "Configuration" and acceptance scenario 17. The new Consolidation limits are ordinary
-// settings of the existing namespace, and the fact count is a removed key: it is not reinterpreted as
-// tokens through the alias table, and it is shown nowhere, because the menu is built from the defaults.
-test("20b 2026-09-08 scenario 17: the new token settings validate and layer, and the removed fact-count key errors by name", () => {
-  expect(DEFAULT_CONFIG.consolidation).toMatchObject({ triggerTokens: 5000, batchTokens: 10000 });
-  // 32a raises main knowledge to 20,000; the separate Noter history envelope stays 20,000.
-  expect(20_000 + DEFAULT_CONFIG.render.episodicBlockTokens).toBe(40_000);
-  for (const key of ["triggerTokens", "batchTokens"]) for (const value of [0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
-    expect(() => TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }), { consolidation: { [key]: value } })).toThrow(`Invalid consolidation.${key}`);
-    expect(() => host({ [`consolidation.${key}`]: value })).toThrow(`consolidation.${key}`);
-  }
-  const removed = "Removed setting consolidation.triggerUnconsolidatedFacts: use consolidation.triggerTokens (tokens, not a count)";
-  expect(() => TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }), { consolidation: { triggerUnconsolidatedFacts: 50 } } as never)).toThrow(removed);
-  expect(() => host({ "consolidation.triggerUnconsolidatedFacts": 50 })).toThrow(removed);
-  // A supplied override reaches the effective configuration under its own name.
-  const memory = TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }), { consolidation: { triggerTokens: 7, batchTokens: 11 } });
-  try { expect(memory.config.consolidation).toMatchObject({ triggerTokens: 7, batchTokens: 11 }); } finally { memory.close(); }
+test("retired C trigger is never interpreted as an N/D token setting", () => {
+  expect(DEFAULT_CONFIG).not.toHaveProperty("consolidation");
+  expect(() => host({ "consolidation.triggerUnconsolidatedFacts": 50 })).toThrow(/Consolidation is retired/);
+  expect(() => TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }),
+    { consolidation: { triggerTokens: 7 } } as never)).toThrow(/Consolidation is retired/);
+  const memory = TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }));
+  try { expect(memory.config.noting).toMatchObject({ triggerTokens: 10_000, batchTokens: 10_000 }); }
+  finally { memory.close(); }
 });
 
 test.each(["user", "toolResult"])("17b 2026-09-08: stale branch capture falls back with the newly completed %s evidence", async role => {
@@ -277,9 +269,8 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
     await h.prompt("user source"); await h.answer("word ".repeat(1000));
     expect((await runner.noting({ sessionId: 1, branch: "main", headTurnId: 1 })).outcome).toBe("success");
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.role)).toEqual(["assistant"]);
-    const result = await runner.consolidate({ sessionId: 1, branch: "main" });
-    expect(result.outcome).toBe("success");
-    expect("range" in result && result.range.facts.map(f => f.id)).toEqual([1]);
+    expect(h.memory.store.listSessionFacts(1).map(f => f.id)).toEqual([1]);
+    expect(h.memory.store.listRuns(1).some(run => run.kind === "consolidation")).toBe(false);
   } finally { runner.close(); await h.dispose(); }
 });
 
@@ -330,16 +321,5 @@ test("20b 2026-09-08 scenario 5: a small oldest entry is not joined with a near-
   } finally { await h.dispose(); }
 });
 
-test("review 2026-09-08: Consolidation negotiates the model's real capacity like Noting and never sends a request the window cannot hold", async () => {
-  const h = host({ "noting.triggerTokens": 1e9 });
-  try {
-    await h.turn();
-    const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(t => t.name === "note")!;
-    expect(note.execute({ facts: [{ text: "Large evidence " + "word ".repeat(6000), source: ["T1#E1"] }] })).toContain("ok: F1");
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 2000, maxTokens: 64 };
-    h.persist(reply("new completion")); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toHaveLength(0); // the oldest fact cannot fit a 2,000-token window: pending, not sent
-    expect(h.notices.some(n => n.includes("Consolidation capacity"))).toBe(true);
-    expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(1);
-  } finally { await h.dispose(); }
-});
+// Retired C-only fact-capacity admission has no live worker. N's oldest-entry and per-round
+// capacity refusals above remain active; D's real pending-version admission is exercised here.
