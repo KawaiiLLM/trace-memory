@@ -41,9 +41,15 @@ test("92 Pi registered tool rejects old fields and writes entry roles through th
   const note = h.tools.get("note")!;
   await expect(note.execute("bad", { facts: [{ text: "invalid", source: [source], actor: "user" }] }, undefined, undefined, h.ctx))
     .rejects.toThrow(/unexpected field/);
-  const accepted = await note.execute("good", { facts: [{ text: "User chose the newer policy", source: [source] }] }, undefined, undefined, h.ctx);
+  await expect(note.execute("old", { facts: [{ text: "old shape", source: [source] }] }, undefined, undefined, h.ctx))
+    .rejects.toThrow(/title|unexpected field/);
+  const accepted = await note.execute("good", { facts: [{ title: "Newer policy", sources: [{ address: source, text: "User chose the newer policy" }] }] }, undefined, undefined, h.ctx);
   const result = JSON.parse(accepted.content[0].text);
   expect(h.memory.store.getFact(result.factIds[0])!.roles).toEqual([{ role: "user" }]);
+  expect(h.memory.store.getFact(result.factIds[0])!.title).toBe("Newer policy");
+  const trace = h.tools.get("trace")!;
+  await expect(trace.execute("tool-removed", { address: source, tool: 0 }, undefined, undefined, h.ctx))
+    .rejects.toThrow(/unexpected parameter|unexpected field/);
   const write = h.tools.get("memory")!;
   const created = await write.execute("create", { operations: [{ op: "create", text: "Keep the chosen policy", category: "constraint", scope: "session",
     topics: [], supports: [`F${result.factIds[0]}`], reason: "policy" }], skipped: [] }, undefined, undefined, h.ctx);
@@ -589,19 +595,19 @@ test("spec overflow policy: a subagent noting fetches cut evidence through the t
   const h = host({ "noting.triggerTokens": 1000, "noting.forkModeDefault": false, notingModel: "fake/noter" });
   await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "Bash", input: { command: "pnpm test" }, content: [{ type: "text", text: "x".repeat(5000) + "\n1 passed" }], isError: false });
-  const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1", full: true } };
+  const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1#E1..E5", full: true } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.answer("word ".repeat(1000)); await h.emit("agent_settled"); await h.drain();
   expect(h.conversations).toHaveLength(3);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
   expect(result.toolCallId).toBe("call-1"); expect(result.isError).toBe(false);
-  expect(result.content[0]!.text).toBe(h.memory.trace("T1", { full: true }));
+  expect(result.content[0]!.text).toBe(h.memory.trace("T1#E1..E5", { full: true }));
   expect(result.content[0]!.text).toContain("x".repeat(5000));
   expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.response!).fetched).toEqual([{ address: "T1", input: { address: "T1", full: true }, content: h.memory.trace("T1", { full: true }) }]);
+  expect(JSON.parse(run.response!).fetched).toEqual([{ address: "T1#E1..E5", input: { address: "T1#E1..E5", full: true }, content: h.memory.trace("T1#E1..E5", { full: true }) }]);
   expect(JSON.parse(run.request!)).toEqual(h.requests[2]);
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
@@ -629,7 +635,7 @@ test("main facade tools bind each call to the current turn, commit immediately a
     await h.emit("tool_result", { toolCallId: name === "note" ? "n1" : undefined, toolName: name, input, ...result, isError: false });
     return result.content[0].text as string;
   };
-  const note = { facts: [{ text: "Use pnpm", source: ["T1#E1"] }] };
+  const note = { facts: [{ title: "Package choice", sources: [{ address: "T1#E1", text: "Use pnpm" }] }] };
   expect(await call("note", note)).toContain("ok: F1");
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
   expect(h.memory.store.listRuns(1)[0]).toMatchObject({ kind: "manual", branch: "main", rangeFrom: "S1/T1", request: JSON.stringify(note) });
@@ -746,7 +752,7 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   const note = (text: string) => {
     const current = state(), tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: current.head, branch: current.branch,
       triggerEntryId: target().triggerEntryId });
-    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ text, source: [`T${current.head}#E1`] }] }));
+    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ title: text, sources: [{ address: `T${current.head}#E1`, text }] }] }));
     expect(receipt.results[0]).toMatch(/^ok:/);
     return receipt.factIds[0] as number;
   };

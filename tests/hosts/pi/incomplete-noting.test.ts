@@ -33,7 +33,7 @@ test.each(["note", "memory"] as const)("92: an explicit %s-only worker ends with
       if (++requests > 2) throw new Error("single-tool failure script repeated a request");
       if (c.messages.some(message => message.role === "toolResult")) return reply("Done.");
       const arguments_: JsonObject = name === "note"
-        ? { facts: [{ text: "User prefers pnpm", source: ["T1#E1"] }] } : { operations: [], skipped: [] };
+        ? { facts: [{ title: "Package choice", sources: [{ address: "T1#E1", text: "User prefers pnpm" }] }] } : { operations: [], skipped: [] };
       return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `only-${name}`, name, arguments: arguments_ }] };
     }, { autoStop: false });
     await h.turn();
@@ -119,7 +119,7 @@ test("32c replaces 26a: off preserves committed facts and reads, blocks both pha
     silent(h); await h.turn();
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
     expect(tools.find(t => t.name === "note")!.execute({ facts: [
-      { text: "Retained claim", source: ["T1#E1"] }] })).toContain("ok: F1");
+      { title: "Retained claim", sources: [{ address: "T1#E1", text: "Retained claim" }] }] })).toContain("ok: F1");
     await tick(h); await tick(h);
     expect(disabled(h)).toHaveLength(1);
     expect(tools.find(t => t.name === "trace")!.execute({ address: "F1" })).toContain("Retained claim");

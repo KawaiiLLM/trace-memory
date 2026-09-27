@@ -22,7 +22,7 @@ const skip = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ ty
   arguments: { operations: [], skipped: [{ knowledge: "K1@v1", because: "Reviewed unchanged" }] } }] });
 function seed(h: ReturnType<typeof host>) {
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] })).toContain("ok: F1");
+  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Package choice", sources: [{ address: "T1#E1", text: "Use pnpm" }] }] })).toContain("ok: F1");
   expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: "Use pnpm", category: "constraint",
     scope: "session", supports: ["F1"], topics: [], reason: "Rule" }], skipped: [] })).not.toContain("rejected:");
 }

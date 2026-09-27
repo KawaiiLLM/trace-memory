@@ -33,7 +33,7 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
             tools: ["mcp__trace_memory__note", "mcp__trace_memory__memory", "mcp__trace_memory__trace", "mcp__trace_memory__search"],
             plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
           for (const [name, args] of [
-            ["note", { facts: [{ text: "User set a rule", source: ["T1#E1"] }] }],
+            ["note", { facts: [{ title: "User rule", sources: [{ address: "T1#E1", text: "User set a rule" }] }] }],
             ["memory", { operations: [{ op: "create", text: "Follow the rule", category: "constraint", scope: "session",
               topics: [], supports: ["$1"], reason: "User requirement" }], skipped: [] }],
           ] as const) {
@@ -65,7 +65,7 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
               expect(JSON.stringify(inspected)).toContain(slot);
             }
             if (ending.startsWith("corrected")) {
-              const value = kind === "note" ? { text: "Corrected rule", source: ["T1#E1"] }
+              const value = kind === "note" ? { title: "Corrected rule", sources: [{ address: "T1#E1", text: "Corrected rule" }] }
                 : { op: "create", text: "Corrected rule", category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "User requirement" };
               const corrected = { ...base, [field]: [{ slot, ...value }] };
               yield { type: "assistant", message: { id: "corrected-response", content: [{ type: "tool_use", id: "corrected-note", name: kind, input: corrected }] } };

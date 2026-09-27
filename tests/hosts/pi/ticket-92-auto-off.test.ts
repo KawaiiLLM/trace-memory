@@ -16,7 +16,7 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     const turn = store.listTurns(session.id)[0]!;
     const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     const tools = f.memory.tools({ kind: "manual", ...target, currentTurnId: turn.id });
-    const factResult = tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Three rules have distinct purposes", source: [`T${turn.id}#E1`] }] });
+    const factResult = tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Three rules", sources: [{ address: `T${turn.id}#E1`, text: "Three rules have distinct purposes" }] }] });
     expect(factResult).not.toContain("rejected:");
     const noted = JSON.parse(factResult);
     expect(noted.factIds).toHaveLength(1);
