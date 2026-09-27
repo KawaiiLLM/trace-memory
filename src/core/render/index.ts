@@ -11,7 +11,7 @@ import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
 import { tokens, tokensJoined, JoinedTokens } from "./tokens.ts";
 export { tokens, tokensJoined, JoinedTokens };
 
-export interface TurnOptions { full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean }
+export interface TurnOptions { full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean; includeThinking?: boolean }
 export interface Rendered { content: string; receipts: string[] }
 
 /** Ticket 30 "One bounded Raw entry view": the three numbers of the one profile. `E` is the most one
@@ -402,8 +402,8 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
   const omitted = new Set<string>();
   let omittedCalls = 0;
   for (const entry of entries) {
-    const view = options.full ? renderEntryWhole(entry, resultText, choose, options.selector, true)
-      : renderEntry(entry, profile, resultText, choose, options.selector, options.blocks, true);
+    const view = options.full ? renderEntryWhole(entry, resultText, choose, options.selector, options.includeThinking !== false)
+      : renderEntry(entry, profile, resultText, choose, options.selector, options.blocks, options.includeThinking !== false);
     if (view.content) lines.push(view.content);
     for (const ordinal of view.omitted) {
       const call = entry.calls.find(call => call.ordinal === ordinal)!;

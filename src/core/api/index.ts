@@ -691,7 +691,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           } else lines.push(renderFact(fact, relations.get(fact.id) ?? [], itemCap));
         }
         if (raw.length) {
-          const rendered = renderTrace(turn, raw, profile, { full: display.full }, display.full ? rawResultText : resultText);
+          // Ordinary Turn views omit thinking; explicit full reads retain the original Raw.
+          const rendered = renderTrace(turn, raw, profile, { full: display.full, includeThinking: display.full === true }, display.full ? rawResultText : resultText);
           const heading = lines[0]! + "\n";
           if (!rendered.content.startsWith(heading)) throw new Error("Raw Turn heading does not match selected Turn");
           lines.push(finish({ ...rendered, content: rendered.content.slice(heading.length) }));

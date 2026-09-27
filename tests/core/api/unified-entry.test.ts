@@ -27,16 +27,24 @@ test("33/93: entry lists retain repeats/order; ranges tolerate sibling gaps; who
     const text = f.m.trace(`T${f.turn.id}`, options);
     expect(text.indexOf("before")).toBeLessThan(text.indexOf("bash(")); expect(text.indexOf("bash(")).toBeLessThan(text.indexOf("after"));
     expect(text).not.toContain("stored reasoning"); expect(text).not.toContain("sibling");
-    expect(f.m.trace(`T${f.turn.id}`, { ...options, full: true })).not.toContain("sibling");
+    const fullTurn = f.m.trace(`T${f.turn.id}`, { ...options, full: true });
+    expect(fullTurn).not.toContain("sibling");
+    expect(fullTurn).toContain("stored reasoning");
     const selected = f.m.trace(`T${f.turn.id}#E4,T${f.turn.id}#E2,T${f.turn.id}#E4`, options);
     expect(selected.indexOf("tool evidence")).toBeLessThan(selected.indexOf("before")); expect(selected.match(/tool evidence/g)).toHaveLength(2);
     expect(selected).toContain('command="run"');
-    expect(f.m.trace(`T${f.turn.id}#E2..E4`, options)).toContain("before");
+    expect(selected).toContain("stored reasoning");
+    const range = f.m.trace(`T${f.turn.id}#E2..E4`, options);
+    expect(range).toContain("before");
+    expect(range).toContain("stored reasoning");
     expect(() => f.m.trace(`T${f.turn.id}#E${sibling.entryOrdinal}`, options)).toThrow(/does not exist/);
     expect(f.m.trace(`T${f.turn.id}@user`, options)).toContain("question");
     for (const removed of [`T${f.turn.id}#E1@thinking`, `T${f.turn.id}#E2@opaque:a-b.c|d`, `T${f.turn.id}#E2@text`])
       expect(() => f.m.trace(removed, options)).toThrow(/invalid public trace address/);
-    expect(f.m.trace(`T${f.turn.id}#E2@assistant`, options)).toContain('command="run"');
+    const exact = f.m.trace(`T${f.turn.id}#E2@assistant`, options);
+    expect(exact).toContain('command="run"');
+    expect(exact).toContain("stored reasoning");
+    expect(f.m.trace(`T${f.turn.id}@assistant`, options)).toContain("stored reasoning");
   } finally { f.m.close(); }
 });
 test("33: Turn budgets each entry, entry budgets each block; null disables each independent ceiling", () => {
