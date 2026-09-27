@@ -6,6 +6,7 @@ import { sourceSeededMemory, toolDefinitions, type ToolContext } from "../../sou
 import { Store } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 const time = "2026-09-09T00:00:00Z";
 
@@ -28,10 +29,9 @@ function facts(count: number, projectName = "p") {
   const { id: sessionId } = store.createSession({ enrollmentChoice: true, host: "fake", projectId, startedAt: time, firstReplyAt: time });
   const turn = store.appendTurn({ sessionId, kind: "turn", userPrompt: "prompt", assistantText: "reply", startedAt: time });
   const user = store.listSourceEntries(sessionId, turn.id)[0]!;
-  const committed = store.commitNotingRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time },
-    facts: Array.from({ length: count }, (_unused, i) => ({ turnId: turn.id, category: "observation" as const, actor: "user" as const,
-      text: `fact ${i + 1}`, source: [`T${turn.id}#user`], entryIds: [user.id], createdAt: time })) });
-  if (!committed.ok) throw new Error(committed.problems.join("; "));
+  const committed = legacyFacts(store, { kind: "manual", sessionId, branch: "main", createdAt: time },
+    Array.from({ length: count }, (_unused, i) => ({ sources: [{ entry: user, address: `T${turn.id}#user` }],
+      category: "observation" as const, actor: "user" as const, text: `fact ${i + 1}`, createdAt: time })));
   return { sessionId, turnId: turn.id, ids: committed.facts.map(f => f.id) };
 }
 

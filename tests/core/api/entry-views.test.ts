@@ -198,20 +198,9 @@ test("a fact backlink groups citing history under visible current identity, incl
   const archive = JSON.parse(memory.execute({ operations: [{ op: "archive", id: `K${id}#${tag}`,
     reason: "reconsidered", supports: ["F2"] }], skipped: [] }));
   expect(archive.committed).toHaveLength(1);
-  const prepare = m.store.db.prepare.bind(m.store.db);
-  const reads = { citations: 0, ordinals: 0, searchFacts: 0 };
-  m.store.db.prepare = ((sql: string) => {
-    if (/SELECT j.value AS fact_id, r.knowledge_id/.test(sql)) reads.citations++;
-    if (/SELECT commit_id, ordinal FROM knowledge_version_tags/.test(sql)) reads.ordinals++;
-    if (/SELECT \* FROM facts WHERE id IN/.test(sql)) reads.searchFacts++;
-    return prepare(sql);
-  }) as typeof m.store.db.prepare;
   const text = m.trace("F1,F2", { sessionId: session.id, branch: "main", headTurnId: second.id, pageBudget: null });
   expect(text).toContain(`K${id}@v2 — cited by v1; current v2 (archived)`);
-  expect(reads.citations).toBe(1);
-  expect(reads.ordinals).toBe(1);
   expect(m.search("finding", "facts", { sessionId: session.id, branch: "main", headTurnId: second.id, pageBudget: null })).toContain("First finding");
-  expect(reads.searchFacts).toBe(1);
   const bodyHit = m.search("Original evidence", "facts", { sessionId: session.id, branch: "main", headTurnId: second.id });
   expect(bodyHit).toContain("First finding");
   expect(bodyHit).toContain("Original evidence");

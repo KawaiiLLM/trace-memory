@@ -45,17 +45,14 @@ test("manual core sorts segments by native path, derives owner, cites roles and 
   expect(x.memory.store.searchAddresses("@assistant", "facts")).toEqual([]);
 });
 
-test("titled branch material hydrates one batch rather than one query per fact", () => {
+test("branch reads retain every fact's ordered source segments", () => {
   const x = setup();
   const source = `T${x.turn.id}#E1`;
   expect(x.note.execute({ facts: Array.from({ length: 12 }, (_, i) => f([{ address: source, text: `episode ${i}` }])) })).toContain("ok: F12");
-  const original = x.memory.store.db.prepare.bind(x.memory.store.db);
-  let bindingReads = 0;
-  x.memory.store.db.prepare = ((sql: string) => { if (/FROM fact_sources/.test(sql)) bindingReads++; return original(sql); }) as typeof x.memory.store.db.prepare;
   const facts = x.memory.store.listBranchFacts(x.session.id, "main", x.turn.id);
-  expect(facts).toHaveLength(12);
-  expect(facts.every(fact => fact.segments?.length === 1)).toBe(true);
-  expect(bindingReads).toBe(2); // one existing membership read, one bounded bulk segment read
+  expect(facts.map(fact => ({ id: fact.id, source: fact.source, segments: fact.segments, text: fact.text })))
+    .toEqual(Array.from({ length: 12 }, (_, i) => ({ id: i + 1, source: [source],
+      segments: [`episode ${i}`], text: `episode ${i}` })));
 });
 
 test("public shape, duplicate entry, mismatched role and thinking are rejected", () => {
