@@ -264,9 +264,9 @@ test("20c/23 scenario 10, rescaled by 73: one bounded view of every entry under 
   defaultWindows();
   // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled
   // read without `full` (23b) is the same bounded view of the same entry, cut where the budgets bite.
-  expect(wholeTrace(memory, `T${next.id}#user`, { full: true })).toContain(body);
-  expect(memory.trace(`T${next.id}#user`)).toContain("USER_HEAD");
-  const full = wholeTrace(memory, `T${next.id}`, { tool: 1, full: true });
+  expect(wholeTrace(memory, `T${next.id}#E1`, { full: true })).toContain(body);
+  expect(memory.trace(`T${next.id}#E1`)).toContain("USER_HEAD");
+  const full = wholeTrace(memory, `T${next.id}`, { full: true });
   expect(full).toContain("SECRET_ARGUMENT");
   expect(full).toContain("SECRET_RESULT");
 });

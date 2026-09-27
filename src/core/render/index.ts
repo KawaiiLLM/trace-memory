@@ -11,7 +11,7 @@ import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
 import { tokens, tokensJoined, JoinedTokens } from "./tokens.ts";
 export { tokens, tokensJoined, JoinedTokens };
 
-export interface TurnOptions { tool?: number; full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean }
+export interface TurnOptions { full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean }
 export interface Rendered { content: string; receipts: string[] }
 
 /** Ticket 30 "One bounded Raw entry view": the three numbers of the one profile. `E` is the most one
@@ -310,7 +310,7 @@ function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (a
 /** The unbounded path (23c ruling 4): the same parts, the same line format, no budget at all. It takes
  * no profile and calls no budget function — no cut, no allocation, no character-array split and no
  * token measurement — so a `full` read of a large result copies stored strings as the deleted evidence
- * path did. A sealed part still shows its floor, which is what `tool` selection asks of it. */
+ * path did. A sealed part still shows its floor. */
 export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor = rawResultText,
   choose: (address: string) => PartChoice = () => "render", selector?: Selector): EntryView {
   const sources = sourceParts(entry, resultText, choose, selector);
@@ -377,9 +377,8 @@ export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultTex
  * source entries, in path order, each rendered by the entry renderer under the caller's profile. Several
  * assistant messages in one Turn therefore each show, a call with several native result occurrences
  * shows each occurrence, and a sibling branch's entries never appear — the caller's branch selected the
- * entries this assembles (`Store.listSourceEntries`). `tool` selects which call's parts are rendered
- * within their budgets; every other call keeps its label line, its omission marker and the receipt that
- * fetches it whole, which is the metadata 22c preserved. A `#user`, `#assistant` or `#t<n>` suffix
+ * entries this assembles (`Store.listSourceEntries`). An omitted call keeps its label line, its
+ * omission marker and a whole-entry expansion receipt. A historical `#user`, `#assistant` or `#t<n>` suffix
  * reads that one source part and drops the rest. `full` is the same assembly through the unbounded
  * path and the raw extractor (23c ruling 4): the same labels, the stored arguments, result text and
  * `details` uncut. Each selected native occurrence remains its own entry; compression never changes
@@ -397,7 +396,7 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
   const choose = (address: string): PartChoice => {
     const suffix = address.slice(address.indexOf("#") + 1);
     if (part) return suffix === part ? "render" : "drop";
-    return options.tool === undefined || !/^t\d+$/.test(suffix) || suffix === `t${options.tool}` ? "render" : "floor";
+    return "render";
   };
   const lines = part || options.blocks || options.selector ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
   const omitted = new Set<string>();

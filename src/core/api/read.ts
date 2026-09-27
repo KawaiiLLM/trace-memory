@@ -24,7 +24,7 @@ export const SEARCH_DEFAULT_FIELDS: readonly ReadField[] = ["text"];
 export const SEARCH_HISTORY_DEFAULT_FIELDS: readonly ReadField[] = ["text", "status"];
 export const SEARCH_PREVIEW_TOKENS = 80;
 export const MAX_PUBLIC_READ_TOKENS = 8000;
-export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; /** Host transport ceiling over the final returned string, in JavaScript UTF-16 code units. Not model-facing. */ maxChars?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; rawTurn?: boolean; factBacklinks?: ReadonlyMap<number, readonly string[]>; profile?: EntryProfile; /** Internal presentation seam; never accepted from model input. */ modelFacing?: boolean }
+export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; /** Host transport ceiling over the final returned string, in JavaScript UTF-16 code units. Not model-facing. */ maxChars?: number; cap?: number; cursor?: string; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; rawTurn?: boolean; factBacklinks?: ReadonlyMap<number, readonly string[]>; /** Internal frozen metadata for batched exact F reads. */ factReadSnapshot?: { ids: ReadonlySet<number>; relations: ReadonlyMap<number, FactRelation[]> }; profile?: EntryProfile; /** Internal presentation seam; never accepted from model input. */ modelFacing?: boolean }
 /** Validate aliases and filters before rendering or touching cursor state. Null is only a
  * content-ceiling disable; pageBudget=null is reserved for internal assembled material reads. */
 export function validateBudgets(options: ListingOptions): void {
@@ -36,7 +36,7 @@ export function validateBudgets(options: ListingOptions): void {
   if (options.full !== undefined && typeof options.full !== "boolean") throw new Error("full must be boolean");
   if (options.full === true && [options.itemBudget, options.toolCallBudget, options.toolResultBudget].some(v => v !== undefined && v !== null)) throw new Error("full:true conflicts with finite content budgets; use null for all content ceilings");
   if (options.pageBudget !== undefined && options.maxTokens !== undefined && options.pageBudget !== options.maxTokens) throw new Error("pageBudget conflicts with maxTokens");
-  if (options.tool !== undefined && (!Number.isSafeInteger(options.tool) || options.tool < 1)) throw new Error("tool must be a positive ordinal");
+  if ("tool" in options) throw new Error("tool parameter is removed; read the whole entry by address");
   if ("where" in options) throw new Error("where is removed; use scope");
   if (options.versions !== undefined && !READ_VERSIONS.includes(options.versions)) throw new Error("versions must be current, history or all");
   if (options.category !== undefined && !(KNOWLEDGE_CATEGORIES as readonly string[]).includes(options.category)) throw new Error("invalid knowledge category filter");
@@ -104,11 +104,9 @@ interface FrozenHit { address: string; fact?: Fact; relations?: FactRelation[]; 
 /** 59c: a batched-search query with no hit; its line trails the hits and is paged like them. */
 type Miss = { miss: string };
 
-/** One component of a `trace` comma list, in request order: either an interval's immutable fact
- * identity with frozen relations, or a named component's renderer over frozen database values.
- * Both render only after the snapshot transaction exits. */
+/** One component of a `trace` comma list, in request order, rendered over frozen metadata. */
 type TaggedBody = { lines: string[]; taggedHeader: string; plainHeader: string; tag: string };
-type TraceUnit = { fact: number; relations: FactRelation[]; header?: string } | { render: () => string | TaggedBody | (string | TaggedBody)[] };
+type TraceUnit = { render: () => string | TaggedBody | (string | TaggedBody)[] };
 
 /** Parent 29 "Version-aware knowledge" (29b): one line per commit the reader's context already holds
  * that is not among the current applicable commits here — superseded, archived or merged away. The
@@ -203,7 +201,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * Cursor state holds only frozen output, never a caller's read or write grants. */
   type FrozenListing = {
     itemBudget: number | null; toolCallBudget: number | null; toolResultBudget: number | null;
-    tool?: number; versions?: ReadVersions; category?: KnowledgeCategory;
+    versions?: ReadVersions; category?: KnowledgeCategory;
     scope?: KnowledgeScope; fields?: readonly ReadField[]; queryCap?: number;
   };
   type PendingLine = { text: string; completionTag?: string };
@@ -227,12 +225,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       : options.full === true ? null : saved ? saved.frozen[key] : defaults[key];
     const frozen: FrozenListing = {
       itemBudget: content("itemBudget"), toolCallBudget: content("toolCallBudget"), toolResultBudget: content("toolResultBudget"),
-      tool: options.tool ?? saved?.frozen.tool,
       versions: options.versions ?? saved?.frozen.versions, category: options.category ?? saved?.frozen.category,
       scope: options.scope ?? saved?.frozen.scope, fields: options.fields ?? saved?.frozen.fields,
       queryCap: saved ? saved.frozen.queryCap : Array.isArray(source) ? undefined : source.queryCap,
     };
-    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "tool", "versions", "category", "scope", "fields"] as const) {
+    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "versions", "category", "scope", "fields"] as const) {
       const same = key === "fields" ? JSON.stringify(frozen.fields) === JSON.stringify(saved?.frozen.fields)
         : frozen[key] === saved?.frozen[key];
       if (saved && !same) throw new Error(`cursor ${key} is frozen; omit it or use the original value`);
@@ -458,8 +455,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     options = effectiveOptions(options);
     const targets = publicTraceTargets(address);
     if (targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
-    const historyFields = targets.some(target => /^K[1-9]\d*\.\.$/.test(target)
-      || options.versions !== "current" && /^K[1-9]\d*$/.test(target));
+    const historyFields = targets.some(target => options.versions !== "current" && /^K[1-9]\d*$/.test(target));
     options = { ...options, fields: [...(options.fields ?? (historyFields ? TRACE_HISTORY_DEFAULT_FIELDS : TRACE_DEFAULT_FIELDS))] };
     options = { ...options, maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS,
       ...(options.pageBudget === null ? { cap: Number.MAX_SAFE_INTEGER } : {}) };
@@ -470,6 +466,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // Freeze only values under the write lock. Renderers close over these values, not queries.
       const fields = new Set(options.fields!);
       const requestedFacts = targets.filter(target => /^F[1-9]\d*$/.test(target)).map(target => Number(target.slice(1)));
+      const factReadSnapshot = { ids: store.existingFactIds(requestedFacts), relations: store.listFactRelationsOf(requestedFacts) };
       const citing = store.citingKnowledge(requestedFacts);
       const backlinkSelection = citing.size ? knowledgeReadSelection(store, { sessionId: options.sessionId,
         branch: options.branch, headTurnId: options.headTurnId }) : null;
@@ -549,40 +546,31 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           const revision = store.getKnowledgeRevision(exact.id, commit)!;
           return knowledgeBody({ knowledge: store.getKnowledge(exact.id)!, revision }, store.commitParents(revision), store.commitChildren(revision), status, historyLine);
         }
-        return prepare(target, { ...options, profile, factBacklinks: backlinks });
+        return prepare(target, { ...options, profile, factBacklinks: backlinks, factReadSnapshot });
       };
-      // Intervals keep immutable fact bodies lazy; membership and mutable relations freeze now.
-      const units = targets.flatMap((target, index): TraceUnit[] => {
-
+      const units = targets.flatMap((target): TraceUnit[] => {
         if (options.modelFacing && /^K[1-9]\d*$/.test(target)) {
           const id = Number(/^K([1-9]\d*)/.exec(target)![1]);
           const history = store.listKnowledgeRevisions(id);
           if (!history.length) return [{ render: named(target) }];
           const selection = knowledgeReadSelection(store, options);
-          const revisions = target.endsWith("..") ? history
-            : options.versions === "current" ? selection.representatives(history)
+          const revisions = options.versions === "current" ? selection.representatives(history)
             : history.filter(r => selection.matches(r) && (options.versions === "all" || selection.graph.applicable.has(r.id)));
           return revisions.length ? revisions.map(revision => ({ render: named(`K${id}@v${store.versionOrdinal(id, revision.id)}`, selection.status(revision),
-            target.endsWith("..") || options.versions !== "current") }))
+            options.versions !== "current") }))
             : [{ render: named(target) }];
         }
         return [{ render: named(target) }];
       });
-      const ids = units.flatMap(unit => "fact" in unit ? [unit.fact] : []);
-      const relations = !ids.length ? new Map<number, FactRelation[]>() : options.sessionId === undefined
-        ? store.listFactRelationsOf(ids)
-        : store.listFactRelationsOnPathOf(ids, store.knowledgePath(options.sessionId, options.branch, options.headTurnId));
-      return units.map(unit => "fact" in unit ? { ...unit, relations: relations.get(unit.fact)! } : unit);
+      return units;
     });
     const format = (units: readonly unknown[]) => (units as TraceUnit[])
       .flatMap<string | TaggedBody>(unit => {
-        const rendered = "fact" in unit ? renderFact(store.getFact(unit.fact)!, unit.relations, profile.entryTokens,
-          text => "\n" + (unit.header ?? "") + text).slice(1) : unit.render();
+        const rendered = unit.render();
         return (Array.isArray(rendered) ? rendered : [rendered]).flatMap<string | TaggedBody>(part => typeof part === "string" ? part.split("\n") : [part]);
       });
-    const footer = [...collectionReceipts, ...(targets.some(target => /^K[1-9]\d*(?:\.\.)?$/.test(target))
-      ? [`versions: ${targets.every(target => /^K[1-9]\d*\.\.$/.test(target)) ? "all" : options.versions}${historyFields ? "; explicit K history" : ""}`,
-        ...(targets.some(target => /^K[1-9]\d*\.\.$/.test(target)) ? ["selected: explicit K.. histories use all branches"] : [])] : [])].join("\n");
+    const footer = [...collectionReceipts, ...(targets.some(target => /^K[1-9]\d*$/.test(target))
+      ? [`versions: ${options.versions}${historyFields ? "; explicit K history" : ""}`] : [])].join("\n");
     return page({ items, format }, options, footer);
   };
   // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).

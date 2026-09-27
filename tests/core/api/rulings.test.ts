@@ -609,20 +609,19 @@ test.each(["user", "assistant", "t1"] as const)("2026-09-07: trace source suffix
   expect(() => memory.trace(`S${s.id + 1}/T${t.id}#${part}`)).toThrow("does not exist");
 });
 
-test("2026-09-07: trace source suffix keeps standard tool cuts unless full", () => {
+test("93: whole result entry keeps standard cuts unless full", () => {
   const { t } = session();
   const output = "hidden evidence ".repeat(300);
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: '{"command":"second"}', result: output, status: "success" });
-  const cut = memory.trace(`T${t.id}#t2`);
+  const cut = memory.trace(`T${t.id}#E6`);
   expect(cut).toMatch(/\[\.\.\. \d+ characters truncated\]/); // 23c: the entry view's one marker family
   expect(cut).not.toContain(output);
   expect(cut).not.toContain("#t1");
   // 17a preserves the full argument object, including fields beyond command.
-  const full = memory.trace(`T${t.id}#t2`, { full: true });
-  // 23c: `full` is the same renderer with no budget — the same labels, the stored bytes uncut.
-  expect(full).toBe(`[T${t.id}#E5@call-2] Bash(command="second")\n[T${t.id}#E6@call-2] Bash success: ${output}`);
-  expect(memory.trace(`T${t.id}#t2`, { tool: 2, full: true })).toBe(full);
-  expect(() => memory.trace(`T${t.id}#t2`, { tool: 1 })).toThrow("conflicts");
+  const full = memory.trace(`T${t.id}#E6`, { full: true });
+  expect(full).toBe(`[T${t.id}#E6@observation] Bash success: ${output}`);
+  expect(memory.trace(`T${t.id}#E5`, { full: true })).toContain('Bash(command="second")');
+  expect(() => memory.trace(`T${t.id}#E6`, { tool: 1 } as never)).toThrow("tool parameter is removed");
 });
 
 test("2026-09-07: trace rejects a missing source part with the reason", () => {

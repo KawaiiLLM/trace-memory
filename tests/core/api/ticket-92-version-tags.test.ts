@@ -21,7 +21,7 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "remember", assistantText: "", startedAt: "now" });
   const context = { kind: "manual" as const, sessionId: session.id, currentTurnId: turn.id, branch: "main" };
   const note = memory.tools(context).find(tool => tool.name === "note")!;
-  const fact = JSON.parse(note.execute({ facts: [{ text: "User wants to preserve a rule", source: [`T${turn.id}#E1`] }] })).factIds[0];
+  const fact = JSON.parse(note.execute({ facts: [{ title: "Preserve a rule", sources: [{ address: `T${turn.id}#E1`, text: "User wants to preserve a rule" }] }] })).factIds[0];
   const create = memory.tools(context).find(tool => tool.name === "memory")!;
   const createdReceipt = create.execute({ operations: [{ op: "create", text: "First rule", category: "constraint", scope: "session", topics: [], reason: "initial", supports: [`F${fact}`] }], skipped: [] });
   if (createdReceipt.startsWith("rejected:")) throw new Error(createdReceipt);
@@ -99,7 +99,7 @@ test("92/03: complete-body tags survive collection and history paging without le
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", assistantText: "", startedAt: "now" });
     const context = { kind: "manual" as const, sessionId: session.id, currentTurnId: turn.id, branch: "main" };
     const tools = memory.tools(context);
-    const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "A paging example", source: [`T${turn.id}#E1`] }] })).factIds[0];
+    const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "A paging example", sources: [{ address: `T${turn.id}#E1`, text: "A paging example" }] }] })).factIds[0];
     const body = "长行😀 Mixed body. ".repeat(60);
     const receipt = JSON.parse(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: body,
       category: "reference", scope: "project", topics: [], reason: "created", supports: [`F${fact}`] }], skipped: [] }));
@@ -116,7 +116,7 @@ test("92/03: complete-body tags survive collection and history paging without le
       expect(pages.every(page => !page.startsWith("rejected:"))).toBe(true);
       return pages;
     };
-    for (const address of [`K${knowledgeId}`, `K${knowledgeId}..`, project.name]) {
+    for (const address of [`K${knowledgeId}`, project.name]) {
       const pages = collect(address, { pageBudget: 130 });
       const taggedIndex = pages.findIndex(page => page.includes(version));
       expect(taggedIndex).toBeGreaterThan(0);
@@ -125,13 +125,13 @@ test("92/03: complete-body tags survive collection and history paging without le
       expect(pages.every(page => tokens(page) <= 130)).toBe(true);
       expect(pages.join("\n")).not.toMatch(/K\d+@\d+/);
     }
-    const humanPage = memory.trace(`K${knowledgeId}@${memory.store.resolveVersionOrdinal(knowledgeId, 1)}`, {
+    const humanPage = memory.trace(`K${knowledgeId}@v1`, {
       sessionId: session.id, branch: "main", headTurnId: turn.id, itemBudget: null, pageBudget: 130 });
     const humanCursor = /cursor=([0-9a-f-]+)/.exec(humanPage)![1];
     expect(trace.execute({ address: `cursor=${humanCursor}` })).toContain("another presentation surface");
     expect(trace.execute({ address: `K${knowledgeId}`, modelFacing: false })).toContain("rejected:");
     const limitedTrace = memory.tools({ ...context, maxReadChars: 600 }).find(t => t.name === "trace")!;
-    const charPages = collect(`K${knowledgeId}..`, { pageBudget: 8000 }, limitedTrace);
+    const charPages = collect(`K${knowledgeId}`, { pageBudget: 8000, versions: "all" }, limitedTrace);
     expect(charPages.every(page => page.length <= 600)).toBe(true);
     expect(charPages.slice(0, -1).join("\n")).not.toContain(version);
     expect(charPages.at(-1)).toContain(version);
@@ -174,7 +174,7 @@ test("92/03+04: concurrent N writers serialize version metadata and convert a st
     const session = memory.store.createSession({ projectId: project.id, host: "pi:writers", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
     const fact = JSON.parse(memory.tools({ kind: "manual", sessionId: session.id, currentTurnId: turn.id, branch: "main" }).find(t => t.name === "note")!
-      .execute({ facts: [{ text: "Rule evidence", source: [`T${turn.id}#E1`] }] })).factIds[0];
+      .execute({ facts: [{ title: "Rule evidence", sources: [{ address: `T${turn.id}#E1`, text: "Rule evidence" }] }] })).factIds[0];
     const content = { text: "Unchanged body", category: "constraint" as const, scope: "session" as const, topics: [], supports: [fact], reason: "revision", createdAt: "now" };
     const run = { kind: "manual" as const, sessionId: session.id, branch: "main", createdAt: "now" };
     const created = memory.store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
@@ -247,7 +247,7 @@ test("92/03: an existing collision stays stable; only the later version extends,
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "remember", assistantText: "", startedAt: "now" });
   const context = { kind: "manual" as const, sessionId: session.id, currentTurnId: turn.id, branch: "main" };
   const note = memory.tools(context).find(tool => tool.name === "note")!;
-  const fact = JSON.parse(note.execute({ facts: [{ text: "Keep an archived rule", source: [`T${turn.id}#E1`] }] })).factIds[0];
+  const fact = JSON.parse(note.execute({ facts: [{ title: "Archive a rule", sources: [{ address: `T${turn.id}#E1`, text: "Keep an archived rule" }] }] })).factIds[0];
   const created = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ operations: [
     { op: "create", text: "An initial body", category: "constraint", scope: "session", topics: [], reason: "initial", supports: [`F${fact}`] }], skipped: [] }));
   const { knowledgeId, version } = created.committed[0];

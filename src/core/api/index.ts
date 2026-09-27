@@ -621,20 +621,22 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const factMatch = /^F([1-9]\d*)$/.exec(target ?? "");
     if (factMatch && !flags.length) {
       if (!Number.isSafeInteger(Number(factMatch[1]))) throw invalid();
-      const fact = store.getFact(Number(factMatch[1]));
-      if (!fact) throw new Error(`fact ${target} does not exist`);
-      const relations = store.listFactRelations(fact.id);
+      const id = Number(factMatch[1]);
+      const snapshot = display.factReadSnapshot;
+      const directFact = snapshot ? undefined : store.getFact(id);
+      if (snapshot ? !snapshot.ids.has(id) : !directFact) throw new Error(`fact ${target} does not exist`);
+      const relations = snapshot ? snapshot.relations.get(id) ?? [] : store.listFactRelations(id);
       let receipt = "";
       if (display.sessionId !== undefined) {
         const path = store.knowledgePath(display.sessionId, display.branch, display.headTurnId);
         const snapshot = store.pathSnapshot(path);
-        const otherIds = [...new Set(relations.map(relation => relation.fromFact === fact.id ? relation.toFact : relation.fromFact))];
+        const otherIds = [...new Set(relations.map(relation => relation.fromFact === id ? relation.toFact : relation.fromFact))];
         const applies = store.factApplicabilityOnPath(otherIds, path, snapshot);
         const inapplicable = otherIds.filter(id => !applies.get(id));
         if (inapplicable.length) receipt = `\nrelations retained by explicit Fact read; other endpoints not applicable on this path: ${inapplicable.map(id => `F${id}`).join(", ")}`;
       }
-      const backlinks = display.factBacklinks?.get(fact.id) ?? [];
-      return () => renderFact(fact, relations, itemCap) + receipt +
+      const backlinks = display.factBacklinks?.get(id) ?? [];
+      return () => renderFact(directFact ?? store.getFact(id)!, relations, itemCap) + receipt +
         (backlinks.length ? `\nKnowledge: ${backlinks.join("; ")}` : "");
     }
     const runMatch = /^R([1-9]\d*)$/.exec(target ?? "");
@@ -649,13 +651,11 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (!parsed) throw invalid();
     const sessionOfAddress = parsed.session;
     const part = parsed.legacy;
-    if (part && display.tool !== undefined && part !== `t${display.tool}`) throw new Error("source suffix conflicts with tool parameter");
-    if ((parsed.entries || parsed.selector) && display.tool !== undefined) throw new Error("tool parameter conflicts with hierarchical selection; use an exact @toolCallId");
-    const options: TurnOptions = { tool: display.tool, full: display.full, part, selector: parsed.selector, blocks: parsed.entries?.length === 1 && parsed.entries[0]!.to === undefined };
+    const options: TurnOptions = { full: display.full, part, selector: parsed.selector, blocks: parsed.entries?.length === 1 && parsed.entries[0]!.to === undefined };
     const turn = store.getTurn(parsed.turn);
     if (!turn) throw new Error(`turn ${target} does not exist`);
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
-    if (!parsed.entries && !parsed.selector && display.tool === undefined && !display.rawTurn && turn.kind !== "compaction") {
+    if (!parsed.entries && !parsed.selector && !display.rawTurn && turn.kind !== "compaction") {
       const meta = display.entryIds ? store.listSourceEntries(turn.sessionId, turn.id, display.branch)
         .filter(entry => display.entryIds!.includes(entry.id)) : store.listSourceEntries(turn.sessionId, turn.id, display.branch);
       const selectedIds = new Set(meta.map(entry => entry.id));
@@ -689,7 +689,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
             lines.push(renderFact(partial, relations.get(fact.id) ?? [], itemCap));
           } else lines.push(renderFact(fact, relations.get(fact.id) ?? [], itemCap));
         }
-        if (raw.length) lines.push(finish(renderTrace(turn, raw, profile, { full: display.full }, display.full ? rawResultText : resultText)));
+        if (raw.length) {
+          const rendered = renderTrace(turn, raw, profile, { full: display.full }, display.full ? rawResultText : resultText);
+          const heading = lines[0]! + "\n";
+          if (!rendered.content.startsWith(heading)) throw new Error("Raw Turn heading does not match selected Turn");
+          lines.push(finish({ ...rendered, content: rendered.content.slice(heading.length) }));
+        }
         if (uncited.length) lines.push(`Processed, not cited: ${uncited.map(entry => `T${turn.id}#E${entry.entryOrdinal}`).join(", ")}`);
         if (meta.length) lines.push(`Raw: T${turn.id}#E${meta[0]!.entryOrdinal}..E${meta.at(-1)!.entryOrdinal}`);
         return lines.join("\n");
@@ -704,8 +709,6 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const times = store.factTurnTimes(facts);
       return () => renderFactGroups(facts, (f, frame) => renderFact(f, relations.get(f.id) ?? [], itemCap, frame), times, true).join("\n");
     }
-    const calls = store.listToolCalls(turn.id);
-    if (options.tool !== undefined && !calls.some((c) => c.ordinal === options.tool)) throw new Error(`tool #t${options.tool} does not exist in ${target}`);
     // 23b: without `full` the read is this Turn's selected source entries, in path order, each
     // rendered by the entry renderer under the configured profile — 22c's Turn-scoped read is what it
     // assembles, and `branch` (when the caller is bound to one) is what keeps a sibling branch's

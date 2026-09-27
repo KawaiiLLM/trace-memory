@@ -40,14 +40,46 @@ test("a long title-only listing obeys its item token budget", () => {
 test("several omitted calls in one entry report each call but one whole-entry expansion", () => {
   const source = { id: 1, turnId: 1, entryOrdinal: 1, sessionId: 1, nativeId: "one", nativeLineage: "main",
     role: "assistant", raw: "", text: "", calls: [1, 2].map(ordinal => ({ ordinal, name: "read",
-      callId: `call-${ordinal}`, status: "attempted", input: JSON.stringify({ path: `file-${ordinal}` }) })),
+      callId: `call-${ordinal}`, status: "attempted", input: JSON.stringify({ path: `file-${ordinal}`.repeat(100) }) })),
     blocks: [1, 2].map(ordinal => ({ kind: "call", call: { ordinal, name: "read", callId: `call-${ordinal}`,
-      status: "attempted", input: JSON.stringify({ path: `file-${ordinal}` }) } })) };
+      status: "attempted", input: JSON.stringify({ path: `file-${ordinal}`.repeat(100) }) } })) };
   const rendered = renderTrace({ id: 1, sessionId: 1, startedAt: "now", kind: "turn" } as any,
-    [source] as any, { entryTokens: 2000, toolInputTokens: 100, toolResultTokens: 100 }, { tool: 3 });
+    [source] as any, { entryTokens: 2000, toolInputTokens: 24, toolResultTokens: 100 });
   expect(rendered.receipts[0]).toContain("2 omitted calls");
   expect(rendered.receipts).toHaveLength(2);
   expect(rendered.receipts[1]).toContain('"address":"T1#E1"');
+});
+
+test("trace rejects tool selection at direct, bound and continuation boundaries; whole entry retains call IDs", () => {
+  const { m, first, session } = fixture();
+  const bound = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: first.id });
+  const trace = bound.find(tool => tool.name === "trace")!;
+  expect((trace.parameters.properties as Record<string, unknown>).tool).toBeUndefined();
+  expect(trace.execute({ address: `T${first.id}#E2`, tool: 1 })).toMatch(/^rejected:/);
+  expect(() => m.trace(`T${first.id}#E2`, { tool: 1 } as never)).toThrow(/tool parameter is removed/);
+  const firstPage = m.trace(`T${first.id}#E1,T${first.id}#E2`, { cap: 1 });
+  const cursor = /cursor=([0-9a-f-]+)/.exec(firstPage)?.[1];
+  expect(cursor).toBeDefined();
+  expect(trace.execute({ address: "cursor=" + cursor, tool: 1 })).toMatch(/^rejected:/);
+  expect(() => m.trace(`T${first.id}#E2`, { cursor, tool: 1 } as never)).toThrow(/tool parameter is removed/);
+  expect(m.trace(`T${first.id}#E2`)).toContain("assistant: reply");
+});
+
+test("knowledge injection charges IDs only while explicit trace/search display support titles", () => {
+  const { m, first, second, session, note } = fixture();
+  expect(note.execute({ facts: [{ title: "A descriptive episode title", sources: [{ address: `T${first.id}#E1`, text: "User asks a question" }] }] })).toContain("ok: F1");
+  const memory = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: second.id }).find(tool => tool.name === "memory")!;
+  const result = JSON.parse(memory.execute({ operations: [{ op: "create", text: "A lasting rule", category: "constraint",
+    scope: "project", topics: [], reason: "user choice", supports: ["F1"] }], skipped: [] }));
+  expect(result.committed).toHaveLength(1);
+  const id = result.committed[0].knowledgeId;
+  const injected = m.injection(session.id);
+  expect(injected.text).toContain("supports: F1");
+  expect(injected.text).not.toContain("A descriptive episode title");
+  expect(injected.knowledgeTokens).toBe(tokens(injected.text));
+  expect(m.trace(`K${id}`, { sessionId: session.id, branch: "main", headTurnId: second.id })).toContain("F1 A descriptive episode title");
+  expect(m.search("lasting rule", "knowledge", { sessionId: session.id, branch: "main", headTurnId: second.id,
+    fields: ["text", "supports"] })).toContain("F1 A descriptive episode title");
 });
 
 test("named project remains a readable collection", () => {

@@ -2216,6 +2216,12 @@ export class Store {
         { id: number; title: string }[]).map(row => [row.id, row.title]) : []);
   }
 
+  /** Existence only, for a paged explicit-F read: defer full fact hydration to its displayed page. */
+  existingFactIds(ids: readonly number[]): Set<number> {
+    return new Set(ids.length ? (this.db.prepare(`SELECT id FROM facts WHERE id IN
+      (SELECT value FROM json_each(?))`).all(JSON.stringify([...new Set(ids)])) as { id: number }[]).map(row => row.id) : []);
+  }
+
   factsByIds(ids: readonly number[]): Fact[] {
     return ids.length ? this.hydrateFactSegments(this.db.prepare(`SELECT * FROM facts WHERE id IN
       (SELECT value FROM json_each(?)) ORDER BY id`).all(JSON.stringify([...new Set(ids)])).map(toFact)) : [];

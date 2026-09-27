@@ -536,7 +536,7 @@ async function runSize(size: string) {
     measure("footer progress alone (enabled)", () => memory.progress(fixture.sessionId, fixture.branch, head),
       `notes ${fixture.pendingEntryCount}->${fixture.pathFactCount}, memory facts->changed/current Knowledge`),
     // 22c: one full tool occurrence inside the Turn with 40 tool calls.
-    measure("trace full (heavy Turn, one occurrence)", () => memory.trace(`T${fixture.heavyTurnId}`, { tool: 1, full: true }),
+    measure("trace full (heavy Turn, all occurrences)", () => memory.trace(`T${fixture.heavyTurnId}`, { full: true }),
       `T${fixture.heavyTurnId}, ${store.listToolCalls(fixture.heavyTurnId).length} tool calls`),
     // 23b: the same Turn assembled from its entries under the tier-1 profile — the same Turn-scoped read.
     measure("trace assembled (heavy Turn, no full)", () => memory.trace(`T${fixture.heavyTurnId}`),

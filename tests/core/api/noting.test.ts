@@ -218,12 +218,12 @@ test("fixture turn golden and noting input use identical rendering with receipts
     // 17a: automatic Raw uses completed entries; explicit trace retains its independent full read.
     const views = hydrate(memory.pendingEntries(sessionId, "main", first.id), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
     expect(input.material.entries.map(e => e.view).join("\n\n")).toBe(views);
-    expect(input.tools[0]!.execute({ address: "T1", tool: 2, full: true })).toBe(memory.trace("T1", { tool: 2, full: true }));
+    expect(input.tools[0]!.execute({ address: "T1", full: true })).toBe(memory.trace("T1", { full: true }));
     return success([]);
   });
   const result = await memory.noting({ sessionId, branch: "main", headTurnId: first.id, mode: "subagent" });
   if (result.outcome !== "success") throw new Error("expected success");
-  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).fetched[0].input).toEqual({ address: "T1", tool: 2, full: true });
+  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).fetched[0].input).toEqual({ address: "T1", full: true });
   expect(calls[0]!.tools[0]!.execute({ address: "T1" })).toContain("finished");
 });
 
@@ -240,16 +240,15 @@ test("fixture fact goldens include quote, sources and both relation directions a
   expect([1, 2, 3].map((id) => memory.trace(`F${id}`)).join("\n\n")).toBe(golden("facts"));
 });
 
-test("full expands selected calls; cap is the listing budget and address flags are rejected", () => {
+test("full expands whole entries; cap is the listing budget and address flags are rejected", () => {
   const t = turn();
-  const full = memory.trace(`T${t.id}`, { tool: 2, full: true });
+  const full = memory.trace(`T${t.id}`, { full: true });
   expect(full).toContain(fixture[0]!.calls[1]!.result!);
-  // 23c: `full` is the entry renderer's unbounded path, so the selected call carries the same labels
-  // every other view uses; the unselected one keeps its floor and its receipt.
-  expect(full).toContain("[T1#E5@call-2] Bash success: ");
-  expect(full).toContain("[T1#E3@call-1] mcp__plugin_claude-mnemo_mnemo__note(...)");
+  // Full rendering does not select one call or seal another; both keep their whole-entry addresses.
+  expect(full).toContain("[T1#E5@observation] Bash success: ");
+  expect(full).toContain("[T1#E3@assistant] mcp__plugin_claude-mnemo_mnemo__note(");
   expect(memory.trace(`T${t.id}`, { cap: 1 })).toContain("cursor=");
-  expect(() => memory.trace("T1", { tool: 99 })).toThrow("does not exist");
+  expect(() => memory.trace("T1", { tool: 99 } as never)).toThrow("tool parameter is removed");
   expect(() => memory.trace("T1 cap=0")).toThrow("invalid trace address");
 });
 

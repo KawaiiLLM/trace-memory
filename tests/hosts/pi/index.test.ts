@@ -589,19 +589,19 @@ test("spec overflow policy: a subagent noting fetches cut evidence through the t
   const h = host({ "noting.triggerTokens": 1000, "noting.forkModeDefault": false, notingModel: "fake/noter" });
   await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "Bash", input: { command: "pnpm test" }, content: [{ type: "text", text: "x".repeat(5000) + "\n1 passed" }], isError: false });
-  const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1", tool: 1, full: true } };
+  const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1", full: true } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.answer("word ".repeat(1000)); await h.emit("agent_settled"); await h.drain();
   expect(h.conversations).toHaveLength(3);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
   expect(result.toolCallId).toBe("call-1"); expect(result.isError).toBe(false);
-  expect(result.content[0]!.text).toBe(h.memory.trace("T1", { tool: 1, full: true }));
+  expect(result.content[0]!.text).toBe(h.memory.trace("T1", { full: true }));
   expect(result.content[0]!.text).toContain("x".repeat(5000));
   expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.response!).fetched).toEqual([{ address: "T1", input: { address: "T1", tool: 1, full: true }, content: h.memory.trace("T1", { tool: 1, full: true }) }]);
+  expect(JSON.parse(run.response!).fetched).toEqual([{ address: "T1", input: { address: "T1", full: true }, content: h.memory.trace("T1", { full: true }) }]);
   expect(JSON.parse(run.request!)).toEqual(h.requests[2]);
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
@@ -682,7 +682,7 @@ test("rejected manual writes throw for Pi to record one failed raw tool call", a
 test("main trace can fetch historical rejected tool evidence without becoming a failed call", async () => {
   const h = host(); await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "read", input: {}, content: [{ type: "text", text: "rejected: previous operation" }], isError: true });
-  const input = { address: "T1", tool: 1, full: true };
+  const input = { address: "T1", full: true };
   const result = await h.tools.get("trace").execute("read-old", input, undefined, undefined, h.ctx);
   expect(result.content[0].text).toContain("rejected: previous operation");
   await h.emit("tool_result", { toolName: "trace", input, ...result, isError: false });

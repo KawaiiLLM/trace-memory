@@ -1,15 +1,11 @@
-// Ticket 25d "Batch trace: fact intervals and documented comma lists". The read façade already
-// accepted a comma list; this file pins that list's promoted contract (request order, repeats kept,
-// kinds mixable) and the one new form: `F81-F90`, the inclusive fact-id interval. Amendment 1 of
-// ticket 25 is what the hyphen is for — `..` keeps its single meaning, so `F81..` still walks later
-// strong negations and `K1@57..K1@61` still diffs two commits, and both are asserted here beside the
-// new grammar. An interval reads the facts that exist in the range: it costs what they cost, never
-// what the numeric span suggests, and it answers an empty range with an empty result rather than with
-// a missing-record diagnostic per integer.
+// Ticket 93 keeps complete independent addresses in comma lists, but removes fact intervals,
+// negation walks and all-branch K.. navigation. Preserve the prior paging, frozen evidence,
+// query batching, version tags and writer authority checks using explicit address lists.
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, toolDefinitions, type ToolContext } from "../../source-fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 
 const time = "2026-09-09T00:00:00Z";
 
@@ -31,9 +27,10 @@ function facts(count: number, projectName = "p") {
   const projectId = store.createProject({ name: projectName, declaredBy: "mark" }).id;
   const { id: sessionId } = store.createSession({ enrollmentChoice: true, host: "fake", projectId, startedAt: time, firstReplyAt: time });
   const turn = store.appendTurn({ sessionId, kind: "turn", userPrompt: "prompt", assistantText: "reply", startedAt: time });
+  const user = store.listSourceEntries(sessionId, turn.id)[0]!;
   const committed = store.commitNotingRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time },
     facts: Array.from({ length: count }, (_unused, i) => ({ turnId: turn.id, category: "observation" as const, actor: "user" as const,
-      text: `fact ${i + 1}`, source: [`T${turn.id}#user`], createdAt: time })) });
+      text: `fact ${i + 1}`, source: [`T${turn.id}#user`], entryIds: [user.id], createdAt: time })) });
   if (!committed.ok) throw new Error(committed.problems.join("; "));
   return { sessionId, turnId: turn.id, ids: committed.facts.map(f => f.id) };
 }
@@ -87,77 +84,47 @@ function countRelationReads() {
     restore: () => { prototype.listFactRelations = one; prototype.listFactRelationsOf = many; } };
 }
 
-test("25d goldens: single, list, interval and mixed expressions read the same records, in the order asked", () => {
+test("93: complete fact addresses preserve request order, repeats and independent components", () => {
   const { ids } = facts(5);
   const record = (id: number) => memory.trace(`F${id}`);
-  const group = (ids: number[]) => `[T1] ${time} (selected facts)\n${ids.map(record).join("\n")}`;
-  expect(memory.trace("F2-F4")).toBe(group([2, 3, 4]));
-  expect(memory.trace("F2-F2")).toBe(group([2])); // a selected interval is a collection
   expect(memory.trace("F1,F3,F5")).toBe([1, 3, 5].map(record).join("\n"));
-  expect(memory.trace("F4-F5,F1")).toBe([group([4, 5]), record(1)].join("\n")); // component order, not id order
-  expect(memory.trace("F2-F3,F2,F2-F3")).toBe([group([2, 3]), record(2), group([2, 3])].join("\n")); // repeats are kept, not deduplicated
+  expect(memory.trace("F4,F5,F1")).toBe([4, 5, 1].map(record).join("\n"));
+  expect(memory.trace("F2,F3,F2,F2,F3")).toBe([2, 3, 2, 2, 3].map(record).join("\n"));
   expect(ids).toEqual([1, 2, 3, 4, 5]);
 });
 
-test("25d goldens: sparse, empty and very wide intervals cover the records that exist", () => {
+test("93: sparse existing facts stay readable; a missing explicit fact fails rather than silently skipping", () => {
   const { ids } = facts(5);
-  memory.store.db.exec("DELETE FROM facts WHERE id = 3"); // a gap inside the range
-  expect(memory.store.factMetadataInRange(1, 5).map(fact => fact.id)).toEqual([1, 2, 4, 5]);
-  const record = (id: number) => memory.trace(`F${id}`);
-  const grouped = `[T1] ${time} (selected facts)\n${[1, 2, 4, 5].map(record).join("\n")}`;
-  expect(memory.trace("F1-F5")).toBe(grouped); // no missing-record diagnostic for F3
-  expect(memory.trace("F3-F3")).toBe("F3-F3: no facts exist in this range");
-  expect(memory.trace("F80-F90")).toBe("F80-F90: no facts exist in this range");
-  expect(memory.trace("F1-F1000000000")).toBe(grouped);
-  // An empty component disappears neither itself nor its neighbours from a mixed expression.
-  expect(memory.trace("F1,F6-F9,F2")).toBe([record(1), "F6-F9: no facts exist in this range", record(2)].join("\n"));
+  expect(memory.trace("F1,F2,F4,F5")).toBe([1, 2, 4, 5].map(id => memory.trace(`F${id}`)).join("\n"));
   expect(ids).toHaveLength(5);
-  // An explicit individual id keeps its own missing-record diagnostic.
-  expect(() => memory.trace("F3")).toThrow("fact F3 does not exist");
+  expect(() => memory.trace("F999")).toThrow("fact F999 does not exist");
+  expect(() => memory.trace("F1,F999,F2", { cap: 1 })).toThrow("fact F999 does not exist");
 });
 
-test("25d validation: reversed, unsafe, padded and non-fact intervals are rejected by name, before anything is read", () => {
+test("93: retired interval and walk forms fail before reading any fact, while a project name remains valid", () => {
   facts(3);
   const counter = countFactReads();
   try {
-    for (const [address, reason] of [["F9-F1", "endpoints ascend"], ["F1-F9007199254740993", "endpoints are safe integers"],
-      ["F0-F9", "endpoints are positive integers without leading zeros"], ["F01-F9", "endpoints are positive integers without leading zeros"],
-      ["F1-K9", "only fact-id intervals exist"], ["K1-K9", "only fact-id intervals exist"], ["T1-T9", "only fact-id intervals exist"]] as const) {
+    for (const address of ["F9-F1", "F1-F9007199254740993", "F0-F9", "F01-F9", "F1-K9", "K1-K9", "T1-T9", "F1..", "K1.."]) {
       counter.reset();
-      expect(() => memory.trace(address)).toThrow(`invalid trace interval ${address}: ${reason}`);
-      expect(() => memory.trace(`F1,${address},F2`, { cap: 1 })).toThrow(`invalid trace interval ${address}`);
-      // Nothing was read and, because the refusal is a throw and not a page, no cursor was minted:
-      // the expression is parsed whole before any continuation state can exist.
+      expect(() => memory.trace(address)).toThrow(/invalid (public )?trace address/);
+      expect(() => memory.trace(`F1,${address},F2`, { cap: 1 })).toThrow(/invalid (public )?trace address/);
       expect(counter.records() + counter.queries()).toBe(0);
     }
   } finally { counter.restore(); }
-  // An address that is not address-shaped is not an interval: a hyphenated project name still resolves.
   memory.store.createProject({ name: "trace-memory", declaredBy: "mark" });
   expect(() => memory.trace("trace-memory")).not.toThrow();
 });
 
-test("25d bounds: a 10^9-wide interval costs what its facts cost, in one range query", () => {
+test("93: an explicit fact list materializes only the requested bodies", () => {
   const { ids } = facts(6);
   const counter = countFactReads();
   try {
     counter.reset();
-    const started = performance.now();
-    const wide = memory.trace("F1-F1000000000");
-    const elapsed = performance.now() - started;
-    // One bounded query selects the existing ids; each of them is rendered once. A read that walked
-    // or allocated the span would move both numbers with the span, not with the six facts.
-    expect(counter.queries()).toBe(1);
+    const list = memory.trace(ids.map(id => `F${id}`).join(","));
     expect(counter.records()).toBe(ids.length);
-    expect(elapsed).toBeLessThan(1_000);
-    expect(wide).toBe(memory.trace(`F1-F${ids.length}`));
-    // Ten times the span, the same cost.
-    counter.reset();
-    expect(memory.trace("F1-F1000000000")).toBe(wide);
-    const narrow = counter.records();
-    counter.reset();
-    memory.trace("F1-F9000000000");
-    expect(counter.records()).toBe(narrow);
-    expect(counter.queries()).toBe(1);
+    expect(counter.queries()).toBe(0); // removed interval resolver is never called
+    expect(list).toBe(ids.map(id => memory.trace(`F${id}`)).join("\n"));
   } finally { counter.restore(); }
 });
 
@@ -183,34 +150,31 @@ function paged(address: string, between: () => void, cap = 2) {
   return { joined: parts.join("\n"), whole };
 }
 
-test("25d pagination: a wide interval pages by cap, completely and without duplicates", () => {
+test("93: a complete-address list pages by cap, completely and without duplicates", () => {
   const { ids } = facts(12);
-  const whole = memory.trace("F1-F1000000000");
-  const { joined } = paged("F1-F1000000000", () => {}, 3);
-  expect(joined).toBe(whole);
-  for (const id of ids) expect(whole.split(`[F${id}]`)).toHaveLength(2); // each record once, none lost
-  // The remainder of an address is never dropped: one line at a time reaches the same whole.
-  expect(paged("F1-F12,F1-F3", () => {}, 1).joined).toBe(memory.trace("F1-F12,F1-F3"));
+  const address = ids.map(id => `F${id}`).join(",");
+  const whole = memory.trace(address);
+  expect(paged(address, () => {}, 3).joined).toBe(whole);
+  for (const id of ids) expect(whole.split(`[F${id}]`)).toHaveLength(2);
+  const repeated = `${address},F1,F2,F3`;
+  expect(paged(repeated, () => {}, 1).joined).toBe(memory.trace(repeated));
 });
 
-test("a first page of an interval costs the page: one record rendered, one batched relation snapshot", () => {
+test("93: first page of a fact list renders only that page; relations freeze in one batch", () => {
   const { ids } = facts(200);
+  const address = ids.map(id => `F${id}`).join(",");
   const records = countFactReads(), relations = countRelationReads();
   try {
     records.reset(); relations.reset();
-    const first = memory.trace(`F1-F${ids.length}`, { cap: 1 });
-    expect(first).toContain(`[T1] ${time} (selected facts)`); // cap=1 admits the group heading first
-    expect(first).not.toContain("[F2]"); // the page, and only the page, was formatted
-    // One range query names the interval's facts; exactly one body is read and rendered.
-    // All relations freeze in one batch under the transaction, before any rendering.
-    // The 199 deferred bodies cost no record read at all.
-    expect(records.queries()).toBe(1);
+    const first = memory.trace(address, { cap: 1 });
+    expect(first).toContain("[F1]");
+    expect(first).not.toContain("[F2]");
+    expect(records.queries()).toBe(0);
     expect(records.records()).toBe(1);
     expect(relations.single()).toBe(0);
     expect(relations.batched()).toBe(1);
-    // A cap wide enough for every line is what it always was: every record in the interval.
     records.reset();
-    memory.trace(`F1-F${ids.length}`, { cap: ids.length * 3, maxTokens: 8000 });
+    memory.trace(address, { cap: ids.length * 3, maxTokens: 8000 });
     expect(records.records()).toBe(ids.length);
   } finally { records.restore(); relations.restore(); }
 });
@@ -219,43 +183,65 @@ test("25d pagination: a fact relation or profile change between pages does not r
   const { sessionId, turnId, ids } = facts(4);
   const store = memory.store;
   const negate = () => {
+    const user = store.listSourceEntries(sessionId, turnId)[0]!;
     const later = store.commitNotingRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time },
-      facts: [{ turnId, category: "observation", actor: "user", text: "later correction", source: [`T${turnId}#user`], createdAt: time,
+      facts: [{ turnId, category: "observation", actor: "user", text: "later correction", source: [`T${turnId}#user`], entryIds: [user.id], createdAt: time,
         negate: [{ target: `F${ids[2]!}`, strength: "strong" }] }] });
     if (!later.ok) throw new Error(later.problems.join("; "));
   };
-  const relations = paged("F1-F4", negate);
+  const relations = paged("F1,F2,F3,F4", negate);
   expect(relations.joined).toBe(relations.whole);
   expect(relations.whole).not.toContain("later correction");
-  expect(memory.trace("F1-F4")).toContain(`inbound negate F${ids.length + 1} strong`); // the write is real
+  expect(memory.trace("F1,F2,F3,F4")).toContain(`inbound negate F${ids.length + 1} strong`);
 
   store.appendToolCall({ turnId, name: "tool", input: "{}", result: "head " + "value ".repeat(400) + " tail", status: "success" });
-  const profile = paged(`T${turnId},F1-F4`, () => { memory.config.render.toolResultTokens = 1_000; }, 3);
+  const profile = paged(`T${turnId}#E1,F1,F2,F3,F4`, () => { memory.config.render.toolResultTokens = 1_000; }, 3);
   expect(profile.joined).toBe(profile.whole);
 });
 
-test("25d pagination: an interval cursor belongs to the session that made the read", () => {
+test("93: paged fact backlinks freeze their original knowledge selection and citations", () => {
+  const { sessionId, turnId, ids } = facts(3);
+  const path = { sessionId, headTurnId: turnId, branch: "main" };
+  const created = memory.store.commitConsolidationRun({ path, run: { kind: "manual", sessionId, branch: "main", createdAt: time },
+    operations: [{ op: "create", handle: "h1", author: "fake", text: "initial", category: "understanding", scope: "session",
+      supports: [ids[1]!], reason: "before first page", topics: [], createdAt: time }] });
+  if (!created.ok) throw new Error(created.problems.join("; "));
+  const { knowledgeId, commit } = created.committed[0]!;
+  const address = "F1,F2,F3";
+  const frozen = paged(address, () => {
+    const updated = commitNoterKnowledge(memory.store, { path, run: { sessionId, branch: "main", createdAt: "later" },
+      operations: [{ op: "update", knowledgeId, baseCommit: commit, text: "changed", category: "understanding", scope: "session",
+        supports: [ids[2]!], reason: "later citation", topics: [], createdAt: "later" }] });
+    expect(updated.ok).toBe(true);
+  }, 1);
+  expect(frozen.joined).toBe(frozen.whole);
+  expect(frozen.joined).toContain("cited by v1; current v1");
+  expect(frozen.joined).not.toContain("current v2");
+  expect(memory.trace("F2,F3")).toContain("current v2");
+});
+
+test("93 pagination: a list cursor belongs to the session that made the read", () => {
   const first = facts(6, "one"), second = facts(6, "two");
   const manual = (sessionId: number, currentTurnId: number): ToolContext => ({ kind: "manual", sessionId, currentTurnId, branch: "main" });
   const mine = memory.tools(manual(first.sessionId, first.turnId))[0]!;
   const theirs = memory.tools(manual(second.sessionId, second.turnId))[0]!;
-  const page = mine.execute({ address: "F1-F12", cap: 2 });
+  const address = Array.from({ length: 12 }, (_unused, i) => `F${i + 1}`).join(",");
+  const page = mine.execute({ address, cap: 2 });
   const cursor = /cursor=(\S+)/.exec(page)![1]!;
-  expect(theirs.execute({ address: "F1-F12", cursor })).toContain("rejected: unknown or expired cursor");
-  expect(mine.execute({ address: "F1-F12", cursor })).toContain("[F2]");
+  expect(theirs.execute({ address, cursor })).toContain("rejected: unknown or expired cursor");
+  expect(mine.execute({ address, cursor })).toContain("[F2]");
 });
 
-test("25d: the `..` grammars keep their single meaning beside the interval, and the description names both", async () => {
+test("93: removed fact walks and K.. reject; exact versions and version ranges remain readable", async () => {
   const { sessionId, turnId, ids } = facts(3);
   const store = memory.store;
+  const user = store.listSourceEntries(sessionId, turnId)[0]!;
   const later = store.commitNotingRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time },
-    facts: [{ turnId, category: "observation", actor: "user", text: "supersedes", source: [`T${turnId}#user`], createdAt: time,
+    facts: [{ turnId, category: "observation", actor: "user", text: "supersedes", source: [`T${turnId}#user`], entryIds: [user.id], createdAt: time,
       negate: [{ target: `F${ids[0]!}`, strength: "strong" }] }] });
   if (!later.ok) throw new Error(later.problems.join("; "));
-  const walk = memory.trace("F1..");
-  expect(walk).toContain("supersedes"); // the negation walk, not an interval
-  expect(walk).not.toContain(`[F${ids[1]!}]`);
-  expect(memory.trace("F1-F1")).not.toContain("supersedes"); // the interval, not a walk
+  expect(() => memory.trace("F1..")).toThrow(/invalid public trace address/);
+  expect(memory.trace("F1")).toContain(`inbound negate F${ids.length + 1} strong`);
 
   const created = store.commitConsolidationRun({ path: { sessionId, headTurnId: turnId, branch: "main" },
     run: { kind: "manual", sessionId, branch: "main", createdAt: time },
@@ -264,12 +250,11 @@ test("25d: the `..` grammars keep their single meaning beside the interval, and 
   if (!created.ok) throw new Error(created.problems.join("; "));
   const { knowledgeId, commit } = created.committed[0]!;
   const updated = await updateKnowledge({ sessionId, headTurnId: turnId, branch: "main" }, ids[0]!, { knowledgeId, commit }, "second");
-  const diff = memory.trace(`K${knowledgeId}@${commit}..K${knowledgeId}@${updated.commit}`);
-  expect(diff).toContain("{+second+}");
-  expect(memory.trace(`K${knowledgeId}..`)).toContain("history (all branches)");
-
+  expect(memory.trace(`K${knowledgeId}@v1..v2`)).toContain("second");
+  expect(() => memory.trace(`K${knowledgeId}..`)).toThrow(/invalid public trace address/);
   const description = toolDefinitions.find(t => t.name === "trace")!.description;
-  for (const form of ["F81,F90,F95", "F81-F90", "F81-F90,F95", "F<n>..", "K1@v2..v5"]) expect(description).toContain(form);
+  for (const form of ["F81,F90,F95", "K1@v2..v5"]) expect(description).toContain(form);
+  expect(description).toContain("Fact intervals, negation walks and all-branch K.. are not public addresses");
   expect(description).toContain("cap counts output lines (default 100)"); // the existing unit, documented as it is
 });
 
@@ -290,7 +275,7 @@ test("25d/92: mixed batch reads keep exact tags without granting manual update a
   const update = (base: number) => knowledge!.execute({ operations: [{ op: "update", id: `K${knowledgeId}#${store.versionTag(knowledgeId, base)}`, text: "third",
     category: "understanding", scope: "session", supports: [`F${ids[0]!}`], reason: "test", topics: [] }], skipped: [] });
   expect(update(tip)).toContain("update belongs to the Dreamer"); // authority is independent of read completion
-  const read = trace!.execute({ address: `K${knowledgeId}@v2,F1-F3` });
+  const read = trace!.execute({ address: `K${knowledgeId}@v2,F1,F2,F3` });
   expect(read).toContain("[F2]"); expect(read).toContain(`[${tag}]`);
   expect(update(tip)).toContain("update belongs to the Dreamer"); // complete reads do not grant manual maintenance authority
 });
