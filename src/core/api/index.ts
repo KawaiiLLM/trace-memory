@@ -659,6 +659,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const meta = display.entryIds ? store.listSourceEntries(turn.sessionId, turn.id, display.branch)
         .filter(entry => display.entryIds!.includes(entry.id)) : store.listSourceEntries(turn.sessionId, turn.id, display.branch);
       const selectedIds = new Set(meta.map(entry => entry.id));
+      store.assertTurnLegacyBindings(turn.id, turn.sessionId);
       const bindings = store.turnFactBindings(turn.id);
       const facts = store.factsByIds([...bindings.keys()]);
       const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, display.branch, display.headTurnId);

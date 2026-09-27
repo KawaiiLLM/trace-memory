@@ -105,9 +105,11 @@ async function knowledgeCorpus(knowledge: number, revisions: number) {
   const store = memory.store, { sessionId, headTurnId } = conversation(3, 1);
   const path = { sessionId, branch: "main", headTurnId };
   store.selectSourcePath(sessionId, "main", store.listSourceEntries(sessionId).map(e => e.id));
+  const entries = store.listSourceEntries(sessionId);
+  const cited = store.hydrateSourceEntries(entries.map(e => e.id)).find(e => e.turnId === headTurnId && e.role === "user")!;
   const noted = store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time },
-    facts: [{ turnId: headTurnId, category: "observation", actor: "user", text: "evidence", source: [`T${headTurnId}#user`], createdAt: time }],
-    entryIds: store.listSourceEntries(sessionId).map(e => e.id) });
+    facts: [{ turnId: headTurnId, category: "observation", actor: "user", text: "evidence", source: [`T${headTurnId}#user`], entryIds: [cited.id], createdAt: time }],
+    entryIds: entries.map(e => e.id) });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const supports = [noted.facts[0]!.id];
   const tips: { knowledgeId: number; commit: number }[] = [];

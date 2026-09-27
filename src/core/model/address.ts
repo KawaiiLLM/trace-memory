@@ -105,7 +105,6 @@ export function publicTraceTargets(expression: string): string[] {
       const parsed = parseTurnAddress(target);
       if (!parsed || parsed.legacy || (parsed.entries && parsed.entries.length !== 1)) throw new Error(`invalid public trace address: ${target}`);
       if (parsed.selector && (parsed.selector.kind !== "role" || parsed.selector.role === "toolResult")) throw new Error(`invalid public trace address: ${target}`);
-      if (parsed.session !== undefined) throw new Error(`invalid public trace address: ${target}`);
       continue;
     }
     if (/^K\d/.test(target)) {
@@ -115,8 +114,7 @@ export function publicTraceTargets(expression: string): string[] {
     }
     if (/^(?:F|R|S)[1-9]\d*$/.test(target)) continue;
     if (/^[A-Z]\d/.test(target) || /^E\d/.test(target) || /^S\d+\//.test(target)) throw new Error(`invalid public trace address: ${target}`);
-    // A project name is an existing public collection target, not address syntax.
-    if (!/^[\p{L}\p{N}_][\p{L}\p{N}_ .-]*$/u.test(target)) throw new Error(`invalid public trace address: ${target}`);
+    // Non-address targets are looked up as existing project names by the reader.
   }
   return targets;
 }

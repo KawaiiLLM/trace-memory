@@ -270,17 +270,17 @@ export interface EntryView extends Rendered { omitted: number[] }
  * lines; only the budgeted path builds the `Part` machinery — and its character arrays — around them,
  * which is what makes `full` free of every budget device (23c ruling 4). */
 function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (address: string) => PartChoice,
-  selector?: Selector): { ordinal: number | null; choice: PartChoice; whole: () => string; floor: () => string; part: () => Part }[] {
+  selector?: Selector, includeThinking = false): { ordinal: number | null; choice: PartChoice; whole: () => string; floor: () => string; part: () => Part }[] {
   const sources: ReturnType<typeof sourceParts> = [];
   const blocks = sourceBlocks(entry);
-  if (blocks.length && blocks.every(block => block.kind === "thinking") && selector?.kind !== "thinking"
+  if (blocks.length && blocks.every(block => block.kind === "thinking") && !includeThinking && selector?.kind !== "thinking"
     && !selector && choose(`T${entry.turnId}#assistant`) !== "drop") {
     const label = `[${entryAddress(entry)}] assistant`, body = "[thinking omitted]";
     sources.push({ ordinal: null, choice: "render", whole: () => bodyLine(label, body), floor: () => bodyLine(label, body), part: () => textPart(label, body) });
   }
   for (const block of blocks) {
     const tool = block.kind === "call" || block.kind === "result";
-    if (block.kind === "thinking" && selector?.kind !== "thinking") continue;
+    if (block.kind === "thinking" && !includeThinking && selector?.kind !== "thinking") continue;
     if (selector?.kind === "thinking" && block.kind !== "thinking") continue;
     if (selector?.kind === "call" && (!tool || block.call.callId !== selector.id)) continue;
     if (selector?.kind === "text" && block.kind !== "text" && block.kind !== "result") continue;
@@ -312,8 +312,8 @@ function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (a
  * token measurement — so a `full` read of a large result copies stored strings as the deleted evidence
  * path did. A sealed part still shows its floor. */
 export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor = rawResultText,
-  choose: (address: string) => PartChoice = () => "render", selector?: Selector): EntryView {
-  const sources = sourceParts(entry, resultText, choose, selector);
+  choose: (address: string) => PartChoice = () => "render", selector?: Selector, includeThinking = false): EntryView {
+  const sources = sourceParts(entry, resultText, choose, selector, includeThinking);
   return { receipts: [], content: sources.map((source) => source.choice === "floor" ? source.floor() : source.whole()).join("\n"),
     omitted: sources.filter((source) => source.ordinal !== null && source.choice === "floor").map((source) => source.ordinal!) };
 }
@@ -329,8 +329,8 @@ export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor
  * the text part yield. Nothing is emitted shorter than a part's minimum and no budget is exceeded to
  * make room: when even the minima cannot fit `E`, the capacity error leaves the entry pending. */
 export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultText: ResultExtractor = rawResultText,
-  choose: (address: string) => PartChoice = () => "render", selector?: Selector, perBlock = false): EntryView {
-  const sources = sourceParts(entry, resultText, choose, selector);
+  choose: (address: string) => PartChoice = () => "render", selector?: Selector, perBlock = false, includeThinking = false): EntryView {
+  const sources = sourceParts(entry, resultText, choose, selector, includeThinking);
   if (!sources.length) return { content: "", receipts: [], omitted: [] };
   const ordinals = sources.map((source) => source.ordinal);
   const isResult = entry.role === "toolResult";
@@ -402,7 +402,8 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
   const omitted = new Set<string>();
   let omittedCalls = 0;
   for (const entry of entries) {
-    const view = options.full ? renderEntryWhole(entry, resultText, choose, options.selector) : renderEntry(entry, profile, resultText, choose, options.selector, options.blocks);
+    const view = options.full ? renderEntryWhole(entry, resultText, choose, options.selector, true)
+      : renderEntry(entry, profile, resultText, choose, options.selector, options.blocks, true);
     if (view.content) lines.push(view.content);
     for (const ordinal of view.omitted) {
       const call = entry.calls.find(call => call.ordinal === ordinal)!;

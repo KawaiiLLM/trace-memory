@@ -2190,6 +2190,17 @@ export class Store {
     return this.hydrateFactSegments(this.db.prepare("SELECT * FROM facts WHERE turn_id = ? ORDER BY id").all(turnId).map(toFact));
   }
 
+  /** A missing legacy binding cannot appear in turnFactBindings; reject rather than silently omit it. */
+  assertTurnLegacyBindings(turnId: number, sessionId: number): void {
+    const prefix = `T${turnId}#`, qualified = `S[0-9]*/T${turnId}#*`;
+    const row = this.db.prepare(`SELECT f.id FROM facts f JOIN turns owner ON owner.id=f.turn_id,
+      json_each(f.source) source WHERE owner.session_id=? AND f.title IS NULL
+      AND NOT EXISTS (SELECT 1 FROM fact_sources fs WHERE fs.fact_id=f.id)
+      AND (substr(source.value,1,?)=? OR source.value GLOB ?) ORDER BY f.id LIMIT 1`)
+      .get(sessionId, prefix.length, prefix, qualified) as { id: number } | undefined;
+    if (row) throw new Error(`F${row.id}: missing legacy source bindings`);
+  }
+
   /** Source membership for a Turn, not ownership by the first contributing Turn. */
   turnFactBindings(turnId: number): Map<number, number[]> {
     const bindings = new Map<number, number[]>();
