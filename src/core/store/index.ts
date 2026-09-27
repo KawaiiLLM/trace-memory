@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assignVersionTag, migrateVersionTags } from "./version-tags.ts";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
-import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
+import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS facts (
   source TEXT NOT NULL,
   source_time TEXT NOT NULL,
   source_roles TEXT,
+  title TEXT,
   CHECK (category IS NULL AND status IS NULL OR category IS NOT NULL AND ((status IS NOT NULL) = (category = 'event')))
 );
 
@@ -170,6 +171,7 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE TABLE IF NOT EXISTS fact_sources (
   fact_id INTEGER NOT NULL REFERENCES facts(id),
   entry_id INTEGER NOT NULL REFERENCES source_entries(id),
+  segment_text TEXT,
   PRIMARY KEY (fact_id, entry_id)
 );
 
@@ -484,6 +486,8 @@ export interface FactCommitInput {
   category?: FactCategory | null;
   actor?: Actor | null;
   text: string;
+  title?: string;
+  segments?: string[];
   quote?: string | null;
   status?: EventStatus | null;
   source: string[];
@@ -714,6 +718,7 @@ function toFact(row: any): Fact {
     category: row.category,
     actor: row.actor,
     text: row.text,
+    ...(row.title !== null && row.title !== undefined ? { title: row.title } : {}),
     quote: row.quote,
     status: row.status ?? null,
     source: JSON.parse(row.source),
@@ -1195,6 +1200,7 @@ export class Store {
         this.db.exec("DELETE FROM task_failures WHERE phase = 'dreaming'; PRAGMA user_version = 1");
       migrateKnowledgeLineage(this.db, true);
       migrateFactAndKnowledge92(this.db);
+      migrateFactSegments93(this.db);
       migrateVersionTags(this.db);
       // The policy is part of the same schema transaction. Concurrent openers serialize at BEGIN;
       // INSERT OR IGNORE preserves an edited existing row and initializes an absent row once.
@@ -2014,16 +2020,16 @@ export class Store {
   }
 
   listSessionFacts(sessionId: number): Fact[] {
-    return this.db.prepare(
+    return this.hydrateFactSegments(this.db.prepare(
       "SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id WHERE t.session_id = ? ORDER BY f.source_time DESC, f.id DESC",
-    ).all(sessionId).map(toFact);
+    ).all(sessionId).map(toFact));
   }
 
   listProjectFacts(projectId: number): Fact[] {
-    return this.db.prepare(
+    return this.hydrateFactSegments(this.db.prepare(
       `SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id
        JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.source_time DESC, f.id DESC`,
-    ).all(projectId).map(toFact);
+    ).all(projectId).map(toFact));
   }
 
   listFactRelations(factId: number): FactRelation[] {
@@ -2133,9 +2139,36 @@ export class Store {
 
   // -- facts --
 
+  /** One binding read for the selected new facts, preserving their Core-ordered authored sources. */
+  private hydrateFactSegments(facts: Fact[]): Fact[] {
+    const selected = facts.filter(f => f.title !== undefined);
+    if (!selected.length) return facts;
+    const bindings = new Map<number, Map<string, string>>();
+    for (const row of this.db.prepare(`SELECT fs.fact_id, fs.segment_text, e.turn_id, e.entry_ordinal
+      FROM fact_sources fs JOIN source_entries e ON e.id=fs.entry_id
+      WHERE fs.fact_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(selected.map(f => f.id))) as
+        { fact_id: number; segment_text: string | null; turn_id: number; entry_ordinal: number }[]) {
+      const byEntry = bindings.get(row.fact_id) ?? new Map<string, string>();
+      if (row.segment_text === null) throw new Error(`F${row.fact_id}: missing source segment`);
+      byEntry.set(`T${row.turn_id}#E${row.entry_ordinal}`, row.segment_text);
+      bindings.set(row.fact_id, byEntry);
+    }
+    for (const fact of selected) {
+      const byEntry = bindings.get(fact.id);
+      const segments = fact.source.map(address => byEntry?.get(address.replace(/@(user|assistant|observation)$/u, "")));
+      if (!fact.roles || fact.roles.length !== fact.source.length || !byEntry ||
+          byEntry.size !== fact.source.length || segments.some((segment, i) => segment === undefined ||
+            (/@(user|assistant|observation)$/u.exec(fact.source[i]!)?.[1] ?? fact.roles![i]?.role) !== fact.roles![i]?.role) ||
+          segments.join("\n") !== fact.text || new Set(fact.source.map(s => s.replace(/@(user|assistant|observation)$/u, ""))).size !== fact.source.length)
+        throw new Error(`F${fact.id}: source segments, roles and body disagree`);
+      fact.segments = segments as string[];
+    }
+    return facts;
+  }
+
   getFact(id: number): Fact | null {
     const row = this.db.prepare("SELECT * FROM facts WHERE id = ?").get(id);
-    return row ? toFact(row) : null;
+    return row ? this.hydrateFactSegments([toFact(row)])[0]! : null;
   }
 
   /** 25d "Range semantics": the facts that exist in an inclusive id interval, ascending. One indexed
@@ -2147,7 +2180,7 @@ export class Store {
   }
 
   listTurnFacts(turnId: number): Fact[] {
-    return this.db.prepare("SELECT * FROM facts WHERE turn_id = ? ORDER BY id").all(turnId).map(toFact);
+    return this.hydrateFactSegments(this.db.prepare("SELECT * FROM facts WHERE turn_id = ? ORDER BY id").all(turnId).map(toFact));
   }
 
   /**
@@ -2193,12 +2226,19 @@ export class Store {
           if (roles && (roles.length !== f.source.length ||
               new Set(citedEntries).size !== new Set(f.entryIds).size ||
               citedEntries.some(id => !f.entryIds!.includes(id)))) throw new Error("fact source bindings must match every cited entry exactly");
-          const info = this.db.prepare("INSERT INTO facts (run_id, turn_id, category, actor, text, quote, status, source, source_time, source_roles) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(runId, f.turnId, f.category ?? null, f.actor ?? null, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt, roles ? JSON.stringify(roles) : null);
+          if (f.title !== undefined && (!f.title.trim() || /[\r\n\u2028\u2029]/u.test(f.title) ||
+              !f.segments || f.segments.length !== f.source.length || f.segments.some(s => !s.trim()) ||
+              f.segments.join("\n") !== f.text || !roles || citedEntries.length !== f.source.length ||
+              citedEntries.some((id, i) => id !== f.entryIds?.[i])))
+            throw new Error("new fact title, segments, body and source bindings disagree");
+          if (f.title === undefined && f.segments !== undefined) throw new Error("segments require a fact title");
+          const info = this.db.prepare("INSERT INTO facts (run_id, turn_id, category, actor, text, quote, status, source, source_time, source_roles, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(runId, f.turnId, f.category ?? null, f.actor ?? null, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt, roles ? JSON.stringify(roles) : null, f.title ?? null);
           const factId = Number(info.lastInsertRowid);
           batchIds.push(factId);
           for (const entryId of new Set(f.entryIds ?? [])) {
             if (this.getSourceEntry(entryId)?.sessionId !== sessionId) throw new Error("fact source entry does not belong to the run session");
-            this.db.prepare("INSERT INTO fact_sources (fact_id, entry_id) VALUES (?, ?)").run(factId, entryId);
+            this.db.prepare("INSERT INTO fact_sources (fact_id, entry_id, segment_text) VALUES (?, ?, ?)")
+              .run(factId, entryId, f.segments?.[citedEntries.indexOf(entryId)] ?? null);
           }
         }
         const resolve = (target: string, batchIndex: number): number => {
@@ -3881,7 +3921,7 @@ export class Store {
     return cost;
   }
   listFactsByRun(runId: number): Fact[] {
-    return this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(runId).map(toFact);
+    return this.hydrateFactSegments(this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(runId).map(toFact));
   }
   listCommitsByRun(runId: number): KnowledgeRevision[] {
     return this.db.prepare("SELECT * FROM knowledge_revisions WHERE run_id = ? ORDER BY id").all(runId).map(toKnowledgeRevision);
@@ -3974,8 +4014,8 @@ export class Store {
       ? this.rawLikeScan(pattern, restricted, owners) : this.rawTrigram(query, restricted, owners);
     if (scope === "raw") return raw();
     const facts = scope === "knowledge" ? [] : (this.db.prepare(`SELECT f.id FROM facts f JOIN turns t ON t.id = f.turn_id
-      WHERE (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND f.text LIKE ? ESCAPE '\\' ORDER BY f.id`)
-      .all(Number(restricted), owners, pattern) as { id: number }[]).map((r) => `F${r.id}`);
+      WHERE (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND (f.text LIKE ? ESCAPE '\\' OR f.title LIKE ? ESCAPE '\\') ORDER BY f.id`)
+      .all(Number(restricted), owners, pattern, pattern) as { id: number }[]).map((r) => `F${r.id}`);
     // 21b: a label matches under the same literal semantics and escaping as the text. EXISTS over
     // json_each reads label values, never the JSON punctuation around them, and returns one row per
     // revision however many labels (or text and labels together) match. Knowledge membership is
@@ -4009,7 +4049,7 @@ export class Store {
     const owners = new Map(candidates.map(fact => [fact.turnId, sessionId]));
     // 80 item 3: one batched `fact_sources` read for the whole candidate list, not one per fact.
     const bound = this.factSourceEntries(candidates.map(fact => fact.id));
-    return candidates.filter(fact => this.factOnPath(fact, path, view, undefined, owners, bound)); // every source on the path, not only the first
+    return this.hydrateFactSegments(candidates.filter(fact => this.factOnPath(fact, path, view, undefined, owners, bound))); // one batch after path selection
   }
 
   /** Ticket 69/72: a cheap composite that changes exactly when a commit could change
@@ -4129,8 +4169,8 @@ export class Store {
     return this.db.prepare("SELECT f.* FROM facts f JOIN consolidated_facts i ON i.fact_id = f.id WHERE i.run_id = ? ORDER BY f.id").all(runId).map(toFact);
   }
   listConsolidatedProjectFacts(projectId: number): Fact[] {
-    return this.db.prepare(`SELECT DISTINCT f.* FROM facts f JOIN consolidated_facts i ON i.fact_id = f.id
-      JOIN turns t ON t.id = f.turn_id JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.source_time DESC, f.id DESC`).all(projectId).map(toFact);
+    return this.hydrateFactSegments(this.db.prepare(`SELECT DISTINCT f.* FROM facts f JOIN consolidated_facts i ON i.fact_id = f.id
+      JOIN turns t ON t.id = f.turn_id JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.source_time DESC, f.id DESC`).all(projectId).map(toFact));
   }
 
   /** `known`, when passed (even `null`), replaces the internal duplicate-check query: a caller that

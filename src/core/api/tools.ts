@@ -20,9 +20,10 @@ type Reads = { traceRead(address: string, options?: ListingOptions): TraceRead;
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 const string = { type: "string" };
 const relation = { type: "array", items: { type: "array", prefixItems: [{ type: "string", pattern: "^(F[1-9][0-9]*|\\$[1-9][0-9]*)$" }, { enum: ["strong", "weak"] }], minItems: 2, maxItems: 2 } };
-const factSchema = object({ slot: { type: "string", pattern: "^\\$[1-9][0-9]*$", description: "N only: completely replace this held fact slot." }, text: { type: "string", minLength: 1 },
-  source: { type: "array", minItems: 1, items: { type: "string", minLength: 1, pattern: "^T[1-9][0-9]*#E[1-9][0-9]*$" } },
-  support: relation, negate: relation }, ["text", "source"]);
+const factSchema = object({ slot: { type: "string", pattern: "^\\$[1-9][0-9]*$", description: "N only: completely replace this held fact slot." },
+  title: { type: "string", minLength: 1, pattern: "^[^\\r\\n\\u2028\\u2029]+$" },
+  sources: { type: "array", minItems: 1, items: object({ address: { type: "string", pattern: "^T[1-9][0-9]*#E[1-9][0-9]*(?:@(user|assistant|observation))?$" }, text: { type: "string", minLength: 1 } }, ["address", "text"]) },
+  support: relation, negate: relation }, ["title", "sources"]);
 const pagination = { cursor: string, cap: { type: "integer", minimum: 1 } };
 const contentBudget = { anyOf: [{ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { type: "null" }] };
 const fields = { type: "array", uniqueItems: true, items: { enum: READ_FIELDS } };
@@ -189,23 +190,23 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     const errors: string[] = [];
     const fact = validateNotingFact(`facts[${index}]`, raw, errors);
     const candidates = context.kind === "noting" ? sourcePath.filter(entry => frozenIds.has(entry.id)) : sourcePath;
-    let first = 0;
-    const cited: SourceResolution[] = [];
+    const cited = new Map<number, { hit: SourceResolution; address: string; text: string }>();
     if (fact) {
-      for (const source of fact.source) {
-        const scope = sourceAddressScope(source);
+      for (const source of fact.sources) {
+        const scope = sourceAddressScope(source.address);
         const entries = scope ? candidates.filter(entry => entry.turnId === scope.turn && entry.entryOrdinal === scope.ordinal) : [];
-        let matches = resolvedSources.get(source);
+        let matches = resolvedSources.get(source.address);
         if (!matches) {
           const missing = entries.filter(entry => !hydratedSources.has(entry.id));
           if (missing.length) for (const entry of store.hydrateSourceEntries(missing.map(entry => entry.id))) hydratedSources.set(entry.id, entry);
-          matches = resolveFactSource(entries.map(entry => hydratedSources.get(entry.id)!), source);
-          resolvedSources.set(source, matches);
+          matches = resolveFactSource(entries.map(entry => hydratedSources.get(entry.id)!), source.address);
+          resolvedSources.set(source.address, matches);
         }
         const turn = matches.length === 1 ? store.getTurn(matches[0]!.entry.turnId) : null;
         if (!turn || turn.sessionId !== session.id || !sourceTurns.has(turn.id) || turn.kind === "compaction")
-          errors.push(`invalid source ${source}; expected admissible Raw in the eligible entry set`);
-        else { first ||= turn.id; cited.push(...matches); }
+          errors.push(`invalid source ${source.address}; expected admissible Raw in the eligible entry set`);
+        else if (cited.has(matches[0]!.entry.id)) errors.push(`duplicate source entry ${source.address}`);
+        else cited.set(matches[0]!.entry.id, { hit: matches[0]!, address: source.address, text: source.text });
       }
       for (const kind of ["support", "negate"] as const) {
         const seen = new Set<string>();
@@ -217,10 +218,14 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         }
       }
     }
-    if (fact && context.kind === "noting" && tokens(fact.text) > 1000) errors.push(`Fact exceeds 1000-token limit: ${tokens(fact.text)} tokens`);
-    if (errors.length || !fact || !first) throw new Error(errors.join("; ") || "invalid fact");
-    return { ...fact, turnId: first, createdAt: store.getTurn(first)!.startedAt,
-      entryIds: candidates.filter(entry => cited.some(hit => hit.entry.id === entry.id)).map(entry => entry.id) };
+    const ordered = candidates.flatMap(entry => cited.has(entry.id) ? [cited.get(entry.id)!] : []);
+    const text = ordered.map(segment => segment.text).join("\n");
+    if (fact && context.kind === "noting" && tokens(text) > 1000) errors.push(`Fact exceeds 1000-token limit: ${tokens(text)} tokens`);
+    if (errors.length || !fact || !ordered.length) throw new Error(errors.join("; ") || "invalid fact");
+    const first = ordered[0]!.hit.entry.turnId;
+    return { ...fact, text, source: ordered.map(segment => segment.address), segments: ordered.map(segment => segment.text),
+      turnId: first, createdAt: store.getTurn(first)!.startedAt,
+      entryIds: ordered.map(segment => segment.hit.entry.id) };
   };
   const held = context.kind === "noting" ? holdNoting(store, run, path, validateFact) : undefined;
   const rejectedNativeCalls = new Set<string>();

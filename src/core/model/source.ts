@@ -61,8 +61,9 @@ function parseSourceAddress(address: string, entryOnly = false): (TurnAddress & 
 /** New fact-write scope: one exact entry address. Legacy aliases remain readable through
  * `resolveSource`, but cannot enter the fact-write candidate set. */
 export function sourceAddressScope(address: string): { turn: number; ordinal?: number } | null {
-  const parsed = parseSourceAddress(address, true);
-  return parsed ? { turn: parsed.turn, ordinal: parsed.entries![0]!.from } : null;
+  const parsed = parseSourceAddress(address.replace(/@(user|assistant|observation)$/u, ""), true);
+  if (!parsed || (address.includes("@") && !/@(user|assistant|observation)$/u.test(address))) return null;
+  return { turn: parsed.turn, ordinal: parsed.entries![0]!.from };
 }
 /** Historical resolver. Legacy role aliases select text, not their entry's dispatches; new fact
  * writes additionally require the entry-only guard in `resolveFactSource`. */
@@ -93,10 +94,13 @@ export function resolveSource(entries: readonly SourceEntry[], address: string):
 /** New facts use only public text/call/result evidence. Whole mixed entries exclude thinking;
  * explicit thinking and thinking-only entries resolve to no factual evidence. Reads are unchanged. */
 export function resolveFactSource(entries: readonly SourceEntry[], address: string): SourceResolution[] {
-  if (!parseSourceAddress(address, true)) return [];
-  return resolveSource(entries, address).flatMap(hit => {
+  if (!sourceAddressScope(address)) return [];
+  const filter = /@(user|assistant|observation)$/u.exec(address)?.[1];
+  const base = filter ? address.slice(0, -filter.length - 1) : address;
+  return resolveSource(entries, base).flatMap(hit => {
+    const role = hit.entry.role === "toolResult" ? "observation" : hit.entry.role;
     const blocks = hit.blocks.filter(block => block.kind !== "thinking");
-    return blocks.length ? [{ entry: hit.entry, blocks }] : [];
+    return blocks.length && (!filter || filter === role) ? [{ entry: hit.entry, blocks }] : [];
   });
 }
 export function exactSource(entry: SourceEntry, address: string): boolean {

@@ -506,6 +506,12 @@ export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity
     const attribution = fact.roles?.[index];
     return attribution ? `${source} (${attribution.role === "assistant" ? attribution.harness : attribution.role})` : source;
   });
+  if (fact.title !== undefined) {
+    if (!fact.segments || !fact.roles || fact.segments.length !== fact.source.length || fact.roles.length !== fact.source.length ||
+        fact.segments.join("\n") !== fact.text) throw new Error(`F${fact.id}: incomplete titled fact`);
+    const body = fact.segments.map((text, i) => `[${fact.source[i]!.replace(/@(user|assistant|observation)$/u, "")}@${fact.roles![i]!.role}] ${text}`).join("\n");
+    return renderSemantic(`[F${fact.id}] ${fact.title}\n`, body, `${edges.length ? `\n  ${edges.join(" · ")}` : ""}\n`, cap, frame);
+  }
   return renderSemantic(`[F${fact.id}] ${fact.createdAt} ${legacy}${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`, fact.text,
     `${edges.length ? ` · ${edges.join(" · ")}` : ""}\n` + [...(fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`]),
       `  source: ${sources.join(", ")}`].join("\n"), cap, frame);
@@ -531,7 +537,7 @@ function renderPreview(prefix: string, body: string, suffix: string, cap: number
 }
 export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80): string {
   const prefix = `[F${fact.id}] ${fact.category && fact.actor ? `[${fact.category}/${fact.actor}] ` : ""}${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`;
-  return renderPreview(prefix, fact.text, "", cap, fields.has("text"));
+  return renderPreview(prefix + (fact.title === undefined ? "" : `${fact.title} — `), fact.text, "", cap, fields.has("text"));
 }
 
 // 21b: the labels ride the metadata line, beside the evidence, so they are never read as conclusion
