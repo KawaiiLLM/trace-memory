@@ -86,7 +86,7 @@ Enabled sessions make background model requests using your Pi credentials and ma
 
 The agent gets four tools: `trace`, `search`, `note`, and `memory`. Explicit reads can search across the local database; automatic knowledge selection and write evidence follow scope and conversation ancestry. Topics organize knowledge without changing those permissions.
 
-**Beta.6 entry addresses:** `T792#E2` reads a stable native entry; `T792#E2,E7@text` projects text from the selected entries; `T792@toolResult` reads complete result messages. New Noter citations use exact E/block labels; legacy citations remain readable. Content limits apply to each selected child, while pages independently default to 2,000 tokens. Set all three content budgets to null (or use `full: true`) for uncompressed content, then follow every cursor. A complete exact `K<n>@<commit>` body grants the corresponding write handle only after its final page. See [entry addresses and read budgets](docs/unified-entry.md) for grammar, compatibility and upgrade rules.
+**Facts and entry reads:** new facts carry a title and one `{address, text}` segment per contributing entry. `T792` shows that Turn's contributions; `T792#E2` reads a whole native entry; `T792@observation` reads result entries. Role filters replace block selectors. Content budgets remain independent of 2,000-token default pages; use `full: true` and follow every cursor for uncompressed content. Complete knowledge bodies reveal an exact tag such as `K12#qfzt`; numbered history uses `K12@v3`, and writes still require a valid current base. See [fact slices and entry reads](docs/unified-entry.md) for the current schema, grammar and legacy-data rules.
 
 ## Data and limits
 

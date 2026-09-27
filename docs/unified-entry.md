@@ -1,71 +1,80 @@
-# Entry addresses and read budgets
+# Fact slices and entry reads
 
-Raw reads use stable Turn-local entry identities and the same ordered blocks as automatic memory material. Existing source bytes and fact citation strings are never rewritten.
+Facts restore an episode; knowledge retains its durable conclusions. A new fact has a title and one text segment per contributing entry. The address selects the reading level, without a separate `layer` parameter.
 
-## Addresses
+## Writing facts
 
-The selection hierarchy is Turn → entry → content. These forms compose without introducing a query language:
+Both manual writers and the Noter use the same shape. This example illustrates a two-source slice:
 
-| Address | Selection |
+```json
+{
+  "facts": [{
+    "title": "Choosing the package manager",
+    "sources": [
+      {"address": "T12#E1", "text": "The user required pnpm instead of npm."},
+      {"address": "T12#E3@assistant", "text": "Pi agent proposed updating the lockfile."}
+    ]
+  }]
+}
+```
+
+Core validates and orders the segments by their entries' positions on the selected path. It derives source roles, joins segment text with line breaks and assigns the earliest source Turn as the new fact's owner. The writer supplies neither a fact-level body nor a fact-wide actor. Two spellings resolving to the same entry are rejected as duplicates. Titles must be nonempty and single-line; segment text must be nonempty.
+
+A slice ends at a topic pivot, the Noter batch boundary or the fact-size limit, not merely when the speaker or activity changes. Assistant segments name the original harness. A result segment reports the result; an inference belongs to the agent entry that drew it. Later corrections form a new slice rather than rewriting the earlier fact.
+
+Noter bodies have a 1,000-estimated-token limit, excluding the title and generated citation markers. Manual facts keep their size exemption. Material windows charge the complete rendering. The existing held-slot protocol is unchanged: Noter publication is atomic at normal termination; manual writes commit immediately. Optional support/negate relations remain available.
+
+## Addresses and views
+
+Navigation follows the identities printed by each view:
+
+| Address | View |
 | --- | --- |
-| `T792` | Entries of one Turn, in selected source order |
-| `T792#E2` | One immutable native entry |
-| `T792#E2..E7` | Inclusive entry interval; branch gaps are allowed |
-| `T792#E2,E7` | Entry list, preserving order and repetitions |
-| `T792#E2,E7@text` | Text projection of every selected entry |
-| `T792@user`, `@assistant`, `@toolResult` | Complete messages of that role; an empty collection is valid |
-| `T792@text` | Text blocks, including tool-result text, preserving entry boundaries |
-| `T792#E2@thinking` | Actual stored, non-redacted thinking, only on explicit request |
-| `T792#E2@opaqueCallId` | That entry's stored call or result fragment |
-| `T792@F*` | Facts owned by the Turn, not facts merely citing it |
+| `T792` | Facts contributing to this Turn, with only its segments; legacy facts shown whole. Unprocessed entries appear as Raw, processed uncited entries as addresses. |
+| `T792#E2` | One immutable native entry, including stored thinking and tool calls. |
+| `T792#E2..E7` | Inclusive entry range, intersected with the selected path; branch gaps are allowed. |
+| `T792#E2,T792#E7,T792#E2` | Explicit components in request order, preserving repetitions. |
+| `T792@user`, `T792@assistant`, `T792@observation` | Raw entries of that role; an empty collection is valid. |
+| `T792#E2@assistant` | The whole entry, with its role checked. |
+| `F81` | Full fact segments and knowledge backlinks. |
+| `K7`, `K7#qfzt` | Reader-visible current knowledge, or one exact tagged version. |
+| `K7@v2`, `K7@v2..v4` | Numbered history or a comparison of two versions. |
 
-An E shorthand inherits its Turn. The trailing selector applies to the entire E selection. A complete T/F/K target begins a separate component: `T792#E2,E7@text,F81,K7@2`. Delimiter-containing or reserved call IDs use JSON quoting, for example `T792#E2@"call,with@delimiters"` and `T792#E2@"text"`. Quotes in ordinary project names do not activate call-ID scanning.
+A stored path remains authoritative even when it contains no entries of the requested Turn. `full` removes compression, never widens membership. Ordinary Turn views omit thinking from their pending-Raw supplement; `full: true` retains it. Direct entry, entry-range and role-filtered Raw reads include stored thinking, subject to their budgets.
 
-A stored branch path stays authoritative even when it contains no entries of the requested Turn or is explicitly empty. Only a read without a path, or legacy data without a stored path, falls back to all session occurrences. `full` never widens this membership.
+The public grammar rejects block selectors (`@text`, `@thinking`, call IDs), `@toolResult`, `T792@F*`, E-list shorthand, fact intervals, `F81..`, `K7..` and global-commit addresses. A role filter belongs to its own address, not to every item in a comma list. `trace.layer` and `trace.tool` are removed; `search.layer` remains supported.
 
-Missing exact entries or fragments report errors. There are no generic globs, Boolean expressions, chained selectors, relative addresses or public `part` parameter. Fact intervals (`F81-F90`), negation walks (`F81..`), knowledge commits/diffs (`K7@2`, `K7@2..4`, `K7@2..K7@4`) and history (`K7..`) retain their separate grammar. Selected fact collections display in owning-Turn chronology, then ascending F IDs; mixed components retain request order. Knowledge collections retain category order.
+A fact backlink includes each knowledge identity once if any version cited that fact and its current version is visible to the reader. It points to the current version and identifies the citing ordinals, without historical bodies or version tags. An invisible current identity is omitted, not replaced by an older visible version. Archived current identities can have body-free backlinks.
 
-## Content and page limits
+Fact listings show titles. Search shows the title and a matching excerpt. Knowledge supports read through trace/search include fact IDs and titles; injected knowledge retains IDs only.
 
-`itemBudget` limits each child of the selected container, not the entire expression. A Turn caps each E separately; one E caps each content block; a selected fragment or semantic leaf is one item. Automatic Raw always budgets whole entries.
+## Content and page budgets
+
+Content limits apply independently of pagination. A Turn caps each Raw entry; a single entry caps each content block. Automatic Raw always budgets whole entries.
 
 | Parameter | Default | Meaning of null |
 | --- | ---: | --- |
-| `itemBudget` | 2,000 | Disable this content ceiling |
-| `toolCallBudget` | 100 | Disable the additional call ceiling |
-| `toolResultBudget` | 100 | Disable the additional result ceiling |
-| `pageBudget` | 2,000 | Internal assembly only; rejected by model-facing tools |
+| `itemBudget` | 2,000 | Disable this content ceiling. |
+| `toolCallBudget` | 100 | Disable the additional call ceiling. |
+| `toolResultBudget` | 100 | Disable the additional result ceiling. |
+| `pageBudget` | 2,000 | Internal assembly only; public tools reject null. |
 
-The configured Raw profile supplies the corresponding defaults. To remove **all** content ceilings, set all three content budgets to null; setting `itemBudget: null` alone retains the call/result ceilings. `full: true` is the compatibility alias for disabling all three and rejects a conflicting finite content budget. The legacy `tool` ordinal selector remains supported, but conflicts with a hierarchical selection. Search retains its independent `maxTokens` contract.
+Configured Raw profiles supply content defaults. `itemBudget: null` alone does not remove the call/result ceilings. Set all three to null, or use `full: true`, for uncompressed content. `full` rejects conflicting finite content budgets. Labels, separators and omission markers count; insufficient space for required identity/framing is an error, not permission to cut an ID.
 
-Labels, separators and omission markers count. A single entry with a selector still budgets each selected block, including multiple text blocks. Semantic previews include their owning group's first heading and separators; negation-walk items include indentation and terminal annotations before fitting the body.
+Pages have their own token budget and line cap. Public pages are capped at 8,000 estimated tokens, including receipts. Cursors freeze membership, path, annotations, profile and effective budgets. Continuations cannot change them or consume another reader's cursor. Oversized lines continue losslessly at Unicode code-point boundaries; follow the receipt's newline-joining rule.
 
-IDs are never cut to make a cap fit; insufficient identity/marker capacity is an error. Automatic Raw preserves the existing staged policy: result payloads yield first, then call arguments, then text. Thinking is never added to automatic Raw bodies. Complete automatic facts and knowledge remain whole under their material windows; a 2k trace preview is not their supplied representation.
+Complete knowledge bodies expose their exact version tag only after the final fragment. Previews and body-free receipts expose no tag. There is no read-grant ledger: a tag identifies a version, while current-base, scope, evidence and claim checks independently control writes. For example, `trace({address: 'K12@v3', itemBudget: null})` still requires following every cursor to read the complete body.
 
-Pages have an independent token budget and line cap. Cursors freeze membership, path, annotations, profile and budgets. Continuation cannot change the content limits or consume another session/project's cursor. Search cursors may continue through trace, never the reverse. Oversized lines continue losslessly at Unicode code-point boundaries; follow the receipt's newline-joining rule. A completed truncated knowledge preview does not grant an exact write handle: the complete semantic body must reach the reader. For a complete knowledge version, use `trace({address:'K12@57',itemBudget:null})` and finish every cursor; `pageBudget` still applies. Complete K versions already supplied internally need no reread. This instruction lives in the shared trace tool description received by both knowledge workers.
+## Historical data and source authority
 
-## Source authority and upgrades
+Legacy fact bodies, authored source strings, actors, categories, statuses and quotes are not rewritten or backfilled into segments. Display resolves their historical selectors internally and prints only whole-entry addresses. Missing entry bindings and inconsistent stored segments fail as data corruption; they do not create an unresolved-source display state.
 
-The host normalizes its own ordered content blocks once at ingestion or upgrade. Rendering and exact source validation consume that persisted authority; core never guesses a host's raw JSON shape. Legacy projections without block proof retain their readable whole-entry and historical aliases, but cannot invent exact call/text/thinking fragments. During upgrade, a recognized native-call mapping mismatch retains that row's legacy projection, original bytes, references, results and ordinal. A numeric entry/Turn warning identifies the row without printing content. Persisted JSON null marks the attempted normalization so reopening does not retry it. New ingestion remains strict; unexpected decoder errors and database, transaction, permission or I/O errors still fail initialization.
+The host normalizes ordered blocks once at ingestion or upgrade. Core consumes this persisted authority rather than guessing native JSON shapes. Recognized legacy mapping failures retain the old projection, bytes and ordinals; unexpected decoder, database or I/O errors still fail initialization. Entry ordinals are allocated transactionally across all branches of a Turn and never renumber on navigation or reopening.
 
-Entry ordinals are allocated transactionally across all branches of a Turn and stored with a unique Turn/ordinal index. Reopening, compaction and tree navigation do not rank or renumber entries. The stored ordinal avoids repeated read-time ranking and remains stable even when a sibling leaves a gap. Source membership metadata keeps coverage checks off large Raw bodies.
+Reading thinking does not make it admissible fact evidence. New manual and Noter facts reject thinking-only entries; mixed entries remain usable for their non-thinking content. Automatic Noter, compaction and branch-carry material omit thinking. Injected summaries and non-text placeholders are not Raw evidence.
 
-Legacy `#user`, `#assistant` and `#tN` retain their original projection meaning, and old facts keep their citation strings. New Noter guidance uses exact frozen E/block labels. Calls and results are separate entries linked by an opaque call ID; a dispatch alone is not completion evidence.
+## Accounting
 
-Citation resolution returns the actual entries and selected blocks once for eligibility, binding and completion. A whole mixed text/call entry cannot promote its dispatch to completed: every cited dispatch requires a cited corresponding result from the same Turn on this path. Explicit text sources remain valid evidence for text deliverables themselves; reported/dispatched events do not require results. Historical role aliases keep their text-projection meaning.
+Pending-token status and trigger eligibility price joined bounded Raw views. Batch capacity additionally prices its full material framing, so an entry can fit the bare-Raw trigger total while exceeding a batch window. Facts and knowledge charge their full displayed forms, including titles and citations where those are shown. Address changes may move boundary crossings; neither the estimator nor the thresholds should be adjusted to hide that cost.
 
-**Thinking reads are not fact authority.** Explicit `@thinking` reads remain available, with stored bytes and entry identity intact. New notes, manual and Noter alike, cannot cite thinking or a thinking-only whole entry. Whole mixed entries select only text/call/result blocks as factual evidence; thinking inside them is excluded. Default rendering and the worker index never inject thinking bodies. Source membership metadata retains historical addresses for existing fact applicability and coverage; it is not new-write permission. Existing fact strings, Raw, knowledge and historical trace remain unchanged.
-
-Non-text markers cannot establish text evidence. A legacy compaction summary is readable as a summary, never fabricated as a native source.
-
-## Fork increments
-
-The source index is an identity mapping over the complete frozen entry range, using the same entry/block addresses as Raw. It contains no body previews. A fork supplements only the selected path's last assistant entry when that entry belongs to the batch and its body was withheld from Raw; earlier assistant messages in the same Turn are not repeated.
-
-A head body already supplied in Raw is never repeated in the supplement. Head and index framing count toward both episodic and model-context capacity; the supplied-body audit includes the head view.
-
-## Accounting and verification
-
-Noting triggers, batch selection and pending-status weights measure the same joined rendered entry bytes. Consolidation does the same for complete grouped facts. Thresholds (Noting 10k, Consolidation 5k), batch ceilings and material windows are unchanged. Longer exact addresses therefore legitimately move crossings and batch boundaries; the estimator and thresholds must not be adjusted to conceal that overhead.
-
-The [verification record](unified-entry-verification.md) contains the fixed-fixture byte/token comparison and check logs. Offline fake-provider checks establish local behavior, not live provider quality, billing or cache reuse.
+Scripted and simulated-provider checks establish local behavior, not live extraction quality, billing or cache reuse. Historical measurements remain in the [earlier verification record](unified-entry-verification.md); they are not measurements of the current format.
