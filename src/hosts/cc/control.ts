@@ -52,7 +52,7 @@ const socketPath = (config: ResolvedCcHostConfig, token: string): string => {
   if (Buffer.byteLength(value) > 100) throw new Error("CC control socket path exceeds the supported Unix-domain path length; configure a shorter stateDir");
   return value;
 };
-const executorLiveness = (executor: CcExecutorBinding): "alive" | "dead" | "unknown" => {
+export const executorLiveness = (executor: CcExecutorBinding): "alive" | "dead" | "unknown" => {
   try { process.kill(executor.pid, 0); return "alive"; }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") return "dead";

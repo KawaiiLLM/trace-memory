@@ -463,8 +463,33 @@ async function load($) {
   if (await $.session.id() !== session) throw new Error("native session changed while loading menu");
   return { session, data: JSON.parse(decode(result, "Trace Memory menu")), breakdown: currentBreakdown };
 }
+async function nativeCompaction($, e, next, session) {
+  const result = await next(e);
+  if (result.skip || next.signal.aborted) return result;
+  try {
+    if (session !== await $.session.id()) throw new Error("native session changed during compact");
+    const process = await $.process.run(
+      ["node", `${$.plugin.root}/dist/cc.cjs`, "hook-delta", "--config", `${$.plugin.root}/cc.config.json`],
+      // 97: the supplement is recorded as this compaction's baseline; the retained messages are not read.
+      { stdin: JSON.stringify({ hook_event_name: "session.compact", session_id: session, messages: [] }) }
+    );
+    const slices = JSON.parse(decode(process, "Trace Memory compact delta")).slices;
+    if (!Array.isArray(slices) || slices.length !== 24) throw new Error("compact delta returned invalid slices");
+    const added = slices.filter(Boolean).map((slice) => slice.hookSpecificOutput?.additionalContext);
+    if (added.some((text) => typeof text !== "string" || !text)) throw new Error("compact delta has invalid carrier");
+    if (session !== await $.session.id() || next.signal.aborted) return result;
+    return added.length ? { ...result, messages: [
+      ...result.messages,
+      ...added.map((text) => ({ role: "user", text, toolUses: [] }))
+    ] } : result;
+  } catch (error) {
+    console.error(`Trace Memory compact delta: ${String(error)}`);
+    return result;
+  }
+}
 export const register = (on) => {
   on("session.compact", async ($, e, next) => {
+    if (e.trigger === "precompute" || e.trigger === "plugin" || e.agentId) return next(e);
     let session;
     try {
       session = await $.session.id();
@@ -472,28 +497,26 @@ export const register = (on) => {
       console.error(`Trace Memory compact identity: ${String(error)}`);
       return next(e);
     }
-    const result = await next(e);
-    if (result.skip || e.trigger === "precompute" || e.trigger === "plugin" || e.agentId || next.signal.aborted) return result;
     try {
-      if (session !== await $.session.id()) throw new Error("native session changed during compact");
-      const process = await $.process.run(
-        ["node", `${$.plugin.root}/dist/cc.cjs`, "hook-delta", "--config", `${$.plugin.root}/cc.config.json`],
-        // 97: the supplement is recorded as this compaction's baseline; the retained messages are not read.
-        { stdin: JSON.stringify({ hook_event_name: "session.compact", session_id: session, messages: [] }) }
-      );
-      const slices = JSON.parse(decode(process, "Trace Memory compact delta")).slices;
-      if (!Array.isArray(slices) || slices.length !== 24) throw new Error("compact delta returned invalid slices");
-      const added = slices.filter(Boolean).map((slice) => slice.hookSpecificOutput?.additionalContext);
-      if (added.some((text) => typeof text !== "string" || !text)) throw new Error("compact delta has invalid carrier");
-      if (session !== await $.session.id() || next.signal.aborted) return result;
-      return added.length ? { ...result, messages: [
-        ...result.messages,
-        ...added.map((text) => ({ role: "user", text, toolUses: [] }))
-      ] } : result;
+      const built = JSON.parse(decode(await $.process.run(
+        ["node", `${$.plugin.root}/dist/cc.cjs`, "hook-compact", "--config", `${$.plugin.root}/cc.config.json`],
+        // The newest message's handle is its transcript row's uuid: the trigger the build waits for.
+        { stdin: JSON.stringify({ session_id: session, trigger: e.messages.at(-1)?.handle }) }
+      ), "Trace Memory compaction"));
+      if (!built.passThrough) {
+        if (typeof built.text !== "string" || !built.text) throw new Error("compaction returned no block");
+        if (session !== await $.session.id()) throw new Error("native session changed during compaction");
+        if (typeof built.warning === "string") try {
+          $.ui.log(built.warning);
+        } catch (error) {
+          console.error(`Trace Memory compaction warning: ${String(error)}`);
+        }
+        return { messages: [{ role: "user", text: built.text, toolUses: [] }] };
+      }
     } catch (error) {
-      console.error(`Trace Memory compact delta: ${String(error)}`);
-      return result;
+      console.error(`Trace Memory compaction: ${String(error)}`);
     }
+    return nativeCompaction($, e, next, session);
   });
   on("session.start", async ($, e, next) => {
     try {

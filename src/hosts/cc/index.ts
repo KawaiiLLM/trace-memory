@@ -8,7 +8,7 @@ import { assertOperatorBinding, readBinding, recordSessionStart, updateBinding, 
 import { readTranscriptCreatedAt } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
-import { ccDeltaInjection, ccPrepareSessionStartInjection, ccPreparedSessionStartInjection, ccSessionStartInjection, databaseIdentity, recordCcBaseline, type CcHookOutput } from "./injection.ts";
+import { ccCompaction, ccDeltaInjection, ccPrepareSessionStartInjection, ccPreparedSessionStartInjection, ccSessionStartInjection, databaseIdentity, recordCcBaseline, type CcHookOutput } from "./injection.ts";
 import { sliceCcInjection } from "./slices.ts";
 import { declareCcProject, operateCcSession } from "./operator.ts";
 import { followNativeSession, processAncestors, publishNativeSession, type CcNativeSessionFollower } from "./native-session.ts";
@@ -186,10 +186,20 @@ async function readStdin(): Promise<string> {
 
 export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "cli") || configFlag !== "--config" || !configPath)
+  if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" &&
+      command !== "hook-compact" && command !== "cli") || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config); return; }
+  if (command === "hook-compact") {
+    // 102: the `session.compact` function hook's compaction; `passThrough` keeps native compaction.
+    const input = JSON.parse(await readStdin()) as { session_id: string; trigger: unknown };
+    validateNativeSessionId(input.session_id);
+    if (typeof input.trigger !== "string" || !input.trigger) throw new Error("CC compaction requires the handle of its newest message");
+    const built = await ccCompaction(config, { session_id: input.session_id, trigger: input.trigger });
+    process.stdout.write(`${JSON.stringify(built ?? { passThrough: true })}\n`);
+    return;
+  }
   if (command === "hook-delta") {
     const input = JSON.parse(await readStdin()) as { session_id: string; transcript_path?: string; prompt_id?: unknown;
       messages?: unknown; hook_event_name?: string };

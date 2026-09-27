@@ -8,9 +8,9 @@ import { entry, knowledge, knowledgeBatch, legacyFacts, session } from "../suppo
 import { readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
-import { ccDeltaInjection, ccSessionStartInjection, databaseIdentity, decodeCcInjection, encodeCcInjection } from "../../src/hosts/cc/injection.ts";
+import { ccCompaction, ccDeltaInjection, ccSessionStartInjection, databaseIdentity, decodeCcInjection, encodeCcInjection } from "../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../src/hosts/cc/slices.ts";
-import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+import { classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 
 const dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -58,6 +58,9 @@ async function fixture(texts = ["Use pnpm."], settings: Record<string, unknown> 
     restartExecutor: async () => { importer.close(); importer = new CcImporter(config, readBinding(config, nativeSession)!); await importer.reconcile(); },
     prompt: (promptId: string) => ccDeltaInjection(config, input, { kind: "prompt", promptId }, slicer),
     compact: () => ccDeltaInjection(config, input, { kind: "compact" }, slicer),
+    /** 102: Trace Memory's compaction, waiting for the row `trigger`. */
+    build: (trigger: string) => ccCompaction(config, { session_id: nativeSession, trigger }),
+    sessionStart: (source: "compact" | "resume") => ccSessionStartInjection(config, { hook_event_name: "SessionStart", source, ...input }),
     resume: () => ccSessionStartInjection(config, { hook_event_name: "SessionStart", source: "resume", ...input }),
     delivered: (headTurnId: number) => store.deliveredKnowledge({ owner: `cc:${nativeSession}`, sessionId, branch: readBinding(config, nativeSession)!.branch, headTurnId }),
     turnOf: (uuid: string) => store.findSourceEntry(sessionId, nativeSession, uuid)!.turnId,
@@ -272,5 +275,85 @@ test("97 transition: a context with no records gets one delivery within its budg
     await f.append(user("u2", "legacy", "p2"), assistant("a2", "u2"));
     expect(f.decode(await f.prompt("p3"))).toEqual([]);
     expect(await f.resume()).toBeNull();
+  } finally { f.close(); }
+});
+
+/** What Claude Code writes after the `session.compact` hook answered: the boundary, then the block as an
+ * ordinary user row (no summary flag), under the prompt that triggered it (102 probe transcripts). */
+const installedBlock = (uuid: string, logicalParentUuid: string, text: string, promptId: string): CcNativeRecord[] => [
+  { uuid, parentUuid: null, logicalParentUuid, type: "system", subtype: "compact_boundary", timestamp: time(++clock),
+    compactMetadata: { trigger: "auto", preTokens: 1000 } } as CcNativeRecord,
+  { uuid: `${uuid}-block`, parentUuid: uuid, type: "user", promptId, timestamp: time(++clock), message: { role: "user", content: text } } as CcNativeRecord];
+
+test("102 a Trace Memory compaction's node holds exactly what its block emitted; the hooks add nothing after it", async () => {
+  const f = await fixture(["Use pnpm.", "Run vitest."]);
+  try {
+    const [first, kept] = f.versions.map(item => item.commit) as [number, number];
+    expect(f.commits(await f.prompt("p2"))).toEqual([first, kept]);
+    await f.append(user("u2", "a1", "p2"), assistant("a2", "u2"));
+    const archived = f.store.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.path.sessionId, createdAt: time(0) },
+      operations: [{ op: "archive", knowledgeId: f.versions[0]!.knowledgeId, baseCommit: first, supports: [f.fact.id], reason: "withdrawn", createdAt: time(0) }] });
+    if (!archived.ok) throw new Error(archived.problems.join());
+    expect(f.decode(await f.prompt("p3")).flatMap(header => header.states)).toEqual([{ fromCommit: first, toCommits: [archived.committed[0]!.commit] }]);
+    await f.append(user("u3", "a2", "p3")); // an automatic compaction at this prompt; the executor has imported it
+    const built = await f.build("u3");
+    const header = decodeCcInjection(built!.text, f.visible())!;
+    expect(header.commits).toEqual([kept]);
+    expect(header.states).toEqual([]); // the compaction starts from nothing delivered: no notice for what it never saw
+    expect(built!.warning).toBeUndefined();
+    await f.append(...installedBlock("cb", "u3", built!.text, "p3"), assistant("a3", "cb-block"));
+    const compaction = f.store.findNativeTurn(f.sessionId, f.nativeSession, "cb")!.turnId;
+    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set(header.commits), knowledgeStates: new Set(), knowledgeTokens: header.knowledgeTokens });
+    expect(f.delivered(f.turnOf("u3")).knowledgeStates).toEqual(new Set([`${first}>${archived.committed[0]!.commit}`]));
+    // SessionStart(compact) never injects; the next prompt and a resume find nothing missing.
+    expect(await f.sessionStart("compact")).toBeNull();
+    expect(f.decode(await f.prompt("p4"))).toEqual([]);
+    expect(await f.sessionStart("resume")).toBeNull();
+  } finally { f.close(); }
+});
+
+test("102 the build waits for its trigger to be written, imports it, and ends the block with it; the block is never Raw", async () => {
+  const f = await fixture();
+  try {
+    await f.append(user("u2", "a1", "p2"), assistant("a2", "u2"));
+    const call: CcNativeRecord = { uuid: "call", parentUuid: "a2", type: "assistant", timestamp: time(++clock),
+      message: { id: "msg-call", role: "assistant", content: [{ type: "tool_use", id: "call-1", name: "Bash", input: { command: "ls" } }] } };
+    const result: CcNativeRecord = { uuid: "result", parentUuid: "call", type: "user", timestamp: time(++clock), promptId: "p2",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: "listing" }] } };
+    // Claude Code holds the call and its result when the hook runs, and writes them moments later. No
+    // executor imports them here, so the build does.
+    const building = f.build("result");
+    await new Promise(resolveLater => setTimeout(resolveLater, 100));
+    f.write(call, result);
+    const built = (await building)!;
+    const raw = built.text.split("\n").filter(line => /^\[T\d+#E\d+@/.test(line));
+    expect(raw.slice(-2).map(line => /@(\w+)\]/.exec(line)![1])).toEqual(["assistant", "observation"]);
+    expect(raw.at(-2)).toContain("Bash(");
+    expect(raw.at(-1)).toContain("listing");
+    const [row] = installedBlock("cb", "result", built.text, "p2").slice(1);
+    // Recognised by its envelope, even if Claude Code were to stamp the row as a prompt.
+    expect(classifySourceRecord({ ...row!, promptSource: "typed" })).toBeNull();
+    await f.append(...installedBlock("cb", "result", built.text, "p2"), assistant("a3", "cb-block"));
+    expect(f.store.findSourceEntry(f.sessionId, f.nativeSession, "cb-block")).toBeNull();
+    expect(f.turnOf("a3")).toBe(f.turnOf("u2")); // the reply goes on in the Turn the compaction interrupted
+  } finally { f.close(); }
+});
+
+test("102 an unbound or disabled session passes through; a path that moves during the build fails it and records nothing", async () => {
+  const f = await fixture();
+  try {
+    expect(await ccCompaction(f.config, { session_id: "unbound-102", trigger: "a1" })).toBeNull();
+    const rows = () => f.store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_deliveries").get() as { count: number };
+    const before = rows().count;
+    const snapshot = Store.prototype.readSnapshot;
+    vi.spyOn(Store.prototype, "readSnapshot").mockImplementationOnce(function (this: Store, fn) {
+      const value = snapshot.call(this, fn);
+      f.write(user("u2", "a1", "p2")); // Claude Code writes a prompt while the block is rendered
+      return value;
+    });
+    await expect(f.build("a1")).rejects.toThrow("changed while the compaction was built");
+    expect(rows().count).toBe(before);
+    f.store.setEnrollment(f.sessionId, false);
+    expect(await f.build("u2")).toBeNull();
   } finally { f.close(); }
 });

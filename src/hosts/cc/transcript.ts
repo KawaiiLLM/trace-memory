@@ -123,6 +123,12 @@ const humanCommandPrompt = (content: string): string | null => {
   return args ? `${name} ${args}` : name;
 };
 
+/** The first two lines of every Trace Memory carrier (encoded in injection.ts). A user row that
+ * begins with them is Trace Memory's own material, never Raw: the compaction a `session.compact`
+ * hook returns (102) is an ordinary user row after the boundary, with no summary flag. */
+export const CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
+export const CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
+
 export class CcNativeLineageError extends Error {}
 
 /** Decode native lineage exactly once. A malformed present value is not an absent parent.
@@ -185,6 +191,7 @@ export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | n
     return { kind: "toolResult", record, nativeId: id, timestamp: timestamp(record), text: "", calls };
   }
   if (!(typeof content === "string" || Array.isArray(content))) return null;
+  if (textBlocks(content)[0]?.startsWith(`${CC_INJECTION_BEGIN}\n${CC_INJECTION_HEADER}`)) return null;
   const nativePrompt = ["typed", "queued", "sdk", "system"].includes(String(record.promptSource));
   const humanPrompt = record.isMeta !== true && record.origin?.kind === "human";
   if (!nativePrompt && !humanPrompt) return null;

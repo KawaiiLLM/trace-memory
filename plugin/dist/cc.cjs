@@ -9873,6 +9873,8 @@ var humanCommandPrompt = (content) => {
   const args = values.get("command-args")?.trim();
   return args ? `${name} ${args}` : name;
 };
+var CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
+var CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
 var CcNativeLineageError = class extends Error {
 };
 function nativeParentId(record3, writtenBefore) {
@@ -9948,6 +9950,8 @@ function classifySourceRecord(record3) {
     return { kind: "toolResult", record: record3, nativeId: id, timestamp: timestamp(record3), text: "", calls };
   }
   if (!(typeof content === "string" || Array.isArray(content))) return null;
+  if (textBlocks(content)[0]?.startsWith(`${CC_INJECTION_BEGIN}
+${CC_INJECTION_HEADER}`)) return null;
   const nativePrompt = ["typed", "queued", "sdk", "system"].includes(String(record3.promptSource));
   const humanPrompt = record3.isMeta !== true && record3.origin?.kind === "human";
   if (!nativePrompt && !humanPrompt) return null;
@@ -18064,8 +18068,8 @@ var ProcessTransport = class {
     }
     logForSdkDebugging(`[ProcessTransport] Writing to stdin: ${data.substring(0, 100)}`);
     try {
-      const written = this.processStdin.write(data);
-      if (!written) {
+      const written2 = this.processStdin.write(data);
+      if (!written2) {
         logForSdkDebugging("[ProcessTransport] Write buffer full, data queued");
       }
     } catch (error3) {
@@ -42234,9 +42238,7 @@ var CcCoordinator = class {
 // src/hosts/cc/injection.ts
 var import_node_crypto15 = require("node:crypto");
 var import_node_fs10 = require("node:fs");
-var CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
 var BEGIN = CC_INJECTION_BEGIN;
-var CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
 var END = "TRACE MEMORY KNOWLEDGE END";
 var digest = (text) => (0, import_node_crypto15.createHash)("sha256").update(text, "utf8").digest("hex");
 var databaseIdentity = (path) => {
@@ -42538,6 +42540,91 @@ async function ccPreparedSessionStartInjection(config3, input, slice) {
   if (!delivered) return { output: null, slices: slice(null, { db: "", nativeSession: input.session_id, coreSession: null }), snapshot: null };
   if (!snapshot2) throw new Error("prepared SessionStart did not capture its input snapshot");
   return { ...delivered, snapshot: snapshot2 };
+}
+function ccTruncationWarning(omitted) {
+  return omitted ? `Trace Memory: compaction omitted ${[
+    ...omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : [],
+    ...omitted.facts ? [`${omitted.facts.count} ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []
+  ].join(" and ")}${omitted.raw ? "; omitted Raw remains pending for Noting." : "."}` : void 0;
+}
+var importedToEnd = (binding) => {
+  if (binding.coreSessionId === null || binding.selectedLeafUuid === null || binding.transcriptOffset === void 0) return false;
+  const tail = readTranscriptTail(binding.transcriptPath, binding.transcriptOffset);
+  return tail !== null && tailNodes(tail).leaf === null;
+};
+var written = (binding, uuid5, store) => binding.coreSessionId !== null && !!(store.findKnownSourceEntry(binding.coreSessionId, binding.nativeSessionId, uuid5) ?? store.findNativeTurn(binding.coreSessionId, binding.nativeSessionId, uuid5)) || !!readTranscriptTail(binding.transcriptPath, binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset ?? 0)?.some((record3) => record3.uuid === uuid5);
+var TRIGGER_WAIT_MS = 1e4;
+async function ccCompaction(config3, input) {
+  const initial = readBinding(config3, input.session_id);
+  if (!initial) return null;
+  if (initial.dbPath !== config3.dbPath) throw new Error("CC binding uses another database");
+  const lineage = initial.nativeSessionId;
+  const memory = TraceMemory(
+    config3.dbPath,
+    async () => {
+      throw new Error("CC compaction cannot run model work");
+    },
+    config3.coreConfig,
+    void 0,
+    (entry) => entry.nativeLineage === lineage ? ccSourceBlocks(entry) : void 0
+  );
+  try {
+    const disabled = (binding2) => (binding2.coreSessionId !== null || binding2.nativeCreatedAt !== null) && !enabled(binding2, memory);
+    const importing = (binding2) => binding2.executor !== null && executorLiveness(binding2.executor) !== "dead";
+    let binding = initial;
+    for (const deadline = Date.now() + TRIGGER_WAIT_MS; ; ) {
+      if (disabled(binding)) return null;
+      const present = written(binding, input.trigger, memory.store);
+      if (present && (importedToEnd(binding) || !importing(binding))) break;
+      if (Date.now() >= deadline) {
+        if (!present) throw new Error(`the compaction's trigger ${input.trigger} was not written to the transcript`);
+        break;
+      }
+      await new Promise((wake) => setTimeout(wake, 20));
+      const current = readBinding(config3, input.session_id);
+      if (current?.dbPath !== config3.dbPath || current.transcriptPath !== initial.transcriptPath) throw new Error("CC binding changed during compaction");
+      binding = current;
+    }
+    if (!importedToEnd(binding)) {
+      const projection = new CcProjection(config3, binding, memory);
+      const imported = await projection.synchronize();
+      if (imported.state === "disabled") return null;
+      if (imported.state !== "ready") throw new Error(imported.problems.join("; ") || `the transcript import is ${imported.state}`);
+      binding = projection.currentBinding();
+      if (!importedToEnd(binding)) throw new Error("the transcript grew while it was imported");
+    }
+    const offset = binding.transcriptOffset;
+    const core = binding.coreSessionId, leaf = binding.selectedLeafUuid, branch = binding.branch, owner = coreHostOf(binding);
+    const headTurnId = memory.store.findSourceEntry(core, lineage, leaf)?.turnId ?? memory.store.findNativeTurn(core, lineage, leaf)?.turnId;
+    if (headTurnId === void 0) throw new Error("the selected native source has no persisted core Turn");
+    const { compacted, watermark } = memory.store.readSnapshot(() => ({
+      compacted: memory.compact(core, branch, headTurnId, [], false),
+      watermark: memory.store.deliveryWatermark(owner)
+    }));
+    if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation: ${compacted.reason}`);
+    const text = encodeCcInjection({ db: databaseIdentity(config3.dbPath), nativeSession: lineage, coreSession: core }, {
+      text: compacted.text,
+      knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
+      knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
+      knowledgeStates: compacted.supplied.knowledgeStates,
+      factIds: compacted.supplied.factIds,
+      entryIds: compacted.supplied.entries.map((entry) => entry.id)
+    });
+    memory.store.transaction(() => {
+      const current = readBinding(config3, input.session_id);
+      if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch || current.selectedLeafUuid !== leaf || current.transcriptOffset !== offset || !importedToEnd(current))
+        throw new Error("the session or its selected path changed while the compaction was built");
+      memory.store.recordKnowledgeDelivery({ owner, nodeKey: (0, import_node_crypto15.randomUUID)(), follows: leaf }, [{
+        knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
+        knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
+        knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0
+      }]);
+    });
+    const warning = ccTruncationWarning(compacted.truncated);
+    return { text, ...warning ? { warning } : {} };
+  } finally {
+    memory.store.close();
+  }
 }
 async function ccDeltaInjection(config3, input, event, slice) {
   const slices = await deliver(config3, input, event, (output, visible) => {
@@ -42870,11 +42957,7 @@ async function prepareBoundClear(config3, input, parentBinding, childId, created
       entryIds: compacted.supplied.entries.map((entry2) => entry2.id),
       composition: compacted.composition
     };
-    const omitted = compacted.truncated;
-    const systemMessage = omitted ? `Trace Memory: compaction omitted ${[
-      ...omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : [],
-      ...omitted.facts ? [`${omitted.facts.count} ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []
-    ].join(" and ")}${omitted.raw ? "; omitted Raw remains pending for Noting." : "."}` : void 0;
+    const systemMessage = ccTruncationWarning(compacted.truncated);
     const visibleBinding = { db: databaseIdentity(config3.dbPath), nativeSession: childId, coreSession: core };
     const output = injection.text ? {
       hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },
@@ -44951,11 +45034,20 @@ async function readStdin() {
 }
 async function runCcCommand(argv = process.argv.slice(2)) {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "cli" || configFlag !== "--config" || !configPath)
+  if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "hook-compact" && command !== "cli" || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
   const config3 = readConfig(configPath);
   if (command === "mcp") {
     await runCcStdioMcp(config3);
+    return;
+  }
+  if (command === "hook-compact") {
+    const input = JSON.parse(await readStdin());
+    validateNativeSessionId(input.session_id);
+    if (typeof input.trigger !== "string" || !input.trigger) throw new Error("CC compaction requires the handle of its newest message");
+    const built = await ccCompaction(config3, { session_id: input.session_id, trigger: input.trigger });
+    process.stdout.write(`${JSON.stringify(built ?? { passThrough: true })}
+`);
     return;
   }
   if (command === "hook-delta") {

@@ -5,7 +5,7 @@ import { compacted, recorded } from "../../source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
 // from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,7 +25,9 @@ import { recordCcSessionEnd } from "../../../src/hosts/cc/lifecycle.ts";
 import * as ccNative from "../../../src/hosts/cc/native-session.ts";
 import { CcImporter } from "../../../src/hosts/cc/importer.ts";
 import { Store } from "../../../src/core/store/index.ts";
-import { fact as seedFact, facts as seedFacts, legacyFacts } from "../../support/seed.ts";
+import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts, session as seedSession } from "../../support/seed.ts";
+import { ccCompaction, ccDeltaInjection, databaseIdentity, decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
+import { sliceCcInjection } from "../../../src/hosts/cc/slices.ts";
 
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -164,6 +166,36 @@ test("2026-09-24, 86: '除了 clear，任何 SessionEnd 都算正常关闭' — 
     const closed = new Store(config.dbPath);
     try { expect(closed.getSession(id)!.closedAt).not.toBeNull(); } finally { closed.close(); }
   } finally { identity.mockRestore(); }
+});
+
+test("2026-09-28, 102: '需要保留当前这一轮的情况' and '会话钩子只用来补投递' — the block ends with the trigger, and the hooks add nothing after it", async () => {
+  const config = resolveCcHostConfig({ dbPath: join(directory, "cc102.sqlite"), stateDir: join(directory, "cc102-state"), baseline: "2025-01-01T00:00:00.000Z" });
+  const transcript = join(directory, "cc102.jsonl"), nativeId = "ruled-compaction";
+  const row = (value: Record<string, unknown>) => `${JSON.stringify({ timestamp: time, ...value })}\n`;
+  writeFileSync(transcript, row({ uuid: "u", parentUuid: null, type: "user", promptId: "p", promptSource: "sdk", message: { role: "user", content: "earlier" } }) +
+    row({ uuid: "a", parentUuid: "u", type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "answered" }] } }) +
+    row({ uuid: "t", parentUuid: "a", type: "user", promptId: "p2", promptSource: "sdk", message: { role: "user", content: "the pending task" } }));
+  const importer = new CcImporter(config, await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: nativeId, transcript_path: transcript }, time));
+  const store = new Store(config.dbPath);
+  try {
+    const core = (await importer.reconcile()).coreSessionId!;
+    const seed = seedSession(store, store.getSession(core)!.projectId, "seed");
+    const turn = store.appendTurn({ sessionId: seed.id, kind: "turn", userPrompt: "rule", startedAt: time });
+    const source = seedEntry(store, seed.id, turn.id, "rule", "user");
+    const fact = legacyFacts(store, { kind: "manual", sessionId: seed.id, createdAt: time }, [{ sources: [{ entry: source,
+      address: `T${turn.id}#E${source.entryOrdinal}` }], text: "rule", category: "decision", actor: "user", createdAt: time }]).facts[0]!;
+    const rule = seedKnowledge(store, { sessionId: seed.id, headTurnId: turn.id }, "global", "constraint", [fact.id], "Use pnpm.").commit;
+    const built = (await ccCompaction(config, { session_id: nativeId, trigger: "t" }))!;
+    const visible = { db: databaseIdentity(config.dbPath), nativeSession: nativeId, coreSession: core };
+    expect(decodeCcInjection(built.text, visible)!.commits).toEqual([rule]);
+    // No original message is kept: the pending prompt is the block's newest Raw.
+    expect(built.text.split("\n").filter(line => /^\[T\d+#E\d+@/.test(line)).at(-1)).toMatch(/@user\] user: the pending task$/);
+    appendFileSync(transcript, row({ uuid: "b", parentUuid: null, logicalParentUuid: "t", type: "system", subtype: "compact_boundary" }) +
+      row({ uuid: "block", parentUuid: "b", type: "user", promptId: "p2", message: { role: "user", content: built.text } }));
+    const next = await ccDeltaInjection(config, { session_id: nativeId, transcript_path: transcript }, { kind: "prompt", promptId: "p3" },
+      (output, binding) => sliceCcInjection(binding, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance));
+    expect(next.filter(Boolean)).toEqual([]);
+  } finally { importer.close(); store.close(); }
 });
 
 test("2026-09-07: the estimate is segment-based, superseding the Q12 two-weight formula, and Chinese is still never priced as ASCII", () => {

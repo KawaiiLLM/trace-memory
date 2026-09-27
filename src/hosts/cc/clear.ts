@@ -5,7 +5,7 @@ import type { ResolvedCcHostConfig } from "./config.ts";
 import { coreHostOf, readBinding, recordSessionStart, renewNativeBinding, updateBinding, validateNativeSessionId, withCcBindingLock,
   type CcBindingLock, type CcHookInput, type CcSessionBinding } from "./binding.ts";
 import { CcProjection } from "./importer.ts";
-import { databaseIdentity, encodeCcInjection, ccSessionStartInjection, type CcHookOutput, type CcVisibleBinding } from "./injection.ts";
+import { ccTruncationWarning, databaseIdentity, encodeCcInjection, ccSessionStartInjection, type CcHookOutput, type CcVisibleBinding } from "./injection.ts";
 import { assignedNativeSession, currentNativeProcess, parsePid, processStartedAt } from "./native-session.ts";
 import { ccSourceBlocks, readTranscriptCreatedAt } from "./transcript.ts";
 
@@ -119,12 +119,7 @@ async function prepareBoundClear(config: ResolvedCcHostConfig, input: CcHookInpu
     // 73 "Truncation is announced in the foreground": a top-level `systemMessage` beside
     // `hookSpecificOutput.additionalContext` — Claude Code 2.1.280 shows it to the user (capped at
     // 4,000 characters; this stays well under it).
-    const omitted = compacted.truncated;
-    // 79 item 4 (ruled): Raw is an exact count only, never a token figure -- the Pi warning's twin.
-    const systemMessage = omitted ? `Trace Memory: compaction omitted ${[
-      ...(omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : []),
-      ...(omitted.facts ? [`${omitted.facts.count} ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []),
-    ].join(" and ")}${omitted.raw ? "; omitted Raw remains pending for Noting." : "."}` : undefined;
+    const systemMessage = ccTruncationWarning(compacted.truncated);
     const visibleBinding: CcVisibleBinding = { db: databaseIdentity(config.dbPath), nativeSession: childId, coreSession: core };
     const output: CcHookOutput | null = injection.text
       ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },

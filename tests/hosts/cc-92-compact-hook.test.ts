@@ -12,16 +12,22 @@ beforeAll(async () => {
 const original = { messages: [{ role: "assistant", text: "summary", handle: { native: 1 } }], tokensBefore: 50 };
 const slice = { hookSpecificOutput: { additionalContext: "knowledge" } };
 const output = { exitCode: 0, stdout: JSON.stringify({ slices: [slice, ...Array(23).fill(null)] }) };
+const passThrough = { exitCode: 0, stdout: JSON.stringify({ passThrough: true }) };
+/** `run` is the 92/08 supplement process; `build` is 102's compaction, which these fixtures pass through
+ * (an unbound or disabled session) unless a test answers it. */
 function fixture() {
   const controller = new AbortController();
   const id = vi.fn(async () => "session-A");
   const run = vi.fn(async () => output);
+  const build = vi.fn(async (_argv: string[], _options: { stdin: string }): Promise<{ exitCode: number; stdout: string; stderr?: string }> => passThrough);
+  const log = vi.fn();
   const next = vi.fn(async () => original) as any;
   next.signal = controller.signal;
-  const host = { session: { id }, process: { run }, plugin: { root: "/plugin" } };
-  return { host, id, run, next, controller };
+  const host = { session: { id }, process: { run: (argv: string[], options: { stdin: string }) => argv.includes("hook-compact") ? build(argv, options) : run() },
+    plugin: { root: "/plugin" }, ui: { log } };
+  return { host, id, run, build, log, next, controller };
 }
-const event = { trigger: "manual", messages: [] };
+const event = { trigger: "manual", messages: [{ role: "assistant", text: "last reply", toolUses: [], handle: "row-uuid" }] };
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(r => { resolve = r; });
@@ -91,6 +97,7 @@ test.each([{ trigger: "precompute" }, { trigger: "plugin" }, { trigger: "manual"
     const f = fixture();
     expect(await compact(f.host, { ...event, ...e }, f.next)).toBe(original);
     expect(f.run).not.toHaveBeenCalled();
+    expect(f.build).not.toHaveBeenCalled(); // 102: nor is it Trace Memory's compaction
   });
 
 test("native skip does not append", async () => {
@@ -98,4 +105,46 @@ test("native skip does not append", async () => {
   f.next.mockResolvedValue(skipped);
   expect(await compact(f.host, event, f.next)).toBe(skipped);
   expect(f.run).not.toHaveBeenCalled();
+});
+
+const block = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.\nTRACE-MEMORY-CC/1 {}\nblock";
+
+test.each(["manual", "auto"])("102: a %s compaction installs Trace Memory's block alone, without Claude Code's summary", async trigger => {
+  const f = fixture();
+  f.build.mockResolvedValue({ exitCode: 0, stdout: JSON.stringify({ text: block }) });
+  expect(await compact(f.host, { ...event, trigger }, f.next)).toEqual({ messages: [{ role: "user", text: block, toolUses: [] }] });
+  expect(f.next).not.toHaveBeenCalled();
+  expect(f.run).not.toHaveBeenCalled();
+  // The build waits for the newest message's row: its handle.
+  expect(JSON.parse(f.build.mock.calls[0]![1].stdin)).toEqual({ session_id: "session-A", trigger: "row-uuid" });
+  expect(f.log).not.toHaveBeenCalled();
+});
+
+test("102: omitted material is announced in the foreground and stays out of the block", async () => {
+  const f = fixture();
+  const warning = "Trace Memory: compaction omitted 3 pending Raw entries; omitted Raw remains pending for Noting.";
+  f.build.mockResolvedValue({ exitCode: 0, stdout: JSON.stringify({ text: block, warning }) });
+  expect((await compact(f.host, event, f.next)).messages).toEqual([{ role: "user", text: block, toolUses: [] }]);
+  expect(f.log).toHaveBeenCalledExactlyOnceWith(warning);
+});
+
+test.each([
+  ["a failed build", { exitCode: 1, stdout: "", stderr: "the session or its selected path changed" }],
+  ["a malformed reply", { exitCode: 0, stdout: "{" }],
+  ["an empty block", { exitCode: 0, stdout: JSON.stringify({ text: "" }) }],
+])("102: %s keeps native compaction and appends today's supplement", async (_label, reply) => {
+  const f = fixture();
+  f.build.mockResolvedValue(reply);
+  const result = await compact(f.host, event, f.next);
+  expect(f.next).toHaveBeenCalledExactlyOnceWith(event);
+  expect(result.messages).toEqual([original.messages[0], { role: "user", text: "knowledge", toolUses: [] }]);
+});
+
+test("102: a session that changed during the build keeps native compaction", async () => {
+  const f = fixture();
+  f.build.mockResolvedValue({ exitCode: 0, stdout: JSON.stringify({ text: block }) });
+  f.id.mockResolvedValueOnce("session-A").mockResolvedValueOnce("session-B");
+  const result = await compact(f.host, event, f.next);
+  expect(f.next).toHaveBeenCalledOnce();
+  expect(result.messages[0]).toBe(original.messages[0]);
 });
