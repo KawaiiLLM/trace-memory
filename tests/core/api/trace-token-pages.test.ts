@@ -203,7 +203,7 @@ test.each(["😀", "𠮷", "👨‍👩‍👧‍👦", "é", "\\\\uD83D\\\\uDE0
   const text = unit.repeat(2000);
   const t = memory.store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: text, startedAt: time });
   const options = { full: true, maxTokens: 128 };
-  expect(drainTrace(memory, memory.trace(`T${t.id}#user`, options), options).joined).toBe(`[T${t.id}#E1@text] user: ${text}`);
+  expect(drainTrace(memory, memory.trace(`T${t.id}#E1@user`, options), options).joined).toBe(`[T${t.id}#E1@user] user: ${text}`);
 });
 
 test.each(["K1@v1", "F1-F1,K1@v1,T1#t1"])("admitted Dreamer drains token-paged historical %s losslessly", async address => {
@@ -262,8 +262,8 @@ test.each([128, 400, 2000])("non-monotone intact Unicode lines take one page whe
   const t = memory.store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: text, startedAt: time });
   expect(tokens("😀".repeat(128))).toBe(143);
   expect(tokens("😀".repeat(128) + "a")).toBe(37);
-  const expected = `[T${t.id}#E1@text] user: ${text}`;
-  expect(memory.trace(`T${t.id}#user`, { full: true, maxTokens: Math.max(128, tokens(expected)) })).toBe(expected);
+  const expected = `[T${t.id}#E1@user] user: ${text}`;
+  expect(memory.trace(`T${t.id}#E1@user`, { full: true, maxTokens: Math.max(128, tokens(expected)) })).toBe(expected);
   const search = memory.search("needle", "raw", { maxTokens: 8000 });
   expect(search).not.toContain("cursor=");
   expect(memory.search("needle", "raw", { maxTokens: Math.max(128, tokens(search)) })).toBe(search);
@@ -322,7 +322,7 @@ test("large lines are priced whole once, then only page-sized prefixes on contin
     } as typeof original;
     let initial = 0;
     try {
-      first = memory.trace(`T${t.id}#user`, { full: true });
+      first = memory.trace(`T${t.id}#E1@user`, { full: true });
       initial = measured;
       measured = 0;
       const cursor = tracePage(first).cursor!;
