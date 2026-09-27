@@ -6,6 +6,7 @@ import { conversationOf, host, reply, usage } from "./test-host.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { hydrate } from "../../source-fixture.ts";
+import { fact as seedFact } from "../../support/seed.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { rawWindowTokens } from "../../../src/core/render/material.ts";
 
@@ -126,9 +127,9 @@ test("D admits a real pending Knowledge pool on an entry without consuming pendi
   const h = host({ "noting.triggerTokens": 1_000_000_000 });
   try {
     await h.turn();
-    const fact = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
-      .execute({ facts: [{ text: "User chose pnpm", source: ["T1#E1"] }] });
-    expect(fact).not.toContain("rejected:");
+    const user = h.memory.store.getSourceEntry(h.memory.store.sourcePath(1, "main", 1)[0]!.id)!;
+    seedFact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Package manager choice",
+      [{ entry: user, text: "User chose pnpm" }]);
     const path = { sessionId: 1, branch: "main", headTurnId: 1 };
     const trigger = createDreamerTrigger(h.memory, path, 1, 1);
     expect(h.memory.taskEligibility("dreaming", path).due).toBe(true);
@@ -151,7 +152,9 @@ test("17b 2026-09-08: lifecycle hooks launch neither phase and preserve both pen
   try {
     h.persist({ role: "user", content: "word ".repeat(20000), timestamp: 1 }); h.persist(reply("pending"));
     await h.emit("session_start");
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: Array.from({ length: 50 }, (_, i) => ({ text: `claim ${i}`, source: ["T1#E1"] })) });
+    const user = h.memory.store.getSourceEntry(h.memory.store.sourcePath(1, "main", 1)[0]!.id)!;
+    for (let i = 0; i < 50; i++) seedFact(h.memory, h.memory.store.knowledgePath(1, "main", 1),
+      `Claim ${i}`, [{ entry: user, text: `claim ${i}` }]);
     const pending = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
     const summary = await h.emit("session_before_tree");
     expect(summary.summary.summary).toBe(h.memory.branchSummary(1, "main", 1));
@@ -269,7 +272,7 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
     const input = raw as NotingAgentInput;
     input.reportRequest({ exact: true });
     if (input.kind === "noting") {
-      input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "partial source fact", source: ["T1#E1"] }] });
+      input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Partial source", sources: [{ address: "T1#E1", text: "partial source fact" }] }] });
       input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     }
     return { outcome: "success", output: "", request: { exact: true } };

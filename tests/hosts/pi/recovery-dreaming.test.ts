@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { host } from "./test-host.ts";
+import { knowledge, legacyFacts } from "../../support/seed.ts";
 
 const compact = (h: ReturnType<typeof host>, signal?: AbortSignal) =>
   h.emit("session_before_compact", { preparation: { tokensBefore: 100000 }, signal }) as Promise<any>;
@@ -12,18 +13,16 @@ async function seeded(options: { rawTokens?: number } = {}) {
     await h.answer(); await h.emit("agent_end"); await h.drain();
   } else await h.turn();
   const store = h.memory.store;
-  const fact = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, facts: [
-    { turnId: 1, source: ["T1#user"], actor: "user", category: "decision", text: "Keep this rule", createdAt: "seed" },
-  ] });
-  if (!fact.ok) throw Error(fact.problems.join());
-  const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [
-    { op: "create", handle: "$1", author: "test", text: "rule ".repeat(6000), category: "constraint", scope: "project", supports: [fact.facts[0]!.id], topics: [], reason: "evidence", createdAt: "seed" },
-  ] });
-  if (!created.ok) throw Error(created.problems.join());
+  const user = store.sourcePath(1, "main", 1).find(entry => store.getSourceEntry(entry.id)?.role === "user")!;
+  const evidence = legacyFacts(store, { kind: "manual", sessionId: 1, createdAt: "seed" },
+    [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], actor: "user", category: "decision",
+      text: "Keep this rule", createdAt: "seed" }]).facts[0]!;
+  const created = knowledge(store, store.knowledgePath(1, "main", 1), "project", "constraint", [evidence.id],
+    "rule ".repeat(6000), { run: { kind: "manual", createdAt: "seed" }, operation: { createdAt: "seed" } });
   const pool = `project:${store.getSession(1)!.projectId}`;
   const pending = store.pendingVersions(pool, store.knowledgePath(1))[0]!.tokens;
   h.memory.setKnowledgeBudget("project", pending * 2);
-  return { h, store, pool, revisionId: created.committed[0]!.commit };
+  return { h, store, pool, revisionId: created.commit };
 }
 
 // Pending changed knowledge is a scheduling trigger, not required compaction material.

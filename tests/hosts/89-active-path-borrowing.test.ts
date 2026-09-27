@@ -3,6 +3,7 @@ import { TraceMemory, type TaskTarget, type NotingAgentInput } from "../../src/c
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { host, reply, type Reply } from "./pi/test-host.ts";
+import { knowledge, legacyFacts } from "../support/seed.ts";
 
 const at = "2026-09-24T00:00:00.000Z";
 function closedTarget(memory: ReturnType<typeof TraceMemory>, projectId: number, invalid = false) {
@@ -12,9 +13,9 @@ function closedTarget(memory: ReturnType<typeof TraceMemory>, projectId: number,
   const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "closed", nativeId: "entry",
     role: "user", text: "Closed evidence", raw: "Closed evidence", calls: [] });
   store.publishSourcePath(session.id, "active", [entry.id], turn.id, "closed");
-  const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "active", createdAt: at },
-    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "Closed rule", source: [`T${turn.id}#E1`], createdAt: at }] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  legacyFacts(store, { kind: "manual", sessionId: session.id, branch: "active", createdAt: at },
+    [{ sources: [{ entry, address: `T${turn.id}#E${entry.entryOrdinal}` }], text: "Closed rule",
+      category: "decision", actor: "user", createdAt: at }]);
   store.closeSession(session.id);
   if (invalid) store.db.prepare("UPDATE session_lineage_cursors SET branch = 'missing' WHERE session_id = ?").run(session.id);
   return { sessionId: session.id, branch: "active", headTurnId: turn.id };
@@ -28,11 +29,11 @@ function abandonedSibling(memory: ReturnType<typeof TraceMemory>, target: TaskTa
     role: "user", text: "ABANDONED_SIBLING", raw: "ABANDONED_SIBLING", calls: [] });
   const rootEntries = store.sourcePath(target.sessionId, target.branch, target.headTurnId).map(value => value.id);
   store.publishSourcePath(target.sessionId, "abandoned", [...rootEntries, entry.id], turn.id, "closed");
-  const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, branch: "abandoned", createdAt: at },
-    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "ABANDONED_SIBLING", source: [`T${turn.id}#E1`], createdAt: at }] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const evidence = legacyFacts(store, { kind: "manual", sessionId: target.sessionId, branch: "abandoned", createdAt: at },
+    [{ sources: [{ entry, address: `T${turn.id}#E${entry.entryOrdinal}` }], text: "ABANDONED_SIBLING",
+      category: "decision", actor: "user", createdAt: at }]).facts[0]!;
   store.setCurrentPath(target.sessionId, target.branch, target.headTurnId, "closed");
-  return { turn, entry, fact: noted.facts[0]! };
+  return { turn, entry, fact: evidence };
 }
 
 function expectConsumedOnlySibling(memory: ReturnType<typeof TraceMemory>, sessionId: number, sibling: ReturnType<typeof abandonedSibling>) {
@@ -167,13 +168,12 @@ test("89: Pi reports a real invalid cursor while its own due N/D both reach thei
     await h.turn();
     const store = h.memory.store;
     const own = store.getSession(1)!;
-    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: own.id, branch: "main", createdAt: at },
-      facts: [{ turnId: 1, category: "decision", actor: "user", text: "Own rule", source: ["T1#E1"], createdAt: at }] });
-    if (!noted.ok) throw new Error(noted.problems.join("; "));
-    const knowledge = store.commitConsolidationRun({ run: { kind: "manual", sessionId: own.id, branch: "main", createdAt: at },
-      operations: [{ op: "create", handle: "$own", author: "test", text: "Own knowledge", category: "constraint", scope: "session",
-        supports: [noted.facts[0]!.id], topics: [], reason: "seed own due pool", createdAt: at }] });
-    if (!knowledge.ok) throw new Error(knowledge.problems.join("; "));
+    const user = store.sourcePath(own.id, "main", 1).find(value => store.getSourceEntry(value.id)?.role === "user")!;
+    const evidence = legacyFacts(store, { kind: "manual", sessionId: own.id, branch: "main", createdAt: at },
+      [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], text: "Own rule",
+        category: "decision", actor: "user", createdAt: at }]).facts[0]!;
+    knowledge(store, store.knowledgePath(own.id, "main", 1), "session", "constraint", [evidence.id],
+      "Own knowledge", { run: { kind: "manual", createdAt: at } });
     const good = closedTarget(h.memory, own.projectId);
     const bad = closedTarget(h.memory, own.projectId, true);
     await h.emit("session_tree");

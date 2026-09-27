@@ -5,6 +5,7 @@ import { ExtensionSelectorComponent, initTheme } from "@earendil-works/pi-coding
 import { compositionMap, contextMap, pendingBar, statusBody } from "../../../src/hosts/pi/session-status.ts";
 import type { ContextComposition } from "../../../src/hosts/pi/context-composition.ts";
 import { host } from "./test-host.ts";
+import { knowledge, legacyFacts } from "../../support/seed.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import * as api from "../../../src/core/api/index.ts";
@@ -201,14 +202,12 @@ test("repeated Dreaming pool reads show identical pending data without DB writes
   await h.turn();
   const store = h.memory.store;
   const turn = store.listTurns(1)[0]!;
-  const fact = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, facts: [
-    { turnId: turn.id, category: "decision", actor: "user", text: "rule", source: [`T${turn.id}#user`], createdAt: "now" },
-  ] });
-  if (!fact.ok) throw Error(fact.problems.join());
-  const committed = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [
-    { op: "create", handle: "$1", author: "test", text: "knowledge", category: "constraint", scope: "project", supports: [fact.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
-  ] });
-  if (!committed.ok) throw Error(committed.problems.join());
+  const user = store.sourcePath(1, "main", turn.id).find(value => store.getSourceEntry(value.id)?.role === "user")!;
+  const evidence = legacyFacts(store, { kind: "manual", sessionId: 1, createdAt: "now" },
+    [{ sources: [{ entry: user, address: `T${turn.id}#E${user.entryOrdinal}` }], category: "decision", actor: "user",
+      text: "rule", createdAt: "now" }]).facts[0]!;
+  knowledge(store, store.knowledgePath(1, "main", turn.id), "project", "constraint", [evidence.id],
+    "knowledge", { run: { kind: "manual", createdAt: "now" } });
   h.memory.setKnowledgeBudget("project", 2468);
   const before = changes(h), entries = structuredClone(h.entries);
   const first = await open(h);

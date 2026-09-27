@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import type { CompactionEntry, CustomMessageEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { host, reply } from "./test-host.ts";
+import { entry, knowledge, legacyFacts } from "../../support/seed.ts";
 import { visibility } from "../../../src/hosts/pi/index.ts";
 import { tokens } from "../../../src/core/render/tokens.ts";
 import { tag } from "../../../src/hosts/pi/settings.ts";
@@ -19,14 +20,12 @@ const seedKnowledge = (h: ReturnType<typeof host>, text = "全局规则") => {
   const store = h.memory.store, project = store.createProject({ name: "project-name", declaredBy: "mark" });
   const seed = store.createSession({ enrollmentChoice: true, host: "fixture", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: seed.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
-  const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: seed.id, createdAt: "now" },
-    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "规则", source: [`T${turn.id}#user`], createdAt: "now" }] });
-  if (!noted.ok) throw new Error("seed");
-  const commit = store.commitConsolidationRun({ run: { kind: "manual", sessionId: seed.id, createdAt: "now" },
-    operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture",
-      text, supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" }] });
-  if (!commit.ok) throw new Error("seed");
-  return commit.committed[0]!.commit;
+  const source = entry(store, seed.id, turn.id, `rule-${seed.id}`, "user", "规则");
+  const evidence = legacyFacts(store, { kind: "noting", sessionId: seed.id, createdAt: "now" },
+    [{ sources: [{ entry: source, address: `T${turn.id}#E${source.entryOrdinal}` }], text: "规则",
+      category: "decision", actor: "user", createdAt: "now" }]).facts[0]!;
+  return knowledge(store, store.knowledgePath(seed.id, "main", turn.id), "global", "constraint",
+    [evidence.id], text, { run: { kind: "manual", createdAt: "now" } }).commit;
 };
 /** The identity this host binds its carriers to, read the way `restore` reads it: the resolved
  * database path, the memory session id the host recorded in its own state entry (absent before the
