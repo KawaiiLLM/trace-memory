@@ -328,6 +328,8 @@ export class CcProjection {
           const parentTurnId = nearestTurn(record, scan);
           turnId = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: source.text, startedAt: timestamp }).id;
           this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turnId, "turn");
+          // 97: a delivery recorded under this prompt's native id belongs to this Turn.
+          if (typeof record.promptId === "string" && record.promptId) this.memory.store.bindDeliveryPrompt(record.promptId, sessionId, turnId);
         } else {
           const owner = nearestTurn(record, scan);
           ownerTurn = owner === null ? null : this.memory.store.getTurn(owner);
@@ -490,8 +492,11 @@ export class CcProjection {
     }
     const completed = scan as CcTranscriptScan;
     if (projectionReady) try {
-      await this.persist(binding => binding.branch === branch && binding.selectedLeafUuid === completed.selectedLeafUuid
-        ? binding : { ...binding, branch, selectedLeafUuid: completed.selectedLeafUuid });
+      const transcriptOffset = completed.selectedLeafOffset ?? undefined;
+      await this.persist(binding => binding.branch === branch && binding.selectedLeafUuid === completed.selectedLeafUuid &&
+        binding.transcriptOffset === transcriptOffset ? binding
+        : (({ transcriptOffset: _stale, ...rest }) => ({ ...rest, branch, selectedLeafUuid: completed.selectedLeafUuid,
+          ...(transcriptOffset === undefined ? {} : { transcriptOffset }) }))(binding));
     } catch (error) {
       // Publication may have committed before the binding receipt failed. Do not append its
       // suffix twice on retry; reconstruct the authoritative selected path instead.

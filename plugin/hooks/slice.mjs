@@ -32,22 +32,23 @@ const stat = path => { try { const s = statSync(path); return [s.dev, s.ino, s.s
   catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 const readOptional = path => { try { return JSON.parse(readFileSync(path, 'utf8')); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
-const transcriptStat = stat(input.transcript_path);
-const inputs = JSON.stringify({ version, session: input.session_id, source: input.source,
-  transcript: input.transcript_path, transcriptStat: transcriptStat?.slice(2) ?? null,
-  ...(promptDelta ? { prompt: input.prompt, event: input.hook_event_name } : {}) });
+// 97: rendering reads the database and at most the transcript tail after the stored leaf, so the
+// event's own identity keys it; Claude Code's concurrent transcript writes do not split one event.
+const inputs = JSON.stringify({ version, session: input.session_id, source: input.source, transcript: input.transcript_path,
+  ...(promptDelta ? { prompt: input.prompt, promptId: input.prompt_id ?? null, event: input.hook_event_name } : {}) });
 const keyOf = value => createHash('sha256').update(value).digest('hex');
 const key = keyOf(inputs), lock = join(state, `${key}.lock`);
 // Identity checks are independent of database freshness. Ownership, enrollment and database
 // watermarks in the renderer's snapshot describe its bodies, not admission of later consumers.
+// 97: the executor's import moves the selected leaf and branch, and Claude Code appends to the
+// transcript, while a context stays the same one; neither is identity.
 const identity = () => {
   const own = readOptional(join(config.stateDir, 'bindings', `${input.session_id}.json`));
   const pid = process.env.CLAUDE_PID;
   const record = pid && /^\d+$/.test(pid) ? readOptional(join(config.stateDir, 'native-sessions', `${pid}.json`)) : null;
-  return JSON.stringify({ db: stat(dbPath)?.slice(0, 2) ?? null, transcriptStat: stat(input.transcript_path),
+  return JSON.stringify({ db: stat(dbPath)?.slice(0, 2) ?? null,
     own: own && { nativeSessionId: own.nativeSessionId, coreSessionId: own.coreSessionId,
-      nativeProcess: own.nativeProcess, transcriptPath: own.transcriptPath, dbPath: own.dbPath,
-      branch: own.branch, selectedLeafUuid: own.selectedLeafUuid, lastClose: own.lastClose },
+      nativeProcess: own.nativeProcess, transcriptPath: own.transcriptPath, dbPath: own.dbPath },
     native: record && { pid: record.pid, startedAt: record.startedAt, nativeSessionId: record.nativeSessionId,
       transcriptPath: record.transcriptPath, source: record.source } });
 };
@@ -104,13 +105,13 @@ while (!staged) {
         return result;
       };
       // Lifecycle is never retried. Clear's frozen material remains owned by its preparation.
-      invoke(promptDelta ? 'hook-delta-prepare' : 'hook-prepare');
+      if (!promptDelta) invoke('hook-prepare');
       const before = identity();
+      // The renderer records every part it returns as delivered before this stage is published (97).
       const { selection, snapshot, slices } = JSON.parse(invoke(promptDelta ? 'hook-delta' : 'hook-slices').stdout);
       if (!promptDelta && !/^[a-f0-9]{64}$/.test(selection) || !Array.isArray(slices) || slices.length !== 24)
         throw new Error('CC renderer returned an invalid selection or slot count');
-      if (before !== identity() || JSON.stringify(transcriptStat) !== JSON.stringify(stat(input.transcript_path)))
-        throw new Error('native identity or transcript changed during SessionStart rendering');
+      if (before !== identity()) throw new Error('native identity changed during SessionStart rendering');
       remaining();
       // hook-slices captures snapshot and bodies in one read transaction. Never replace its
       // descriptor with current database metadata, or rerender because another writer committed.
@@ -133,7 +134,8 @@ while (!staged) {
 remaining();
 if (staged.inputs !== inputs || startedAt < staged.windowStart || startedAt >= staged.deadline)
   throw new Error('invalid SessionStart stage generation');
-if (staged.error) throw new Error(`SessionStart stage producer failed: ${staged.error}`);
+// 97: the producer reported its own failure; the other slots pass the request through silently.
+if (staged.error) process.exit(0);
 if (staged.identity !== identity()) throw new Error('native identity or transcript changed before its staged slice was read');
 const slice = staged.slices[slot];
 if (slice) process.stdout.write(`${JSON.stringify(promptDelta

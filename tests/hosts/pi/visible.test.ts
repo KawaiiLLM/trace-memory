@@ -39,7 +39,7 @@ const view = (h: ReturnType<typeof host>, binding = bound(h)) =>
 const carrierOf = (entry: { details?: unknown }) => (entry.details as { traceMemory: Carrier }).traceMemory;
 const customMessages = (h: ReturnType<typeof host>) => h.entries.filter(e => e.type === "custom_message") as CustomMessageEntry[];
 
-test("29a case 3 (injection identity): the injected message carries exactly the commit ids it supplied, and is visible as knowledge but never as Raw", async () => {
+test("29a case 3 (injection identity): the injected message carries exactly the commit ids it supplied, and is never Raw", async () => {
   const h = host(quiet);
   try {
     const commit = seedKnowledge(h);
@@ -49,12 +49,7 @@ test("29a case 3 (injection identity): the injected message carries exactly the 
     const entry = customMessages(h)[0]!;
     expect(carrierOf(entry).db).toBe(h.dbPath);
     expect(carrierOf(entry).supplied).toEqual({ entries: [], factIds: [], knowledgeCommitIds: [commit], knowledgeTokens: tokens(result.message.content) });
-    const visible = view(h);
-    expect([...visible.knowledgeCommitIds]).toEqual([commit]);
-    expect(visible.raw.get(entry.id)).toBeUndefined(); // our own injection is not a source entry
-    // The commit id appears in the rendered block as well; the coverage above came from the metadata,
-    // and a knowledge id that was never supplied is not conjured out of the text.
-    expect(visible.knowledgeCommitIds.has(commit + 1)).toBe(false);
+    expect(view(h).raw.get(entry.id)).toBeUndefined(); // our own injection is not a source entry
     // The injection happens once: the next prompt returns no message and therefore no second carrier.
     await h.answer(); await h.emit("agent_settled"); await h.drain();
     expect(await h.prompt("second")).toBeUndefined();
@@ -71,14 +66,18 @@ test("29a case 4 (allocation identity): the first prompt's injection is bound to
     // Written before the first reply, so there is no memory session id yet to bind to.
     expect(carrierOf(entry).session).toBeNull();
     expect(carrierOf(entry).pi).toBe(h.ctx.sessionManager.getSessionId());
-    expect([...view(h).knowledgeCommitIds]).toEqual([commit]);
+    // 97: the delivery is recorded for this context before its memory session exists.
+    const store = h.memory.store, owner = `pi:${h.ctx.sessionManager.getSessionId()}`;
+    expect([...store.deliveredKnowledge({ owner, sessionId: null, headTurnId: null, prompts: store.deliveryPrompts(owner) })
+      .knowledgeCommitIds]).toEqual([commit]);
     await h.answer(); await h.emit("agent_settled"); await h.drain();
     const binding = bound(h);
     expect(binding.session).toBeGreaterThan(0); // the reply allocated it
-    expect([...view(h, binding).knowledgeCommitIds]).toEqual([commit]); // still recognised, through `pi`
-    // Another database's equal integers, and another memory session's carrier, satisfy nothing.
-    expect(view(h, { ...binding, db: `${h.dbPath}.other` }).knowledgeCommitIds.size).toBe(0);
-    expect(view(h, { ...binding, session: binding.session! + 1, pi: "other-pi" }).knowledgeCommitIds.size).toBe(0);
+    const head = store.listTurns(binding.session!).at(-1)!.id;
+    expect([...store.deliveredKnowledge({ owner, sessionId: binding.session!, branch: "main", headTurnId: head })
+      .knowledgeCommitIds]).toEqual([commit]); // the prompt's Turn owns it once allocated
+    // Another context's records satisfy nothing.
+    expect(store.deliveredKnowledge({ owner: "pi:other-pi", sessionId: null, headTurnId: null }).knowledgeCommitIds.size).toBe(0);
   } finally { await h.dispose(); }
 });
 
@@ -117,9 +116,6 @@ test("29a case 5/6 (compaction baseline, retained entries): the custom summary a
     expect(visible.raw.get(kept)).toBe("source"); // a pre-compaction source Pi retained still counts
     expect(visible.raw.get(dropped)).toBe("view"); // …and one it summarised away is covered by the carrier
     for (const entry of supplied.entries) expect(visible.raw.has(entry.nativeId)).toBe(true);
-    // The replacement re-establishes the knowledge too: the injection entry it summarised away is gone
-    // from the context, and the baseline is rebuilt from the accepted replacement alone.
-    expect([...visible.knowledgeCommitIds]).toEqual([commit]);
   } finally { await h.dispose(); }
 });
 
@@ -161,7 +157,6 @@ test("29a case 7 (opaque fallback): a native summary proves nothing, and the ent
     await h.prompt("first");
     await h.emit("message_end", { message: reply("one") });
     const kept = h.entries.at(-1)!.id, injection = customMessages(h)[0]!.id;
-    expect(view(h).knowledgeCommitIds.size).toBe(1); // visible while the injection is in the context
 
     // Pi's own compaction entry: no `traceMemory`, so no coverage claim of any kind is read off its
     // free text — not the knowledge it summarised, and not the entries it replaced.
@@ -170,7 +165,6 @@ test("29a case 7 (opaque fallback): a native summary proves nothing, and the ent
     const context = (h.ctx.sessionManager.buildContextEntries() as SessionEntry[]).map(e => e.id);
     expect(context).not.toContain(injection);
     const visible = view(h);
-    expect(visible.knowledgeCommitIds.size).toBe(0);
     expect(visible.factIds.size).toBe(0);
     expect(visible.raw.get(kept)).toBe("source"); // a retained entry still counts on its own
     expect([...visible.raw.values()].every(v => v === "source")).toBe(true); // nothing is tier-1 covered
@@ -197,7 +191,8 @@ test("29a case 9 / the memoized view: one computation per context position, and 
     const visible = visibility({ getLeafId: () => manager.getLeafId(), getEntry: id => manager.getEntry(id),
       buildContextEntries: () => { built++; return manager.buildContextEntries(); } });
     const binding = bound(h);
-    expect([...visible(binding).knowledgeCommitIds]).toEqual([commit]);
+    const retained = [...visible(binding).raw];
+    expect(retained.length).toBeGreaterThan(0);
     // A streaming token moves nothing: the leaf, the entry count and the binding are unchanged, so the
     // cached view is returned without walking the context again.
     for (let i = 0; i < 50; i++) visible(binding);
@@ -205,7 +200,7 @@ test("29a case 9 / the memoized view: one computation per context position, and 
     // A new commit changes applicability, not this context: the view is unchanged and — because the
     // database is deliberately not in the key — it is not recomputed either.
     seedKnowledge(h, "另一条全局规则");
-    expect([...visible(binding).knowledgeCommitIds]).toEqual([commit]);
+    expect([...visible(binding).raw]).toEqual(retained);
     expect(built).toBe(1);
     // A real append extends the selected view, without rebuilding historical context.
     await h.prompt("second");

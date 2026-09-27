@@ -1,17 +1,16 @@
-import { knowledgeStateKey, noVisibility, type SuppliedMaterial, type VisibleView } from "../../core/api/visible.ts";
-import { memoryBodyHash } from "../../core/render/material.ts";
-import { legacyKnowledgeTokens } from "../../core/render/retained-knowledge.ts";
+import { noVisibility, type SuppliedMaterial, type VisibleView } from "../../core/api/visible.ts";
 
 /** The identity a Pi envelope is bound to, so another database's equal integers can never satisfy
  * coverage and one memory session's material is not read as another's. `session` is null before the
  * first reply allocates the memory session; that envelope is recognized through its Pi session id. */
 export interface VisibleBinding { db: string; session: number | null; pi: string }
 
-/** Pi's payload persisted under `details.traceMemory`. */
+/** Pi's payload persisted under `details.traceMemory`. Knowledge delivery is recorded in the
+ * database (97); `prompt` names the delivery this carrier's node owns, and its `supplied` Knowledge
+ * fields are descriptive only. */
 export interface Carrier extends VisibleBinding {
   supplied: SuppliedMaterial;
-  /** Binds new accounting metadata to the exact retained text. Legacy carriers omit both. */
-  knowledgeHash?: string;
+  prompt?: string;
   /** Legacy Ticket 31 field. New foreground eligibility never consults it; old persisted envelopes
    * retain their material and legacy worker metadata. */
   generation?: number;
@@ -20,15 +19,6 @@ export interface Carrier extends VisibleBinding {
 /** The shape needed from one entry returned by Pi's `buildContextEntries()`. */
 export interface ContextEntry { id: string; parentId?: string | null; type: string; customType?: string; details?: unknown;
   content?: unknown; summary?: string }
-
-export const knowledgeAccountingHash = (text: string, cost: number): string => memoryBodyHash(JSON.stringify([cost, text]));
-const carrierText = (entry: ContextEntry): string => {
-  if (entry.type === "compaction" && typeof entry.summary === "string") return entry.summary;
-  if (typeof entry.content === "string") return entry.content;
-  if (Array.isArray(entry.content) && entry.content.every(block => block?.type === "text" && typeof block.text === "string"))
-    return entry.content.map(block => block.text).join("\n");
-  throw new Error("Trace Memory: retained memory carrier has no complete text payload");
-};
 
 /** The Pi envelope this entry holds for this binding, or nothing. Fails closed on every mismatch. */
 const carrierOf = (entry: ContextEntry, binding: VisibleBinding): Carrier | undefined => {
@@ -55,20 +45,14 @@ const carrierOf = (entry: ContextEntry, binding: VisibleBinding): Carrier | unde
   const bound = binding.session !== null && carrier.session === binding.session;
   const beforeAllocation = carrier.session === null && carrier.pi === binding.pi;
   if (!bound && !beforeAllocation) return;
-  if (Object.hasOwn(supplied, "knowledgeTokens") || Object.hasOwn(carrier, "knowledgeHash")) {
-    if (!Number.isSafeInteger(supplied.knowledgeTokens) || Number(supplied.knowledgeTokens) < 0
-        || carrier.knowledgeHash !== knowledgeAccountingHash(carrierText(entry), supplied.knowledgeTokens as number))
-      throw new Error("Trace Memory: invalid retained Knowledge accounting metadata or payload");
-  }
   return carrier as unknown as Carrier;
 };
 
-/** Derive visible material from Pi's selected context and nothing else. Entries arrive in Pi order,
- * so a retained original entry overrides a bounded representation supplied for the same native id. */
+/** Derive visible Raw and facts from Pi's selected context and nothing else. Entries arrive in Pi
+ * order, so a retained original entry overrides a bounded representation supplied for the same
+ * native id. Delivered Knowledge is not derived here: it is recorded in the database (97). */
 export function visibleView(entries: readonly ContextEntry[], binding: VisibleBinding): VisibleView {
-  const view = noVisibility();
-  view.knowledgeTokens = 0;
-  return collectVisibleView(view, entries, binding);
+  return collectVisibleView(noVisibility(), entries, binding);
 }
 
 /** Validate the whole appended delta before touching the borrowed memo. A later malformed carrier
@@ -80,18 +64,14 @@ export function extendVisibleView(view: VisibleView, entries: readonly ContextEn
     if (representation === "source" || !view.raw.has(id)) view.raw.set(id, representation);
   for (const [id, native] of delta.rawEntryIds ?? []) (view.rawEntryIds ??= new Map()).set(id, native);
   for (const id of delta.factIds) view.factIds.add(id);
-  for (const id of delta.knowledgeCommitIds) view.knowledgeCommitIds.add(id);
-  for (const state of delta.knowledgeStates ?? []) (view.knowledgeStates ??= new Set()).add(state);
-  view.knowledgeTokens = (view.knowledgeTokens ?? 0) + delta.knowledgeTokens!;
   view.injection ||= delta.injection;
   view.suppliedGeneration = Math.max(view.suppliedGeneration, delta.suppliedGeneration);
   return view;
 }
 
 function collectVisibleView(view: VisibleView, entries: readonly ContextEntry[], binding: VisibleBinding): VisibleView {
-  const { raw, factIds, knowledgeCommitIds } = view;
+  const { raw, factIds } = view;
   const rawEntryIds = view.rawEntryIds ?? new Map<number, string>();
-  const knowledgeStates = view.knowledgeStates ?? new Set<string>();
   let { injection, suppliedGeneration } = view;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object" || typeof entry.id !== "string" || !entry.id.trim()) continue;
@@ -99,7 +79,6 @@ function collectVisibleView(view: VisibleView, entries: readonly ContextEntry[],
     const carrier = carrierOf(entry, binding);
     if (!carrier) continue;
     const supplied = carrier.supplied;
-    view.knowledgeTokens = (view.knowledgeTokens ?? 0) + (supplied.knowledgeTokens ?? legacyKnowledgeTokens(carrierText(entry)));
     if (entry.type === "custom_message") injection = true;
     if (carrier.pi === binding.pi && typeof carrier.generation === "number" && carrier.generation > suppliedGeneration)
       suppliedGeneration = carrier.generation;
@@ -109,10 +88,7 @@ function collectVisibleView(view: VisibleView, entries: readonly ContextEntry[],
       if (marked) rawEntryIds.set(item.id, item.nativeId);
     }
     for (const id of supplied.factIds ?? []) factIds.add(id);
-    for (const id of supplied.knowledgeCommitIds ?? []) knowledgeCommitIds.add(id);
-    for (const state of supplied.knowledgeStates ?? []) knowledgeStates.add(knowledgeStateKey(state));
   }
-  Object.assign(view, { ...(rawEntryIds.size ? { rawEntryIds } : {}),
-    ...(knowledgeStates.size ? { knowledgeStates } : {}), injection, suppliedGeneration });
+  Object.assign(view, { ...(rawEntryIds.size ? { rawEntryIds } : {}), injection, suppliedGeneration });
   return view;
 }

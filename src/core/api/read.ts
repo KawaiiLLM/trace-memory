@@ -347,8 +347,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   // under the existing scope and commit-graph rules. Its block layout lives in core/render/material.ts.
   const applicable = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string) =>
     store.listVisibleKnowledge(sessionId, projectId, headTurnId, branch);
-  /** 92: current visible exact versions minus bodies actually retained on the selected context.
-   * Facts and Raw are evidence, not substitutes for a knowledge publication. */
+  /** 92/97: current visible exact versions minus the node's delivered state, which hosts read from
+   * the per-node delivery records. Facts and Raw are evidence, not substitutes for a publication. */
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility(),
     transport = false): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
@@ -377,7 +377,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     if (!delta.length && !states.length) return empty();
 
     const line = knowledgeLine;
-    // Hosts account every retained occurrence, including inapplicable bodies, from its carrier.
+    // Hosts pass the recorded cost of every delivery on the path, including inapplicable bodies.
     // Only older direct API callers without that measured view need the compatibility projection;
     // normal publication must not re-render historical bodies just to discard their estimated cost.
     const unaccountedCost = () => {

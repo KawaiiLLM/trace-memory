@@ -10,7 +10,9 @@ import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
 import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
+export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget } from "./deliveries.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
+import { DELIVERIES_SQL, STATE_KEY, foldDelivered, type DeliveredState, type DeliveryNode, type DeliveryPart, type DeliveryRow, type DeliveryTarget } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
 import { factAddresses, renderKnowledge, renderKnowledgeChange, tokens } from "../render/index.ts";
 import { isKnowledgeCategory, knowledgeCategoryGroup } from "../model/index.ts";
@@ -1193,6 +1195,7 @@ export class Store {
       migrateDreamingRanges64d(this.db);
       this.db.exec(PROCESSING_SQL);
       this.db.exec(EXECUTIONS_SQL);
+      this.db.exec(DELIVERIES_SQL);
       // 86, option A: legacy Dreamer streaks used a range ID, not the oldest pending revision.
       // SQLite's application version was previously unused. Version 1 marks this data-only reset,
       // in the same transaction as the upgrade; later opens must preserve new revision-keyed streaks.
@@ -2500,6 +2503,110 @@ export class Store {
    * shorter path. */
   pathTurns(path: KnowledgePath): PathMembership {
     return path.branch && path.headTurnId != null ? this.pathSnapshot(path).turns : this.loadPathTurns(path);
+  }
+
+  /** 97: one owner's delivery rows, extended by id and cached like a path view. Prompt bindings are
+   * looked up only for rows still unbound. Reads inside a transaction never touch the cache. */
+  private readonly deliveryRows = new Map<string, { rows: DeliveryRow[]; last: number; mapped: Map<string, number> }>();
+  private ownerDeliveries(owner: string): { rows: readonly DeliveryRow[]; mapped: ReadonlyMap<string, number> } {
+    const outside = !this.db.isTransaction;
+    const cached = outside ? this.deliveryRows.get(owner) : undefined;
+    if (outside) this.db.exec("BEGIN");
+    try {
+      const fresh = (this.db.prepare(`SELECT id, turn_id, prompt, baseline, commits, states, knowledge_tokens
+        FROM knowledge_deliveries WHERE owner = ? AND id > ? ORDER BY id`).all(owner, cached?.last ?? 0) as
+        { id: number; turn_id: number | null; prompt: string | null; baseline: number; commits: string; states: string; knowledge_tokens: number }[])
+        .map(row => ({ id: Number(row.id), turnId: row.turn_id === null ? null : Number(row.turn_id), prompt: row.prompt,
+          baseline: row.baseline === 1, commits: JSON.parse(row.commits) as number[], states: JSON.parse(row.states) as string[],
+          tokens: Number(row.knowledge_tokens) }));
+      const rows = [...cached?.rows ?? [], ...fresh], mapped = new Map(cached?.mapped);
+      const unbound = [...new Set(rows.flatMap(row => row.prompt !== null && !mapped.has(row.prompt) ? [row.prompt] : []))];
+      if (unbound.length) for (const row of this.db.prepare(`SELECT prompt, turn_id FROM delivery_prompts
+        WHERE prompt IN (SELECT value FROM json_each(?))`).all(JSON.stringify(unbound)) as { prompt: string; turn_id: number }[])
+        mapped.set(row.prompt, Number(row.turn_id));
+      if (outside) {
+        this.db.exec("COMMIT");
+        this.deliveryRows.set(owner, { rows, last: rows.at(-1)?.id ?? 0, mapped });
+      }
+      return { rows, mapped };
+    } catch (error) {
+      if (outside && this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** 97: the delivered state of one node: its lineage's rows folded from the last baseline. */
+  deliveredKnowledge(node: DeliveryNode): DeliveredState {
+    const { rows, mapped } = this.ownerDeliveries(node.owner);
+    const ancestry = node.sessionId !== null && node.headTurnId !== null
+      ? [...this.pathTurns({ sessionId: node.sessionId, headTurnId: node.headTurnId, ...(node.branch ? { branch: node.branch } : {}) })].reverse()
+      : [];
+    return foldDelivered(rows, ancestry, node.prompts ?? [], mapped);
+  }
+
+  /** The prompt keys an owner recorded under, in first-recorded order. */
+  deliveryPrompts(owner: string): string[] {
+    return (this.db.prepare(`SELECT prompt FROM knowledge_deliveries WHERE owner = ? AND prompt IS NOT NULL
+      GROUP BY prompt ORDER BY MIN(id)`).all(owner) as { prompt: string }[]).map(row => row.prompt);
+  }
+
+  /** The newest delivery row of an owner; a publisher compares it before recording. */
+  deliveryWatermark(owner: string): number {
+    return Number((this.db.prepare("SELECT IFNULL(MAX(id), 0) AS id FROM knowledge_deliveries WHERE owner = ?").get(owner) as { id: number }).id);
+  }
+
+  /** 97: record every emitted part at its node, in one transaction. Empty parts are not rows; a
+   * baseline always leaves one row, so a compaction that delivered nothing still restarts the set. */
+  recordKnowledgeDelivery(target: DeliveryTarget, parts: readonly DeliveryPart[], createdAt = new Date().toISOString()): number[] {
+    if (typeof target.owner !== "string" || !target.owner) throw new Error("delivery owner is required");
+    if (target.turnId != null && target.prompt != null) throw new Error("a delivery node is a Turn or a prompt, not both");
+    if (target.prompt != null && (typeof target.prompt !== "string" || !target.prompt)) throw new Error("delivery prompt key must be a nonempty string");
+    for (const part of parts) {
+      if (!part.knowledgeCommitIds.every(id => Number.isSafeInteger(id) && id > 0) || !part.knowledgeStates.every(key => STATE_KEY.test(key))
+          || !Number.isSafeInteger(part.knowledgeTokens) || part.knowledgeTokens < 0) throw new Error("invalid delivery part");
+    }
+    const kept = parts.filter(part => part.knowledgeCommitIds.length || part.knowledgeStates.length || part.knowledgeTokens);
+    const rows = kept.length ? kept : target.baseline ? [{ knowledgeCommitIds: [], knowledgeStates: [], knowledgeTokens: 0 }] : [];
+    if (!rows.length) return [];
+    return this.transaction(() => {
+      if (target.turnId != null) {
+        const host = this.db.prepare("SELECT s.host FROM turns t JOIN sessions s ON s.id = t.session_id WHERE t.id = ?").get(target.turnId) as { host: string } | undefined;
+        if (host?.host !== target.owner) throw new Error(`delivery Turn ${target.turnId} does not belong to ${target.owner}`);
+      }
+      const commits = [...new Set(rows.flatMap(part => part.knowledgeCommitIds))];
+      const known = Number((this.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions WHERE id IN (SELECT value FROM json_each(?))")
+        .get(JSON.stringify(commits)) as { count: number }).count);
+      if (known !== commits.length) throw new Error("delivery names an unknown knowledge version");
+      const insert = this.db.prepare(`INSERT INTO knowledge_deliveries(owner, turn_id, prompt, baseline, commits, states, knowledge_tokens, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+      return rows.map((part, index) => Number(insert.run(target.owner, target.turnId ?? null, target.prompt ?? null,
+        target.baseline && index === 0 ? 1 : 0, JSON.stringify(part.knowledgeCommitIds), JSON.stringify(part.knowledgeStates),
+        part.knowledgeTokens, createdAt).lastInsertRowid));
+    });
+  }
+
+  /** 97: the import binds a host prompt key to the Turn that prompt created; the first binding wins. */
+  bindDeliveryPrompt(prompt: string, sessionId: number, turnId: number): void {
+    if (typeof prompt !== "string" || !prompt) throw new Error("delivery prompt key must be a nonempty string");
+    const turn = this.db.prepare("SELECT session_id FROM turns WHERE id = ?").get(turnId) as { session_id: number } | undefined;
+    if (!turn || Number(turn.session_id) !== sessionId) throw new Error(`Turn ${turnId} is not in session S${sessionId}`);
+    this.db.prepare("INSERT OR IGNORE INTO delivery_prompts(prompt, session_id, turn_id) VALUES (?, ?, ?)").run(prompt, sessionId, turnId);
+  }
+
+  /** A read-only snapshot for work that must see one database state: path views built inside it
+   * are discarded with it, as in a write transaction. */
+  readSnapshot<T>(fn: () => T): T {
+    if (this.db.isTransaction) return fn();
+    this.db.exec("BEGIN");
+    this.transactionPaths = new Map();
+    try {
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    } finally { this.transactionPaths = null; }
   }
 
   private loadPathTurns(path: KnowledgePath): Set<number> {

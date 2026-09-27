@@ -35,9 +35,9 @@ export interface VisibleView {
   rawEntryIds?: Map<number, string>;
   factIds: Set<number>;
   knowledgeCommitIds: Set<number>;
-  /** Canonical identities of complete state notices, kept separate from exact body visibility. */
+  /** Canonical identities of complete state notices already shown, kept separate from exact body visibility. */
   knowledgeStates?: Set<string>;
-  /** Sum of retained publication costs, including measured legacy text. Only unaccounted API views omit it. */
+  /** 97: the delivered publications' summed render-time Knowledge cost. Only unaccounted API views omit it. */
   knowledgeTokens?: number;
   /** Legacy visibility metadata retained for worker/fixture compatibility. Foreground eligibility
    * depends on exact bodies and state notices, never this initial-injection marker. */
@@ -59,3 +59,8 @@ export const noVisibility = (): VisibleView => ({ raw: new Map(), factIds: new S
 /** Stable persisted identity of one whole state notice. */
 export const knowledgeStateKey = (state: KnowledgeStateReceipt): string =>
   `${state.fromCommit}>${state.toCommits.join(",")}`;
+
+/** 97: a node's recorded delivered state, in the shape the foreground selector subtracts. */
+export const deliveredView = (state: { knowledgeCommitIds: Set<number>; knowledgeStates: Set<string>; knowledgeTokens: number }): VisibleView =>
+  ({ ...noVisibility(), knowledgeCommitIds: new Set(state.knowledgeCommitIds), knowledgeStates: new Set(state.knowledgeStates),
+    knowledgeTokens: state.knowledgeTokens });

@@ -17,6 +17,9 @@ import * as nativeSession from "../../src/hosts/cc/native-session.ts";
 import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 import { ccContextEvidence } from "../../src/hosts/cc/menu-context.ts";
 import { tokens } from "../../src/core/render/tokens.ts";
+import { ccDeltaInjection } from "../../src/hosts/cc/injection.ts";
+import { sliceCcInjection } from "../../src/hosts/cc/slices.ts";
+import { entry, knowledge, legacyFacts, session } from "../support/seed.ts";
 
 // 63: `/clear` binds the cleared-into native session as another lineage of the SAME core session as
 // the one it was cleared from — Claude Code's equivalent of Pi's in-place compaction.
@@ -53,6 +56,9 @@ function fixture(label: string, overrides: Record<string, unknown> = {}) {
 async function startParent(f: ReturnType<typeof fixture>, pid = process.pid) {
   vi.stubEnv("CLAUDE_PID", String(pid));
   await handleCcHook(f.config, { hook_event_name: "SessionStart", source: "startup", session_id: f.parentId, transcript_path: f.parentTranscriptPath });
+  // 97: the executor's import allocates and projects; a SessionStart Hook only reads what it published.
+  const importer = new CcImporter(f.config, readBinding(f.config, f.parentId)!);
+  try { await importer.reconcile(); } finally { importer.close(); }
   return readBinding(f.config, f.parentId)!;
 }
 const clearInto = (f: ReturnType<typeof fixture>) => handleCcHook(f.config,
@@ -194,9 +200,9 @@ test("73: clear truncates the Raw window rather than falling back, and warns in 
   expect(output!.systemMessage!.length).toBeLessThan(4_000);
   // The child binding records exactly the warning issued by the same successful clear Hook.
   expect(child.lastCompactionNotice).toBe(output!.systemMessage);
-  writeFileSync(f.childTranscriptPath, "{malformed native transcript}\n");
+  // A failing SessionStart (97: Hooks no longer read the transcript, so a binding mismatch fails it).
   await expect(handleCcHook(f.config, { hook_event_name: "SessionStart", source: "compact", session_id: f.childId,
-    transcript_path: f.childTranscriptPath })).rejects.toThrow();
+    transcript_path: join(f.dir, "another.jsonl") })).rejects.toThrow("disagrees");
   expect(readBinding(f.config, f.childId)!.lastCompactionNotice).toBe(output!.systemMessage);
   // 92 reads actual preserved context even on a compact event. Retain the real clear carrier,
   // not a boundary with missing/unknown retention metadata.
@@ -590,4 +596,32 @@ test("a SessionEnd on one lineage while another lineage's executor is live relea
   expect(readBinding(f.config, f.childId)!.executor).toEqual(live); // untouched
   const store = new Store(f.config.dbPath);
   try { expect(store.getSession(coreSessionId)!.closedAt).toBeNull(); } finally { store.close(); }
+});
+
+test("97 /clear starts an empty delivered set: the child holds exactly the clear supplement, and its first prompt adds nothing", async () => {
+  const f = fixture("delivery");
+  const parent = await startParent(f);
+  const store = new Store(f.config.dbPath);
+  try {
+    const seed = session(store, parent.projectId!, "fixture");
+    const turn = store.appendTurn({ sessionId: seed.id, kind: "turn", userPrompt: "rule", startedAt: "2026-01-01T00:00:00.000Z" });
+    const source = entry(store, seed.id, turn.id, "rule", "user", "rule");
+    const evidence = legacyFacts(store, { kind: "manual", sessionId: seed.id, createdAt: "now" }, [{ sources: [{ entry: source,
+      address: `T${turn.id}#E${source.entryOrdinal}` }], text: "rule", category: "decision", actor: "user", createdAt: "now" }]).facts[0]!;
+    const rule = knowledge(store, { sessionId: seed.id, headTurnId: turn.id }, "global", "constraint", [evidence.id], "Use pnpm.",
+      { run: { kind: "manual", createdAt: "now" } }).commit;
+    const slicer = (output: any, visible: any) => sliceCcInjection(visible, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance);
+    const parentPrompt = await ccDeltaInjection(f.config, { session_id: f.parentId, transcript_path: f.parentTranscriptPath },
+      { kind: "prompt", promptId: "p2" }, slicer);
+    expect(parentPrompt.filter(Boolean)).toHaveLength(1);
+    const output = await clearInto(f);
+    const header = envelopeHeader(output!.hookSpecificOutput.additionalContext);
+    expect(header.k).toEqual([rule]);
+    const child = readBinding(f.config, f.childId)!;
+    const delivered = store.deliveredKnowledge({ owner: `cc:${f.parentId}`, sessionId: child.coreSessionId, branch: child.branch,
+      headTurnId: child.clearedFrom!.compactionTurnId });
+    expect(delivered).toEqual({ knowledgeCommitIds: new Set([rule]), knowledgeStates: new Set(), knowledgeTokens: header.t });
+    expect((await ccDeltaInjection(f.config, { session_id: f.childId, transcript_path: f.childTranscriptPath },
+      { kind: "prompt", promptId: "child-p1" }, slicer)).filter(Boolean)).toEqual([]);
+  } finally { store.close(); }
 });

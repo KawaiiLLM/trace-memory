@@ -1,0 +1,190 @@
+// 97: Claude Code delivery is recorded at emission and read back per node; hooks never rescan the transcript.
+import { afterEach, expect, test, vi } from "vitest";
+import { appendFileSync, closeSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Store } from "../../src/core/store/index.ts";
+import { entry, knowledge, knowledgeBatch, legacyFacts, session } from "../support/seed.ts";
+import { readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
+import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
+import { CcImporter } from "../../src/hosts/cc/importer.ts";
+import { ccDeltaInjection, ccSessionStartInjection, databaseIdentity, decodeCcInjection, encodeCcInjection } from "../../src/hosts/cc/injection.ts";
+import { sliceCcInjection } from "../../src/hosts/cc/slices.ts";
+import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+
+const dirs: string[] = [];
+afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+const time = (second: number) => `2026-09-28T00:00:${String(second % 60).padStart(2, "0")}.000Z`;
+const line = (value: unknown) => `${JSON.stringify(value)}\n`;
+let clock = 0;
+const user = (uuid: string, parentUuid: string | null, promptId: string): CcNativeRecord => ({ uuid, parentUuid, type: "user",
+  timestamp: time(++clock), promptSource: "typed", promptId, message: { role: "user", content: uuid } });
+const assistant = (uuid: string, parentUuid: string): CcNativeRecord => ({ uuid, parentUuid, type: "assistant",
+  timestamp: time(++clock), message: { role: "assistant", content: [{ type: "text", text: uuid }] } });
+const attachment = (uuid: string, parentUuid: string, content: string): CcNativeRecord => ({ uuid, parentUuid, type: "attachment",
+  timestamp: time(++clock), attachment: { type: "hook_additional_context", hookEvent: "UserPromptSubmit", content: [content] } });
+
+/** An imported native session (the executor's work), one supporting fact and global knowledge. */
+async function fixture(texts = ["Use pnpm."], settings: Record<string, unknown> = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "tm97-cc-")); dirs.push(dir);
+  const transcriptPath = join(dir, "native.jsonl"), nativeSession = "native-97";
+  const config = resolveCcHostConfig({ dbPath: join(dir, "m.sqlite"), stateDir: join(dir, "s"), baseline: "2025-01-01T00:00:00.000Z", ...settings });
+  writeFileSync(transcriptPath, [user("u1", null, "p1"), assistant("a1", "u1")].map(line).join(""));
+  let importer = new CcImporter(config, await recordSessionStart(config, { hook_event_name: "SessionStart", source: "startup",
+    session_id: nativeSession, transcript_path: transcriptPath }, time(0)));
+  const imported = await importer.reconcile();
+  const store = new Store(config.dbPath), sessionId = imported.coreSessionId!;
+  // Global knowledge grounded in another session, so it applies on every branch of this one.
+  const seed = session(store, store.getSession(sessionId)!.projectId, "fixture");
+  const seedTurn = store.appendTurn({ sessionId: seed.id, kind: "turn", userPrompt: "rule", startedAt: time(0) });
+  const source = entry(store, seed.id, seedTurn.id, "rule", "user", "rule");
+  const fact = legacyFacts(store, { kind: "manual", sessionId: seed.id, createdAt: time(0) }, [{ sources: [{ entry: source,
+    address: `T${seedTurn.id}#E${source.entryOrdinal}` }], text: "rule", category: "decision", actor: "user", createdAt: time(0) }]).facts[0]!;
+  const path = { sessionId: seed.id, headTurnId: seedTurn.id };
+  const versions = knowledgeBatch(store, path, texts.map(text => ({ scope: "global" as const, category: "constraint" as const,
+    supports: [fact.id], text })), { kind: "manual", createdAt: time(0) }).committed;
+  const input = { session_id: nativeSession, transcript_path: transcriptPath };
+  const visible = () => ({ db: databaseIdentity(config.dbPath), nativeSession, coreSession: readBinding(config, nativeSession)!.coreSessionId });
+  const slicer = (output: Parameters<typeof sliceCcInjection>[1] extends never ? never : any, binding: Parameters<typeof sliceCcInjection>[0]) =>
+    sliceCcInjection(binding, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance);
+  const decode = (outputs: readonly ({ hookSpecificOutput: { additionalContext: string } } | null)[]) => outputs
+    .filter(output => output?.hookSpecificOutput.additionalContext).map(output => decodeCcInjection(output!.hookSpecificOutput.additionalContext, visible())!);
+  const commits = (outputs: Parameters<typeof decode>[0]) => decode(outputs).flatMap(header => header.commits);
+  return {
+    dir, config, store, sessionId, fact, path, versions, input, transcriptPath, nativeSession, visible, decode, commits,
+    /** Claude Code writes records; the executor imports them. */
+    append: async (...records: CcNativeRecord[]) => { appendFileSync(transcriptPath, records.map(line).join("")); return importer.reconcile(); },
+    write: (...records: CcNativeRecord[]) => appendFileSync(transcriptPath, records.map(line).join("")),
+    restartExecutor: async () => { importer.close(); importer = new CcImporter(config, readBinding(config, nativeSession)!); await importer.reconcile(); },
+    prompt: (promptId: string) => ccDeltaInjection(config, input, { kind: "prompt", promptId }, slicer),
+    compact: () => ccDeltaInjection(config, input, { kind: "compact" }, slicer),
+    resume: () => ccSessionStartInjection(config, { hook_event_name: "SessionStart", source: "resume", ...input }),
+    delivered: (headTurnId: number) => store.deliveredKnowledge({ owner: `cc:${nativeSession}`, sessionId, branch: readBinding(config, nativeSession)!.branch, headTurnId }),
+    turnOf: (uuid: string) => store.findSourceEntry(sessionId, nativeSession, uuid)!.turnId,
+    close: () => { importer.close(); store.close(); },
+  };
+}
+
+test("97 a prompt's delivery belongs to its own node: a rewind before it and a re-edit of it deliver again; its branch does not", async () => {
+  const f = await fixture();
+  try {
+    const [rule] = f.versions.map(item => item.commit);
+    expect(f.commits(await f.prompt("p2"))).toEqual([rule]); // delivered with prompt p2
+    await f.append(user("u2", "a1", "p2"), assistant("a2", "u2"));
+    expect(f.commits(await f.prompt("p3"))).toEqual([]); // p2's Turn owns it
+    await f.append(user("u3", "a2", "p3"), assistant("a3", "u3"));
+    expect([...f.delivered(f.turnOf("u3")).knowledgeCommitIds]).toEqual([rule]);
+
+    // Re-edit p2: a sibling Turn under the same parent does not inherit p2's delivery.
+    await f.append(user("u2-edit", "a1", "p2e"), assistant("a2-edit", "u2-edit"));
+    expect(f.delivered(f.turnOf("u2-edit")).knowledgeCommitIds.size).toBe(0);
+    expect(f.commits(await f.prompt("p4"))).toEqual([rule]);
+    await f.append(user("u4", "a2-edit", "p4"), assistant("a4", "u4"));
+
+    // Rewind before p2 altogether: a new root prompt holds nothing either.
+    await f.append(user("u-root", null, "pr"), assistant("a-root", "u-root"));
+    expect(f.delivered(f.turnOf("u-root")).knowledgeCommitIds.size).toBe(0);
+    expect(f.commits(await f.prompt("p5"))).toEqual([rule]);
+    await f.append(user("u5", "a-root", "p5"), assistant("a5", "u5"));
+
+    // Back onto the first branch: its own deliveries stand, and nothing is delivered again.
+    await f.append(user("u6", "a3", "p6"), assistant("a6", "u6"));
+    expect([...f.delivered(f.turnOf("u6")).knowledgeCommitIds]).toEqual([rule]);
+    expect(f.commits(await f.prompt("p7"))).toEqual([]);
+  } finally { f.close(); }
+});
+
+test("97 a delivery survives a restart and an import that has not caught up; a part Claude Code persisted to a file still counts", async () => {
+  const f = await fixture();
+  try {
+    const [rule] = f.versions.map(item => item.commit);
+    const first = await f.prompt("p2");
+    expect(f.commits(first)).toEqual([rule]);
+    // Claude Code wrote the prompt, but the executor has not imported it: the tail shows the prompt.
+    f.write(user("u2", "a1", "p2"), attachment("h2", "u2",
+      "<persisted-output>\nOutput too large (12KB). Full output saved to: /tmp/hook.txt\n\nPreview (first 2KB):\nTRACE\n...\n</persisted-output>"),
+      assistant("a2", "h2"));
+    expect(f.commits(await f.prompt("p3"))).toEqual([]);
+    await f.restartExecutor();
+    expect(f.commits(await f.prompt("p3"))).toEqual([]);
+    expect((await f.resume())).toBeNull();
+    // A new version is the only thing missing after all of that.
+    const added = knowledge(f.store, f.path, "global", "constraint", [f.fact.id], "Run vitest.", { run: { kind: "manual", createdAt: time(0) } }).commit;
+    expect(f.commits(await f.prompt("p3"))).toEqual([added]);
+  } finally { f.close(); }
+});
+
+test("97 a compaction's supplement is its baseline: versions, notices and cost restart together", async () => {
+  const f = await fixture(["Use pnpm.", "Run vitest."]);
+  try {
+    const [first, kept] = f.versions.map(item => item.commit) as [number, number];
+    expect(f.commits(await f.prompt("p2"))).toEqual([first, kept]);
+    await f.append(user("u2", "a1", "p2"), assistant("a2", "u2"));
+    const archived = f.store.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.path.sessionId, createdAt: time(0) },
+      operations: [{ op: "archive", knowledgeId: f.versions[0]!.knowledgeId, baseCommit: first, supports: [f.fact.id], reason: "withdrawn", createdAt: time(0) }] });
+    if (!archived.ok) throw new Error(archived.problems.join());
+    const archive = archived.committed[0]!.commit;
+    const notice = f.decode(await f.prompt("p3"));
+    expect(notice.flatMap(header => header.commits)).toEqual([]);
+    expect(notice.flatMap(header => header.states)).toEqual([{ fromCommit: first, toCommits: [archive] }]);
+    await f.append(user("u3", "a2", "p3"), assistant("a3", "u3"));
+    expect(f.decode(await f.prompt("p4"))).toEqual([]); // the notice is not repeated
+    await f.append(user("u4", "a3", "p4"), assistant("a4", "u4"));
+    const before = f.delivered(f.turnOf("u4"));
+    expect(before.knowledgeStates).toEqual(new Set([`${first}>${archive}`]));
+
+    const supplement = f.decode(await f.compact());
+    expect(supplement.flatMap(header => header.commits)).toEqual([kept]);
+    expect(supplement.flatMap(header => header.states)).toEqual([]);
+    const after = f.delivered(f.turnOf("u4"));
+    expect(after).toEqual({ knowledgeCommitIds: new Set([kept]), knowledgeStates: new Set(),
+      knowledgeTokens: supplement.reduce((sum, header) => sum + header.knowledgeTokens!, 0) });
+    expect(after.knowledgeTokens).toBeLessThan(before.knowledgeTokens);
+    expect(f.decode(await f.prompt("p5"))).toEqual([]);
+
+    // A compaction whose supplement could not be rendered still restarts the set, empty.
+    vi.spyOn(Store.prototype, "deliveryWatermark").mockImplementationOnce(() => { throw new Error("injected render failure"); });
+    await expect(f.compact()).rejects.toThrow("injected render failure");
+    expect(f.delivered(f.turnOf("u4")).knowledgeCommitIds.size).toBe(0);
+    expect(f.commits(await f.prompt("p5"))).toEqual([kept]);
+  } finally { f.close(); }
+});
+
+test("97 hooks read the transcript only after the stored leaf", async () => {
+  const f = await fixture();
+  try {
+    const [rule] = f.versions.map(item => item.commit);
+    await f.append(user("u2", "a1", "p2"), assistant("a2", "u2"));
+    const offset = readBinding(f.config, f.nativeSession)!.transcriptOffset!;
+    expect(offset).toBeGreaterThan(0);
+    // Everything before the stored offset becomes unreadable garbage of the same length.
+    const descriptor = openSync(f.transcriptPath, "r+");
+    try { writeSync(descriptor, Buffer.from(`${"{".repeat(offset - 1)}\n`), 0, offset, 0); } finally { closeSync(descriptor); }
+    f.write(user("u3", "a2", "p3"));
+    expect(f.commits(await f.prompt("p4"))).toEqual([rule]);
+    f.write(user("u4", "u3", "p4"));
+    expect(await f.resume()).toBeNull();
+    expect(f.commits(await f.compact())).toEqual([rule]);
+    const rows = f.store.db.prepare("SELECT prompt, turn_id, baseline FROM knowledge_deliveries ORDER BY id").all();
+    // The prompt delivery belongs to p4; the compaction to the head the unimported tail shows, p4 again.
+    expect(rows).toEqual([{ prompt: "p4", turn_id: null, baseline: 0 }, { prompt: "p4", turn_id: null, baseline: 1 }]);
+  } finally { f.close(); }
+});
+
+test("97 transition: a context with no records gets one delivery within its budget; unchanged, later prompts deliver nothing", async () => {
+  const f = await fixture(["First rule. " + "x".repeat(400), "Second rule. " + "y".repeat(400), "Third rule. " + "z".repeat(400)],
+    { "compaction.sharedAllowanceTokens": 1 });
+  try {
+    // Carriers written before 97 are never read: one here claims every version.
+    const old = encodeCcInjection(f.visible(), { text: "legacy", knowledgeCommitIds: f.versions.map(item => item.commit) });
+    await f.append(attachment("legacy", "a1", old));
+    f.store.setKnowledgeBudget("global", 300); f.store.setKnowledgeBudget("project", 0); f.store.setKnowledgeBudget("session", 0);
+    const first = f.decode(await f.prompt("p2"));
+    expect(first.flatMap(header => header.commits).length).toBeGreaterThan(0);
+    expect(first.flatMap(header => header.commits).length).toBeLessThan(3);
+    expect(first.reduce((sum, header) => sum + header.knowledgeTokens!, 0)).toBeLessThanOrEqual(300);
+    await f.append(user("u2", "legacy", "p2"), assistant("a2", "u2"));
+    expect(f.decode(await f.prompt("p3"))).toEqual([]);
+    expect(await f.resume()).toBeNull();
+  } finally { f.close(); }
+});

@@ -65,18 +65,13 @@ test("32/92: actual inherited carriers suppress duplicate bodies without grantin
     expect(injection.text).toContain(f.content.text);
     const binding = { db: "fixture-db", session: 1, pi: "fixture-pi" };
     // A retained carrier includes the body that Pi actually persisted, not just its IDs.
-    // Omit accounting metadata deliberately to exercise legacy text-based charging.
     const entry = { id: "injection", type: "custom_message", customType: "trace-memory", content: injection.text, details: { traceMemory: {
       ...binding, supplied: { entries: [], factIds: [], knowledgeCommitIds: injection.knowledgeCommitIds },
     } } };
-    const visible = visibleView([entry], binding);
-    expect(visible.knowledgeTokens).toBeGreaterThan(0);
-    expect([...visible.knowledgeCommitIds]).toEqual(injection.knowledgeCommitIds);
-    const inherited = f.freeze({ mode: "fork", visible });
+    const inherited = f.freeze({ mode: "fork", visible: visibleView([entry], binding) });
     expect(inherited.prepared?.supplied.knowledgeCommitIds).toEqual([]);
     expect(inherited.prepared).not.toHaveProperty("readKnowledgeCommits");
     expect(inherited.prepared?.text).not.toContain(f.content.text);
-    expect(visibleView([entry], { ...binding, db: "another-db" }).knowledgeCommitIds.size).toBe(0);
   } finally { f.memory.close(); }
 });
 

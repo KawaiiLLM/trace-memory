@@ -167,3 +167,70 @@ test("34c real native-session carrier survives reopen and ordinary prompt checks
     expect((await f.h.emit("before_agent_start", { prompt: "already visible" }))?.message).toBeUndefined();
   } finally { await f.dispose(); }
 });
+
+// 97: Pi records each publication at emission and reads its delivered state from the per-node records.
+const owner = (h: Host) => `pi:${h.ctx.sessionManager.getSessionId()}`;
+const deliveredAt = (h: Host) => h.memory.store.deliveredKnowledge({ owner: owner(h), sessionId: 1, branch: "main",
+  headTurnId: h.memory.store.listTurns(1).filter(turn => turn.kind === "turn").at(-1)!.id });
+const compact = async (h: Host) => {
+  const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100 } });
+  h.compaction(result.compaction.summary);
+  await h.emit("session_compact");
+  return result.compaction;
+};
+
+test("97 a compaction's supplement restarts the delivered set; rewinding before it restores the earlier records", async () => {
+  const { h, support } = await seeded();
+  try {
+    const before = [...h.entries];
+    const [later] = create(h, support, "project", "Created before compaction.");
+    const summary = await compact(h);
+    expect(summary.summary).toContain("Created before compaction.");
+    expect(summary.details.traceMemory.prompt).toMatch(/^[0-9a-f-]{36}$/);
+    // The supplement is the compaction node's delivery: nothing is missing after it.
+    expect((await h.prompt("after compaction"))?.message).toBeUndefined();
+    // Back before the compaction, its supplement is not on the path; the earlier delivery is.
+    h.entries.splice(0, h.entries.length, ...before);
+    await h.emit("session_tree");
+    const rewound = (await h.prompt("rewound"))?.message;
+    expect(rewound.content).toContain("Created before compaction.");
+    expect(rewound.content).not.toContain("Use pnpm.");
+    expect(carrier(rewound).supplied.knowledgeCommitIds).toEqual([later!.commit]);
+  } finally { await h.dispose(); }
+});
+
+test("97 a native compaction restarts the set empty; a compaction Pi never appends records nothing on the path", async () => {
+  const { h } = await seeded();
+  try {
+    // Pi's own compaction carries none of ours: it is a node whose delivery is empty.
+    h.compaction("native summary");
+    await h.emit("session_compact");
+    expect((await served(h, "after native compaction")).content).toContain("Use pnpm.");
+    const delivered = deliveredAt(h);
+    expect(delivered.knowledgeCommitIds.size).toBe(1);
+    // The supplement is recorded at emission, but no compaction entry and no session_compact follow.
+    await h.emit("session_before_compact", { preparation: { tokensBefore: 100 } });
+    expect(deliveredAt(h)).toEqual(delivered);
+    expect((await h.prompt("after cancelled compaction"))?.message).toBeUndefined();
+  } finally { await h.dispose(); }
+});
+
+test("97 transition: carriers from before 97 are not read; one delivery within budget, then nothing while unchanged", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "compaction.sharedAllowanceTokens": 1 });
+  try {
+    await h.prompt(); await h.answer();
+    const support = fact(h, "use pnpm");
+    const created = create(h, support, "project", ...["First", "Second", "Third"].map(name =>
+      `${name} rule. ${Array.from({ length: 60 }, (_, i) => `${name.toLowerCase()}${i}`).join(" ")}`));
+    // A pre-97 carrier claims every version; it names no delivery record.
+    h.persist({ role: "custom", customType: "trace-memory", content: "legacy", display: false, details: { traceMemory: {
+      db: h.dbPath, session: 1, pi: h.ctx.sessionManager.getSessionId(),
+      supplied: { entries: [], factIds: [], knowledgeCommitIds: created.map(item => item.commit) } } } });
+    for (const field of ["global", "project", "session"] as const) h.memory.store.setKnowledgeBudget(field, field === "project" ? 300 : 0);
+    const first = await served(h, "first after deployment");
+    const ids = carrier(first).supplied.knowledgeCommitIds;
+    expect(ids.length).toBeGreaterThan(0);
+    expect(ids.length).toBeLessThan(3);
+    expect((await h.prompt("unchanged"))?.message).toBeUndefined();
+  } finally { await h.dispose(); }
+});

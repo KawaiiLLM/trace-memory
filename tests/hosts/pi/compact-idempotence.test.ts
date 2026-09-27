@@ -48,7 +48,10 @@ test("persisted hook lifecycle: repeat, N progress, 117 knowledge commits, small
     const c = result.compaction;
     const id = manager.appendCompaction(c.summary, c.firstKeptEntryId, c.tokensBefore, c.details, true);
     await h.emit("session_compact", { compactionEntry: manager.getEntry(id) });
-    return c;
+    // 97: each emission records its own delivery under a fresh key; the material is what repeats.
+    const { prompt, ...traceMemory } = c.details.traceMemory;
+    expect(prompt).toMatch(/^[0-9a-f-]{36}$/);
+    return { ...c, details: { ...c.details, traceMemory } };
   };
   try {
     f.script(() => say("answer"));

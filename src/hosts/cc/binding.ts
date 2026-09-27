@@ -43,6 +43,9 @@ export interface CcSessionBinding {
   projectId: number | null;
   branch: string;
   selectedLeafUuid: string | null;
+  /** 97: byte offset just after the selected leaf's line at its import. Hooks read only what
+   * follows it. Absent on bindings written before 97. */
+  transcriptOffset?: number;
   executor: CcExecutorBinding | null;
   /** Native SessionStart owner; fences a delayed SessionEnd from a previous native process. */
   nativeProcess?: CcProcessIdentity;
@@ -124,6 +127,7 @@ function parseBinding(value: unknown): CcSessionBinding {
       (binding.coreHost !== undefined && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:"))) ||
       (binding.clearedFrom !== undefined && !validClearedFrom(binding.clearedFrom)) ||
       (binding.clearedInto !== undefined && (typeof binding.clearedInto?.nativeSessionId !== "string" || typeof binding.clearedInto.at !== "string")) ||
+      (binding.transcriptOffset !== undefined && (!Number.isSafeInteger(binding.transcriptOffset) || binding.transcriptOffset < 0)) ||
       (binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid)))
     throw new Error("invalid Claude Code binding record");
   return binding as CcSessionBinding;
@@ -149,7 +153,7 @@ export function readBinding(config: ResolvedCcHostConfig, nativeSessionId: strin
 export function dropLostCoreSession(binding: CcSessionBinding, store: Pick<Store, "getSession" | "getProject">): CcSessionBinding {
   if (binding.coreSessionId === null || store.getSession(binding.coreSessionId)) return binding;
   const { coreSessionId: _coreSessionId, coreHost: _coreHost, clearedFrom: _clearedFrom, clearedInto: _clearedInto,
-    selectedLeafUuid: _selectedLeafUuid, branch: _branch, projectId, ...rest } = binding;
+    selectedLeafUuid: _selectedLeafUuid, transcriptOffset: _transcriptOffset, branch: _branch, projectId, ...rest } = binding;
   return { ...rest, coreSessionId: null, branch: "main", selectedLeafUuid: null,
     projectId: projectId !== null && store.getProject(projectId) ? projectId : null };
 }

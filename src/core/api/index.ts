@@ -8,7 +8,7 @@ import { readFacade, readProfile, type ListingOptions, type SearchScope, type Co
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
 // 29a/53: core owns only the host-neutral visibility contract; each host reads its own envelopes.
 import type { VisibleView } from "./visible.ts";
-export { knowledgeStateKey, noVisibility } from "./visible.ts";
+export { deliveredView, knowledgeStateKey, noVisibility } from "./visible.ts";
 export type { InitialContext, KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
@@ -26,7 +26,7 @@ export type { SharedMaterial, KnowledgeGroup, TaskRange, MemoryComposition } fro
 export { enrollmentDefault, sourceDigest } from "../store/index.ts";
 export { directoryAllocation } from "../project/directory.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
-export type { SourceInput, SourceEntry, TaskTarget } from "../store/index.ts";
+export type { SourceInput, SourceEntry, TaskTarget, DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget } from "../store/index.ts";
 export type { TriggerOrigin } from "../model/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
 export type { NotingDiagnostic, NotingNearAudit, NotingUnansweredNearPair } from "../noting/review.ts";

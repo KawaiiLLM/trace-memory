@@ -6,7 +6,6 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { selectedNativePath, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
-import { selectedCcVisibleRecords } from "../../src/hosts/cc/injection.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -88,10 +87,4 @@ test("a reply that goes on after an automatic compaction belongs to the Turn of 
     expect(turnOf("a1-continued")).toBe(turnOf("u1"));
     expect(store.getTurn(turnOf("u2"))!.userPrompt).toBe("u2");
   } finally { importer.close(); }
-});
-
-test("the context after an automatic compaction is its preserved messages, the boundary and what follows it", () => {
-  // Claude Code re-inserts the preserved messages after the summary; earlier messages are gone.
-  expect(selectedCcVisibleRecords(autoCompacted()).map(record => record.uuid))
-    .toEqual(["a1", "x1", "boundary", "instructions", "summary", "t", "u2", "a2"]);
 });

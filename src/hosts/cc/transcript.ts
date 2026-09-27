@@ -206,15 +206,18 @@ export class CcTranscriptScan {
   readonly completeOffset: number;
   readonly lineCount: number;
   readonly selectedLeafUuid: string | null;
+  /** 97: the byte offset just after the selected leaf's line; everything later is its tail. */
+  readonly selectedLeafOffset: number | null;
   readonly problems: string[];
   readonly newProblems: Set<string>;
 
   constructor(input: { nodes: Map<string, CcNativeNode>; callCarriers: Map<string, Set<string>>; snapshot: CcTranscriptSnapshot;
     stamp: FileStamp; reset: boolean; completeOffset: number; lineCount: number; selectedLeafUuid: string | null;
-    problems?: string[]; newProblems?: Set<string> }) {
+    selectedLeafOffset: number | null; problems?: string[]; newProblems?: Set<string> }) {
     this.nodes = input.nodes; this.callCarriers = input.callCarriers;
     this.snapshot = input.snapshot; this.stamp = input.stamp; this.reset = input.reset;
     this.completeOffset = input.completeOffset; this.lineCount = input.lineCount; this.selectedLeafUuid = input.selectedLeafUuid;
+    this.selectedLeafOffset = input.selectedLeafOffset;
     this.problems = input.problems ?? [];
     this.newProblems = input.newProblems ?? new Set();
   }
@@ -268,6 +271,7 @@ export class CcTranscriptCursor {
   private lineCount = 0;
   private recordCount = 0;
   private selectedLeafUuid: string | null = null;
+  private selectedLeafOffset: number | null = null;
   private nodes = new Map<string, CcNativeNode>();
   private callCarriers = new Map<string, Set<string>>();
   private unresolvedProblems = new Set<string>();
@@ -368,12 +372,13 @@ export class CcTranscriptCursor {
       const scanCalls = reset ? new Map<string, Set<string>>() : this.callCarriers;
       const problems = reset ? [] : [...this.unresolvedProblems], newProblems = new Set<string>();
       let selectedLeafUuid = reset ? null : this.selectedLeafUuid;
+      let selectedLeafOffset = reset ? null : this.selectedLeafOffset;
       let physicalRecords = reset ? 0 : this.recordCount;
       let lines = reset ? 0 : this.lineCount;
       const preliminary = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords,
         incompleteBytes: stamp.size - completeOffset, changed: true, reset });
       const scan = new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, snapshot: preliminary, stamp, reset,
-        completeOffset, lineCount: lines, selectedLeafUuid, problems, newProblems });
+        completeOffset, lineCount: lines, selectedLeafUuid, selectedLeafOffset, problems, newProblems });
       let beginning = 0;
       while (beginning < completeLength) {
         const ending = bytes.indexOf(0x0a, beginning);
@@ -403,7 +408,7 @@ export class CcTranscriptCursor {
               }
             }
             if (!collected) collectedById.set(node.uuid, { record, identity });
-            if (source) selectedLeafUuid = node.uuid;
+            if (source) { selectedLeafUuid = node.uuid; selectedLeafOffset = start + beginning; }
           }
         }
         if (collect) records.push(record);
@@ -431,7 +436,7 @@ export class CcTranscriptCursor {
         const resultSnapshot = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords, records,
           incompleteBytes: stamp.size - completeOffset, changed: true, reset });
         return new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, snapshot: resultSnapshot, stamp, reset,
-          completeOffset, lineCount: lines, selectedLeafUuid, problems, newProblems });
+          completeOffset, lineCount: lines, selectedLeafUuid, selectedLeafOffset, problems, newProblems });
       };
       return { scan, ordered, finish };
     } finally { closeSync(descriptor); }
@@ -488,6 +493,7 @@ export class CcTranscriptCursor {
     if (scan.reset) { this.nodes = scan.nodes; this.callCarriers = scan.callCarriers; }
     this.stamp = scan.stamp; this.completeOffset = scan.completeOffset;
     this.lineCount = scan.lineCount; this.recordCount = scan.snapshot.recordCount; this.selectedLeafUuid = scan.selectedLeafUuid;
+    this.selectedLeafOffset = scan.selectedLeafOffset;
     this.rejected = null; this.lastSnapshot = problem ? { ...scan.snapshot, problem } : scan.snapshot;
   }
 
@@ -603,3 +609,80 @@ export const ccSourceBlocks: SourceNormalizer = entry => {
     ? { kind: "text", text: block.text } : { kind: "marker", text: `[${typeof block.type === "string" ? block.type : "non-text content"} omitted]` });
   return result;
 };
+
+/** 97: the complete records written after `offset`, never anything before it. A file shorter than
+ * the offset was replaced or truncated: its tail is unknown. */
+export function readTranscriptTail(path: string, offset: number): CcNativeRecord[] | null {
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("transcript tail offset must be a nonnegative integer");
+  let descriptor: number;
+  try { descriptor = openSync(path, "r"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  try {
+    const size = fstatSync(descriptor).size;
+    if (size < offset) return null;
+    const bytes = Buffer.allocUnsafe(size - offset);
+    let read = 0;
+    while (read < bytes.length) {
+      const amount = readSync(descriptor, bytes, read, bytes.length - read, offset + read);
+      if (!amount) break;
+      read += amount;
+    }
+    const complete = bytes.subarray(0, bytes.subarray(0, read).lastIndexOf(0x0a) + 1).toString("utf8");
+    return complete.split("\n").filter(Boolean).map(line => {
+      let parsed: unknown;
+      try { parsed = JSON.parse(line); } catch (error) { throw new Error(`invalid completed transcript record in the tail: ${String(error)}`); }
+      const record = object(parsed);
+      if (!record) throw new Error("invalid completed transcript record in the tail: expected an object");
+      return record as CcNativeRecord;
+    });
+  } finally { closeSync(descriptor); }
+}
+
+/** 97: the prompts of the selected chain inside a tail, oldest first, and where that chain leaves
+ * the tail: the uuid of the first record before it, or null when the chain starts in the tail. */
+export function tailPrompts(records: readonly CcNativeRecord[]): { prompts: string[]; exit: string | null; leaf: string | null } {
+  const position = new Map<string, number>();
+  records.forEach((record, index) => { const id = nativeId(record); if (id && !position.has(id)) position.set(id, index); });
+  const leaf = [...records].reverse().find(record => classifySourceRecord(record) !== null);
+  if (!leaf) return { prompts: [], exit: null, leaf: null };
+  const prompts: string[] = [], seen = new Set<string>();
+  let current: CcNativeRecord | undefined = leaf;
+  for (;;) {
+    const id = nativeId(current)!;
+    if (seen.has(id)) throw new Error(`native lineage cycle at ${id}`);
+    seen.add(id);
+    if (classifySourceRecord(current)?.kind === "user" && typeof current.promptId === "string" && current.promptId)
+      prompts.unshift(current.promptId);
+    const at = position.get(id)!;
+    const parent = nativeParentId(current, uuid => (position.get(uuid) ?? -1) < at);
+    if (parent === null) return { prompts, exit: null, leaf: nativeId(leaf) };
+    current = position.has(parent) ? records[position.get(parent)!] : undefined;
+    if (!current) return { prompts, exit: parent, leaf: nativeId(leaf) };
+  }
+}
+
+/** The first timestamp of a transcript, read from its start only as far as that record. */
+export function readTranscriptCreatedAt(path: string): string | null {
+  let descriptor: number;
+  try { descriptor = openSync(path, "r"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  try {
+    let pending = "", position = 0;
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    for (;;) {
+      const amount = readSync(descriptor, chunk, 0, chunk.length, position);
+      if (!amount) return null;
+      position += amount;
+      pending += chunk.subarray(0, amount).toString("utf8");
+      let newline: number;
+      while ((newline = pending.indexOf("\n")) >= 0) {
+        const line = pending.slice(0, newline); pending = pending.slice(newline + 1);
+        if (!line) continue;
+        let record: unknown;
+        try { record = JSON.parse(line); } catch { return null; }
+        const created = nativeCreatedAt([record as CcNativeRecord]);
+        if (created) return created;
+      }
+    }
+  } finally { closeSync(descriptor); }
+}
