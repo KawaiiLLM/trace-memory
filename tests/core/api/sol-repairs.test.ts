@@ -33,17 +33,26 @@ const slice = (text: string, addresses: string[]) => ({ title: "Evidence slice",
 test("Sol 1: bound empty Turn/path never expands; full and unbound reads preserve membership", () => {
   const f = setup();
   try {
-    const left = f.text("LEFT PRIVATE");
+    const left = f.text("LEFT PRIVATE"), leftSecond = f.text("LEFT SECOND");
     const rightTurn = f.m.store.appendTurn({ sessionId: f.sessionId, kind: "turn", startedAt: time });
     const right = f.text("RIGHT", "user", rightTurn.id);
-    f.select([left.id], "left"); f.select([right.id], "right"); f.select([], "empty");
+    f.select([left.id, leftSecond.id], "left"); f.select([right.id], "right"); f.select([], "empty");
     for (const branch of ["right", "empty"]) for (const full of [false, true]) {
       const options = { branch, full, pageBudget: null };
       for (const address of ["T1", "T1@assistant"]) expect(f.m.trace(address, options)).not.toContain("LEFT PRIVATE");
       expect(f.m.trace("T1@assistant", options)).toBe("");
       expect(() => f.m.trace("T1#E1", options)).toThrow("does not exist on this path");
+      for (const range of ["T1#E1..E2", "T1#E1..E9"]) {
+        expect(f.m.trace(range, options)).not.toContain("LEFT PRIVATE");
+        expect(f.m.trace(range, options)).not.toContain("LEFT SECOND");
+      }
       expect(() => f.m.trace("T1#assistant", options)).toThrow("invalid public trace address");
     }
+    const leftRange = f.m.trace("T1#E1..E2", { branch: "left", pageBudget: null });
+    expect(leftRange).toContain("LEFT PRIVATE");
+    expect(leftRange).toContain("LEFT SECOND");
+    expect(leftRange).not.toContain("RIGHT");
+    expect(f.m.trace("T1#E1..E9", { branch: "left" })).toContain("LEFT SECOND");
     expect(f.m.trace("T1", { full: true, pageBudget: null })).toContain("LEFT PRIVATE");
     expect(f.m.trace("T1#E1@assistant", { branch: "legacy-without-path", full: true })).toContain("LEFT PRIVATE");
     const otherSession = f.m.store.createSession({ host: "test", projectId: f.m.store.getSession(f.sessionId)!.projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true });
@@ -178,6 +187,14 @@ test("Sol 5: semantic groups and walks budget complete framing; automatic facts 
     for (const address of ["F1,F2,F3", "F3,F1", "sol"]) {
       const assembled = f.m.trace(address, { itemBudget: 100, pageBudget: null });
       const grouped = tracePage(assembled).body; // collection receipts spend the page budget, not a fact's item budget
+      const items = grouped.split(/\n(?=\[(?:F\d+|T\d+)\](?:\s|$))/);
+      for (const [index, item] of items.entries()) {
+        expect(tokens(item)).toBeLessThanOrEqual(100);
+        if (/^\[T\d+\]/.test(item)) {
+          expect(items[index + 1]).toMatch(/^\[F\d+\]/);
+          expect(tokens(`${item}\n${items[index + 1]}`)).toBeLessThanOrEqual(100);
+        }
+      }
       expect(grouped).toContain("[F3]");
       if (address === "sol") expect(assembled).toContain("One representative per K");
       // drainTrace measures every whole response including receipts against maxTokens.
@@ -203,7 +220,7 @@ test("Sol 4: one source-path read serves a whole submission, including repeated 
   } finally { f.m.close(); }
 });
 
-test("Sol 2: entry-level reads retain normalized tool leaves' 100-token ceilings", () => {
+test("Sol 2: whole-entry tool leaves retain independent item/call/result ceilings and full reads", () => {
   const f = setup();
   try {
     const call = { ordinal: 1, name: "bash", callId: "long", status: "attempted", input: JSON.stringify({ command: "command ".repeat(900) }) };
@@ -219,8 +236,25 @@ test("Sol 2: entry-level reads retain normalized tool leaves' 100-token ceilings
       const eighty = renderEntry(source, { ...f.m.config.render, entryTokens: 80 }, undefined, undefined, selector, true);
       expect(tokens(eighty.content)).toBeLessThanOrEqual(80);
       const address = `T1#E${source.entryOrdinal}@${source.role === "assistant" ? "assistant" : "observation"}`;
-      expect(f.m.trace(address, { itemBudget: 100, pageBudget: null })).toContain("truncated");
-      expect(f.m.trace(address, { itemBudget: null, pageBudget: null })).toContain("truncated");
+      const payload = (source.role === "assistant" ? "command " : "output ").repeat(900).trim();
+      const boundedEntry = f.m.trace(address, { itemBudget: 100, toolCallBudget: null, toolResultBudget: null, pageBudget: null });
+      const renderedEntry = boundedEntry.split("\n\nReceipts:")[0]!;
+      expect(renderedEntry).toContain(`[T1#E${source.entryOrdinal}@`);
+      expect(tokens(renderedEntry)).toBeLessThanOrEqual(100);
+      expect(boundedEntry).toContain("truncated");
+      const itemOnlyNull = f.m.trace(address, { itemBudget: null, pageBudget: null });
+      expect(itemOnlyNull).toContain("truncated"); // the tool leaf keeps its independent ceiling
+      const otherOnlyNull = f.m.trace(address, { itemBudget: null,
+        [source.role === "assistant" ? "toolResultBudget" : "toolCallBudget"]: null, pageBudget: null });
+      expect(otherOnlyNull).toContain("truncated");
+      const ownToolNull = f.m.trace(address, { itemBudget: null,
+        [source.role === "assistant" ? "toolCallBudget" : "toolResultBudget"]: null, pageBudget: null });
+      expect(ownToolNull).toContain(payload);
+      expect(ownToolNull).not.toContain("truncated");
+      const allNull = f.m.trace(address, { itemBudget: null, toolCallBudget: null, toolResultBudget: null, pageBudget: null });
+      expect(allNull).toContain(payload);
+      expect(allNull).not.toContain("truncated");
+      expect(f.m.trace(address, { full: true, pageBudget: null })).toBe(allNull);
     }
   } finally { f.m.close(); }
 });

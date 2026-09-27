@@ -3,6 +3,7 @@ import { sourceSeededMemory, compacted } from "../../source-fixture.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
 import { setKnowledgeInjection, setSharedAllowance } from "../../knowledge-budget-fixture.ts";
 import { charge, xmlBlock } from "../../../src/core/render/index.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 const time = "2026-09-06T00:00:00Z";
 const open = () => sourceSeededMemory(":memory:", async () => { throw new Error("allocator calls no worker"); });
@@ -19,9 +20,10 @@ function fixture(extra = { knowledge: 0, facts: 0, raw: 0 }, noted = false, hist
   const factText = "word ".repeat(extra.facts) + "required fact";
   const knowledgeText = "word ".repeat(extra.knowledge) + "current complete knowledge";
   // Oversized facts are isolated as manual/historical writes, not new Noter output.
-  const f = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: historicalManual ? "manual" : "noting", createdAt: time }, entryIds: noted ? entries.map(e => e.id) : [],
-    facts: [{ turnId: t.id, text: factText, category: "observation", actor: "user", source: [`T${t.id}#user`], entryIds: entries.map(e => e.id), createdAt: time }] });
-  if (!f.ok) throw new Error(JSON.stringify(f));
+  const f = legacyFacts(memory.store, { sessionId: s.id, branch: "main", kind: historicalManual ? "manual" : "noting", createdAt: time }, [
+    { sources: [{ entry: entries[0]!, address: `T${t.id}#user` }], text: factText,
+      category: "observation", actor: "user", createdAt: time },
+  ], noted ? entries.map(e => e.id) : []);
   const k = memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "manual", createdAt: time },
     operations: [{ op: "create", topics: [], handle: "$k", author: "test", text: knowledgeText, category: "constraint", scope: "project", supports: [f.facts[0]!.id], reason: "initial", createdAt: time }] });
   if (!k.ok) throw new Error(JSON.stringify(k));
@@ -116,10 +118,10 @@ test("92: a historical unconsolidated fact stays eligible but cannot borrow shar
   setKnowledgeInjection(memory, 0);
   const raw = memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeId: "history", nativeLineage: "fixture",
     role: "assistant", text: "word ".repeat(2_000), raw: "", calls: [] });
-  const history = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "manual", createdAt: time }, entryIds: [],
-    facts: [{ turnId: t.id, text: "word ".repeat(2_000) + "historical fact", category: "observation", actor: "user", source: [`T${t.id}#user`],
-      entryIds: [memory.store.sourcePath(s.id, "main", t.id)[0]!.id], createdAt: time }] });
-  if (!history.ok) throw new Error(JSON.stringify(history));
+  const history = legacyFacts(memory.store, { sessionId: s.id, branch: "main", kind: "manual", createdAt: time }, [
+    { sources: [{ entry: memory.store.sourcePath(s.id, "main", t.id)[0]!, address: `T${t.id}#user` }],
+      text: "word ".repeat(2_000) + "historical fact", category: "observation", actor: "user", createdAt: time },
+  ]);
   memory.config.compaction.factsTokens = 9_000;
   const result = memory.compact(s.id, "main", t.id);
   expect("native" in result ? [] : result.supplied.entries.map(e => e.id)).toContain(raw.id);
@@ -141,9 +143,10 @@ test("92: processed Raw uses only its base remainder; facts independently keep t
   memory.config.compaction.rawTokens = 1_000;
   const newest = memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeId: "newest", nativeLineage: "fixture",
     role: "assistant", text: "word ".repeat(700), raw: "", calls: [] });
-  expect(memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "manual", createdAt: time },
-    facts: [{ turnId: t.id, text: "word ".repeat(8_000) + "NEWEST FACT", category: "observation", actor: "user", source: [`T${t.id}#user`],
-      entryIds: [primaryEntry.id], createdAt: time }] }).ok).toBe(true);
+  legacyFacts(memory.store, { sessionId: s.id, branch: "main", kind: "manual", createdAt: time }, [
+    { sources: [{ entry: primaryEntry, address: `T${t.id}#user` }], text: "word ".repeat(8_000) + "NEWEST FACT",
+      category: "observation", actor: "user", createdAt: time },
+  ]);
   const result = memory.compact(s.id, "main", t.id), windows = charged(result);
   expect("native" in result ? [] : result.supplied.entries.map(e => e.id)).toContain(newest.id);
   expect("native" in result ? [] : result.supplied.entries.map(e => e.id)).not.toContain(primaryEntry.id);
@@ -173,12 +176,18 @@ test("32e old pending holes and fully bound facts survive when final Raw does no
   const { s, t, entries } = fixture();
   const later = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t.id, kind: "turn", userPrompt: "later source", startedAt: "2026-09-07T00:00:00Z" });
   const newer = memory.store.sourcePath(s.id, "main", later.id).at(-1)!;
-  const added = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: time }, entryIds: [newer.id], facts: [
-    { turnId: later.id, text: "partly covered", category: "observation", actor: "user", source: [`T${t.id}#user`, `T${later.id}#user`], entryIds: [entries[0]!.id, newer.id], createdAt: time },
-    { turnId: later.id, text: "fully bound fact", category: "observation", actor: "user", source: [`T${t.id}#user`, `T${later.id}#user`], entryIds: [entries[0]!.id, newer.id], createdAt: time },
-    { turnId: t.id, text: "old pending fact hole", category: "observation", actor: "user", source: [`T${t.id}#user`], entryIds: [entries[0]!.id], createdAt: time },
-  ] });
-  if (!added.ok) throw new Error(JSON.stringify(added));
+  const olderSource = { entry: entries[0]!, address: `T${t.id}#user` };
+  const newerSource = { entry: newer, address: `T${later.id}#user` };
+  const added = legacyFacts(memory.store, { kind: "noting", sessionId: s.id, branch: "main", createdAt: time }, [
+    { turnId: later.id, sources: [olderSource, newerSource], text: "partly covered", category: "observation", actor: "user", createdAt: time },
+    { turnId: later.id, sources: [olderSource, newerSource], text: "fully bound fact", category: "observation", actor: "user", createdAt: time },
+    { turnId: t.id, sources: [olderSource], text: "old pending fact hole", category: "observation", actor: "user", createdAt: time },
+  ], [newer.id]);
+  expect(added.facts.map(fact => ({ turnId: fact.turnId, source: fact.source }))).toEqual([
+    { turnId: later.id, source: [`T${t.id}#user`, `T${later.id}#user`] },
+    { turnId: later.id, source: [`T${t.id}#user`, `T${later.id}#user`] },
+    { turnId: t.id, source: [`T${t.id}#user`] },
+  ]);
   const full = memory.compact(s.id, "main", later.id);
   memory.config.compaction.rawTokens = charged(full).raw;
   memory.config.compaction.sharedAllowanceTokens = 0;
@@ -196,14 +205,12 @@ test("32e fully bound facts: final Raw coverage filters before fact budgeting; r
   const older = append("older-source", "old source ".repeat(1_500));
   const newer = append("newer-source", "new source");
   memory.selectEntries(s.id, "main", [...entries.map(entry => entry.id), older.id, newer.id]);
-  const history = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: time },
-    entryIds: [older.id, newer.id], facts: [
-      { turnId: t.id, text: "older bound fact", category: "observation", actor: "user",
-        source: [`T${t.id}#E${older.entryOrdinal}`], entryIds: [older.id], createdAt: time },
-      { turnId: t.id, text: "newest covered " + "word ".repeat(850), category: "observation", actor: "user",
-        source: [`T${t.id}#E${newer.entryOrdinal}`], entryIds: [newer.id], createdAt: time },
-    ] });
-  if (!history.ok) throw new Error(JSON.stringify(history));
+  const history = legacyFacts(memory.store, { kind: "noting", sessionId: s.id, branch: "main", createdAt: time }, [
+    { sources: [{ entry: older, address: `T${t.id}#E${older.entryOrdinal}` }], text: "older bound fact",
+      category: "observation", actor: "user", createdAt: time },
+    { sources: [{ entry: newer, address: `T${t.id}#E${newer.entryOrdinal}` }], text: "newest covered " + "word ".repeat(850),
+      category: "observation", actor: "user", createdAt: time },
+  ], [older.id, newer.id]);
   expect(memory.store.factEntries(history.facts[0]!.id)).toEqual([older.id]);
   expect(memory.store.factEntries(history.facts[1]!.id)).toEqual([newer.id]);
   memory.config.compaction.rawTokens = 200;

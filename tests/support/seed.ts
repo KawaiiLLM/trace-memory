@@ -47,12 +47,13 @@ export function fact(memory: TraceMemory, path: KnowledgePath, title: string,
 type BoundSource = { entry: Pick<SourceEntryMeta, "id" | "turnId" | "entryOrdinal">; address: string };
 type LegacySeed = Pick<FactCommitInput, "text" | "category" | "actor" | "createdAt" | "support" | "negate" | "quote" | "status"> & {
   sources: readonly BoundSource[];
+  turnId?: number;
 };
 type SeedRun = Pick<RunInput, "kind" | "sessionId" | "branch" | "createdAt">;
 
 function legacyRow(seed: LegacySeed): FactCommitInput {
   if (!seed.sources.length) throw new Error("legacy fact requires bound entries");
-  return { turnId: seed.sources[0]!.entry.turnId, text: seed.text, category: seed.category, actor: seed.actor,
+  return { turnId: seed.turnId ?? seed.sources[0]!.entry.turnId, text: seed.text, category: seed.category, actor: seed.actor,
     createdAt: seed.createdAt, source: seed.sources.map(source => source.address),
     entryIds: seed.sources.map(source => source.entry.id),
     ...(seed.support !== undefined ? { support: seed.support } : {}),

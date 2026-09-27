@@ -56,6 +56,9 @@ test("entry/cleanup integration: carry budgets only its exact normalized Raw suf
     expect(carry).toContain("(selected facts)");
     expect(carry).toContain(factText); expect(carry).toContain(knowledgeText);
     expect(carry).toContain("negate F1 strong");
+    expect(carry).toContain(`[T${turn.id}#E${mixed.entryOrdinal}@assistant] ${factText}`);
+    expect(carry).toContain(`[T${turn.id}#E${result.entryOrdinal}@observation] Result evidence`);
+    expect(carry).toContain(`[T${turn.id}#E1@user] a later correction`);
     expect(m.store.factEntries(1)).toEqual([mixed.id, result.id]);
     expect(m.store.getFact(1)!.roles?.map(role => role.role)).toEqual(["assistant", "observation"]);
     expect(tokens(carry)).toBeGreaterThan(cap); // Only Pending raw owns the carry cap.

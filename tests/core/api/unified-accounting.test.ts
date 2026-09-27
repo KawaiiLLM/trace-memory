@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { TraceMemory, DEFAULT_CONFIG, renderEntry, tokens } from "../../../src/core/api/index.ts";
 import { renderFact, renderFactGroups } from "../../../src/core/render/index.ts";
+import { rawWindowTokens } from "../../../src/core/render/material.ts";
 import { unifiedFixture } from "../../fixtures/unified-entry.ts";
 
 const time = "2026-09-01T00:00:00Z";
@@ -28,8 +29,9 @@ test("33: fixed realistic fixture prices the exact Raw bytes for status, trigger
     expect(memory.taskEligibility("noting", target)).toEqual({ due: true });
     const batch = memory.notingBatch(target);
     expect(batch).toHaveLength(92);
-    expect(tokens(views.slice(0, batch.length).join("\n\n"))).toBeLessThanOrEqual(10000);
-    expect(tokens(views.slice(0, batch.length + 2).join("\n\n"))).toBeGreaterThan(10000);
+    expect(rawWindowTokens(views.slice(0, batch.length), [])).toBeLessThanOrEqual(10000);
+    expect(tokens(views.slice(0, batch.length + 1).join("\n\n"))).toBeLessThanOrEqual(10000); // bare Raw is not the batch charge
+    expect(rawWindowTokens(views.slice(0, batch.length + 1), [])).toBeGreaterThan(10000); // full framing rejects the next entry
     for (const count of [93, 94]) {
       memory.selectEntries(sessionId, "main", entries.slice(0, count).map(entry => entry.id));
       const measured = tokens(views.slice(0, count).join("\n\n"));

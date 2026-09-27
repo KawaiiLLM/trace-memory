@@ -53,7 +53,7 @@ test("92 supersedes completion policing: dispatch and result retain different de
   } finally { m.close(); }
 });
 
-test("33: Turn facts use ownership rather than citation overlap; collections sort by owning time", () => {
+test("93: Turn reads show only contributed segments; stored ownership and project order use the earliest source Turn", () => {
   const { m, sessionId, turn, entry } = setup();
   try {
     const next = m.store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", startedAt: "2026-08-01T00:00:00Z" });
@@ -65,8 +65,18 @@ test("33: Turn facts use ownership rather than citation overlap; collections sor
       { title: "First ownership", sources: [{ address: "T1#E1", text: "First ownership" }, { address: "T2#E1", text: "Confirmed ownership" }] },
       { title: "Second ownership", sources: [{ address: "T2#E1", text: "Second ownership" }] }] }));
     expect(result.factIds).toEqual([1, 2]);
-    expect(m.trace("F2", { pageBudget: null })).toContain("Second ownership");
-    expect(m.trace("F1", { pageBudget: null })).toContain("First ownership");
+    const firstTurn = m.trace("T1", { pageBudget: null });
+    const secondTurn = m.trace("T2", { pageBudget: null });
+    expect(firstTurn).toContain("[F1] First ownership");
+    expect(firstTurn).toContain("[T1#E1@assistant] First ownership");
+    expect(firstTurn).not.toContain("Confirmed ownership");
+    expect(firstTurn).not.toContain("[F2]");
+    expect(secondTurn).toContain("[F1] First ownership");
+    expect(secondTurn).toContain("[T2#E1@user] Confirmed ownership");
+    expect(secondTurn).toContain("[F2] Second ownership");
+    expect(secondTurn).not.toContain("[T1#E1@assistant] First ownership");
+    expect(m.store.getFact(1)!.turnId).toBe(turn.id);
+    expect(m.store.getFact(2)!.turnId).toBe(next.id);
     const grouped = m.trace('alpha"beta', { pageBudget: null });
     expect(grouped.indexOf("[F2]")).toBeLessThan(grouped.indexOf("[F1]"));
     expect(grouped).toContain("[T1#E1@assistant] First ownership");
