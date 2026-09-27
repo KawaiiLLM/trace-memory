@@ -770,9 +770,10 @@ that field are measured individually; ambiguous unescaped delimiters produce a d
 conservative whole-content charge, not an error or a zero. Repeated bodies and inapplicable old bodies
 still consume context. CC checks the sum of final segment Knowledge costs against the remaining
 allowance after packing; repeated domain framing counts, but host JSON and Fact/Raw do not.
-Consolidator references use the same Knowledge capacity, header and
-newer-first capacity selection. The reproducible synthetic method and
-250/1,000-candidate measurements are recorded in [perf-34c.md](perf-34c.md).
+Fresh Noter and Dreamer material use the same Knowledge capacity and renderer;
+Dreamer's pending slice occupies part of that window. The historical Consolidator-era
+synthetic method and 250/1,000-candidate measurements remain in [perf-34c.md](perf-34c.md);
+they are not performance evidence for the current N/D implementation.
 
 Successful noting commits record `factIds` in the
 existing response envelope; this identifies a run's own facts even when runs overlap in their source
