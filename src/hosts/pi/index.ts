@@ -317,8 +317,8 @@ export default function (pi: ExtensionAPI) {
   const delivered = (target?: TaskTarget | { sessionId: number; branch: string; headTurnId: number | null }): VisibleView =>
     deliveredView(memory.store.deliveredKnowledge(target
       ? { owner: owner(), sessionId: target.sessionId, branch: target.branch, headTurnId: target.headTurnId }
-      : { owner: owner(), sessionId: null, headTurnId: null, prompts: ctx.sessionManager.getBranch().flatMap(entry =>
-        entry.type === "custom_message" && entry.customType === tag ? [deliveryKey(entry)].filter(key => key !== undefined) : []) }));
+      : { owner: owner(), sessionId: null, headTurnId: null, pending: ctx.sessionManager.getBranch().flatMap(entry =>
+        entry.type === "custom_message" && entry.customType === tag ? [deliveryKey(entry)].filter(key => key !== undefined).map(key => ({ key })) : []) }));
   const deliveryPart = (block: { knowledgeCommitIds: number[]; knowledgeStates?: { fromCommit: number; toCommits: number[] }[]; knowledgeTokens?: number; text: string }) =>
     ({ knowledgeCommitIds: block.knowledgeCommitIds, knowledgeStates: (block.knowledgeStates ?? []).map(knowledgeStateKey),
       knowledgeTokens: block.knowledgeTokens ?? tokens(block.text) });
@@ -808,14 +808,14 @@ export default function (pi: ExtensionAPI) {
       // 97: a carrier's delivery belongs to the node Pi persisted it under.
       const key = deliveryKey(entry);
       if (entry.type === "custom_message" && entry.customType === tag) {
-        if (key && turnId) memory.store.bindDeliveryPrompt(key, state.sessionId, turnId);
+        if (key && turnId) memory.store.bindDeliveryNode(key, state.sessionId, turnId);
         continue;
       }
       if (entry.type === "compaction") {
         const node = memory.store.findNativeTurn(state.sessionId, lineage, entry.id);
         if (node?.kind === "compaction") {
           head = node.turnId;
-          if (key) memory.store.bindDeliveryPrompt(key, state.sessionId, node.turnId);
+          if (key) memory.store.bindDeliveryNode(key, state.sessionId, node.turnId);
         }
         continue;
       }
@@ -985,7 +985,7 @@ export default function (pi: ExtensionAPI) {
       ...(block.knowledgeStates?.length ? { knowledgeStates: block.knowledgeStates } : {}) };
     // 97 "Record at emission": this prompt's node owns the delivery once Pi persists the prompt.
     const prompt = randomUUID();
-    try { memory.store.recordKnowledgeDelivery({ owner: owner(), prompt }, [deliveryPart(block)]); }
+    try { memory.store.recordKnowledgeDelivery({ owner: owner(), nodeKey: prompt }, [deliveryPart(block)]); }
     catch (error) { context.ui.notify(String(error), "error"); return; }
     return { message: { customType: tag, content: block.text, display: false,
       details: { traceMemory: { ...carrier(supplied, prompt).traceMemory, composition: block.composition } } } };
@@ -1315,13 +1315,14 @@ export default function (pi: ExtensionAPI) {
     const valid = () => !closed && enabled() && state.sessionId === initial.sessionId
       && state.branch === initial.branch && state.head === initial.head && state.projectId === initial.projectId
       && (!initial.sessionId || memory.store.getSession(initial.sessionId)?.projectId === initial.projectId);
-    const allocate = (): ReturnType<typeof memory.compact> => {
+    const allocate = (knowledge = true): ReturnType<typeof memory.compact> => {
       try {
         if (!valid()) return { native: true, reason: "memory enrollment or the selected path changed" };
         if (state.sessionId) return memory.store.transaction(() => {
           if (!valid()) return { native: true as const, reason: "memory enrollment, project or the selected path changed" };
-          return memory.compact(state.sessionId!, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION));
+          return memory.compact(state.sessionId!, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION), false, { knowledge });
         });
+        if (!knowledge) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
         const block = memory.injection({ projectId: state.projectId });
         return { text: block.text, composition: block.composition, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
           knowledgeTokens: block.knowledgeTokens, knowledgeStates: block.knowledgeStates } };
@@ -1351,14 +1352,25 @@ export default function (pi: ExtensionAPI) {
     // 73 "Truncation is announced in the foreground": the warning describes exactly this carrier, and is
     // given once Pi has appended it (\`session_compact\` below). No callback runs between the final
     // reprice above and this return, and a compaction Pi does not append warns about nothing.
+    // 97 "Record at emission", in Claude Code's order: the supplement is recorded before it is
+    // published, as the compaction node's delivery once Pi appends the compaction (a compaction Pi
+    // never appends leaves the key unbound, and so on no path). What cannot be recorded, including
+    // anything before a memory session exists, is published without its Knowledge body.
+    let prompt: string | undefined;
+    if (state.sessionId) try {
+      prompt = randomUUID();
+      memory.store.recordKnowledgeDelivery({ owner: owner(), nodeKey: prompt }, [deliveryPart({ ...result.supplied, text: result.text })]);
+    } catch (error) {
+      prompt = undefined;
+      context.ui.notify(`Trace Memory: compaction Knowledge was not recorded and is left out: ${String(error)}`, "warning");
+    }
+    if (!prompt) {
+      if (signal?.aborted || closed) return { cancel: true };
+      result = allocate(false);
+      if (signal?.aborted || closed) return { cancel: true };
+      if ("native" in result || !result.text) return;
+    }
     publishedTruncation = result.truncated;
-    // 97 "Record at emission": the supplement is the compaction node's baseline once Pi appends it;
-    // a compaction Pi never appends leaves this key unbound, and so on no path.
-    let prompt: string | undefined = randomUUID();
-    try {
-      if (state.sessionId) memory.store.recordKnowledgeDelivery({ owner: owner(), prompt, baseline: true }, [deliveryPart({ ...result.supplied, text: result.text })]);
-      else prompt = undefined;
-    } catch (error) { prompt = undefined; context.ui.notify(`Trace Memory: compaction delivery was not recorded: ${String(error)}`, "warning"); }
     return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied, prompt).traceMemory, composition: result.composition } } } };
   });
   pi.on("session_compact", (_event, context) => {
@@ -1386,11 +1398,10 @@ export default function (pi: ExtensionAPI) {
       const key = custom && typeof own.prompt === "string" && own.prompt ? own.prompt : undefined;
       const turn = memory.store.transaction(() => {
         const turn = memory.store.appendTurn({ sessionId, parentTurnId: state.head, kind: "compaction", assistantText: entry.summary, startedAt: now(), endedAt: now() });
-        // 97: the compaction is a node on every later path; its own supplement is its delivery,
-        // and a compaction without ours (native) restarts the delivered set with nothing.
+        // 97: the compaction is a node on every later path. It starts from its own supplement; a
+        // compaction without ours (native) starts from nothing.
         memory.store.bindNativeTurn(sessionId, reconciled?.lineage ?? state.originPiId ?? state.piId, entry.id, turn.id, "compaction");
-        if (key) memory.store.bindDeliveryPrompt(key, sessionId, turn.id);
-        else memory.store.recordKnowledgeDelivery({ owner: owner(), turnId: turn.id, baseline: true }, []);
+        if (key) memory.store.bindDeliveryNode(key, sessionId, turn.id);
         return turn;
       });
       state.head = turn.id;

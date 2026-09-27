@@ -638,26 +638,36 @@ export function readTranscriptTail(path: string, offset: number): CcNativeRecord
   } finally { closeSync(descriptor); }
 }
 
-/** 97: the prompts of the selected chain inside a tail, oldest first, and where that chain leaves
- * the tail: the uuid of the first record before it, or null when the chain starts in the tail. */
-export function tailPrompts(records: readonly CcNativeRecord[]): { prompts: string[]; exit: string | null; leaf: string | null } {
+/** 97: a node of the selected chain inside a tail: a prompt, by its native prompt id, or a
+ * compaction boundary, by the source record it follows (null at the root). */
+export type TailNode = { prompt: string } | { follows: string | null };
+
+/** 97: the nodes of the selected chain inside a tail, oldest first; where that chain leaves the tail
+ * (the uuid of the first record before it, or null when the chain starts in the tail); and the last
+ * source record in the tail, which a compaction written now would follow. */
+export function tailNodes(records: readonly CcNativeRecord[]): { nodes: TailNode[]; exit: string | null; leaf: string | null } {
   const position = new Map<string, number>();
   records.forEach((record, index) => { const id = nativeId(record); if (id && !position.has(id)) position.set(id, index); });
   const leaf = [...records].reverse().find(record => classifySourceRecord(record) !== null);
-  if (!leaf) return { prompts: [], exit: null, leaf: null };
-  const prompts: string[] = [], seen = new Set<string>();
-  let current: CcNativeRecord | undefined = leaf;
+  if (!leaf) return { nodes: [], exit: null, leaf: null };
+  const nodes: TailNode[] = [], seen = new Set<string>();
+  let current: CcNativeRecord | undefined = leaf, awaiting: { follows: string | null } | null = null;
   for (;;) {
     const id = nativeId(current)!;
     if (seen.has(id)) throw new Error(`native lineage cycle at ${id}`);
     seen.add(id);
-    if (classifySourceRecord(current)?.kind === "user" && typeof current.promptId === "string" && current.promptId)
-      prompts.unshift(current.promptId);
+    const source = classifySourceRecord(current);
+    if (source && awaiting) { awaiting.follows = id; awaiting = null; }
+    if (source?.kind === "user" && typeof current.promptId === "string" && current.promptId) nodes.unshift({ prompt: current.promptId });
+    if (source?.kind === "compaction") nodes.unshift(awaiting = { follows: null });
     const at = position.get(id)!;
     const parent = nativeParentId(current, uuid => (position.get(uuid) ?? -1) < at);
-    if (parent === null) return { prompts, exit: null, leaf: nativeId(leaf) };
+    if (parent === null) return { nodes, exit: null, leaf: nativeId(leaf) };
     current = position.has(parent) ? records[position.get(parent)!] : undefined;
-    if (!current) return { prompts, exit: parent, leaf: nativeId(leaf) };
+    if (!current) {
+      if (awaiting) awaiting.follows = parent;
+      return { nodes, exit: parent, leaf: nativeId(leaf) };
+    }
   }
 }
 

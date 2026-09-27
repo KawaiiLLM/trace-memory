@@ -1,8 +1,9 @@
 // Ticket 34c: foreground Knowledge delivery through the real Pi fake-host publication seam.
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { host } from "./test-host.ts";
 import { fixture } from "./native-fixture.ts";
 import { knowledgeBatch, legacyFacts } from "../../support/seed.ts";
+import { Store } from "../../../src/core/store/index.ts";
 
 const time = "2026-09-12T00:00:00Z";
 type Host = ReturnType<typeof host>;
@@ -197,6 +198,27 @@ test("97 a compaction's supplement restarts the delivered set; rewinding before 
     expect(rewound.content).not.toContain("Use pnpm.");
     expect(carrier(rewound).supplied.knowledgeCommitIds).toEqual([later!.commit]);
   } finally { await h.dispose(); }
+});
+
+test("97 a supplement whose delivery cannot be recorded is not published: the compaction leaves its Knowledge out", async () => {
+  const { h, support } = await seeded();
+  try {
+    create(h, support, "project", "Created before compaction.");
+    // The extension's own Store records; the host's observer Store is another instance.
+    const record = vi.spyOn(Store.prototype, "recordKnowledgeDelivery").mockImplementationOnce(() => { throw new Error("injected record failure"); });
+    const result = (await h.emit("session_before_compact", { preparation: { tokensBefore: 100 } })).compaction;
+    expect(result.summary).not.toContain("Created before compaction.");
+    expect(result.summary).not.toContain("Use pnpm.");
+    expect(result.details.traceMemory.prompt).toBeUndefined();
+    expect(result.details.traceMemory.supplied.knowledgeCommitIds).toEqual([]);
+    h.compaction(result.summary);
+    await h.emit("session_compact");
+    // Nothing was claimed, so the next prompt delivers what the compaction left out.
+    const next = await served(h, "after compaction");
+    expect(next.content).toContain("Created before compaction.");
+    expect(next.content).toContain("Use pnpm.");
+    expect(record).toHaveBeenCalledTimes(2);
+  } finally { vi.restoreAllMocks(); await h.dispose(); }
 });
 
 test("97 a native compaction restarts the set empty; a compaction Pi never appends records nothing on the path", async () => {

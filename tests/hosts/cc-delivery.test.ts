@@ -114,7 +114,14 @@ test("97 a delivery survives a restart and an import that has not caught up; a p
   } finally { f.close(); }
 });
 
-test("97 a compaction's supplement is its baseline: versions, notices and cost restart together", async () => {
+/** What Claude Code writes after its compaction hooks return: the boundary, then the summary. */
+const boundary = (uuid: string, logicalParentUuid: string, trigger = "manual"): CcNativeRecord[] => [
+  { uuid, parentUuid: null, logicalParentUuid, type: "system", subtype: "compact_boundary", timestamp: time(++clock),
+    compactMetadata: { trigger, preTokens: 1000 } } as CcNativeRecord,
+  { uuid: `${uuid}-summary`, parentUuid: uuid, type: "user", isCompactSummary: true, timestamp: time(++clock),
+    message: { role: "user", content: "summary" } } as CcNativeRecord];
+
+test("97 a compaction's supplement belongs to the compaction's own node: versions, notices and cost restart there", async () => {
   const f = await fixture(["Use pnpm.", "Run vitest."]);
   try {
     const [first, kept] = f.versions.map(item => item.commit) as [number, number];
@@ -132,21 +139,73 @@ test("97 a compaction's supplement is its baseline: versions, notices and cost r
     await f.append(user("u4", "a3", "p4"), assistant("a4", "u4"));
     const before = f.delivered(f.turnOf("u4"));
     expect(before.knowledgeStates).toEqual(new Set([`${first}>${archive}`]));
+    const added = knowledge(f.store, f.path, "global", "constraint", [f.fact.id], "Review before release.", { run: { kind: "manual", createdAt: time(0) } }).commit;
 
     const supplement = f.decode(await f.compact());
-    expect(supplement.flatMap(header => header.commits)).toEqual([kept]);
+    expect(supplement.flatMap(header => header.commits)).toEqual([kept, added]);
     expect(supplement.flatMap(header => header.states)).toEqual([]);
-    const after = f.delivered(f.turnOf("u4"));
-    expect(after).toEqual({ knowledgeCommitIds: new Set([kept]), knowledgeStates: new Set(),
-      knowledgeTokens: supplement.reduce((sum, header) => sum + header.knowledgeTokens!, 0) });
-    expect(after.knowledgeTokens).toBeLessThan(before.knowledgeTokens);
+    const cost = supplement.reduce((sum, header) => sum + header.knowledgeTokens!, 0);
+    // The node before the compaction is not changed by it, before or after the import.
+    expect(f.delivered(f.turnOf("u4"))).toEqual(before);
+    f.write(...boundary("cb", "a4")); // written by Claude Code, not yet imported
     expect(f.decode(await f.prompt("p5"))).toEqual([]);
+    await f.restartExecutor();
+    const compaction = f.store.findNativeTurn(f.sessionId, f.nativeSession, "cb")!.turnId;
+    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set([kept, added]), knowledgeStates: new Set(), knowledgeTokens: cost });
+    expect(f.delivered(f.turnOf("u4"))).toEqual(before);
+    expect(f.decode(await f.prompt("p5"))).toEqual([]);
+    // A branch from before the compaction, rewinding to that node, still misses what came later.
+    await f.append(user("u5-alt", "a4", "p5-alt"), assistant("a5-alt", "u5-alt"));
+    expect(f.commits(await f.prompt("p6"))).toEqual([added]);
+  } finally { f.close(); }
+});
 
-    // A compaction whose supplement could not be rendered still restarts the set, empty.
+test("97 a compaction whose supplement failed still starts empty, where its boundary is", async () => {
+  const f = await fixture();
+  try {
+    const [rule] = f.versions.map(item => item.commit);
+    expect(f.commits(await f.prompt("p2"))).toEqual([rule]);
+    await f.append(user("u2", "a1", "p2"), assistant("a2", "u2"));
     vi.spyOn(Store.prototype, "deliveryWatermark").mockImplementationOnce(() => { throw new Error("injected render failure"); });
     await expect(f.compact()).rejects.toThrow("injected render failure");
-    expect(f.delivered(f.turnOf("u4")).knowledgeCommitIds.size).toBe(0);
-    expect(f.commits(await f.prompt("p5"))).toEqual([kept]);
+    expect([...f.delivered(f.turnOf("u2")).knowledgeCommitIds]).toEqual([rule]);
+    f.write(...boundary("cb", "a2"));
+    expect(f.commits(await f.prompt("p3"))).toEqual([rule]);
+  } finally { f.close(); }
+});
+
+test("97 an automatic compaction that interrupts a reply is on the path of the prompts after it", async () => {
+  const f = await fixture();
+  try {
+    const [rule] = f.versions.map(item => item.commit);
+    expect(f.commits(await f.prompt("p2"))).toEqual([rule]);
+    await f.append(user("u2", "a1", "p2"));
+    const added = knowledge(f.store, f.path, "global", "constraint", [f.fact.id], "Review before release.", { run: { kind: "manual", createdAt: time(0) } }).commit;
+    expect(f.commits(await f.compact())).toEqual([rule, added]);
+    // The reply goes on after the boundary, under the same prompt.
+    await f.append(...boundary("cb", "u2", "auto"), assistant("a2", "cb-summary"));
+    expect(f.commits(await f.prompt("p3"))).toEqual([]);
+    await f.append(user("u3", "a2", "p3"), assistant("a3", "u3"));
+    const compaction = f.store.findNativeTurn(f.sessionId, f.nativeSession, "cb")!.turnId;
+    expect(f.store.getTurn(f.turnOf("u3"))!.parentTurnId).toBe(compaction);
+    expect(f.turnOf("a2")).toBe(f.turnOf("u2"));
+    expect([...f.delivered(f.turnOf("u3")).knowledgeCommitIds]).toEqual([rule, added]);
+    expect([...f.delivered(f.turnOf("u2")).knowledgeCommitIds]).toEqual([rule]);
+  } finally { f.close(); }
+});
+
+test("97 a new root branch the import has not reached starts empty", async () => {
+  const f = await fixture();
+  try {
+    const [rule] = f.versions.map(item => item.commit);
+    expect(f.commits(await f.prompt("p2"))).toEqual([rule]);
+    await f.append(user("u2", "a1", "p2"), assistant("a2", "u2"));
+    // A branch started from the first prompt again: its chain starts in the unimported tail.
+    f.write(user("root-2", null, "pr"), assistant("root-2-a", "root-2"));
+    expect(f.commits(await f.prompt("p3"))).toEqual([rule]);
+    // Once imported, the branch is its own path; p3 was never written, so it is not on it.
+    await f.restartExecutor();
+    expect(f.commits(await f.prompt("p4"))).toEqual([rule]);
   } finally { f.close(); }
 });
 
@@ -165,9 +224,10 @@ test("97 hooks read the transcript only after the stored leaf", async () => {
     f.write(user("u4", "u3", "p4"));
     expect(await f.resume()).toBeNull();
     expect(f.commits(await f.compact())).toEqual([rule]);
-    const rows = f.store.db.prepare("SELECT prompt, turn_id, baseline FROM knowledge_deliveries ORDER BY id").all();
-    // The prompt delivery belongs to p4; the compaction to the head the unimported tail shows, p4 again.
-    expect(rows).toEqual([{ prompt: "p4", turn_id: null, baseline: 0 }, { prompt: "p4", turn_id: null, baseline: 1 }]);
+    const rows = f.store.db.prepare("SELECT node_key, turn_id, follows FROM knowledge_deliveries ORDER BY id").all() as
+      { node_key: string; turn_id: null; follows: string | null }[];
+    // The prompt delivery belongs to p4; the compaction to its own node, after the last record the tail shows.
+    expect(rows).toEqual([{ node_key: "p4", turn_id: null, follows: null }, { node_key: expect.stringMatching(/^[0-9a-f-]{36}$/), turn_id: null, follows: "u4" }]);
   } finally { f.close(); }
 });
 

@@ -1,12 +1,12 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { TraceMemory, deliveredView, knowledgeStateKey, noVisibility, type DeliveryNode, type DeliveryPart, type DeliveryTarget,
-  type Injection, type KnowledgeStateReceipt, type VisibleView } from "../../core/api/index.ts";
+  type Injection, type KnowledgeStateReceipt, type PendingNode, type VisibleView } from "../../core/api/index.ts";
 import type { TransportItem } from "../../core/render/material.ts";
 import type { KnowledgePath } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
-import { ccSourceBlocks, readTranscriptTail, tailPrompts } from "./transcript.ts";
+import { ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
 
 export const CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
 const BEGIN = CC_INJECTION_BEGIN;
@@ -156,44 +156,60 @@ async function injectionBinding(config: ResolvedCcHostConfig, initial: CcSession
 
 export type CcDeliveryEvent = { kind: "session-start" } | { kind: "prompt"; promptId: string } | { kind: "compact" };
 
+type DeliveryAt = Pick<DeliveryTarget, "turnId" | "nodeKey" | "follows">;
+
 /** 97: the head node of one native session, from the database and the binding. Only records
- * written after the stored leaf are read: they may hold prompts the executor has not imported. */
+ * written after the stored leaf are read: they may hold prompts and compactions the executor has
+ * not imported. `at()` is where a publication to the head node is recorded; `following()` is the
+ * node of a compaction written now, after the last source record. */
 export function ccDeliveryHead(binding: CcSessionBinding, memory: Memory): { owner: string; node: DeliveryNode;
-  at: Pick<DeliveryTarget, "turnId" | "prompt">; target: KnowledgePath | { projectId: number } } {
+  at: () => DeliveryAt; following: () => DeliveryAt; target: KnowledgePath | { projectId: number } } {
   const owner = coreHostOf(binding), core = binding.coreSessionId, store = memory.store;
+  const unanchored = (): never => { throw new Error("a compaction with no source record before it holds no delivery"); };
+  const head = (headTurnId: number | null, tail: ReturnType<typeof tailNodes>, leaf: string | null,
+    target: KnowledgePath | { projectId: number }) => {
+    const pending: PendingNode[] = tail.nodes.map(node => "prompt" in node ? { key: node.prompt }
+      : { key: node.follows === null ? null : store.compactionDeliveryKey(owner, node.follows), compaction: true });
+    const last = tail.nodes.at(-1);
+    return { owner, node: { owner, sessionId: core, ...(core === null ? {} : { branch: binding.branch }), headTurnId, pending },
+      at: (): DeliveryAt => !last ? headTurnId === null ? {} : { turnId: headTurnId }
+        : "prompt" in last ? { nodeKey: last.prompt }
+        : { nodeKey: pending.at(-1)!.key ?? randomUUID(), follows: last.follows ?? unanchored() },
+      following: (): DeliveryAt => ({ nodeKey: randomUUID(), follows: leaf ?? unanchored() }), target };
+  };
   if (core === null) {
     if (binding.projectId === null) throw new Error("provisional Claude Code project is unavailable");
-    // Before allocation nothing is imported: the prompts on the path are those the transcript holds.
-    const prompts = tailPrompts(readTranscriptTail(binding.transcriptPath, 0) ?? []).prompts;
-    return { owner, node: { owner, sessionId: null, headTurnId: null, prompts },
-      at: prompts.length ? { prompt: prompts.at(-1)! } : {}, target: { projectId: binding.projectId } };
+    // Before allocation nothing is imported: the nodes on the path are those the transcript holds.
+    const tail = tailNodes(readTranscriptTail(binding.transcriptPath, 0) ?? []);
+    return head(null, tail, tail.leaf, { projectId: binding.projectId });
   }
   const session = store.getSession(core);
   if (!session || session.host !== owner || session.projectId !== binding.projectId)
     throw new Error("bound Claude Code core session or project disagrees with the database");
   const turnOf = (uuid: string) => store.findSourceEntry(core, binding.nativeSessionId, uuid)?.turnId
     ?? store.findNativeTurn(core, binding.nativeSessionId, uuid)?.turnId;
-  let headTurnId: number | null = binding.clearedFrom?.compactionTurnId ?? null;
+  // 63: a cleared native session's root continues from the compaction its clear appended.
+  const root = binding.clearedFrom?.compactionTurnId ?? null;
+  let headTurnId: number | null = root;
   if (binding.selectedLeafUuid !== null) {
-    headTurnId = turnOf(binding.selectedLeafUuid) ?? null;
+    headTurnId = binding.selectedHeadTurnId ?? turnOf(binding.selectedLeafUuid) ?? null;
     if (headTurnId === null) throw new Error("native selected source has no persisted core Turn");
   }
-  let prompts: string[] = [];
+  let tail: ReturnType<typeof tailNodes> = { nodes: [], exit: null, leaf: null };
   const offset = binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset;
   if (offset !== undefined) {
-    const tail = tailPrompts(readTranscriptTail(binding.transcriptPath, offset) ?? []);
-    prompts = tail.prompts;
+    tail = tailNodes(readTranscriptTail(binding.transcriptPath, offset) ?? []);
     if (tail.leaf !== null && tail.exit !== binding.selectedLeafUuid) {
-      // The executor has not imported a branch switch yet. Its branch point is resolved only when
-      // it is an imported record; otherwise the stored head stands until the import catches up.
-      const rebased = tail.exit === null ? null : turnOf(tail.exit) ?? null;
-      if (rebased !== null) headTurnId = rebased;
-      else console.error(`Trace Memory: unimported native branch point ${String(tail.exit)}; using the stored head`);
+      // The executor has not imported a branch switch yet. A chain that starts in the tail is a new
+      // root branch; a branch point the import has reached is its Turn; otherwise the stored head
+      // stands until the import catches up.
+      const rebased = tail.exit === null ? root : turnOf(tail.exit) ?? null;
+      if (tail.exit === null || rebased !== null) headTurnId = rebased;
+      else console.error(`Trace Memory: unimported native branch point ${tail.exit}; using the stored head`);
     }
   }
-  return { owner, node: { owner, sessionId: core, branch: binding.branch, headTurnId, prompts },
-    at: prompts.length ? { prompt: prompts.at(-1)! } : headTurnId === null ? {} : { turnId: headTurnId },
-    target: headTurnId === null ? { projectId: session.projectId } : { sessionId: core, branch: binding.branch, headTurnId } };
+  return head(headTurnId, tail, tail.leaf ?? binding.selectedLeafUuid,
+    headTurnId === null ? { projectId: session.projectId } : { sessionId: core, branch: binding.branch, headTurnId });
 }
 
 const partOf = (output: CcHookOutput | null, visible: CcVisibleBinding): DeliveryPart[] => {
@@ -223,23 +239,23 @@ async function deliver<T>(config: ResolvedCcHostConfig, input: Pick<CcHookInput,
     const selected = memory.store.readSnapshot(() => {
       options.onSnapshot?.(memory.store.db, binding);
       const head = ccDeliveryHead(binding, memory);
-      const own = event.kind === "prompt" ? [event.promptId] : [];
-      // A compaction's supplement is rendered against nothing delivered: it is the new baseline.
+      const at = event.kind === "prompt" ? { nodeKey: event.promptId } : event.kind === "compact" ? head.following() : head.at();
+      // A compaction's supplement is rendered against nothing delivered: it starts its own node.
       const delivered = event.kind === "compact" ? { ...noVisibility(), knowledgeTokens: 0 }
-        : deliveredView(memory.store.deliveredKnowledge({ ...head.node, prompts: [...head.node.prompts ?? [], ...own] }));
-      return { head, injection: memory.injection(head.target, delivered, true), watermark: memory.store.deliveryWatermark(head.owner) };
+        : deliveredView(memory.store.deliveredKnowledge(event.kind === "prompt"
+          ? { ...head.node, pending: [...head.node.pending ?? [], { key: event.promptId }] } : head.node));
+      return { head, at, injection: memory.injection(head.target, delivered, true), watermark: memory.store.deliveryWatermark(head.owner) };
     });
-    const { head, injection } = selected;
+    const { head, at, injection } = selected;
     const output: CcHookOutput | null = injection.text ? { hookSpecificOutput: { hookEventName: "SessionStart",
       additionalContext: encodeCcInjection(visible, injection) }, transportItems: injection.transportItems,
       transportKnowledgeAllowance: injection.knowledgeAllowance } : null;
     const { outputs, result } = emit(output, visible);
     const parts = outputs.flatMap(value => partOf(value, visible));
-    const at = event.kind === "prompt" ? { prompt: event.promptId } : head.at;
-    if (parts.length || event.kind === "compact") memory.store.transaction(() => {
+    if (parts.length) memory.store.transaction(() => {
       if (memory.store.deliveryWatermark(head.owner) !== selected.watermark)
         throw new Error("another Knowledge publication for this context landed while this one was rendered");
-      memory.store.recordKnowledgeDelivery({ owner: head.owner, ...at, baseline: event.kind === "compact" }, parts);
+      memory.store.recordKnowledgeDelivery({ owner: head.owner, ...at }, parts);
     });
     return result;
   } finally {
@@ -256,8 +272,7 @@ export function recordCcBaseline(config: ResolvedCcHostConfig, binding: CcSessio
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC clear Hook cannot run model work"); }, config.coreConfig);
   try {
     const visible = { db: databaseIdentity(config.dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
-    memory.store.recordKnowledgeDelivery({ owner: coreHostOf(binding), turnId, baseline: true },
-      outputs.flatMap(value => partOf(value, visible)));
+    memory.store.recordKnowledgeDelivery({ owner: coreHostOf(binding), turnId }, outputs.flatMap(value => partOf(value, visible)));
   } finally { memory.store.close(); }
 }
 
@@ -332,29 +347,11 @@ export async function ccPreparedSessionStartInjection(config: ResolvedCcHostConf
 }
 
 /** 97: the UserPromptSubmit delta and the `session.compact` supplement. A prompt's parts belong
- * to that prompt's node; a compaction's parts are its baseline, rendered against nothing delivered. */
+ * to that prompt's node; a compaction's parts to the compaction's own node, which the executor's
+ * import binds to its Turn. Until then it is on the path only where the boundary is. */
 export async function ccDeltaInjection(config: ResolvedCcHostConfig, input: Pick<CcHookInput, "session_id" | "transcript_path">,
   event: Exclude<CcDeliveryEvent, { kind: "session-start" }>,
   slice: (output: CcHookOutput | null, visible: CcVisibleBinding) => (CcHookOutput | null)[]): Promise<(CcHookOutput | null)[]> {
-  let slices: (CcHookOutput | null)[] | null;
-  try { slices = await deliver(config, input, event, (output, visible) => { const slices = slice(output, visible); return { outputs: slices, result: slices }; }); }
-  catch (error) {
-    // The compaction happened whether or not its supplement could be rendered: it still restarts
-    // the delivered set, with nothing delivered.
-    if (event.kind === "compact") try { recordEmptyBaseline(config, input); }
-    catch (secondary) { console.error(`Trace Memory: compaction baseline was not recorded: ${secondary instanceof Error ? secondary.message : String(secondary)}`); }
-    throw error;
-  }
+  const slices = await deliver(config, input, event, (output, visible) => { const slices = slice(output, visible); return { outputs: slices, result: slices }; });
   return slices ?? slice(null, { db: "", nativeSession: input.session_id, coreSession: null });
-}
-
-function recordEmptyBaseline(config: ResolvedCcHostConfig, input: Pick<CcHookInput, "session_id">): void {
-  const binding = readBinding(config, input.session_id);
-  if (!binding) return;
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC compact Hook cannot run model work"); }, config.coreConfig);
-  try {
-    if (!enabled(binding, memory)) return;
-    const head = ccDeliveryHead(binding, memory);
-    memory.store.recordKnowledgeDelivery({ owner: head.owner, ...head.at, baseline: true }, []);
-  } finally { memory.store.close(); }
 }

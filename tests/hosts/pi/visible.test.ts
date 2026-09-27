@@ -68,7 +68,7 @@ test("29a case 4 (allocation identity): the first prompt's injection is bound to
     expect(carrierOf(entry).pi).toBe(h.ctx.sessionManager.getSessionId());
     // 97: the delivery is recorded for this context before its memory session exists.
     const store = h.memory.store, owner = `pi:${h.ctx.sessionManager.getSessionId()}`;
-    expect([...store.deliveredKnowledge({ owner, sessionId: null, headTurnId: null, prompts: [carrierOf(entry).prompt!] })
+    expect([...store.deliveredKnowledge({ owner, sessionId: null, headTurnId: null, pending: [{ key: carrierOf(entry).prompt! }] })
       .knowledgeCommitIds]).toEqual([commit]);
     await h.answer(); await h.emit("agent_settled"); await h.drain();
     const binding = bound(h);

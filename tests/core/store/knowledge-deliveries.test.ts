@@ -26,9 +26,10 @@ function fixture() {
     ({ scope: "global" as const, category: "constraint" as const, supports: [fact.id], text })), { kind: "manual", createdAt: at })
     .committed.map(item => item.commit);
   const part = (commits: number[], tokens: number, states: string[] = []) => ({ knowledgeCommitIds: commits, knowledgeStates: states, knowledgeTokens: tokens });
-  const at_ = (headTurnId: number | null, prompts: string[] = []) =>
-    store.deliveredKnowledge({ owner, sessionId: s.id, headTurnId, prompts });
-  return { dir, path, store, owner, sessionId: s.id, t1, t2, t3, versions, part, at: at_ };
+  const at_ = (headTurnId: number | null, pending: { key: string | null; compaction?: boolean }[] = []) =>
+    store.deliveredKnowledge({ owner, sessionId: s.id, headTurnId, pending });
+  const compaction = (parentTurnId: number) => store.appendTurn({ sessionId: s.id, parentTurnId, kind: "compaction", startedAt: at, endedAt: at });
+  return { dir, path, store, owner, sessionId: s.id, t1, t2, t3, versions, part, at: at_, turn, compaction };
 }
 
 test("97 a node's delivered state is its lineage's records; a sibling's are not inherited", () => {
@@ -50,30 +51,53 @@ test("97 a prompt's delivery belongs to the Turn that prompt creates, or to the 
   const f = fixture();
   try {
     const [a] = f.versions as [number];
-    f.store.recordKnowledgeDelivery({ owner: f.owner, prompt: "p2" }, [f.part([a], 3)]);
+    f.store.recordKnowledgeDelivery({ owner: f.owner, nodeKey: "p2" }, [f.part([a], 3)]);
     expect(f.at(f.t1.id).knowledgeCommitIds.size).toBe(0); // not yet on any path
-    expect(f.at(f.t1.id, ["p2"]).knowledgeCommitIds).toEqual(new Set([a])); // the prompt the transcript tail shows
-    f.store.bindDeliveryPrompt("p2", f.sessionId, f.t2.id);
+    expect(f.at(f.t1.id, [{ key: "p2" }]).knowledgeCommitIds).toEqual(new Set([a])); // the prompt the transcript tail shows
+    f.store.bindDeliveryNode("p2", f.sessionId, f.t2.id);
     expect(f.at(f.t2.id).knowledgeCommitIds).toEqual(new Set([a]));
     expect(f.at(f.t3.id).knowledgeCommitIds.size).toBe(0); // a re-edit of that prompt is a sibling
-    f.store.bindDeliveryPrompt("p2", f.sessionId, f.t3.id); // the first binding stands
+    f.store.bindDeliveryNode("p2", f.sessionId, f.t3.id); // the first binding stands
     expect(f.at(f.t3.id).knowledgeCommitIds.size).toBe(0);
-    expect(() => f.store.bindDeliveryPrompt("p9", f.sessionId + 1, f.t2.id)).toThrow("is not in session");
+    expect(() => f.store.bindDeliveryNode("p9", f.sessionId + 1, f.t2.id)).toThrow("is not in session");
   } finally { f.store.close(); }
 });
 
-test("97 a baseline restarts versions, notices and cost together; later parts accumulate on it", () => {
+test("97 a compaction node starts from its own supplement: versions, notices and cost restart together", () => {
   const f = fixture();
   try {
     const [a, b, c] = f.versions as [number, number, number];
-    f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t1.id }, [f.part([a], 5, [`${a}>${b}`])]);
-    f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t1.id, baseline: true }, [f.part([b], 20), f.part([c], 30)]);
-    f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t2.id }, [f.part([], 4, [`${b}>${c}`])]);
-    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([b, c]), knowledgeStates: new Set([`${b}>${c}`]), knowledgeTokens: 54 });
-    // A compaction that delivered nothing still restarts the set.
-    expect(f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t2.id, baseline: true }, [])).toHaveLength(1);
-    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set(), knowledgeStates: new Set(), knowledgeTokens: 0 });
-    expect(f.at(f.t3.id).knowledgeCommitIds).toEqual(new Set([b, c])); // the sibling keeps its own baseline
+    f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t2.id }, [f.part([a], 5, [`${a}>${b}`])]);
+    const compacted = f.compaction(f.t2.id), after = f.turn(compacted.id, "after");
+    f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: compacted.id }, [f.part([b], 20), f.part([c], 30)]);
+    f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: after.id }, [f.part([], 4, [`${b}>${c}`])]);
+    expect(f.at(after.id)).toEqual({ knowledgeCommitIds: new Set([b, c]), knowledgeStates: new Set([`${b}>${c}`]), knowledgeTokens: 54 });
+    // The node before the compaction keeps its own state; a compaction with no supplement starts empty.
+    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a]), knowledgeStates: new Set([`${a}>${b}`]), knowledgeTokens: 5 });
+    expect(f.at(f.compaction(after.id).id)).toEqual({ knowledgeCommitIds: new Set(), knowledgeStates: new Set(), knowledgeTokens: 0 });
+  } finally { f.store.close(); }
+});
+
+test("97 a compaction's supplement waits under its key until the import binds it; only the path past the boundary sees it", () => {
+  const f = fixture();
+  try {
+    const [a, b] = f.versions as [number, number];
+    f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t2.id }, [f.part([a], 5)]);
+    f.store.recordKnowledgeDelivery({ owner: f.owner, nodeKey: "k-old", follows: "leaf-2" }, [f.part([a], 1)]);
+    f.store.bindDeliveryNode("k-old", f.sessionId, f.compaction(f.t3.id).id); // an earlier compaction elsewhere
+    f.store.recordKnowledgeDelivery({ owner: f.owner, nodeKey: "k1", follows: "leaf-2" }, [f.part([b], 9)]);
+    f.store.recordKnowledgeDelivery({ owner: f.owner, nodeKey: "k2", follows: "leaf-2" }, [f.part([a], 2)]);
+    expect(f.store.compactionDeliveryKey(f.owner, "leaf-2")).toBe("k1"); // the oldest unbound
+    expect(f.store.compactionDeliveryKey("cc:other", "leaf-2")).toBeNull();
+    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a]), knowledgeStates: new Set(), knowledgeTokens: 5 });
+    expect(f.at(f.t2.id, [{ key: "k1", compaction: true }])).toEqual({ knowledgeCommitIds: new Set([b]), knowledgeStates: new Set(), knowledgeTokens: 9 });
+    expect(f.at(f.t2.id, [{ key: null, compaction: true }]).knowledgeTokens).toBe(0);
+    const compacted = f.compaction(f.t2.id);
+    f.store.bindDeliveryNode("k1", f.sessionId, compacted.id);
+    expect(f.at(compacted.id)).toEqual({ knowledgeCommitIds: new Set([b]), knowledgeStates: new Set(), knowledgeTokens: 9 });
+    expect(f.at(f.t2.id).knowledgeTokens).toBe(5);
+    expect(f.store.compactionDeliveryKey(f.owner, "leaf-2")).toBe("k2");
+    expect(() => f.store.recordKnowledgeDelivery({ owner: f.owner, follows: "leaf-2" }, [f.part([a], 1)])).toThrow("needs its key");
   } finally { f.store.close(); }
 });
 
@@ -96,25 +120,34 @@ test("97 a record names only this context's Turns, existing versions and canonic
     expect(() => f.store.recordKnowledgeDelivery({ owner: "cc:other", turnId: f.t1.id }, [f.part([a], 1)])).toThrow("does not belong");
     expect(() => f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t1.id }, [f.part([999], 1)])).toThrow("unknown knowledge version");
     expect(() => f.store.recordKnowledgeDelivery({ owner: f.owner }, [f.part([a], 1, ["garbled"])])).toThrow("invalid delivery part");
-    expect(() => f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t1.id, prompt: "p" }, [f.part([a], 1)])).toThrow("not both");
+    expect(() => f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t1.id, nodeKey: "p" }, [f.part([a], 1)])).toThrow("not both");
+    expect(() => f.at(f.t1.id) && f.store.deliveredKnowledge({ owner: "cc:other", sessionId: f.sessionId, headTurnId: f.t1.id })).toThrow("does not own");
     expect(f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_deliveries").get()).toEqual({ n: 0 });
   } finally { f.store.close(); }
 });
 
-test("97 another connection's records and prompt bindings reach a warm reader; a restart reads the same state", () => {
+test("97 another connection's records and bindings reach a warm reader's cached nodes; a restart reads the same state", () => {
   const f = fixture();
   const other = new Store(f.path);
   try {
-    const [a, b] = f.versions as [number, number];
+    const [a, b, c] = f.versions as [number, number, number];
+    const compacted = f.compaction(f.t2.id), after = f.turn(compacted.id, "after");
     f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t1.id }, [f.part([a], 2)]);
-    expect(f.at(f.t2.id).knowledgeCommitIds).toEqual(new Set([a])); // warms this reader
-    other.recordKnowledgeDelivery({ owner: f.owner, prompt: "p2" }, [f.part([b], 3)]);
+    expect(f.at(f.t2.id).knowledgeCommitIds).toEqual(new Set([a])); // caches T1 and T2
+    expect(f.at(after.id).knowledgeTokens).toBe(0); // and the compaction and the Turn after it
+    other.recordKnowledgeDelivery({ owner: f.owner, nodeKey: "p2" }, [f.part([b], 3)]);
     expect(f.at(f.t2.id).knowledgeCommitIds).toEqual(new Set([a]));
-    other.bindDeliveryPrompt("p2", f.sessionId, f.t2.id);
+    other.bindDeliveryNode("p2", f.sessionId, f.t2.id);
     expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a, b]), knowledgeStates: new Set(), knowledgeTokens: 5 });
+    // A row at an ancestor reaches its cached descendants, but not past a compaction.
+    other.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t1.id }, [f.part([c], 7)]);
+    expect(f.at(f.t2.id).knowledgeTokens).toBe(12);
+    expect(f.at(after.id).knowledgeTokens).toBe(0);
+    other.recordKnowledgeDelivery({ owner: f.owner, turnId: compacted.id }, [f.part([c], 1)]);
+    expect(f.at(after.id)).toEqual({ knowledgeCommitIds: new Set([c]), knowledgeStates: new Set(), knowledgeTokens: 1 });
     f.store.close();
     const restarted = new Store(f.path);
-    try { expect(restarted.deliveredKnowledge({ owner: f.owner, sessionId: f.sessionId, headTurnId: f.t2.id }).knowledgeTokens).toBe(5); }
+    try { expect(restarted.deliveredKnowledge({ owner: f.owner, sessionId: f.sessionId, headTurnId: f.t2.id }).knowledgeTokens).toBe(12); }
     finally { restarted.close(); }
   } finally { other.close(); if (!f.store.closed) f.store.close(); }
 });
@@ -122,7 +155,7 @@ test("97 another connection's records and prompt bindings reach a warm reader; a
 test("97 migration adds the delivery tables to an existing database without touching its rows", () => {
   const f = fixture();
   const turns = f.store.db.prepare("SELECT COUNT(*) AS n FROM turns").get();
-  f.store.db.exec("DROP TABLE knowledge_deliveries; DROP TABLE delivery_prompts");
+  f.store.db.exec("DROP TABLE knowledge_deliveries; DROP TABLE delivery_nodes");
   f.store.close();
   const reopened = new Store(f.path);
   try {

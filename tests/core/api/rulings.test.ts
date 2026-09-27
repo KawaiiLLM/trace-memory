@@ -2857,7 +2857,7 @@ async function deliveryFixture(texts: string[]) {
   const prompt = (promptId: string) => ccDeltaInjection(config, { session_id: native, transcript_path: transcriptPath }, { kind: "prompt", promptId },
     (output, visible) => sliceCcInjection(visible, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance));
   return { dir, store, importer, transcriptPath, record, prompt, commits: committed.committed.map(item => item.commit),
-    rows: () => store.db.prepare("SELECT prompt, commits, knowledge_tokens FROM knowledge_deliveries ORDER BY id").all() as
+    rows: () => store.db.prepare("SELECT node_key AS prompt, commits, knowledge_tokens FROM knowledge_deliveries ORDER BY id").all() as
       { prompt: string; commits: string; knowledge_tokens: number }[],
     dispose: () => { importer.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
@@ -2893,11 +2893,13 @@ test("97 \"所有计算应该都可以统一基于缓存算\" (2026-09-28): a no
   const s = memory.store.createSession({ enrollmentChoice: true, host: "cc:r97", projectId: project.id, startedAt: time, firstReplyAt: time });
   const t1 = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "one", startedAt: time });
   const t2 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t1.id, kind: "turn", userPrompt: "two", startedAt: time });
-  const t3 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t1.id, kind: "turn", userPrompt: "three", startedAt: time });
+  const t3 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t1.id, kind: "compaction", startedAt: time, endedAt: time });
+  const t4 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t3.id, kind: "turn", userPrompt: "four", startedAt: time });
   const part = (tokens: number) => ({ knowledgeCommitIds: [], knowledgeStates: [], knowledgeTokens: tokens });
   memory.store.recordKnowledgeDelivery({ owner: "cc:r97", turnId: t1.id }, [part(1)]);
   memory.store.recordKnowledgeDelivery({ owner: "cc:r97", turnId: t2.id }, [part(10)]);
-  memory.store.recordKnowledgeDelivery({ owner: "cc:r97", turnId: t3.id, baseline: true }, [part(100)]);
+  memory.store.recordKnowledgeDelivery({ owner: "cc:r97", turnId: t3.id }, [part(100)]);
+  memory.store.recordKnowledgeDelivery({ owner: "cc:r97", turnId: t4.id }, [part(1000)]);
   const at = (headTurnId: number) => memory.store.deliveredKnowledge({ owner: "cc:r97", sessionId: s.id, headTurnId }).knowledgeTokens;
-  expect([at(t1.id), at(t2.id), at(t3.id)]).toEqual([1, 11, 100]);
+  expect([at(t1.id), at(t2.id), at(t3.id), at(t4.id)]).toEqual([1, 11, 100, 1100]);
 });
