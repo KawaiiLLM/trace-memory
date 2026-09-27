@@ -538,6 +538,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         return value;
       };
       const fields = new Set(display.fields ?? ["text", "supports", "topics", "status", "links"]);
+      const supportTitles = store.factTitles([...new Set(history.flatMap(revision => revision.supports))]);
       const descriptions = new Map<number, () => string>();
       const capture = (revisions: typeof history, historyLines = false) => {
         for (const r of revisions) {
@@ -547,7 +548,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
             const grounds = [...store.revisionGrounds(r)].sort((a, b) => a - b);
             const address = display.modelFacing ? (revision: typeof r) => revision.id === r.id
               ? `K${id}#${store.versionTag(id, r.id)}` : shown(revision) : undefined;
-            return renderKnowledgeTrace({ knowledge, revision: r }, parents, children, itemCap, grounds, fields, historyLines, undefined, address);
+            return renderKnowledgeTrace({ knowledge, revision: r }, parents, children, itemCap, grounds, fields, historyLines, undefined, address, undefined, supportTitles);
           });
         }
       };
@@ -632,7 +633,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         const inapplicable = otherIds.filter(id => !applies.get(id));
         if (inapplicable.length) receipt = `\nrelations retained by explicit Fact read; other endpoints not applicable on this path: ${inapplicable.map(id => `F${id}`).join(", ")}`;
       }
-      return () => renderFact(fact, relations, itemCap) + receipt;
+      const backlinks = display.factBacklinks?.get(fact.id) ?? [];
+      return () => renderFact(fact, relations, itemCap) + receipt +
+        (backlinks.length ? `\nKnowledge: ${backlinks.join("; ")}` : "");
     }
     const runMatch = /^R([1-9]\d*)$/.exec(target ?? "");
     if (runMatch) {
@@ -652,6 +655,46 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const turn = store.getTurn(parsed.turn);
     if (!turn) throw new Error(`turn ${target} does not exist`);
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
+    if (!parsed.entries && !parsed.selector && display.tool === undefined && !display.rawTurn && turn.kind !== "compaction") {
+      const meta = display.entryIds ? store.listSourceEntries(turn.sessionId, turn.id, display.branch)
+        .filter(entry => display.entryIds!.includes(entry.id)) : store.listSourceEntries(turn.sessionId, turn.id, display.branch);
+      const selectedIds = new Set(meta.map(entry => entry.id));
+      const bindings = store.turnFactBindings(turn.id);
+      const facts = store.factsByIds([...bindings.keys()]);
+      const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, display.branch, display.headTurnId);
+      const snapshot = path ? store.pathSnapshot(path) : undefined;
+      const allBound = store.factSourceEntries(facts.map(fact => fact.id));
+      const selected = facts.filter(fact => {
+        if (!bindings.get(fact.id)?.some(id => selectedIds.has(id))) return false;
+        return !path || store.factOnPath(fact, path, snapshot, undefined, undefined, allBound);
+      });
+      const relations = display.sessionId === undefined ? store.listFactRelationsOf(selected.map(f => f.id))
+        : store.listFactRelationsOnPathOf(selected.map(f => f.id), path!);
+      const cited = new Set(selected.flatMap(fact => allBound.get(fact.id) ?? []));
+      const noted = store.notedEntryIds(meta.map(entry => entry.id));
+      const pending = meta.filter(entry => !noted.has(entry.id));
+      const uncited = meta.filter(entry => noted.has(entry.id) && !cited.has(entry.id));
+      const raw = pending.length ? store.hydrateSourceEntries(pending.map(entry => entry.id)) : [];
+      const profile = readProfile(display, display.profile ?? cfg.render);
+      return () => {
+        const lines = [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
+        for (const fact of selected) {
+          if (fact.segments) {
+            const selectedAddresses = new Set(meta.filter(entry => selectedIds.has(entry.id))
+              .map(entry => `T${entry.turnId}#E${entry.entryOrdinal}`));
+            const subset = fact.source.map((source, i) => selectedAddresses.has(source.replace(/@(user|assistant|observation)$/u, "")) ? i : -1)
+              .filter(i => i >= 0);
+            const partial = { ...fact, source: subset.map(i => fact.source[i]!), roles: subset.map(i => fact.roles![i]!),
+              segments: subset.map(i => fact.segments![i]!), text: subset.map(i => fact.segments![i]!).join("\n") };
+            lines.push(renderFact(partial, relations.get(fact.id) ?? [], itemCap));
+          } else lines.push(renderFact(fact, relations.get(fact.id) ?? [], itemCap));
+        }
+        if (raw.length) lines.push(finish(renderTrace(turn, raw, profile, { full: display.full }, display.full ? rawResultText : resultText)));
+        if (uncited.length) lines.push(`Processed, not cited: ${uncited.map(entry => `T${turn.id}#E${entry.entryOrdinal}`).join(", ")}`);
+        if (meta.length) lines.push(`Raw: T${turn.id}#E${meta[0]!.entryOrdinal}..E${meta.at(-1)!.entryOrdinal}`);
+        return lines.join("\n");
+      };
+    }
     if (parsed.selector?.kind === "facts") {
       const facts = store.listTurnFacts(turn.id);
       const relations = display.sessionId === undefined ? store.listFactRelationsOf(facts.map(f => f.id)) : (() => {
@@ -687,7 +730,11 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }
     if (turn.kind === "compaction" && parsed.entries) return () => "";
     const selector = parsed.selector;
-    if (selector?.kind === "role") occurrences = occurrences.filter(entry => entry.role === selector.role);
+    if (selector?.kind === "role") {
+      const matches = (entry: SourceEntry) => (entry.role === "toolResult" ? "observation" : entry.role) === selector.role;
+      if (parsed.entries && occurrences.some(entry => !matches(entry))) throw new Error(`entry role does not match: ${address}`);
+      occurrences = occurrences.filter(matches);
+    }
     else if (selector && selector.kind !== "facts") {
       const matches = (entry: SourceEntry) => !!entry.blocks && sourceBlocks(entry).some(block => selector.kind === "call"
         ? (block.kind === "call" || block.kind === "result") && block.call.callId === selector.id

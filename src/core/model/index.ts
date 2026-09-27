@@ -100,6 +100,8 @@ export interface Fact {
   /** Absent on historical facts; new facts have one segment for every source. */
   title?: string;
   segments?: string[];
+  /** Read-only native binding projection for legacy display; never rewrites authored source. */
+  boundAddresses?: string[];
   quote: string | null;
   /** One derived attribution per cited entry, in source order. Legacy rows omit this. */
   roles?: { role: "user" | "assistant" | "observation"; harness?: "Pi agent" | "Claude Code" }[];

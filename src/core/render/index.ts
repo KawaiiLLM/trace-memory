@@ -287,7 +287,7 @@ function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (a
     const legacy = `T${entry.turnId}#${tool ? `t${block.call.ordinal}` : entry.role === "user" ? "user" : "assistant"}`;
     const choice = choose(legacy);
     if (choice === "drop") continue;
-    const address = fragmentAddress(entry, block);
+    const address = `${entryAddress(entry)}@${entry.role === "toolResult" ? "observation" : entry.role}`;
     const role = ` ${entry.role}`;
     if ("text" in block) {
       const label = `[${address}]${role}`, body = block.text;
@@ -401,15 +401,17 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
   };
   const lines = part || options.blocks || options.selector ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
   const omitted = new Set<string>();
+  let omittedCalls = 0;
   for (const entry of entries) {
     const view = options.full ? renderEntryWhole(entry, resultText, choose, options.selector) : renderEntry(entry, profile, resultText, choose, options.selector, options.blocks);
     if (view.content) lines.push(view.content);
     for (const ordinal of view.omitted) {
       const call = entry.calls.find(call => call.ordinal === ordinal)!;
-      omitted.add(fragmentAddress(entry, { kind: entry.role === "toolResult" ? "result" : "call", call }));
+      omittedCalls++;
+      omitted.add(entryAddress(entry));
     }
   }
-  const receipts = omitted.size ? [`T${turn.id}: ${omitted.size} omitted calls (including partial calls)`,
+  const receipts = omittedCalls ? [`T${turn.id}: ${omittedCalls} omitted calls (including partial calls)`,
     ...[...omitted].map(address => `expand: trace(${JSON.stringify({ address, itemBudget: null, toolCallBudget: null, toolResultBudget: null })})`)] : [];
   return { content: lines.join("\n"), receipts };
 }
@@ -439,9 +441,7 @@ const string = (value: unknown): string => typeof value === "string" ? value : v
 /** Identity mapping only, never another Raw preview. Fragment labels share persisted source
  * authority with rendering and citations; repeated text blocks need only one index address. */
 export function renderEntryIndex(entry: SourceEntry): string {
-  const addresses = [...new Set(sourceBlocks(entry).filter(block => block.kind !== "thinking")
-    .map(block => fragmentAddress(entry, block)))];
-  return `[${entryAddress(entry)}] ${entry.role}: ${addresses.join(", ")}`;
+  return `[${entryAddress(entry)}@${entry.role === "toolResult" ? "observation" : entry.role}] ${entry.role}`;
 }
 
 /** How a stored run mode reads (ticket 19 "Historical truth"). New work records `fork` (inherited
@@ -498,7 +498,8 @@ export function renderSemantic(prefix: string, body: string, suffix: string, cap
   if (tokens(build(0)) > cap) throw new Error("semantic item capacity cannot hold identity and evidence metadata");
   return build(fit(build, cut.list.length, cap));
 }
-export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity, frame: (text: string) => string = text => text): string {
+export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity, frame: (text: string) => string = text => text,
+  boundAddresses?: readonly string[]): string {
   const edges = relations.map((r) => r.fromFact === fact.id
     ? `${r.kind} F${r.toFact} ${r.strength}` : `inbound ${r.kind} F${r.fromFact} ${r.strength}`);
   const legacy = fact.category && fact.actor ? `[${fact.category}/${fact.actor}] ` : "";
@@ -514,7 +515,7 @@ export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity
   }
   return renderSemantic(`[F${fact.id}] ${fact.createdAt} ${legacy}${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`, fact.text,
     `${edges.length ? ` · ${edges.join(" · ")}` : ""}\n` + [...(fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`]),
-      `  source: ${sources.join(", ")}`].join("\n"), cap, frame);
+      `  source: ${(boundAddresses ?? fact.boundAddresses ?? sources).join(", ")}`].join("\n"), cap, frame);
 }
 
 /** Search previews keep identity outside the optional field set. Unlike complete semantic records,
@@ -535,9 +536,15 @@ function renderPreview(prefix: string, body: string, suffix: string, cap: number
   return tokens(build(0)) <= cap ? build(fit(build, cut.list.length, cap))
     : inline(`${prefix.trimEnd()} ${truncated(cut.characters)}${suffix}`);
 }
-export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80): string {
+export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80, query?: string): string {
+  if (fact.title !== undefined) {
+    if (query === undefined) return renderPreview(`[F${fact.id}] `, fact.title, "", cap, true);
+    const at = fact.text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+    const excerpt = at < 0 ? fact.title : `…${fact.text.slice(Math.max(0, at - 30), at + query.length + 30)}…`;
+    return renderPreview(`[F${fact.id}] ${fact.title} — `, excerpt, "", cap, fields.has("text"));
+  }
   const prefix = `[F${fact.id}] ${fact.category && fact.actor ? `[${fact.category}/${fact.actor}] ` : ""}${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`;
-  return renderPreview(prefix + (fact.title === undefined ? "" : `${fact.title} — `), fact.text, "", cap, fields.has("text"));
+  return renderPreview(prefix, fact.text, "", cap, fields.has("text"));
 }
 
 // 21b: the labels ride the metadata line, beside the evidence, so they are never read as conclusion
@@ -550,7 +557,8 @@ export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevisio
   return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
-export const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
+export const factAddresses = (ids: number[], titles?: ReadonlyMap<number, string>): string => ids.map(id =>
+  `F${id}${titles?.get(id) ? ` ${titles.get(id)}` : ""}`).join(", ") || "none";
 // 21a: commit history carries the authored message; the compact automatic knowledge line does not.
 const commitLine = (r: KnowledgeRevision): string =>
   `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)} reason: ${r.reason}`;
@@ -568,11 +576,11 @@ export const renderCommitHistory = (revisions: KnowledgeRevision[], fields?: Rea
 
 export function renderKnowledgePreview(value: KnowledgeWithRevision, status: string,
   fields: ReadonlySet<string>, cap = 80, parents: KnowledgeRevision[] = [], children: KnowledgeRevision[] = [],
-  address?: (revision: KnowledgeRevision) => string): string {
+  address?: (revision: KnowledgeRevision) => string, supportTitles?: ReadonlyMap<number, string>): string {
   const r = value.revision, supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
   const shown = address ?? ((revision: KnowledgeRevision) => `K${revision.knowledgeId}@${revision.id}`);
   const suffix = [
-    ...(fields.has("supports") ? [`${supportLabel}: ${factAddresses(r.supports)}`] : []),
+    ...(fields.has("supports") ? [`${supportLabel}: ${factAddresses(r.supports, supportTitles)}`] : []),
     ...(fields.has("topics") && r.topics.length ? [`topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`status: ${status}`] : []),
     ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
@@ -584,7 +592,7 @@ export function renderKnowledgePreview(value: KnowledgeWithRevision, status: str
 
 export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity,
   effectiveGrounds: number[] = value.revision.supports, fields?: ReadonlySet<string>, historyLine = false, pathStatus?: string,
-  address?: (revision: KnowledgeRevision) => string, versionLabel?: string): string {
+  address?: (revision: KnowledgeRevision) => string, versionLabel?: string, supportTitles?: ReadonlyMap<number, string>): string {
   const shown = address ?? ((r: KnowledgeRevision) => `K${r.knowledgeId}@${r.id}`);
   const addresses = (commits: KnowledgeRevision[]) => commits.map(shown).join(", ") || "none";
   const direct = new Set(value.revision.supports), inherited = effectiveGrounds.filter(id => !direct.has(id));
@@ -599,7 +607,7 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
   const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "";
   const prefix = `[${shown(r)}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] `;
   const suffix = [
-    ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}${fields.has("topics") ? topicList(r.topics) : ""}`,
+    ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports, supportTitles)}${fields.has("topics") ? topicList(r.topics) : ""}`,
       ...(r.supportSemantics === "change" ? [`\n  inherited lineage supports: ${factAddresses(inherited)}`] : [])] : []),
     ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`\n  status: ${r.op} ${r.createdAt}${r.actorRole ? `; actor ${r.actorRole}; run R${r.runId}${!r.supports.length ? "; maintenance judgment" : ""}` : ""}`] : []),

@@ -2141,6 +2141,13 @@ export class Store {
 
   /** One binding read for the selected new facts, preserving their Core-ordered authored sources. */
   private hydrateFactSegments(facts: Fact[]): Fact[] {
+    const legacy = facts.filter(f => f.title === undefined);
+    const nativeAddresses = this.factBoundAddresses(legacy.map(f => f.id));
+    for (const fact of legacy) {
+      const bound = nativeAddresses.get(fact.id);
+      if (fact.source.length && !bound?.length) throw new Error(`F${fact.id}: missing legacy source bindings`);
+      fact.boundAddresses = bound ?? [];
+    }
     const selected = facts.filter(f => f.title !== undefined);
     if (!selected.length) return facts;
     const bindings = new Map<number, Map<string, string>>();
@@ -2181,6 +2188,56 @@ export class Store {
 
   listTurnFacts(turnId: number): Fact[] {
     return this.hydrateFactSegments(this.db.prepare("SELECT * FROM facts WHERE turn_id = ? ORDER BY id").all(turnId).map(toFact));
+  }
+
+  /** Source membership for a Turn, not ownership by the first contributing Turn. */
+  turnFactBindings(turnId: number): Map<number, number[]> {
+    const bindings = new Map<number, number[]>();
+    for (const row of this.db.prepare(`SELECT fs.fact_id, fs.entry_id FROM fact_sources fs
+      JOIN source_entries e ON e.id = fs.entry_id WHERE e.turn_id = ? ORDER BY fs.fact_id, fs.entry_id`)
+      .all(turnId) as { fact_id: number; entry_id: number }[]) {
+      const entries = bindings.get(row.fact_id) ?? [];
+      entries.push(row.entry_id);
+      bindings.set(row.fact_id, entries);
+    }
+    return bindings;
+  }
+
+  revisionSupportIds(knowledgeIds: readonly number[]): number[] {
+    if (!knowledgeIds.length) return [];
+    return (this.db.prepare(`SELECT DISTINCT j.value AS id FROM knowledge_revisions r, json_each(r.supports) j
+      WHERE r.knowledge_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify([...new Set(knowledgeIds)])) as
+      { id: number }[]).map(row => row.id);
+  }
+
+  factTitles(ids: readonly number[]): Map<number, string> {
+    return new Map(ids.length ? (this.db.prepare(`SELECT id, title FROM facts WHERE id IN
+      (SELECT value FROM json_each(?)) AND title IS NOT NULL`).all(JSON.stringify([...new Set(ids)])) as
+        { id: number; title: string }[]).map(row => [row.id, row.title]) : []);
+  }
+
+  factsByIds(ids: readonly number[]): Fact[] {
+    return ids.length ? this.hydrateFactSegments(this.db.prepare(`SELECT * FROM facts WHERE id IN
+      (SELECT value FROM json_each(?)) ORDER BY id`).all(JSON.stringify([...new Set(ids)])).map(toFact)) : [];
+  }
+
+  notedEntryIds(ids: readonly number[]): Set<number> {
+    return new Set(ids.length ? (this.db.prepare(`SELECT entry_id FROM noted_entries WHERE entry_id IN
+      (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as { entry_id: number }[]).map(row => row.entry_id) : []);
+  }
+
+  /** Direct historical citations, before selecting the one current version of each identity. */
+  citingKnowledge(factIds: readonly number[]): Map<number, Map<number, number[]>> {
+    const result = new Map<number, Map<number, number[]>>();
+    if (!factIds.length) return result;
+    for (const row of this.db.prepare(`SELECT j.value AS fact_id, r.knowledge_id, r.id FROM knowledge_revisions r,
+      json_each(r.supports) j WHERE j.value IN (SELECT value FROM json_each(?)) ORDER BY r.id`)
+      .all(JSON.stringify([...new Set(factIds)])) as { fact_id: number; knowledge_id: number; id: number }[]) {
+      const identities = result.get(row.fact_id) ?? new Map<number, number[]>();
+      identities.set(row.knowledge_id, [...(identities.get(row.knowledge_id) ?? []), row.id]);
+      result.set(row.fact_id, identities);
+    }
+    return result;
   }
 
   /**
@@ -2396,6 +2453,12 @@ export class Store {
       .get(knowledgeId, commitId) as { tag: string } | undefined;
     if (!row) throw new Error(`unknown knowledge version K${knowledgeId}`);
     return row.tag;
+  }
+
+  versionOrdinals(commitIds: readonly number[]): Map<number, number> {
+    return new Map(commitIds.length ? (this.db.prepare(`SELECT commit_id, ordinal FROM knowledge_version_tags
+      WHERE commit_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify([...new Set(commitIds)])) as
+        { commit_id: number; ordinal: number }[]).map(row => [row.commit_id, row.ordinal]) : []);
   }
 
   versionOrdinal(knowledgeId: number, commitId: number): number {
@@ -3190,6 +3253,17 @@ export class Store {
       WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id`).all(JSON.stringify(ids)) as { fact_id: number; entry_id: number }[])
       bound.get(Number(row.fact_id))!.push(Number(row.entry_id));
     return bound;
+  }
+
+  /** Native addresses of all actual bindings; historic block spellings can bind multiple entries. */
+  factBoundAddresses(factIds: readonly number[]): Map<number, string[]> {
+    const result = new Map<number, string[]>();
+    if (!factIds.length) return result;
+    for (const row of this.db.prepare(`SELECT fs.fact_id, e.turn_id, e.entry_ordinal FROM fact_sources fs
+      JOIN source_entries e ON e.id = fs.entry_id WHERE fs.fact_id IN (SELECT value FROM json_each(?)) ORDER BY fs.fact_id, fs.entry_id`)
+      .all(JSON.stringify([...new Set(factIds)])) as { fact_id: number; turn_id: number; entry_ordinal: number }[])
+      result.set(row.fact_id, [...(result.get(row.fact_id) ?? []), `T${row.turn_id}#E${row.entry_ordinal}`]);
+    return result;
   }
 
   /** Fact and Raw readers keep their supplied frozen path. Foreign facts remain available for their
