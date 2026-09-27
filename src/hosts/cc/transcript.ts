@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { SourceNormalizationError, type SourceBlock, type SourceNormalizer } from "../../core/model/source.ts";
@@ -71,6 +72,11 @@ export interface CcNativeNode {
   importProblem?: string;
   turnId?: number;
   entryId?: number;
+  /** An assistant row's message id and content, hashed: what a copy shares with the row it repeats. */
+  messageKey?: string;
+  /** An earlier row with the same message id and content: Claude Code wrote this one again across a
+   * compaction, under a new uuid. It is that row, not new Raw. */
+  copyOf?: string;
 }
 
 interface FileStamp { size: number; modifiedMs: number; changedMs: number; device: number; inode: number }
@@ -183,13 +189,19 @@ export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | n
   return { kind: "user", record, nativeId: id, timestamp: timestamp(record), text, calls: [] };
 }
 
+/** Claude Code 2.1.280 splits one API message into rows sharing its id, one per content block, so
+ * the id alone does not identify a row; the id with the row's content does. */
+const messageKey = (record: CcNativeRecord): string | undefined => typeof record.message?.id === "string"
+  ? createHash("sha256").update(JSON.stringify([record.message.id, record.message.content])).digest("base64") : undefined;
+
 const nodeOf = (record: CcNativeRecord, writtenBefore: (uuid: string) => boolean): CcNativeNode | null => {
   const uuid = nativeId(record);
   if (!uuid) return null;
   const source = classifySourceRecord(record);
   try {
     return { uuid, parentUuid: nativeParentId(record, writtenBefore), sourceKind: source?.kind ?? null,
-      calls: source?.kind === "assistant" ? source.calls.map(call => ({ id: call.callId, name: call.name })) : [], timestamp: source?.timestamp ?? timestamp(record) };
+      calls: source?.kind === "assistant" ? source.calls.map(call => ({ id: call.callId, name: call.name })) : [], timestamp: source?.timestamp ?? timestamp(record),
+      ...(source?.kind === "assistant" ? { messageKey: messageKey(record) } : {}) };
   } catch (error) {
     if (!(error instanceof CcNativeLineageError)) throw error;
     return { uuid, parentUuid: null, sourceKind: source?.kind ?? null,
@@ -201,6 +213,8 @@ export class CcTranscriptScan {
   readonly nodes: Map<string, CcNativeNode>;
   readonly snapshot: CcTranscriptSnapshot;
   readonly callCarriers: Map<string, Set<string>>;
+  /** Each assistant message key and the latest row written with it. */
+  readonly messageKeys: Map<string, string>;
   readonly stamp: FileStamp;
   readonly reset: boolean;
   readonly completeOffset: number;
@@ -211,10 +225,10 @@ export class CcTranscriptScan {
   readonly problems: string[];
   readonly newProblems: Set<string>;
 
-  constructor(input: { nodes: Map<string, CcNativeNode>; callCarriers: Map<string, Set<string>>; snapshot: CcTranscriptSnapshot;
-    stamp: FileStamp; reset: boolean; completeOffset: number; lineCount: number; selectedLeafUuid: string | null;
+  constructor(input: { nodes: Map<string, CcNativeNode>; callCarriers: Map<string, Set<string>>; messageKeys: Map<string, string>;
+    snapshot: CcTranscriptSnapshot; stamp: FileStamp; reset: boolean; completeOffset: number; lineCount: number; selectedLeafUuid: string | null;
     selectedLeafOffset: number | null; problems?: string[]; newProblems?: Set<string> }) {
-    this.nodes = input.nodes; this.callCarriers = input.callCarriers;
+    this.nodes = input.nodes; this.callCarriers = input.callCarriers; this.messageKeys = input.messageKeys;
     this.snapshot = input.snapshot; this.stamp = input.stamp; this.reset = input.reset;
     this.completeOffset = input.completeOffset; this.lineCount = input.lineCount; this.selectedLeafUuid = input.selectedLeafUuid;
     this.selectedLeafOffset = input.selectedLeafOffset;
@@ -274,6 +288,7 @@ export class CcTranscriptCursor {
   private selectedLeafOffset: number | null = null;
   private nodes = new Map<string, CcNativeNode>();
   private callCarriers = new Map<string, Set<string>>();
+  private messageKeys = new Map<string, string>();
   private unresolvedProblems = new Set<string>();
   private rejected: { stamp: FileStamp; snapshot: CcTranscriptSnapshot } | null = null;
   private lastSnapshot: CcTranscriptSnapshot | null = null;
@@ -370,6 +385,7 @@ export class CcTranscriptCursor {
       // builds a replacement index off to the side.
       const scanNodes = reset ? new Map<string, CcNativeNode>() : this.nodes;
       const scanCalls = reset ? new Map<string, Set<string>>() : this.callCarriers;
+      const scanKeys = reset ? new Map<string, string>() : this.messageKeys;
       const problems = reset ? [] : [...this.unresolvedProblems], newProblems = new Set<string>();
       let selectedLeafUuid = reset ? null : this.selectedLeafUuid;
       let selectedLeafOffset = reset ? null : this.selectedLeafOffset;
@@ -377,7 +393,7 @@ export class CcTranscriptCursor {
       let lines = reset ? 0 : this.lineCount;
       const preliminary = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords,
         incompleteBytes: stamp.size - completeOffset, changed: true, reset });
-      const scan = new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, snapshot: preliminary, stamp, reset,
+      const scan = new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, messageKeys: scanKeys, snapshot: preliminary, stamp, reset,
         completeOffset, lineCount: lines, selectedLeafUuid, selectedLeafOffset, problems, newProblems });
       let beginning = 0;
       while (beginning < completeLength) {
@@ -401,8 +417,13 @@ export class CcTranscriptCursor {
             source = null; node = null;
           } else {
             if (!prior) {
+              if (node.messageKey !== undefined) {
+                const earlier = scanKeys.get(node.messageKey);
+                if (earlier !== undefined) node.copyOf = earlier;
+                scanKeys.set(node.messageKey, node.uuid);
+              }
               scanNodes.set(node.uuid, node);
-              for (const call of node.calls) {
+              if (node.copyOf === undefined) for (const call of node.calls) {
                 const carriers = scanCalls.get(call.id) ?? new Set<string>();
                 carriers.add(node.uuid); scanCalls.set(call.id, carriers);
               }
@@ -435,7 +456,7 @@ export class CcTranscriptCursor {
       const finish = (): CcTranscriptScan => {
         const resultSnapshot = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords, records,
           incompleteBytes: stamp.size - completeOffset, changed: true, reset });
-        return new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, snapshot: resultSnapshot, stamp, reset,
+        return new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, messageKeys: scanKeys, snapshot: resultSnapshot, stamp, reset,
           completeOffset, lineCount: lines, selectedLeafUuid, selectedLeafOffset, problems, newProblems });
       };
       return { scan, ordered, finish };
@@ -490,7 +511,7 @@ export class CcTranscriptCursor {
   commit(scan: CcTranscriptScan, problem?: string): void {
     if (scan.reset) this.unresolvedProblems.clear();
     for (const value of scan.newProblems) this.unresolvedProblems.add(value);
-    if (scan.reset) { this.nodes = scan.nodes; this.callCarriers = scan.callCarriers; }
+    if (scan.reset) { this.nodes = scan.nodes; this.callCarriers = scan.callCarriers; this.messageKeys = scan.messageKeys; }
     this.stamp = scan.stamp; this.completeOffset = scan.completeOffset;
     this.lineCount = scan.lineCount; this.recordCount = scan.snapshot.recordCount; this.selectedLeafUuid = scan.selectedLeafUuid;
     this.selectedLeafOffset = scan.selectedLeafOffset;

@@ -88,3 +88,48 @@ test("a reply that goes on after an automatic compaction belongs to the Turn of 
     expect(store.getTurn(turnOf("u2"))!.userPrompt).toBe("u2");
   } finally { importer.close(); }
 });
+
+/** Claude Code 2.1.280's automatic compaction in the middle of a reply, while a tool call is in flight, as recorded in a
+ * production transcript (2026-09-27): after the summary it writes the in-flight message again under new uuids, one row per
+ * content block as before, with the same message id and content and only its usage changed; the tool result follows again,
+ * naming the call's original row as its parent. */
+const inFlight = (uuid: string, parentUuid: string, second: number, block: Record<string, unknown>): CcNativeRecord => ({
+  uuid, parentUuid, type: "assistant", timestamp: at(second),
+  message: { id: "msg-1", role: "assistant", content: [block], usage: { output_tokens: 7 } },
+});
+const toolResult = (uuid: string, parentUuid: string, second: number): CcNativeRecord => ({
+  uuid, parentUuid, type: "user", timestamp: at(second), sourceToolAssistantUUID: "call",
+  message: { role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: "listing" }] },
+});
+const copied = (record: CcNativeRecord, uuid: string, parentUuid: string): CcNativeRecord => record.type === "assistant"
+  ? { ...record, uuid, parentUuid, message: { ...record.message, usage: { output_tokens: 0 } } } : { ...record, uuid, parentUuid };
+const midReplyCompacted = (): CcNativeRecord[] => {
+  const thinking = inFlight("thinking", "u1", 2, { type: "thinking", thinking: "plan", signature: "sig" });
+  const call = inFlight("call", "thinking", 3, { type: "tool_use", id: "call-1", name: "Bash", input: { command: "ls" } });
+  const result = toolResult("result", "call", 4);
+  return [prompt("u1", null, 1), thinking, call, result, attachment("x1", "result", 5),
+    { uuid: "boundary", parentUuid: null, logicalParentUuid: "x1", type: "system", subtype: "compact_boundary", timestamp: at(6),
+      compactMetadata: { trigger: "auto", preTokens: 967295 } } as CcNativeRecord,
+    { uuid: "summary", parentUuid: "boundary", type: "user", isCompactSummary: true, isVisibleInTranscriptOnly: true, timestamp: at(6),
+      message: { role: "user", content: "summary" } } as CcNativeRecord,
+    copied(thinking, "thinking-copy", "summary"), copied(call, "call-copy", "thinking-copy"), copied(result, "result-copy", "call"),
+    attachment("x2", "result-copy", 7)];
+};
+
+test("a message an automatic compaction writes again under new uuids is imported once, with its tool call", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm-cc-auto-compact-")); dirs.push(dir);
+  const transcriptPath = join(dir, "native.jsonl");
+  const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), baseline: "2025-01-01T00:00:00.000Z" });
+  writeFileSync(transcriptPath, midReplyCompacted().map(record => `${JSON.stringify(record)}\n`).join(""));
+  const binding = await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: "auto-compact", transcript_path: transcriptPath }, at(1));
+  const importer = new CcImporter(config, binding);
+  try {
+    const result = await importer.reconcile(), store = importer.memory.store;
+    expect(result.problems).toEqual([]);
+    const prompted = store.findSourceEntry(result.coreSessionId!, "auto-compact", "u1")!.turnId;
+    // The two rows sharing one message id with different content remain two entries.
+    expect(store.listSourceEntries(result.coreSessionId!, prompted).map(entry => entry.nativeId))
+      .toEqual(["u1", "thinking", "call", "result", "result-copy"]);
+    expect(store.listToolCalls(prompted).map(call => call.name)).toEqual(["Bash"]);
+  } finally { importer.close(); }
+});

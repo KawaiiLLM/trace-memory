@@ -35,7 +35,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // src/hosts/cc/index.ts
 var import_node_fs14 = require("node:fs");
-var import_node_crypto16 = require("node:crypto");
+var import_node_crypto17 = require("node:crypto");
 var import_node_path12 = require("node:path");
 var import_node_url = require("node:url");
 
@@ -9825,6 +9825,7 @@ async function recordSessionStart(config3, input, nativeCreatedAt2) {
 }
 
 // src/hosts/cc/transcript.ts
+var import_node_crypto12 = require("node:crypto");
 var import_node_fs5 = require("node:fs");
 var import_node_perf_hooks = require("node:perf_hooks");
 var INGEST_SLICE_MS = 40;
@@ -9953,6 +9954,7 @@ function classifySourceRecord(record3) {
   const text = !nativePrompt && typeof content === "string" ? humanCommandPrompt(content) ?? content : textBlocks(content).join("\n");
   return { kind: "user", record: record3, nativeId: id, timestamp: timestamp(record3), text, calls: [] };
 }
+var messageKey = (record3) => typeof record3.message?.id === "string" ? (0, import_node_crypto12.createHash)("sha256").update(JSON.stringify([record3.message.id, record3.message.content])).digest("base64") : void 0;
 var nodeOf = (record3, writtenBefore) => {
   const uuid5 = nativeId(record3);
   if (!uuid5) return null;
@@ -9963,7 +9965,8 @@ var nodeOf = (record3, writtenBefore) => {
       parentUuid: nativeParentId(record3, writtenBefore),
       sourceKind: source?.kind ?? null,
       calls: source?.kind === "assistant" ? source.calls.map((call) => ({ id: call.callId, name: call.name })) : [],
-      timestamp: source?.timestamp ?? timestamp(record3)
+      timestamp: source?.timestamp ?? timestamp(record3),
+      ...source?.kind === "assistant" ? { messageKey: messageKey(record3) } : {}
     };
   } catch (error3) {
     if (!(error3 instanceof CcNativeLineageError)) throw error3;
@@ -9981,6 +9984,8 @@ var CcTranscriptScan = class {
   nodes;
   snapshot;
   callCarriers;
+  /** Each assistant message key and the latest row written with it. */
+  messageKeys;
   stamp;
   reset;
   completeOffset;
@@ -9993,6 +9998,7 @@ var CcTranscriptScan = class {
   constructor(input) {
     this.nodes = input.nodes;
     this.callCarriers = input.callCarriers;
+    this.messageKeys = input.messageKeys;
     this.snapshot = input.snapshot;
     this.stamp = input.stamp;
     this.reset = input.reset;
@@ -10053,6 +10059,7 @@ var CcTranscriptCursor = class {
   selectedLeafOffset = null;
   nodes = /* @__PURE__ */ new Map();
   callCarriers = /* @__PURE__ */ new Map();
+  messageKeys = /* @__PURE__ */ new Map();
   unresolvedProblems = /* @__PURE__ */ new Set();
   rejected = null;
   lastSnapshot = null;
@@ -10149,6 +10156,7 @@ var CcTranscriptCursor = class {
       const parsedRecords = [];
       const scanNodes = reset ? /* @__PURE__ */ new Map() : this.nodes;
       const scanCalls = reset ? /* @__PURE__ */ new Map() : this.callCarriers;
+      const scanKeys = reset ? /* @__PURE__ */ new Map() : this.messageKeys;
       const problems = reset ? [] : [...this.unresolvedProblems], newProblems = /* @__PURE__ */ new Set();
       let selectedLeafUuid = reset ? null : this.selectedLeafUuid;
       let selectedLeafOffset = reset ? null : this.selectedLeafOffset;
@@ -10164,6 +10172,7 @@ var CcTranscriptCursor = class {
       const scan = new CcTranscriptScan({
         nodes: scanNodes,
         callCarriers: scanCalls,
+        messageKeys: scanKeys,
         snapshot: preliminary,
         stamp,
         reset,
@@ -10200,8 +10209,13 @@ var CcTranscriptCursor = class {
             node = null;
           } else {
             if (!prior) {
+              if (node.messageKey !== void 0) {
+                const earlier = scanKeys.get(node.messageKey);
+                if (earlier !== void 0) node.copyOf = earlier;
+                scanKeys.set(node.messageKey, node.uuid);
+              }
               scanNodes.set(node.uuid, node);
-              for (const call of node.calls) {
+              if (node.copyOf === void 0) for (const call of node.calls) {
                 const carriers = scanCalls.get(call.id) ?? /* @__PURE__ */ new Set();
                 carriers.add(node.uuid);
                 scanCalls.set(call.id, carriers);
@@ -10252,6 +10266,7 @@ var CcTranscriptCursor = class {
         return new CcTranscriptScan({
           nodes: scanNodes,
           callCarriers: scanCalls,
+          messageKeys: scanKeys,
           snapshot: resultSnapshot,
           stamp,
           reset,
@@ -10319,6 +10334,7 @@ var CcTranscriptCursor = class {
     if (scan.reset) {
       this.nodes = scan.nodes;
       this.callCarriers = scan.callCarriers;
+      this.messageKeys = scan.messageKeys;
     }
     this.stamp = scan.stamp;
     this.completeOffset = scan.completeOffset;
@@ -40247,6 +40263,7 @@ var unavailableRunner = async () => ({
 var provisionalEnabled = (binding) => binding.enrollment.choice ?? binding.enrollment.defaultEnabled;
 var CcIntegrityError = class extends Error {
 };
+var ownsEntry = (node) => !!node.sourceKind && node.sourceKind !== "compaction" && node.copyOf === void 0;
 var snapshotKey = (value) => JSON.stringify([value.exists, value.device, value.inode, value.size, value.modifiedMs, value.changedMs]);
 var CC_PLUGIN_NAME = "trace-memory";
 var CC_MCP_SERVER_NAME = "traceMemory";
@@ -40284,7 +40301,7 @@ var CcProjection = class {
     const ancestry = this.transcript.callPath(toolUseId, nativeToolNames);
     if (!ancestry) return null;
     const entryIds = [];
-    for (const node of ancestry) if (node.sourceKind && node.sourceKind !== "compaction") {
+    for (const node of ancestry) if (ownsEntry(node)) {
       if (node.entryId === void 0) return null;
       entryIds.push(node.entryId);
     }
@@ -40537,6 +40554,12 @@ var CcProjection = class {
         }
         return { association: { turnId: known.turnId, entryId: known.id }, calls };
       }
+      const original = scan2.node(source.nativeId)?.copyOf;
+      if (original !== void 0) {
+        const turnId = scan2.node(original)?.turnId;
+        if (turnId === void 0) throw new CcIntegrityError(`native source ${original} is not persisted`);
+        return { association: { turnId } };
+      }
       return this.memory.store.transaction(() => {
         let turnId;
         let ownerTurn = null;
@@ -40641,7 +40664,7 @@ var CcProjection = class {
           let selectedNodes;
           if (continuous) {
             selectedNodes = extension.reverse();
-            for (const node of selectedNodes) if (node.sourceKind && node.sourceKind !== "compaction") {
+            for (const node of selectedNodes) if (ownsEntry(node)) {
               if (node.entryId === void 0) {
                 if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                 projectionReady = false;
@@ -40658,7 +40681,7 @@ var CcProjection = class {
             } else {
               selectedNodes = selected.nodes;
               selectedEntryIds = [];
-              for (const node of selectedNodes) if (node.sourceKind && node.sourceKind !== "compaction") {
+              for (const node of selectedNodes) if (ownsEntry(node)) {
                 if (node.entryId === void 0) {
                   if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                   projectionReady = false;
@@ -40691,7 +40714,7 @@ var CcProjection = class {
                   projectionReady = false;
                 } else {
                   selectedEntryIds = [];
-                  for (const node of rebuilt.nodes) if (node.sourceKind && node.sourceKind !== "compaction") {
+                  for (const node of rebuilt.nodes) if (ownsEntry(node)) {
                     if (node.entryId === void 0) {
                       addProblem(`native source ${node.uuid} is not persisted`);
                       projectionReady = false;
@@ -40844,7 +40867,7 @@ var CcImporter = class {
 var import_node_fs7 = require("node:fs");
 var import_node_net = require("node:net");
 var import_node_path6 = require("node:path");
-var import_node_crypto12 = require("node:crypto");
+var import_node_crypto13 = require("node:crypto");
 var socketPath = (config3, token) => {
   const value = (0, import_node_path6.join)(config3.stateDir, "control", `${token.replaceAll("-", "").slice(0, 12)}.sock`);
   if (Buffer.byteLength(value) > 100) throw new Error("CC control socket path exceeds the supported Unix-domain path length; configure a shorter stateDir");
@@ -40892,7 +40915,7 @@ var closeServer = (server) => new Promise((resolve4) => {
 });
 async function startControlServer(config3, initial, memory, bindingTimeoutMs, signal, handlers) {
   let binding = initial;
-  const token = (0, import_node_crypto12.randomUUID)(), path = socketPath(config3, token);
+  const token = (0, import_node_crypto13.randomUUID)(), path = socketPath(config3, token);
   const executor = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: (/* @__PURE__ */ new Date()).toISOString() };
   (0, import_node_fs7.mkdirSync)((0, import_node_path6.dirname)(path), { recursive: true });
   const server = (0, import_node_net.createServer)((connection) => {
@@ -41594,12 +41617,12 @@ var CcTaskScheduler = class {
 // src/hosts/cc/status.ts
 var import_node_fs8 = require("node:fs");
 var import_node_path7 = require("node:path");
-var import_node_crypto13 = require("node:crypto");
+var import_node_crypto14 = require("node:crypto");
 function statusPath(stateDir, nativeSessionId) {
   return (0, import_node_path7.join)(stateDir, "status", `${nativeSessionId}.json`);
 }
 function writeCcStatus(stateDir, status) {
-  const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto13.randomUUID)()}.tmp`;
+  const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto14.randomUUID)()}.tmp`;
   (0, import_node_fs8.mkdirSync)((0, import_node_path7.dirname)(target), { recursive: true });
   let descriptor;
   try {
@@ -42199,13 +42222,13 @@ var CcCoordinator = class {
 };
 
 // src/hosts/cc/injection.ts
-var import_node_crypto14 = require("node:crypto");
+var import_node_crypto15 = require("node:crypto");
 var import_node_fs10 = require("node:fs");
 var CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
 var BEGIN = CC_INJECTION_BEGIN;
 var CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
 var END = "TRACE MEMORY KNOWLEDGE END";
-var digest = (text) => (0, import_node_crypto14.createHash)("sha256").update(text, "utf8").digest("hex");
+var digest = (text) => (0, import_node_crypto15.createHash)("sha256").update(text, "utf8").digest("hex");
 var databaseIdentity = (path) => {
   const stat = (0, import_node_fs10.statSync)(path);
   return `${stat.dev}:${stat.ino}`;
@@ -42324,8 +42347,8 @@ function ccDeliveryHead(binding, memory) {
     return {
       owner,
       node: { owner, sessionId: core, ...core === null ? {} : { branch: binding.branch }, headTurnId: headTurnId2, pending },
-      at: () => !last ? headTurnId2 === null ? {} : { turnId: headTurnId2 } : "prompt" in last ? { nodeKey: last.prompt } : { nodeKey: pending.at(-1).key ?? (0, import_node_crypto14.randomUUID)(), follows: last.follows ?? unanchored() },
-      following: () => ({ nodeKey: (0, import_node_crypto14.randomUUID)(), follows: leaf ?? unanchored() }),
+      at: () => !last ? headTurnId2 === null ? {} : { turnId: headTurnId2 } : "prompt" in last ? { nodeKey: last.prompt } : { nodeKey: pending.at(-1).key ?? (0, import_node_crypto15.randomUUID)(), follows: last.follows ?? unanchored() },
+      following: () => ({ nodeKey: (0, import_node_crypto15.randomUUID)(), follows: leaf ?? unanchored() }),
       target
     };
   };
@@ -43276,7 +43299,7 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
 // src/hosts/cc/menu-config.ts
 var import_node_fs13 = require("node:fs");
 var import_node_path11 = require("node:path");
-var import_node_crypto15 = require("node:crypto");
+var import_node_crypto16 = require("node:crypto");
 
 // node_modules/jsonc-parser/lib/esm/impl/scanner.js
 function createScanner(text, ignoreTrivia = false) {
@@ -44652,7 +44675,7 @@ function editedCcConfig(text, id, value, capacity) {
 function saveCcConfig(path, original, updated) {
   const next = resolveCcHostConfig(JSON.parse(updated));
   if ((0, import_node_fs13.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
-  const temporary = `${path}.${process.pid}.${(0, import_node_crypto15.randomUUID)()}`;
+  const temporary = `${path}.${process.pid}.${(0, import_node_crypto16.randomUUID)()}`;
   let fd;
   try {
     fd = (0, import_node_fs13.openSync)(temporary, "wx", 384);
@@ -44980,7 +45003,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
         return { ...current, lastCompactionNotice: input.source === "clear" ? slices[0]?.systemMessage ?? null : null };
       });
     }
-    const selection = (0, import_node_crypto16.createHash)("sha256").update(JSON.stringify({
+    const selection = (0, import_node_crypto17.createHash)("sha256").update(JSON.stringify({
       material: output?.transportItems ?? [],
       warning: output?.systemMessage ?? null,
       knowledgeAllowance: output?.transportKnowledgeAllowance ?? null,

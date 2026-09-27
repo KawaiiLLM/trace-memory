@@ -51,6 +51,8 @@ const unavailableRunner = async () => ({ outcome: "failure" as const,
 const provisionalEnabled = (binding: CcSessionBinding) => binding.enrollment.choice ?? binding.enrollment.defaultEnabled;
 
 class CcIntegrityError extends Error {}
+/** A node that holds its own source entry on a path: not a compaction, and not a copy of an earlier row. */
+const ownsEntry = (node: CcNativeNode): boolean => !!node.sourceKind && node.sourceKind !== "compaction" && node.copyOf === undefined;
 interface CallIdentity { ordinal: number; name: string }
 interface BootstrapSummary {
   key: string;
@@ -101,7 +103,7 @@ export class CcProjection {
     const ancestry = this.transcript.callPath(toolUseId, nativeToolNames);
     if (!ancestry) return null;
     const entryIds: number[] = [];
-    for (const node of ancestry) if (node.sourceKind && node.sourceKind !== "compaction") {
+    for (const node of ancestry) if (ownsEntry(node)) {
       if (node.entryId === undefined) return null;
       entryIds.push(node.entryId);
     }
@@ -343,6 +345,13 @@ export class CcProjection {
         }
         return { association: { turnId: known.turnId, entryId: known.id }, calls };
       }
+      // A row Claude Code wrote again across a compaction is the row it repeats: no entry, no tool call.
+      const original = scan.node(source.nativeId)?.copyOf;
+      if (original !== undefined) {
+        const turnId = scan.node(original)?.turnId;
+        if (turnId === undefined) throw new CcIntegrityError(`native source ${original} is not persisted`);
+        return { association: { turnId } };
+      }
       return this.memory.store.transaction(() => {
         let turnId: number;
         // The owning Turn is fetched once here and reused below for the assistant-text append
@@ -434,7 +443,7 @@ export class CcProjection {
           let selectedNodes: typeof extension;
           if (continuous) {
             selectedNodes = extension.reverse();
-            for (const node of selectedNodes) if (node.sourceKind && node.sourceKind !== "compaction") {
+            for (const node of selectedNodes) if (ownsEntry(node)) {
               if (node.entryId === undefined) {
                 if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                 projectionReady = false; break;
@@ -448,7 +457,7 @@ export class CcProjection {
             } else {
               selectedNodes = selected.nodes;
               selectedEntryIds = [];
-              for (const node of selectedNodes) if (node.sourceKind && node.sourceKind !== "compaction") {
+              for (const node of selectedNodes) if (ownsEntry(node)) {
                 if (node.entryId === undefined) {
                   if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                   projectionReady = false; break;
@@ -475,7 +484,7 @@ export class CcProjection {
                 if (rebuilt.problem) { addProblem(rebuilt.problem); projectionReady = false; }
                 else {
                   selectedEntryIds = [];
-                  for (const node of rebuilt.nodes) if (node.sourceKind && node.sourceKind !== "compaction") {
+                  for (const node of rebuilt.nodes) if (ownsEntry(node)) {
                     if (node.entryId === undefined) { addProblem(`native source ${node.uuid} is not persisted`); projectionReady = false; break; }
                     selectedEntryIds.push(node.entryId);
                   }
