@@ -971,43 +971,75 @@ CREATE TABLE IF NOT EXISTS knowledge_deliveries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   owner TEXT NOT NULL CHECK (length(owner) > 0),
   turn_id INTEGER REFERENCES turns(id),
-  prompt TEXT CHECK (prompt IS NULL OR length(prompt) > 0),
-  baseline INTEGER NOT NULL CHECK (baseline IN (0,1)),
+  node_key TEXT CHECK (node_key IS NULL OR length(node_key) > 0),
+  follows TEXT CHECK (follows IS NULL OR (node_key IS NOT NULL AND length(follows) > 0)),
   commits TEXT NOT NULL,
   states TEXT NOT NULL,
   knowledge_tokens INTEGER NOT NULL CHECK (knowledge_tokens >= 0),
   created_at TEXT NOT NULL,
-  CHECK (turn_id IS NULL OR prompt IS NULL)
+  CHECK (turn_id IS NULL OR node_key IS NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_deliveries_owner ON knowledge_deliveries(owner, id);
-CREATE TABLE IF NOT EXISTS delivery_prompts (
-  prompt TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS delivery_nodes (
+  node_key TEXT PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   turn_id INTEGER NOT NULL REFERENCES turns(id)
 );
 `;
 var STATE_KEY = /^[1-9]\d*>[1-9]\d*(?:,[1-9]\d*)*$/;
-function foldDelivered(rows, ancestry, prompts, mapped) {
-  const positions = new Map(ancestry.map((id, index) => [id, index]));
-  const pending = new Map(prompts.map((prompt3, index) => [prompt3, ancestry.length + index]));
-  const placed = [];
+var noDelivery = () => ({ knowledgeCommitIds: /* @__PURE__ */ new Set(), knowledgeStates: /* @__PURE__ */ new Set(), knowledgeTokens: 0 });
+function withRows(state, rows) {
+  if (!rows?.length) return state;
+  const next = {
+    knowledgeCommitIds: new Set(state.knowledgeCommitIds),
+    knowledgeStates: new Set(state.knowledgeStates),
+    knowledgeTokens: state.knowledgeTokens
+  };
   for (const row of rows) {
-    const at = row.turnId !== null ? positions.get(row.turnId) : row.prompt === null ? -1 : positions.get(mapped.get(row.prompt) ?? 0) ?? pending.get(row.prompt);
-    if (at !== void 0) placed.push({ at, row });
+    for (const id of row.commits) next.knowledgeCommitIds.add(id);
+    for (const key of row.states) next.knowledgeStates.add(key);
+    next.knowledgeTokens += row.tokens;
   }
-  placed.sort((a, b) => a.at - b.at || a.row.id - b.row.id);
-  let start = 0;
-  for (let index = placed.length - 1; index >= 0; index--) if (placed[index].row.baseline) {
-    start = index;
-    break;
+  return next;
+}
+var push = (map2, key, rows) => map2.set(key, [...map2.get(key) ?? [], ...rows]);
+function placeDeliveries(owner, rows, bindings) {
+  const turns = /* @__PURE__ */ new Set();
+  let root2 = false;
+  for (const [key, turn] of bindings) if (!owner.bound.has(key)) {
+    owner.bound.set(key, turn);
+    const keyed = owner.byKey.get(key);
+    if (keyed) {
+      push(owner.byTurn, turn, keyed);
+      turns.add(turn);
+    }
   }
-  const state = { knowledgeCommitIds: /* @__PURE__ */ new Set(), knowledgeStates: /* @__PURE__ */ new Set(), knowledgeTokens: 0 };
-  for (const { row } of placed.slice(start)) {
-    for (const id of row.commits) state.knowledgeCommitIds.add(id);
-    for (const key of row.states) state.knowledgeStates.add(key);
-    state.knowledgeTokens += row.tokens;
+  for (const row of rows) {
+    if (row.nodeKey !== null) {
+      push(owner.byKey, row.nodeKey, [row]);
+      const turn = owner.bound.get(row.nodeKey);
+      if (turn !== void 0) {
+        push(owner.byTurn, turn, [row]);
+        turns.add(turn);
+      }
+    } else if (row.turnId !== null) {
+      push(owner.byTurn, row.turnId, [row]);
+      turns.add(row.turnId);
+    } else {
+      owner.root = [...owner.root, row];
+      root2 = true;
+    }
   }
-  return state;
+  return { turns, root: root2 };
+}
+function dropStale(nodes, turns, root2) {
+  if (!turns.size && !root2) return;
+  const stale = /* @__PURE__ */ new Set();
+  for (const id of [...nodes.keys()].sort((a, b) => a - b)) {
+    const node = nodes.get(id);
+    if (turns.has(id) || !node.compaction && (node.parent === null ? root2 : stale.has(node.parent))) stale.add(id);
+  }
+  for (const id of stale) nodes.delete(id);
 }
 
 // src/core/store/processing.ts
@@ -2903,60 +2935,32 @@ var Store = class {
   pathTurns(path) {
     return path.branch && path.headTurnId != null ? this.pathSnapshot(path).turns : this.loadPathTurns(path);
   }
-  /** 97: one owner's delivery rows, extended by id and cached like a path view. Prompt bindings are
-   * looked up only for rows still unbound. Reads inside a transaction never touch the cache. */
-  deliveryRows = /* @__PURE__ */ new Map();
-  ownerDeliveries(owner) {
-    const outside = !this.db.isTransaction;
-    const cached3 = outside ? this.deliveryRows.get(owner) : void 0;
-    if (outside) this.db.exec("BEGIN");
-    try {
-      const fresh = this.db.prepare(`SELECT id, turn_id, prompt, baseline, commits, states, knowledge_tokens
-        FROM knowledge_deliveries WHERE owner = ? AND id > ? ORDER BY id`).all(owner, cached3?.last ?? 0).map((row) => ({
-        id: Number(row.id),
-        turnId: row.turn_id === null ? null : Number(row.turn_id),
-        prompt: row.prompt,
-        baseline: row.baseline === 1,
-        commits: JSON.parse(row.commits),
-        states: JSON.parse(row.states),
-        tokens: Number(row.knowledge_tokens)
-      }));
-      const rows = [...cached3?.rows ?? [], ...fresh], mapped = new Map(cached3?.mapped);
-      const unbound = [...new Set(rows.flatMap((row) => row.prompt !== null && !mapped.has(row.prompt) ? [row.prompt] : []))];
-      if (unbound.length) for (const row of this.db.prepare(`SELECT prompt, turn_id FROM delivery_prompts
-        WHERE prompt IN (SELECT value FROM json_each(?))`).all(JSON.stringify(unbound)))
-        mapped.set(row.prompt, Number(row.turn_id));
-      if (outside) {
-        this.db.exec("COMMIT");
-        this.deliveryRows.set(owner, { rows, last: rows.at(-1)?.id ?? 0, mapped });
-      }
-      return { rows, mapped };
-    } catch (error3) {
-      if (outside && this.db.isTransaction) this.db.exec("ROLLBACK");
-      throw error3;
-    }
-  }
-  /** 97: the delivered state of one node: its lineage's rows folded from the last baseline. */
+  /** 97: the delivered state of one node: its head Turn's per-node state, then the pending nodes
+   * after it. A prompt adds its rows; a compaction starts again from its own. */
   deliveredKnowledge(node) {
-    const { rows, mapped } = this.ownerDeliveries(node.owner);
-    const ancestry = node.sessionId !== null && node.headTurnId !== null ? [...this.pathTurns({ sessionId: node.sessionId, headTurnId: node.headTurnId, ...node.branch ? { branch: node.branch } : {} })].reverse() : [];
-    return foldDelivered(rows, ancestry, node.prompts ?? [], mapped);
+    if (node.sessionId !== null && this.getSession(node.sessionId)?.host !== node.owner)
+      throw new Error(`delivery owner ${node.owner} does not own session S${node.sessionId}`);
+    const cache = this.deliveryCache(), owner = this.ownerDeliveries(cache, node.owner);
+    let state = node.sessionId !== null && node.headTurnId !== null ? this.turnDelivered(cache, owner, { sessionId: node.sessionId, headTurnId: node.headTurnId, ...node.branch ? { branch: node.branch } : {} }) : withRows(noDelivery(), owner.root);
+    for (const pending of node.pending ?? [])
+      state = withRows(pending.compaction ? noDelivery() : state, pending.key === null ? void 0 : owner.byKey.get(pending.key));
+    return { knowledgeCommitIds: new Set(state.knowledgeCommitIds), knowledgeStates: new Set(state.knowledgeStates), knowledgeTokens: state.knowledgeTokens };
   }
   /** The newest delivery row of an owner; a publisher compares it before recording. */
   deliveryWatermark(owner) {
     return Number(this.db.prepare("SELECT IFNULL(MAX(id), 0) AS id FROM knowledge_deliveries WHERE owner = ?").get(owner).id);
   }
-  /** 97: record every emitted part at its node, in one transaction. Empty parts are not rows; a
-   * baseline always leaves one row, so a compaction that delivered nothing still restarts the set. */
+  /** 97: record every emitted part at its node, in one transaction. Empty parts are not rows. */
   recordKnowledgeDelivery(target, parts, createdAt = (/* @__PURE__ */ new Date()).toISOString()) {
     if (typeof target.owner !== "string" || !target.owner) throw new Error("delivery owner is required");
-    if (target.turnId != null && target.prompt != null) throw new Error("a delivery node is a Turn or a prompt, not both");
-    if (target.prompt != null && (typeof target.prompt !== "string" || !target.prompt)) throw new Error("delivery prompt key must be a nonempty string");
+    if (target.turnId != null && target.nodeKey != null) throw new Error("a delivery node is a Turn or a key, not both");
+    if (target.nodeKey != null && (typeof target.nodeKey !== "string" || !target.nodeKey)) throw new Error("delivery node key must be a nonempty string");
+    if (target.follows != null && (target.nodeKey == null || typeof target.follows !== "string" || !target.follows))
+      throw new Error("a pending compaction's delivery needs its key and the record it follows");
     for (const part of parts) {
       if (!part.knowledgeCommitIds.every((id) => Number.isSafeInteger(id) && id > 0) || !part.knowledgeStates.every((key) => STATE_KEY.test(key)) || !Number.isSafeInteger(part.knowledgeTokens) || part.knowledgeTokens < 0) throw new Error("invalid delivery part");
     }
-    const kept = parts.filter((part) => part.knowledgeCommitIds.length || part.knowledgeStates.length || part.knowledgeTokens);
-    const rows = kept.length ? kept : target.baseline ? [{ knowledgeCommitIds: [], knowledgeStates: [], knowledgeTokens: 0 }] : [];
+    const rows = parts.filter((part) => part.knowledgeCommitIds.length || part.knowledgeStates.length || part.knowledgeTokens);
     if (!rows.length) return [];
     return this.transaction(() => {
       if (target.turnId != null) {
@@ -2966,13 +2970,13 @@ var Store = class {
       const commits = [...new Set(rows.flatMap((part) => part.knowledgeCommitIds))];
       const known = Number(this.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions WHERE id IN (SELECT value FROM json_each(?))").get(JSON.stringify(commits)).count);
       if (known !== commits.length) throw new Error("delivery names an unknown knowledge version");
-      const insert = this.db.prepare(`INSERT INTO knowledge_deliveries(owner, turn_id, prompt, baseline, commits, states, knowledge_tokens, created_at)
+      const insert = this.db.prepare(`INSERT INTO knowledge_deliveries(owner, turn_id, node_key, follows, commits, states, knowledge_tokens, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-      return rows.map((part, index) => Number(insert.run(
+      return rows.map((part) => Number(insert.run(
         target.owner,
         target.turnId ?? null,
-        target.prompt ?? null,
-        target.baseline && index === 0 ? 1 : 0,
+        target.nodeKey ?? null,
+        target.follows ?? null,
         JSON.stringify(part.knowledgeCommitIds),
         JSON.stringify(part.knowledgeStates),
         part.knowledgeTokens,
@@ -2980,12 +2984,19 @@ var Store = class {
       ).lastInsertRowid));
     });
   }
-  /** 97: the import binds a host prompt key to the Turn that prompt created; the first binding wins. */
-  bindDeliveryPrompt(prompt3, sessionId, turnId) {
-    if (typeof prompt3 !== "string" || !prompt3) throw new Error("delivery prompt key must be a nonempty string");
+  /** 97: a host binds a node key to the Turn that node became; the first binding wins. */
+  bindDeliveryNode(nodeKey, sessionId, turnId) {
+    if (typeof nodeKey !== "string" || !nodeKey) throw new Error("delivery node key must be a nonempty string");
     const turn = this.db.prepare("SELECT session_id FROM turns WHERE id = ?").get(turnId);
     if (!turn || Number(turn.session_id) !== sessionId) throw new Error(`Turn ${turnId} is not in session S${sessionId}`);
-    this.db.prepare("INSERT OR IGNORE INTO delivery_prompts(prompt, session_id, turn_id) VALUES (?, ?, ?)").run(prompt3, sessionId, turnId);
+    this.db.prepare("INSERT OR IGNORE INTO delivery_nodes(node_key, session_id, turn_id) VALUES (?, ?, ?)").run(nodeKey, sessionId, turnId);
+  }
+  /** 97: the supplement key of a compaction not yet bound, by the native record it follows: the
+   * oldest unbound one. The import binds exactly this key to the compaction's Turn. */
+  compactionDeliveryKey(owner, follows) {
+    const row = this.db.prepare(`SELECT d.node_key FROM knowledge_deliveries d WHERE d.owner = ? AND d.follows = ?
+      AND NOT EXISTS (SELECT 1 FROM delivery_nodes n WHERE n.node_key = d.node_key) ORDER BY d.id LIMIT 1`).get(owner, follows);
+    return row?.node_key ?? null;
   }
   /** A read-only snapshot for work that must see one database state: path views built inside it
    * are discarded with it, as in a write transaction. */
@@ -3160,7 +3171,9 @@ var Store = class {
     const water = this.db.prepare(`SELECT
       (SELECT IFNULL(MAX(id), 0) FROM knowledge_revisions) AS revision,
       (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cursor,
-      (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS path`).get();
+      (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS path,
+      (SELECT IFNULL(MAX(id), 0) FROM knowledge_deliveries) AS delivery,
+      (SELECT IFNULL(MAX(rowid), 0) FROM delivery_nodes) AS deliveryNode`).get();
     const projects = new Map(this.db.prepare("SELECT id, project_id FROM sessions").all().map((row) => [Number(row.id), Number(row.project_id)]));
     if (!previous) {
       const input2 = this.buildGraphInput();
@@ -3215,10 +3228,13 @@ var Store = class {
         componentOf,
         components,
         results,
-        visibility: /* @__PURE__ */ new Map()
+        visibility: /* @__PURE__ */ new Map(),
+        deliveries: { row: water.delivery, node: water.deliveryNode, owners: /* @__PURE__ */ new Map(), nodes: /* @__PURE__ */ new Map() }
       };
     }
-    if (water.revision === previous.maxRevision && water.cursor === previous.cursorVersion && water.path === previous.pathVersion && projects.size === previous.projects.size && [...projects].every(([id, project]) => previous.projects.get(id) === project)) return previous;
+    const deliveries = this.advanceDeliveries(previous.deliveries, water.delivery, water.deliveryNode);
+    if (water.revision === previous.maxRevision && water.cursor === previous.cursorVersion && water.path === previous.pathVersion && projects.size === previous.projects.size && [...projects].every(([id, project]) => previous.projects.get(id) === project))
+      return deliveries === previous.deliveries ? previous : { ...previous, deliveries };
     const input = {
       revisions: [...previous.input.revisions],
       parents: new Map(previous.input.parents),
@@ -3249,7 +3265,8 @@ var Store = class {
       componentOf: new Map(previous.componentOf),
       components: new Map([...previous.components].map(([id, members]) => [id, new Set(members)])),
       results: new Map(previous.results),
-      visibility: new Map(previous.visibility)
+      visibility: new Map(previous.visibility),
+      deliveries
     };
     const dirty = /* @__PURE__ */ new Set();
     const changedOwners = /* @__PURE__ */ new Set();
@@ -3369,6 +3386,95 @@ var Store = class {
       next.visibility.set(key, ids);
     }
     return next;
+  }
+  /** 97: the delivery part of the per-node cache. Committed reads use 88's advanced graph; a read
+   * inside a transaction starts cold at that transaction's watermarks and is discarded with it. */
+  deliveryCache() {
+    if (!this.db.isTransaction) {
+      this.commitGraphInput(void 0, 0);
+      return this.graphInputCache.deliveries;
+    }
+    const water = this.db.prepare(`SELECT (SELECT IFNULL(MAX(id), 0) FROM knowledge_deliveries) AS row,
+      (SELECT IFNULL(MAX(rowid), 0) FROM delivery_nodes) AS node`).get();
+    return { row: Number(water.row), node: Number(water.node), owners: /* @__PURE__ */ new Map(), nodes: /* @__PURE__ */ new Map() };
+  }
+  readDeliveryRows(where, ...values) {
+    return this.db.prepare(`SELECT id, owner, turn_id, node_key, commits, states, knowledge_tokens FROM knowledge_deliveries
+      WHERE ${where} ORDER BY id`).all(...values).map((row) => ({
+      id: Number(row.id),
+      owner: row.owner,
+      turnId: row.turn_id === null ? null : Number(row.turn_id),
+      nodeKey: row.node_key,
+      commits: JSON.parse(row.commits),
+      states: JSON.parse(row.states),
+      tokens: Number(row.knowledge_tokens)
+    }));
+  }
+  /** Bindings of the rows' keys, up to a binding watermark. */
+  deliveryBindings(rows, upTo) {
+    const keys = [...new Set(rows.flatMap((row) => row.nodeKey === null ? [] : [row.nodeKey]))];
+    return new Map(keys.length ? this.db.prepare(`SELECT node_key, turn_id FROM delivery_nodes WHERE rowid <= ?
+      AND node_key IN (SELECT value FROM json_each(?))`).all(upTo, JSON.stringify(keys)).map((row) => [row.node_key, Number(row.turn_id)]) : []);
+  }
+  /** An owner's rows at the cache's watermarks, loaded once: a hook's cold start. */
+  ownerDeliveries(cache, name) {
+    let owner = cache.owners.get(name);
+    if (owner) return owner;
+    const rows = this.readDeliveryRows("owner = ? AND id <= ?", name, cache.row);
+    owner = { root: [], byTurn: /* @__PURE__ */ new Map(), byKey: /* @__PURE__ */ new Map(), bound: /* @__PURE__ */ new Map() };
+    placeDeliveries(owner, rows, this.deliveryBindings(rows, cache.node));
+    cache.owners.set(name, owner);
+    return owner;
+  }
+  /** A Turn's delivered state: its nearest computed ancestor's plus the rows of each Turn after it,
+   * restarting at the latest compaction. Every Turn derived on the way is kept. */
+  turnDelivered(cache, owner, path) {
+    const hit = cache.nodes.get(path.headTurnId);
+    if (hit) return hit.state;
+    const walk = [];
+    let base = null;
+    for (const id of this.pathTurns(path)) {
+      if (cache.nodes.has(id)) {
+        base = id;
+        break;
+      }
+      walk.push(id);
+    }
+    const compactions = new Set(this.db.prepare("SELECT id FROM turns WHERE kind = 'compaction' AND id IN (SELECT value FROM json_each(?))").all(JSON.stringify(walk)).map((row) => Number(row.id)));
+    const latest = walk.findIndex((id) => compactions.has(id));
+    let state = latest >= 0 ? noDelivery() : base === null ? withRows(noDelivery(), owner.root) : cache.nodes.get(base).state;
+    for (let index = latest >= 0 ? latest : walk.length - 1; index >= 0; index--) {
+      const id = walk[index], compaction = compactions.has(id);
+      state = withRows(compaction ? noDelivery() : state, owner.byTurn.get(id));
+      cache.nodes.set(id, { state, parent: walk[index + 1] ?? base, compaction });
+    }
+    return state;
+  }
+  /** Apply rows and key bindings after the previous watermarks to the loaded owners, and drop the
+   * node states they change. Unloaded owners are read whole when first needed. */
+  advanceDeliveries(previous, row, node) {
+    if (row === previous.row && node === previous.node) return previous;
+    if (!previous.owners.size) return { ...previous, row, node };
+    const rows = this.readDeliveryRows("id > ? AND id <= ?", previous.row, row);
+    const bindings = new Map([
+      ...this.db.prepare("SELECT node_key, turn_id FROM delivery_nodes WHERE rowid > ? AND rowid <= ?").all(previous.node, node).map((value) => [value.node_key, Number(value.turn_id)]),
+      ...this.deliveryBindings(rows, node)
+    ]);
+    const owners2 = new Map(previous.owners), nodes = new Map(previous.nodes), turns = /* @__PURE__ */ new Set();
+    let root2 = false;
+    for (const [name, prior] of previous.owners) {
+      const own = rows.filter((value) => value.owner === name);
+      const keys = new Set(own.flatMap((value) => value.nodeKey === null ? [] : [value.nodeKey]));
+      const relevant = new Map([...bindings].filter(([key]) => prior.byKey.has(key) || keys.has(key)));
+      if (!own.length && !relevant.size) continue;
+      const next = { root: prior.root, byTurn: new Map(prior.byTurn), byKey: new Map(prior.byKey), bound: new Map(prior.bound) };
+      const changed = placeDeliveries(next, own, relevant);
+      owners2.set(name, next);
+      for (const id of changed.turns) turns.add(id);
+      root2 ||= changed.root;
+    }
+    dropStale(nodes, turns, root2);
+    return { row, node, owners: owners2, nodes };
   }
   buildGraphInput(seed, selectedFacts) {
     const revisions = seed ? [...seed] : this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
@@ -7019,7 +7125,7 @@ function readFacade(store, config3, prepare = () => {
       const sourced = prepared ? prepared.entries.filter(onEndpoint) : head === void 0 ? [] : store.sourcePath(sessionId, branch, head, sourceSnapshot);
       const pending = prepared ? prepared.pending.filter(onEndpoint) : head === void 0 ? [] : store.pendingEntries(sessionId, branch, head, sourceSnapshot);
       const pendingIds = new Set(pending.map((e) => e.id));
-      const knowledge = store.currentKnowledge(path, {}, snapshot2);
+      const knowledge = options.knowledge === false ? [] : store.currentKnowledge(path, {}, snapshot2);
       const visible = Array.isArray(retainedView) ? noVisibility() : retainedView;
       const retained = new Set(Array.isArray(retainedView) ? retainedView : visible.raw.keys());
       const sessionFacts = store.listSessionFacts(sessionId);
@@ -7038,7 +7144,7 @@ function readFacade(store, config3, prepare = () => {
       const receiptCharge = (receipts) => receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0;
       const view = (entry) => renderEntry(entry, config3.render, resultText);
       const knowledgeEnvelope = caps.knowledge + sharedAllowance;
-      const allNotes = knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path, void 0, void 0, true).sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit);
+      const allNotes = options.knowledge === false ? [] : knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path, void 0, void 0, true).sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit);
       const noteReceipt = (omitted) => omitted ? [`omitted ${omitted} older inherited knowledge status lines; knowledge base plus shared allowance is full`] : [];
       const noteTextCost = (kept) => kept ? charge([KNOWLEDGE_STATUS_TITLE, ...allNotes.slice(0, kept).map((note) => note.text)]) : 0;
       const noteCost = (kept) => noteTextCost(kept) + receiptCharge(noteReceipt(allNotes.length - kept));
@@ -9527,7 +9633,7 @@ var validClearedFrom = (value) => {
 };
 function parseBinding(value) {
   const binding = value;
-  if (!binding || binding.version !== 1 || validateNativeSessionId(binding.nativeSessionId) !== binding.nativeSessionId || typeof binding.transcriptPath !== "string" || !binding.transcriptPath || typeof binding.dbPath !== "string" || binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId < 1) || binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId < 1) || typeof binding.branch !== "string" || !binding.branch || binding.nativeProcess !== void 0 && (!Number.isSafeInteger(binding.nativeProcess?.pid) || binding.nativeProcess.pid <= 0 || typeof binding.nativeProcess.startedAt !== "string" || !binding.nativeProcess.startedAt) || binding.lastCompactionNotice !== void 0 && binding.lastCompactionNotice !== null && typeof binding.lastCompactionNotice !== "string" || binding.cwd !== void 0 && (typeof binding.cwd !== "string" || !(0, import_node_path4.isAbsolute)(binding.cwd)) || binding.coreHost !== void 0 && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:")) || binding.clearedFrom !== void 0 && !validClearedFrom(binding.clearedFrom) || binding.clearedInto !== void 0 && (typeof binding.clearedInto?.nativeSessionId !== "string" || typeof binding.clearedInto.at !== "string") || binding.transcriptOffset !== void 0 && (!Number.isSafeInteger(binding.transcriptOffset) || binding.transcriptOffset < 0) || binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid))
+  if (!binding || binding.version !== 1 || validateNativeSessionId(binding.nativeSessionId) !== binding.nativeSessionId || typeof binding.transcriptPath !== "string" || !binding.transcriptPath || typeof binding.dbPath !== "string" || binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId < 1) || binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId < 1) || typeof binding.branch !== "string" || !binding.branch || binding.nativeProcess !== void 0 && (!Number.isSafeInteger(binding.nativeProcess?.pid) || binding.nativeProcess.pid <= 0 || typeof binding.nativeProcess.startedAt !== "string" || !binding.nativeProcess.startedAt) || binding.lastCompactionNotice !== void 0 && binding.lastCompactionNotice !== null && typeof binding.lastCompactionNotice !== "string" || binding.cwd !== void 0 && (typeof binding.cwd !== "string" || !(0, import_node_path4.isAbsolute)(binding.cwd)) || binding.coreHost !== void 0 && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:")) || binding.clearedFrom !== void 0 && !validClearedFrom(binding.clearedFrom) || binding.clearedInto !== void 0 && (typeof binding.clearedInto?.nativeSessionId !== "string" || typeof binding.clearedInto.at !== "string") || binding.transcriptOffset !== void 0 && (!Number.isSafeInteger(binding.transcriptOffset) || binding.transcriptOffset < 0) || binding.selectedHeadTurnId !== void 0 && (!Number.isSafeInteger(binding.selectedHeadTurnId) || binding.selectedHeadTurnId < 1) || binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid))
     throw new Error("invalid Claude Code binding record");
   return binding;
 }
@@ -9548,6 +9654,7 @@ function dropLostCoreSession(binding, store) {
     clearedInto: _clearedInto,
     selectedLeafUuid: _selectedLeafUuid,
     transcriptOffset: _transcriptOffset,
+    selectedHeadTurnId: _selectedHeadTurnId,
     branch: _branch,
     projectId,
     ...rest
@@ -10356,27 +10463,35 @@ function readTranscriptTail(path, offset) {
     (0, import_node_fs5.closeSync)(descriptor);
   }
 }
-function tailPrompts(records) {
+function tailNodes(records) {
   const position = /* @__PURE__ */ new Map();
   records.forEach((record3, index) => {
     const id = nativeId(record3);
     if (id && !position.has(id)) position.set(id, index);
   });
   const leaf = [...records].reverse().find((record3) => classifySourceRecord(record3) !== null);
-  if (!leaf) return { prompts: [], exit: null, leaf: null };
-  const prompts = [], seen = /* @__PURE__ */ new Set();
-  let current = leaf;
+  if (!leaf) return { nodes: [], exit: null, leaf: null };
+  const nodes = [], seen = /* @__PURE__ */ new Set();
+  let current = leaf, awaiting = null;
   for (; ; ) {
     const id = nativeId(current);
     if (seen.has(id)) throw new Error(`native lineage cycle at ${id}`);
     seen.add(id);
-    if (classifySourceRecord(current)?.kind === "user" && typeof current.promptId === "string" && current.promptId)
-      prompts.unshift(current.promptId);
+    const source = classifySourceRecord(current);
+    if (source && awaiting) {
+      awaiting.follows = id;
+      awaiting = null;
+    }
+    if (source?.kind === "user" && typeof current.promptId === "string" && current.promptId) nodes.unshift({ prompt: current.promptId });
+    if (source?.kind === "compaction") nodes.unshift(awaiting = { follows: null });
     const at = position.get(id);
     const parent = nativeParentId(current, (uuid5) => (position.get(uuid5) ?? -1) < at);
-    if (parent === null) return { prompts, exit: null, leaf: nativeId(leaf) };
+    if (parent === null) return { nodes, exit: null, leaf: nativeId(leaf) };
     current = position.has(parent) ? records[position.get(parent)] : void 0;
-    if (!current) return { prompts, exit: parent, leaf: nativeId(leaf) };
+    if (!current) {
+      if (awaiting) awaiting.follows = parent;
+      return { nodes, exit: parent, leaf: nativeId(leaf) };
+    }
   }
 }
 function readTranscriptCreatedAt(path) {
@@ -40147,6 +40262,8 @@ var CcProjection = class {
   lastResult = null;
   expectedPath = null;
   synchronized = false;
+  /** 97: memo of `promptParent` per native node; a rescan replaces the nodes and so the memo. */
+  promptParents = /* @__PURE__ */ new WeakMap();
   constructor(config3, binding, memory) {
     if (binding.dbPath !== config3.dbPath) throw new Error("CC binding uses another database");
     this.config = config3;
@@ -40334,16 +40451,7 @@ var CcProjection = class {
     const addProblem = (problem) => {
       if (!problems.includes(problem)) problems.push(problem);
     };
-    const nearestTurn = (record3, scan2) => {
-      const seen = /* @__PURE__ */ new Set();
-      const own = typeof record3.uuid === "string" ? scan2.node(record3.uuid) : void 0;
-      if (own?.lineageProblem) throw new CcIntegrityError(own.lineageProblem);
-      let parent;
-      try {
-        parent = own ? own.parentUuid : nativeParentId(record3);
-      } catch (error3) {
-        throw new CcIntegrityError(error3 instanceof Error ? error3.message : String(error3));
-      }
+    const importedAbove = (parent, scan2, seen = /* @__PURE__ */ new Set()) => {
       while (parent) {
         if (seen.has(parent)) throw new CcIntegrityError(`native lineage cycle at ${parent}`);
         seen.add(parent);
@@ -40351,11 +40459,37 @@ var CcProjection = class {
         if (!ancestor) throw new CcIntegrityError(`native lineage parent ${parent} is missing`);
         if (ancestor.lineageProblem) throw new CcIntegrityError(ancestor.lineageProblem);
         if (ancestor.importProblem) throw new CcIntegrityError(ancestor.importProblem);
-        if (ancestor.turnId !== void 0) return ancestor.turnId;
+        if (ancestor.turnId !== void 0) return ancestor;
         if (ancestor.sourceKind !== null) throw new CcIntegrityError(`native source ${ancestor.uuid} is not persisted`);
         parent = ancestor.parentUuid;
       }
-      return this.binding.clearedFrom?.compactionTurnId ?? null;
+      return null;
+    };
+    const rootTurn = () => this.binding.clearedFrom?.compactionTurnId ?? null;
+    const parentOf = (record3, scan2) => {
+      const own = typeof record3.uuid === "string" ? scan2.node(record3.uuid) : void 0;
+      if (own?.lineageProblem) throw new CcIntegrityError(own.lineageProblem);
+      try {
+        return own ? own.parentUuid : nativeParentId(record3);
+      } catch (error3) {
+        throw new CcIntegrityError(error3 instanceof Error ? error3.message : String(error3));
+      }
+    };
+    const nearestTurn = (record3, scan2) => importedAbove(parentOf(record3, scan2), scan2)?.turnId ?? rootTurn();
+    const promptParent = (node, scan2) => {
+      const walked = [], seen = /* @__PURE__ */ new Set();
+      let found;
+      while (found === void 0) {
+        if (!node) found = rootTurn();
+        else if (this.promptParents.has(node)) found = this.promptParents.get(node);
+        else if (node.sourceKind === "user" || node.sourceKind === "compaction") found = node.turnId;
+        else {
+          walked.push(node);
+          node = importedAbove(node.parentUuid, scan2, seen);
+        }
+      }
+      for (const value of walked) this.promptParents.set(value, found);
+      return found;
     };
     const knownCalls = (turnId) => {
       const loaded = this.callsByTurn.get(turnId);
@@ -40374,7 +40508,7 @@ var CcProjection = class {
       const timestamp2 = source.timestamp;
       if (source.kind === "compaction") {
         const known2 = this.memory.store.findNativeTurn(sessionId, lineage, source.nativeId);
-        const parentTurnId = nearestTurn(record3, scan2);
+        const above = importedAbove(parentOf(record3, scan2), scan2), parentTurnId = above?.turnId ?? rootTurn();
         if (known2) {
           const turn = this.memory.store.getTurn(known2.turnId);
           if (!turn || turn.kind !== "compaction" || turn.parentTurnId !== parentTurnId || turn.startedAt !== source.timestamp)
@@ -40384,6 +40518,8 @@ var CcProjection = class {
         return this.memory.store.transaction(() => {
           const turn = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "compaction", startedAt: timestamp2, endedAt: timestamp2 });
           this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turn.id, "compaction");
+          const key = above && this.memory.store.compactionDeliveryKey(coreHostOf(this.binding), above.uuid);
+          if (key) this.memory.store.bindDeliveryNode(key, sessionId, turn.id);
           return { association: { turnId: turn.id } };
         });
       }
@@ -40405,10 +40541,10 @@ var CcProjection = class {
         let turnId;
         let ownerTurn = null;
         if (source.kind === "user") {
-          const parentTurnId = nearestTurn(record3, scan2);
+          const parentTurnId = promptParent(importedAbove(parentOf(record3, scan2), scan2), scan2);
           turnId = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: source.text, startedAt: timestamp2 }).id;
           this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turnId, "turn");
-          if (typeof record3.promptId === "string" && record3.promptId) this.memory.store.bindDeliveryPrompt(record3.promptId, sessionId, turnId);
+          if (typeof record3.promptId === "string" && record3.promptId) this.memory.store.bindDeliveryNode(record3.promptId, sessionId, turnId);
         } else {
           const owner = nearestTurn(record3, scan2);
           ownerTurn = owner === null ? null : this.memory.store.getTurn(owner);
@@ -40600,11 +40736,14 @@ var CcProjection = class {
     const completed = scan;
     if (projectionReady) try {
       const transcriptOffset = completed.selectedLeafOffset ?? void 0;
-      await this.persist((binding) => binding.branch === branch && binding.selectedLeafUuid === completed.selectedLeafUuid && binding.transcriptOffset === transcriptOffset ? binding : (({ transcriptOffset: _stale, ...rest }) => ({
+      const leaf = completed.selectedLeafUuid === null ? void 0 : completed.node(completed.selectedLeafUuid);
+      const selectedHeadTurnId = leaf?.turnId === void 0 ? void 0 : promptParent(leaf, completed) ?? void 0;
+      await this.persist((binding) => binding.branch === branch && binding.selectedLeafUuid === completed.selectedLeafUuid && binding.transcriptOffset === transcriptOffset && binding.selectedHeadTurnId === selectedHeadTurnId ? binding : (({ transcriptOffset: _stale, selectedHeadTurnId: _head, ...rest }) => ({
         ...rest,
         branch,
         selectedLeafUuid: completed.selectedLeafUuid,
-        ...transcriptOffset === void 0 ? {} : { transcriptOffset }
+        ...transcriptOffset === void 0 ? {} : { transcriptOffset },
+        ...selectedHeadTurnId === void 0 ? {} : { selectedHeadTurnId }
       }))(binding));
     } catch (error3) {
       this.lastResult = null;
@@ -42176,42 +42315,51 @@ async function injectionBinding(config3, initial, memory) {
 }
 function ccDeliveryHead(binding, memory) {
   const owner = coreHostOf(binding), core = binding.coreSessionId, store = memory.store;
-  if (core === null) {
-    if (binding.projectId === null) throw new Error("provisional Claude Code project is unavailable");
-    const prompts2 = tailPrompts(readTranscriptTail(binding.transcriptPath, 0) ?? []).prompts;
+  const unanchored = () => {
+    throw new Error("a compaction with no source record before it holds no delivery");
+  };
+  const head = (headTurnId2, tail2, leaf, target) => {
+    const pending = tail2.nodes.map((node) => "prompt" in node ? { key: node.prompt } : { key: node.follows === null ? null : store.compactionDeliveryKey(owner, node.follows), compaction: true });
+    const last = tail2.nodes.at(-1);
     return {
       owner,
-      node: { owner, sessionId: null, headTurnId: null, prompts: prompts2 },
-      at: prompts2.length ? { prompt: prompts2.at(-1) } : {},
-      target: { projectId: binding.projectId }
+      node: { owner, sessionId: core, ...core === null ? {} : { branch: binding.branch }, headTurnId: headTurnId2, pending },
+      at: () => !last ? headTurnId2 === null ? {} : { turnId: headTurnId2 } : "prompt" in last ? { nodeKey: last.prompt } : { nodeKey: pending.at(-1).key ?? (0, import_node_crypto14.randomUUID)(), follows: last.follows ?? unanchored() },
+      following: () => ({ nodeKey: (0, import_node_crypto14.randomUUID)(), follows: leaf ?? unanchored() }),
+      target
     };
+  };
+  if (core === null) {
+    if (binding.projectId === null) throw new Error("provisional Claude Code project is unavailable");
+    const tail2 = tailNodes(readTranscriptTail(binding.transcriptPath, 0) ?? []);
+    return head(null, tail2, tail2.leaf, { projectId: binding.projectId });
   }
   const session = store.getSession(core);
   if (!session || session.host !== owner || session.projectId !== binding.projectId)
     throw new Error("bound Claude Code core session or project disagrees with the database");
   const turnOf = (uuid5) => store.findSourceEntry(core, binding.nativeSessionId, uuid5)?.turnId ?? store.findNativeTurn(core, binding.nativeSessionId, uuid5)?.turnId;
-  let headTurnId = binding.clearedFrom?.compactionTurnId ?? null;
+  const root2 = binding.clearedFrom?.compactionTurnId ?? null;
+  let headTurnId = root2;
   if (binding.selectedLeafUuid !== null) {
-    headTurnId = turnOf(binding.selectedLeafUuid) ?? null;
+    headTurnId = binding.selectedHeadTurnId ?? turnOf(binding.selectedLeafUuid) ?? null;
     if (headTurnId === null) throw new Error("native selected source has no persisted core Turn");
   }
-  let prompts = [];
+  let tail = { nodes: [], exit: null, leaf: null };
   const offset = binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset;
   if (offset !== void 0) {
-    const tail = tailPrompts(readTranscriptTail(binding.transcriptPath, offset) ?? []);
-    prompts = tail.prompts;
+    tail = tailNodes(readTranscriptTail(binding.transcriptPath, offset) ?? []);
     if (tail.leaf !== null && tail.exit !== binding.selectedLeafUuid) {
-      const rebased = tail.exit === null ? null : turnOf(tail.exit) ?? null;
-      if (rebased !== null) headTurnId = rebased;
-      else console.error(`Trace Memory: unimported native branch point ${String(tail.exit)}; using the stored head`);
+      const rebased = tail.exit === null ? root2 : turnOf(tail.exit) ?? null;
+      if (tail.exit === null || rebased !== null) headTurnId = rebased;
+      else console.error(`Trace Memory: unimported native branch point ${tail.exit}; using the stored head`);
     }
   }
-  return {
-    owner,
-    node: { owner, sessionId: core, branch: binding.branch, headTurnId, prompts },
-    at: prompts.length ? { prompt: prompts.at(-1) } : headTurnId === null ? {} : { turnId: headTurnId },
-    target: headTurnId === null ? { projectId: session.projectId } : { sessionId: core, branch: binding.branch, headTurnId }
-  };
+  return head(
+    headTurnId,
+    tail,
+    tail.leaf ?? binding.selectedLeafUuid,
+    headTurnId === null ? { projectId: session.projectId } : { sessionId: core, branch: binding.branch, headTurnId }
+  );
 }
 var partOf = (output, visible) => {
   const context = output?.hookSpecificOutput.additionalContext;
@@ -42244,11 +42392,11 @@ async function deliver(config3, input, event, emit, options = {}) {
     const selected = memory.store.readSnapshot(() => {
       options.onSnapshot?.(memory.store.db, binding);
       const head2 = ccDeliveryHead(binding, memory);
-      const own = event.kind === "prompt" ? [event.promptId] : [];
-      const delivered = event.kind === "compact" ? { ...noVisibility(), knowledgeTokens: 0 } : deliveredView(memory.store.deliveredKnowledge({ ...head2.node, prompts: [...head2.node.prompts ?? [], ...own] }));
-      return { head: head2, injection: memory.injection(head2.target, delivered, true), watermark: memory.store.deliveryWatermark(head2.owner) };
+      const at2 = event.kind === "prompt" ? { nodeKey: event.promptId } : event.kind === "compact" ? head2.following() : head2.at();
+      const delivered = event.kind === "compact" ? { ...noVisibility(), knowledgeTokens: 0 } : deliveredView(memory.store.deliveredKnowledge(event.kind === "prompt" ? { ...head2.node, pending: [...head2.node.pending ?? [], { key: event.promptId }] } : head2.node));
+      return { head: head2, at: at2, injection: memory.injection(head2.target, delivered, true), watermark: memory.store.deliveryWatermark(head2.owner) };
     });
-    const { head, injection } = selected;
+    const { head, at, injection } = selected;
     const output = injection.text ? {
       hookSpecificOutput: {
         hookEventName: "SessionStart",
@@ -42259,11 +42407,10 @@ async function deliver(config3, input, event, emit, options = {}) {
     } : null;
     const { outputs, result } = emit(output, visible);
     const parts = outputs.flatMap((value) => partOf(value, visible));
-    const at = event.kind === "prompt" ? { prompt: event.promptId } : head.at;
-    if (parts.length || event.kind === "compact") memory.store.transaction(() => {
+    if (parts.length) memory.store.transaction(() => {
       if (memory.store.deliveryWatermark(head.owner) !== selected.watermark)
         throw new Error("another Knowledge publication for this context landed while this one was rendered");
-      memory.store.recordKnowledgeDelivery({ owner: head.owner, ...at, baseline: event.kind === "compact" }, parts);
+      memory.store.recordKnowledgeDelivery({ owner: head.owner, ...at }, parts);
     });
     return result;
   } finally {
@@ -42278,10 +42425,7 @@ function recordCcBaseline(config3, binding, outputs) {
   }, config3.coreConfig);
   try {
     const visible = { db: databaseIdentity(config3.dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
-    memory.store.recordKnowledgeDelivery(
-      { owner: coreHostOf(binding), turnId, baseline: true },
-      outputs.flatMap((value) => partOf(value, visible))
-    );
+    memory.store.recordKnowledgeDelivery({ owner: coreHostOf(binding), turnId }, outputs.flatMap((value) => partOf(value, visible)));
   } finally {
     memory.store.close();
   }
@@ -42363,35 +42507,11 @@ async function ccPreparedSessionStartInjection(config3, input, slice) {
   return { ...delivered, snapshot: snapshot2 };
 }
 async function ccDeltaInjection(config3, input, event, slice) {
-  let slices;
-  try {
-    slices = await deliver(config3, input, event, (output, visible) => {
-      const slices2 = slice(output, visible);
-      return { outputs: slices2, result: slices2 };
-    });
-  } catch (error3) {
-    if (event.kind === "compact") try {
-      recordEmptyBaseline(config3, input);
-    } catch (secondary) {
-      console.error(`Trace Memory: compaction baseline was not recorded: ${secondary instanceof Error ? secondary.message : String(secondary)}`);
-    }
-    throw error3;
-  }
+  const slices = await deliver(config3, input, event, (output, visible) => {
+    const slices2 = slice(output, visible);
+    return { outputs: slices2, result: slices2 };
+  });
   return slices ?? slice(null, { db: "", nativeSession: input.session_id, coreSession: null });
-}
-function recordEmptyBaseline(config3, input) {
-  const binding = readBinding(config3, input.session_id);
-  if (!binding) return;
-  const memory = TraceMemory(config3.dbPath, async () => {
-    throw new Error("CC compact Hook cannot run model work");
-  }, config3.coreConfig);
-  try {
-    if (!enabled(binding, memory)) return;
-    const head = ccDeliveryHead(binding, memory);
-    memory.store.recordKnowledgeDelivery({ owner: head.owner, ...head.at, baseline: true }, []);
-  } finally {
-    memory.store.close();
-  }
 }
 
 // src/hosts/cc/slices.ts
