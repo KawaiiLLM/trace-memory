@@ -5,6 +5,7 @@ import { expect, test } from "vitest";
 import { call, fixture, piSession, say } from "./native-fixture.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
+import { knowledgeBatch, legacyFacts } from "../../support/seed.ts";
 import extension from "../../../src/hosts/pi/index.ts";
 
 // Real foreground hooks and persisted Pi compactions, not repeated calls to the allocator.
@@ -59,19 +60,20 @@ test("persisted hook lifecycle: repeat, N progress, 117 knowledge commits, small
     const first = await compact();
     expect(await compact()).toEqual(first);
     expect(store.listSourceEntries(1)).toEqual(sources);
-    const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "seed" },
-      entryIds: sources.map(e => e.id), facts: [{ turnId: 1, category: "observation", actor: "user",
-        text: "durable evidence", source: ["T1#user"], createdAt: "seed" }] });
-    expect(noted.ok).toBe(true);
+    const user = sources.find(source => store.getSourceEntry(source.id)?.role === "user")!;
+    const noted = legacyFacts(store, { kind: "noting", sessionId: 1, branch: "main", createdAt: "seed" },
+      [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], category: "observation", actor: "user",
+        text: "durable evidence", createdAt: "seed" }], sources.map(source => source.id));
     const afterNoting = await compact();
-    expect(afterNoting.summary).not.toBe(first.summary);
+    // The retained Raw already covers these facts, so Noting progresses without duplicating them in the summary.
+    expect(sources.every(source => store.entryNoted(source.id))).toBe(true);
+    expect(afterNoting.summary).toBe(first.summary);
     expect(await compact()).toEqual(afterNoting);
     const fact = store.listSessionFacts(1)[0]!;
-    const consolidated = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "seed" },
-      operations: Array.from({ length: 117 }, (_, i) => ({ op: "create" as const,
-        handle: `$k${i}`, topics: [], reason: "Initial admission.", author: "fixture", text: `Durable knowledge ${i}`,
-        category: "constraint" as const, scope: "global" as const, supports: [fact.id], createdAt: "seed" })) });
-    if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
+    const consolidated = knowledgeBatch(store, store.knowledgePath(1, "main", 1),
+      Array.from({ length: 117 }, (_, i) => ({ topics: [], reason: "Initial admission.", author: "fixture",
+        text: `Durable knowledge ${i}`, category: "constraint" as const, scope: "global" as const,
+        supports: [fact.id], createdAt: "seed" })), { kind: "manual", createdAt: "seed" });
     let dreamSubmitted = false;
     f.script(body => {
       if (!JSON.stringify(body).includes("# Dreamer")) return say("answer");

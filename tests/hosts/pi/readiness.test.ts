@@ -1,4 +1,5 @@
 import { expect, test, vi } from "vitest";
+import { legacyFacts } from "../../support/seed.ts";
 import { host, reply } from "./test-host.ts";
 import { checkpointReadiness } from "../../../src/hosts/pi/native.ts";
 // The native cases exercise fork checkpoint readiness; the ordinary host case runs fresh.
@@ -82,9 +83,9 @@ test("64c: Pi does not borrow a due closed-session Dreamer target", async () => 
     const entry = h.memory.appendEntry({ sessionId: closed.id, turnId: turn.id, nativeLineage: "closed", nativeId: "closed-entry",
       role: "user", text: "closed evidence", raw: "closed evidence", calls: [] });
     h.memory.selectEntries(closed.id, "main", [entry.id]);
-    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: closed.id, createdAt: "now" }, entryIds: [entry.id],
-      facts: [{ turnId: turn.id, source: [`T${turn.id}#user`], actor: "user", category: "decision", text: "closed rule", createdAt: "now" }] });
-    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    const noted = legacyFacts(store, { kind: "manual", sessionId: closed.id, createdAt: "now" },
+      [{ sources: [{ entry, address: `T${turn.id}#E${entry.entryOrdinal}` }], actor: "user", category: "decision",
+        text: "closed rule", createdAt: "now" }], [entry.id]);
     const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: closed.id, createdAt: "now" }, operations: [{ op: "create",
       handle: "$closed", author: "test", text: "closed ".repeat(1_000), category: "constraint", scope: "session",
       supports: [noted.facts[0]!.id], topics: [], reason: "closed session test", createdAt: "now" }] });

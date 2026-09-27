@@ -157,7 +157,7 @@ test("20c 2026-09-08 scenario 13 (rule replaced in 29c): a persisted compaction 
     expect(String(response(h).fallbackReason)).toContain(`Raw availability: entry ${dropped.id} (T${dropped.turnId}, native ${dropped.nativeId})`);
     expect(h.memory.store.forkSuppression(1)).toBeNull(); // not the cache-miss latch, and no enrollment change
     const sent = String(h.conversations.at(-1)!.messages[0]!.content);
-    expect(sent).toContain("[T1#E1@text] user: "); // full primary material for the whole batch
+    expect(sent).toContain("[T1#E1@user] user: "); // full primary material for the whole batch
     expect(sent).toContain("HEAD"); expect(sent).toContain("after");
     // Reopening re-reads the context: the view is not cached across it, and the answer does not change.
     await h.emit("session_start");

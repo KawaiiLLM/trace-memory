@@ -27,6 +27,7 @@ import { host, reply } from "./test-host.ts";
 // This suite explicitly requests forks to exercise their refusal and re-admission paths.
 import { stableForkFixture as fixture, say, call, noteAndMemory, worker, submitted, noteBatch, settled, toolResults, usage as wireUsage, type Body } from "./native-fixture.ts";
 import { hydrate } from "../../source-fixture.ts";
+import { fact } from "../../support/seed.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
 import { forkable, runNative } from "../../../src/hosts/pi/native.ts";
 import { toolDefinitions, type NotingAgentInput } from "../../../src/core/api/index.ts";
@@ -180,21 +181,22 @@ test("92: a Noter overflow fallback discards the first held pool and publishes o
     const finalText = "Package trace-memory moved from beta.2 to beta.3";
     f.script((body: Body) => {
       if (!worker(body)) return say("Seeded.");
-      return submitted(body) ? say("Done.") : noteAndMemory("seed", { facts: [{ ...noteBatch.facts[0], text: oldText }] });
+      return submitted(body) ? say("Done.") : noteAndMemory("seed", { facts: [{ ...noteBatch.facts[0], sources: [{ address: "T1#E1", text: oldText }] }] });
     });
     await f.turn("seed source " + "word ".repeat(100));
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual([oldText]);
 
     let inserted = false;
-    const finalBatch = { facts: [{ ...noteBatch.facts[0], text: finalText, source: ["T2#E1"] }] };
+    const finalBatch = { facts: [{ ...noteBatch.facts[0], sources: [{ address: "T2#E1", text: finalText }] }] };
     f.script((body: Body) => {
       if (!worker(body)) return say("Target recorded.");
       if (!fresh(body)) {
         if (!toolResults(body)) return call("candidate", "note", finalBatch);
         if (!inserted) {
           inserted = true;
-          const note = f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!;
-          for (let i = 0; i < 3; i++) note.execute({ facts: [{ ...noteBatch.facts[0], text: finalText }] });
+          const source = f.h.memory.store.sourcePath(1, "main", 1).find(entry => entry.entryOrdinal === 1)!;
+          for (let i = 0; i < 3; i++) fact(f.h.memory, f.h.memory.store.knowledgePath(1, "main", 1),
+            `Updated package ${i}`, [{ entry: f.h.memory.store.getSourceEntry(source.id)!, text: finalText }]);
         }
         return rejected(OVERFLOW);
       }
