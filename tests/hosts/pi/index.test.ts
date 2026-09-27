@@ -3,7 +3,7 @@ import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { host as createHost, reply, notingFact, noteHeld, usage, type Reply } from "./test-host.ts";
-import { compacted } from "../../source-fixture.ts";
+import { compacted, seedSourceEntry } from "../../source-fixture.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 
@@ -62,6 +62,19 @@ test("92 Pi registered tool rejects old fields and writes entry roles through th
   expect(JSON.parse(archived.content[0].text).committed[0].version).toBe(`K${identity.knowledgeId}@v2`);
 });
 
+test("legacy source-only fact without an entry binding fails as damaged data", async () => {
+  const h = host();
+  const project = h.memory.store.createProject({ name: "damaged-entry", declaredBy: "mark" });
+  const session = h.memory.store.createSession({ host: "fixture", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+  const turn = h.memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: "now", userPrompt: "rule" });
+  const result = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, createdAt: "now" }, facts: [
+    { turnId: turn.id, category: "decision", actor: "user", text: "rule", source: [`T${turn.id}#user`], createdAt: "now" },
+  ] });
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.problems.join(" ")).toMatch(/source|entry|binding/);
+  expect(h.memory.store.listSessionFacts(session.id)).toEqual([]);
+});
+
 test("smoke: the default extension loads and registers the Pi hooks, tools, and read-only command", async () => {
   const h = host();
   expect([...h.tools.keys()]).toEqual(["trace", "search", "note", "memory"]);
@@ -117,8 +130,10 @@ test("first prompt injects only global knowledge; project knowledge requires an 
   const p = h.memory.store.createProject({ name: "project-name", declaredBy: "mark" });
   const s = h.memory.store.createSession({ enrollmentChoice: true, host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const t = h.memory.store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
+  seedSourceEntry(h.memory, t.id, "user", "规则");
+  const userEntry = h.memory.store.listSourceEntries(s.id).at(-1)!;
   const recorded = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, createdAt: "now" }, facts: [
-    { turnId: t.id, category: "observation", actor: "user", text: "规则", source: [`T${t.id}#user`], createdAt: "now" },
+    { turnId: t.id, entryIds: [userEntry.id], category: "observation", actor: "user", text: "规则", source: [`T${t.id}#user`], createdAt: "now" },
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   const seeded = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, createdAt: "now" }, operations: [
@@ -231,7 +246,9 @@ test("29d: the knowledge block is offered until the selected context carries it,
   const store = h.memory.store, p = store.createProject({ name: "project-name", declaredBy: "mark" });
   const seed = store.createSession({ enrollmentChoice: true, host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const st = store.appendTurn({ sessionId: seed.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
-  const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: seed.id, createdAt: "now" }, facts: [{ turnId: st.id, category: "decision", actor: "user", text: "规则", source: [`T${st.id}#user`], createdAt: "now" }] });
+  seedSourceEntry(h.memory, st.id, "user", "规则");
+  const seedEntry = store.listSourceEntries(seed.id).at(-1)!;
+  const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: seed.id, createdAt: "now" }, facts: [{ turnId: st.id, entryIds: [seedEntry.id], category: "decision", actor: "user", text: "规则", source: [`T${st.id}#user`], createdAt: "now" }] });
   if (!noted.ok) throw new Error("seed");
   store.commitConsolidationRun({ run: { kind: "manual", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "全局规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" }] });
   // A prompt whose message Pi never persisted leaves no baseline, so the next prompt offers it again.
@@ -340,7 +357,7 @@ test("knowledge is injected once per visible baseline, only once something exist
   const p = h.memory.store.getSession(1)!.projectId;
   const t = h.memory.store.getTurn(1)!;
   const recorded = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" },
-    facts: [{ turnId: t.id, category: "decision", actor: "user", text: "用 pnpm", source: ["T1#user"], createdAt: "2026-09-06T00:00:00Z" }] });
+    facts: [{ turnId: t.id, entryIds: [h.memory.store.sourcePath(1, "main", t.id).find(e => e.turnId === t.id && h.memory.store.getSourceEntry(e.id)?.role === "user")!.id], category: "decision", actor: "user", text: "用 pnpm", source: ["T1#user"], createdAt: "2026-09-06T00:00:00Z" }] });
   if (!recorded.ok) throw new Error("setup");
   h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" }, operations: [
     { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
@@ -436,8 +453,10 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   const target = store.createProject({ name: "named", declaredBy: "mark" });
   const peer = store.createSession({ enrollmentChoice: true, host: "peer", projectId: target.id, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", startedAt: "now", userPrompt: "用 pnpm，不要 npm" });
+  seedSourceEntry(h.memory, turn.id, "user", "用 pnpm，不要 npm");
+  const peerEntry = store.listSourceEntries(peer.id).at(-1)!;
   const recorded = store.commitNotingRun({ run: { kind: "noting", sessionId: peer.id, createdAt: "now" }, facts: [
-    { turnId: turn.id, category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [`T${turn.id}#user`], createdAt: "now" },
+    { turnId: turn.id, entryIds: [peerEntry.id], category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [`T${turn.id}#user`], createdAt: "now" },
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   seed(peer.id, recorded.facts[0]!.id, ["project"]);
