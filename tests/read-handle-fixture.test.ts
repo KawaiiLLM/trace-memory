@@ -10,7 +10,7 @@ for (const long of [false, true]) test(`92: fixture reads the complete tagged bo
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Keep this rule", startedAt: "now" });
     const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
     const note = tools.find(tool => tool.name === "note")!, write = tools.find(tool => tool.name === "memory")!;
-    expect(note.execute({ facts: [{ text: "Keep this rule", source: [`T${turn.id}#E1`] }] })).not.toContain("rejected:");
+    expect(note.execute({ facts: [{ title: "Rule evidence", sources: [{ address: `T${turn.id}#E1`, text: "Keep this rule" }] }] })).not.toContain("rejected:");
     expect(write.execute({ operations: [{ op: "create", text: long ? "Rule detail. ".repeat(4000) : "A short rule", category: "constraint",
       scope: "project", topics: [], supports: ["F1"], reason: "Fixture evidence" }], skipped: [] })).toContain("committed");
     const trace = vi.spyOn(tools.find(tool => tool.name === "trace")!, "execute");
