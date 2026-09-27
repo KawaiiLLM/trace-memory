@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { hash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { SourceNormalizationError, type SourceBlock, type SourceNormalizer } from "../../core/model/source.ts";
@@ -192,9 +192,11 @@ export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | n
 }
 
 /** Claude Code 2.1.280 splits one API message into rows sharing its id, one per content block, so
- * the id alone does not identify a row; the id with the row's content does. */
+ * the id alone does not identify a row; the id with the row's content does.
+ * ponytail: hashes every assistant row while indexing (about 1 ms per MB of assistant content); a
+ * cheap block fingerprint with an exact re-read on a match would avoid it if a full scan needs it. */
 const messageKey = (record: CcNativeRecord): string | undefined => typeof record.message?.id === "string"
-  ? createHash("sha256").update(JSON.stringify([record.message.id, record.message.content])).digest("base64") : undefined;
+  ? hash("sha256", JSON.stringify([record.message.id, record.message.content]), "base64") : undefined;
 
 const nodeOf = (record: CcNativeRecord, writtenBefore: (uuid: string) => boolean): CcNativeNode | null => {
   const uuid = nativeId(record);

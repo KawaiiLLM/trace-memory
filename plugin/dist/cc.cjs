@@ -9954,7 +9954,7 @@ function classifySourceRecord(record3) {
   const text = !nativePrompt && typeof content === "string" ? humanCommandPrompt(content) ?? content : textBlocks(content).join("\n");
   return { kind: "user", record: record3, nativeId: id, timestamp: timestamp(record3), text, calls: [] };
 }
-var messageKey = (record3) => typeof record3.message?.id === "string" ? (0, import_node_crypto12.createHash)("sha256").update(JSON.stringify([record3.message.id, record3.message.content])).digest("base64") : void 0;
+var messageKey = (record3) => typeof record3.message?.id === "string" ? (0, import_node_crypto12.hash)("sha256", JSON.stringify([record3.message.id, record3.message.content]), "base64") : void 0;
 var nodeOf = (record3, writtenBefore) => {
   const uuid5 = nativeId(record3);
   if (!uuid5) return null;
@@ -11587,10 +11587,10 @@ var require_util = __commonJS((exports2) => {
   var codegen_1 = require_codegen();
   var code_1 = require_code();
   function toHash(arr) {
-    const hash2 = {};
+    const hash3 = {};
     for (const item of arr)
-      hash2[item] = true;
-    return hash2;
+      hash3[item] = true;
+    return hash3;
   }
   exports2.toHash = toHash;
   function alwaysValidSchema(it, schema) {
@@ -36869,7 +36869,7 @@ __export(schemas_exports2, {
   float64: () => float64,
   function: () => _function,
   guid: () => guid3,
-  hash: () => hash,
+  hash: () => hash2,
   hex: () => hex2,
   hostname: () => hostname3,
   httpUrl: () => httpUrl,
@@ -37381,7 +37381,7 @@ function hostname3(_params) {
 function hex2(_params) {
   return _stringFormat(ZodCustomStringFormat, "hex", regexes_exports.hex, _params);
 }
-function hash(alg, params) {
+function hash2(alg, params) {
   const enc = params?.enc ?? "hex";
   const format2 = `${alg}_${enc}`;
   const regex = regexes_exports[format2];
@@ -42242,7 +42242,7 @@ var databaseIdentity = (path) => {
 var positiveId = (value) => Number.isSafeInteger(value) && Number(value) > 0;
 var object6 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 var identityCount = (injection) => injection.knowledgeCommitIds.length + (injection.knowledgeStates ?? []).reduce((count, state) => count + 1 + state.toCommits.length, 0) + (injection.factIds?.length ?? 0) + (injection.entryIds?.length ?? 0);
-function injectionFrame(binding, injection, hash2) {
+function injectionFrame(binding, injection, hash3) {
   if (injection.knowledgeTokens !== void 0 && (!Number.isSafeInteger(injection.knowledgeTokens) || injection.knowledgeTokens < 0))
     throw new Error("invalid Knowledge accounting metadata");
   const header = {
@@ -42252,7 +42252,7 @@ function injectionFrame(binding, injection, hash2) {
     ...injection.knowledgeTokens === void 0 ? {} : { t: injection.knowledgeTokens },
     k: injection.knowledgeCommitIds,
     r: (injection.knowledgeStates ?? []).map(knowledgeStateKey),
-    h: hash2,
+    h: hash3,
     ...injection.factIds === void 0 ? {} : { f: injection.factIds },
     ...injection.entryIds === void 0 ? {} : { e: injection.entryIds },
     ...injection.slice === void 0 ? {} : { p: injection.slice }
