@@ -265,6 +265,34 @@ test("missing legacy bindings are corruption; titled corruption remains rejected
   expect(() => m.trace("F2")).toThrow("source segments, roles and body disagree");
 });
 
+test("a partially lost legacy binding fails every read and is readable after restoration", () => {
+  const { m, first, second, session } = fixture();
+  const firstEntry = m.store.listSourceEntries(session.id, first.id).find(e => e.entryOrdinal === 1)!;
+  const secondEntry = m.store.listSourceEntries(session.id, second.id).find(e => e.entryOrdinal === 2)!;
+  const source = [`S${session.id}/T${first.id}#user`, `S${session.id}/T${second.id}#assistant`];
+  const saved = m.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" },
+    facts: [{ turnId: first.id, category: "decision", text: "two contributions", createdAt: "now",
+      source, entryIds: [firstEntry.id, secondEntry.id] }] });
+  expect(saved.ok).toBe(true);
+  // This historical entry selector remains stored even when the projection has no block metadata.
+  source[0] = `S${session.id}/T${first.id}#E1@text`;
+  m.store.db.prepare("UPDATE facts SET source=? WHERE id=1").run(JSON.stringify(source));
+  expect(m.store.getFact(1)!.source).toEqual(source);
+  expect(m.trace("F1")).toContain("two contributions");
+  expect(m.trace(`T${first.id}`)).toContain("two contributions");
+  expect(m.trace(`T${second.id}`)).toContain("two contributions");
+  m.store.db.prepare("DELETE FROM fact_sources WHERE fact_id=1 AND entry_id=?").run(secondEntry.id);
+  const unchanged = () => (m.store.db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+  const before = unchanged();
+  for (const target of ["F1", `T${first.id}`, `T${second.id}`])
+    expect(() => m.trace(target)).toThrow("F1: missing legacy source bindings");
+  expect(unchanged()).toBe(before);
+  m.store.db.prepare("INSERT INTO fact_sources(fact_id,entry_id) VALUES(1,?)").run(secondEntry.id);
+  expect(m.trace("F1")).toContain("two contributions");
+  expect(m.trace(`T${first.id}`)).toContain("two contributions");
+  expect(m.trace(`T${second.id}`)).toContain("two contributions");
+});
+
 test("a paged search keeps the selected fact preview after later writes", () => {
   const { m, first, second, note } = fixture();
   expect(note.execute({ facts: [

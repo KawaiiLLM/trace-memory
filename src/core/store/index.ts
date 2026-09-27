@@ -2142,12 +2142,8 @@ export class Store {
   /** One binding read for the selected new facts, preserving their Core-ordered authored sources. */
   private hydrateFactSegments(facts: Fact[]): Fact[] {
     const legacy = facts.filter(f => f.title === undefined);
-    const nativeAddresses = this.factBoundAddresses(legacy.map(f => f.id));
-    for (const fact of legacy) {
-      const bound = nativeAddresses.get(fact.id);
-      if (fact.source.length && !bound?.length) throw new Error(`F${fact.id}: missing legacy source bindings`);
-      fact.boundAddresses = bound ?? [];
-    }
+    const nativeAddresses = this.factBoundAddresses(legacy);
+    for (const fact of legacy) fact.boundAddresses = nativeAddresses.get(fact.id) ?? [];
     const selected = facts.filter(f => f.title !== undefined);
     if (!selected.length) return facts;
     const bindings = new Map<number, Map<string, string>>();
@@ -2190,15 +2186,14 @@ export class Store {
     return this.hydrateFactSegments(this.db.prepare("SELECT * FROM facts WHERE turn_id = ? ORDER BY id").all(turnId).map(toFact));
   }
 
-  /** A missing legacy binding cannot appear in turnFactBindings; reject rather than silently omit it. */
+  /** Find authored sources for this Turn even when the binding used to discover them is gone. */
   assertTurnLegacyBindings(turnId: number, sessionId: number): void {
     const prefix = `T${turnId}#`, qualified = `S[0-9]*/T${turnId}#*`;
-    const row = this.db.prepare(`SELECT f.id FROM facts f JOIN turns owner ON owner.id=f.turn_id,
+    const facts = this.db.prepare(`SELECT DISTINCT f.id, f.source FROM facts f JOIN turns owner ON owner.id=f.turn_id,
       json_each(f.source) source WHERE owner.session_id=? AND f.title IS NULL
-      AND NOT EXISTS (SELECT 1 FROM fact_sources fs WHERE fs.fact_id=f.id)
-      AND (substr(source.value,1,?)=? OR source.value GLOB ?) ORDER BY f.id LIMIT 1`)
-      .get(sessionId, prefix.length, prefix, qualified) as { id: number } | undefined;
-    if (row) throw new Error(`F${row.id}: missing legacy source bindings`);
+      AND (substr(source.value,1,?)=? OR source.value GLOB ?) ORDER BY f.id`)
+      .all(sessionId, prefix.length, prefix, qualified) as { id: number; source: string }[];
+    this.factBoundAddresses(facts.map(fact => ({ id: fact.id, source: JSON.parse(fact.source) as string[] })));
   }
 
   /** Source membership for a Turn, not ownership by the first contributing Turn. */
@@ -3272,14 +3267,38 @@ export class Store {
     return bound;
   }
 
-  /** Native addresses of all actual bindings; historic block spellings can bind multiple entries. */
-  factBoundAddresses(factIds: readonly number[]): Map<number, string[]> {
+  /** Validate each authored legacy source against actual bindings using metadata only; never infer extra display entries. */
+  factBoundAddresses(facts: readonly Pick<Fact, "id" | "source">[]): Map<number, string[]> {
     const result = new Map<number, string[]>();
-    if (!factIds.length) return result;
-    for (const row of this.db.prepare(`SELECT fs.fact_id, e.turn_id, e.entry_ordinal FROM fact_sources fs
+    if (!facts.length) return result;
+    const bound = new Map<number, Set<string>>();
+    for (const row of this.db.prepare(`SELECT fs.fact_id, e.session_id, e.turn_id, e.entry_ordinal, e.addresses FROM fact_sources fs
       JOIN source_entries e ON e.id = fs.entry_id WHERE fs.fact_id IN (SELECT value FROM json_each(?)) ORDER BY fs.fact_id, fs.entry_id`)
-      .all(JSON.stringify([...new Set(factIds)])) as { fact_id: number; turn_id: number; entry_ordinal: number }[])
-      result.set(row.fact_id, [...(result.get(row.fact_id) ?? []), `T${row.turn_id}#E${row.entry_ordinal}`]);
+      .all(JSON.stringify([...new Set(facts.map(fact => fact.id))])) as { fact_id: number; session_id: number;
+        turn_id: number; entry_ordinal: number; addresses: string }[]) {
+      const native = `T${row.turn_id}#E${row.entry_ordinal}`;
+      result.set(row.fact_id, [...(result.get(row.fact_id) ?? []), native]);
+      const keys = bound.get(row.fact_id) ?? new Set<string>();
+      keys.add(native);
+      keys.add(`S${row.session_id}/${native}`);
+      for (const address of JSON.parse(row.addresses) as string[]) {
+        const key = sourceKey(address);
+        keys.add(key);
+        keys.add(`S${row.session_id}/${key}`);
+      }
+      bound.set(row.fact_id, keys);
+    }
+    for (const fact of facts) {
+      const keys = bound.get(fact.id);
+      if (fact.source.length && (!result.get(fact.id)?.length || fact.source.some(source => {
+        const session = /^S([1-9]\d*)\//.exec(source);
+        const unqualified = session ? source.slice(session[0].length) : source;
+        // Historic block spellings prove entry membership, not present-day block content.
+        const entry = /^T([1-9]\d*)#E([1-9]\d*)(?:@.*)?$/u.exec(unqualified);
+        const key = entry ? `T${entry[1]}#E${entry[2]}` : sourceKey(unqualified);
+        return !keys?.has((session ? `S${session[1]}/` : "") + key);
+      }))) throw new Error(`F${fact.id}: missing legacy source bindings`);
+    }
     return result;
   }
 
