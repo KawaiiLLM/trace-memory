@@ -16,22 +16,32 @@ export function entry(store: Store, sessionId: number, turnId: number, nativeId:
     nativeId, role, text, raw: JSON.stringify({ role, content: text }), calls: [] });
 }
 
-/** Current public write shape: Core, not the fixture, decides ordering, roles and owning Turn. */
-export function fact(memory: TraceMemory, path: KnowledgePath, title: string,
-  sources: readonly { entry: SourceEntry; text: string }[], negate: readonly (readonly [number, "strong" | "weak"])[] = []): Fact {
-  if (path.headTurnId === null || !path.branch) throw new Error("fact requires an explicit headed branch");
+type NewSeed = { title: string; sources: readonly { entry: SourceEntry; text: string }[];
+  negate?: readonly (readonly [number, "strong" | "weak"])[] };
+
+/** One real manual note call for the supplied batch; Core owns ordering, roles and owning Turn. */
+export function facts(memory: TraceMemory, path: KnowledgePath, items: readonly NewSeed[]): Fact[] {
+  if (path.headTurnId === null || !path.branch) throw new Error("facts require an explicit headed branch");
   const tool = memory.tools({ kind: "manual", sessionId: path.sessionId, branch: path.branch,
     currentTurnId: path.headTurnId }).find(tool => tool.name === "note")!;
-  const receipt = tool.execute({ facts: [{ title, sources: sources.map(source => ({
+  const receipt = tool.execute({ facts: items.map(item => ({ title: item.title, sources: item.sources.map(source => ({
     address: `T${source.entry.turnId}#E${source.entry.entryOrdinal}`, text: source.text,
-  })), ...(negate.length ? { negate: negate.map(([id, strength]) => [`F${id}`, strength]) } : {}) }] });
+  })), ...(item.negate?.length ? { negate: item.negate.map(([id, strength]) => [`F${id}`, strength]) } : {}) })) });
   if (receipt.startsWith("rejected:")) throw new Error(`fact seed failed: ${receipt}`);
   const result = JSON.parse(receipt) as { factIds?: number[]; results?: string[] };
-  if (result.factIds?.length !== 1 || result.results?.[0] !== `ok: F${result.factIds[0]}`)
+  if (result.factIds?.length !== items.length || result.results?.length !== items.length ||
+      result.results.some((message, index) => message !== `ok: F${result.factIds![index]}`))
     throw new Error(`fact seed failed: ${JSON.stringify(result)}`);
-  const committed = memory.store.getFact(result.factIds[0]!);
-  if (!committed) throw new Error("fact seed committed without a readable fact");
-  return committed;
+  return result.factIds.map(id => {
+    const committed = memory.store.getFact(id);
+    if (!committed) throw new Error(`fact seed committed without readable F${id}`);
+    return committed;
+  });
+}
+
+export function fact(memory: TraceMemory, path: KnowledgePath, title: string,
+  sources: readonly { entry: SourceEntry; text: string }[], negate: readonly (readonly [number, "strong" | "weak"])[] = []): Fact {
+  return facts(memory, path, [{ title, sources, negate }])[0]!;
 }
 
 type BoundSource = { entry: Pick<SourceEntryMeta, "id" | "turnId" | "entryOrdinal">; address: string };
