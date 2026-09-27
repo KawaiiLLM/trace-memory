@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
-import { recordSessionStart } from "../../src/hosts/cc/binding.ts";
+import { readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { selectedNativePath, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 
@@ -132,4 +132,41 @@ test("a message an automatic compaction writes again under new uuids is imported
       .toEqual(["u1", "thinking", "call", "result", "result-copy"]);
     expect(store.listToolCalls(prompted).map(call => call.name)).toEqual(["Bash"]);
   } finally { importer.close(); }
+});
+
+test("rows arriving one by one across that compaction import the same entries, Turns and selected path as one scan of the finished file", async () => {
+  const records = [...midReplyCompacted(), assistant("a1", "x2", 8), prompt("u2", "a1", 9), assistant("a2", "u2", 10)];
+  const project = async (oneByOne: boolean) => {
+    const dir = mkdtempSync(join(tmpdir(), "tm-cc-auto-compact-")); dirs.push(dir);
+    const transcriptPath = join(dir, "native.jsonl");
+    const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), baseline: "2025-01-01T00:00:00.000Z" });
+    writeFileSync(transcriptPath, oneByOne ? "" : records.map(record => `${JSON.stringify(record)}\n`).join(""));
+    const importer = new CcImporter(config, await recordSessionStart(config,
+      { hook_event_name: "SessionStart", session_id: "auto-compact", transcript_path: transcriptPath }, at(1)));
+    try {
+      let result = await importer.reconcile();
+      const store = importer.memory.store, compaction = () => store.db.prepare("SELECT id FROM turns WHERE kind = 'compaction'").get() as { id: number };
+      for (const record of oneByOne ? records : []) {
+        appendFileSync(transcriptPath, `${JSON.stringify(record)}\n`);
+        result = await importer.reconcile();
+        expect(result.problems).toEqual([]);
+        // While the copies are the last rows, the head a prompt would follow is the compaction.
+        if (record.uuid === "thinking-copy" || record.uuid === "call-copy")
+          expect(readBinding(config, "auto-compact")!.selectedHeadTurnId).toBe(compaction().id);
+      }
+      expect(result.problems).toEqual([]);
+      const sessionId = result.coreSessionId!;
+      return {
+        entries: store.listSourceEntries(sessionId).map(entry => [entry.nativeId, entry.turnId, entry.entryOrdinal]),
+        turns: store.db.prepare("SELECT id, kind, parent_turn_id FROM turns ORDER BY id").all().map(row => ({ ...row })),
+        paths: store.db.prepare("SELECT branch FROM source_paths").all().map(row => row.branch),
+        branch: result.branch, head: result.headTurnId, path: result.selectedEntryIds.map(id => store.getSourceEntry(id)!.nativeId),
+      };
+    } finally { importer.close(); }
+  };
+  const fresh = await project(false);
+  expect(fresh.path).toEqual(["u1", "thinking", "call", "result", "result-copy", "a1", "u2", "a2"]);
+  expect(fresh.turns).toEqual([{ id: 1, kind: "turn", parent_turn_id: null }, { id: 2, kind: "compaction", parent_turn_id: 1 },
+    { id: 3, kind: "turn", parent_turn_id: 2 }]);
+  expect(await project(true)).toEqual(fresh);
 });

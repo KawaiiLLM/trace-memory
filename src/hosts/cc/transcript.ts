@@ -77,6 +77,8 @@ export interface CcNativeNode {
   /** An earlier row with the same message id and content: Claude Code wrote this one again across a
    * compaction, under a new uuid. It is that row, not new Raw. */
   copyOf?: string;
+  /** The parent a tool result names, when the scan continues it from that parent's later copy. */
+  namedParent?: string;
 }
 
 interface FileStamp { size: number; modifiedMs: number; changedMs: number; device: number; inode: number }
@@ -410,13 +412,20 @@ export class CcTranscriptCursor {
         let source = classifySourceRecord(record), node = nodeOf(record, id => scanNodes.has(id));
         if (node) {
           const prior = scanNodes.get(node.uuid), collected = collectedById.get(node.uuid), identity = nativeIdentity(record);
-          if (prior && (prior.parentUuid !== node.parentUuid || prior.sourceKind !== node.sourceKind || prior.lineageProblem !== node.lineageProblem) ||
+          if (prior && ((prior.namedParent ?? prior.parentUuid) !== node.parentUuid || prior.sourceKind !== node.sourceKind || prior.lineageProblem !== node.lineageProblem) ||
               collected && collected.identity !== identity) {
             const problem = `native transcript UUID ${node.uuid} changed within the completed file`;
             scan.markProblem(node.uuid, problem);
             source = null; node = null;
           } else {
             if (!prior) {
+              // After a compaction in the middle of a reply, the model's context continues from the copy
+              // of the in-flight message, but Claude Code names the call's original row as its result's parent.
+              // ponytail: a result truly resumed from the original after its copy (an SDK resume at a
+              // pre-compaction uuid) would also continue from the copy; tell them apart if that occurs.
+              const named = node.parentUuid, parentKey = named === null ? undefined : scanNodes.get(named)?.messageKey;
+              const latest = source?.kind === "toolResult" && parentKey !== undefined ? scanKeys.get(parentKey) : undefined;
+              if (latest !== undefined && latest !== named) { node.namedParent = named!; node.parentUuid = latest; }
               if (node.messageKey !== undefined) {
                 const earlier = scanKeys.get(node.messageKey);
                 if (earlier !== undefined) node.copyOf = earlier;

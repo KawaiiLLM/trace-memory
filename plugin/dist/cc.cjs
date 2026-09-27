@@ -10202,13 +10202,19 @@ var CcTranscriptCursor = class {
         let source = classifySourceRecord(record3), node = nodeOf(record3, (id) => scanNodes.has(id));
         if (node) {
           const prior = scanNodes.get(node.uuid), collected = collectedById.get(node.uuid), identity = nativeIdentity(record3);
-          if (prior && (prior.parentUuid !== node.parentUuid || prior.sourceKind !== node.sourceKind || prior.lineageProblem !== node.lineageProblem) || collected && collected.identity !== identity) {
+          if (prior && ((prior.namedParent ?? prior.parentUuid) !== node.parentUuid || prior.sourceKind !== node.sourceKind || prior.lineageProblem !== node.lineageProblem) || collected && collected.identity !== identity) {
             const problem = `native transcript UUID ${node.uuid} changed within the completed file`;
             scan.markProblem(node.uuid, problem);
             source = null;
             node = null;
           } else {
             if (!prior) {
+              const named = node.parentUuid, parentKey = named === null ? void 0 : scanNodes.get(named)?.messageKey;
+              const latest = source?.kind === "toolResult" && parentKey !== void 0 ? scanKeys.get(parentKey) : void 0;
+              if (latest !== void 0 && latest !== named) {
+                node.namedParent = named;
+                node.parentUuid = latest;
+              }
               if (node.messageKey !== void 0) {
                 const earlier = scanKeys.get(node.messageKey);
                 if (earlier !== void 0) node.copyOf = earlier;

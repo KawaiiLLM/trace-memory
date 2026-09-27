@@ -194,6 +194,30 @@ test("97 an automatic compaction that interrupts a reply is on the path of the p
   } finally { f.close(); }
 });
 
+test("a compaction that interrupts a tool call is on the path of the prompts after it, though the result names the call's original row", async () => {
+  const f = await fixture();
+  try {
+    const [rule] = f.versions.map(item => item.commit);
+    expect(f.commits(await f.prompt("p2"))).toEqual([rule]);
+    const call: CcNativeRecord = { uuid: "call", parentUuid: "u2", type: "assistant", timestamp: time(++clock),
+      message: { id: "msg-call", role: "assistant", content: [{ type: "tool_use", id: "call-1", name: "Bash", input: { command: "ls" } }] } };
+    const result: CcNativeRecord = { uuid: "result", parentUuid: "call", type: "user", timestamp: time(++clock),
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: "listing" }] } };
+    await f.append(user("u2", "a1", "p2"), call, result);
+    const added = knowledge(f.store, f.path, "global", "constraint", [f.fact.id], "Review before release.", { run: { kind: "manual", createdAt: time(0) } }).commit;
+    expect(f.commits(await f.compact())).toEqual([rule, added]);
+    // After the summary Claude Code writes the call again under a new uuid, then its result, naming the original call.
+    await f.append(...boundary("cb", "result", "auto"), { ...call, uuid: "call-copy", parentUuid: "cb-summary" },
+      { ...result, uuid: "result-copy", parentUuid: "call" }, assistant("a2", "result-copy"));
+    expect(f.commits(await f.prompt("p3"))).toEqual([]);
+    await f.append(user("u3", "a2", "p3"), assistant("a3", "u3"));
+    const compaction = f.store.findNativeTurn(f.sessionId, f.nativeSession, "cb")!.turnId;
+    expect(f.store.getTurn(f.turnOf("u3"))!.parentTurnId).toBe(compaction);
+    expect([...f.delivered(f.turnOf("u3")).knowledgeCommitIds]).toEqual([rule, added]);
+    expect([...f.delivered(f.turnOf("u2")).knowledgeCommitIds]).toEqual([rule]);
+  } finally { f.close(); }
+});
+
 test("97 a new root branch the import has not reached starts empty", async () => {
   const f = await fixture();
   try {
