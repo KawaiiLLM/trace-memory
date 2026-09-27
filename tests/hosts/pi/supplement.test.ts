@@ -2,22 +2,22 @@
 import { expect, test } from "vitest";
 import { host } from "./test-host.ts";
 import { fixture } from "./native-fixture.ts";
+import { knowledgeBatch, legacyFacts } from "../../support/seed.ts";
 
 const time = "2026-09-12T00:00:00Z";
 type Host = ReturnType<typeof host>;
 
 const fact = (h: Host, text: string) => {
-  const recorded = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, createdAt: time },
-    facts: [{ turnId: 1, category: "decision", actor: "user", text, source: ["T1#user"], createdAt: time }] });
-  if (!recorded.ok) throw new Error(recorded.problems.join("; "));
-  return recorded.facts[0]!.id;
+  const store = h.memory.store;
+  const user = store.sourcePath(1, "main", 1).find(entry => store.getSourceEntry(entry.id)?.role === "user")!;
+  return legacyFacts(store, { kind: "noting", sessionId: 1, createdAt: time },
+    [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], category: "decision", actor: "user",
+      text, createdAt: time }]).facts[0]!.id;
 };
 const create = (h: Host, support: number, scope: "project" | "global", ...texts: string[]) => {
-  const result = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: time },
-    operations: texts.map((text, index) => ({ op: "create" as const, handle: `$k${Date.now()}${index}`, author: "fixture", text,
-      category: "constraint" as const, scope, supports: [support], topics: [], reason: "record conclusion", createdAt: time })) });
-  if (!result.ok) throw new Error(result.problems.join("; "));
-  return result.committed;
+  return knowledgeBatch(h.memory.store, h.memory.store.knowledgePath(1, "main", 1),
+    texts.map(text => ({ author: "fixture", text, category: "constraint", scope, supports: [support],
+      topics: [], reason: "record conclusion", createdAt: time })), { kind: "manual", createdAt: time }).committed;
 };
 const command = (h: Host, line: string) => h.commands.get("trace")!.handler(line, h.ctx);
 const carrier = (message: any) => message.details.traceMemory as { supplied: { knowledgeCommitIds: number[]; knowledgeStates?: unknown[] } };
@@ -77,13 +77,14 @@ test("34c off pauses delivery; re-enable and project assignment only change the 
     const project = store.createProject({ name: "other", declaredBy: "mark" });
     const peer = store.createSession({ enrollmentChoice: true, host: "peer", projectId: project.id, startedAt: time, firstReplyAt: time });
     const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", userPrompt: "other", startedAt: time });
-    const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: peer.id, createdAt: time }, facts: [
-      { turnId: turn.id, category: "decision", actor: "user", text: "other", source: [`T${turn.id}#user`], createdAt: time }] });
-    if (!noted.ok) throw new Error(noted.problems.join());
-    const committed = store.commitConsolidationRun({ run: { kind: "manual", sessionId: peer.id, createdAt: time }, operations: [
-      { op: "create", handle: "$other", author: "peer", text: "Other project rule.", category: "constraint", scope: "project",
-        supports: [noted.facts[0]!.id], topics: [], reason: "other", createdAt: time }] });
-    expect(committed.ok).toBe(true);
+    const user = store.appendSourceEntry({ sessionId: peer.id, turnId: turn.id, nativeLineage: "peer",
+      nativeId: "other-user", role: "user", text: "other", raw: "other", calls: [] });
+    const evidence = legacyFacts(store, { kind: "noting", sessionId: peer.id, createdAt: time },
+      [{ sources: [{ entry: user, address: `T${turn.id}#E${user.entryOrdinal}` }], category: "decision",
+        actor: "user", text: "other", createdAt: time }]).facts[0]!;
+    knowledgeBatch(store, store.knowledgePath(peer.id, "main", turn.id),
+      [{ author: "peer", text: "Other project rule.", category: "constraint", scope: "project",
+        supports: [evidence.id], topics: [], reason: "other", createdAt: time }], { kind: "manual", createdAt: time });
     await command(h, "project other");
     expect((await served(h, "new project")).content).toContain("Other project rule.");
   } finally { await h.dispose(); }
