@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, type ToolDefinition } from "../../source-fixture.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>, note: ToolDefinition;
-const fact = (extra = {}) => ({ text: "Use pnpm.", source: ["T1#E1"], ...extra });
+const fact = (extra = {}) => ({ title: "Package manager choice", sources: [{ address: "T1#E1", text: "Use pnpm." }], ...extra });
 beforeEach(() => {
   memory = sourceSeededMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }));
   const p = memory.store.createProject({ name: "p", declaredBy: "mark" });
@@ -16,14 +16,14 @@ for (const category of ["question", "proposal", "decision", "observation", "inte
   expect(note.execute({ facts: [fact({ category })] })).toContain("unexpected field");
   expect(memory.store.listSessionFacts(1)).toEqual([]);
   const stored = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "source time" },
-    facts: [{ turnId: 1, category, actor: "user", text: "Use pnpm.", source: ["T1#user"],
+    facts: [{ turnId: 1, category, actor: "user", text: "Use pnpm.", source: ["T1#user"], entryIds: [memory.store.sourcePath(1, "main", 1)[0]!.id],
       ...(category === "event" ? { status: "completed" as const } : {}), createdAt: "source time" }] });
   expect(stored.ok).toBe(true);
   expect(memory.trace("F1")).toContain(`[${category}/user]`);
 });
 for (const status of ["completed", "reported", "dispatched", "attempted"] as const) test(`legacy event status ${status} renders as a prefix without storing it in text`, () => {
   const stored = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "source time" },
-    facts: [{ turnId: 1, category: "event", actor: "user", status, text: "Use pnpm.", source: ["T1#user"], createdAt: "source time" }] });
+    facts: [{ turnId: 1, category: "event", actor: "user", status, text: "Use pnpm.", source: ["T1#user"], entryIds: [memory.store.sourcePath(1, "main", 1)[0]!.id], createdAt: "source time" }] });
   expect(stored.ok).toBe(true);
   expect(memory.trace("F1")).toContain(`${status}: Use pnpm.`);
   expect(memory.store.getFact(1)?.text).toBe("Use pnpm.");
@@ -38,12 +38,12 @@ for (const [label, changes, error] of [
   ["caller-selected role", { role: "user" }, "unexpected field"],
   ["retired quote", { quote: "Use pnpm." }, "unexpected field"],
   ["timestamp", { timestamp: "invented" }, "unexpected field"],
-  ["fact id in text", { text: "See F12" }, "embed"],
-  ["knowledge id in text", { text: "See K7" }, "embed"],
-  ["empty source", { source: [] }, "source"],
-  ["invalid source", { source: ["T1"] }, "source"],
-  ["missing entry source", { source: ["T1#E99"] }, "invalid source"],
-  ["block-selected source", { source: ["T1#E1@text"] }, "invalid source"],
+  ["fact id in text", { sources: [{ address: "T1#E1", text: "See F12" }] }, "embed"],
+  ["knowledge id in text", { sources: [{ address: "T1#E1", text: "See K7" }] }, "embed"],
+  ["empty source", { sources: [] }, "sources"],
+  ["invalid source", { sources: [{ address: "T1", text: "Use pnpm." }] }, "source"],
+  ["missing entry source", { sources: [{ address: "T1#E99", text: "Use pnpm." }] }, "invalid source"],
+  ["block-selected source", { sources: [{ address: "T1#E1@text", text: "Use pnpm." }] }, "invalid source"],
   ["self handle", { support: [["$1", "weak"]] }, "earlier"],
   ["zero handle", { support: [["$0", "weak"]] }, "earlier"],
   ["missing fact", { negate: [["F101", "strong"]] }, "existing"],
@@ -55,9 +55,9 @@ for (const [label, changes, error] of [
   expect(memory.store.listSessionFacts(1)).toEqual([]);
 });
 test("new episodes derive the entry role and keep completion wording in the body", () => {
-  expect(note.execute({ facts: [fact({ text: "completed: the user confirmed pnpm" })] })).toContain("ok: F1");
+  expect(note.execute({ facts: [fact({ sources: [{ address: "T1#E1", text: "completed: the user confirmed pnpm" }] })] })).toContain("ok: F1");
   const stored = memory.store.getFact(1)!;
-  expect(stored).toMatchObject({ text: "completed: the user confirmed pnpm", source: ["T1#E1"], createdAt: "source time" });
+  expect(stored).toMatchObject({ title: "Package manager choice", text: "completed: the user confirmed pnpm", source: ["T1#E1"], createdAt: "source time" });
   expect(stored.roles).toEqual([{ role: "user" }]);
   expect(stored.category).toBeNull();
   expect(stored.actor).toBeNull();
@@ -70,5 +70,5 @@ test("local handles resolve to earlier facts and existing facts remain valid tar
   expect(note.execute({ facts: [fact(), fact({ support: [["$1", "weak"]] })] })).toContain("F2");
   expect(note.execute({ facts: [fact({ negate: [["F1", "strong"]] })] })).toContain("F3");
   expect(memory.trace("F2")).toContain("support F1 weak");
-  expect(memory.trace("F1..")).toContain("[F3]");
+  expect(memory.trace("F1")).toContain("negate F3 strong");
 });
