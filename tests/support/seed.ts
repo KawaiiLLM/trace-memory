@@ -76,18 +76,29 @@ export function legacyFact(store: Store, path: KnowledgePath, sources: readonly 
     [{ sources, text, category, actor: "user", createdAt: at }]).facts[0]!;
 }
 
-/** Real manual or N knowledge publication; caller supplies scope, evidence and selected path. */
-export function knowledge(store: Store, path: KnowledgePath, scope: "global" | "project" | "session",
-  category: KnowledgeCategory, supports: number[], text: string,
-  options: { run?: { kind: "manual" | "noting"; createdAt: string }; operation?: { createdAt?: string; topics?: string[] } } = {}) {
-  const run = options.run ?? { kind: "noting", createdAt: at };
-  const operation = { op: "create" as const, handle: "$1", author: "test", text, category, scope,
-    supports, topics: options.operation?.topics ?? [], reason: "fixture", createdAt: options.operation?.createdAt ?? run.createdAt };
+type KnowledgeSeed = { scope: "global" | "project" | "session"; category: KnowledgeCategory; supports: number[];
+  text: string; topics?: string[]; createdAt?: string; author?: string; reason?: string };
+type KnowledgeRun = { kind: "manual" | "noting"; createdAt: string };
+
+/** One real create-only manual/N knowledge run; caller owns path, run time and each item's metadata. */
+export function knowledgeBatch(store: Store, path: KnowledgePath, items: readonly KnowledgeSeed[],
+  run: KnowledgeRun = { kind: "noting", createdAt: at }) {
+  const operations = items.map((item, index) => ({ op: "create" as const, handle: `$${index + 1}`,
+    author: item.author ?? "test", text: item.text, category: item.category, scope: item.scope,
+    supports: item.supports, topics: item.topics ?? [], reason: item.reason ?? "fixture",
+    createdAt: item.createdAt ?? run.createdAt }));
   const recorded = { kind: run.kind, sessionId: path.sessionId, branch: path.branch, createdAt: run.createdAt };
   const result = run.kind === "manual"
-    ? store.commitConsolidationRun({ path, run: recorded, operations: [operation] })
-    : commitNoterKnowledge(store, { path, run: { sessionId: path.sessionId, branch: path.branch, createdAt: run.createdAt }, operations: [operation] });
+    ? store.commitConsolidationRun({ path, run: recorded, operations })
+    : commitNoterKnowledge(store, { path, run: { sessionId: path.sessionId, branch: path.branch, createdAt: run.createdAt }, operations });
   if (!result.ok) throw new Error(result.problems.join("; "));
-  if (result.committed.length !== 1) throw new Error("knowledge seed did not commit one revision");
-  return result.committed[0]!;
+  if (result.committed.length !== items.length) throw new Error("knowledge seed did not commit every revision");
+  return result;
+}
+
+export function knowledge(store: Store, path: KnowledgePath, scope: "global" | "project" | "session",
+  category: KnowledgeCategory, supports: number[], text: string,
+  options: { run?: KnowledgeRun; operation?: { createdAt?: string; topics?: string[] } } = {}) {
+  return knowledgeBatch(store, path, [{ scope, category, supports, text, topics: options.operation?.topics,
+    createdAt: options.operation?.createdAt }], options.run).committed[0]!;
 }
