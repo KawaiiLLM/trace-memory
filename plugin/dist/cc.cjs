@@ -2942,11 +2942,6 @@ var Store = class {
     const ancestry = node.sessionId !== null && node.headTurnId !== null ? [...this.pathTurns({ sessionId: node.sessionId, headTurnId: node.headTurnId, ...node.branch ? { branch: node.branch } : {} })].reverse() : [];
     return foldDelivered(rows, ancestry, node.prompts ?? [], mapped);
   }
-  /** The prompt keys an owner recorded under, in first-recorded order. */
-  deliveryPrompts(owner) {
-    return this.db.prepare(`SELECT prompt FROM knowledge_deliveries WHERE owner = ? AND prompt IS NOT NULL
-      GROUP BY prompt ORDER BY MIN(id)`).all(owner).map((row) => row.prompt);
-  }
   /** The newest delivery row of an owner; a publisher compares it before recording. */
   deliveryWatermark(owner) {
     return Number(this.db.prepare("SELECT IFNULL(MAX(id), 0) AS id FROM knowledge_deliveries WHERE owner = ?").get(owner).id);
