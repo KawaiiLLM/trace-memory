@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
-import { legacyFact } from "../../support/seed.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 const workflowHeadings = (JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as { promptOrder: string[] }).promptOrder;
 const call = (id: string, name: string, args: unknown): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id, name, arguments: args as JsonObject }] });
@@ -16,9 +16,10 @@ async function seeded(config: Record<string, unknown> = {}, text = "Keep the use
   const h = host({ "noting.triggerTokens": 1000000, "dreaming.triggerTokens": 1, ...config });
   await h.emit("session_start"); await h.turn();
   const store = h.memory.store;
-  const seedPath = store.knowledgePath(1, "main", 1);
   const user = store.sourcePath(1, "main", 1).find(value => store.getSourceEntry(value.id)?.role === "user")!;
-  const evidence = legacyFact(store, seedPath, [{ entry: store.getSourceEntry(user.id)!, address: `T1#E${user.entryOrdinal}` }], text, "decision");
+  const evidence = legacyFacts(store, { kind: "manual", sessionId: 1, createdAt: "now" },
+    [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], text,
+      category: "decision", actor: "user", createdAt: "now" }]).facts[0]!;
   const content = { text, category: "constraint" as const, scope: "project" as const, supports: [evidence.id], topics: [], reason: "evidence", createdAt: "now" };
   const c = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
   if (!c.ok) throw Error(c.problems.join());

@@ -14,7 +14,7 @@ import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { countPathBuilds, countRunBodies, countSourceReads } from "../../perf/fixture.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
-import { fact, knowledge, legacyFacts } from "../../support/seed.ts";
+import { fact, knowledge, knowledgeBatch, legacyFacts } from "../../support/seed.ts";
 
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
@@ -277,9 +277,10 @@ test("an enabled refresh uses one path snapshot and one bounded processed-versio
   const h = host(quiet);
   await h.turn();
   const written = facts(h, 6);
-  for (const [i, item] of written.entries())
-    knowledge(h.memory.store, h.memory.store.knowledgePath(1, "main", 1), "session", "understanding",
-      [item.id], `current ${i}`, { run: { kind: "manual", createdAt: time } });
+  knowledgeBatch(h.memory.store, h.memory.store.knowledgePath(1, "main", 1),
+    written.map((item, i) => ({ scope: "session", category: "understanding", supports: [item.id],
+      text: `current ${i}`, author: "test", topics: [], reason: "test", createdAt: time })),
+    { kind: "manual", createdAt: time });
   const reads = countSourceReads(), builds = countPathBuilds(), bodies = countRunBodies();
   const rendered = vi.spyOn(rendering, "renderKnowledge"), processed = vi.spyOn(Store.prototype, "processedCurrentVersions");
   const snapshot = vi.spyOn(h.memory.store, "pathSnapshot");

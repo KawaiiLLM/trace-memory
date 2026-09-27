@@ -6,7 +6,7 @@ import { conversationOf, host, reply, usage } from "./test-host.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { hydrate } from "../../source-fixture.ts";
-import { fact as seedFact } from "../../support/seed.ts";
+import { fact as seedFact, facts as seedFacts } from "../../support/seed.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { rawWindowTokens } from "../../../src/core/render/material.ts";
 
@@ -153,8 +153,8 @@ test("17b 2026-09-08: lifecycle hooks launch neither phase and preserve both pen
     h.persist({ role: "user", content: "word ".repeat(20000), timestamp: 1 }); h.persist(reply("pending"));
     await h.emit("session_start");
     const user = h.memory.store.getSourceEntry(h.memory.store.sourcePath(1, "main", 1)[0]!.id)!;
-    for (let i = 0; i < 50; i++) seedFact(h.memory, h.memory.store.knowledgePath(1, "main", 1),
-      `Claim ${i}`, [{ entry: user, text: `claim ${i}` }]);
+    seedFacts(h.memory, h.memory.store.knowledgePath(1, "main", 1),
+      Array.from({ length: 50 }, (_, i) => ({ title: `Claim ${i}`, sources: [{ entry: user, text: `claim ${i}` }] })));
     const pending = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
     const summary = await h.emit("session_before_tree");
     expect(summary.summary.summary).toBe(h.memory.branchSummary(1, "main", 1));

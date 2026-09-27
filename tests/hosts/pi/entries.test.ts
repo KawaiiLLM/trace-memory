@@ -531,8 +531,9 @@ test("33/93: the Noter carries whole-entry role labels, not native message ident
 
 test("23c/30: the Noter prompt names the labels, the independent part budgets and the honesty clause once", () => {
   const prompt = loadPrompt("noting.md");
-  for (const named of ["`[T<n>#E<m>@text] user: <text>`", "`assistant: <text>`",
-    "`[T<n>#E<m>@<callId>] <tool>(<key>=<value>, …)`", "`[T<n>#E<r>@<callId>] <tool> <status>: <result text>`",
+  // 93 replaces block selectors with whole-entry role filters; the budget and honesty contracts remain.
+  for (const named of ["`[T12#E1@user] user: <text>`", "`[T12#E2@assistant] assistant: <text>`",
+    "`@observation`", "`<tool>(<key>=<value>, …)`", "`<tool> <status>: <result text>`",
     "a tool-call part shows at most 100 tokens, a tool-result part at most 100",
     "an entry at most 2,000",
     "`[... N characters truncated]`", "`[... N characters of details truncated]`"]) {
