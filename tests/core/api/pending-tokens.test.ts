@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { sourceSeededMemory , hydrate } from "../../source-fixture.ts";
 import { renderEntry, tokens } from "../../../src/core/render/index.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 test("N pending token projection shares joined entries with exact trigger eligibility", () => {
   const agent = vi.fn();
@@ -13,10 +14,10 @@ test("N pending token projection shares joined entries with exact trigger eligib
     const sibling = store.appendTurn({ sessionId: session.id, parentTurnId: a.id, kind: "turn", userPrompt: "sibling ".repeat(100), startedAt: "2026-01-03T00:00:00Z" });
     const target = { sessionId: session.id, branch: "main", headTurnId: b.id };
     for (const turn of [a, b, sibling]) {
-      const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [
-        { turnId: turn.id, category: "decision", actor: "user", text: `rule ${turn.id}`, source: [`T${turn.id}#user`], createdAt: "now" },
-      ] });
-      if (!noted.ok) throw Error(noted.problems.join());
+      const user = hydrate(store.listSourceEntries(session.id, turn.id), store).find(entry => entry.role === "user")!;
+      legacyFacts(store, { kind: "manual", sessionId: session.id, createdAt: "now" }, [{
+        sources: [{ entry: user, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: `rule ${turn.id}`, createdAt: "now",
+      }]);
     }
     const expectedRaw = tokens(hydrate(store.pendingEntries(session.id, "main", b.id), store).map(e => renderEntry(e, memory.config.render, memory.resultText).content).join("\n\n"));
     // Historical facts remain stored but no longer contribute to a live C trigger.
@@ -47,10 +48,10 @@ test("Dreaming projection follows the selected head and current project, not dat
     const create = (projectId: number, text: string) => {
       const session = s.createSession({ host: "test", projectId, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
       const turn = s.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: text, startedAt: "now" });
-      const noted = s.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [
-        { turnId: turn.id, category: "decision", actor: "user", text, source: [`T${turn.id}#user`], createdAt: "now" },
-      ] });
-      if (!noted.ok) throw Error(noted.problems.join());
+      const user = hydrate(s.listSourceEntries(session.id, turn.id), s).find(entry => entry.role === "user")!;
+      const noted = legacyFacts(s, { kind: "manual", sessionId: session.id, createdAt: "now" }, [{
+        sources: [{ entry: user, address: `T${turn.id}#user` }], category: "decision", actor: "user", text, createdAt: "now",
+      }]);
       const written = s.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
         { op: "create", handle: "$1", author: "test", text, category: "constraint", scope: "project", supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
       ] });
@@ -81,10 +82,10 @@ test("dreamingPending lists every pool in fixed order (global, project, session)
     const store = memory.store, project = store.createProject({ name: "P", declaredBy: "mark" });
     const session = store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
     const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
-    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [
-      { turnId: turn.id, category: "decision", actor: "user", text: "rule", source: [`T${turn.id}#user`], createdAt: "now" },
-    ] });
-    if (!noted.ok) throw Error(noted.problems.join());
+    const user = hydrate(store.listSourceEntries(session.id, turn.id), store).find(entry => entry.role === "user")!;
+    const noted = legacyFacts(store, { kind: "manual", sessionId: session.id, createdAt: "now" }, [{
+      sources: [{ entry: user, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "rule", createdAt: "now",
+    }]);
     const create = (scope: "global" | "project" | "session", text: string) => {
       const written = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
         { op: "create", handle: `$${scope}`, author: "test", text, category: "constraint", scope, supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },

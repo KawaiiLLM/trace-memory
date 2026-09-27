@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
 import { Store, type TaskTarget } from "../../../src/core/store/index.ts";
+import { entry as seedEntry, legacyFacts } from "../../support/seed.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -13,16 +14,17 @@ function base(seeded = false, config: Parameters<typeof TraceMemory>[2] = {}) {
   const session = store.createSession({ host: `host-${memories.length}`, projectId: own.id, projectDeclaration: "undeclared",
     enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: seeded ? "pending raw ".repeat(30) : "evidence", startedAt: "now" });
+  const source = seeded ? hydrate(store.listSourceEntries(session.id, turn.id), store).find(entry => entry.role === "user")!
+    : seedEntry(store, session.id, turn.id, `user-${turn.id}`, "user", "evidence");
   const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-  return { memory, store, own, session, turn, path };
+  return { memory, store, own, session, turn, source, path };
 }
 
 function fact(f: ReturnType<typeof base>) {
-  const result = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: [
-    { turnId: f.turn.id, category: "decision", actor: "user", text: "pending fact ".repeat(30), source: [`T${f.turn.id}#user`], createdAt: "now" },
-  ] });
-  if (!result.ok) throw new Error(result.problems.join("; "));
-  return result.facts[0]!;
+  return legacyFacts(f.store, { kind: "manual", sessionId: f.session.id, createdAt: "now" }, [{
+    sources: [{ entry: f.source, address: `T${f.turn.id}#user` }], category: "decision", actor: "user",
+    text: "pending fact ".repeat(30), createdAt: "now",
+  }]).facts[0]!;
 }
 
 function knowledge(f: ReturnType<typeof base>, scope: "project" | "global" | "session" = "project") {
@@ -165,8 +167,9 @@ test.each(["source", "target", "unrelated"] as const)("86: a %s project peer's l
   const peerSession = f.store.createSession({ host: "peer", projectId: peerProject.id, projectDeclaration: "mark",
     enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const peerTurn = f.store.appendTurn({ sessionId: peerSession.id, kind: "turn", userPrompt: "peer evidence", startedAt: "now" });
+  const peerSource = seedEntry(f.store, peerSession.id, peerTurn.id, `peer-${peerTurn.id}`, "user", "peer evidence");
   const peerPath = { sessionId: peerSession.id, branch: "main", headTurnId: peerTurn.id };
-  const peerItem = knowledge({ ...f, own: peerProject, session: peerSession, turn: peerTurn, path: peerPath });
+  const peerItem = knowledge({ ...f, own: peerProject, session: peerSession, turn: peerTurn, source: peerSource, path: peerPath });
   const held = f.store.acquireClaim(peerPath, "dreaming", "peer-executor")!;
   expect(held).not.toBeNull();
   const range = f.store.retainKnowledgePoolRange(peerPath, `project:${peerProject.id}`, held);
@@ -195,10 +198,10 @@ function claimFixture() {
     const project = projectId === undefined ? store.createProject({ name, declaredBy: "mark" }) : store.getProject(projectId)!;
     const session = store.createSession({ host: name, projectId: project.id, projectDeclaration: "mark", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
     const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
-    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [
-      { turnId: turn.id, category: "decision", actor: "user", text: "evidence", source: [`T${turn.id}#user`], createdAt: "now" },
-    ] });
-    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    const source = seedEntry(store, session.id, turn.id, `${name}-evidence`, "user", "evidence");
+    const noted = legacyFacts(store, { kind: "manual", sessionId: session.id, createdAt: "now" }, [{
+      sources: [{ entry: source, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "evidence", createdAt: "now",
+    }]);
     const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
       { op: "create", handle: "$1", author: "test", text: `pending ${name}`, category: "constraint", scope: "project", supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
     ] });

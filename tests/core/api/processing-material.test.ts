@@ -16,7 +16,7 @@ function fixture(agent: (input: NotingAgentInput) => void = () => {}) {
   const s = memory.store.createSession({ host: "test", enrollmentChoice: true, projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const turn = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use this rule", startedAt: "now" });
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: turn.id });
-  tools[2]!.execute({ facts: [{ text: "rule", source: ["T1#E1"] }] });
+  tools[2]!.execute({ facts: [{ title: "Rule", sources: [{ address: `T${turn.id}#E1`, text: "rule" }] }] });
   const content = { text: "word ".repeat(5_200), category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "test" };
   expect(tools[3]!.execute({ operations: [{ op: "create", ...content }], skipped: [] })).toContain("committed");
   // Derive an exact 5,000-token Knowledge window from the real pool policy.
@@ -54,7 +54,7 @@ test("92: omitted knowledge has no printed tag; an exact tag works without read 
 test("32/92: actual inherited carriers suppress duplicate bodies without granting reads", () => {
   const f = fixture();
   try {
-    f.tools[2]!.execute({ facts: [{ text: "withdraw", source: ["T1#E1"], negate: [["F1", "strong"]] }] });
+    f.tools[2]!.execute({ facts: [{ title: "Withdrawal", sources: [{ address: "T1#E1", text: "withdraw" }], negate: [["F1", "strong"]] }] });
     const withoutCues = f.freeze();
     expect(withoutCues.prepared?.supplied.knowledgeCommitIds).toEqual([]);
     expect(withoutCues.prepared?.text).not.toContain(f.content.text);

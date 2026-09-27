@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { sourceSeededMemory, type NotingAgentInput, type DreamingAgentInput } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory, type NotingAgentInput, type DreamingAgentInput } from "../../source-fixture.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 // Exercise both explicit N tools and real terminal publication.
 async function checkMemoryBatch(output: unknown | ((tag: (id: number) => string) => unknown)) {
@@ -8,10 +9,10 @@ async function checkMemoryBatch(output: unknown | ((tag: (id: number) => string)
     const p = memory.store.createProject({ name: "validation", declaredBy: "mark" });
     const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
     const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", assistantText: "evidence", startedAt: "now" });
-    const noted = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
-      facts: Array.from({ length: 6 }, (_, i) => ({ turnId: t.id, category: "observation" as const, actor: "agent" as const, text: `Evidence ${i}`, source: [`T${t.id}#assistant`], createdAt: "now" })),
-      entryIds: [] });
-    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    const assistant = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store).find(entry => entry.role === "assistant")!;
+    const noted = legacyFacts(memory.store, { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
+      Array.from({ length: 6 }, (_, i) => ({ sources: [{ entry: assistant, address: `T${t.id}#assistant` }],
+        category: "observation" as const, actor: "agent" as const, text: `Evidence ${i}`, createdAt: "now" })));
     const seeded = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
       operations: Array.from({ length: 10 }, (_, i) => ({ op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category: "understanding" as const, scope: "project" as const, text: `Seed ${i}`, supports: [1], createdAt: "now" })) });
     if (!seeded.ok) throw new Error(seeded.problems.join("; "));
@@ -123,7 +124,7 @@ describe("checkMemoryBatch", async () => {
       const session = memory.store.createSession({ projectId: project.id, host: "pi:test", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
       const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", startedAt: "now" });
       const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
-      expect(tools[2]!.execute({ facts: [{ text: "Rule", source: [`T${turn.id}#E1`] }] })).toContain("F1");
+      expect(tools[2]!.execute({ facts: [{ title: "Rule admission", sources: [{ address: `T${turn.id}#E1`, text: "Rule" }] }] })).toContain("F1");
       expect(JSON.parse(tools[3]!.execute({ operations: [{ op: "create", text: "Rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Seed" }], skipped: [] })).committed).toHaveLength(1);
       const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: turn.id });
       expect(result.outcome, JSON.stringify(result)).toBe("failure");

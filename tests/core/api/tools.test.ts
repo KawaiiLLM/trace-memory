@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { sourceSeededMemory, toolRejected, type NotingAgentInput, type RunAgent, type ToolContext } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory, toolRejected, type NotingAgentInput, type RunAgent, type ToolContext } from "../../source-fixture.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>, agent: RunAgent;
-const fact = (source = "T1#E1", extra = {}) => ({ text: "project evidence", source: [source], ...extra });
+const fact = (source = "T1#E1", extra: { source?: string[]; text?: string; [key: string]: unknown } = {}) => {
+  const { source: addresses = [source], text = "project evidence", ...fields } = extra;
+  return { title: "Project evidence", sources: addresses.map((address, index) => ({ address, text: index === 0 ? text : `Evidence at ${address}` })), ...fields };
+};
 const manual = (sessionId = 1, currentTurnId = 1, branch = "main"): ToolContext => ({ kind: "manual", sessionId, currentTurnId, branch });
 const record = () => memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
 beforeEach(() => {
@@ -78,11 +81,13 @@ test("source time follows the first source, including tool sources; all sources 
   memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, assistantText: "later", startedAt: "later source time" });
   memory.store.appendToolCall({ turnId: 2, name: "bash", status: "success", result: "passed" });
   const note = memory.tools(manual(1, 2))[2]!;
-  expect(note.execute({ facts: [fact("T2#E3", { source: ["T2#E3", "T1#E1"] })] })).toContain("F1");
-  expect(memory.store.getFact(1)!.roles).toEqual([{ role: "observation" }, { role: "user" }]);
-  expect(memory.store.getFact(1)).toMatchObject({ turnId: 2, createdAt: "later source time" });
+  const observation = hydrate(memory.store.listSourceEntries(1, 2), memory.store).find(entry => entry.role === "toolResult")!;
+  const cited = `T2#E${observation.entryOrdinal}`;
+  expect(note.execute({ facts: [fact(cited, { source: [cited, "T1#E1"] })] })).toContain("F1");
+  expect(memory.store.getFact(1)!.roles).toEqual([{ role: "user" }, { role: "observation" }]);
+  expect(memory.store.getFact(1)).toMatchObject({ turnId: 1, createdAt: "first source time" });
   expect(memory.store.db.prepare("SELECT f.source_time, r.kind, r.created_at FROM facts f JOIN runs r ON r.id = f.run_id WHERE f.id = 1").get())
-    .toEqual({ source_time: "later source time", kind: "manual", created_at: memory.store.getRun(1)!.createdAt });
+    .toEqual({ source_time: "first source time", kind: "manual", created_at: memory.store.getRun(1)!.createdAt });
   expect(note.execute({ facts: [fact("T1#E1", { source: ["T1#E1", "T999#E1"] })] })).toContain("rejected:");
   expect(memory.store.listSessionFacts(1)).toHaveLength(1);
 });
@@ -122,8 +127,8 @@ test("trace and search use parameter options, share scoped pagination, and rejec
   memory.store.appendToolCall({ turnId: 1, name: "bash", status: "success", result: "x".repeat(2000) });
   memory.tools(manual())[2]!.execute({ facts: [fact(), fact()] });
   const [trace, search] = memory.tools(manual());
-  expect(trace!.execute({ address: "T1", tool: 1, full: true })).toContain("x".repeat(2000));
-  expect(trace!.execute({ address: "T1" })).toContain('trace({"address":"T1#E4@call-1","itemBudget":null,"toolCallBudget":null,"toolResultBudget":null})');
+  expect(trace!.execute({ address: "T1#E4@observation", itemBudget: null, toolResultBudget: null })).toContain("x".repeat(2000));
+  expect(trace!.execute({ address: "T1" })).toContain("T1#E4");
   for (const address of ["T1 tool=1 full", "T1 cap=0", "F1 cap=1"]) expect(trace!.execute({ address })).toContain("rejected:");
   const first = search!.execute({ query: "project", layer: "facts", cap: 1 });
   const cursor = /cursor=(\S+)/.exec(first)![1];
@@ -138,7 +143,7 @@ test("reads reach any project's evidence; write sources stay bound to the sessio
   memory.store.appendTurn({ sessionId: 2, kind: "turn", userPrompt: "private evidence", startedAt: "now" });
   memory.tools(manual(2, 2))[2]!.execute({ facts: [fact("T2#E1", { text: "private evidence" })] });
   const tools = memory.tools(manual());
-  for (const address of ["F1", "F1..", "T2", "S2", "S2/T2", "T1,T2"]) expect(tools[0]!.execute({ address })).not.toContain("rejected:");
+  for (const address of ["F1", "T2", "S2", "S2/T2", "T1,T2"]) expect(tools[0]!.execute({ address })).not.toContain("rejected:");
   expect(tools[1]!.execute({ query: "private", layer: "all", scope: "global" })).toContain("private evidence");
   expect(tools[2]!.execute({ facts: [fact("T2#E1")] })).toContain("rejected:"); // a write may only cite its own session
   const page = memory.tools(manual(2, 2))[0]!.execute({ address: "T2", cap: 1 });

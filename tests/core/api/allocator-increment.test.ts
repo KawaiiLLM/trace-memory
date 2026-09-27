@@ -117,7 +117,8 @@ test("92: a historical unconsolidated fact stays eligible but cannot borrow shar
   const raw = memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeId: "history", nativeLineage: "fixture",
     role: "assistant", text: "word ".repeat(2_000), raw: "", calls: [] });
   const history = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "manual", createdAt: time }, entryIds: [],
-    facts: [{ turnId: t.id, text: "word ".repeat(2_000) + "historical fact", category: "observation", actor: "user", source: [`T${t.id}#user`], createdAt: time }] });
+    facts: [{ turnId: t.id, text: "word ".repeat(2_000) + "historical fact", category: "observation", actor: "user", source: [`T${t.id}#user`],
+      entryIds: [memory.store.sourcePath(s.id, "main", t.id)[0]!.id], createdAt: time }] });
   if (!history.ok) throw new Error(JSON.stringify(history));
   memory.config.compaction.factsTokens = 9_000;
   const result = memory.compact(s.id, "main", t.id);
@@ -141,7 +142,8 @@ test("92: processed Raw uses only its base remainder; facts independently keep t
   const newest = memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeId: "newest", nativeLineage: "fixture",
     role: "assistant", text: "word ".repeat(700), raw: "", calls: [] });
   expect(memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "manual", createdAt: time },
-    facts: [{ turnId: t.id, text: "word ".repeat(8_000) + "NEWEST FACT", category: "observation", actor: "user", source: [`T${t.id}#user`], createdAt: time }] }).ok).toBe(true);
+    facts: [{ turnId: t.id, text: "word ".repeat(8_000) + "NEWEST FACT", category: "observation", actor: "user", source: [`T${t.id}#user`],
+      entryIds: [primaryEntry.id], createdAt: time }] }).ok).toBe(true);
   const result = memory.compact(s.id, "main", t.id), windows = charged(result);
   expect("native" in result ? [] : result.supplied.entries.map(e => e.id)).toContain(newest.id);
   expect("native" in result ? [] : result.supplied.entries.map(e => e.id)).not.toContain(primaryEntry.id);
@@ -150,13 +152,16 @@ test("92: processed Raw uses only its base remainder; facts independently keep t
   expect(windows.raw).toBeLessThanOrEqual(1_000);
 });
 
-test("32e final Raw coverage filters optional facts only; retained bounded views count and unknown bindings stay", () => {
+test("32e final Raw coverage filters optional facts; damaged legacy bindings fail explicitly", () => {
   const { s, t, f, entries } = fixture(undefined, true);
   const first = memory.compact(s.id, "main", t.id);
   expect("native" in first ? [] : first.supplied.factIds).not.toContain(f.id);
+  const binding = memory.store.db.prepare("SELECT segment_text FROM fact_sources WHERE fact_id = ? AND entry_id = ?")
+    .get(f.id, entries[0]!.id) as { segment_text: string };
   memory.store.db.prepare("DELETE FROM fact_sources WHERE fact_id = ?").run(f.id);
-  expect(compacted(memory.compact(s.id, "main", t.id))).toContain("required fact");
-  memory.store.db.prepare("INSERT INTO fact_sources VALUES (?, ?)").run(f.id, entries[0]!.id);
+  expect(() => memory.compact(s.id, "main", t.id)).toThrow("missing legacy source bindings");
+  memory.store.db.prepare("INSERT INTO fact_sources (fact_id, entry_id, segment_text) VALUES (?, ?, ?)")
+    .run(f.id, entries[0]!.id, binding.segment_text);
   memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time }, facts: [], entryIds: entries.map(e => e.id) });
   const visible = noVisibility(); visible.raw.set(entries[0]!.nativeId, "view");
   const retained = memory.compact(s.id, "main", t.id, visible);
@@ -164,13 +169,13 @@ test("32e final Raw coverage filters optional facts only; retained bounded views
   expect("native" in retained ? [1] : retained.supplied.entries).toEqual([]);
 });
 
-test("32e old pending holes and incomplete optional bindings survive filtering", () => {
+test("32e old pending holes and fully bound facts survive when final Raw does not cover every source", () => {
   const { s, t, entries } = fixture();
   const later = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t.id, kind: "turn", userPrompt: "later source", startedAt: "2026-09-07T00:00:00Z" });
   const newer = memory.store.sourcePath(s.id, "main", later.id).at(-1)!;
   const added = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: time }, entryIds: [newer.id], facts: [
     { turnId: later.id, text: "partly covered", category: "observation", actor: "user", source: [`T${t.id}#user`, `T${later.id}#user`], entryIds: [entries[0]!.id, newer.id], createdAt: time },
-    { turnId: later.id, text: "incomplete binding", category: "observation", actor: "user", source: [`T${t.id}#user`, `T${later.id}#user`], entryIds: [entries[0]!.id], createdAt: time },
+    { turnId: later.id, text: "fully bound fact", category: "observation", actor: "user", source: [`T${t.id}#user`, `T${later.id}#user`], entryIds: [entries[0]!.id, newer.id], createdAt: time },
     { turnId: t.id, text: "old pending fact hole", category: "observation", actor: "user", source: [`T${t.id}#user`], entryIds: [entries[0]!.id], createdAt: time },
   ] });
   if (!added.ok) throw new Error(JSON.stringify(added));
@@ -179,26 +184,42 @@ test("32e old pending holes and incomplete optional bindings survive filtering",
   memory.config.compaction.sharedAllowanceTokens = 0;
   setKnowledgeInjection(memory, 0);
   const result = memory.compact(s.id, "main", later.id), text = compacted(result);
-  for (const marker of ["partly covered", "incomplete binding", "old pending fact hole"]) expect(text).toContain(marker);
+  for (const marker of ["partly covered", "fully bound fact", "old pending fact hole"]) expect(text).toContain(marker);
   expect("native" in result ? [] : result.supplied.entries.map(e => e.id)).toEqual([entries[0]!.id, newer.id]);
   expect(memory.pendingEntries(s.id, "main", later.id).map(e => e.id)).toEqual([entries[0]!.id]);
 });
 
-test("32e coverage filtering precedes fact prefix budgeting and retained fact IDs deduplicate", () => {
-  const { s, t, entries } = fixture(undefined, true);
-  const history = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: time }, entryIds: entries.map(e => e.id), facts: [
-    { turnId: t.id, text: "older unknown binding", category: "observation", actor: "user", source: [`T${t.id}#user`], createdAt: time },
-    { turnId: t.id, text: "newest covered " + "word ".repeat(850), category: "observation", actor: "user", source: [`T${t.id}#user`], entryIds: entries.map(e => e.id), createdAt: time },
-  ] });
+test("32e fully bound facts: final Raw coverage filters before fact budgeting; retained IDs deduplicate", () => {
+  const { s, t, entries, f } = fixture(undefined, true);
+  const append = (nativeId: string, text: string) => memory.appendEntry({ sessionId: s.id, turnId: t.id,
+    nativeId, nativeLineage: "fixture", role: "user", text, raw: text, calls: [] });
+  const older = append("older-source", "old source ".repeat(1_500));
+  const newer = append("newer-source", "new source");
+  memory.selectEntries(s.id, "main", [...entries.map(entry => entry.id), older.id, newer.id]);
+  const history = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: time },
+    entryIds: [older.id, newer.id], facts: [
+      { turnId: t.id, text: "older bound fact", category: "observation", actor: "user",
+        source: [`T${t.id}#E${older.entryOrdinal}`], entryIds: [older.id], createdAt: time },
+      { turnId: t.id, text: "newest covered " + "word ".repeat(850), category: "observation", actor: "user",
+        source: [`T${t.id}#E${newer.entryOrdinal}`], entryIds: [newer.id], createdAt: time },
+    ] });
   if (!history.ok) throw new Error(JSON.stringify(history));
-  memory.config.compaction.factsTokens = 200;
-  const result = memory.compact(s.id, "main", t.id);
-  expect(compacted(result)).toContain("older unknown binding");
-  expect("native" in result ? [1] : result.supplied.factIds).toEqual([history.facts[0]!.id]);
-  // Retained (already visible to the caller) deduplicates it out of the facts window entirely,
-  // rather than showing it a second time.
-  const retained = noVisibility(); retained.factIds.add(history.facts[0]!.id);
-  const deduped = memory.compact(s.id, "main", t.id, retained);
-  expect("native" in deduped ? [1] : deduped.supplied.factIds).not.toContain(history.facts[0]!.id);
-  expect("native" in deduped ? -1 : charged(deduped).facts).toBeLessThan(charged(result).facts);
+  expect(memory.store.factEntries(history.facts[0]!.id)).toEqual([older.id]);
+  expect(memory.store.factEntries(history.facts[1]!.id)).toEqual([newer.id]);
+  memory.config.compaction.rawTokens = 200;
+  memory.config.compaction.factsTokens = 400;
+  const visible = noVisibility(); visible.factIds.add(f.id);
+  const result = memory.compact(s.id, "main", t.id, visible);
+  if ("native" in result) throw new Error(result.reason);
+  const rawIds = result.supplied.entries.map(entry => entry.id);
+  expect(rawIds).toContain(newer.id);
+  expect(rawIds).not.toContain(older.id);
+  expect([...memory.store.factsCoveredByRaw(history.facts, new Set(rawIds))]).toEqual([history.facts[1]!.id]);
+  expect(result.supplied.factIds).toEqual([history.facts[0]!.id]);
+  expect(result.text).toContain("older bound fact");
+  visible.factIds.add(history.facts[0]!.id);
+  const deduped = memory.compact(s.id, "main", t.id, visible);
+  if ("native" in deduped) throw new Error(deduped.reason);
+  expect(deduped.supplied.factIds).not.toContain(history.facts[0]!.id);
+  expect(charged(deduped).facts).toBeLessThan(charged(result).facts);
 });

@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
-import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
+import { legacyFacts } from "../../support/seed.ts";
 import { MEMORY_PHASES } from "../../../src/hosts/phase-settings.ts";
 import { historicalConsolidation } from "../../noting-knowledge-fixture.ts";
 
@@ -43,10 +44,10 @@ test("92/07: only N/D admit; historical C audit and costs keep original labels",
 test("92/07: historical unconsolidated facts neither block project movement nor get certified", () => {
   const f = fixture();
   try {
-    const written = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: [{
-      turnId: f.turn.id, category: "observation", actor: "user", text: "historical pending fact ".repeat(800), source: [`T${f.turn.id}#user`], createdAt: "now",
-    }] });
-    if (!written.ok) throw new Error(written.problems.join("; "));
+    const user = hydrate(f.store.listSourceEntries(f.session.id, f.turn.id), f.store).find(entry => entry.role === "user")!;
+    const written = legacyFacts(f.store, { kind: "manual", sessionId: f.session.id, createdAt: "now" }, [{
+      sources: [{ entry: user, address: `T${f.turn.id}#user` }], category: "observation", actor: "user", text: "historical pending fact ".repeat(800), createdAt: "now",
+    }]);
     const before = f.store.listSessionFacts(f.session.id);
     expect(f.memory.declareProject(f.session.id, "new-project", "mark", f.target)).toContain("new-project");
     expect(f.store.listSessionFacts(f.session.id)).toEqual(before);
@@ -58,10 +59,10 @@ test("92/07: historical unconsolidated facts neither block project movement nor 
 test("92/07: history processing rows survive and cannot supply a live C seat", () => {
   const f = fixture();
   try {
-    const facts = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: [{
-      turnId: f.turn.id, category: "observation", actor: "user", text: "historical", source: [`T${f.turn.id}#user`], createdAt: "now",
-    }] });
-    if (!facts.ok) throw new Error(facts.problems.join("; "));
+    const user = hydrate(f.store.listSourceEntries(f.session.id, f.turn.id), f.store).find(entry => entry.role === "user")!;
+    const facts = legacyFacts(f.store, { kind: "manual", sessionId: f.session.id, createdAt: "now" }, [{
+      sources: [{ entry: user, address: `T${f.turn.id}#user` }], category: "observation", actor: "user", text: "historical", createdAt: "now",
+    }]);
     historicalConsolidation(f.store, f.session.id, facts.facts.map(fact => fact.id));
     const old = f.store.listRuns(f.session.id).find(run => run.kind === "consolidation")!;
     f.store.db.prepare("INSERT INTO task_claims(session_id,phase,executor_id,token,expires_at,borrowed,reserved) VALUES (?,?,?,?,?,0,0)")

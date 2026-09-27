@@ -175,7 +175,7 @@ for (const sameProject of [false, true]) test(`independent sessions publish whil
 test("Raw progress failure inside terminal publication rolls back facts, knowledge and success audit", async () => {
   const evidence = fact();
   script.push(async input => {
-    expect(input.tools[2]!.execute({ facts: [{ text: "New episode", source: [`T${evidence.turnId}#E1`] }] })).toContain("held");
+    expect(input.tools[2]!.execute({ facts: [{ title: "New episode", sources: [{ address: `T${evidence.turnId}#E1`, text: "New episode" }] }] })).toContain("held");
     expect(input.tools[3]!.execute({ operations: [{ ...create(evidence.id).operations[0], supports: ["$1"] }], skipped: [] })).toContain("held");
     return success();
   });

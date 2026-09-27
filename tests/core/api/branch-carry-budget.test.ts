@@ -31,12 +31,13 @@ test("entry/cleanup integration: carry budgets only its exact normalized Raw suf
       raw: JSON.stringify({ role: "toolResult", toolCallId: call.callId, content: [{ type: "text", text: "result ".repeat(500) }] }) });
     const selected = [f.entries[0]!, mixed, result];
     m.selectEntries(session.id, "main", selected.map(e => e.id));
-    const source = `T${turn.id}#E${result.entryOrdinal}@"call,one"`;
+    const source = `T${turn.id}#E${result.entryOrdinal}@observation`;
     const factText = "complete event evidence ".repeat(1000), knowledgeText = "complete conclusion ".repeat(1000);
     const note = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id }).find(t => t.name === "note")!;
     expect(note.execute({ facts: [
-      { text: factText, source: [`T${turn.id}#E${mixed.entryOrdinal}`, `T${turn.id}#E${result.entryOrdinal}`] },
-      { text: "a later correction", source: [`T${turn.id}#E1`], negate: [["$1", "strong"]] },
+      { title: "Complete event", sources: [{ address: `T${turn.id}#E${mixed.entryOrdinal}`, text: factText },
+        { address: `T${turn.id}#E${result.entryOrdinal}`, text: "Result evidence" }] },
+      { title: "Later correction", sources: [{ address: `T${turn.id}#E1`, text: "a later correction" }], negate: [["$1", "strong"]] },
     ] })).not.toContain("rejected:");
     const knowledge = m.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
       run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$k", author: "test", text: knowledgeText,
@@ -48,14 +49,15 @@ test("entry/cleanup integration: carry budgets only its exact normalized Raw suf
     const carry = f.carry();
     expect(f.raw()).toBe([...views, receipt(1)].join("\n"));
     expect(tokens(`Pending raw:\n${f.raw()}`)).toBeLessThanOrEqual(cap);
-    expect(views[0]).toContain(`[T${turn.id}#E3@"call,one"]`);
+    expect(views[0]).toContain(`[T${turn.id}#E3@assistant]`);
     expect(views[1]).toContain(`[${source}]`);
     expect(views.every(view => view.includes("characters truncated"))).toBe(true);
     views.forEach(view => expect(tokens(view)).toBeLessThanOrEqual(m.config.render.entryTokens));
     expect(carry).toContain("(selected facts)");
     expect(carry).toContain(factText); expect(carry).toContain(knowledgeText);
     expect(carry).toContain("negate F1 strong");
-    expect(carry).toContain(`source: T${turn.id}#E3 (Pi agent), T${turn.id}#E4 (observation)`);
+    expect(m.store.factEntries(1)).toEqual([mixed.id, result.id]);
+    expect(m.store.getFact(1)!.roles?.map(role => role.role)).toEqual(["assistant", "observation"]);
     expect(tokens(carry)).toBeGreaterThan(cap); // Only Pending raw owns the carry cap.
     expect(carry).not.toContain("SIBLING-ONLY");
     expect(m.trace(`T${turn.id}`, { branch: "main", full: true, pageBudget: null })).not.toContain("SIBLING-ONLY");

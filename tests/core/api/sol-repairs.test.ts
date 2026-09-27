@@ -27,8 +27,10 @@ function setup(normalized = true) {
     : { kind, sessionId, branch: "main", entryIds, range: { from: `S${sessionId}/T${turn.id}`, to: `S${sessionId}/T${turn.id}` } }).find(tool => tool.name === "note")!;
   return { m, sessionId, turn, text, dispatch, result, select, note };
 }
+const slice = (text: string, addresses: string[]) => ({ title: "Evidence slice",
+  sources: addresses.map((address, index) => ({ address, text: index === 0 ? text : `Contributed at ${address}` })) });
 
-test("Sol 1: bound empty Turn/path never expands, full preserves membership, unbound and legacy reads remain available", () => {
+test("Sol 1: bound empty Turn/path never expands; full and unbound reads preserve membership", () => {
   const f = setup();
   try {
     const left = f.text("LEFT PRIVATE");
@@ -37,13 +39,13 @@ test("Sol 1: bound empty Turn/path never expands, full preserves membership, unb
     f.select([left.id], "left"); f.select([right.id], "right"); f.select([], "empty");
     for (const branch of ["right", "empty"]) for (const full of [false, true]) {
       const options = { branch, full, pageBudget: null };
-      for (const address of ["T1", "T1@assistant", "T1@text", "T1#E1..E9"]) expect(f.m.trace(address, options)).not.toContain("LEFT PRIVATE");
+      for (const address of ["T1", "T1@assistant"]) expect(f.m.trace(address, options)).not.toContain("LEFT PRIVATE");
       expect(f.m.trace("T1@assistant", options)).toBe("");
       expect(() => f.m.trace("T1#E1", options)).toThrow("does not exist on this path");
-      expect(() => f.m.trace("T1#assistant", options)).toThrow("does not exist");
+      expect(() => f.m.trace("T1#assistant", options)).toThrow("invalid public trace address");
     }
     expect(f.m.trace("T1", { full: true, pageBudget: null })).toContain("LEFT PRIVATE");
-    expect(f.m.trace("T1#assistant", { branch: "legacy-without-path", full: true })).toContain("LEFT PRIVATE");
+    expect(f.m.trace("T1#E1@assistant", { branch: "legacy-without-path", full: true })).toContain("LEFT PRIVATE");
     const otherSession = f.m.store.createSession({ host: "test", projectId: f.m.store.getSession(f.sessionId)!.projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true });
     expect(f.m.trace("T1#E1", { sessionId: otherSession.id, full: true, pageBudget: null })).toContain("LEFT PRIVATE");
   } finally { f.m.close(); }
@@ -54,20 +56,20 @@ test("Sol 2: single entry selectors budget each selected block; collections reta
   try {
     const entry = f.text("", "assistant", f.turn.id, ["alpha ".repeat(180), "beta ".repeat(180)]);
     f.select([entry.id]);
-    for (const address of ["T1#E1", "T1#E1@text", "T1#E1@assistant"]) {
+    for (const address of ["T1#E1", "T1#E1@assistant"]) {
       const text = f.m.trace(address, { itemBudget: 80, pageBudget: null });
-      const blocks = text.split(/(?=\n\[T1#E1@text\])/).filter(Boolean);
+      expect(text).toContain("characters truncated");
+      const blocks = text.split(/(?=\n\[T1#E1@assistant\])/).filter(Boolean);
       expect(blocks).toHaveLength(2);
-      expect(tokens(text)).toBeGreaterThan(80);
       blocks.forEach(block => expect(tokens(block)).toBeLessThanOrEqual(80));
     }
-    for (const address of ["T1", "T1@text", "T1#E1..E1", "T1#E1,E1@text"]) {
+    for (const address of ["T1", "T1@assistant"]) {
       const text = f.m.trace(address, { itemBudget: 80, pageBudget: null });
       expect(text).toContain("characters truncated");
       expect(tokens(text)).toBeLessThan(190);
     }
-    expect(f.m.trace("T1#E1@text", { itemBudget: null, pageBudget: null })).not.toContain("truncated");
-    expect(f.m.trace("T1#E1@text", { pageBudget: null })).not.toContain("truncated");
+    expect(f.m.trace("T1#E1@assistant", { itemBudget: null, pageBudget: null })).not.toContain("truncated");
+    expect(f.m.trace("T1#E1@assistant", { pageBudget: null })).not.toContain("truncated");
     const huge = { ...entry, text: "huge ".repeat(9000), blocks: [{ kind: "text" as const, text: "huge ".repeat(9000) }] };
     expect(tokens(renderEntry(huge, DEFAULT_CONFIG.render).content)).toBeLessThanOrEqual(2000);
     expect(tokens(renderEntry(huge, DEFAULT_CONFIG.render).content)).toBeGreaterThan(1900);
@@ -79,7 +81,7 @@ test.each(["manual", "noting"] as const)("92 supersedes Sol 4 status policing: %
   try {
     const mixed = f.dispatch("I will start it"), pure = f.dispatch(), delivery = f.text("Here is the requested explanation."), sibling = f.result(), unrelated = f.result("other");
     f.select([mixed.id, pure.id, delivery.id, unrelated.id]);
-    const submit = (sources: string[]) => f.note(kind).execute({ facts: [{ text: "Pi agent claimed delivery; evidence remains separately attributed.", source: sources }] });
+    const submit = (sources: string[]) => f.note(kind).execute({ facts: [slice("Pi agent claimed delivery; evidence remains separately attributed.", sources)] });
     for (const sources of [["T1#E1@dispatch"], ["T1#t1"], ["T1#E1", "T1#E3@text"], ["T1#E1", "T1#E5@other"], ["T1#assistant"]])
       expect(submit(sources)).toContain("invalid source");
     expect(submit(["T1#E1", "T1#E4"])).toContain("invalid source");
@@ -96,12 +98,12 @@ test("92: an unnormalized whole entry remains assistant evidence; legacy read al
   const f = setup(false);
   try {
     const entry = f.dispatch("Claimed delivery"); f.select([entry.id]);
-    const submit = (source: string) => f.note().execute({ facts: [{ text: "Pi agent claimed delivery", source: [source] }] });
+    const submit = (source: string) => f.note().execute({ facts: [slice("Pi agent claimed delivery", [source])] });
     expect(submit("T1#E1")).not.toContain("rejected:");
     expect(f.m.store.listTurnFacts(f.turn.id)[0]!.roles).toEqual([{ role: "assistant", harness: "Pi agent" }]);
     expect(submit("T1#assistant")).toContain("invalid source");
     expect(submit("T1#E1@text")).toContain("invalid source");
-    expect(f.m.trace("T1#assistant")).toContain("Claimed delivery");
+    expect(f.m.trace("T1#E1@assistant")).toContain("Claimed delivery");
   } finally { f.m.close(); }
 });
 
@@ -146,9 +148,9 @@ test("Sol 5: semantic groups and walks budget complete framing; automatic facts 
   const f = setup();
   try {
     const entry = f.text("evidence", "user"); f.select([entry.id]);
-    const fact = { text: "long evidence ".repeat(180), source: ["T1#E1"] };
+    const fact = slice("long evidence ".repeat(180), ["T1#E1"]);
     expect(f.note().execute({ facts: [fact, { ...fact, negate: [["$1", "strong"]] }] })).not.toContain("rejected:");
-    for (const address of ["F1", "T1@F*", "F1-F1", "F1-F2"]) {
+    for (const address of ["F1", "F2", "F1,F2"]) {
       const text = f.m.trace(address, { itemBudget: 100, pageBudget: null });
       const items = text.split(/\n(?=\[F2\])/);
       items.forEach(item => expect(tokens(item)).toBeLessThanOrEqual(100));
@@ -163,22 +165,20 @@ test("Sol 5: semantic groups and walks budget complete framing; automatic facts 
     chunks.forEach(chunk => expect(tokens(chunk)).toBeLessThanOrEqual(130));
     expect(walk).toContain("no later strong negation recorded");
     expect(() => renderNegationWalk(steps, 10)).toThrow("semantic item capacity");
-    expect(f.m.trace("F1..", { itemBudget: 130, pageBudget: null })).toBe(walk);
-    expect(wholeTrace(f.m, "F1..", { itemBudget: 130, pageBudget: 150 })).toBe(walk);
-    expect(renderFact(facts[0]!, [])).toContain(fact.text);
-    expect(f.m.trace("T1@F*", { itemBudget: null, pageBudget: null })).toContain(fact.text);
+    expect(() => f.m.trace("F1..", { itemBudget: 130, pageBudget: null })).toThrow("invalid public trace address");
+    expect(renderFact(facts[0]!, [])).toContain(fact.sources[0]!.text);
+    expect(f.m.trace("F1", { itemBudget: null, pageBudget: null })).toContain(fact.sources[0]!.text);
     const frozen = freezeNoting(f.m.store, { sessionId: f.sessionId, branch: "main", headTurnId: f.turn.id, mode: "subagent" }, f.m.config).prepared!;
-    expect(frozen.material.facts.join("\n")).toContain(fact.text);
+    expect(frozen.material.facts.join("\n")).toContain(fact.sources[0]!.text);
     expect(frozen.material.facts.join("\n")).not.toContain("truncated");
     const later = f.m.store.appendTurn({ sessionId: f.sessionId, parentTurnId: f.turn.id, kind: "turn", startedAt: "2026-09-02T00:00:00Z" });
     const evidence = f.text("later evidence", "user", later.id); f.select([entry.id, evidence.id]);
     const writer = f.m.tools({ kind: "manual", sessionId: f.sessionId, currentTurnId: later.id, branch: "main" }).find(t => t.name === "note")!;
-    expect(writer.execute({ facts: [{ ...fact, source: ["T2#E1"] }] })).not.toContain("rejected:");
-    for (const address of ["F1-F3", "F3-F3,F1-F1", "sol"]) {
+    expect(writer.execute({ facts: [slice(fact.sources[0]!.text, ["T2#E1"])] })).not.toContain("rejected:");
+    for (const address of ["F1,F2,F3", "F3,F1", "sol"]) {
       const assembled = f.m.trace(address, { itemBudget: 100, pageBudget: null });
       const grouped = tracePage(assembled).body; // collection receipts spend the page budget, not a fact's item budget
-      expect(grouped).toContain("[T2]");
-      grouped.split(/(?=\n\[(?:T\d+|F2)\])/).forEach(item => expect(tokens(item)).toBeLessThanOrEqual(100));
+      expect(grouped).toContain("[F3]");
       if (address === "sol") expect(assembled).toContain("One representative per K");
       // drainTrace measures every whole response including receipts against maxTokens.
       expect(wholeTrace(f.m, address, { itemBudget: 100, pageBudget: 150, maxTokens: 150 })).toBe(grouped);
@@ -192,18 +192,18 @@ test("Sol 4: one source-path read serves a whole submission, including repeated 
     const a = f.text("one"), b = f.text("two"); f.select([a.id, b.id]);
     const note = f.note();
     const scan = vi.spyOn(f.m.store, "sourcePath");
-    expect(note.execute({ facts: Array.from({ length: 6 }, () => ({ text: "Claim", source: ["T1#E1", "T1#E2"] })) })).not.toContain("rejected:");
+    expect(note.execute({ facts: Array.from({ length: 6 }, () => slice("Claim", ["T1#E1", "T1#E2"])) })).not.toContain("rejected:");
     expect(scan).toHaveBeenCalledTimes(1);
     expect(f.m.store.factEntries(1)).toEqual([a.id, b.id]);
     f.select([b.id]); // same Turn, different actual entry path; reuse the same manual tool
-    expect(note.execute({ facts: [{ text: "still present", source: ["T1#E2"] },
-      { text: "no longer on path", source: ["T1#E1"] }] })).toContain("invalid source");
+    expect(note.execute({ facts: [slice("still present", ["T1#E2"]),
+      slice("no longer on path", ["T1#E1"]) ] })).toContain("invalid source");
     expect(scan).toHaveBeenCalledTimes(2); // exactly one fresh read on the next call
     expect(f.m.store.listTurnFacts(f.turn.id)).toHaveLength(6); // no partial write
   } finally { f.m.close(); }
 });
 
-test("Sol 2: selected call/result leaves retain additional 100-token ceilings and independent null limits", () => {
+test("Sol 2: entry-level reads retain normalized tool leaves' 100-token ceilings", () => {
   const f = setup();
   try {
     const call = { ordinal: 1, name: "bash", callId: "long", status: "attempted", input: JSON.stringify({ command: "command ".repeat(900) }) };
@@ -218,8 +218,9 @@ test("Sol 2: selected call/result leaves retain additional 100-token ceilings an
       expect(bounded.content).toContain("truncated");
       const eighty = renderEntry(source, { ...f.m.config.render, entryTokens: 80 }, undefined, undefined, selector, true);
       expect(tokens(eighty.content)).toBeLessThanOrEqual(80);
-      expect(f.m.trace(`T1#E${source.entryOrdinal}@long`, { itemBudget: null, pageBudget: null })).toContain("truncated");
-      expect(f.m.trace(`T1#E${source.entryOrdinal}@long`, { itemBudget: null, toolCallBudget: null, toolResultBudget: null, pageBudget: null })).not.toContain("truncated");
+      const address = `T1#E${source.entryOrdinal}@${source.role === "assistant" ? "assistant" : "observation"}`;
+      expect(f.m.trace(address, { itemBudget: 100, pageBudget: null })).toContain("truncated");
+      expect(f.m.trace(address, { itemBudget: null, pageBudget: null })).toContain("truncated");
     }
   } finally { f.m.close(); }
 });

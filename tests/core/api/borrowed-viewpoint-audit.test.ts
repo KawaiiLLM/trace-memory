@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
-import { sourceSeededMemory, recorded, type RunAgent, type NotingAgentInput } from '../../source-fixture.ts';
+import { sourceSeededMemory, recorded, hydrate, type RunAgent, type NotingAgentInput } from '../../source-fixture.ts';
+import { fact as seedFact } from '../../support/seed.ts';
 
 const at = '2026-09-01T00:00:00.000Z';
 type Worker = NotingAgentInput;
@@ -20,9 +21,8 @@ function fixture(agent: RunAgent) {
   s.publishSourcePath(target.id,'old',oldIds,old.id,'target');
   s.publishSourcePath(executor.id,'main',entryFor(ex.id),ex.id,'executor');
   function fact(session:number,branch:string,turn:number,text:string) {
-    const receipt=memory.tools({kind:'manual',sessionId:session,branch,currentTurnId:turn})[2]!.execute({facts:[{text,source:[`T${turn}#E1`]}]});
-    if(receipt.includes('rejected:'))throw Error(receipt);
-    return s.listSessionFacts(session).find(f=>f.text===text)!;
+    const entry=hydrate(s.listSourceEntries(session,turn),s).find(e=>e.role==='user')!;
+    return seedFact(memory,{sessionId:session,branch,headTurnId:turn},`Evidence T${turn}`,[{entry,text}]);
   }
   const rootFact=fact(target.id,'old',root.id,'ROOT_COMMON_RULE');
   const liveFact=fact(target.id,'live',live.id,'SIBLING_MUST_NOT_LEAK');
@@ -58,11 +58,11 @@ async function execute(borrowed:boolean,dead:boolean) {
     expect(historical, historical).toContain('SIBLING_MUST_NOT_LEAK');
     {
       const note=input.tools.find(t=>t.name==='note')!;
-      const bad=note.execute({facts:[{text:'wrong sibling',source:[`T${f.live.id}#E1`]}]});
+      const bad=note.execute({facts:[{title:'Wrong sibling',sources:[{address:`T${f.live.id}#E1`,text:'wrong sibling'}]}]});
       expect(bad).toContain('rejected:');checks.push('sibling Raw citation rejected');
-      const badExecutor=note.execute({facts:[{slot:'$1',text:'wrong executor',source:[`T${f.ex.id}#E1`]}]});
+      const badExecutor=note.execute({facts:[{slot:'$1',title:'Wrong executor',sources:[{address:`T${f.ex.id}#E1`,text:'wrong executor'}]}]});
       expect(badExecutor).toContain('rejected:');checks.push('executor Raw citation rejected');
-      const batch={facts:[{slot:'$1',text:'Recorded target statement',source:[`T${f.old.id}#E1`]}]};
+      const batch={facts:[{slot:'$1',title:'Target statement',sources:[{address:`T${f.old.id}#E1`,text:'Recorded target statement'}]}]};
       let receipt=note.execute(batch);
       expect(receipt).not.toContain('rejected:');
     }

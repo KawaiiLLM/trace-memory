@@ -21,7 +21,7 @@ test("33 history: equivalent JSON call-ID spellings preserve authored sources an
   const { m, sessionId, turn, entry } = setup();
   try {
     const source = `T${turn.id}#E1@"\\u0061ctual"`;
-    expect(m.trace(source)).toContain('command="test"');
+    expect(m.trace(`T${turn.id}#E1@assistant`)).toContain('command="test"');
     const result = m.store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time }, entryIds: [entry.id], facts: [{ turnId: turn.id,
       category: "event", actor: "agent", status: "attempted", text: "Started the check.", source: [source], entryIds: [entry.id], createdAt: time }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
@@ -38,7 +38,7 @@ test("92 supersedes completion policing: dispatch and result retain different de
   const { m, sessionId, turn, entry, call } = setup();
   try {
     const note = m.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" }).find(tool => tool.name === "note")!;
-    const fact = (source: string) => ({ facts: [{ text: "The cited entry describes the check.", source: [source] }] });
+    const fact = (source: string) => ({ facts: [{ title: "Check evidence", sources: [{ address: source, text: "The cited entry describes the check." }] }] });
     expect(note.execute(fact("T1#E1@actual"))).toContain("invalid source");
     expect(note.execute(fact("T1#E1"))).not.toContain("rejected:");
     expect(m.store.getFact(1)!.roles).toEqual([{ role: "assistant", harness: "Pi agent" }]);
@@ -48,8 +48,8 @@ test("92 supersedes completion policing: dispatch and result retain different de
     expect(note.execute(fact("T1#E2"))).not.toContain("rejected:");
     expect(m.store.getFact(2)!.roles).toEqual([{ role: "observation" }]);
     expect(m.trace("T1@user", { pageBudget: null })).toBe("");
-    expect(m.trace("T1@text", { pageBudget: null })).toContain("passed");
-    expect(m.trace("T1@text", { pageBudget: null })).not.toContain("command=");
+    expect(m.trace("T1@observation", { pageBudget: null })).toContain("passed");
+    expect(m.trace("T1@observation", { pageBudget: null })).not.toContain("command=");
   } finally { m.close(); }
 });
 
@@ -62,15 +62,15 @@ test("33: Turn facts use ownership rather than citation overlap; collections sor
     m.selectEntries(sessionId, "main", [entry.id, user.id]);
     const note = m.tools({ kind: "manual", sessionId, currentTurnId: next.id, branch: "main" }).find(t => t.name === "note")!;
     const result = JSON.parse(note.execute({ facts: [
-      { text: "First ownership", source: ["T1#E1", "T2#E1"] },
-      { text: "Second ownership", source: ["T2#E1"] }] }));
+      { title: "First ownership", sources: [{ address: "T1#E1", text: "First ownership" }, { address: "T2#E1", text: "Confirmed ownership" }] },
+      { title: "Second ownership", sources: [{ address: "T2#E1", text: "Second ownership" }] }] }));
     expect(result.factIds).toEqual([1, 2]);
-    expect(m.trace("T2@F*", { pageBudget: null })).toContain("[F2]");
-    expect(m.trace("T2@F*", { pageBudget: null })).not.toContain("[F1]");
-    expect(m.trace("T1@F*", { pageBudget: null })).toContain("[F1]");
-    const grouped = m.trace("F1-F2", { pageBudget: null });
+    expect(m.trace("F2", { pageBudget: null })).toContain("Second ownership");
+    expect(m.trace("F1", { pageBudget: null })).toContain("First ownership");
+    const grouped = m.trace('alpha"beta', { pageBudget: null });
     expect(grouped.indexOf("[F2]")).toBeLessThan(grouped.indexOf("[F1]"));
-    expect(grouped).toContain("source: T1#E1 (Pi agent), T2#E1 (user)");
+    expect(grouped).toContain("[T1#E1@assistant] First ownership");
+    expect(grouped).toContain("[T2#E1@user] Confirmed ownership");
   } finally { m.close(); }
 });
 
@@ -80,12 +80,11 @@ test("92: partial semantic reads omit tags; full history paging reveals a tag bu
   try {
     const tools = m.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" });
     const note = tools.find(t => t.name === "note")!, memory = tools.find(t => t.name === "memory")!, trace = tools.find(t => t.name === "trace")!;
-    expect(note.execute({ facts: [{ text: "Started the check.", source: ["T1#E1"] }] })).not.toContain("rejected:");
+    expect(note.execute({ facts: [{ title: "Started check", sources: [{ address: "T1#E1", text: "Started the check." }] }] })).not.toContain("rejected:");
     const text = "A complete durable claim has its conditions and evidence. ".repeat(500);
     expect(memory.execute({ operations: [{ op: "create", text, category: "understanding", scope: "project", supports: ["F1"], reason: "Initial evidence", topics: [] }], skipped: [] })).not.toContain("rejected:");
     const path = { sessionId, headTurnId: turn.id, branch: "main" };
     const firstTrigger = createDreamerTrigger(m, path, 1, 1, "project");
-    let currentCommit = 0;
     const settled = await scenarios.run(m, path, input => {
       const request = { fixture: "make read target historical" }; input.reportRequest(request);
       const trace = input.tools.find(t => t.name === "trace")!, write = input.tools.find(t => t.name === "memory")!;
@@ -94,7 +93,6 @@ test("92: partial semantic reads omit tags; full history paging reveals a tag bu
         supports: ["F1"], reason: "Make the large revision historical for the read-ledger test.", topics: [] },
       { op: "archive", id: `K${firstTrigger.knowledgeId}#${m.store.versionTag(firstTrigger.knowledgeId, firstTrigger.commit)}`, supports: ["F1"], reason: "Retire the initial fixture trigger." }], skipped: [] }));
       expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1).version).toBe("K1@v2");
-      currentCommit = m.store.resolveVersionOrdinal(1, 2);
       return { outcome: "success", output: "settled", request };
     });
     if (settled.outcome !== "success") throw new Error(JSON.stringify(settled));
@@ -125,8 +123,8 @@ test("92: partial semantic reads omit tags; full history paging reveals a tag bu
       return { outcome: "success", output: "read ledger checked", request };
     });
     if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-    expect(wholeTrace(m, `K1@1..${currentCommit}`, { full: true })).toBe(wholeTrace(m, `K1@1..K1@${currentCommit}`, { full: true }));
-    expect(m.trace(`K1@1..${currentCommit}`, { itemBudget: 200, pageBudget: null })).toContain("characters truncated");
+    expect(wholeTrace(m, "K1@v2", { full: true })).toContain("Current replacement");
+    expect(m.trace("K1@v1..v2", { itemBudget: 200, pageBudget: null })).toContain("characters truncated");
     expect(trace.execute({ address: "K1", pageBudget: null })).toContain("internal-only");
   } finally { m.close(); }
 });

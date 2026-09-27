@@ -259,8 +259,11 @@ test("34a migration labels legacy supports without changing ids, links or proces
   const project = store.createProject({ name: "upgrade", declaredBy: "mark" });
   const session = store.createSession({ host: "test", enrollmentChoice: true, projectId: project.id, startedAt: time, firstReplyAt: time });
   const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "legacy", startedAt: time });
+  const entry = store.appendSourceEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "legacy-user",
+    role: "user", text: "legacy", raw: "legacy", calls: [] });
   const fact = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: time }, facts: [{ turnId: turn.id,
-    category: "decision", actor: "user", text: "legacy", source: [`T${turn.id}#user`], createdAt: time }] });
+    category: "decision", actor: "user", text: "legacy", source: [`T${turn.id}#user`],
+    entryIds: [entry.id], createdAt: time }] });
   if (!fact.ok) throw new Error(fact.problems.join());
   const create = (handle: string) => store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{
     op: "create", handle, author: "legacy", text: handle, category: "constraint", scope: "project", supports: [fact.facts[0]!.id], topics: [], reason: "legacy", createdAt: time }] });

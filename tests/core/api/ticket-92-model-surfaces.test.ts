@@ -1,6 +1,7 @@
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { expect, test } from "vitest";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
+import { fact as seedFact } from "../../support/seed.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
 import { sliceCcInjection, CC_KNOWLEDGE_RECENCY_NOTICE } from "../../../src/hosts/cc/slices.ts";
 import { decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
@@ -14,7 +15,8 @@ test("92/03: model lists and compact carriers use chronological tags; human read
     const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "shared evidence", startedAt: "now" });
     const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     const tools = memory.tools({ kind: "manual", ...target, currentTurnId: turn.id });
-    const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Shared evidence", source: [`T${turn.id}#E1`] }] })).factIds[0];
+    const user = hydrate(store.listSourceEntries(session.id, turn.id), store).find(entry => entry.role === "user")!;
+    const fact = seedFact(memory, target, "Shared evidence", [{ entry: user, text: "Shared evidence" }]).id;
     const content = { scope: "project" as const, topics: [], supports: [fact], reason: "fixture", createdAt: "now" };
     const created = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
       { op: "create", handle: "$1", author: "test", ...content, category: "constraint", text: "Needle original" },
@@ -40,7 +42,7 @@ test("92/03: model lists and compact carriers use chronological tags; human read
     const search = tools.find(t => t.name === "search")!.execute({ query: "Needle", layer: "knowledge", maxTokens: 8000 });
     expect(search.indexOf(`K${second.knowledgeId}@v1`)).toBeLessThan(search.indexOf(`K${first.knowledgeId}@v2`));
     expect(search).not.toContain(firstTag);
-    expect(memory.trace(`K${first.knowledgeId}@${latest.commit}`)).toContain(`[K${first.knowledgeId}@${latest.commit}]`);
+    expect(memory.trace(`K${first.knowledgeId}@v2`)).toContain(`[K${first.knowledgeId}@${latest.commit}]`);
     const binding = { db: "92-surface", nativeSession: "native", coreSession: session.id };
     const slices = sliceCcInjection(binding, injected.transportItems!);
     const text = slices.filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext).join("\n");

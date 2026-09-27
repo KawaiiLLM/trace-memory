@@ -22,8 +22,10 @@ import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
 import { resolveCcHostConfig } from "../../../src/hosts/cc/config.ts";
 import { recordSessionStart } from "../../../src/hosts/cc/binding.ts";
 import { recordCcSessionEnd } from "../../../src/hosts/cc/lifecycle.ts";
+import * as ccNative from "../../../src/hosts/cc/native-session.ts";
 import { CcImporter } from "../../../src/hosts/cc/importer.ts";
 import { Store } from "../../../src/core/store/index.ts";
+import { fact as seedFact, facts as seedFacts, legacyFacts } from "../../support/seed.ts";
 
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -136,7 +138,9 @@ test("2026-09-24, 86: '除了 clear，任何 SessionEnd 都算正常关闭' — 
     { uuid: "u", parentUuid: null, type: "user", timestamp: time, promptId: "p", promptSource: "sdk", userType: "external", message: { role: "user", content: "rule" } },
     { uuid: "a", parentUuid: "u", type: "assistant", timestamp: time, message: { role: "assistant", content: [{ type: "text", text: "recorded" }] } },
   ].map(record => JSON.stringify(record)).join("\n") + "\n");
-  vi.stubEnv("CLAUDE_PID", String(process.pid));
+  // API-level 86 contract: the OS process probe uses `ps`, which the network Seatbelt denies.
+  // Only its identity outlet is controlled; binding and Store lifecycle remain real.
+  const identity = vi.spyOn(ccNative, "currentNativeProcess").mockReturnValue({ pid: process.pid, startedAt: "fixture-start" });
   try {
     const binding = await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: nativeId, transcript_path: transcript }, time);
     const importer = new CcImporter(config, binding);
@@ -146,10 +150,20 @@ test("2026-09-24, 86: '除了 clear，任何 SessionEnd 都算正常关闭' — 
     expect((await recordCcSessionEnd(config, { ...input, reason: "clear" })).confirmed).toBe(false);
     const open = new Store(config.dbPath);
     try { expect(open.getSession(id)!.closedAt).toBeNull(); } finally { open.close(); }
-    expect((await recordCcSessionEnd(config, { ...input, reason: "other" })).confirmed).toBe(true);
+    identity.mockReturnValue(null);
+    const unavailable = await recordCcSessionEnd(config, { ...input, reason: "other" });
+    expect(unavailable).toMatchObject({ confirmed: false, diagnostic: expect.stringContaining("identity is unavailable") });
+    identity.mockReturnValue({ pid: process.pid, startedAt: "different-start" });
+    const stale = await recordCcSessionEnd(config, { ...input, reason: "other" });
+    expect(stale).toMatchObject({ confirmed: false, diagnostic: expect.stringContaining("earlier native process") });
+    const stillOpen = new Store(config.dbPath);
+    try { expect(stillOpen.getSession(id)!.closedAt).toBeNull(); } finally { stillOpen.close(); }
+    identity.mockReturnValue({ pid: process.pid, startedAt: "fixture-start" });
+    const ended = await recordCcSessionEnd(config, { ...input, reason: "other" });
+    expect(ended, JSON.stringify(ended)).toMatchObject({ confirmed: true, reason: "SessionEnd other" });
     const closed = new Store(config.dbPath);
     try { expect(closed.getSession(id)!.closedAt).not.toBeNull(); } finally { closed.close(); }
-  } finally { vi.unstubAllEnvs(); }
+  } finally { identity.mockRestore(); }
 });
 
 test("2026-09-07: the estimate is segment-based, superseding the Q12 two-weight formula, and Chinese is still never priced as ASCII", () => {
@@ -196,10 +210,10 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
   // This older fixture ends with a result: its earlier assistant text is not a missing head reply.
   expect(branch!.material.head).toBeNull();
   expect(branch!.material.sources).toEqual([
-    `[T${t.id}#E1] user: T${t.id}#E1@text`,
-    `[T${t.id}#E2] assistant: T${t.id}#E2@text`,
-    `[T${t.id}#E3] assistant: T${t.id}#E3@call-1`,
-    `[T${t.id}#E4] toolResult: T${t.id}#E4@call-1`]);
+    `[T${t.id}#E1@user] user`,
+    `[T${t.id}#E2@assistant] assistant`,
+    `[T${t.id}#E3@assistant] assistant`,
+    `[T${t.id}#E4@observation] toolResult`]);
   // 29b: one builder, not one material. The frozen target is the same in both modes; the parts differ
   // by exactly what the child could already see, so the fresh child gets the Raw and no repair parts.
   expect(subagent!.material.head).toBe(null);
@@ -217,7 +231,8 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
 /** Knowledge to lead the block with: one manually written fact, consolidated by hand into K1. */
 function seededKnowledge(sessionId: number, turnId: number) {
   const tools = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId });
-  expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: [`T${turnId}#E1`] }] })).toContain("ok: F1");
+  const entry = hydrate(memory.store.listSourceEntries(sessionId, turnId), memory.store).find(value => value.role === "user")!;
+  expect(seedFact(memory, { sessionId, branch: "main", headTurnId: turnId }, "Package manager decision", [{ entry, text: "Use pnpm" }]).id).toBe(1);
   expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain("committed");
 }
 
@@ -315,7 +330,7 @@ test("2026-09-07: four tools, no other model-facing surface", () => {
 test("2026-09-07: a rejected item writes nothing", () => {
   const { s, t } = session();
   const note = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!;
-  const fact = { text: "Use pnpm", source: [`T${t.id}#E1`] };
+  const fact = { title: "Package manager decision", sources: [{ address: `T${t.id}#E1`, text: "Use pnpm" }] };
   const rejected = JSON.parse(note.execute({ facts: [fact, { ...fact, actor: "tool" }] }));
   expect(rejected.results[0]).toBe("ok"); expect(rejected.results[1]).toContain("rejected:");
   expect(memory.store.listSessionFacts(s.id)).toEqual([]);
@@ -331,14 +346,14 @@ test("2026-09-07 / 92: one terminal publication per run, not one immediate tool 
     const input = raw as NotingAgentInput;
     input.reportRequest({ round: 1 });
     const note = input.tools[2]!;
-    const fact = { text: "Use pnpm", source: [`T${t.id}#E1`] };
+    const fact = { title: "Package manager decision", sources: [{ address: `T${t.id}#E1`, text: "Use pnpm" }] };
     expect(note.execute({ facts: [fact] })).toContain("held: $1");
     expect(memory.store.listSessionFacts(s.id)).toEqual([]);
     expect(memory.store.listRuns(s.id).some(run => run.outcome === "success")).toBe(false);
     const entries = memory.store.sourcePath(s.id, "main", t.id);
     expect(entries.length).toBeGreaterThan(0);
     expect(entries.some(entry => memory.store.entryNoted(entry.id))).toBe(false);
-    expect(note.execute({ facts: [{ slot: "$1", ...fact, text: "Use pnpm, not npm" }] })).toContain("held: $1");
+    expect(note.execute({ facts: [{ slot: "$1", ...fact, sources: [{ address: `T${t.id}#E1`, text: "Use pnpm, not npm" }] }] })).toContain("held: $1");
     expect(input.tools[3]!.execute({ operations: [], skipped: [] })).not.toContain("rejected:");
     expect(memory.store.listSessionFacts(s.id)).toEqual([]);
     return { outcome: "success", output: "Done", request: { round: 2 } };
@@ -379,7 +394,9 @@ function memoryWriter() {
   memory.selectEntries(s.id, "main", entries.map(entry => entry.id));
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: entries.at(-1)!.id };
   const tools = memory.tools({ kind: "manual", ...path, currentTurnId: t.id });
-  expect(tools[2]!.execute({ facts: ["Use pnpm", "Do not use npm"].map(text => ({ text, source: [`T${t.id}#E1`] })) })).not.toContain("rejected:");
+  expect(seedFacts(memory, path, ["Use pnpm", "Do not use npm"].map(text => ({
+    title: "Package manager decision", sources: [{ entry: entries[0]!, text }],
+  })))).toHaveLength(2);
   const create = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
   const write = (operations: any[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] }));
   return { s, t, path, tools, write, create };
@@ -514,7 +531,7 @@ test("2026-09-07: merge atomic", async () => {
   expect(memory.store.getKnowledge(second.knowledgeId)).toMatchObject({ id: second.knowledgeId });
   expect(memory.store.listKnowledgeLinks(second.knowledgeId)).toEqual([{ fromKnowledge: second.knowledgeId,
     fromCommit: second.commit, kind: "merged_into", toKnowledge: first.knowledgeId, toCommit: mergeCommit }]);
-  expect(memory.trace(`K${second.knowledgeId}@${second.commit}`)).toContain("Avoid npm");
+  expect(memory.trace(history(second.knowledgeId, second.commit))).toContain("Avoid npm");
   expect(memory.trace(`K${second.knowledgeId}`)).toContain(`K${first.knowledgeId}@${mergeCommit}`);
 });
 
@@ -527,7 +544,7 @@ test.each(["success", "failure"] as const)("92: invalid knowledge slot is correc
     const note = input.tools.find(tool => tool.name === "note")!;
     const tool = input.tools.find(tool => tool.name === "memory")!;
     input.reportRequest({ messages: ["invalid"] });
-    expect(note.execute({ facts: [{ text: "The user chose pnpm", source: [`T${t.id}#E1`] }] })).toContain("held: $1");
+    expect(note.execute({ facts: [{ title: "Package manager choice", sources: [{ address: `T${t.id}#E1`, text: "The user chose pnpm" }] }] })).toContain("held: $1");
     const create = { op: "create", topics: [], reason: "User choice", text: "Use pnpm", category: "constraint", scope: "project", supports: ["$1"] };
     expect(tool.execute({ operations: [{ ...create, id: "K1" }], skipped: [] })).toContain("rejected: M1");
     expect(memory.store.listSessionFacts(s.id)).toEqual([]);
@@ -570,12 +587,12 @@ test("2026-09-07: branch input premise repair appends the missing final reply an
   expect(input.mode).toBe("fork");
   expect(input.material.head).toBeNull(); // The last native entry is a result, not E2's earlier reply.
   expect(input.material.sources).toEqual([
-    `[T2#E1] user: T2#E1@text`,
-    `[T2#E2] assistant: T2#E2@text`,
-    `[T3#E1] user: T3#E1@text`,
-    `[T3#E2] assistant: T3#E2@text`,
-    `[T3#E3] assistant: T3#E3@call-2`,
-    `[T3#E4] toolResult: T3#E4@call-2`]);
+    `[T2#E1@user] user`,
+    `[T2#E2@assistant] assistant`,
+    `[T3#E1@user] user`,
+    `[T3#E2@assistant] assistant`,
+    `[T3#E3@assistant] assistant`,
+    `[T3#E4@observation] toolResult`]);
   expect(input.text).not.toContain("PRIVATE USER TAIL");
   expect(input.material.sources.join("\n")).not.toContain("PRIVATE TOOL RESULT");
 });
@@ -587,26 +604,27 @@ test("33: a branch source index uses shared identities, not a separate body prev
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "x".repeat(60) + "\nTAIL", result: null, status: "attempted" });
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
     visible: visibleTarget(memory, s.id, "main", t.id) });
-  expect(calls[0]!.material.head).toContain("[T2#E2@call-2] Bash(");
+  expect(calls[0]!.material.head).toContain("[T2#E2@assistant] Bash(");
   expect(calls[0]!.material.sources).toEqual([
-    "[T2#E1] user: T2#E1@text",
-    "[T2#E2] assistant: T2#E2@call-2"]);
+    "[T2#E1@user] user",
+    "[T2#E2@assistant] assistant"]);
   expect(calls[0]!.material.sources.join("\n")).not.toContain("TAIL");
 });
 
-test.each(["user", "assistant", "t1"] as const)("2026-09-07: trace source suffix #%s renders only its part", (part) => {
+// 93 replaces the retired #user/#assistant/#call selector with a whole entry and checked role.
+test.each([{ ordinal: 1, role: "user", text: "用 pnpm，不要 npm" },
+  { ordinal: 2, role: "assistant", text: "好的。" },
+  { ordinal: 4, role: "observation", text: 'Bash success: {"stdout":"done","stderr":""}' }] as const)
+("93: entry E%s checks @%s and reads the whole entry", ({ ordinal, role, text }) => {
   const { s, t } = session();
   const tool = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[0]!;
-  // 23b: a source part reads as the entry view of that part — the addresses its labels carry, and for
-  // a call both of its parts: the arguments the assistant sent and the result that came back.
-  const expected = part === "user" ? `[T${t.id}#E1@text] user: 用 pnpm，不要 npm`
-    : part === "assistant" ? `[T${t.id}#E2@text] assistant: 好的。`
-    : `[T${t.id}#E3@call-1] Bash(command="pnpm install")\n[T${t.id}#E4@call-1] Bash success: {"stdout":"done","stderr":""}`;
   for (const base of [`T${t.id}`, `S${s.id}/T${t.id}`]) {
-    expect(memory.trace(`${base}#${part}`)).toBe(expected);
-    expect(tool.execute({ address: `${base}#${part}` })).toBe(expected);
+    const address = `${base}#E${ordinal}@${role}`;
+    expect(memory.trace(address)).toContain(text);
+    expect(tool.execute({ address })).toContain(text);
   }
-  expect(() => memory.trace(`S${s.id + 1}/T${t.id}#${part}`)).toThrow("does not exist");
+  expect(() => memory.trace(`S${s.id + 1}/T${t.id}#E${ordinal}@${role}`)).toThrow("does not exist");
+  expect(() => memory.trace(`T${t.id}#E${ordinal}@${role === "user" ? "assistant" : "user"}`)).toThrow(/role/);
 });
 
 test("93: whole result entry keeps standard cuts unless full", () => {
@@ -624,14 +642,18 @@ test("93: whole result entry keeps standard cuts unless full", () => {
   expect(() => memory.trace(`T${t.id}#E6`, { tool: 1 } as never)).toThrow("tool parameter is removed");
 });
 
-test("2026-09-07: trace rejects a missing source part with the reason", () => {
+// 93 retires block selectors, not the missing-entry and scope rejection guarantees.
+test("93: trace rejects missing whole entries and retired selectors", () => {
   const { s } = session();
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: null, assistantText: null, startedAt: time });
   const tool = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[0]!;
-  for (const part of ["user", "assistant", "t1"]) for (const base of [`T${t.id}`, `S${s.id}/T${t.id}`]) {
-    const reason = `source T${t.id}#${part} does not exist`;
-    expect(() => memory.trace(`${base}#${part}`)).toThrow(reason);
-    expect(tool.execute({ address: `${base}#${part}` })).toBe(`rejected: ${reason}`);
+  for (const base of [`T${t.id}`, `S${s.id}/T${t.id}`]) {
+    expect(() => memory.trace(`${base}#E1@user`)).toThrow(/does not exist/);
+    expect(tool.execute({ address: `${base}#E1@user` })).toContain("does not exist");
+    for (const retired of ["#user", "#assistant", "#t1", "#E1@text"]) {
+      expect(() => memory.trace(`${base}${retired}`)).toThrow("invalid public trace address");
+      expect(tool.execute({ address: `${base}${retired}` })).toContain("invalid public trace address");
+    }
   }
 });
 
@@ -650,9 +672,8 @@ function commitPaths() {
   };
   const writer = (sessionId: number, headTurnId: number, branch: string, triggerEntryId: number) => {
     const tools = memory.tools({ kind: "manual", sessionId, currentTurnId: headTurnId, branch, triggerEntryId });
-    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ text: branch, source: [`T${headTurnId}#E1`] }] }));
-    expect(receipt.results[0]).toMatch(/^ok:/);
-    const fact = `F${receipt.factIds[0]}`;
+    const entry = hydrate(memory.store.listSourceEntries(sessionId, headTurnId), memory.store).find(value => value.role === "user")!;
+    const fact = `F${seedFact(memory, { sessionId, branch, headTurnId }, "Branch decision", [{ entry, text: branch }]).id}`;
     return { sessionId, headTurnId, branch, triggerEntryId, fact, tools,
       read: (address = "K1") => readHandle(tools, address),
       write: (operations: any[]) => {
@@ -717,7 +738,9 @@ test("2026-09-07 A: sibling-branch facts are readable but supports requires an a
     expect(rejected.results[0]).toContain("record an adoption fact on this path first");
     expect(memory.store.getKnowledge(2)).toBeNull();
   }
-  const adopted = JSON.parse(c.tools[2]!.execute({ facts: [{ text: `Adopt the other branch's rule 「${d.fact}」`, source: [`T${c.headTurnId}#E1`] }] }));
+  const entry = hydrate(memory.store.listSourceEntries(c.sessionId, c.headTurnId), memory.store).find(value => value.role === "user")!;
+  const adopted = { factIds: [seedFact(memory, { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
+    "Sibling branch adoption", [{ entry, text: `Adopt the other branch's rule 「${d.fact}」` }]).id] };
   expect(c.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(`F${adopted.factIds[0]}`) }]).committed).toHaveLength(1);
 });
 
@@ -914,7 +937,7 @@ test("92: a mixed multi-K read exposes exact body tags; abandoned cursors expire
     const abandoned = trace.execute({ address: "K1", cap: 1 }), abandonedCursor = /cursor=(\S+)/.exec(abandoned)![1];
     for (let i = 0; i < 16; i++) trace.execute({ address: `K${created[0].knowledgeId}`, cap: 1 });
     expect(trace.execute({ address: `cursor=${abandonedCursor}` })).toContain("unknown or expired cursor");
-    let page = trace.execute({ address: `K${created[0].knowledgeId},F1-F2,${created[1].version}`, cap: 1 }), count = 0;
+    let page = trace.execute({ address: `K${created[0].knowledgeId},F1,F2,${created[1].version}`, cap: 1 }), count = 0;
     expect(page).toContain("cursor=");
     const maintained = new Set<number>();
     for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
@@ -941,7 +964,8 @@ test("92: a mixed multi-K read exposes exact body tags; abandoned cursors expire
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
 });
 
-test.each(["K2", "K2@v1", "K2,F1-F2,K1", "F1-F2,K2@v1,K1,K2"])("paged %s exposes the frozen old tag, never the later successor", async address => {
+// 93 retires fact intervals; comma lists still preserve the frozen mixed read.
+test.each(["K2", "K2@v1", "K2,F1,F2,K1", "F1,F2,K2@v1,K1,K2"])("paged %s exposes the frozen old tag, never the later successor", async address => {
   const { root, peer, content } = commitPaths(); const other = peer();
   const created = root.write([{ op: "create", topics: [], reason: "New rule.", ...content(root.fact, "FROZEN-SECOND") }]).committed[0];
   const path = { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId };
@@ -986,8 +1010,8 @@ test("41a: project/current defaults, version expansion and exact addresses prese
   expect(current).toContain(`[K1@${cCommit}]`);
   expect(current).not.toContain(`[K1@${dCommit}]`);
   expect(current).toContain("searched: project sessions; global/project/session knowledge, current versions");
-  const history = memory.search("", "knowledge", { ...c, versions: "history" });
-  expect(history).not.toContain("[K1@1]"); expect(history).toContain(`[K1@${cCommit}]`); expect(history).not.toContain(`[K1@${dCommit}]`);
+  const historicalResults = memory.search("", "knowledge", { ...c, versions: "history" });
+  expect(historicalResults).not.toContain("[K1@1]"); expect(historicalResults).toContain(`[K1@${cCommit}]`); expect(historicalResults).not.toContain(`[K1@${dCommit}]`);
   const all = memory.search("", "knowledge", { ...c, versions: "all" });
   expect(all).toContain(`[K1@${cCommit}]`);
   for (const commit of [1, dCommit]) expect(all).not.toContain(`[K1@${commit}]`);
@@ -996,8 +1020,8 @@ test("41a: project/current defaults, version expansion and exact addresses prese
   expect(trace).not.toContain("Applicable history on this path:");
   expect(memory.trace("K1", { ...c, versions: "history" })).toContain("Applicable history on this path:");
   expect(memory.trace("K1", { ...c, versions: "all" })).toContain("Other branches' tips:");
-  expect(memory.trace(`K1@${dCommit}`, c)).toContain("FILTER-D");
-  expect(memory.trace(`K1@${cCommit}..K1@${dCommit}`, c)).toContain("[-C-]{+D+}");
+  expect(memory.trace(history(1, dCommit), c)).toContain("FILTER-D");
+  expect(memory.trace(`K1@v${memory.store.versionOrdinal(1, cCommit)}..v${memory.store.versionOrdinal(1, dCommit)}`, c)).toContain("FILTER-[-C-]{+D+}");
 });
 
 test("41a: category and unified scope filter candidates and cursor options are frozen", () => {
@@ -1026,10 +1050,11 @@ test("41a: category and unified scope filter candidates and cursor options are f
 
 test("41b: search previews budget text independently of long fact evidence metadata", () => {
   const { c } = commitPaths();
-  const receipt = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: c.sessionId, branch: c.branch, createdAt: time },
-    facts: [{ turnId: c.headTurnId, category: "observation", actor: "user", text: "PREVIEW-FACT " + "word ".repeat(300),
-      quote: "quote ".repeat(2000), source: [`T${c.headTurnId}#user`], createdAt: time }], entryIds: [] });
-  if (!receipt.ok) throw new Error(receipt.problems.join("; "));
+  const entry = memory.store.listSourceEntries(c.sessionId, c.headTurnId)[0]!;
+  const receipt = legacyFacts(memory.store, { kind: "noting", sessionId: c.sessionId, branch: c.branch, createdAt: time }, [{
+    sources: [{ entry, address: `T${c.headTurnId}#user` }], category: "observation", actor: "user",
+    text: "PREVIEW-FACT " + "word ".repeat(300), quote: "quote ".repeat(2000), createdAt: time,
+  }]);
   const factId = receipt.facts[0]!.id;
   const search = c.tools.find(tool => tool.name === "search")!;
   const preview = search.execute({ query: "PREVIEW-FACT", layer: "facts" });
@@ -1046,10 +1071,11 @@ test("41 review: fact and knowledge previews are one physical line with head-onl
   const { c, publish } = commitPaths();
   publish(c);
   const longFactText = "FACT-LONG-41 " + "alpha 😀 ".repeat(180) + "\nFACT-LONG-TAIL";
-  const factReceipt = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: c.sessionId, branch: c.branch, createdAt: time },
-    facts: [{ turnId: c.headTurnId, category: "observation", actor: "user", text: longFactText,
-      source: [`T${c.headTurnId}#user`], createdAt: time }], entryIds: [] });
-  if (!factReceipt.ok) throw new Error(factReceipt.problems.join("; "));
+  const entry = memory.store.listSourceEntries(c.sessionId, c.headTurnId)[0]!;
+  const factReceipt = legacyFacts(memory.store, { kind: "noting", sessionId: c.sessionId, branch: c.branch, createdAt: time }, [{
+    sources: [{ entry, address: `T${c.headTurnId}#user` }], category: "observation", actor: "user",
+    text: longFactText, createdAt: time,
+  }]);
   const factId = factReceipt.facts[0]!.id;
   const longKnowledgeText = "KNOWLEDGE-LONG-41 " + "beta 🚀 ".repeat(180) + "\nKNOWLEDGE-LONG-TAIL";
   const created = c.write([{ op: "create", text: longKnowledgeText, category: "reference", scope: "project",
@@ -1072,7 +1098,7 @@ test("41 review: fact and knowledge previews are one physical line with head-onl
   expect(hit(search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge", itemBudget: 1 }))).toMatch(/^\[K\d+@v\d+\] \[reference\/project\] \[\.\.\. \d+ characters truncated\]$/);
 
   expect(memory.trace(`F${factId}`, { itemBudget: null, pageBudget: null })).toContain(longFactText);
-  expect(memory.trace(`K${created.knowledgeId}@${created.commit}`, { itemBudget: null, pageBudget: null })).toContain(longKnowledgeText);
+  expect(memory.trace(history(created.knowledgeId, created.commit), { itemBudget: null, pageBudget: null })).toContain(longKnowledgeText);
 });
 
 test("41b/92: fields control tag display, while a known exact tag needs no read ledger", async () => {
@@ -1170,7 +1196,7 @@ test("41 review: history defaults include reasons and partition applicable from 
   const path = { sessionId: c.sessionId, headTurnId: c.headTurnId, branch: c.branch };
 
   expect(memory.trace("K1", path)).not.toContain("reason:");
-  expect(memory.trace("K1@1", { ...path, versions: "history" })).not.toContain("reason:");
+  expect(memory.trace("K1@v1", { ...path, versions: "history" })).not.toContain("reason:");
   const history = memory.trace("K1", { ...path, versions: "history" });
   expect(history.match(/^  K1@\d+ .* reason: /gm)).toHaveLength(2);
   const all = memory.trace("K1", { ...path, versions: "all" });
@@ -1192,8 +1218,8 @@ test("41 review: history defaults include reasons and partition applicable from 
 
   expect(memory.trace("K1", { ...path, versions: "history", fields: ["text"] })).not.toContain("reason:");
   expect(memory.trace("K1", { ...path, versions: "history", fields: ["reason"] })).toContain("reason:");
-  expect(memory.trace("K1..", { fields: ["text"] })).not.toContain("reason:");
-  expect(memory.trace("K1..").match(/^  K1@\d+ .* reason: /gm)).toHaveLength(3);
+  expect(memory.trace("K1", { ...path, versions: "all", fields: ["text"] })).not.toContain("reason:");
+  expect(memory.trace("K1", { ...path, versions: "all" }).match(/^  K1@\d+ .* reason: /gm)).toHaveLength(3);
 
   const first = memory.trace("K1", { ...path, versions: "history", cap: 1 });
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
@@ -1255,7 +1281,7 @@ test("41b: fields and budgets freeze across pages; public pages cap at 8000 whil
   expect(search.execute({ query: "", cursor, itemBudget: 21 })).toContain("rejected: cursor itemBudget is frozen");
   page = search.execute({ query: "", cursor });
   expect(page).not.toContain("rejected:");
-  expect(memory.trace("K1@1", { pageBudget: null })).toContain("[K1@1]");
+  expect(memory.trace("K1@v1", { pageBudget: null })).toContain("[K1@1]");
 });
 
 test("64b/34a: global current scope hides the identity without visible fallback", async () => {
@@ -1344,36 +1370,27 @@ test("16b: path trace separates applicable history, parents, children and siblin
   expect(others).toContain(`K1@${dCommit}`);
   publish(root);
   expect(memory.trace("K1", root)).toContain("K1 path current: K1@1");
-  const tree = memory.trace("K1..");
+  const tree = memory.trace("K1", { versions: "all" });
   expect(tree).toContain(`children: K1@${cCommit}, K1@${dCommit}`);
-  for (const id of [1, cCommit, dCommit]) expect(tree).toContain(`[K1@${id}]`);
+  for (const id of [1, cCommit, dCommit]) expect(tree).toContain(`K1@${id}`);
   expect(memory.trace("K1").split("\n")[0]).not.toMatch(/current/i);
-  expect(memory.trace("K1@1")).toContain(`children: K1@${cCommit}, K1@${dCommit}`);
+  expect(memory.trace("K1@v1")).toContain(`children: K1@${cCommit}, K1@${dCommit}`);
 });
 
-test("16b: commit addresses are global, full diffs allow siblings and reverse order, missing stays missing", async () => {
+// 93 removes commit-address diffs and K.. public history, but keeps per-identity ordinal ranges.
+test("93: numbered version ranges compare siblings in both directions, reject missing versions", async () => {
   const { c, d, edit } = commitPaths();
   const cCommit = (await edit(c, "C version", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1))).committed[0].commit as number;
   const dCommit = (await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
-  expect(memory.trace(`K1@${cCommit}..K1@${dCommit}`)).toContain("[-C-]{+D+} version");
-  expect(memory.trace(`K1@${dCommit}..K1@${cCommit}`)).toContain("[-D-]{+C+} version");
-  expect(memory.trace(`K1@${cCommit}..K1@${cCommit}`)).toContain("History: none");
-  expect(memory.trace(`K1@${cCommit}..${dCommit}`)).toBe(memory.trace(`K1@${cCommit}..K1@${dCommit}`));
-  expect(memory.trace(`K1@${dCommit}..${cCommit}`)).toBe(memory.trace(`K1@${dCommit}..K1@${cCommit}`));
-  for (const address of [`K1@${cCommit}..K2@${dCommit}`, `K1@${cCommit}..`, `K1@${cCommit}..K1@9007199254740992`]) {
-    expect(() => memory.trace(address)).toThrow("invalid trace address");
-    expect(c.tools[0]!.execute({ address })).toContain("rejected: invalid trace address");
-  }
-  for (const address of ["K1@57", `K1@${cCommit}..K1@57`]) {
-    expect(() => memory.trace(address)).toThrow("does not exist");
-    expect(c.tools[0]!.execute({ address })).toContain("invalid trace address");
-  }
-  // Public history is per identity; a well-formed missing version still fails as missing.
-  for (const address of ["K1@v57", `${history(1, cCommit)}..v57`])
-    expect(c.tools[0]!.execute({ address })).toContain("unknown knowledge history K1@v57");
-  expect(c.tools[0]!.execute({ address: history(1, dCommit) })).toContain("D version");
-  expect(c.tools[0]!.execute({ address: "K1.." })).toContain("D version");
+  const cVersion = memory.store.versionOrdinal(1, cCommit), dVersion = memory.store.versionOrdinal(1, dCommit);
+  expect(memory.trace(`K1@v${cVersion}..v${dVersion}`)).toContain("[-C-]{+D+} version");
+  expect(memory.trace(`K1@v${dVersion}..v${cVersion}`)).toContain("[-D-]{+C+} version");
+  expect(memory.trace(`K1@v${cVersion}..v${cVersion}`)).toContain("History: none");
+  expect(c.tools[0]!.execute({ address: "K1@v57" })).toContain("unknown knowledge history K1@v57");
+  expect(c.tools[0]!.execute({ address: `K1@v${cVersion}..v57` })).toContain("unknown knowledge history K1@v57");
+  expect(() => memory.trace(`K1@v${cVersion}..K2@v${dVersion}`)).toThrow("invalid public trace address");
 });
+
 
 test("16b: search notes describe the supplied path, including archives and unrestricted siblings", async () => {
   const { root, c, d, edit, publish } = commitPaths();
@@ -1429,13 +1446,13 @@ test("16b: a fact whose only source is an injected compaction message lacks a ra
   const injected = memory.store.appendTurn({ sessionId: c.sessionId, parentTurnId: c.headTurnId, kind: "compaction", assistantText: "<knowledge>Only injected: violet tiles</knowledge>", startedAt: time });
   const tools = memory.tools({ kind: "manual", sessionId: c.sessionId, branch: c.branch, currentTurnId: injected.id });
   const before = memory.store.listSessionFacts(c.sessionId);
-  const fact = { text: "Only injected: violet tiles", source: [`T${injected.id}#E1`] };
+  const fact = { title: "Injected-only text", sources: [{ address: `T${injected.id}#E1`, text: "Only injected: violet tiles" }] };
   expect(memory.store.listSourceEntries(c.sessionId, injected.id)).toEqual([]);
   expect(tools[2]!.execute({ facts: [fact] })).toContain(`invalid source T${injected.id}#E1; expected admissible Raw in the eligible entry set`);
-  expect(tools[2]!.execute({ facts: [{ ...fact, source: [] }] })).toContain("rejected:");
-  expect(tools[2]!.execute({ facts: [{ ...fact, source: [`T${d.headTurnId}#E1`] }] })).toContain(`invalid source T${d.headTurnId}#E1; expected admissible Raw in the eligible entry set`);
+  expect(tools[2]!.execute({ facts: [{ ...fact, sources: [] }] })).toContain("rejected:");
+  expect(tools[2]!.execute({ facts: [{ ...fact, sources: [{ address: `T${d.headTurnId}#E1`, text: "Only injected: violet tiles" }] }] })).toContain(`invalid source T${d.headTurnId}#E1; expected admissible Raw in the eligible entry set`);
   expect(memory.store.listSessionFacts(c.sessionId)).toEqual(before);
-  expect(tools[2]!.execute({ facts: [{ ...fact, text: "User required pnpm", source: [`T${root.headTurnId}#E1`] }] })).toContain("ok: F");
+  expect(tools[2]!.execute({ facts: [{ ...fact, sources: [{ address: `T${root.headTurnId}#E1`, text: "User required pnpm" }] }] })).toContain("ok: F");
 });
 
 test("64b/16b: every raw source of a multi-source fact constrains carry, current and citations", async () => {
@@ -1446,8 +1463,10 @@ test("64b/16b: every raw source of a multi-source fact constrains carry, current
   memory.selectEntries(c.sessionId, c.branch, entries.map(entry => entry.id));
   const tools = memory.tools({ kind: "manual", sessionId: c.sessionId, branch: c.branch,
     currentTurnId: c.headTurnId, triggerEntryId: entries.at(-1)!.id });
-  const fact = JSON.parse(tools[2]!.execute({ facts: [{ text: "Use violet tiles",
-    source: [`T${root.headTurnId}#E1`, `T${c.headTurnId}#E2`] }] })).factIds[0] as number;
+  const fact = JSON.parse(tools[2]!.execute({ facts: [{ title: "Violet tile decision", sources: [
+    { address: `T${root.headTurnId}#E1`, text: "Initial tile rule" },
+    { address: `T${c.headTurnId}#E2`, text: "Use violet tiles" },
+  ] }] })).factIds[0] as number;
   publish(c);
   const trigger = createDreamerTrigger(memory, c, fact, 1);
   const updated = await admittedWrite(c, trigger, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
@@ -1546,7 +1565,7 @@ test("73: three windows plus the shared allowance — pending material first, tr
   // Pending facts and pending Raw of one path, plus one consolidated fact and one extracted entry.
   const write = (text: string, turnId = t.id) => {
     const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: turnId, branch: "main" });
-    return JSON.parse(tools[2]!.execute({ facts: [{ text, source: [`T${turnId}#E1`] }] })).factIds[0] as number;
+    return JSON.parse(tools[2]!.execute({ facts: [{ title: "Material window fact", sources: [{ address: `T${turnId}#E1`, text }] }] })).factIds[0] as number;
   };
   // Padding gives the two items the tight-window case below must drop a size it can reliably
   // exclude, while the substrings the assertions look for stay intact.
@@ -1815,7 +1834,7 @@ test("30: a marked compressed view is visible Raw; a budget change adds no richn
 test("64c: the knowledge cap remains hard and recency, not category, selects whole items", () => {
   const { s, t } = session();
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: [`T${t.id}#E1`] }] })).toContain("ok: F1");
+  expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Package manager decision", sources: [{ address: `T${t.id}#E1`, text: "Use pnpm" }] }] })).toContain("ok: F1");
   const write = (category: string, text: string) => expect(tools.find(tool => tool.name === "memory")!
     .execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text, category, scope: "project", supports: ["F1"] }], skipped: [] })).toContain('"committed"');
   for (let i = 0; i < 6; i++) write("constraint", `constraint ${i} ` + "word ".repeat(1_000));
@@ -2214,15 +2233,13 @@ test("26a/92: a Noter requires both tools; silence or note alone is not zero-fac
 });
 
 /** 26 amendment 2 (26c design §1, defect D3): one shared prefix and two children — a fact on the
- * prefix, a fact on the selected child, a fact on its sibling. Manual writes, so the facts carry no
- * entry bindings and applicability is answered from the Turn ancestry and the citable addresses. */
+ * prefix, a fact on the selected child, a fact on its sibling. Each manual fact has a real entry
+ * binding; applicability is checked against the selected source path. */
 function pathFacts() {
   const { s, t } = session();
   const write = (headTurnId: number, branch: string, text: string): number => {
-    const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: headTurnId, branch });
-    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ text, source: [`T${headTurnId}#E1`] }] }));
-    expect(receipt.results[0]).toMatch(/^ok:/);
-    return receipt.factIds[0] as number;
+    const entry = hydrate(memory.store.listSourceEntries(s.id, headTurnId), memory.store).find(value => value.role === "user")!;
+    return seedFact(memory, { sessionId: s.id, branch, headTurnId }, "Branch fact", [{ entry, text }]).id;
   };
   const child = (branch: string, parentTurnId: number, prompt: string) =>
     memory.store.appendTurn({ sessionId: s.id, parentTurnId, kind: "turn", userPrompt: prompt, assistantText: `${branch} reply`, startedAt: time });
@@ -2500,7 +2517,7 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
   });
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const fact = JSON.parse(memory.tools({ kind: "manual", ...target, currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [{ text: "D's independent evidence", source: [`T${t.id}#E1`] }] })).factIds[0] as number;
+    .find(tool => tool.name === "note")!.execute({ facts: [{ title: "Independent evidence", sources: [{ address: `T${t.id}#E1`, text: "D's independent evidence" }] }] })).factIds[0] as number;
   const trigger = createDreamerTrigger(memory, target, fact, 1);
   const controller = new AbortController();
   const cancelled = memory.noting({ ...target, mode: "subagent", signal: controller.signal });
@@ -2600,13 +2617,12 @@ test("64b/29/31: an identity disappearance is noticed again after restore and re
 test("40 N0/92: the verbatim object span stays inside the episode in corner quotes", () => {
   const { s, t } = session();
   const note = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!;
-  const fact = (changes: Record<string, unknown>) => ({
-    text: "The audited item was named as 「K213@271」.", source: [`T${t.id}#E1`], ...changes });
-  const rejected = JSON.parse(note.execute({ facts: [fact({ text: "K213@271 names its object in the text instead of the quote." })] }));
+  const fact = (text: string) => ({ title: "Audited object", sources: [{ address: `T${t.id}#E1`, text }] });
+  const rejected = JSON.parse(note.execute({ facts: [fact("K213@271 names its object in the text instead of the quote.")] }));
   expect(rejected.results[0]).toContain("rejected:");
-  expect(rejected.results[0]).toContain("ids live in structured relation/support fields");
+  expect(rejected.results[0]).toContain("sources[0].text: must not embed a fact or knowledge id");
   expect(memory.store.listSessionFacts(s.id)).toEqual([]);
-  const accepted = JSON.parse(note.execute({ facts: [fact({})] }));
+  const accepted = JSON.parse(note.execute({ facts: [fact("The audited item was named as 「K213@271」.")] }));
   expect(accepted.results[0]).toMatch(/^ok:/);
   expect(memory.store.getFact(accepted.factIds[0])!.quote).toBeNull();
   expect(memory.store.getFact(accepted.factIds[0])!.text).toContain("「K213@271」");
@@ -2759,7 +2775,8 @@ test("61: every backticked category, kind or field word used in a stage file is 
   const shared = ["model", "facts", "knowledge", "admission", "atomicity", "completeness", "pending", "citations", "formats", "live"]
     .map(name => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8")).join("\n");
   const defined = new Set(["goal", "constraint", "understanding", "reference", "open", "observation", "user", "assistant", "role",
-    "session", "project", "global", "trace", "search", "supports", "reason", "topics", "text", "category", "scope", "inbound", "support", "negate", "strong", "weak"]);
+    "session", "project", "global", "trace", "search", "supports", "reason", "topics", "text", "title", "sources", "address",
+    "category", "scope", "inbound", "support", "negate", "strong", "weak"]);
   for (const word of defined) expect(shared, `shared blocks define ${word}`).toMatch(new RegExp("`" + word + "`|\\*\\*" + word + "\\*\\*"));
   for (const file of STAGE_PROMPTS) {
     const raw = readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8").replace(/```[\s\S]*?```/g, "");

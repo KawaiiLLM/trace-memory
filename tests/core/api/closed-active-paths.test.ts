@@ -2,7 +2,8 @@ import { expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory, type RunAgent, type NotingAgentInput } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory, type RunAgent, type NotingAgentInput } from "../../source-fixture.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 const at = "2026-09-25T00:00:00Z";
 type Phase = "noting";
@@ -34,10 +35,11 @@ function fixture(db = ":memory:") {
   memory.selectEntries(target, "right", entries([root.id, right.id]));
   memory.selectEntries(target, "abandoned", entries([root.id]));
   const fact = (turnId: number, branch: string) => {
-    const result = store.commitNotingRun({ run: { kind: "manual", sessionId: target, branch, createdAt: at }, facts: [
-      { turnId, category: "observation", actor: "user", text: `fact ${turnId}`, source: [`T${turnId}#user`], createdAt: at } ] });
-    if (!result.ok) throw new Error(result.problems.join("; "));
-    return result.facts[0]!.id;
+    const source = hydrate(store.listSourceEntries(target, turnId), store).find(entry => entry.role === "user")!;
+    return legacyFacts(store, { kind: "manual", sessionId: target, branch, createdAt: at }, [{
+      sources: [{ entry: source, address: `T${turnId}#user` }], category: "observation", actor: "user",
+      text: `fact ${turnId}`, createdAt: at,
+    }]).facts[0]!.id;
   };
   const facts = { root: fact(root.id, "left"), left: fact(left.id, "left"), later: fact(later.id, "left"), right: fact(right.id, "right") };
   store.setCurrentPath(target, "left", left.id, "one");

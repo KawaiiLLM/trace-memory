@@ -8,6 +8,7 @@ import { Store } from "../../../src/core/store/index.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
+import { entry as seedEntry } from "../../support/seed.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 let dir: string;
@@ -96,16 +97,18 @@ describe("global ids", () => {
     expect(p2.id).toBeGreaterThan(p1.id);
     const s1 = makeSession(p1.id);
     const t1 = store.appendTurn({ sessionId: s1.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
+    const e1 = seedEntry(store, s1.id, t1.id, "first", "user", "fact one");
     const r1 = store.commitNotingRun({
       run: { kind: "noting", sessionId: s1.id, createdAt: "2026-01-01T00:00:01Z" },
-      facts: [{ turnId: t1.id, category: "observation", actor: "user", text: "fact one", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
+      facts: [{ turnId: t1.id, category: "observation", actor: "user", text: "fact one", source: [`T${t1.id}#user`], entryIds: [e1.id], createdAt: "2026-01-01T00:00:01Z" }],
     });
     expect(r1.ok).toBe(true);
     const s2 = makeSession(p2.id);
     const t2 = store.appendTurn({ sessionId: s2.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
+    const e2 = seedEntry(store, s2.id, t2.id, "second", "user", "fact two");
     const r2 = store.commitNotingRun({
       run: { kind: "noting", sessionId: s2.id, createdAt: "2026-01-01T00:00:01Z" },
-      facts: [{ turnId: t2.id, category: "observation", actor: "user", text: "fact two", source: ["T2#user"], createdAt: "2026-01-01T00:00:01Z" }],
+      facts: [{ turnId: t2.id, category: "observation", actor: "user", text: "fact two", source: [`T${t2.id}#user`], entryIds: [e2.id], createdAt: "2026-01-01T00:00:01Z" }],
     });
     expect(r2.ok).toBe(true);
     if (r1.ok && r2.ok) {
@@ -135,17 +138,19 @@ describe("commitNotingRun: local handle resolution", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
+    const user = seedEntry(store, s.id, t.id, "initial", "user", "use pnpm");
+    const assistant = seedEntry(store, s.id, t.id, "reply", "assistant", "switched the lockfile to pnpm");
     const result = store.commitNotingRun({
       run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [
-        { turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" },
+        { turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: [`T${t.id}#user`], entryIds: [user.id], createdAt: "2026-01-01T00:00:01Z" },
         {
           turnId: t.id,
           category: "event",
           actor: "agent",
           status: "completed",
           text: "switched the lockfile to pnpm",
-          source: ["T1#t1"],
+          source: [`T${t.id}#assistant`], entryIds: [assistant.id],
           createdAt: "2026-01-01T00:00:02Z",
           support: [{ target: "$1", strength: "weak" }],
         },
@@ -163,9 +168,10 @@ describe("commitNotingRun: local handle resolution", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
+    const user = seedEntry(store, s.id, t.id, "prior", "user", "use pnpm");
     const first = store.commitNotingRun({
       run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
-      facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
+      facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: [`T${t.id}#user`], entryIds: [user.id], createdAt: "2026-01-01T00:00:01Z" }],
     });
     expect(first.ok).toBe(true);
     if (!first.ok) return;
@@ -177,7 +183,7 @@ describe("commitNotingRun: local handle resolution", () => {
           category: "decision",
           actor: "user",
           text: "confirmed pnpm again",
-          source: ["T2#user"],
+          source: [`T${t.id}#user`], entryIds: [user.id],
           createdAt: "2026-01-01T00:01:00Z",
           support: [{ target: `F${first.facts[0]!.id}`, strength: "strong" }],
         },
@@ -232,7 +238,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
     const run = (createdAt: string) => store.bindRunOrigin({ kind: "noting" as const, sessionId: s.id, branch: "main", createdAt }, origin);
     const notingResult = store.commitNotingRun({
       run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
-      facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
+      facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: [`T${t.id}#user`], entryIds: [entry.id], createdAt: "2026-01-01T00:00:01Z" }],
     });
     expect(notingResult.ok).toBe(true);
     if (!notingResult.ok) return;
@@ -314,9 +320,10 @@ describe("project merge", () => {
     const into = store.createProject({ name: "the-real-project", declaredBy: "mark" });
     const s = makeSession(from.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
+    const user = seedEntry(store, s.id, t.id, "merger", "user", "use pnpm");
     const recorded = store.commitNotingRun({
       run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
-      facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
+      facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: [`T${t.id}#user`], entryIds: [user.id], createdAt: "2026-01-01T00:00:01Z" }],
     });
     expect(recorded.ok).toBe(true);
     if (!recorded.ok) return;
@@ -354,10 +361,11 @@ describe("visibility rule", () => {
     const s1 = makeSession(p.id);
     const s2 = makeSession(p.id);
     const t1 = store.appendTurn({ sessionId: s1.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
+    const initial = seedEntry(store, s1.id, t1.id, "scope-initial", "user", "context fact");
 
     const recorded = store.commitNotingRun({
       run: { kind: "noting", sessionId: s1.id, createdAt: "2026-01-01T00:00:01Z" },
-      facts: [{ turnId: t1.id, category: "observation", actor: "user", text: "context fact", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
+      facts: [{ turnId: t1.id, category: "observation", actor: "user", text: "context fact", source: [`T${t1.id}#user`], entryIds: [initial.id], createdAt: "2026-01-01T00:00:01Z" }],
     });
     expect(recorded.ok).toBe(true);
     if (!recorded.ok) return;
@@ -366,8 +374,9 @@ describe("visibility rule", () => {
     // A knowledge item's project is the project of the session that consolidated it; only global knowledge have none.
     function newKnowledge(scope: "session" | "project" | "global", sessionId: number, text: string) {
       const turn = store.appendTurn({ sessionId, kind: "turn", startedAt: "2026-01-01T00:01:00Z" });
+      const source = seedEntry(store, sessionId, turn.id, `scope-${turn.id}`, "user", "context fact");
       const evidence = store.commitNotingRun({ run: { kind: "noting", sessionId, createdAt: "2026-01-01T00:01:00Z" }, facts: [
-        { turnId: turn.id, category: "observation", actor: "user", text: "context fact", source: [`T${turn.id}#user`], createdAt: "2026-01-01T00:01:00Z" } ] });
+        { turnId: turn.id, category: "observation", actor: "user", text: "context fact", source: [`T${turn.id}#user`], entryIds: [source.id], createdAt: "2026-01-01T00:01:00Z" } ] });
       if (!evidence.ok) throw new Error("fixture evidence failed");
       const r = commitNoterKnowledge(store, {
         run: { sessionId, createdAt: "2026-01-01T00:01:00Z" },
@@ -406,10 +415,11 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     store.selectSourcePath(s.id, "main", [entry.id]);
     const recorded = store.commitNotingRun({
       run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
-      facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
+      facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: [`T${t.id}#user`],
+        entryIds: [entry.id], createdAt: "2026-01-01T00:00:01Z" }],
     });
-    if (!recorded.ok) throw new Error("seed failed");
-    return { p, s, t, factId: recorded.facts[0]!.id, path: { sessionId: s.id, branch: "main", headTurnId: t.id } };
+    if (!recorded.ok) throw new Error(recorded.problems.join("; "));
+    return { p, s, t, entry, factId: recorded.facts[0]!.id, path: { sessionId: s.id, branch: "main", headTurnId: t.id } };
   }
   const consolidationAt = "2026-01-01T00:01:00Z";
 
@@ -766,7 +776,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
   });
 
   test("a short write lock held by another process delays the commit instead of losing it", async () => {
-    const { s, t, factId } = seed();
+    const { s, t, entry: boundEntry, factId } = seed();
     const holder = spawn(process.execPath, ["--input-type=module", "-e", `
       import { DatabaseSync } from "node:sqlite";
       import { setTimeout } from "node:timers/promises";
@@ -782,7 +792,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const started = performance.now();
     const r = store.commitNotingRun({
       run: { kind: "noting", sessionId: s.id, createdAt: consolidationAt },
-      facts: [{ turnId: t.id, category: "observation", actor: "user", text: "written under contention", source: ["T1#user"], createdAt: consolidationAt }],
+      facts: [{ turnId: t.id, category: "observation", actor: "user", text: "written under contention", source: [`T${t.id}#user`], entryIds: [boundEntry.id], createdAt: consolidationAt }],
     });
     expect(performance.now() - started).toBeGreaterThanOrEqual(100);
     expect((await exited)[0]).toBe(0);
@@ -792,7 +802,9 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     // 17c 2026-09-08 extends this real-process write-lock seam with task admission and fencing.
     const entry = store.appendSourceEntry({ sessionId: s.id, turnId: t.id, nativeId: "pending", nativeLineage: "process-test",
       role: "user", text: "pending evidence", raw: "pending evidence", calls: [] });
-    store.selectSourcePath(s.id, "main", [entry.id]);
+    store.selectSourcePath(s.id, "main", [boundEntry.id, entry.id]);
+    const pendingBefore = store.pendingEntries(s.id, "main", t.id).map(item => item.id);
+    expect(pendingBefore).toContain(entry.id);
     const knowledge = store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, createdAt: consolidationAt }, operations: [{
       op: "create", handle: "$pending", author: "test", text: "pending maintenance", category: "constraint", scope: "session",
       supports: [factId], reason: "evidence", topics: [], createdAt: consolidationAt,
@@ -838,7 +850,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
           expect(store.getClaim(s.id, stale.phase)!.token).toBe(replacement.token);
           expect(store.releaseClaim(replacement)).toBe(true);
         }
-        expect(store.pendingEntries(s.id, "main", t.id)).toHaveLength(1);
+        expect(store.pendingEntries(s.id, "main", t.id).map(item => item.id)).toEqual(pendingBefore);
         expect(store.consolidationBatch(s.id, "main", t.id).length).toBeGreaterThan(0);
         const live = makeSession(store.getSession(s.id)!.projectId);
         const liveTurn = store.appendTurn({ sessionId: live.id, kind: "turn", startedAt: consolidationAt });

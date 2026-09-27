@@ -2,7 +2,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { TraceMemory, noVisibility } from "../../../src/core/api/index.ts";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
+import { fact as seedFact } from "../../support/seed.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { tokens } from "../../../src/core/render/tokens.ts";
@@ -20,8 +21,8 @@ function fixture(file = false) {
   const session = store.createSession({ host: "pi:92", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Evidence", startedAt: "now" });
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-  const note = memory.tools({ kind: "manual", ...target, currentTurnId: turn.id }).find(tool => tool.name === "note")!;
-  const fact = JSON.parse(note.execute({ facts: [{ text: "User supplied evidence", source: [`T${turn.id}#E1`] }] })).factIds[0] as number;
+  const user = hydrate(store.listSourceEntries(session.id, turn.id), store).find(entry => entry.role === "user")!;
+  const fact = seedFact(memory, target, "Supplied evidence", [{ entry: user, text: "User supplied evidence" }]).id;
   const content = { author: "fixture", category: "constraint" as const, scope: "project" as const, topics: [], supports: [fact], reason: "fixture", createdAt: "now" };
   const create = (text: string) => {
     const result = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ ...content, op: "create", handle: "$new", text }] });
@@ -60,8 +61,8 @@ test("92 a globally current but reader-invisible successor hides the identity an
   const peer = f.store.createSession({ host: "pi:peer", projectId: f.project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const turn = f.store.appendTurn({ sessionId: peer.id, kind: "turn", userPrompt: "Private rule", startedAt: "now" });
   const target = { sessionId: peer.id, branch: "main", headTurnId: turn.id };
-  const note = f.memory.tools({ kind: "manual", ...target, currentTurnId: turn.id }).find(tool => tool.name === "note")!;
-  const fact = JSON.parse(note.execute({ facts: [{ text: "Private evidence", source: [`T${turn.id}#E1`] }] })).factIds[0];
+  const user = hydrate(f.store.listSourceEntries(peer.id, turn.id), f.store).find(entry => entry.role === "user")!;
+  const fact = seedFact(f.memory, target, "Private evidence", [{ entry: user, text: "Private evidence" }]).id;
   const changed = commitNoterKnowledge(f.store, { path: target, run: { sessionId: peer.id, createdAt: "later" }, operations: [{ ...f.content,
     op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, text: "Secret successor", scope: "session", supports: [fact] }] });
   if (!changed.ok) throw new Error(changed.problems.join("; "));

@@ -144,7 +144,7 @@ test("ticket92material native prefix uses path position, rejects empty/corrupt/s
   const order = [all[0]!.id, all[2]!.id, all[1]!.id];
   f.memory.selectEntries(f.session.id, "main", order);
   const note = f.memory.tools({ kind: "manual", ...f.target, currentTurnId: f.turn.id }).find(tool => tool.name === "note")!;
-  const laterFact = JSON.parse(note.execute({ facts: [{ text: "later source must not leak", source: [`T${f.turn.id}#E2`] }] })).factIds[0];
+  const laterFact = JSON.parse(note.execute({ facts: [{ title: "Later source", sources: [{ address: `T${f.turn.id}#E2`, text: "later source must not leak" }] }] })).factIds[0];
   const read = readFacade(f.store, f.memory.config);
   const result = read.compact(f.session.id, "main", f.turn.id, [], false, { endpointEntryId: all[2]!.id, processedRawRefill: false });
   if ("native" in result) throw new Error("unexpected fallback");

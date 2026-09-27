@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
-import { sourceSeededMemory, validateConfig, type ClosedSessionScope, type NotingAgentInput } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory, validateConfig, type ClosedSessionScope, type NotingAgentInput } from "../../source-fixture.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 const at = "2026-09-09T00:00:00Z";
 /** Explicit scripted empty N output uses both tools. */
@@ -17,9 +18,10 @@ function setup(scope: ClosedSessionScope = "project", agent: Parameters<typeof s
   const session = (projectId: number, closed: boolean) => {
     const s = memory.store.createSession({ host: "fake", projectId, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
     const turn = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "evidence", assistantText: "answer", startedAt: at });
-    const noted = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: at },
-      facts: [{ turnId: turn.id, category: "observation", actor: "user", text: "evidence", source: [`T${turn.id}#user`], createdAt: at }] });
-    expect(noted.ok).toBe(true);
+    const user = hydrate(memory.store.listSourceEntries(s.id, turn.id), memory.store).find(entry => entry.role === "user")!;
+    legacyFacts(memory.store, { kind: "manual", sessionId: s.id, branch: "main", createdAt: at }, [{
+      sources: [{ entry: user, address: `T${turn.id}#user` }], category: "observation", actor: "user", text: "evidence", createdAt: at,
+    }]);
     memory.selectEntries(s.id, "main", memory.store.listSourceEntries(s.id).map(e => e.id));
     if (closed) memory.store.closeSession(s.id);
     return { sessionId: s.id, branch: "main", headTurnId: turn.id };
@@ -128,7 +130,7 @@ test("a project-scoped borrowed writer cannot commit after its executor moves to
   try {
     const pending = memory.noting({ ...same, borrowed: true, executorSessionId: active.sessionId });
     memory.declareProject(active.sessionId, "different", "mark", active);
-    const receipt = String(await input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "late write", source: [`T${same.headTurnId}#E1`] }] }));
+    const receipt = String(await input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Late borrowed write", sources: [{ address: `T${same.headTurnId}#E1`, text: "late write" }] }] }));
     expect(receipt).toContain("held");
     input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     expect(memory.store.listTurnFacts(same.headTurnId)).toHaveLength(1); // only the prior manual fact

@@ -31,7 +31,7 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
     if ((raw as { kind: string }).kind === "noting") {
       const input = raw as NotingAgentInput;
       const note = input.tools.find(tool => tool.name === "note")!;
-      const receipt = note.execute({ facts: [{ text: "shared durable rule", source: [source] }] });
+      const receipt = note.execute({ facts: [{ title: "Shared durable rule", sources: [{ address: source, text: "shared durable rule" }] }] });
       expect(receipt).toContain("held:");
       input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
       const memory = input.tools.find(tool => tool.name === "memory")!;

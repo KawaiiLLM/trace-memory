@@ -25,10 +25,10 @@ function append(store: Store, sessionId: number, parentTurnId: number | null, na
     role, text: nativeId, raw: JSON.stringify({ role, content: nativeId }), calls: [] });
   return { turn, entry };
 }
-function fact(store: Store, sessionId: number, branch: string, turnId: number, source: string, entryId?: number) {
+function fact(store: Store, sessionId: number, branch: string, turnId: number, source: string, entryId: number) {
   const result = store.commitNotingRun({ run: { kind: "manual", sessionId, branch, createdAt: at }, facts: [{
     turnId, category: "observation", actor: "user", text: `evidence ${source}`, source: [source],
-    ...(entryId === undefined ? {} : { entryIds: [entryId] }), createdAt: at,
+    entryIds: [entryId], createdAt: at,
   }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.facts[0]!;
@@ -54,11 +54,11 @@ test("71/79: current membership and a path snapshot read source_entries only thr
     store.setCurrentPath(owner.id, "main", child.turn.id, "L");
     store.setCurrentPath(reader.id, "main", readNode.turn.id, "L");
     const boundFact = fact(store, owner.id, "main", child.turn.id, `T${child.turn.id}#user`, child.entry.id);
-    const legacyFact = fact(store, owner.id, "main", root.turn.id, `T${root.turn.id}#user`);
+    const rootFact = fact(store, owner.id, "main", root.turn.id, `T${root.turn.id}#user`, root.entry.id);
     const path: KnowledgePath = { sessionId: owner.id, branch: "main", headTurnId: child.turn.id };
     const consolidation = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: owner.id, branch: "main", createdAt: at },
       operations: [{ op: "create", handle: "$k", author: "test", text: "k", category: "understanding", scope: "global",
-        supports: [boundFact.id, legacyFact.id], topics: [], reason: "shape fixture", createdAt: at }] });
+        supports: [boundFact.id, rootFact.id], topics: [], reason: "shape fixture", createdAt: at }] });
     if (!consolidation.ok) throw new Error(consolidation.problems.join("; "));
     const readerPath: KnowledgePath = { sessionId: reader.id, branch: "main", headTurnId: readNode.turn.id };
 

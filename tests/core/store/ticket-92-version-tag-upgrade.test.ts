@@ -3,7 +3,8 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
+import { fact as seedFact } from "../../support/seed.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -16,8 +17,9 @@ test("92/03: pre-tag revision metadata backfills once without rewriting knowledg
   const project = old.store.createProject({ name: "older", declaredBy: "mark" });
   const session = old.store.createSession({ projectId: project.id, host: "pi:old", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
   const turn = old.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "old", assistantText: "", startedAt: "now" });
-  const note = old.tools({ kind: "manual", sessionId: session.id, currentTurnId: turn.id, branch: "main" }).find(tool => tool.name === "note")!;
-  const factId = JSON.parse(note.execute({ facts: [{ text: "Old evidence", source: [`T${turn.id}#E1`] }] })).factIds[0];
+  const source = hydrate(old.store.listSourceEntries(session.id, turn.id), old.store).find(entry => entry.role === "user")!;
+  const factId = seedFact(old, { sessionId: session.id, branch: "main", headTurnId: turn.id },
+    "Old evidence", [{ entry: source, text: "Old evidence" }]).id;
   const receipt = JSON.parse(old.tools({ kind: "manual", sessionId: session.id, currentTurnId: turn.id, branch: "main" })
     .find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text: "Old body", category: "reference", scope: "session", topics: ["old"], reason: "old reason", supports: [`F${factId}`] }], skipped: [] }));
   const id = receipt.committed[0].knowledgeId;
