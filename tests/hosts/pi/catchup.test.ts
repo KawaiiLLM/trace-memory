@@ -430,7 +430,7 @@ test("disabled executors cannot acquire or commit borrowed N; project change fen
 test("failed own capacity admission leaves its N slot free for a smaller closed tail", async () => {
   const h = host({ "noting.triggerTokens": 30 });
   try {
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 19000 };
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 20000 };
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);

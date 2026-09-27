@@ -28,6 +28,9 @@ import { host, reply } from "./test-host.ts";
 import { stableForkFixture as fixture, say, call, noteAndMemory, worker, submitted, noteBatch, settled, toolResults, usage as wireUsage, type Body } from "./native-fixture.ts";
 import { hydrate } from "../../source-fixture.ts";
 import { fact } from "../../support/seed.ts";
+import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { tokens } from "../../../src/core/render/tokens.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
 import { forkable, runNative } from "../../../src/hosts/pi/native.ts";
 import { toolDefinitions, type NotingAgentInput } from "../../../src/core/api/index.ts";
@@ -587,7 +590,10 @@ test("27d 2026-09-10 (parent 27 amendment 6): a fallback model that cannot hold 
     const find = f.h.ctx.modelRegistry.find.bind(f.h.ctx.modelRegistry);
     f.h.ctx.modelRegistry.find = ((provider: string, id: string) => {
       const model = find(provider, id);
-      return id === "test-mini" && model ? { ...model, contextWindow: 18_000 } : model;
+      // The Noter's fixed cost fits with 204 tokens to spare, as it did when this window was 18,000:
+      // the whole frozen batch cannot, so the capacity loop, not the preflight floor, refuses it.
+      const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(toolDefinitions));
+      return id === "test-mini" && model ? { ...model, contextWindow: CONTEXT_HEADROOM + fixed + 204 } : model;
     }) as typeof f.h.ctx.modelRegistry.find;
     let frozen: number[] = [];
     f.script((body: Body) => {

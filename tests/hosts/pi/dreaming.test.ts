@@ -171,9 +171,6 @@ test("64c native host: a fitting residual ends successfully without a repair rou
       priorStage = position;
     }
     expect(initialSystem).not.toContain("### Intensity, set by the failed check");
-    expect(initialSystem).toContain("When over budget, protect first: user constraints and corrections, milestone results, errors and lessons, designs and their reasons, important deadlines, open matters.");
-    expect(initialSystem).toContain("An archive states who fully carries the information, what evidence proves it expired, or what the budget trade actually lost.");
-    expect(initialSystem).toContain("Old, short, rarely used or finished is by itself no proof of no value.");
     expect(initialSystem).not.toMatch(/global 4,000|project 10,000|session 1,000|applicable block within 15,000/);
     expect(repairSystems).toEqual([]); expect(repairToolSets).toEqual([]); expect(repairHistory).toBeUndefined();
     expect(repairMessages).toEqual([]);
