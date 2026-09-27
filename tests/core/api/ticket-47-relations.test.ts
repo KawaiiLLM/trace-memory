@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { drainTrace, wholeTrace } from "../../trace-pages.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -17,22 +18,21 @@ function fixture() {
   const rootEntry = append("root"), siblingEntry = append("sibling"), thirdEntry = append("third"), fourthEntry = append("fourth");
   memory.selectEntries(session.id, "root", [rootEntry.id]);
   memory.selectEntries(session.id, "sibling", [rootEntry.id, siblingEntry.id, thirdEntry.id, fourthEntry.id]);
-  const root = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: "now" }, facts: [{
-    turnId: turn.id, entryIds: [rootEntry.id], category: "observation", actor: "user", text: "common fact ".repeat(200), source: [`T${turn.id}#E1`], createdAt: "now",
-  }] });
-  if (!root.ok) throw new Error(root.problems.join("; "));
-  const sibling = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "sibling", createdAt: "now" }, facts: [{
-    turnId: turn.id, entryIds: [siblingEntry.id], category: "observation", actor: "user", text: "sibling correction", source: [`T${turn.id}#E2`], createdAt: "now",
-    negate: [{ target: `F${root.facts[0]!.id}`, strength: "strong" }],
-  }] });
-  if (!sibling.ok) throw new Error(sibling.problems.join("; "));
-  const third = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "sibling", createdAt: "now" }, facts: [{
-    turnId: turn.id, entryIds: [thirdEntry.id], category: "observation", actor: "user", text: "third sibling fact", source: [`T${turn.id}#E3`], createdAt: "now",
-    negate: [{ target: `F${sibling.facts[0]!.id}`, strength: "weak" }],
+  const root = legacyFacts(store, { kind: "manual", sessionId: session.id, branch: "root", createdAt: "now" }, [{
+    sources: [{ entry: rootEntry, address: `T${turn.id}#E1` }], category: "observation", actor: "user",
+    text: "common fact ".repeat(200), createdAt: "now",
+  }]);
+  const sibling = legacyFacts(store, { kind: "manual", sessionId: session.id, branch: "sibling", createdAt: "now" }, [{
+    sources: [{ entry: siblingEntry, address: `T${turn.id}#E2` }], category: "observation", actor: "user",
+    text: "sibling correction", createdAt: "now", negate: [{ target: `F${root.facts[0]!.id}`, strength: "strong" }],
+  }]);
+  const third = legacyFacts(store, { kind: "manual", sessionId: session.id, branch: "sibling", createdAt: "now" }, [{
+    sources: [{ entry: thirdEntry, address: `T${turn.id}#E3` }], category: "observation", actor: "user",
+    text: "third sibling fact", createdAt: "now", negate: [{ target: `F${sibling.facts[0]!.id}`, strength: "weak" }],
   }, {
-    turnId: turn.id, entryIds: [fourthEntry.id], category: "observation", actor: "user", text: "fourth sibling fact", source: [`T${turn.id}#E4`], createdAt: "now",
-  }] });
-  if (!third.ok) throw new Error(third.problems.join("; "));
+    sources: [{ entry: fourthEntry, address: `T${turn.id}#E4` }], category: "observation", actor: "user",
+    text: "fourth sibling fact", createdAt: "now",
+  }]);
   return { memory, store, session, turn, root: root.facts[0]!, sibling: sibling.facts[0]!, third: third.facts[0]!, fourth: third.facts[1]!,
     rootPath: { sessionId: session.id, branch: "root", headTurnId: turn.id },
     siblingPath: { sessionId: session.id, branch: "sibling", headTurnId: turn.id } };
@@ -46,7 +46,10 @@ test("47: path-bound relations require both endpoints while an exact Fact read r
 
   const rootTools = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "root", currentTurnId: f.turn.id });
   const trace = rootTools.find(tool => tool.name === "trace")!;
-  const collection = trace.execute({ address: `T${f.turn.id}@F*`, itemBudget: null });
+  // 93 makes a bare Turn the fact view; 47's endpoint applicability rule still holds.
+  const collection = trace.execute({ address: `T${f.turn.id}`, itemBudget: null });
+  expect(collection).toContain(`[F${f.root.id}]`);
+  expect(collection).not.toContain(`[F${f.sibling.id}]`);
   expect(collection).not.toContain(`inbound negate F${f.sibling.id}`);
   const targetApplicable = trace.execute({ address: `F${f.root.id}`, itemBudget: null });
   expect(targetApplicable).toContain(`inbound negate F${f.sibling.id} strong`);
@@ -59,7 +62,7 @@ test("47: path-bound relations require both endpoints while an exact Fact read r
   expect(targetInapplicable).not.toContain(`other endpoints not applicable on this path: F${f.root.id}`);
 
   const siblingTools = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "sibling", currentTurnId: f.turn.id });
-  expect(siblingTools.find(tool => tool.name === "trace")!.execute({ address: `T${f.turn.id}@F*`, itemBudget: null }))
+  expect(siblingTools.find(tool => tool.name === "trace")!.execute({ address: `T${f.turn.id}`, itemBudget: null }))
     .toContain(`inbound negate F${f.sibling.id} strong`);
   const bothApplicable = siblingTools.find(tool => tool.name === "trace")!.execute({ address: `F${f.sibling.id}`, itemBudget: null });
   expect(bothApplicable).not.toContain("other endpoints not applicable on this path");
