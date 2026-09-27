@@ -2544,12 +2544,6 @@ export class Store {
     return foldDelivered(rows, ancestry, node.prompts ?? [], mapped);
   }
 
-  /** The prompt keys an owner recorded under, in first-recorded order. */
-  deliveryPrompts(owner: string): string[] {
-    return (this.db.prepare(`SELECT prompt FROM knowledge_deliveries WHERE owner = ? AND prompt IS NOT NULL
-      GROUP BY prompt ORDER BY MIN(id)`).all(owner) as { prompt: string }[]).map(row => row.prompt);
-  }
-
   /** The newest delivery row of an owner; a publisher compares it before recording. */
   deliveryWatermark(owner: string): number {
     return Number((this.db.prepare("SELECT IFNULL(MAX(id), 0) AS id FROM knowledge_deliveries WHERE owner = ?").get(owner) as { id: number }).id);
