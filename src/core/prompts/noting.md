@@ -34,6 +34,13 @@ Keep enough for a newcomer to recover the main discussion, important branches, r
 5. Tool-result segments record actual returns; agent segments record the original agent's analysis, proposals or actions. Calls without new contributions, repeated searches and routine steps need no citation.
 6. Resolve references to concrete objects. For approval, withdrawal, objection or correction, say what it concerns, what the earlier position was and what changed. Do not merely say the user agreed or overturned something.
 
+**Example: observation versus explanation.** Illustrative only, not evidence or an admission rule.
+
+> Material: A timing tool reports that database commits dominate import time, without an internal breakdown. Claude Code suspects disk synchronization and proposes measuring the substeps.
+> Wrong observation: Disk synchronization caused the slowdown, and no later investigation occurred.
+> Correct observation segment: Database commits dominated the measured import time; the tool gave no internal breakdown.
+> Correct agent segment: Claude Code suspected disk synchronization but could not distinguish it from other commit costs, and proposed measuring the substeps.
+
 ## Knowledge principles
 
 <!-- include: admission -->
