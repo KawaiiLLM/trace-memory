@@ -14,6 +14,7 @@ import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { countPathBuilds, countRunBodies, countSourceReads } from "../../perf/fixture.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
+import { fact } from "../../support/seed.ts";
 
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
@@ -53,9 +54,13 @@ const refresh = (h: Host) => h.emit("agent_end");
 /** Facts on the current branch, written without a model and without taking any entry, so the pending
  * entry count is untouched and a per-fact rebuild would be visible. */
 function facts(h: Host, count = 3) {
-  const committed = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: time },
-    facts: Array.from({ length: count }, (_, i) => ({ turnId: 1, category: "observation" as const, actor: "user" as const,
-      text: `footer fact ${i}`, source: ["T1#user"], createdAt: time })) });
+  const store = h.memory.store;
+  const source = store.sourcePath(1, "main", 1).find(value => store.getSourceEntry(value.id)?.role === "user")!;
+  // A single noting run is essential here: later assertions distinguish run count from fact count.
+  const committed = store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: time },
+    facts: Array.from({ length: count }, (_, i) => ({ turnId: 1, entryIds: [source.id],
+      category: "observation" as const, actor: "user" as const, text: `footer fact ${i}`,
+      source: [`T1#E${source.entryOrdinal}`], createdAt: time })) });
   if (!committed.ok) throw new Error(committed.problems.join("; "));
   return committed.facts;
 }
@@ -210,13 +215,17 @@ test("24a: the counts follow the selected branch, so a sibling entry of the same
   await h.emit("agent_end");
   const common = [...h.entries];
   const write = (branch: string) => h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
-  expect(write("main")[2]!.execute({ facts: [{ text: "Use alpha everywhere", source: ["T1#E1"] }] })).not.toContain("rejected:");
+  const source = (ordinal: number) => h.memory.store.sourcePath(1, "main", 1)
+    .find(value => value.entryOrdinal === ordinal)!;
+  fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Alpha rule",
+    [{ entry: h.memory.store.getSourceEntry(source(1).id)!, text: "Use alpha everywhere" }]);
   expect(write("main")[3]!.execute({ operations: [{ op: "create", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
     supports: ["F1"], reason: "Admitted from the shared ancestry." }], skipped: [] })).not.toContain("rejected:");
   // A withdrawal bound to a sibling entry of the same Turn: only main holds it.
   h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });
   await h.emit("agent_end");
-  expect(write("main")[2]!.execute({ facts: [{ text: "Pi agent reports alpha withdrawn", source: ["T1#E4"] }] })).not.toContain("rejected:");
+  fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Alpha withdrawn",
+    [{ entry: h.memory.store.getSourceEntry(source(4).id)!, text: "Pi agent reports alpha withdrawn" }]);
   const handle = readHandle(write("main"), "K1");
   expect(write("main")[3]!.execute({ operations: [{ op: "archive", id: handle, supports: ["F2"], reason: "The rule was withdrawn on this path." }], skipped: [] })).not.toContain("rejected:");
   await refresh(h);
@@ -324,9 +333,9 @@ test("24a/51: concurrent N and D indicator prefers N; off and no-theme fallback"
   const h = host({ "noting.triggerTokens": 1_000, "noting.forkModeDefault": false });
   await h.turn();
   expect(footer(h)).toMatchObject({ glyph: "○", role: "dim" });
-  const seed = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
-    .execute({ facts: [{ text: "User chose pnpm", source: ["T1#E1"] }] });
-  expect(seed).not.toContain("rejected:");
+  const source = h.memory.store.sourcePath(1, "main", 1).find(value => value.entryOrdinal === 1)!;
+  fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Package manager choice",
+    [{ entry: h.memory.store.getSourceEntry(source.id)!, text: "User chose pnpm" }]);
   const priorRequests = h.requests.length;
   const due = createDreamerTrigger(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1, 1);
   expect(h.memory.taskEligibility("dreaming", { sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ due: true });
