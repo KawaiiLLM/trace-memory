@@ -1,6 +1,10 @@
 ### Facts
 
-A new fact records one source-grounded episode in text and cites one or more exact native entries. It has no fact-wide category, actor, status or quote; historical rows retain those fields unchanged.
+A fact is one topic's slice over a continuous stretch of conversation. Its short, nonempty, single-line `title` names what happened, not just the conclusion. A slice may draw on several entries and Turns.
+
+Its `sources` each contain an `address` for one contributing whole entry and `text` for that entry's contribution. Core orders the segments by the selected path and joins their text into the body. Each source's role comes from its entry, not the writer.
+
+A new fact has no fact-wide category, actor, status or quote. Historical rows retain those fields and their stored source strings unchanged.
 
 Each cited entry has a core-derived `role`:
 - `user` — a user's message.
