@@ -6,23 +6,21 @@ import { promisify } from "node:util";
 import { join } from "node:path";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { Store, type RunInput } from "../../../src/core/store/index.ts";
+import { session as seedSession, entry as seedEntry, legacyFact, knowledge as seedKnowledge } from "../../support/seed.ts";
 
 const stores: Store[] = [], directories: string[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function fixture(path = ":memory:") {
   const store = new Store(path); stores.push(store);
   const project = store.createProject({ name: "archive", declaredBy: "mark" });
-  const session = store.createSession({ host: "test", enrollmentChoice: true, projectId: project.id, startedAt: "now", firstReplyAt: "now" });
+  const session = seedSession(store, project.id, "test");
   const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
-  const entry = store.appendSourceEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "trigger",
-    role: "user", text: "rule", raw: "rule", calls: [] });
+  const entry = seedEntry(store, session.id, turn.id, "trigger", "user", "rule");
   store.selectSourcePath(session.id, "main", [entry.id]);
-  const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{ turnId: turn.id, source: [`T${turn.id}#user`], actor: "user", category: "decision", text: "rule", createdAt: "now" }] });
-  if (!facts.ok) throw Error(facts.problems.join());
-  const content = { supports: [facts.facts[0]!.id], reason: "evidence", text: "rule", category: "constraint" as const, scope: "project" as const, topics: [], createdAt: "now" };
-  const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
-  if (!created.ok) throw Error(created.problems.join());
-  const item = created.committed[0]!;
+  const selected = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+  const evidence = legacyFact(store, selected, [{ entry, address: `T${turn.id}#user` }], "rule");
+  const content = { supports: [evidence.id], reason: "evidence", text: "rule", category: "constraint" as const, scope: "project" as const, topics: [], createdAt: "now" };
+  const item = seedKnowledge(store, selected, "project", content.supports, content.text);
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   const claim = store.acquireClaim(target, "dreaming", "test")!;
   const range = store.retainKnowledgePoolRange(target, `project:${project.id}`, claim);
@@ -35,33 +33,25 @@ test("64b: writer branch visibility rejects a live session base atomically while
   const setup = (writerBranch: "left" | "right") => {
     const store = new Store(":memory:"); stores.push(store);
     const project = store.createProject({ name: `writer-${writerBranch}`, declaredBy: "mark" });
-    const session = store.createSession({ host: `writer-${writerBranch}`, enrollmentChoice: true, projectId: project.id, startedAt: "now", firstReplyAt: "now" });
+    const session = seedSession(store, project.id, `writer-${writerBranch}`);
     const root = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "root", startedAt: "now" });
     const left = store.appendTurn({ sessionId: session.id, parentTurnId: root.id, kind: "turn", userPrompt: "left", startedAt: "now" });
     const right = store.appendTurn({ sessionId: session.id, parentTurnId: root.id, kind: "turn", userPrompt: "right", startedAt: "now" });
-    const entry = (turnId: number, nativeId: string) => store.appendSourceEntry({ sessionId: session.id, turnId, nativeLineage: "fixture", nativeId,
-      role: "user", text: nativeId, raw: nativeId, calls: [] });
+    const entry = (turnId: number, nativeId: string) => seedEntry(store, session.id, turnId, nativeId, "user");
     const rootEntry = entry(root.id, "root"), leftEntry = entry(left.id, "left"), rightEntry = entry(right.id, "right");
     store.selectSourcePath(session.id, "left", [rootEntry.id, leftEntry.id]);
     store.selectSourcePath(session.id, "right", [rootEntry.id, rightEntry.id]);
-    const note = (turnId: number, branch: string, entryId: number, text: string) => {
-      const result = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch, createdAt: "now" }, facts: [{
-        turnId, source: [`T${turnId}#user`], entryIds: [entryId], actor: "user", category: "decision", text, createdAt: "now",
-      }] });
-      if (!result.ok) throw new Error(result.problems.join("; "));
-      return result.facts[0]!;
-    };
-    const rootFact = note(root.id, "left", rootEntry.id, "shared evidence");
-    const leftFact = note(left.id, "left", leftEntry.id, "session evidence");
+    const note = (turnId: number, branch: string, sourceEntry: ReturnType<typeof seedEntry>, text: string) =>
+      legacyFact(store, { sessionId: session.id, branch, headTurnId: turnId },
+        [{ entry: sourceEntry, address: `T${turnId}#user` }], text);
+    const rootFact = note(root.id, "left", rootEntry, "shared evidence");
+    const leftFact = note(left.id, "left", leftEntry, "session evidence");
     const writerFact = note(writerBranch === "left" ? left.id : right.id, writerBranch,
-      writerBranch === "left" ? leftEntry.id : rightEntry.id, "writer evidence");
+      writerBranch === "left" ? leftEntry : rightEntry, "writer evidence");
     const create = (scope: "session" | "project" | "global", factId: number, handle: string) => {
-      const result = store.commitConsolidationRun({ path: { sessionId: session.id, branch: scope === "session" ? "left" : writerBranch,
+      return seedKnowledge(store, { sessionId: session.id, branch: scope === "session" ? "left" : writerBranch,
         headTurnId: scope === "session" ? left.id : writerBranch === "left" ? left.id : right.id },
-        run: { kind: "manual", sessionId: session.id, branch: writerBranch, createdAt: "now" }, operations: [{ op: "create", handle,
-          author: "test", text: `${scope} base`, category: "constraint", scope, supports: [factId], topics: [], reason: "fixture", createdAt: "now" }] });
-      if (!result.ok) throw new Error(result.problems.join("; "));
-      return result.committed[0]!;
+        scope, [factId], `${scope} base`);
     };
     const sessionBase = create("session", leftFact.id, "$s"), projectBase = create("project", rootFact.id, "$p"), globalBase = create("global", rootFact.id, "$g");
     store.setCurrentPath(session.id, "left", left.id, "native-left");
@@ -128,12 +118,11 @@ test.each(["update", "archive"] as const)("64b: empty-support %s materializes th
 
 test("64b: empty-support merge unions both exact parents and split copies its exact parent", () => {
   const merged = fixture();
-  const secondFact = merged.store.commitNotingRun({ run: { kind: "manual", sessionId: merged.target.sessionId, createdAt: "now" }, facts: [{
-    turnId: merged.target.headTurnId, source: [`T${merged.target.headTurnId}#user`], actor: "user", category: "decision", text: "second rule", createdAt: "now",
-  }] });
-  if (!secondFact.ok) throw Error(secondFact.problems.join());
+  const mergedEntry = merged.store.getSourceEntry(merged.target.triggerEntryId!)!;
+  const secondFact = legacyFact(merged.store, merged.target,
+    [{ entry: mergedEntry, address: `T${merged.target.headTurnId}#user` }], "second rule");
   const second = merged.store.commitConsolidationRun({ run: { kind: "manual", sessionId: merged.target.sessionId, createdAt: "now" }, operations: [{
-    op: "create", handle: "$2", author: "test", ...merged.content, text: "second rule", supports: [secondFact.facts[0]!.id],
+    op: "create", handle: "$2", author: "test", ...merged.content, text: "second rule", supports: [secondFact.id],
   }] });
   if (!second.ok) throw Error(second.problems.join());
   const run = merged.store.bindDreamingRun(merged.run);
@@ -144,7 +133,7 @@ test("64b: empty-support merge unions both exact parents and split copies its ex
   }] });
   expect(merge.ok).toBe(true);
   if (merge.ok) expect(merged.store.knowledgeRevision(merge.committed[0]!.commit)?.supports)
-    .toEqual([merged.content.supports[0], secondFact.facts[0]!.id]);
+    .toEqual([merged.content.supports[0], secondFact.id]);
 
   const split = fixture();
   const splitRun = split.store.bindDreamingRun(split.run);
@@ -159,10 +148,8 @@ test("64b: empty-support merge unions both exact parents and split copies its ex
 
 test("64b: explicit evidence is not augmented and invalid evidence rolls back the whole batch", () => {
   const f = fixture();
-  const evidence = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, facts: [{
-    turnId: f.target.headTurnId, source: [`T${f.target.headTurnId}#user`], actor: "user", category: "decision", text: "replacement evidence", createdAt: "now",
-  }] });
-  if (!evidence.ok) throw Error(evidence.problems.join());
+  const evidence = legacyFact(f.store, f.target,
+    [{ entry: f.store.getSourceEntry(f.target.triggerEntryId!)!, address: `T${f.target.headTurnId}#user` }], "replacement evidence");
   const another = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{
     op: "create", handle: "$2", author: "test", ...f.content, text: "another rule",
   }] });
@@ -171,7 +158,7 @@ test("64b: explicit evidence is not augmented and invalid evidence rolls back th
   const before = f.store.listKnowledgeRevisions();
   const invalid = f.store.commitConsolidationRun({ run, path: f.target, operations: [
     { op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, text: "evidence rewrite", category: "constraint", scope: "project",
-      supports: [evidence.facts[0]!.id], topics: [], reason: "Apply evidence.", createdAt: "now" },
+      supports: [evidence.id], topics: [], reason: "Apply evidence.", createdAt: "now" },
     { op: "archive", knowledgeId: another.committed[0]!.knowledgeId, baseCommit: another.committed[0]!.commit,
       supports: [999_999], reason: "Invalid evidence.", createdAt: "now" },
   ] });
@@ -179,10 +166,10 @@ test("64b: explicit evidence is not augmented and invalid evidence rolls back th
   expect(f.store.listKnowledgeRevisions()).toEqual(before);
   const accepted = f.store.commitConsolidationRun({ run, path: f.target, operations: [{ op: "update",
     knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, text: "evidence rewrite", category: "constraint", scope: "project",
-    supports: [evidence.facts[0]!.id], topics: [], reason: "Apply evidence.", createdAt: "now",
+    supports: [evidence.id], topics: [], reason: "Apply evidence.", createdAt: "now",
   }] });
   expect(accepted.ok).toBe(true);
-  if (accepted.ok) expect(f.store.knowledgeRevision(accepted.committed[0]!.commit)?.supports).toEqual([evidence.facts[0]!.id]);
+  if (accepted.ok) expect(f.store.knowledgeRevision(accepted.committed[0]!.commit)?.supports).toEqual([evidence.id]);
 });
 
 test("64b: empty legacy parent support remains empty and Dreamer admission needs no trigger entry", () => {
@@ -262,8 +249,8 @@ test("64b: inherited archive provenance and direct-support applicability survive
   const memory = TraceMemory(db, async () => { throw Error("no provider"); }); stores.push(memory.store);
   expect(memory.store.knowledgeRevision(commit)).toMatchObject({ actorRole: "dreaming", parentId: f.item.commit, scope: "project", supports, reason: f.archive.reason });
   expect(memory.store.commitApplies(memory.store.knowledgeRevision(commit)!, f.target)).toBe(true);
-  expect(memory.trace(`K${f.item.knowledgeId}@${commit}`)).toContain(`change supports: F${supports[0]}`);
-  expect(memory.trace(`K${f.item.knowledgeId}@${f.item.commit}`)).toContain("rule");
+  expect(memory.trace(`K${f.item.knowledgeId}@v2`)).toContain(`change supports: F${supports[0]}`);
+  expect(memory.trace(`K${f.item.knowledgeId}@v1`)).toContain("rule");
   expect(memory.trace("F1")).toContain("rule");
   expect(memory.search("rule", "knowledge", { versions: "all", fields: ["text", "status"] })).toContain("status: archived");
 });

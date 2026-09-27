@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, type KnowledgePath } from "../../../src/core/store/index.ts";
 import type { KnowledgeRevision } from "../../../src/core/model/index.ts";
+import { session, entry, legacyFact, knowledge as commitKnowledge } from "../../support/seed.ts";
 
 const at = "2026-09-21T00:00:00.000Z";
 const directories: string[] = [];
@@ -14,33 +15,17 @@ function database() {
   directories.push(directory);
   return join(directory, "trace.db");
 }
-function session(store: Store, projectId: number, host: string) {
-  return store.createSession({ enrollmentChoice: true, host, startedAt: at, firstReplyAt: at, projectId });
-}
-function append(store: Store, sessionId: number, parentTurnId: number | null, nativeId: string, role: "user" | "assistant" = "user") {
+function append(store: Store, sessionId: number, parentTurnId: number | null, nativeId: string) {
   const turn = store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: nativeId, startedAt: at });
-  const entry = store.appendSourceEntry({ sessionId, nativeLineage: `lineage-${sessionId}`, nativeId, turnId: turn.id,
-    role, text: nativeId, raw: JSON.stringify({ role, content: nativeId }), calls: [] });
-  return { turn, entry };
+  return { turn, entry: entry(store, sessionId, turn.id, nativeId, "user") };
 }
-function siblingEntry(store: Store, sessionId: number, turnId: number, nativeId: string, role: "user" | "assistant" = "assistant") {
-  return store.appendSourceEntry({ sessionId, nativeLineage: `lineage-${sessionId}`, nativeId, turnId,
-    role, text: nativeId, raw: JSON.stringify({ role, content: nativeId }), calls: [] });
-}
-function fact(store: Store, sessionId: number, branch: string, turnId: number, source: string, entryId?: number) {
-  const result = store.commitNotingRun({ run: { kind: "manual", sessionId, branch, createdAt: at }, facts: [{
-    turnId, category: "observation", actor: "user", text: `evidence ${source}`, source: [source],
-    ...(entryId === undefined ? {} : { entryIds: [entryId] }), createdAt: at,
-  }] });
-  if (!result.ok) throw new Error(result.problems.join("; "));
-  return result.facts[0]!;
+function fact(store: Store, sessionId: number, branch: string, turnId: number, address: string, entryId: number) {
+  const bound = store.getSourceEntry(entryId);
+  if (!bound) throw new Error(`missing fixture entry ${entryId}`);
+  return legacyFact(store, { sessionId, branch, headTurnId: turnId }, [{ entry: bound, address }], `evidence ${address}`);
 }
 function knowledge(store: Store, path: KnowledgePath, factId: number, label: string) {
-  const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
-    operations: [{ op: "create", handle: `$${label}`, author: "test", text: label, category: "understanding", scope: "global",
-      supports: [factId], topics: [], reason: "membership fixture", createdAt: at }] });
-  if (!result.ok) throw new Error(result.problems.join("; "));
-  return result.committed[0]!;
+  return commitKnowledge(store, path, "global", [factId], label);
 }
 
 /** Independent preserved route: one ordinary pathSnapshot/factOnPath evaluation per direct support. */
@@ -61,13 +46,13 @@ function expectEquivalent(store: Store, reader: KnowledgePath) {
   expect([...graph.applicable]).toEqual(expected);
 }
 
-test("batched owner membership matches preserved snapshots for bound/unbound siblings and a head prefix", () => {
+test("batched owner membership matches preserved snapshots for bound siblings and a head prefix", () => {
   const store = new Store(":memory:");
   try {
     const project = store.createProject({ name: "equivalence", declaredBy: "mark" });
     const owner = session(store, project.id, "owner"), reader = session(store, project.id, "reader");
     const root = append(store, owner.id, null, "root"), child = append(store, owner.id, root.turn.id, "child");
-    const sibling = siblingEntry(store, owner.id, child.turn.id, "child-sibling");
+    const sibling = entry(store, owner.id, child.turn.id, "child-sibling", "assistant");
     const readNode = append(store, reader.id, null, "read");
     store.selectSourcePath(owner.id, "main", [root.entry.id, child.entry.id]);
     store.selectSourcePath(owner.id, "sibling", [root.entry.id, sibling.id]);
@@ -75,11 +60,11 @@ test("batched owner membership matches preserved snapshots for bound/unbound sib
     store.selectSourcePath(owner.id, "empty", []);
     store.selectSourcePath(reader.id, "main", [readNode.entry.id]);
     const bound = fact(store, owner.id, "main", child.turn.id, `T${child.turn.id}#user`, child.entry.id);
-    const unbound = fact(store, owner.id, "sibling", child.turn.id, `T${child.turn.id}#assistant`);
+    const siblingFact = fact(store, owner.id, "sibling", child.turn.id, `T${child.turn.id}#assistant`, sibling.id);
     const rootFact = fact(store, owner.id, "main", root.turn.id, `T${root.turn.id}#user`, root.entry.id);
     const writePath = { sessionId: owner.id, branch: "main", headTurnId: child.turn.id };
     const siblingPath = { sessionId: owner.id, branch: "sibling", headTurnId: child.turn.id };
-    const boundKnowledge = knowledge(store, writePath, bound.id, "bound"), unboundKnowledge = knowledge(store, siblingPath, unbound.id, "unbound");
+    const boundKnowledge = knowledge(store, writePath, bound.id, "bound"), unboundKnowledge = knowledge(store, siblingPath, siblingFact.id, "unbound");
     const rootKnowledge = knowledge(store, writePath, rootFact.id, "root");
     const readerPath = { sessionId: reader.id, branch: "main", headTurnId: readNode.turn.id };
     store.setCurrentPath(reader.id, "main", readNode.turn.id, "test-lineage");
@@ -115,8 +100,8 @@ test("same-length entry replacement is operation-local across Stores, rollback a
     const project = writer.createProject({ name: "freshness", declaredBy: "mark" });
     const owner = session(writer, project.id, "owner"), consumer = session(writer, project.id, "consumer");
     const root = append(writer, owner.id, null, "root"), node = append(writer, owner.id, root.turn.id, "node");
-    const left = siblingEntry(writer, owner.id, node.turn.id, "left", "user");
-    const right = siblingEntry(writer, owner.id, node.turn.id, "right", "assistant");
+    const left = entry(writer, owner.id, node.turn.id, "left", "user");
+    const right = entry(writer, owner.id, node.turn.id, "right", "assistant");
     const readNode = append(writer, consumer.id, null, "read");
     writer.selectSourcePath(owner.id, "main", [root.entry.id, left.id]);
     writer.selectSourcePath(owner.id, "right", [root.entry.id, right.id]);
@@ -202,7 +187,7 @@ test("67: projection loads only direct-support owner cursors and reuses reader m
         store.publishSourcePath(owner.id, "main", ids, parent!, "first");
         store.publishSourcePath(owner.id, "prefix", ids.slice(0, 100), store.getSourceEntry(ids[99]!)!.turnId, "second");
         owners.push({ sessionId: owner.id, path: { sessionId: owner.id, branch: "main", headTurnId: parent },
-          factId: fact(store, owner.id, "main", parent!, `T${parent}#user`, ids.at(-1)).id });
+          factId: fact(store, owner.id, "main", parent!, `T${parent}#user`, ids.at(-1)!).id });
       }
       for (const owner of owners.slice(0, 2)) knowledge(store, owner.path, owner.factId, `supported-${owner.sessionId}`);
     });
