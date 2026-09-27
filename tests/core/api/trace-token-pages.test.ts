@@ -29,7 +29,9 @@ function rendered(turnId: number, full = true, part?: "user" | "assistant" | `t$
   const entries = hydrate(memory.store.listSourceEntries(turn.sessionId, turnId, full ? undefined : branch), memory.store);
   if (part) {
     const ordinal = part === "user" ? 1 : part === "assistant" ? 2 : Number(part.slice(1));
-    return wholeTrace(memory, `T${turnId}#E${ordinal}`, { full });
+    const selected = entries.find(entry => entry.entryOrdinal === ordinal)!;
+    // The oracle renders the stored entry directly; it must not reuse the paging API under test.
+    return finish(renderTrace(turn, [selected], memory.config.render, { full, blocks: true }));
   }
   const body = finish(renderTrace(turn, entries, memory.config.render, { full }));
   return `${body}\nRaw: T${turnId}#E${entries[0]!.entryOrdinal}..E${entries.at(-1)!.entryOrdinal}`;
