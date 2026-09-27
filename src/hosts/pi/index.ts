@@ -12,8 +12,8 @@ import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggle
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, directoryAllocation, enrollmentDefault, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
-import { visibleView, extendVisibleView, knowledgeAccountingHash, type ContextEntry, type VisibleBinding } from "./visible.ts";
+import { TraceMemory, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
+import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
 import { CURRENT_CONTEXT_SNAPSHOT_EVENT, type CurrentContextSnapshotResult } from "./context-snapshot.ts";
@@ -302,8 +302,26 @@ export default function (pi: ExtensionAPI) {
    * can never satisfy coverage. `session` is null until the first reply allocates the memory session
    * id; an injection written before that is recognised afterwards through the Pi session id here. */
   const binding = (): VisibleBinding => ({ db: dbPath, session: state.sessionId ?? null, pi: state.piId });
-  const carrier = (supplied: SuppliedMaterial, text: string) => ({ traceMemory: { ...binding(), supplied,
-    ...(supplied.knowledgeTokens === undefined ? {} : { knowledgeHash: knowledgeAccountingHash(text, supplied.knowledgeTokens) }) } });
+  /** 97: the carrier names the delivery recorded for its own node; the walk binds that key to the
+   * Turn Pi persisted it under. `supplied` Knowledge fields describe the text; nothing reads them. */
+  const carrier = (supplied: SuppliedMaterial, prompt?: string) => ({ traceMemory: { ...binding(), supplied, ...(prompt ? { prompt } : {}) } });
+  /** 97: the session host that owns this context's delivery records, known before allocation. */
+  const owner = () => state.sessionId ? memory.store.getSession(state.sessionId)!.host : `pi:${state.piId}`;
+  /** 97: the delivery key a persisted carrier of this database names. */
+  const deliveryKey = (entry: object): string | undefined => {
+    const own = (entry as { details?: { traceMemory?: { db?: unknown; prompt?: unknown } } }).details?.traceMemory;
+    return own?.db === dbPath && typeof own.prompt === "string" && own.prompt ? own.prompt : undefined;
+  };
+  /** 97: what this context has been delivered, read from the per-node records. Before allocation
+   * there is no Turn: the prompts on the path are the carriers Pi persisted on the selected branch. */
+  const delivered = (target?: TaskTarget | { sessionId: number; branch: string; headTurnId: number | null }): VisibleView =>
+    deliveredView(memory.store.deliveredKnowledge(target
+      ? { owner: owner(), sessionId: target.sessionId, branch: target.branch, headTurnId: target.headTurnId }
+      : { owner: owner(), sessionId: null, headTurnId: null, pending: ctx.sessionManager.getBranch().flatMap(entry =>
+        entry.type === "custom_message" && entry.customType === tag ? [deliveryKey(entry)].filter(key => key !== undefined).map(key => ({ key })) : []) }));
+  const deliveryPart = (block: { knowledgeCommitIds: number[]; knowledgeStates?: { fromCommit: number; toCommits: number[] }[]; knowledgeTokens?: number; text: string }) =>
+    ({ knowledgeCommitIds: block.knowledgeCommitIds, knowledgeStates: (block.knowledgeStates ?? []).map(knowledgeStateKey),
+      knowledgeTokens: block.knowledgeTokens ?? tokens(block.text) });
   /** The task a fork refusal is decided for: its phase, its evidence path and — 27d/18b — the
    * boundary that fixes which pending entries it may take, so 29c checks the batch this task would
    * really select and not a larger set it will never freeze. */
@@ -337,7 +355,7 @@ export default function (pi: ExtensionAPI) {
    * both are re-decided for every task, and 27c records the reason rather than only its verdict,
    * because the reason is what the run audit and the one warning say. */
   const unpublishedKnowledge = (target: TaskTarget): string | undefined => {
-    const delta = memory.injection(target, visible(binding()));
+    const delta = memory.injection(target, delivered(target));
     return delta.knowledgeCommitIds.length || delta.knowledgeStates?.length
       ? "Knowledge publication: ordinary deliverable material has not landed in the exact parent context" : undefined;
   };
@@ -716,7 +734,7 @@ export default function (pi: ExtensionAPI) {
   // native parent links only as far as the already reconciled leaf. Restoration/navigation still
   // rebuilds and verifies the full ancestry, and snapshots retain their full integrity check.
   let reconciledLeaf: string | null | undefined;
-  let reconciled: { ids: string[]; lineage: string; turnId?: number; selected: number[]; seen: Set<string>;
+  let reconciled: { ids: string[]; lineage: string; turnId?: number; head?: number; selected: number[]; seen: Set<string>;
     path: ReturnType<TraceMemory["store"]["sourcePathState"]>;
     toolCalls: Map<string, { ordinal: number; name: string; callId: string }> } | undefined;
   const reconcile = (check = true) => {
@@ -761,6 +779,9 @@ export default function (pi: ExtensionAPI) {
     reconciled = undefined; // a walk that throws leaves nothing to resume from
     let lineage = resume ? resume.lineage : state.originPiId ?? state.piId;
     let turnId = resume?.turnId;
+    // 97: the node a new user Turn descends from. It is the owning Turn, except after a compaction
+    // this host recorded: then the compaction's Turn, so the compaction lies on every later path.
+    let head = resume?.head;
     const ids = resume ? resume.ids : [], selected = resume ? resume.selected : [];
     const priorCount = selected.length;
     const seen = resume ? resume.seen : new Set<string>();
@@ -784,6 +805,20 @@ export default function (pi: ExtensionAPI) {
         if (data.dbPath === dbPath) lineage = data.piId;
         continue;
       }
+      // 97: a carrier's delivery belongs to the node Pi persisted it under.
+      const key = deliveryKey(entry);
+      if (entry.type === "custom_message" && entry.customType === tag) {
+        if (key && turnId) memory.store.bindDeliveryNode(key, state.sessionId, turnId);
+        continue;
+      }
+      if (entry.type === "compaction") {
+        const node = memory.store.findNativeTurn(state.sessionId, lineage, entry.id);
+        if (node?.kind === "compaction") {
+          head = node.turnId;
+          if (key) memory.store.bindDeliveryNode(key, state.sessionId, node.turnId);
+        }
+        continue;
+      }
       const source = piPersistedSource(entry);
       if (!source) continue;
       const { message, text: natural, calls } = source;
@@ -799,11 +834,13 @@ export default function (pi: ExtensionAPI) {
           role = memory.store.getSourceEntry(known.id)!.role;
         }
         selected.push(known.id); turnId = known.turnId;
+        if (role === "user" || head === undefined) head = known.turnId;
         if (role === "assistant") offer(known.turnId, known.calls);
         continue;
       }
       if (message.role === "user") {
-        turnId = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: turnId ?? null, kind: "turn", userPrompt: natural, startedAt: entry.timestamp }).id;
+        turnId = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: head ?? turnId ?? null, kind: "turn", userPrompt: natural, startedAt: entry.timestamp }).id;
+        head = turnId;
       }
       if (!turnId) { missing(`owning user entry for ${entry.id}`); continue; }
       const fragments: Parameters<typeof memory.appendEntry>[0]["calls"] = [];
@@ -842,10 +879,10 @@ export default function (pi: ExtensionAPI) {
     }
     state.sourceHead = selected.at(-1);
     if (turnId) {
-      state.head = turnId;
+      state.head = head ?? turnId;
       if (current) current.id = turnId;
     }
-    reconciled = { ids, lineage, turnId, selected, seen, toolCalls, path };
+    reconciled = { ids, lineage, turnId, head, selected, seen, toolCalls, path };
     return opportunities;
   });
 
@@ -929,10 +966,10 @@ export default function (pi: ExtensionAPI) {
     // separate trigger. Facts and Raw can suppress a revision but are never added to this payload.
     const authority = { binding: binding(), leaf: context.sessionManager.getLeafId(), branch: state.branch,
       head: state.head ?? null, projectId: state.projectId, sessionId: state.sessionId ?? null };
-    const view = visible(authority.binding);
     let block: ReturnType<TraceMemory["injection"]>;
     try {
-      block = memory.injection(state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null, branch: state.branch } : { projectId: state.projectId }, view);
+      const target = state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null, branch: state.branch } : undefined;
+      block = memory.injection(target ?? { projectId: state.projectId }, delivered(target));
     } catch (error) { context.ui.notify(String(error), "error"); return; }
     if (!block.text) return;
     // Publication, not an offer, is authoritative. Recheck every mutable binding immediately before
@@ -946,8 +983,12 @@ export default function (pi: ExtensionAPI) {
     const supplied: SuppliedMaterial = { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
       knowledgeTokens: block.knowledgeTokens,
       ...(block.knowledgeStates?.length ? { knowledgeStates: block.knowledgeStates } : {}) };
+    // 97 "Record at emission": this prompt's node owns the delivery once Pi persists the prompt.
+    const prompt = randomUUID();
+    try { memory.store.recordKnowledgeDelivery({ owner: owner(), nodeKey: prompt }, [deliveryPart(block)]); }
+    catch (error) { context.ui.notify(String(error), "error"); return; }
     return { message: { customType: tag, content: block.text, display: false,
-      details: { traceMemory: { ...carrier(supplied, block.text).traceMemory, composition: block.composition } } } };
+      details: { traceMemory: { ...carrier(supplied, prompt).traceMemory, composition: block.composition } } } };
   });
   pi.on("message_start", (event, context) => {
     ensure(context); reconcile();
@@ -1274,13 +1315,14 @@ export default function (pi: ExtensionAPI) {
     const valid = () => !closed && enabled() && state.sessionId === initial.sessionId
       && state.branch === initial.branch && state.head === initial.head && state.projectId === initial.projectId
       && (!initial.sessionId || memory.store.getSession(initial.sessionId)?.projectId === initial.projectId);
-    const allocate = (): ReturnType<typeof memory.compact> => {
+    const allocate = (knowledge = true): ReturnType<typeof memory.compact> => {
       try {
         if (!valid()) return { native: true, reason: "memory enrollment or the selected path changed" };
         if (state.sessionId) return memory.store.transaction(() => {
           if (!valid()) return { native: true as const, reason: "memory enrollment, project or the selected path changed" };
-          return memory.compact(state.sessionId!, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION));
+          return memory.compact(state.sessionId!, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION), false, { knowledge });
         });
+        if (!knowledge) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
         const block = memory.injection({ projectId: state.projectId });
         return { text: block.text, composition: block.composition, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
           knowledgeTokens: block.knowledgeTokens, knowledgeStates: block.knowledgeStates } };
@@ -1310,15 +1352,33 @@ export default function (pi: ExtensionAPI) {
     // 73 "Truncation is announced in the foreground": the warning describes exactly this carrier, and is
     // given once Pi has appended it (\`session_compact\` below). No callback runs between the final
     // reprice above and this return, and a compaction Pi does not append warns about nothing.
+    // 97 "Record at emission", in Claude Code's order: the supplement is recorded before it is
+    // published, as the compaction node's delivery once Pi appends the compaction (a compaction Pi
+    // never appends leaves the key unbound, and so on no path). What cannot be recorded, including
+    // anything before a memory session exists, is published without its Knowledge body.
+    let prompt: string | undefined;
+    if (state.sessionId) try {
+      prompt = randomUUID();
+      memory.store.recordKnowledgeDelivery({ owner: owner(), nodeKey: prompt }, [deliveryPart({ ...result.supplied, text: result.text })]);
+    } catch (error) {
+      prompt = undefined;
+      context.ui.notify(`Trace Memory: compaction Knowledge was not recorded and is left out: ${String(error)}`, "warning");
+    }
+    if (!prompt) {
+      if (signal?.aborted || closed) return { cancel: true };
+      result = allocate(false);
+      if (signal?.aborted || closed) return { cancel: true };
+      if ("native" in result || !result.text) return;
+    }
     publishedTruncation = result.truncated;
-    return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied, result.text).traceMemory, composition: result.composition } } } };
+    return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied, prompt).traceMemory, composition: result.composition } } } };
   });
   pi.on("session_compact", (_event, context) => {
     // Pi 0.85.1 finds its event entry by the first equal summary. Read the actual appended
     // compaction on the selected ancestry instead: equal text is never carrier identity.
     const entry = context.sessionManager.getBranch().filter(entry => entry.type === "compaction").at(-1);
     if (!entry || entry.type !== "compaction") return;
-    const own = (entry.details as { traceMemory?: VisibleBinding } | undefined)?.traceMemory;
+    const own = (entry.details as { traceMemory?: VisibleBinding & { prompt?: unknown } } | undefined)?.traceMemory;
     const custom = own?.db === dbPath && own.pi === state.piId && own.session === (state.sessionId ?? null);
     lastCompaction = custom ? "bounded entry views" : "native delegation — saved without Trace Memory material coverage";
     const omitted = custom ? publishedTruncation : undefined;
@@ -1334,8 +1394,19 @@ export default function (pi: ExtensionAPI) {
       context.ui.notify(`Trace Memory: compaction omitted ${parts.join(" and ")}${raw ? "; omitted Raw remains pending for Noting." : "."}`, "warning");
     }
     if (enabled() && state.sessionId) {
-      const turn = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: state.head, kind: "compaction", assistantText: entry.summary, startedAt: now(), endedAt: now() });
-      state.head = turn.id; save();
+      const sessionId = state.sessionId;
+      const key = custom && typeof own.prompt === "string" && own.prompt ? own.prompt : undefined;
+      const turn = memory.store.transaction(() => {
+        const turn = memory.store.appendTurn({ sessionId, parentTurnId: state.head, kind: "compaction", assistantText: entry.summary, startedAt: now(), endedAt: now() });
+        // 97: the compaction is a node on every later path. It starts from its own supplement; a
+        // compaction without ours (native) starts from nothing.
+        memory.store.bindNativeTurn(sessionId, reconciled?.lineage ?? state.originPiId ?? state.piId, entry.id, turn.id, "compaction");
+        if (key) memory.store.bindDeliveryNode(key, sessionId, turn.id);
+        return turn;
+      });
+      state.head = turn.id;
+      if (reconciled) reconciled.head = turn.id;
+      save();
     }
     context.ui.notify(`Trace Memory: compaction used ${lastCompaction}.`, "info");
   });

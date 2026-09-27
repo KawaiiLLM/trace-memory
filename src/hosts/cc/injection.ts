@@ -1,12 +1,12 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import { legacyKnowledgeTokens } from "../../core/render/retained-knowledge.ts";
-import { TraceMemory, knowledgeStateKey, noVisibility, type Injection, type KnowledgeStateReceipt, type VisibleView } from "../../core/api/index.ts";
+import { TraceMemory, deliveredView, knowledgeStateKey, noVisibility, type DeliveryNode, type DeliveryPart, type DeliveryTarget,
+  type Injection, type KnowledgeStateReceipt, type PendingNode, type VisibleView } from "../../core/api/index.ts";
 import type { TransportItem } from "../../core/render/material.ts";
+import type { KnowledgePath } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
-import { CcProjection } from "./importer.ts";
-import { ccSourceBlocks, classifySourceRecord, nativeParentId, readCompleteTranscript, selectedNativePath, type CcNativeRecord } from "./transcript.ts";
+import { ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
 
 export const CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
 const BEGIN = CC_INJECTION_BEGIN;
@@ -118,321 +118,17 @@ export function decodeCcInjection(content: unknown, binding: CcVisibleBinding): 
   return digest(header.knowledgeTokens === undefined ? body : JSON.stringify([header.knowledgeTokens, body])) === header.sha256 ? header : null;
 }
 
-const attachmentContents = (record: CcNativeRecord): unknown[] => {
-  if (record.type !== "attachment" || record.isSidechain === true || !object(record.attachment) ||
-      record.attachment.type !== "hook_additional_context" ||
-      !["SessionStart", "UserPromptSubmit"].includes(String(record.attachment.hookEvent)) ||
-      !Array.isArray(record.attachment.content)) return [];
-  return record.attachment.content;
-};
-
-function compactPreserved(record: CcNativeRecord): string[] | null {
-  if (record.type !== "system" || record.subtype !== "compact_boundary") return null;
-  const metadata = object(record.compactMetadata) ? record.compactMetadata : null;
-  const messages = metadata && object(metadata.preservedMessages) ? metadata.preservedMessages : null;
-  if (!messages || !Array.isArray(messages.uuids) || !messages.uuids.every((id: unknown) => typeof id === "string" && id))
-    throw new Error(`native compact boundary ${String(record.uuid)} has invalid preservedMessages`);
-  return messages.uuids;
-}
-
-/** A function hook returning rewritten messages makes CC 2.1.280 rebuild the entire compacted
- * segment. It writes a summary immediately after the boundary and gives every returned user
- * message a new UUID; copied native prompts keep their promptSource. No old UUID is authority here. */
-function rebuiltCompactSegment(selected: NativeSelection, index: number): CcNativeRecord[] | null {
-  const boundary = selected.records[index]!;
-  if (boundary.type !== "system" || boundary.subtype !== "compact_boundary") return null;
-  const metadata = object(boundary.compactMetadata) ? boundary.compactMetadata : null;
-  if (!metadata || Object.hasOwn(metadata, "preservedMessages") || Object.hasOwn(metadata, "preservedSegment")) return null;
-  const summary = selected.records[index + 1];
-  if (!summary || summary.type !== "user" || summary.isCompactSummary !== true ||
-      summary.isVisibleInTranscriptOnly !== true || summary.parentUuid !== boundary.uuid ||
-      typeof summary.promptId !== "string" || !summary.promptId)
-    throw new Error(`native compact boundary ${String(boundary.uuid)} has unknown preservation metadata`);
-  return selected.records.slice(index);
-}
-
-/** Before another source is written, the source leaf is the boundary itself. Follow only its
- * unique native summary continuation; an unrelated physical suffix has no retention authority. */
-function selectedRebuiltContinuation(records: readonly CcNativeRecord[], selected: NativeSelection): NativeSelection {
-  const boundary = selected.records.at(-1)!;
-  if (boundary.type !== "system" || boundary.subtype !== "compact_boundary" ||
-      !object(boundary.compactMetadata) || Object.hasOwn(boundary.compactMetadata, "preservedMessages") ||
-      Object.hasOwn(boundary.compactMetadata, "preservedSegment")) return selected;
-  const start = records.indexOf(boundary);
-  const childrenByParent = new Map<string, CcNativeRecord[]>();
-  for (const record of records.slice(start + 1)) {
-    if (record.isSidechain === true || typeof record.uuid !== "string") continue;
-    const parent = nativeParentId(record);
-    if (parent !== null) childrenByParent.set(parent, [...(childrenByParent.get(parent) ?? []), record]);
-  }
-  const continuation: CcNativeRecord[] = [];
-  let parent = boundary.uuid!, promptId: string | undefined, parentPosition = start;
-  for (;;) {
-    const children = childrenByParent.get(parent) ?? [];
-    if (children.length > 1) throw new Error("native retained context has ambiguous compact tails");
-    const child = children[0];
-    if (!child) break;
-    const childPosition = records.indexOf(child);
-    if (childPosition <= parentPosition || continuation.some(record => record.uuid === child.uuid) || child.uuid === boundary.uuid)
-      throw new Error(`native retained tail cycle at ${child.uuid}`);
-    if (!continuation.length) {
-      if (child.type !== "user" || child.isCompactSummary !== true ||
-          child.isVisibleInTranscriptOnly !== true || child.parentUuid !== boundary.uuid ||
-          typeof child.promptId !== "string" || !child.promptId)
-        throw new Error(`native compact boundary ${boundary.uuid} has unknown preservation metadata`);
-      promptId = child.promptId;
-    } else if (child.type !== "attachment" && !(child.type === "user" &&
-        child.isCompactSummary !== true && child.isVisibleInTranscriptOnly !== true &&
-        child.promptId === promptId && typeof child.message?.content === "string" &&
-        classifySourceRecord(child) === null)) {
-      throw new Error(`native compact boundary ${boundary.uuid} has unknown preservation metadata`);
-    }
-    continuation.push(child); parent = child.uuid!; parentPosition = childPosition;
-  }
-  if (!continuation.length) throw new Error(`native compact boundary ${boundary.uuid} has unknown preservation metadata`);
-  return { ...selected, records: [...selected.records, ...continuation] };
-}
-
-interface NativeSelection { leafUuid: string | null; records: CcNativeRecord[]; problem?: string }
-interface NativePreservation { boundary: CcNativeRecord; anchor: CcNativeRecord; preserved: string[]; head: string; tail: string }
-
-/** Validate the native preservation description without deciding whether this boundary owns the
- * selected context. Abandoned siblings are allowed to remain in the physical file. */
-function nativePreservation(record: CcNativeRecord, byId: ReadonlyMap<string, CcNativeRecord>): NativePreservation | null {
-  if (record.type !== "system" || record.subtype !== "compact_boundary" || typeof record.uuid !== "string") return null;
-  const metadata = object(record.compactMetadata) ? record.compactMetadata : null;
-  const segment = metadata && object(metadata.preservedSegment) ? metadata.preservedSegment : null;
-  const messages = metadata && object(metadata.preservedMessages) ? metadata.preservedMessages : null;
-  const preserved = messages?.uuids, anchorId = messages?.anchorUuid, head = segment?.headUuid, tail = segment?.tailUuid;
-  if (!Array.isArray(preserved) || !preserved.length || !preserved.every(id => typeof id === "string" && id) ||
-      typeof anchorId !== "string" || !anchorId || typeof head !== "string" || typeof tail !== "string" ||
-      preserved[0] !== head || preserved.at(-1) !== tail || record.logicalParentUuid !== tail || record.parentUuid !== null)
-    return null;
-  // Claude Code's own loader (2.1.280) looks the preserved messages up by UUID and re-inserts them after
-  // the anchor; their parent links are not part of that contract. Its automatic compaction lists, as the
-  // last preserved message, one written under the summary, and puts attachments between the boundary
-  // and the summary. So every preserved message must exist, and the anchor must descend from the boundary.
-  if (!preserved.every(id => byId.has(id))) return null;
-  const anchor = byId.get(anchorId);
-  if (!anchor) return null;
-  for (let current: CcNativeRecord | undefined = anchor, seen = new Set<string>(); current !== record;) {
-    const parent: string | null = current === undefined ? null : nativeParentId(current);
-    if (parent === null || seen.has(parent)) return null;
-    seen.add(parent); current = byId.get(parent);
-  }
-  return { boundary: record, anchor, preserved: preserved as string[], head, tail };
-}
-
-/** CC may copy a compacted context by putting the preserved head after a summary anchor while the
- * boundary still names the preserved tail as its logical parent. Break only that fully validated
- * host retention cycle; source/evidence ancestry keeps its original strict resolver. */
-function selectedRetentionPath(records: readonly CcNativeRecord[]): NativeSelection {
-  const ordinary = selectedNativePath(records);
-  if (!ordinary.problem?.startsWith("native lineage cycle at ")) return ordinary;
-  const byId = new Map(records.flatMap(record => typeof record.uuid === "string" && record.uuid
-    ? [[record.uuid, record] as const] : []));
-  const projectedBoundaries = new Set<string>();
-  const projected = records.map(record => {
-    const shape = nativePreservation(record, byId);
-    if (!shape || nativeParentId(byId.get(shape.head)!) !== shape.anchor.uuid) return record;
-    projectedBoundaries.add(record.uuid as string);
-    return { ...record, logicalParentUuid: undefined, parentUuid: null };
-  });
-  const selected = selectedNativePath(projected);
-  if (selected.problem || !selected.records.some(record => typeof record.uuid === "string" && projectedBoundaries.has(record.uuid))) return ordinary;
-  return { leafUuid: selected.leafUuid, records: selected.records.map(record => byId.get(record.uuid as string)!) };
-}
-
-const hasKnowledgeAttachment = (record: CcNativeRecord): boolean => attachmentContents(record).length > 0;
-
-/** Extend an authoritative source path only through the one retained Hook-carrier tail. A physical
- * suffix or a shared ancestor is not branch authority. */
-function retainedTail(records: readonly CcNativeRecord[], roots: Set<string>, after: number,
-  carrier: (record: CcNativeRecord) => boolean = hasKnowledgeAttachment): Set<string> {
-  const positions = new Map<string, number>();
-  records.forEach((record, index) => { if (typeof record.uuid === "string" && record.uuid) positions.set(record.uuid, index); });
-  const eligible = new Map<string, CcNativeRecord>();
-  for (let index = after + 1; index < records.length; index++) {
-    const record = records[index]!;
-    if (typeof record.uuid === "string" && record.uuid && record.isSidechain !== true) eligible.set(record.uuid, record);
-  }
-  const carrierPaths: string[][] = [];
-  for (const record of eligible.values()) {
-    if (!carrier(record)) continue;
-    const path: string[] = [], seen = new Set<string>();
-    let current: CcNativeRecord | undefined = record;
-    while (current && typeof current.uuid === "string" && !roots.has(current.uuid)) {
-      if (seen.has(current.uuid)) throw new Error(`native retained tail cycle at ${current.uuid}`);
-      seen.add(current.uuid); path.push(current.uuid);
-      const parent = nativeParentId(current);
-      if (parent === null) break;
-      current = eligible.get(parent);
-      if (!current && roots.has(parent)) break;
-    }
-    const parent = path.length ? nativeParentId(eligible.get(path.at(-1)!)!) : null;
-    if (path.length && parent !== null && roots.has(parent)) carrierPaths.push(path.reverse());
-  }
-  if (!carrierPaths.length) return new Set();
-  carrierPaths.sort((left, right) => left.length - right.length || (positions.get(left.at(-1)!)! - positions.get(right.at(-1)!)!));
-  const chosen = carrierPaths.at(-1)!;
-  for (const path of carrierPaths) if (!path.every((id, index) => chosen[index] === id))
-    throw new Error("native retained context has ambiguous Hook-carrier tails");
-  return new Set(chosen);
-}
-
-function selectedPreservation(records: readonly CcNativeRecord[], selected: NativeSelection,
-  byId: ReadonlyMap<string, CcNativeRecord>): { shape: NativePreservation; index: number; retainedStart: number } | null {
-  const selectedIndex = new Map(selected.records.map((record, index) => [record.uuid as string, index]));
-  const candidates: { shape: NativePreservation; index: number; retainedStart: number }[] = [];
-  for (const record of records) {
-    if (record.type !== "system" || record.subtype !== "compact_boundary" || typeof record.uuid !== "string") continue;
-    const onPath = selectedIndex.get(record.uuid);
-    const shape = nativePreservation(record, byId);
-    if (onPath !== undefined) {
-      if (!shape) {
-        const preserved = compactPreserved(record);
-        for (const id of preserved!) if (!byId.has(id))
-          throw new Error(`native compact boundary ${record.uuid} preserves missing record ${id}`);
-        throw new Error(`native compact boundary ${record.uuid} has inconsistent preservation metadata`);
-      }
-      candidates.push({ shape, index: onPath, retainedStart: onPath + 1 });
-      continue;
-    }
-    if (!shape || typeof shape.anchor.promptId !== "string" || !shape.anchor.promptId) continue;
-    // Manual /compact continues from the preserved tail rather than the boundary. The summary anchor
-    // and the non-source continuation share the native prompt identity, while ancestry proves the
-    // continuation belongs to the selected path. Prompt identity alone is never occurrence authority.
-    const continuation = selected.records.find(candidate => candidate.uuid !== record.uuid &&
-      !shape.preserved.includes(candidate.uuid as string) && candidate.promptId === shape.anchor.promptId &&
-      classifySourceRecord(candidate) === null && nativeParentId(candidate) === shape.tail);
-    if (continuation) {
-      const index = selectedIndex.get(continuation.uuid as string)!;
-      candidates.push({ shape, index, retainedStart: index });
-    }
-  }
-  if (!candidates.length) return null;
-  candidates.sort((left, right) => left.index - right.index);
-  const chosen = candidates.at(-1)!;
-  if (candidates.some(candidate => candidate !== chosen && candidate.index === chosen.index &&
-      candidate.shape.boundary.uuid !== chosen.shape.boundary.uuid))
-    throw new Error("native retained context has ambiguous compact boundaries");
-  return chosen;
-}
-
-/** Select what native CC actually retains. Evidence chooses the live branch; validated preservation
- * metadata replaces the pre-boundary portion of that ancestry. Neither a shared UUID nor physical
- * recency can grant an abandoned boundary authority. */
-export function selectedCcVisibleRecords(records: readonly CcNativeRecord[]): CcNativeRecord[] {
-  const source = selectedRetentionPath(records);
-  if (source.problem) throw new Error(source.problem);
-  if (!source.leafUuid) return [];
-  const selected = selectedRebuiltContinuation(records, source);
-  const positions = new Map<string, number>();
-  const byId = new Map<string, CcNativeRecord>();
-  records.forEach((record, index) => {
-    if (typeof record.uuid === "string" && record.uuid) { positions.set(record.uuid, index); byId.set(record.uuid, record); }
-  });
-  const selectedIds = new Set(selected.records.map(record => record.uuid as string));
-  const latestBoundary = selected.records.map(record => record.type === "system" && record.subtype === "compact_boundary").lastIndexOf(true);
-  if (latestBoundary >= 0 && object(selected.records[latestBoundary]!.compactMetadata) &&
-      !Object.hasOwn(selected.records[latestBoundary]!.compactMetadata as object, "preservedMessages") &&
-      !Object.hasOwn(selected.records[latestBoundary]!.compactMetadata as object, "preservedSegment")) {
-    const segment = rebuiltCompactSegment(selected, latestBoundary)!;
-    // The returned segment is authoritative, but a subsequent Hook or function carrier can be
-    // appended below its selected source leaf before the next source record is persisted.
-    const ids = new Set(segment.map(record => record.uuid as string));
-    const promptId = segment[1]!.promptId;
-    for (const id of retainedTail(records, ids, positions.get(source.leafUuid)!, record =>
-      hasKnowledgeAttachment(record) || isRebuiltCarrier(record, promptId))) ids.add(id);
-    return records.filter(record => typeof record.uuid === "string" && ids.has(record.uuid));
-  }
-  const preservation = selectedPreservation(records, selected, byId);
-  const retained = new Set<string>();
-  if (preservation) {
-    for (const id of preservation.shape.preserved) retained.add(id);
-    retained.add(preservation.shape.boundary.uuid as string);
-    for (const record of selected.records.slice(preservation.retainedStart)) retained.add(record.uuid as string);
-  } else for (const id of selectedIds) retained.add(id);
-  const tail = retainedTail(records, retained, positions.get(source.leafUuid)!);
-  for (const id of tail) retained.add(id);
-  return records.filter(record => typeof record.uuid === "string" && retained.has(record.uuid));
-}
-
-function isRebuiltCarrier(record: CcNativeRecord, promptId: unknown): boolean {
-  return record.type === "user" && !classifySourceRecord(record) && record.isSidechain !== true &&
-    record.isMeta !== true && record.promptSource === undefined && record.origin === undefined &&
-    record.promptId === promptId && record.message?.role === "user" &&
-    typeof record.message.content === "string" && record.message.content.startsWith(BEGIN);
-}
-
-function rebuiltCarrier(records: readonly CcNativeRecord[], index: number): string | null {
-  const boundary = records.slice(0, index).map(item => item.type === "system" && item.subtype === "compact_boundary" &&
-    object(item.compactMetadata) && !Object.hasOwn(item.compactMetadata as object, "preservedMessages")).lastIndexOf(true);
-  const summary = boundary >= 0 ? records[boundary + 1] : null;
-  const record = records[index]!;
-  return summary && index > boundary + 1 && isRebuiltCarrier(record, summary.promptId)
-    ? record.message!.content as string : null;
-}
-
-function addKnowledgeCarrier(view: VisibleView, content: string, binding: CcVisibleBinding, uuid: string): void {
-  const envelope = decodeCcInjection(content, binding);
-  if (!envelope) throw new Error(`native compact carrier ${uuid} has invalid Knowledge envelope`);
-  const headerEnd = content.indexOf("\n", `${BEGIN}\n${CC_INJECTION_HEADER}`.length);
-  const body = content.slice(headerEnd + 1, -(`\n${END}`).length);
-  view.knowledgeTokens = (view.knowledgeTokens ?? 0) + (envelope.knowledgeTokens ?? legacyKnowledgeTokens(body));
-  for (const commit of envelope.commits) view.knowledgeCommitIds.add(commit);
-  for (const state of envelope.states) (view.knowledgeStates ??= new Set()).add(knowledgeStateKey(state));
-}
-
-/** Before native persistence, the function hook's returned messages are the sole retention
- * authority. Their handles must resolve to an already selected, reconstructed native carrier;
- * native user prompts and mere copies in tool/assistant text are never delivery evidence. */
-export function ccRetainedMessageView(records: readonly CcNativeRecord[], binding: CcVisibleBinding,
-  messages: readonly { role: string; text: string; handle?: string }[]): VisibleView {
-  const view = noVisibility();
-  view.knowledgeTokens = 0;
-  const visible = selectedCcVisibleRecords(records);
-  const byId = new Map(visible.map(record => [record.uuid, record]));
-  for (const message of messages) {
-    if (message.role !== "user" || !message.handle || !message.text.startsWith(BEGIN)) continue;
-    const record = byId.get(message.handle);
-    if (!record || record.type !== "user" || record.promptSource !== undefined || record.origin !== undefined ||
-        record.isSidechain === true || record.isMeta === true || record.message?.role !== "user" ||
-        record.message.content !== message.text || classifySourceRecord(record)) continue;
-    if (rebuiltCarrier(visible, visible.indexOf(record)) !== message.text) continue;
-    addKnowledgeCarrier(view, message.text, binding, message.handle);
-  }
-  return view;
-}
-
-export function ccVisibleView(records: readonly CcNativeRecord[], binding: CcVisibleBinding): VisibleView {
-  const view = noVisibility();
-  view.knowledgeTokens = 0;
-  const visible = selectedCcVisibleRecords(records);
-  for (let index = 0; index < visible.length; index++) {
-    const record = visible[index]!;
-    const source = classifySourceRecord(record);
-    if (source && source.kind !== "compaction") view.raw.set(source.nativeId, "source");
-    for (const content of attachmentContents(record)) {
-      if (decodeCcInjection(content, binding)) addKnowledgeCarrier(view, content as string, binding, record.uuid as string);
-    }
-    const rebuilt = rebuiltCarrier(visible, index);
-    if (rebuilt) addKnowledgeCarrier(view, rebuilt, binding, record.uuid as string);
-  }
-  return view;
-}
-
-const enabled = (binding: CcSessionBinding, memory: ReturnType<typeof TraceMemory>): boolean => sessionEnabled(binding, memory.store);
+type Memory = ReturnType<typeof TraceMemory>;
+const enabled = (binding: CcSessionBinding, memory: Memory): boolean => sessionEnabled(binding, memory.store);
 
 async function lockedInjectionBinding(config: ResolvedCcHostConfig, nativeSessionId: string,
-  transcriptPath: string, memory: ReturnType<typeof TraceMemory>): Promise<CcSessionBinding> {
+  transcriptPath: string, memory: Memory): Promise<CcSessionBinding> {
   return updateBinding(config, nativeSessionId, current => {
     if (!current || current.dbPath !== config.dbPath || current.transcriptPath !== transcriptPath)
       throw new Error("CC binding changed while preparing injection");
     // 84 edge case: a rollback that reaches back before this native session's own core session was
     // created still leaves the binding naming it; drop it and fall through below exactly as a
-    // not-yet-registered binding — `CcProjection.synchronize()` (called right after this returns)
-    // then re-allocates a fresh core session for this native identity and re-imports Raw.
+    // not-yet-registered binding. The executor's import re-allocates a core session for it.
     current = dropLostCoreSession(current, memory.store);
     if (!enabled(current, memory)) return current;
     if (current.coreSessionId !== null) {
@@ -450,59 +146,174 @@ async function lockedInjectionBinding(config: ResolvedCcHostConfig, nativeSessio
   });
 }
 
-export async function ccPrepareSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<void> {
+/** Enrollment and the provisional project are the only binding writes an injection makes. A
+ * binding that needs neither is read without the lock the executor's import holds. */
+async function injectionBinding(config: ResolvedCcHostConfig, initial: CcSessionBinding, memory: Memory): Promise<CcSessionBinding> {
+  const settled = dropLostCoreSession(initial, memory.store) === initial &&
+    (!enabled(initial, memory) || initial.coreSessionId !== null || initial.projectId !== null && !!memory.store.getProject(initial.projectId));
+  return settled ? initial : lockedInjectionBinding(config, initial.nativeSessionId, initial.transcriptPath, memory);
+}
+
+export type CcDeliveryEvent = { kind: "session-start" } | { kind: "prompt"; promptId: string } | { kind: "compact" };
+
+type DeliveryAt = Pick<DeliveryTarget, "turnId" | "nodeKey" | "follows">;
+
+/** 97: the head node of one native session, from the database and the binding. Only records
+ * written after the stored leaf are read: they may hold prompts and compactions the executor has
+ * not imported. `at()` is where a publication to the head node is recorded; `following()` is the
+ * node of a compaction written now, after the last source record. */
+export function ccDeliveryHead(binding: CcSessionBinding, memory: Memory): { owner: string; node: DeliveryNode;
+  at: () => DeliveryAt; following: () => DeliveryAt; target: KnowledgePath | { projectId: number } } {
+  const owner = coreHostOf(binding), core = binding.coreSessionId, store = memory.store;
+  const unanchored = (): never => { throw new Error("a compaction with no source record before it holds no delivery"); };
+  const head = (headTurnId: number | null, tail: ReturnType<typeof tailNodes>, leaf: string | null,
+    target: KnowledgePath | { projectId: number }) => {
+    const pending: PendingNode[] = tail.nodes.map(node => "prompt" in node ? { key: node.prompt }
+      : { key: node.follows === null ? null : store.compactionDeliveryKey(owner, node.follows), compaction: true });
+    const last = tail.nodes.at(-1);
+    return { owner, node: { owner, sessionId: core, ...(core === null ? {} : { branch: binding.branch }), headTurnId, pending },
+      at: (): DeliveryAt => !last ? headTurnId === null ? {} : { turnId: headTurnId }
+        : "prompt" in last ? { nodeKey: last.prompt }
+        : { nodeKey: pending.at(-1)!.key ?? randomUUID(), follows: last.follows ?? unanchored() },
+      following: (): DeliveryAt => ({ nodeKey: randomUUID(), follows: leaf ?? unanchored() }), target };
+  };
+  if (core === null) {
+    if (binding.projectId === null) throw new Error("provisional Claude Code project is unavailable");
+    // Before allocation nothing is imported: the nodes on the path are those the transcript holds.
+    const tail = tailNodes(readTranscriptTail(binding.transcriptPath, 0) ?? []);
+    return head(null, tail, tail.leaf, { projectId: binding.projectId });
+  }
+  const session = store.getSession(core);
+  if (!session || session.host !== owner || session.projectId !== binding.projectId)
+    throw new Error("bound Claude Code core session or project disagrees with the database");
+  const turnOf = (uuid: string) => store.findSourceEntry(core, binding.nativeSessionId, uuid)?.turnId
+    ?? store.findNativeTurn(core, binding.nativeSessionId, uuid)?.turnId;
+  // 63: a cleared native session's root continues from the compaction its clear appended.
+  const root = binding.clearedFrom?.compactionTurnId ?? null;
+  let headTurnId: number | null = root;
+  if (binding.selectedLeafUuid !== null) {
+    headTurnId = binding.selectedHeadTurnId ?? turnOf(binding.selectedLeafUuid) ?? null;
+    if (headTurnId === null) throw new Error("native selected source has no persisted core Turn");
+  }
+  let tail: ReturnType<typeof tailNodes> = { nodes: [], exit: null, leaf: null };
+  const offset = binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset;
+  if (offset !== undefined) {
+    tail = tailNodes(readTranscriptTail(binding.transcriptPath, offset) ?? []);
+    if (tail.leaf !== null && tail.exit !== binding.selectedLeafUuid) {
+      // The executor has not imported a branch switch yet. A chain that starts in the tail is a new
+      // root branch; a branch point the import has reached is its Turn; otherwise the stored head
+      // stands until the import catches up.
+      const rebased = tail.exit === null ? root : turnOf(tail.exit) ?? null;
+      if (tail.exit === null || rebased !== null) headTurnId = rebased;
+      else console.error(`Trace Memory: unimported native branch point ${tail.exit}; using the stored head`);
+    }
+  }
+  return head(headTurnId, tail, tail.leaf ?? binding.selectedLeafUuid,
+    headTurnId === null ? { projectId: session.projectId } : { sessionId: core, branch: binding.branch, headTurnId });
+}
+
+const partOf = (output: CcHookOutput | null, visible: CcVisibleBinding): DeliveryPart[] => {
+  const context = output?.hookSpecificOutput.additionalContext;
+  if (!context) return [];
+  const header = decodeCcInjection(context, visible);
+  if (!header) throw new Error("emitted Claude Code carrier failed its own decoding");
+  return [{ knowledgeCommitIds: header.commits, knowledgeStates: header.states.map(knowledgeStateKey),
+    knowledgeTokens: header.knowledgeTokens ?? 0 }];
+};
+
+/** 97 "Record at emission": whatever parts `emit` returns are recorded at their node before the
+ * caller prints or stages them. The node's delivered state is read in one database snapshot; the
+ * record commits only if no other publication for this context landed in between. */
+async function deliver<T>(config: ResolvedCcHostConfig, input: Pick<CcHookInput, "session_id" | "transcript_path">,
+  event: CcDeliveryEvent, emit: (output: CcHookOutput | null, visible: CcVisibleBinding) => { outputs: (CcHookOutput | null)[]; result: T },
+  options: { prepared?: boolean; onSnapshot?: (db: import("node:sqlite").DatabaseSync, binding: CcSessionBinding) => void } = {}): Promise<T | null> {
   const initial = readBinding(config, input.session_id);
-  if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
+  if (!initial || initial.dbPath !== config.dbPath || input.transcript_path !== undefined && initial.transcriptPath !== input.transcript_path)
+    throw new Error("CC native session or transcript binding is unavailable");
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); },
     config.coreConfig, undefined, entry => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : undefined);
   try {
-    const binding = await lockedInjectionBinding(config, initial.nativeSessionId, initial.transcriptPath, memory);
-    if (!enabled(binding, memory)) return;
-    const projection = new CcProjection(config, binding, memory);
-    const projected = await projection.synchronize();
-    if (projected.state === "not-ready")
-      throw new Error(projected.problems.join("; ") || "native source projection is not ready");
+    const binding = options.prepared ? initial : await injectionBinding(config, initial, memory);
+    if (!enabled(binding, memory)) return null;
+    const visible = { db: databaseIdentity(config.dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
+    const selected = memory.store.readSnapshot(() => {
+      options.onSnapshot?.(memory.store.db, binding);
+      const head = ccDeliveryHead(binding, memory);
+      const at = event.kind === "prompt" ? { nodeKey: event.promptId } : event.kind === "compact" ? head.following() : head.at();
+      // A compaction's supplement is rendered against nothing delivered: it starts its own node.
+      const delivered = event.kind === "compact" ? { ...noVisibility(), knowledgeTokens: 0 }
+        : deliveredView(memory.store.deliveredKnowledge(event.kind === "prompt"
+          ? { ...head.node, pending: [...head.node.pending ?? [], { key: event.promptId }] } : head.node));
+      return { head, at, injection: memory.injection(head.target, delivered, true), watermark: memory.store.deliveryWatermark(head.owner) };
+    });
+    const { head, at, injection } = selected;
+    const output: CcHookOutput | null = injection.text ? { hookSpecificOutput: { hookEventName: "SessionStart",
+      additionalContext: encodeCcInjection(visible, injection) }, transportItems: injection.transportItems,
+      transportKnowledgeAllowance: injection.knowledgeAllowance } : null;
+    const { outputs, result } = emit(output, visible);
+    const parts = outputs.flatMap(value => partOf(value, visible));
+    if (parts.length) memory.store.transaction(() => {
+      if (memory.store.deliveryWatermark(head.owner) !== selected.watermark)
+        throw new Error("another Knowledge publication for this context landed while this one was rendered");
+      memory.store.recordKnowledgeDelivery({ owner: head.owner, ...at }, parts);
+    });
+    return result;
+  } finally {
+    // An injection owns no executor or claim. Closing its Store directly avoids invalidating work
+    // owned by the concurrently running MCP process.
+    memory.store.close();
+  }
+}
+
+/** Record an already-rendered publication (a frozen `/clear` compaction) at its compaction node. */
+export function recordCcBaseline(config: ResolvedCcHostConfig, binding: CcSessionBinding, outputs: readonly (CcHookOutput | null)[]): void {
+  const turnId = binding.clearedFrom?.compactionTurnId;
+  if (turnId == null || binding.coreSessionId === null) return;
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC clear Hook cannot run model work"); }, config.coreConfig);
+  try {
+    const visible = { db: databaseIdentity(config.dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
+    memory.store.recordKnowledgeDelivery({ owner: coreHostOf(binding), turnId }, outputs.flatMap(value => partOf(value, visible)));
   } finally { memory.store.close(); }
 }
 
-/** Read-only Knowledge selection for one SessionStart occurrence. Binding/project enrollment are the
- * only durable writes; this facade starts no importer, scheduler, worker, or executor loop. */
+/** SessionStart's only preparation: enrollment and the provisional project. */
+export async function ccPrepareSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<void> {
+  const initial = readBinding(config, input.session_id);
+  if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); }, config.coreConfig);
+  try { await injectionBinding(config, initial, memory); } finally { memory.store.close(); }
+}
+
+const sessionStartSource = (input: CcHookInput): void => {
+  if (!input.source || !(["startup", "resume", "clear", "compact"] as const).includes(input.source))
+    throw new Error("SessionStart source must be startup, resume, clear or compact");
+};
+
+/** One whole SessionStart publication (the unsliced `hook` command), recorded as one part. */
 export async function ccSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<CcHookOutput | null> {
-  const output = await prepareSessionStartInjection(config, input);
-  // Publish a clean occurrence only after selection, encoding and Store close all succeed.
-  // Clear's warning is written with its child link; ordinary SessionStart emits no warning.
+  sessionStartSource(input);
+  const output = input.source === "compact" ? null
+    : await deliver(config, input, { kind: "session-start" }, output => ({ outputs: [output], result: output }));
+  // Publish a clean occurrence only after selection, recording and Store close all succeed.
   await updateBinding(config, input.session_id, current => {
     if (!current || current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path)
       throw new Error("CC binding changed while completing SessionStart");
     return current.lastCompactionNotice == null ? current : { ...current, lastCompactionNotice: null };
   });
-  return output;
+  return output ?? null;
 }
 
-export async function ccCompactInjection(config: ResolvedCcHostConfig, input: CcHookInput,
-  retained: readonly { role: string; text: string; handle?: string }[]): Promise<CcHookOutput | null> {
-  return prepareSessionStartInjection(config, input, false, undefined, retained);
-}
-
-export function ccPromptContextReady(transcriptPath: string): boolean {
-  const snapshot = readCompleteTranscript(transcriptPath);
-  if (snapshot.problem || snapshot.incompleteBytes)
-    throw new Error(snapshot.problem ?? `native transcript has ${snapshot.incompleteBytes} incomplete trailing bytes`);
-  if (!snapshot.exists) return false;
-  const selected = selectedNativePath(snapshot.records);
-  if (selected.problem) throw new Error(selected.problem);
-  return selected.leafUuid !== null;
-}
-
-export async function ccPromptInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<CcHookOutput | null> {
-  if (!ccPromptContextReady(input.transcript_path)) return null;
-  return prepareSessionStartInjection(config, input);
-}
-
-export async function ccPreparedSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput):
-  Promise<{ output: CcHookOutput | null; snapshot: object | null }> {
+/** 66's sliced SessionStart: the parts and the database snapshot they were rendered from. */
+export async function ccPreparedSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput,
+  slice: (output: CcHookOutput | null, visible: CcVisibleBinding) => (CcHookOutput | null)[]):
+  Promise<{ output: CcHookOutput | null; slices: (CcHookOutput | null)[]; snapshot: object | null }> {
+  sessionStartSource(input);
+  if (input.source === "compact") return { output: null, slices: slice(null, { db: "", nativeSession: input.session_id, coreSession: null }), snapshot: null };
   let snapshot: object | undefined;
-  const output = await prepareSessionStartInjection(config, input, true, (db, binding) => {
+  const delivered = await deliver(config, input, { kind: "session-start" }, (output, visible) => {
+    const slices = slice(output, visible);
+    return { outputs: slices, result: { output, slices } };
+  }, { prepared: true, onSnapshot: (db, binding) => {
     const watermarks = db.prepare(`SELECT
       (SELECT IFNULL(MAX(id),0) FROM facts) f,
       (SELECT IFNULL(MAX(rowid),0) FROM consolidated_facts) cf,
@@ -529,79 +340,18 @@ export async function ccPreparedSessionStartInjection(config: ResolvedCcHostConf
         inheritedTail: binding.clearedFrom.inheritedEntryIds.at(-1) ?? null },
       transcriptPath: binding.transcriptPath, dbPath: binding.dbPath, cwd: binding.cwd };
     snapshot = { watermarks, owner, header, cursor, own };
-  });
-  if (!snapshot && output) throw new Error("prepared SessionStart did not capture its input snapshot");
-  return { output, snapshot: snapshot ?? null };
+  } });
+  if (!delivered) return { output: null, slices: slice(null, { db: "", nativeSession: input.session_id, coreSession: null }), snapshot: null };
+  if (!snapshot) throw new Error("prepared SessionStart did not capture its input snapshot");
+  return { ...delivered, snapshot };
 }
 
-async function prepareSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput,
-  prepared = false, onSnapshot?: (db: import("node:sqlite").DatabaseSync, binding: CcSessionBinding) => void,
-  retained?: readonly { role: string; text: string; handle?: string }[]): Promise<CcHookOutput | null> {
-  if (!input.source || !(["startup", "resume", "clear", "compact"] as const).includes(input.source))
-    throw new Error("SessionStart source must be startup, resume, clear or compact");
-  const initial = readBinding(config, input.session_id);
-  if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); },
-    config.coreConfig, undefined, entry => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : undefined);
-  try {
-    let binding = prepared ? initial : await lockedInjectionBinding(config, initial.nativeSessionId, initial.transcriptPath, memory);
-    if (prepared) {
-      memory.store.db.exec("BEGIN");
-      onSnapshot?.(memory.store.db, binding);
-    }
-    if (!enabled(binding, memory)) {
-      if (prepared) memory.store.db.exec("COMMIT");
-      return null;
-    }
-    if (!prepared) {
-      const projection = new CcProjection(config, binding, memory);
-      const projected = await projection.synchronize();
-      binding = projection.currentBinding();
-      if (projected.state === "disabled") return null;
-      if (projected.state === "not-ready")
-        throw new Error(projected.problems.join("; ") || "native source projection is not ready");
-    }
-    if (input.source === "compact" && !retained) {
-      if (prepared) memory.store.db.exec("COMMIT");
-      return null;
-    }
-    const snapshot = readCompleteTranscript(binding.transcriptPath);
-    if (snapshot.problem || snapshot.incompleteBytes)
-      throw new Error(snapshot.problem ?? `native transcript has ${snapshot.incompleteBytes} incomplete trailing bytes`);
-    const core = binding.coreSessionId;
-    let target: { projectId: number } | { sessionId: number; branch: string; headTurnId: number };
-    if (core === null) {
-      if (binding.projectId === null) throw new Error("provisional Claude Code project is unavailable");
-      target = { projectId: binding.projectId };
-    } else {
-      const session = memory.store.getSession(core);
-      if (!session || session.host !== coreHostOf(binding) || session.projectId !== binding.projectId)
-        throw new Error("bound Claude Code core session or project disagrees with the database");
-      if (!snapshot.exists) throw new Error("native transcript is unavailable for an allocated Claude Code session");
-      const selected = selectedNativePath(snapshot.records);
-      if (selected.problem) throw new Error(selected.problem);
-      if (!selected.leafUuid || selected.leafUuid !== binding.selectedLeafUuid)
-        throw new Error("native selected source disagrees with the persisted Claude Code binding");
-      const entry = memory.store.findSourceEntry(core, binding.nativeSessionId, selected.leafUuid);
-      const turn = memory.store.findNativeTurn(core, binding.nativeSessionId, selected.leafUuid);
-      const headTurnId = entry?.turnId ?? turn?.turnId;
-      if (!headTurnId) throw new Error("native selected source has no persisted core Turn");
-      target = { sessionId: core, branch: binding.branch, headTurnId };
-    }
-    const visibleBinding = { db: databaseIdentity(config.dbPath), nativeSession: binding.nativeSessionId, coreSession: core };
-    // The event name is not a retained compaction boundary. Native preservation metadata selects
-    // actual context, including any surviving carriers; an offered compact never clears delivery.
-    const visible = retained ? ccRetainedMessageView(snapshot.records, visibleBinding, retained)
-      : ccVisibleView(snapshot.records, visibleBinding);
-    const injection = memory.injection(target, visible, true);
-    if (prepared) memory.store.db.exec("COMMIT");
-    if (!injection.text) return null;
-    const additionalContext = encodeCcInjection(visibleBinding, injection);
-    return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext }, transportItems: injection.transportItems,
-      transportKnowledgeAllowance: injection.knowledgeAllowance };
-  } finally {
-    // SessionStart owns no executor or claim. Closing its Store directly avoids invalidating work
-    // owned by the concurrently running MCP process after projection-only synchronization.
-    memory.store.close();
-  }
+/** 97: the UserPromptSubmit delta and the `session.compact` supplement. A prompt's parts belong
+ * to that prompt's node; a compaction's parts to the compaction's own node, which the executor's
+ * import binds to its Turn. Until then it is on the path only where the boundary is. */
+export async function ccDeltaInjection(config: ResolvedCcHostConfig, input: Pick<CcHookInput, "session_id" | "transcript_path">,
+  event: Exclude<CcDeliveryEvent, { kind: "session-start" }>,
+  slice: (output: CcHookOutput | null, visible: CcVisibleBinding) => (CcHookOutput | null)[]): Promise<(CcHookOutput | null)[]> {
+  const slices = await deliver(config, input, event, (output, visible) => { const slices = slice(output, visible); return { outputs: slices, result: slices }; });
+  return slices ?? slice(null, { db: "", nativeSession: input.session_id, coreSession: null });
 }

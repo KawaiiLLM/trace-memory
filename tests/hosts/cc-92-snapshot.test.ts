@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { TraceMemory } from "../../src/core/api/index.ts";
 import { knowledgeBatch, legacyFacts } from "../support/seed.ts";
-import { ccVisibleView, databaseIdentity, decodeCcInjection } from "../../src/hosts/cc/injection.ts";
+import { databaseIdentity, decodeCcInjection } from "../../src/hosts/cc/injection.ts";
 
 const dirs: string[] = [];
 const children: ChildProcess[] = [];
@@ -137,26 +137,19 @@ test("92: real staging renders once across an external mid-snapshot commit and 2
       const slot = decodeCcInjection(output.hookSpecificOutput.additionalContext, visible)!.slice![0];
       expect(output).toEqual(stage[0].slices[slot]);
     }
-    // Staging is not delivery. Keep the now-stale first body but discard another segment.
-    const keptOutputs = outputs.filter(output => decodeCcInjection(output.hookSpecificOutput.additionalContext, visible)!.slice![0] !== 23);
-    const records = [{ uuid: "first-user", parentUuid: null, type: "user", promptSource: "typed",
-      timestamp: "2026-01-02T00:00:00.000Z", message: { role: "user", content: "hello" } }, ...keptOutputs.map((output, n) => ({
-        uuid: `carrier-${n}`, parentUuid: n ? `carrier-${n - 1}` : "first-user", type: "attachment",
-        sessionId: visible.nativeSession, attachment: { type: "hook_additional_context", hookEvent: "SessionStart",
-          hookName: "SessionStart", content: [output.hookSpecificOutput.additionalContext] },
-      }))];
-    const retainedView = ccVisibleView(records, visible), retained = retainedView.knowledgeCommitIds;
-    expect(retained.size).toBe(23); expect(retained).toContain(oldIds[0]);
-    expect(retained).not.toContain(oldIds[23]); expect(retained).not.toContain(newId);
-    expect(retainedView.knowledgeTokens).toBe(keptOutputs.reduce((sum, output) => sum + decodeCcInjection(output.hookSpecificOutput.additionalContext, visible)!.knowledgeTokens!, 0));
+    // 97 "Staged is delivered": every part of the staged publication is recorded, with its own cost,
+    // before any slot prints; a segment the conversation later lost still counts.
     expect(stage[0].slices.filter(Boolean)).toHaveLength(24);
-    // At the next existing SessionStart (no new prompt hook), both missing exact versions return.
-    writeFileSync(f.transcript, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+    const recorded = memory.store.db.prepare("SELECT commits, knowledge_tokens FROM knowledge_deliveries WHERE owner = ? ORDER BY id")
+      .all("cc:snapshot-test") as { commits: string; knowledge_tokens: number }[];
+    expect(recorded.flatMap(row => JSON.parse(row.commits))).toEqual(oldIds);
+    expect(recorded.map(row => row.knowledge_tokens)).toEqual(decoded.map(value => value.knowledgeTokens));
+    // At the next SessionStart only the version committed during the snapshot is missing.
     const next = await f.run(0, epoch + 60_000).result;
     expect(next.code, next.stderr).toBe(0);
     const nextStage = f.stages().find(value => value.deadline === epoch + 115_000)!;
     const delta = nextStage.slices.filter(Boolean).flatMap((output: any) => decodeCcInjection(output.hookSpecificOutput.additionalContext, visible)!.commits);
-    expect(delta.sort((a: number, b: number) => a - b)).toEqual([oldIds[23], newId]);
+    expect(delta).toEqual([newId]);
   } finally { memory.store.close(); }
 }, 30_000);
 
@@ -211,8 +204,10 @@ test("92: producer failure is shared only for its window; later invocation retri
   const first = await f.run(0, epoch).result;
   expect(first.code).not.toBe(0); expect(first.stderr).toContain("fixture producer failure");
   rmSync(join(f.plugin, "fail"));
+  // 97: the producer reported the failure once; a slot sharing its window passes through silently.
   const eligible = await f.run(2, epoch + 54_999).result;
-  expect(eligible.code).not.toBe(0); expect(eligible.stderr).toContain("stage producer failed");
+  expect(eligible).toMatchObject({ code: 0, stdout: "" });
+  expect(eligible.stderr).not.toMatch(/fail/i);
   expect(f.calls()).toHaveLength(2);
   const next = await f.run(2, epoch + 55_000).result;
   expect(next.code, next.stderr).toBe(0); expect(f.calls()).toHaveLength(4);
@@ -222,24 +217,23 @@ test("92: producer failure is shared only for its window; later invocation retri
   expect(f.stages().some(stage => stage.deadline === epoch + 55_000)).toBe(false);
 });
 
-test("92: transcript mutation during selection fails without retrying lifecycle or publishing carriers", async () => {
+test("97: Claude Code appending to the transcript during SessionStart rendering publishes the staged parts", async () => {
   const f = fixture(); writeFileSync(join(f.plugin, "mutate-transcript"), "change");
   const result = await f.run(0, epoch).result;
-  expect(result.code).not.toBe(0); expect(result.stderr).toContain("native identity or transcript changed");
-  expect(result.stdout).toBe(""); expect(f.calls()).toHaveLength(2);
-  expect(f.stages()).toHaveLength(1); expect(f.stages()[0].slices).toBeUndefined();
+  expect(result.code, result.stderr).toBe(0); expect(result.stdout).toContain(":0");
+  expect(f.calls().map(call => call.command)).toEqual(["hook-prepare", "hook-slices"]);
+  expect(f.stages()).toHaveLength(1); expect(f.stages()[0].slices).toHaveLength(24);
 });
 
-test("92: prompt fallback rejects a native transcript append during rendering without publishing a carrier", async () => {
+test("97: a prompt delta renders once, with no preparation pass, while the transcript grows", async () => {
   const f = fixture(false, true);
   writeFileSync(join(f.plugin, "mutate-transcript"), "append");
   const result = await f.run(0, epoch).result;
-  expect(result.code).not.toBe(0);
-  expect(result.stderr).toContain("native identity or transcript changed");
-  expect(result.stdout).toBe("");
-  expect(f.calls().map(call => call.command)).toEqual(["hook-delta-prepare", "hook-delta"]);
+  expect(result.code, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout).hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+  expect(f.calls().map(call => call.command)).toEqual(["hook-delta"]);
   expect(f.stages()).toHaveLength(1);
-  expect(f.stages()[0].slices).toBeUndefined();
+  expect(f.stages()[0].slices).toHaveLength(24);
 });
 
 test("92: carrier corruption and native identity replacement still fail closed", async () => {
@@ -253,5 +247,5 @@ test("92: carrier corruption and native identity replacement still fail closed",
   mkdirSync(join(f.stateDir, "bindings"), { recursive: true });
   put(join(f.stateDir, "bindings/snapshot-test.json"), { nativeSessionId: "other" });
   const replaced = await f.run(0, epoch + 1).result;
-  expect(replaced.code).not.toBe(0); expect(replaced.stderr).toContain("native identity or transcript changed");
+  expect(replaced.code).not.toBe(0); expect(replaced.stderr).toContain("native identity");
 });

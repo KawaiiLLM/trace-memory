@@ -10,7 +10,10 @@ import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
 import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
+export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
+import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
+  type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
 import { factAddresses, renderKnowledge, renderKnowledgeChange, tokens } from "../render/index.ts";
 import { isKnowledgeCategory, knowledgeCategoryGroup } from "../model/index.ts";
@@ -626,6 +629,8 @@ type SelectiveGraph = {
   liveness: Map<number, boolean>; componentOf: Map<number, number>;
   components: Map<number, Set<number>>; results: Map<number, GraphResults>;
   visibility: Map<string, Set<number>>;
+  /** 97: delivered Knowledge per node, beside visibility, at its own two watermarks. */
+  deliveries: DeliveryCache;
 };
 
 /** One path's membership, built once per operation (22a) and passed through every applicability check.
@@ -1193,6 +1198,7 @@ export class Store {
       migrateDreamingRanges64d(this.db);
       this.db.exec(PROCESSING_SQL);
       this.db.exec(EXECUTIONS_SQL);
+      this.db.exec(DELIVERIES_SQL);
       // 86, option A: legacy Dreamer streaks used a range ID, not the oldest pending revision.
       // SQLite's application version was previously unused. Version 1 marks this data-only reset,
       // in the same transaction as the upgrade; later opens must preserve new revision-keyed streaks.
@@ -2502,6 +2508,86 @@ export class Store {
     return path.branch && path.headTurnId != null ? this.pathSnapshot(path).turns : this.loadPathTurns(path);
   }
 
+  /** 97: the delivered state of one node: its head Turn's per-node state, then the pending nodes
+   * after it. A prompt adds its rows; a compaction starts again from its own. */
+  deliveredKnowledge(node: DeliveryNode): DeliveredState {
+    if (node.sessionId !== null && this.getSession(node.sessionId)?.host !== node.owner)
+      throw new Error(`delivery owner ${node.owner} does not own session S${node.sessionId}`);
+    const cache = this.deliveryCache(), owner = this.ownerDeliveries(cache, node.owner);
+    let state = node.sessionId !== null && node.headTurnId !== null
+      ? this.turnDelivered(cache, owner, { sessionId: node.sessionId, headTurnId: node.headTurnId, ...(node.branch ? { branch: node.branch } : {}) })
+      : withRows(noDelivery(), owner.root);
+    for (const pending of node.pending ?? [])
+      state = withRows(pending.compaction ? noDelivery() : state, pending.key === null ? undefined : owner.byKey.get(pending.key));
+    return { knowledgeCommitIds: new Set(state.knowledgeCommitIds), knowledgeStates: new Set(state.knowledgeStates), knowledgeTokens: state.knowledgeTokens };
+  }
+
+  /** The newest delivery row of an owner; a publisher compares it before recording. */
+  deliveryWatermark(owner: string): number {
+    return Number((this.db.prepare("SELECT IFNULL(MAX(id), 0) AS id FROM knowledge_deliveries WHERE owner = ?").get(owner) as { id: number }).id);
+  }
+
+  /** 97: record every emitted part at its node, in one transaction. Empty parts are not rows. */
+  recordKnowledgeDelivery(target: DeliveryTarget, parts: readonly DeliveryPart[], createdAt = new Date().toISOString()): number[] {
+    if (typeof target.owner !== "string" || !target.owner) throw new Error("delivery owner is required");
+    if (target.turnId != null && target.nodeKey != null) throw new Error("a delivery node is a Turn or a key, not both");
+    if (target.nodeKey != null && (typeof target.nodeKey !== "string" || !target.nodeKey)) throw new Error("delivery node key must be a nonempty string");
+    if (target.follows != null && (target.nodeKey == null || typeof target.follows !== "string" || !target.follows))
+      throw new Error("a pending compaction's delivery needs its key and the record it follows");
+    for (const part of parts) {
+      if (!part.knowledgeCommitIds.every(id => Number.isSafeInteger(id) && id > 0) || !part.knowledgeStates.every(key => STATE_KEY.test(key))
+          || !Number.isSafeInteger(part.knowledgeTokens) || part.knowledgeTokens < 0) throw new Error("invalid delivery part");
+    }
+    const rows = parts.filter(part => part.knowledgeCommitIds.length || part.knowledgeStates.length || part.knowledgeTokens);
+    if (!rows.length) return [];
+    return this.transaction(() => {
+      if (target.turnId != null) {
+        const host = this.db.prepare("SELECT s.host FROM turns t JOIN sessions s ON s.id = t.session_id WHERE t.id = ?").get(target.turnId) as { host: string } | undefined;
+        if (host?.host !== target.owner) throw new Error(`delivery Turn ${target.turnId} does not belong to ${target.owner}`);
+      }
+      const commits = [...new Set(rows.flatMap(part => part.knowledgeCommitIds))];
+      const known = Number((this.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions WHERE id IN (SELECT value FROM json_each(?))")
+        .get(JSON.stringify(commits)) as { count: number }).count);
+      if (known !== commits.length) throw new Error("delivery names an unknown knowledge version");
+      const insert = this.db.prepare(`INSERT INTO knowledge_deliveries(owner, turn_id, node_key, follows, commits, states, knowledge_tokens, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+      return rows.map(part => Number(insert.run(target.owner, target.turnId ?? null, target.nodeKey ?? null, target.follows ?? null,
+        JSON.stringify(part.knowledgeCommitIds), JSON.stringify(part.knowledgeStates), part.knowledgeTokens, createdAt).lastInsertRowid));
+    });
+  }
+
+  /** 97: a host binds a node key to the Turn that node became; the first binding wins. */
+  bindDeliveryNode(nodeKey: string, sessionId: number, turnId: number): void {
+    if (typeof nodeKey !== "string" || !nodeKey) throw new Error("delivery node key must be a nonempty string");
+    const turn = this.db.prepare("SELECT session_id FROM turns WHERE id = ?").get(turnId) as { session_id: number } | undefined;
+    if (!turn || Number(turn.session_id) !== sessionId) throw new Error(`Turn ${turnId} is not in session S${sessionId}`);
+    this.db.prepare("INSERT OR IGNORE INTO delivery_nodes(node_key, session_id, turn_id) VALUES (?, ?, ?)").run(nodeKey, sessionId, turnId);
+  }
+
+  /** 97: the supplement key of a compaction not yet bound, by the native record it follows: the
+   * oldest unbound one. The import binds exactly this key to the compaction's Turn. */
+  compactionDeliveryKey(owner: string, follows: string): string | null {
+    const row = this.db.prepare(`SELECT d.node_key FROM knowledge_deliveries d WHERE d.owner = ? AND d.follows = ?
+      AND NOT EXISTS (SELECT 1 FROM delivery_nodes n WHERE n.node_key = d.node_key) ORDER BY d.id LIMIT 1`).get(owner, follows) as { node_key: string } | undefined;
+    return row?.node_key ?? null;
+  }
+
+  /** A read-only snapshot for work that must see one database state: path views built inside it
+   * are discarded with it, as in a write transaction. */
+  readSnapshot<T>(fn: () => T): T {
+    if (this.db.isTransaction) return fn();
+    this.db.exec("BEGIN");
+    this.transactionPaths = new Map();
+    try {
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    } finally { this.transactionPaths = null; }
+  }
+
   private loadPathTurns(path: KnowledgePath): Set<number> {
     if (!this.getSession(path.sessionId)) throw new Error(`session S${path.sessionId} does not exist`);
     const parents = new Map((this.db.prepare(`WITH RECURSIVE lineage(id, parent_turn_id) AS (
@@ -2661,8 +2747,10 @@ export class Store {
     const water = this.db.prepare(`SELECT
       (SELECT IFNULL(MAX(id), 0) FROM knowledge_revisions) AS revision,
       (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cursor,
-      (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS path`).get() as
-      { revision: number; cursor: number; path: number };
+      (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS path,
+      (SELECT IFNULL(MAX(id), 0) FROM knowledge_deliveries) AS delivery,
+      (SELECT IFNULL(MAX(rowid), 0) FROM delivery_nodes) AS deliveryNode`).get() as
+      { revision: number; cursor: number; path: number; delivery: number; deliveryNode: number };
     const projects = new Map<number, number>(this.db.prepare("SELECT id, project_id FROM sessions").all()
       .map(row => [Number(row.id), Number(row.project_id)]));
     if (!previous) {
@@ -2698,11 +2786,13 @@ export class Store {
       const foreground = new Map([...owners.keys()].map(id => [id, this.graphFingerprint(id)]));
       return { input, maxRevision: water.revision, cursorVersion: water.cursor, pathVersion: water.path,
         projects, foreground, owners, citations, ownerRevisions, liveness, componentOf, components, results,
-        visibility: new Map() };
+        visibility: new Map(), deliveries: { row: water.delivery, node: water.deliveryNode, owners: new Map(), nodes: new Map() } };
     }
+    const deliveries = this.advanceDeliveries(previous.deliveries, water.delivery, water.deliveryNode);
     if (water.revision === previous.maxRevision && water.cursor === previous.cursorVersion &&
       water.path === previous.pathVersion && projects.size === previous.projects.size &&
-      [...projects].every(([id, project]) => previous.projects.get(id) === project)) return previous;
+      [...projects].every(([id, project]) => previous.projects.get(id) === project))
+      return deliveries === previous.deliveries ? previous : { ...previous, deliveries };
 
     // Clone before applying a read snapshot: failed reads and rolled-back transactions publish nothing.
     const input: GraphInput = { revisions: [...previous.input.revisions], parents: new Map(previous.input.parents),
@@ -2719,7 +2809,7 @@ export class Store {
       ownerRevisions: new Map([...previous.ownerRevisions].map(([id, revisions]) => [id, new Set(revisions)])),
       liveness: new Map(previous.liveness), componentOf: new Map(previous.componentOf),
       components: new Map([...previous.components].map(([id, members]) => [id, new Set(members)])),
-      results: new Map(previous.results), visibility: new Map(previous.visibility) };
+      results: new Map(previous.results), visibility: new Map(previous.visibility), deliveries };
     const dirty = new Set<number>();
     const changedOwners = new Set<number>();
     if (water.cursor !== previous.cursorVersion || water.path !== previous.pathVersion)
@@ -2828,6 +2918,94 @@ export class Store {
       next.visibility.set(key, ids);
     }
     return next;
+  }
+
+  /** 97: the delivery part of the per-node cache. Committed reads use 88's advanced graph; a read
+   * inside a transaction starts cold at that transaction's watermarks and is discarded with it. */
+  private deliveryCache(): DeliveryCache {
+    if (!this.db.isTransaction) {
+      this.commitGraphInput(undefined, 0);
+      return this.graphInputCache!.deliveries;
+    }
+    const water = this.db.prepare(`SELECT (SELECT IFNULL(MAX(id), 0) FROM knowledge_deliveries) AS row,
+      (SELECT IFNULL(MAX(rowid), 0) FROM delivery_nodes) AS node`).get() as { row: number; node: number };
+    return { row: Number(water.row), node: Number(water.node), owners: new Map(), nodes: new Map() };
+  }
+
+  private readDeliveryRows(where: string, ...values: (string | number)[]): DeliveryRow[] {
+    return (this.db.prepare(`SELECT id, owner, turn_id, node_key, commits, states, knowledge_tokens FROM knowledge_deliveries
+      WHERE ${where} ORDER BY id`).all(...values) as { id: number; owner: string; turn_id: number | null; node_key: string | null;
+      commits: string; states: string; knowledge_tokens: number }[]).map(row => ({ id: Number(row.id), owner: row.owner,
+      turnId: row.turn_id === null ? null : Number(row.turn_id), nodeKey: row.node_key, commits: JSON.parse(row.commits) as number[],
+      states: JSON.parse(row.states) as string[], tokens: Number(row.knowledge_tokens) }));
+  }
+
+  /** Bindings of the rows' keys, up to a binding watermark. */
+  private deliveryBindings(rows: readonly DeliveryRow[], upTo: number): Map<string, number> {
+    const keys = [...new Set(rows.flatMap(row => row.nodeKey === null ? [] : [row.nodeKey]))];
+    return new Map(keys.length ? (this.db.prepare(`SELECT node_key, turn_id FROM delivery_nodes WHERE rowid <= ?
+      AND node_key IN (SELECT value FROM json_each(?))`).all(upTo, JSON.stringify(keys)) as { node_key: string; turn_id: number }[])
+      .map(row => [row.node_key, Number(row.turn_id)]) : []);
+  }
+
+  /** An owner's rows at the cache's watermarks, loaded once: a hook's cold start. */
+  private ownerDeliveries(cache: DeliveryCache, name: string): OwnerDeliveries {
+    let owner = cache.owners.get(name);
+    if (owner) return owner;
+    const rows = this.readDeliveryRows("owner = ? AND id <= ?", name, cache.row);
+    owner = { root: [], byTurn: new Map(), byKey: new Map(), bound: new Map() };
+    placeDeliveries(owner, rows, this.deliveryBindings(rows, cache.node));
+    cache.owners.set(name, owner);
+    return owner;
+  }
+
+  /** A Turn's delivered state: its nearest computed ancestor's plus the rows of each Turn after it,
+   * restarting at the latest compaction. Every Turn derived on the way is kept. */
+  private turnDelivered(cache: DeliveryCache, owner: OwnerDeliveries, path: KnowledgePath): DeliveredState {
+    const hit = cache.nodes.get(path.headTurnId!);
+    if (hit) return hit.state;
+    const walk: number[] = []; // head first
+    let base: number | null = null;
+    for (const id of this.pathTurns(path)) {
+      if (cache.nodes.has(id)) { base = id; break; }
+      walk.push(id);
+    }
+    const compactions = new Set((this.db.prepare("SELECT id FROM turns WHERE kind = 'compaction' AND id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(walk)) as { id: number }[]).map(row => Number(row.id)));
+    const latest = walk.findIndex(id => compactions.has(id));
+    let state = latest >= 0 ? noDelivery() : base === null ? withRows(noDelivery(), owner.root) : cache.nodes.get(base)!.state;
+    for (let index = latest >= 0 ? latest : walk.length - 1; index >= 0; index--) {
+      const id = walk[index]!, compaction = compactions.has(id);
+      state = withRows(compaction ? noDelivery() : state, owner.byTurn.get(id));
+      cache.nodes.set(id, { state, parent: walk[index + 1] ?? base, compaction });
+    }
+    return state;
+  }
+
+  /** Apply rows and key bindings after the previous watermarks to the loaded owners, and drop the
+   * node states they change. Unloaded owners are read whole when first needed. */
+  private advanceDeliveries(previous: DeliveryCache, row: number, node: number): DeliveryCache {
+    if (row === previous.row && node === previous.node) return previous;
+    if (!previous.owners.size) return { ...previous, row, node };
+    const rows = this.readDeliveryRows("id > ? AND id <= ?", previous.row, row);
+    const bindings = new Map([...(this.db.prepare("SELECT node_key, turn_id FROM delivery_nodes WHERE rowid > ? AND rowid <= ?")
+      .all(previous.node, node) as { node_key: string; turn_id: number }[]).map(value => [value.node_key, Number(value.turn_id)] as const),
+      ...this.deliveryBindings(rows, node)]);
+    const owners = new Map(previous.owners), nodes = new Map(previous.nodes), turns = new Set<number>();
+    let root = false;
+    for (const [name, prior] of previous.owners) {
+      const own = rows.filter(value => value.owner === name);
+      const keys = new Set(own.flatMap(value => value.nodeKey === null ? [] : [value.nodeKey]));
+      const relevant = new Map([...bindings].filter(([key]) => prior.byKey.has(key) || keys.has(key)));
+      if (!own.length && !relevant.size) continue;
+      const next: OwnerDeliveries = { root: prior.root, byTurn: new Map(prior.byTurn), byKey: new Map(prior.byKey), bound: new Map(prior.bound) };
+      const changed = placeDeliveries(next, own, relevant);
+      owners.set(name, next);
+      for (const id of changed.turns) turns.add(id);
+      root ||= changed.root;
+    }
+    dropStale(nodes, turns, root);
+    return { row, node, owners, nodes };
   }
 
   private buildGraphInput(seed?: readonly KnowledgeRevision[], selectedFacts?: { owner?: number; ids: Set<number> }): GraphInput {

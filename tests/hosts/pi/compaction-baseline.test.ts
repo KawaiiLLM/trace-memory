@@ -129,7 +129,6 @@ test("29a case 5: a cancelled and a failed attempt append nothing and leave the 
     expect(compactions(f.manager)[0]!.details).toEqual(baseline);
     f.manager.branch(c1.id);
     expect(facts(f.manager)).toEqual([1]);
-    expect([...viewAt(f.manager).knowledgeCommitIds]).toEqual([11]);
   } finally { f.dispose(); }
 }, 30000);
 
@@ -167,7 +166,6 @@ test("29a case 8: rewinding within a segment, across a compaction, forward again
     f.manager.branch(compaction.id);
     expect((f.manager.buildContextEntries()).map(e => e.id)).toEqual([compaction.id]);
     expect(facts(f.manager)).toEqual([4, 5]);
-    expect([...viewAt(f.manager).knowledgeCommitIds]).toEqual([11]);
     expect(viewAt(f.manager).raw.size).toBe(0); // nothing retained here, and nothing invented
 
     // Forward again to the tip: the same view as before the walk.

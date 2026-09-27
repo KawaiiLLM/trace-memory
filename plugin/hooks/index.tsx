@@ -67,8 +67,8 @@ export const register = (on: any) => {
     try {
       if (session !== await $.session.id()) throw new Error("native session changed during compact");
       const process = await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-delta", "--config", `${$.plugin.root}/cc.config.json`],
-        { stdin: JSON.stringify({ hook_event_name: "session.compact", session_id: session,
-          messages: result.messages }) });
+        // 97: the supplement is recorded as this compaction's baseline; the retained messages are not read.
+        { stdin: JSON.stringify({ hook_event_name: "session.compact", session_id: session, messages: [] }) });
       const slices = JSON.parse(decode(process, "Trace Memory compact delta")).slices;
       if (!Array.isArray(slices) || slices.length !== 24) throw new Error("compact delta returned invalid slices");
       const added = slices.filter(Boolean).map((slice: any) => slice.hookSpecificOutput?.additionalContext);

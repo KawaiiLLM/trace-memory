@@ -16,32 +16,30 @@ const compacted = (id: string, over: Partial<Carrier> = {}): ContextEntry =>
   ({ id, type: "compaction", summary: "", details: { traceMemory: { ...binding, supplied: supplied(), ...over } } });
 const message = (id: string): ContextEntry => ({ id, type: "message" });
 
-test("29a case 3 (injection identity): an injection carries exactly its supplied commits, is not a Raw source, and an id in its text alone covers nothing", () => {
+test("29a case 3 (injection identity): an injection is not a Raw source, and an id in its text alone covers nothing", () => {
   const view = visibleView([
     message("e1"),
     // The rendered block names K4@11 and K9@12; only K4@11 was actually kept within the budget, so
     // only K4@11 is stated. Membership is metadata; parsing text for cost cannot add IDs.
     { ...injected("e2", { supplied: supplied({ knowledgeCommitIds: [11] }) }), type: "custom_message" },
   ], binding);
-  expect([...view.knowledgeCommitIds]).toEqual([11]);
   expect(view.factIds.size).toBe(0);
   expect(view.raw.get("e2")).toBeUndefined(); // the injection is not itself a source entry
   expect([...view.raw.keys()]).toEqual(["e1"]);
 });
 
-test("29a case 4 (allocation identity): a pre-allocation injection is recognised after allocation, and another database's equal ids never are", () => {
-  const before = injected("e2", { session: null, supplied: supplied({ knowledgeCommitIds: [11] }) });
-  // Written on the first prompt, when no memory session id existed yet: bound to the Pi session id.
-  expect([...visibleView([before], { ...binding, session: null }).knowledgeCommitIds]).toEqual([11]);
+test("29a case 4 (allocation identity): a pre-allocation carrier is recognised after allocation, and another database's equal ids never are", () => {
+  const before = compacted("e2", { session: null, supplied: supplied({ factIds: [11] }) });
+  // Written before any memory session id existed: bound to the Pi session id.
+  expect([...visibleView([before], { ...binding, session: null }).factIds]).toEqual([11]);
   // The first reply allocates S7; the same entry still counts, through that same Pi session id.
-  expect([...visibleView([before], binding).knowledgeCommitIds]).toEqual([11]);
+  expect([...visibleView([before], binding).factIds]).toEqual([11]);
   // A different Pi session cannot claim it, and neither can another database's identical integers.
-  expect(visibleView([before], { ...binding, pi: "pi-2" }).knowledgeCommitIds.size).toBe(0);
+  expect(visibleView([before], { ...binding, pi: "pi-2" }).factIds.size).toBe(0);
   const foreign = injected("e3", { db: "/tmp/b/trace.db", supplied: supplied({ factIds: [1, 2], knowledgeCommitIds: [11] }) });
   const other = injected("e4", { session: 8, supplied: supplied({ factIds: [3] }) });
   const view = visibleView([foreign, other], binding);
   expect(view.factIds.size).toBe(0);
-  expect(view.knowledgeCommitIds.size).toBe(0);
 });
 
 test("29a case 7 (opaque fallback): a native summary proves nothing, and entries retained past it still count", () => {
@@ -75,7 +73,6 @@ test("29a case 9 (visibility versus database changes): the view is a function of
   // same context computes the same view, and nothing here can observe a read that was never recorded.
   const again = visibleView(entries, binding);
   expect([...again.factIds]).toEqual([...first.factIds]);
-  expect([...again.knowledgeCommitIds]).toEqual([...first.knowledgeCommitIds]);
   expect([...again.raw]).toEqual([...first.raw]);
   // A shorter selection is its own view, not a subset of a remembered one.
   expect(visibleView([entries[1]!], binding).factIds.size).toBe(0);
@@ -86,7 +83,6 @@ test("29a: a malformed or legacy carrier fails closed rather than being reverse-
   const empty: ContextEntry = { id: "e3", type: "custom_message" };
   const view = visibleView([legacy, empty], binding);
   expect(view.factIds.size).toBe(0);
-  expect(view.knowledgeCommitIds.size).toBe(0);
   expect(view.raw.size).toBe(0);
 });
 
@@ -116,14 +112,13 @@ test.each([
   ]),
 ])("malformed persisted carrier %#: reject atomically without throwing", payload => {
   const view = visibleView([{ ...injected("bad"), details: { traceMemory: payload } }], binding);
-  expect(view).toEqual({ raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(), knowledgeTokens: 0, injection: false, suppliedGeneration: 0 });
+  expect(view).toEqual({ raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(), injection: false, suppliedGeneration: 0 });
 });
 
 test.each(["custom", "branch_summary", "model_change", "message", "custom_message"])("foreign container %s donates no plugin coverage", type => {
   const view = visibleView([{ ...injected("raw", { generation: 8, supplied: supplied({ factIds: [1], knowledgeCommitIds: [2] }) }),
     type, customType: "other-extension" }], binding);
   expect([...view.factIds]).toEqual([]);
-  expect([...view.knowledgeCommitIds]).toEqual([]);
   expect(view.suppliedGeneration).toBe(0);
   expect(view.injection).toBe(false);
   expect([...view.raw]).toEqual(type === "message" ? [["raw", "source"]] : []);
@@ -144,9 +139,9 @@ test("carrier validation inspects every item before donating any identity", () =
 });
 
 test("a cloned Pi session inherits legitimate material, not the originating session's command completion", () => {
-  const cloned = injected("cloned", { generation: 8, supplied: supplied({ knowledgeCommitIds: [1] }) });
+  const cloned = injected("cloned", { generation: 8, supplied: supplied({ factIds: [1] }) });
   const view = visibleView([cloned], { ...binding, pi: "new-pi-session" });
-  expect([...view.knowledgeCommitIds]).toEqual([1]);
+  expect([...view.factIds]).toEqual([1]);
   expect(view.injection).toBe(true);
   expect(view.suppliedGeneration).toBe(0);
 });

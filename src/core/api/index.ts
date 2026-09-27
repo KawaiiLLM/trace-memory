@@ -8,7 +8,7 @@ import { readFacade, readProfile, type ListingOptions, type SearchScope, type Co
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
 // 29a/53: core owns only the host-neutral visibility contract; each host reads its own envelopes.
 import type { VisibleView } from "./visible.ts";
-export { knowledgeStateKey, noVisibility } from "./visible.ts";
+export { deliveredView, knowledgeStateKey, noVisibility } from "./visible.ts";
 export type { InitialContext, KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
@@ -26,7 +26,7 @@ export type { SharedMaterial, KnowledgeGroup, TaskRange, MemoryComposition } fro
 export { enrollmentDefault, sourceDigest } from "../store/index.ts";
 export { directoryAllocation } from "../project/directory.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
-export type { SourceInput, SourceEntry, TaskTarget } from "../store/index.ts";
+export type { SourceInput, SourceEntry, TaskTarget, DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "../store/index.ts";
 export type { TriggerOrigin } from "../model/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
 export type { NotingDiagnostic, NotingNearAudit, NotingUnansweredNearPair } from "../noting/review.ts";
@@ -435,7 +435,9 @@ export interface TraceMemory {
    * envelope, or the explicit ask that the host decline and let its native compaction run (20c).
    * `retainedView` describes actually retained Raw/fact/knowledge identities; legacy native-ID arrays
    * remain accepted for Raw-only callers. A host that keeps none passes none. */
-  compact(sessionId: number, branch?: string, headTurnId?: number, retainedView?: readonly string[] | VisibleView, transportItems?: boolean): CompactResult;
+  compact(sessionId: number, branch?: string, headTurnId?: number, retainedView?: readonly string[] | VisibleView, transportItems?: boolean,
+    /** 97: `knowledge: false` leaves the Knowledge window empty, for a host that cannot record its delivery. */
+    options?: { knowledge?: boolean }): CompactResult;
   /** Ticket 21b: the path-selected applicable knowledge grouped by topic, as commit references; a
    * read projection only — it neither reorders injection nor changes what is applicable. */
   topicGroups(sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups;

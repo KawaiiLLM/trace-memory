@@ -2829,3 +2829,77 @@ test("86 rule 4: '单条事实/知识不能超过1k'", () => {
   if (!rejected.ok) expect(rejected.problems.join(" ")).toContain("1000-token limit: 1001 tokens");
   expect(memory.store.listTurnFacts(t.id)).toEqual([]);
 });
+
+/** 97 (2026-09-28): delivery is the database's job, recorded per node at emission. */
+async function deliveryFixture(texts: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), "rulings-97-"));
+  const transcriptPath = join(dir, "native.jsonl"), native = "native-97";
+  const config = resolveCcHostConfig({ dbPath: join(dir, "m.sqlite"), stateDir: join(dir, "s"), baseline: "2025-01-01T00:00:00.000Z" });
+  const record = (uuid: string, parentUuid: string | null, type: "user" | "assistant", promptId?: string) => JSON.stringify(type === "user"
+    ? { uuid, parentUuid, type, timestamp: time, promptSource: "typed", promptId, message: { role: "user", content: uuid } }
+    : { uuid, parentUuid, type, timestamp: time, message: { role: "assistant", content: [{ type: "text", text: uuid }] } }) + "\n";
+  writeFileSync(transcriptPath, record("u1", null, "user", "p1") + record("a1", "u1", "assistant"));
+  const importer = new CcImporter(config, await recordSessionStart(config, { hook_event_name: "SessionStart", source: "startup",
+    session_id: native, transcript_path: transcriptPath }, time));
+  const imported = await importer.reconcile();
+  const store = importer.memory.store;
+  const seed = store.createSession({ enrollmentChoice: true, host: "fixture", projectId: store.getSession(imported.coreSessionId!)!.projectId, startedAt: time, firstReplyAt: time });
+  const turn = store.appendTurn({ sessionId: seed.id, kind: "turn", userPrompt: "rule", startedAt: time });
+  const source = store.appendSourceEntry({ sessionId: seed.id, turnId: turn.id, nativeLineage: "seed", nativeId: "rule", role: "user", text: "rule", raw: "rule", calls: [] });
+  const evidence = legacyFacts(store, { kind: "manual", sessionId: seed.id, createdAt: time }, [{ sources: [{ entry: source,
+    address: `T${turn.id}#E${source.entryOrdinal}` }], text: "rule", category: "decision", actor: "user", createdAt: time }]).facts[0]!;
+  const committed = store.commitConsolidationRun({ path: { sessionId: seed.id, headTurnId: turn.id }, run: { kind: "manual", sessionId: seed.id, createdAt: time },
+    operations: texts.map((text, index) => ({ op: "create" as const, handle: `$${index + 1}`, author: "fixture", text, category: "constraint" as const,
+      scope: "global" as const, supports: [evidence.id], topics: [], reason: "fixture", createdAt: time })) });
+  if (!committed.ok) throw new Error(committed.problems.join());
+  const { ccDeltaInjection } = await import("../../../src/hosts/cc/injection.ts");
+  const { sliceCcInjection } = await import("../../../src/hosts/cc/slices.ts");
+  const prompt = (promptId: string) => ccDeltaInjection(config, { session_id: native, transcript_path: transcriptPath }, { kind: "prompt", promptId },
+    (output, visible) => sliceCcInjection(visible, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance));
+  return { dir, store, importer, transcriptPath, record, prompt, commits: committed.committed.map(item => item.commit),
+    rows: () => store.db.prepare("SELECT node_key AS prompt, commits, knowledge_tokens FROM knowledge_deliveries ORDER BY id").all() as
+      { prompt: string; commits: string; knowledge_tokens: number }[],
+    dispose: () => { importer.close(); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+test("97 \"只要投过就算成功\" (2026-09-28): an emitted part is delivered even when Claude Code persists it to a file", async () => {
+  const f = await deliveryFixture(["Use pnpm."]);
+  try {
+    expect((await f.prompt("p2")).filter(Boolean)).toHaveLength(1);
+    // Claude Code kept only a file reference and a preview; nothing confirms or refutes delivery.
+    writeFileSync(f.transcriptPath, readFileSync(f.transcriptPath, "utf8") + f.record("u2", "a1", "user", "p2")
+      + JSON.stringify({ uuid: "h2", parentUuid: "u2", type: "attachment", attachment: { type: "hook_additional_context",
+        hookEvent: "UserPromptSubmit", content: ["<persisted-output>\nOutput too large (12KB). Full output saved to: /tmp/x.txt\n</persisted-output>"] } }) + "\n");
+    await f.importer.reconcile();
+    expect((await f.prompt("p3")).filter(Boolean)).toEqual([]);
+  } finally { f.dispose(); }
+});
+
+test("97 \"暂存成功就算全部已投递\" (2026-09-28): every part of a staged publication counts in the staging transaction", async () => {
+  const f = await deliveryFixture(Array.from({ length: 4 }, (_, n) => `Rule ${n}: ${"word ".repeat(1600)}`));
+  try {
+    const slices = (await f.prompt("p2")).filter(Boolean);
+    expect(slices.length).toBeGreaterThan(1);
+    // Recorded before any slot printed: one row per part, each with its own render-time cost.
+    const rows = f.rows();
+    expect(rows).toHaveLength(slices.length);
+    expect(rows.flatMap(row => JSON.parse(row.commits)).sort((a: number, b: number) => a - b)).toEqual(f.commits);
+    expect(new Set(rows.map(row => row.prompt))).toEqual(new Set(["p2"]));
+  } finally { f.dispose(); }
+});
+
+test("97 \"所有计算应该都可以统一基于缓存算\" (2026-09-28): a node's delivered state is its parent's plus its own; a compaction restarts it", () => {
+  const project = memory.store.createProject({ name: "p97", declaredBy: "mark" });
+  const s = memory.store.createSession({ enrollmentChoice: true, host: "cc:r97", projectId: project.id, startedAt: time, firstReplyAt: time });
+  const t1 = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "one", startedAt: time });
+  const t2 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t1.id, kind: "turn", userPrompt: "two", startedAt: time });
+  const t3 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t1.id, kind: "compaction", startedAt: time, endedAt: time });
+  const t4 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t3.id, kind: "turn", userPrompt: "four", startedAt: time });
+  const part = (tokens: number) => ({ knowledgeCommitIds: [], knowledgeStates: [], knowledgeTokens: tokens });
+  memory.store.recordKnowledgeDelivery({ owner: "cc:r97", turnId: t1.id }, [part(1)]);
+  memory.store.recordKnowledgeDelivery({ owner: "cc:r97", turnId: t2.id }, [part(10)]);
+  memory.store.recordKnowledgeDelivery({ owner: "cc:r97", turnId: t3.id }, [part(100)]);
+  memory.store.recordKnowledgeDelivery({ owner: "cc:r97", turnId: t4.id }, [part(1000)]);
+  const at = (headTurnId: number) => memory.store.deliveredKnowledge({ owner: "cc:r97", sessionId: s.id, headTurnId }).knowledgeTokens;
+  expect([at(t1.id), at(t2.id), at(t3.id), at(t4.id)]).toEqual([1, 11, 100, 1100]);
+});

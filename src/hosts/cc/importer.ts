@@ -4,7 +4,7 @@ import type { ResolvedCcHostConfig } from "./config.ts";
 import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, withCcBindingLock, type CcBindingLock, type CcSessionBinding } from "./binding.ts";
 import { CcTranscriptCursor, CcTranscriptScan, CcTranscriptScanFailure, ccSourceBlocks, classifySourceRecord,
-  nativeParentId, readTranscriptBootstrap, readTranscriptMetadata, type CcNativeRecord, type CcSourceRecord,
+  nativeParentId, readTranscriptBootstrap, readTranscriptMetadata, type CcNativeNode, type CcNativeRecord, type CcSourceRecord,
   type CcTranscriptSnapshot } from "./transcript.ts";
 
 /** Measurement and test-only hooks; every field is optional. `onIngestGap` reports each cooperative
@@ -51,6 +51,8 @@ const unavailableRunner = async () => ({ outcome: "failure" as const,
 const provisionalEnabled = (binding: CcSessionBinding) => binding.enrollment.choice ?? binding.enrollment.defaultEnabled;
 
 class CcIntegrityError extends Error {}
+/** A node that holds its own source entry on a path: not a compaction, and not a copy of an earlier row. */
+const ownsEntry = (node: CcNativeNode): boolean => !!node.sourceKind && node.sourceKind !== "compaction" && node.copyOf === undefined;
 interface CallIdentity { ordinal: number; name: string }
 interface BootstrapSummary {
   key: string;
@@ -76,6 +78,8 @@ export class CcProjection {
   private lastResult: CcReconcileResult | null = null;
   private expectedPath: SourcePathState | null = null;
   private synchronized = false;
+  /** 97: memo of `promptParent` per native node; a rescan replaces the nodes and so the memo. */
+  private promptParents = new WeakMap<CcNativeNode, number | null>();
 
   constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, memory: TraceMemoryFacade) {
     if (binding.dbPath !== config.dbPath) throw new Error("CC binding uses another database");
@@ -99,7 +103,7 @@ export class CcProjection {
     const ancestry = this.transcript.callPath(toolUseId, nativeToolNames);
     if (!ancestry) return null;
     const entryIds: number[] = [];
-    for (const node of ancestry) if (node.sourceKind && node.sourceKind !== "compaction") {
+    for (const node of ancestry) if (ownsEntry(node)) {
       if (node.entryId === undefined) return null;
       entryIds.push(node.entryId);
     }
@@ -242,14 +246,8 @@ export class CcProjection {
     const sessionId = this.binding.coreSessionId, lineage = this.binding.nativeSessionId;
     const appendedEntryIds: number[] = [], problems: string[] = [], failedNativeIds = new Set<string>();
     const addProblem = (problem: string): void => { if (!problems.includes(problem)) problems.push(problem); };
-    const nearestTurn = (record: CcNativeRecord, scan: CcTranscriptScan): number | null => {
-      const seen = new Set<string>();
-      // The scan resolved this record's lineage in file order; resolve the same parent here.
-      const own = typeof record.uuid === "string" ? scan.node(record.uuid) : undefined;
-      if (own?.lineageProblem) throw new CcIntegrityError(own.lineageProblem);
-      let parent: string | null;
-      try { parent = own ? own.parentUuid : nativeParentId(record); }
-      catch (error) { throw new CcIntegrityError(error instanceof Error ? error.message : String(error)); }
+    /** The nearest imported source record above `parent`, or null at the root. */
+    const importedAbove = (parent: string | null, scan: CcTranscriptScan, seen = new Set<string>()): CcNativeNode | null => {
       while (parent) {
         if (seen.has(parent)) throw new CcIntegrityError(`native lineage cycle at ${parent}`);
         seen.add(parent);
@@ -257,13 +255,38 @@ export class CcProjection {
         if (!ancestor) throw new CcIntegrityError(`native lineage parent ${parent} is missing`);
         if (ancestor.lineageProblem) throw new CcIntegrityError(ancestor.lineageProblem);
         if (ancestor.importProblem) throw new CcIntegrityError(ancestor.importProblem);
-        if (ancestor.turnId !== undefined) return ancestor.turnId;
+        if (ancestor.turnId !== undefined) return ancestor;
         if (ancestor.sourceKind !== null) throw new CcIntegrityError(`native source ${ancestor.uuid} is not persisted`);
         parent = ancestor.parentUuid;
       }
-      // 63: a native session cleared into from another continues that core session; its root
-      // records descend from the compaction Turn the clear appended under the parent's head.
-      return this.binding.clearedFrom?.compactionTurnId ?? null;
+      return null;
+    };
+    // 63: a native session cleared into from another continues that core session; its root
+    // records descend from the compaction Turn the clear appended under the parent's head.
+    const rootTurn = () => this.binding.clearedFrom?.compactionTurnId ?? null;
+    const parentOf = (record: CcNativeRecord, scan: CcTranscriptScan): string | null => {
+      // The scan resolved this record's lineage in file order; resolve the same parent here.
+      const own = typeof record.uuid === "string" ? scan.node(record.uuid) : undefined;
+      if (own?.lineageProblem) throw new CcIntegrityError(own.lineageProblem);
+      try { return own ? own.parentUuid : nativeParentId(record); }
+      catch (error) { throw new CcIntegrityError(error instanceof Error ? error.message : String(error)); }
+    };
+    const nearestTurn = (record: CcNativeRecord, scan: CcTranscriptScan): number | null =>
+      importedAbove(parentOf(record, scan), scan)?.turnId ?? rootTurn();
+    /** 97: the Turn a prompt below `node` descends from: the nearest prompt or compaction at or above
+     * it, past the replies of the Turn they answer. After a compaction that interrupted a reply, that
+     * is the compaction, so it lies on every later path, as on Pi. */
+    const promptParent = (node: CcNativeNode | null, scan: CcTranscriptScan): number | null => {
+      const walked: CcNativeNode[] = [], seen = new Set<string>();
+      let found: number | null | undefined;
+      while (found === undefined) {
+        if (!node) found = rootTurn();
+        else if (this.promptParents.has(node)) found = this.promptParents.get(node)!;
+        else if (node.sourceKind === "user" || node.sourceKind === "compaction") found = node.turnId!;
+        else { walked.push(node); node = importedAbove(node.parentUuid, scan, seen); }
+      }
+      for (const value of walked) this.promptParents.set(value, found);
+      return found;
     };
     // 74: call identities alone (`turnCallIdentities`), never every entry of the Turn — the same
     // identities `listSourceEntries` used to expose only by loading each entry's full Raw.
@@ -289,7 +312,7 @@ export class CcProjection {
       const timestamp = source.timestamp;
       if (source.kind === "compaction") {
         const known = this.memory.store.findNativeTurn(sessionId, lineage, source.nativeId);
-        const parentTurnId = nearestTurn(record, scan);
+        const above = importedAbove(parentOf(record, scan), scan), parentTurnId = above?.turnId ?? rootTurn();
         if (known) {
           const turn = this.memory.store.getTurn(known.turnId);
           if (!turn || turn.kind !== "compaction" || turn.parentTurnId !== parentTurnId || turn.startedAt !== source.timestamp)
@@ -299,6 +322,9 @@ export class CcProjection {
         return this.memory.store.transaction(() => {
           const turn = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "compaction", startedAt: timestamp, endedAt: timestamp });
           this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turn.id, "compaction");
+          // 97: the supplement the compact hook recorded for the compaction after this record.
+          const key = above && this.memory.store.compactionDeliveryKey(coreHostOf(this.binding), above.uuid);
+          if (key) this.memory.store.bindDeliveryNode(key, sessionId, turn.id);
           return { association: { turnId: turn.id } };
         });
       }
@@ -319,15 +345,24 @@ export class CcProjection {
         }
         return { association: { turnId: known.turnId, entryId: known.id }, calls };
       }
+      // A row Claude Code wrote again across a compaction is the row it repeats: no entry, no tool call or result.
+      const original = scan.node(source.nativeId)?.copyOf;
+      if (original !== undefined) {
+        const turnId = scan.node(original)?.turnId;
+        if (turnId === undefined) throw new CcIntegrityError(`native source ${original} is not persisted`);
+        return { association: { turnId } };
+      }
       return this.memory.store.transaction(() => {
         let turnId: number;
         // The owning Turn is fetched once here and reused below for the assistant-text append
         // (70: it is read once for the ownership check and once more for the append otherwise).
         let ownerTurn: ReturnType<Store["getTurn"]> = null;
         if (source.kind === "user") {
-          const parentTurnId = nearestTurn(record, scan);
+          const parentTurnId = promptParent(importedAbove(parentOf(record, scan), scan), scan);
           turnId = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: source.text, startedAt: timestamp }).id;
           this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turnId, "turn");
+          // 97: a delivery recorded under this prompt's native id belongs to this Turn.
+          if (typeof record.promptId === "string" && record.promptId) this.memory.store.bindDeliveryNode(record.promptId, sessionId, turnId);
         } else {
           const owner = nearestTurn(record, scan);
           ownerTurn = owner === null ? null : this.memory.store.getTurn(owner);
@@ -408,7 +443,7 @@ export class CcProjection {
           let selectedNodes: typeof extension;
           if (continuous) {
             selectedNodes = extension.reverse();
-            for (const node of selectedNodes) if (node.sourceKind && node.sourceKind !== "compaction") {
+            for (const node of selectedNodes) if (ownsEntry(node)) {
               if (node.entryId === undefined) {
                 if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                 projectionReady = false; break;
@@ -422,7 +457,7 @@ export class CcProjection {
             } else {
               selectedNodes = selected.nodes;
               selectedEntryIds = [];
-              for (const node of selectedNodes) if (node.sourceKind && node.sourceKind !== "compaction") {
+              for (const node of selectedNodes) if (ownsEntry(node)) {
                 if (node.entryId === undefined) {
                   if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                   projectionReady = false; break;
@@ -449,7 +484,7 @@ export class CcProjection {
                 if (rebuilt.problem) { addProblem(rebuilt.problem); projectionReady = false; }
                 else {
                   selectedEntryIds = [];
-                  for (const node of rebuilt.nodes) if (node.sourceKind && node.sourceKind !== "compaction") {
+                  for (const node of rebuilt.nodes) if (ownsEntry(node)) {
                     if (node.entryId === undefined) { addProblem(`native source ${node.uuid} is not persisted`); projectionReady = false; break; }
                     selectedEntryIds.push(node.entryId);
                   }
@@ -490,8 +525,14 @@ export class CcProjection {
     }
     const completed = scan as CcTranscriptScan;
     if (projectionReady) try {
-      await this.persist(binding => binding.branch === branch && binding.selectedLeafUuid === completed.selectedLeafUuid
-        ? binding : { ...binding, branch, selectedLeafUuid: completed.selectedLeafUuid });
+      const transcriptOffset = completed.selectedLeafOffset ?? undefined;
+      const leaf = completed.selectedLeafUuid === null ? undefined : completed.node(completed.selectedLeafUuid);
+      const selectedHeadTurnId = leaf?.turnId === undefined ? undefined : promptParent(leaf, completed) ?? undefined;
+      await this.persist(binding => binding.branch === branch && binding.selectedLeafUuid === completed.selectedLeafUuid &&
+        binding.transcriptOffset === transcriptOffset && binding.selectedHeadTurnId === selectedHeadTurnId ? binding
+        : (({ transcriptOffset: _stale, selectedHeadTurnId: _head, ...rest }) => ({ ...rest, branch, selectedLeafUuid: completed.selectedLeafUuid,
+          ...(transcriptOffset === undefined ? {} : { transcriptOffset }),
+          ...(selectedHeadTurnId === undefined ? {} : { selectedHeadTurnId }) }))(binding));
     } catch (error) {
       // Publication may have committed before the binding receipt failed. Do not append its
       // suffix twice on retry; reconstruct the authoritative selected path instead.

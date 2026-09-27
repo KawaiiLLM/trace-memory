@@ -5,10 +5,10 @@ import { fileURLToPath } from "node:url";
 import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
 import { upgradeSettingsFile } from "../retired-settings.ts";
 import { assertOperatorBinding, readBinding, recordSessionStart, updateBinding, validateNativeSessionId, type CcHookInput } from "./binding.ts";
-import { nativeCreatedAt, readCompleteTranscript } from "./transcript.ts";
+import { readTranscriptCreatedAt } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
-import { ccCompactInjection, ccPrepareSessionStartInjection, ccPreparedSessionStartInjection, ccPromptContextReady, ccPromptInjection, ccSessionStartInjection, databaseIdentity, type CcHookOutput } from "./injection.ts";
+import { ccDeltaInjection, ccPrepareSessionStartInjection, ccPreparedSessionStartInjection, ccSessionStartInjection, databaseIdentity, recordCcBaseline, type CcHookOutput } from "./injection.ts";
 import { sliceCcInjection } from "./slices.ts";
 import { declareCcProject, operateCcSession } from "./operator.ts";
 import { followNativeSession, processAncestors, publishNativeSession, type CcNativeSessionFollower } from "./native-session.ts";
@@ -47,10 +47,15 @@ export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostCon
     // when this process served a bound parent. Otherwise it falls through to the ordinary path below.
     if (input.source === "clear") {
       const cleared = await ccHandleClear(config, input);
-      if (cleared.handled) { publish(); return cleared.output; }
+      if (cleared.handled) {
+        publish();
+        // 97: the unsliced carrier is the clear's whole supplement, recorded at its compaction node.
+        if (!prepareOnly) recordCcBaseline(config, readBinding(config, input.session_id)!, [cleared.output]);
+        return cleared.output;
+      }
     }
-    const snapshot = readCompleteTranscript(input.transcript_path);
-    await recordSessionStart(config, input, snapshot.exists && !snapshot.problem ? nativeCreatedAt(snapshot.records) : null);
+    // Creation time matters only to a new binding; a bound session's transcript is not read.
+    await recordSessionStart(config, input, readBinding(config, input.session_id) ? null : readTranscriptCreatedAt(input.transcript_path));
     publish();
     if (prepareOnly) { await ccPrepareSessionStartInjection(config, input); return null; }
     return ccSessionStartInjection(config, input);
@@ -181,59 +186,52 @@ async function readStdin(): Promise<string> {
 
 export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "hook-delta-prepare" && command !== "cli") || configFlag !== "--config" || !configPath)
+  if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "cli") || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config); return; }
-  if (command === "hook-delta" || command === "hook-delta-prepare") {
-    const input = JSON.parse(await readStdin()) as { session_id: string; transcript_path?: string;
-      messages?: { role: string; text: string; handle?: string }[]; hook_event_name?: string };
+  if (command === "hook-delta") {
+    const input = JSON.parse(await readStdin()) as { session_id: string; transcript_path?: string; prompt_id?: unknown;
+      messages?: unknown; hook_event_name?: string };
     validateNativeSessionId(input.session_id);
     const binding = readBinding(config, input.session_id);
     if (!binding || input.transcript_path !== undefined && input.transcript_path !== binding.transcriptPath)
       throw new Error("CC delta native session or transcript binding is unavailable");
-    if (command === "hook-delta-prepare") {
-      if (input.hook_event_name !== "UserPromptSubmit") throw new Error("CC prompt preparation requires UserPromptSubmit");
-      if (!ccPromptContextReady(binding.transcriptPath)) {
-        console.error("Trace Memory prompt delta: native context not established; startup owns initial injection");
-        return;
-      }
-      await ccPrepareSessionStartInjection(config, { hook_event_name: "SessionStart", source: "resume",
-        session_id: input.session_id, transcript_path: binding.transcriptPath, cwd: binding.cwd });
-      return;
-    }
     if (input.messages !== undefined && (!Array.isArray(input.messages) || input.hook_event_name !== "session.compact"))
       throw new Error("CC compact delta requires returned messages");
     if (input.messages === undefined && input.hook_event_name !== "UserPromptSubmit")
       throw new Error("CC prompt delta requires UserPromptSubmit");
-    const event = { hook_event_name: "SessionStart" as const, source: input.messages ? "compact" as const : "resume" as const,
-      session_id: input.session_id, transcript_path: binding.transcriptPath, cwd: binding.cwd };
-    const output = input.messages ? await ccCompactInjection(config, event, input.messages)
-      : await ccPromptInjection(config, event);
-    const visible = { db: databaseIdentity(config.dbPath), nativeSession: input.session_id,
-      coreSession: readBinding(config, input.session_id)?.coreSessionId ?? null };
-    const slices = sliceCcInjection(visible, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance);
+    // 97: the prompt's own node is its native prompt id; the compacted messages are not read.
+    if (input.messages === undefined && (typeof input.prompt_id !== "string" || !input.prompt_id))
+      throw new Error("CC prompt delta requires the native prompt_id");
+    const slices = await ccDeltaInjection(config, { session_id: input.session_id, transcript_path: binding.transcriptPath },
+      input.messages ? { kind: "compact" } : { kind: "prompt", promptId: input.prompt_id as string },
+      (output, visible) => sliceCcInjection(visible, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance));
     process.stdout.write(`${JSON.stringify({ slices })}\n`);
     return;
   }
   if (command === "hook" || command === "hook-prepare" || command === "hook-slices") {
     const input = JSON.parse(await readStdin()) as CcHookInput;
-    const selected = command === "hook-slices" && !(input.source === "clear" && readBinding(config, input.session_id)?.clearedFrom)
-      ? await ccPreparedSessionStartInjection(config, input) : null;
-    const output = command === "hook-slices" ? selected ? selected.output : readPreparedClear(config, input)
-      : await handleCcHook(config, input, command === "hook-prepare");
-    if (command === "hook-prepare") return;
-    if (command === "hook") {
-      if (output) { const { transportItems: _, transportKnowledgeAllowance: _allowance, ...native } = output; process.stdout.write(`${JSON.stringify(native)}\n`); }
+    if (command !== "hook-slices") {
+      const output = await handleCcHook(config, input, command === "hook-prepare");
+      if (command === "hook" && output) { const { transportItems: _, transportKnowledgeAllowance: _allowance, ...native } = output; process.stdout.write(`${JSON.stringify(native)}\n`); }
       return;
     }
     if (input.hook_event_name !== "SessionStart") throw new Error("hook-slices requires SessionStart");
-    if (output?.hookSpecificOutput.additionalContext && !output.transportItems)
-      throw new Error("CC SessionStart has no structured transport material");
+    const sliced = (output: CcHookOutput | null, visible: { db: string; nativeSession: string; coreSession: number | null }) => {
+      if (output?.hookSpecificOutput.additionalContext && !output.transportItems)
+        throw new Error("CC SessionStart has no structured transport material");
+      return sliceCcInjection(visible, output?.transportItems ?? [], output?.systemMessage, output?.transportKnowledgeAllowance);
+    };
+    const clearing = input.source === "clear" ? readBinding(config, input.session_id) : null;
+    let output: CcHookOutput | null, slices: (CcHookOutput | null)[], snapshot: object | null = null;
+    if (clearing?.clearedFrom) {
+      output = readPreparedClear(config, input);
+      slices = sliced(output, { db: databaseIdentity(config.dbPath), nativeSession: input.session_id, coreSession: clearing.coreSessionId });
+      recordCcBaseline(config, clearing, slices);
+    } else ({ output, slices, snapshot } = await ccPreparedSessionStartInjection(config, input, sliced));
     const bound = readBinding(config, input.session_id);
     if (!bound) throw new Error("CC SessionStart has no binding after preparation");
-    const slices = sliceCcInjection({ db: databaseIdentity(config.dbPath), nativeSession: input.session_id,
-      coreSession: bound.coreSessionId }, output?.transportItems ?? [], output?.systemMessage, output?.transportKnowledgeAllowance);
     if (input.source !== "clear" && bound.lastCompactionNotice || input.source === "clear" && bound.clearedFrom &&
       slices[0]?.systemMessage !== bound.lastCompactionNotice) {
       await updateBinding(config, input.session_id, current => {
@@ -245,7 +243,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
     const selection = createHash("sha256").update(JSON.stringify({ material: output?.transportItems ?? [],
       warning: output?.systemMessage ?? null, knowledgeAllowance: output?.transportKnowledgeAllowance ?? null, frozenClear: input.source === "clear" && bound.clearedFrom
         ? bound.clearedFrom.compactionTurnId : null })).digest("hex");
-    process.stdout.write(`${JSON.stringify({ selection, snapshot: selected?.snapshot ?? null, slices })}\n`);
+    process.stdout.write(`${JSON.stringify({ selection, snapshot, slices })}\n`);
     return;
   }
   if (sessionFlag !== "--session" || !nativeSessionId || !verb)

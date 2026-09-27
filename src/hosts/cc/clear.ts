@@ -7,7 +7,7 @@ import { coreHostOf, readBinding, recordSessionStart, renewNativeBinding, update
 import { CcProjection } from "./importer.ts";
 import { databaseIdentity, encodeCcInjection, ccSessionStartInjection, type CcHookOutput, type CcVisibleBinding } from "./injection.ts";
 import { assignedNativeSession, currentNativeProcess, parsePid, processStartedAt } from "./native-session.ts";
-import { ccSourceBlocks, nativeCreatedAt, readCompleteTranscript } from "./transcript.ts";
+import { ccSourceBlocks, readTranscriptCreatedAt } from "./transcript.ts";
 
 export type CcClearResult = { handled: false } | { handled: true; output: CcHookOutput | null };
 
@@ -26,8 +26,7 @@ export async function ccHandleClear(config: ResolvedCcHostConfig, input: CcHookI
   if (!parentBinding) return { handled: false };
   const childId = validateNativeSessionId(input.session_id);
   const nativeProcess = currentNativeProcess();
-  const childSnapshot = readCompleteTranscript(input.transcript_path);
-  const createdAt = childSnapshot.exists && !childSnapshot.problem ? nativeCreatedAt(childSnapshot.records) : null;
+  const createdAt = readTranscriptCreatedAt(input.transcript_path);
 
   if (parentBinding.coreSessionId === null) {
     // A provisional parent has nothing to compact from; only its project and enrollment carry over.

@@ -347,8 +347,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   // under the existing scope and commit-graph rules. Its block layout lives in core/render/material.ts.
   const applicable = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string) =>
     store.listVisibleKnowledge(sessionId, projectId, headTurnId, branch);
-  /** 92: current visible exact versions minus bodies actually retained on the selected context.
-   * Facts and Raw are evidence, not substitutes for a knowledge publication. */
+  /** 92/97: current visible exact versions minus the node's delivered state, which hosts read from
+   * the per-node delivery records. Facts and Raw are evidence, not substitutes for a publication. */
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility(),
     transport = false): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
@@ -377,7 +377,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     if (!delta.length && !states.length) return empty();
 
     const line = knowledgeLine;
-    // Hosts account every retained occurrence, including inapplicable bodies, from its carrier.
+    // Hosts pass the recorded cost of every delivery on the path, including inapplicable bodies.
     // Only older direct API callers without that measured view need the compatibility projection;
     // normal publication must not re-render historical bodies just to discard their estimated cost.
     const unaccountedCost = () => {
@@ -675,7 +675,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // is required any more: every window truncates — newest kept, oldest omitted with a receipt —
     // rather than escalating to a native delegation. Omitted material stays pending in the store.
     compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = [],
-      transport = false, options: { endpointEntryId?: number; processedRawRefill?: boolean;
+      transport = false, options: { endpointEntryId?: number; processedRawRefill?: boolean; knowledge?: boolean;
         /** Internal: views from this synchronous freeze under this exact profile/extractor. */
         renderedEntries?: ReadonlyMap<number, EntryView>;
         /** Internal: authoritative ordered metadata and processing state of this same freeze. */
@@ -696,7 +696,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const pending = prepared ? prepared.pending.filter(onEndpoint)
         : head === undefined ? [] : store.pendingEntries(sessionId, branch, head, sourceSnapshot);
       const pendingIds = new Set(pending.map(e => e.id));
-      const knowledge = store.currentKnowledge(path, {}, snapshot);
+      const knowledge = options.knowledge === false ? [] : store.currentKnowledge(path, {}, snapshot);
       const visible = Array.isArray(retainedView) ? noVisibility() : retainedView as VisibleView;
       const retained = new Set(Array.isArray(retainedView) ? retainedView : visible.raw.keys());
       // Ticket 80 item 3: one batched `fact_sources` read for the whole session's facts, not one per fact.
@@ -724,7 +724,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
 
       // ---- 1. Knowledge first: required status notices, newest kept, then bodies newest-first. ----
       const knowledgeEnvelope = caps.knowledge + sharedAllowance;
-      const allNotes = knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path, undefined, undefined, true)
+      const allNotes = options.knowledge === false ? [] : knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path, undefined, undefined, true)
         .sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit);
       const noteReceipt = (omitted: number) => omitted
         ? [`omitted ${omitted} older inherited knowledge status lines; knowledge base plus shared allowance is full`] : [];
