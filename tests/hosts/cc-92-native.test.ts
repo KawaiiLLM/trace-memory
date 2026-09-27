@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { sourceSeededMemory } from "../source-fixture.ts";
+import { fact as seedFact } from "../support/seed.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
@@ -30,7 +31,7 @@ const opts = { DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_R
 function config(cwd: string) { return resolveCcHostConfig({ dbPath: join(cwd, "memory.sqlite"), stateDir: join(cwd, "state"),
   notingModel: "sonnet", notingThinking: "medium", "dreaming.model": "sonnet", "dreaming.thinking": "medium",
   worker: { claudeExecutable: fenced, claudeVersion: "2.1.280", contextWindows: { sonnet: 200_000 }, cwd } }); }
-const fact = (text: string, source = "T2#E1") => ({ text, source: [source] });
+const fact = (text: string, source = "T2#E1") => ({ title: text, sources: [{ address: source, text }] });
 const empty = { operations: [], skipped: [] };
 const tool = (id: number, name: "note" | "memory", input: unknown): LoopbackTurn => ({
   blocks: [{ type: "tool_use", id: `toolu_${id}`, name: `mcp__trace_memory__${name}`, input }], stopReason: "tool_use",
@@ -71,8 +72,9 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
     const first = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "User established an earlier rule", assistantText: "Claude Code recorded the rule", startedAt: "now" });
     if (variant === "nine-corrected") {
       const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: first.id });
-      const written = JSON.parse(manual.find(t => t.name === "note")!.execute({ facts: [fact("Earlier user rule", "T1#E1")] }));
-      oldId = written.factIds[0];
+      const source = memory.store.sourcePath(session.id, "main", first.id).find(entry => entry.entryOrdinal === 1)!;
+      oldId = seedFact(memory, memory.store.knowledgePath(session.id, "main", first.id), "Earlier user rule",
+        [{ entry: memory.store.getSourceEntry(source.id)!, text: "Earlier user rule" }]).id;
       expect(manual.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: "Earlier rule", category: "constraint", scope: "session", topics: [], supports: [`F${oldId}`], reason: "Earlier user rule" }], skipped: [] })).toContain("committed");
       const prior = memory.store.currentKnowledge({ sessionId: session.id, branch: "main", headTurnId: first.id })[0]!;
       tag = `K${prior.knowledge.id}#${memory.store.versionTag(prior.knowledge.id, prior.revision.id)}`;
