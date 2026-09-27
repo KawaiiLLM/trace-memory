@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { Store } from "../../../src/core/store/index.ts";
+import { entry, legacyFacts } from "../../support/seed.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -17,10 +18,10 @@ function legacyFixture(extension = false, splitInvisible = false) {
   const session = store.createSession({ host: "pi", enrollmentChoice: true, projectId: project.id,
     projectDeclaration: "mark", startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "e", startedAt: "now" });
-  const noting = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{
-    turnId: turn.id, category: "decision", actor: "user", text: "e", source: [`T${turn.id}#user`], createdAt: "now",
-  }] });
-  if (!noting.ok) throw new Error(noting.problems.join("; "));
+  const initialEntry = entry(store, session.id, turn.id, "initial-evidence", "user", "e");
+  const noting = legacyFacts(store, { kind: "manual", sessionId: session.id, createdAt: "now" }, [{
+    sources: [{ entry: initialEntry, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "e", createdAt: "now",
+  }]);
   const created = store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
     run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{
       op: "create", handle: "$1", author: "test", text: "root", category: "constraint", scope: "global",

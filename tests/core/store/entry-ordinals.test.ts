@@ -65,7 +65,7 @@ test("entry/cleanup integration: ordinal and block upgrade preserves the retired
     const a = store.appendSourceEntry(f.input("a")), b = store.appendSourceEntry(f.input("b"));
     store.selectSourcePath(f.session.id, "main", [b.id]);
     const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "time" }, facts: [{ turnId: f.turn.id,
-      category: "observation", actor: "user", text: "legacy fact", source: [`T${f.turn.id}#user`], createdAt: "time" }] });
+      category: "observation", actor: "user", text: "legacy fact", source: [`T${f.turn.id}#user`], entryIds: [b.id], createdAt: "time" }] });
     if (!noted.ok) throw Error(noted.problems.join());
     store.db.exec(`CREATE TABLE pending_deliveries (run_id INTEGER NOT NULL REFERENCES runs(id), session_id INTEGER NOT NULL REFERENCES sessions(id), branch TEXT, delivered_at TEXT)`);
     store.db.prepare("INSERT INTO pending_deliveries VALUES (?, ?, 'main', NULL)").run(noted.runId, f.session.id);

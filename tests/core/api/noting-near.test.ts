@@ -18,7 +18,7 @@ function fixture(script: (task: NotingAgentInput) => Partial<RunAgentResult> | v
   const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
   const tools = memory.tools({ kind: "manual", ...path, currentTurnId: turn.id });
   const note = tools.find(tool => tool.name === "note")!;
-  expect(note.execute({ facts: [{ text: "The user set a rule", source: ["T1#E1"] }] })).toContain("F1");
+  expect(note.execute({ facts: [{ title: "User rule", sources: [{ address: "T1#E1", text: "The user set a rule" }] }] })).toContain("F1");
   return { memory, path, note, run: () => memory.noting(path) };
 }
 const use = (task: NotingAgentInput, name: "note" | "memory", input: unknown) => task.tools.find(tool => tool.name === name)!.execute(input);
@@ -28,7 +28,7 @@ for (const relation of [undefined, ["support", "strong"], ["support", "weak"], [
     const f = fixture(task => {
       ack = task.acknowledgeRequest;
       task.reportRequest({ exact: "payload" }); task.acknowledgeRequest();
-      const receipt = use(task, "note", { facts: [{ text: "The user set a rule", source: ["T1#E1"],
+      const receipt = use(task, "note", { facts: [{ title: "User rule reviewed", sources: [{ address: "T1#E1", text: "The user set a rule" }],
         ...(relation ? { [relation[0]]: [["F1", relation[1]]] } : {}) }] });
       expect(JSON.parse(receipt)).toMatchObject({ results: ["held: $1"] });
       expect(reviewFeedback(receipt)).toBeUndefined();
@@ -54,7 +54,7 @@ test("92: old review receipts and audit remain readable but grant no write proto
     response: JSON.stringify({ notingNearReview: legacy, diagnostics: [{ kind: "unanswered_near", pairs: [] }] }) });
   expect(JSON.parse(f.memory.store.getRun(saved.id)!.response!).notingNearReview).toEqual(legacy);
   expect(reviewFeedback(JSON.stringify({ feedback: { role: "user", content: "NEAR: old record" } }))).toBe("NEAR: old record");
-  expect(f.note.execute({ facts: [{ slot: "$1", text: "No manual draft", source: ["T1#E1"] }] })).toContain("rejected:");
+  expect(f.note.execute({ facts: [{ slot: "$1", title: "No manual draft", sources: [{ address: "T1#E1", text: "No manual draft" }] }] })).toContain("rejected:");
   expect(f.note.execute({ facts: [], drop: ["$1"] })).toContain("rejected:");
 });
 
@@ -72,7 +72,7 @@ test("92: explicit audit unavailability is allowed; missing both request and dec
 test("92: later same-Turn native entries cannot widen frozen source or processing membership", async () => {
   let lateId = 0;
   const f = fixture(task => {
-    use(task, "note", { facts: [{ text: "Pi agent explained the rule", source: ["T1#E2"] }] });
+    use(task, "note", { facts: [{ title: "Pi agent explanation", sources: [{ address: "T1#E2", text: "Pi agent explained the rule" }] }] });
     const before = f.memory.store.sourcePath(f.path.sessionId, "main", 1);
     const late = f.memory.appendEntry({ sessionId: f.path.sessionId, nativeLineage: "fixture", nativeId: "late", turnId: 1,
       role: "assistant", text: "later", raw: JSON.stringify({ role: "assistant", text: "later" }), calls: [] });

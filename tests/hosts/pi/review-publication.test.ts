@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { host, reply } from "./test-host.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 async function seeded(sharedAllowance = 50) {
   const h = host({ "noting.triggerTokens": 1e9,
@@ -13,9 +14,11 @@ async function seeded(sharedAllowance = 50) {
   await h.emit("session_start");
   expect(h.requests).toEqual([]);
   const s = h.memory.store;
-  const f = s.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, facts: [{ turnId: 1, source: ["T1#user"], actor: "user", category: "decision", text: "Keep this rule", createdAt: "seed" }] });
-  if (!f.ok) throw Error(f.problems.join());
-  const c = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$1", author: "test", text: "rule ".repeat(6000), category: "constraint", scope: "project", supports: [f.facts[0]!.id], topics: [], reason: "evidence", createdAt: "seed" }] });
+  const user = s.sourcePath(1, "main", 1).find(value => s.getSourceEntry(value.id)?.role === "user")!;
+  const evidence = legacyFacts(s, { kind: "manual", sessionId: 1, createdAt: "seed" },
+    [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], text: "Keep this rule",
+      category: "decision", actor: "user", createdAt: "seed" }]).facts[0]!;
+  const c = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$1", author: "test", text: "rule ".repeat(6000), category: "constraint", scope: "project", supports: [evidence.id], topics: [], reason: "evidence", createdAt: "seed" }] });
   if (!c.ok) throw Error(c.problems.join());
   return { h, s, item: c.committed[0]! };
 }

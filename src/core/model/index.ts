@@ -97,6 +97,11 @@ export interface Fact {
   category: FactCategory | null;
   actor: Actor | null;
   text: string;
+  /** Absent on historical facts; new facts have one segment for every source. */
+  title?: string;
+  segments?: string[];
+  /** Read-only native binding projection for legacy display; never rewrites authored source. */
+  boundAddresses?: string[];
   quote: string | null;
   /** One derived attribution per cited entry, in source order. Legacy rows omit this. */
   roles?: { role: "user" | "assistant" | "observation"; harness?: "Pi agent" | "Claude Code" }[];
@@ -192,8 +197,8 @@ export interface NotingRelationInput {
 }
 
 export interface NotingFactInput {
-  text: string;
-  source: string[]; // each address names one whole entry, e.g. "T812#E2"
+  title: string;
+  sources: { address: string; text: string }[];
   support?: NotingRelationInput[];
   negate?: NotingRelationInput[];
 }
@@ -234,27 +239,26 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
   }
   const f = raw as Record<string, unknown>;
 
-  if (!isNonEmptyString(f.text)) {
-    problems.push(`${path}.text: expected a non-empty string`);
-  } else {
-    // Essential verbatim snippets moved from the retired quote field into 「…」.
-    // Their literal identifiers are evidence text, never structured references.
-    if (EMBEDDED_ID_RE.test(f.text.replace(/「[^」]*」/gu, ""))) {
-      problems.push(`${path}.text: must not embed a fact or knowledge id; ids live in structured relation/support fields`);
-    }
-  }
+  if (!isNonEmptyString(f.title) || !f.title.trim() || /[\r\n\u2028\u2029]/u.test(f.title))
+    problems.push(`${path}.title: expected a non-empty single-line string`);
+  if (!Array.isArray(f.sources) || !f.sources.length) problems.push(`${path}.sources: expected non-empty source segments`);
+  else f.sources.forEach((source, i) => {
+    if (!source || typeof source !== "object" || Array.isArray(source) ||
+        typeof source.address !== "string" || !source.address || typeof source.text !== "string" || !source.text.trim() ||
+        Object.keys(source).some(key => !["address", "text"].includes(key)))
+      problems.push(`${path}.sources[${i}]: expected {address, non-empty text}`);
+    else if (EMBEDDED_ID_RE.test(source.text.replace(/「[^」]*」/gu, "")))
+      problems.push(`${path}.sources[${i}].text: must not embed a fact or knowledge id`);
+  });
   for (const key of Object.keys(f)) {
-    if (!["text", "source", "support", "negate"].includes(key)) problems.push(`${path}.${key}: unexpected field`);
-  }
-  if (!isStringArray(f.source) || f.source.length === 0) {
-    problems.push(`${path}.source: expected a non-empty array of address strings`);
+    if (!["title", "sources", "support", "negate"].includes(key)) problems.push(`${path}.${key}: unexpected field`);
   }
   const support = validateRelationList(`${path}.support`, f.support, problems);
   const negate = validateRelationList(`${path}.negate`, f.negate, problems);
 
   return {
-    text: f.text as string,
-    source: (f.source as string[]) ?? [],
+    title: f.title as string,
+    sources: (f.sources as NotingFactInput["sources"]) ?? [],
     support,
     negate,
   };

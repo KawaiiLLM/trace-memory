@@ -80,7 +80,7 @@ for (const [label, restoreContent] of [["not yet split", true], ["already split"
     const nativeIdBefore = new Map(store.db.prepare("SELECT id, native_id FROM source_entries").all().map((r: any) => [Number(r.id), r.native_id]));
     // Bind a fact to `withCall` so its binding can be checked unchanged after the backfill.
     const bound = store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "time" }, facts: [{ turnId: turn.id,
-      category: "observation", actor: "user", text: "bound to the entry that will be renumbered", source: [`T${turn.id}#t1`], createdAt: "time" }] });
+      category: "observation", actor: "user", text: "bound to the entry that will be renumbered", source: [`T${turn.id}#t1`], entryIds: [withCall.id], createdAt: "time" }] });
     if (!bound.ok) throw new Error(bound.problems.join());
     const factEntriesBefore = store.factEntries(bound.facts[0]!.id);
 

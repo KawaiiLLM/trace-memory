@@ -1,8 +1,19 @@
-src/core/ is host-agnostic: it must not import any host SDK.
+# Core reference
+
+`src/core/` is host-agnostic: it must not import any host SDK.
+
+## Current facts and reads (93)
+
+The [fact-slice and entry-reading contract](unified-entry.md) is the current public reference. It supersedes the historical source, rendering and address forms recorded in the numbered ticket sections below.
+
+- New `note` items require a single-line `title` and nonempty `sources: [{address, text}]`. Core orders segments by the selected path, joins their bodies, derives source roles and assigns the earliest source Turn. Duplicate resolved entries are rejected. N's 1,000-token cap applies to the body; windows charge the full rendering.
+- A bare Turn displays contributing fact segments, pending Raw and addresses of processed uncited entries. Whole-entry/range addresses read Raw. Exact facts include backlinks to reader-visible current knowledge identities, including historical citing versions. Trace/search knowledge supports show fact titles; injection does not.
+- Public `@` selectors are only role filters. Block selectors, E-list shorthand, fact intervals, negation walks, `K..`, `trace.layer` and `trace.tool` are removed. Knowledge versions use tags or `@v` ordinals, not global commit numbers. Search retains its `layer` parameter.
+- Legacy stored bodies, sources and metadata remain unchanged. Display normalizes sources to whole-entry addresses; missing bindings or inconsistent stored segments fail explicitly. New facts still reject thinking-only evidence. Ordinary Turn views omit thinking; explicit full or entry Raw reads retain it.
 
 ## Noter publication (92/04)
 
-This contract supersedes the older immediate-Noting and NEAR descriptions below. Input selection and live Consolidation retirement remain separate 92 integration steps.
+This contract supersedes the older immediate-Noting and NEAR descriptions below. Live Consolidation is retired; historical C records remain readable. The numbered sections retain implementation history, not permission to use superseded schemas or stages.
 
 - Foreground and N advertise identical `note`/`memory` definitions. Core enforces role permissions. Manual writes remain immediate and reject N-only slots, drops and local knowledge supports; manual within-call relation handles still work.
 - N holds facts in stable `$n` slots and knowledge operations in `Mn` slots. Omitted slot appends; explicit slot fully replaces. A rejected replacement invalidates the prior value. Drop leaves a gap and cannot remove a referenced fact. Empty calls confirm use but do not clear drafts or slot errors.
@@ -19,10 +30,9 @@ The [entry-address contract](unified-entry.md) supersedes older ticket descripti
 - noting/    freeze the task material, provide tools, record the last provider request and final text.
 - api/tools.ts  role-bound tools; atomic note/memory validation and commit; Dreamer's read-only check.
 - dreaming/  freeze one due Knowledge pool, provide maintenance tools, and record terminal pool consumption.
-- consolidation/  freeze pending facts and visible Knowledge, validate create-only submissions, and commit revisions.
 - render/  one renderer for noting material, compaction tail, branch summary, trace; XML injection blocks.
 - render/material.ts  the shared material contract and the block layout of every consumer (20a).
-- prompts/ noting.md, consolidation.md, dreaming.md — the stage prompts, each declaring the shared memory-model blocks it includes (`shared/model.md`, `facts.md`, `knowledge.md` — definitions; `admission.md`, `atomicity.md`, `evidence.md`, `grounding.md`, `identity.md`, `authority.md`, `protection.md`, `body.md`, `reading.md` — principles; `formats.md`, `live.md` — inputs) at `<!-- include: name -->` markers that `load.ts` splices in — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
+- prompts/ noting.md, dreaming.md — the live stage prompts, each declaring the shared memory-model blocks it includes (`shared/model.md`, `facts.md`, `knowledge.md` — definitions; `admission.md`, `atomicity.md`, `evidence.md`, `grounding.md`, `identity.md`, `authority.md`, `protection.md`, `body.md`, `reading.md` — principles; `formats.md`, `live.md` — inputs) at `<!-- include: name -->` markers that `load.ts` splices in — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
 
 Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: fork mode = inherited context, or subagent mode = fresh context). Optional result fields ride along into the run record's response JSON: `verification`, `fallbackReason`, `retries`, `audit`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file. One result field is not recorded at all: `refused` (27c), by which a host says it would not run the frozen task in the mode it was admitted for and will admit it once more itself — core records no run for that attempt and returns the value to the caller unread, with `outcome: "dropped"`.
 

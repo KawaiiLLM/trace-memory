@@ -235,8 +235,8 @@ test("CC import is idempotent, preserves all source evidence, and projects only 
       .get(sessionId, f.nativeSessionId)).toEqual({ branch: first.branch, head_turn_id: first.headTurnId });
     expect(Object.hasOwn(readBinding(f.config, f.nativeSessionId)!, "selectedPathUuids")).toBe(false);
     expect(entries.filter(entry => entry.role === "assistant").map(entry => entry.nativeId)).toEqual(["a1", "a2", "a3"]);
-    expect(f.importer.memory.trace("T1#E2@call-1", { full: true })).toContain("Read");
-    expect(f.importer.memory.trace("T1#E3@call-1", { full: true })).toContain("result");
+    expect(f.importer.memory.trace("T1#E2@assistant", { full: true })).toContain("Read");
+    expect(f.importer.memory.trace("T1#E3@observation", { full: true })).toContain("result");
     expect((await f.importer.reconcile()).appendedEntryIds).toEqual([]);
     expect(f.importer.memory.store.listTurns(sessionId)).toHaveLength(4);
     expect(f.importer.memory.store.db.prepare("SELECT native_id, kind FROM native_turns ORDER BY turn_id").all())

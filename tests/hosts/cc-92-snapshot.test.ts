@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSy
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { TraceMemory } from "../../src/core/api/index.ts";
+import { knowledgeBatch, legacyFacts } from "../support/seed.ts";
 import { ccVisibleView, databaseIdentity, decodeCcInjection } from "../../src/hosts/cc/injection.ts";
 
 const dirs: string[] = [];
@@ -86,15 +87,16 @@ test("92: real staging renders once across an external mid-snapshot commit and 2
     const session = memory.store.createSession({ enrollmentChoice: true, host: "fixture", projectId: project.id,
       startedAt: "2026-01-01T00:00:00.000Z", firstReplyAt: "2026-01-01T00:00:00.000Z" });
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: "now", userPrompt: "a rule" });
-    const noted = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" },
-      facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "Rule evidence", source: [`T${turn.id}#user`], createdAt: "now" }] });
-    if (!noted.ok) throw new Error(noted.problems.join(";"));
-    const content = { author: "fixture", topics: [], reason: "fixture", supports: [noted.facts[0]!.id],
+    const source = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "rule",
+      role: "user", text: "a rule", raw: "a rule", calls: [] });
+    const evidence = legacyFacts(memory.store, { kind: "manual", sessionId: session.id, createdAt: "now" },
+      [{ sources: [{ entry: source, address: `T${turn.id}#E${source.entryOrdinal}` }], category: "decision",
+        actor: "user", text: "Rule evidence", createdAt: "now" }]).facts[0]!;
+    const content = { author: "fixture", topics: [], reason: "fixture", supports: [evidence.id],
       createdAt: "now", category: "constraint" as const, scope: "global" as const };
-    const created = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" },
-      operations: Array.from({ length: 24 }, (_, n) => ({ ...content, op: "create" as const, handle: `$${n}`,
-        text: `Original rule ${n}: ${"x".repeat(6000)}` })) });
-    if (!created.ok) throw new Error(created.problems.join(";"));
+    const created = knowledgeBatch(memory.store, memory.store.knowledgePath(session.id, "main", turn.id),
+      Array.from({ length: 24 }, (_, n) => ({ ...content, text: `Original rule ${n}: ${"x".repeat(6000)}` })),
+      { kind: "manual", createdAt: "now" });
     memory.store.db.exec("UPDATE knowledge_budget_policy SET global_tokens=100000");
     const oldIds = created.committed.map(commit => commit.commit);
     const producer = f.run(0, epoch, { pauseSnapshot: true });

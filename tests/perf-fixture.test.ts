@@ -11,6 +11,15 @@ test("92: performance seed retains C processing and performs its merge through a
     const fixture = generate(join(directory, "trace.db"), { entries: 150, facts: 30, resultChars: 100 });
     const store = new Store(fixture.dbPath);
     try {
+      const facts = store.listSessionFacts(fixture.sessionId);
+      expect(facts).toHaveLength(fixture.factCount);
+      for (const fact of facts) {
+        const bindings = store.factEntries(fact.id);
+        expect(bindings).toHaveLength(1);
+        const entry = store.getSourceEntry(bindings[0]!);
+        expect(entry?.turnId).toBe(fact.turnId);
+        expect(entry?.role).toBe("user");
+      }
       const revisions = store.listKnowledgeRevisions();
       expect(revisions).toHaveLength(fixture.knowledgeCount);
       const merged = revisions.filter(revision => revision.op === "merge");

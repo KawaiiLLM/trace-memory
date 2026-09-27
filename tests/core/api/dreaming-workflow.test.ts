@@ -70,8 +70,9 @@ test("64c prompt and fixture use only the current maintenance contract", () => {
     "finished-reference-archived-on-completion-fact", "finished-status-folded-into-ruling",
   ]) expect(renderedFixture).not.toContain(retired);
   expect(prompt).not.toContain("### Intensity, set by the failed check");
-  expect(prompt).toContain("over budget: another round of Archiving on it, then `check` again");
-  expect(prompt).toContain("then `check` again, until it fits");
+  expect(prompt).toContain("over budget: another round of budget reduction on it, then `check` again");
+  expect(prompt).toContain("coarsen suitable related topics first, then archive lower-value knowledge if needed");
+  expect(prompt).toContain("then `check` again until the pool fits");
   expect(prompt).toContain("Another pool over budget is reported, not acted on");
 });
 

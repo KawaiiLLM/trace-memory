@@ -14,6 +14,7 @@ import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { countPathBuilds, countRunBodies, countSourceReads } from "../../perf/fixture.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
+import { fact, knowledge, knowledgeBatch, legacyFacts } from "../../support/seed.ts";
 
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
@@ -53,11 +54,12 @@ const refresh = (h: Host) => h.emit("agent_end");
 /** Facts on the current branch, written without a model and without taking any entry, so the pending
  * entry count is untouched and a per-fact rebuild would be visible. */
 function facts(h: Host, count = 3) {
-  const committed = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: time },
-    facts: Array.from({ length: count }, (_, i) => ({ turnId: 1, category: "observation" as const, actor: "user" as const,
-      text: `footer fact ${i}`, source: ["T1#user"], createdAt: time })) });
-  if (!committed.ok) throw new Error(committed.problems.join("; "));
-  return committed.facts;
+  const store = h.memory.store;
+  const source = store.sourcePath(1, "main", 1).find(value => store.getSourceEntry(value.id)?.role === "user")!;
+  // A single noting run is essential here: later assertions distinguish run count from fact count.
+  return legacyFacts(store, { kind: "noting", sessionId: 1, branch: "main", createdAt: time },
+    Array.from({ length: count }, (_, i) => ({ sources: [{ entry: source, address: `T1#E${source.entryOrdinal}` }],
+      category: "observation" as const, actor: "user" as const, text: `footer fact ${i}`, createdAt: time }))).facts;
 }
 function processPool(h: Host, pool: string, createdAt = time, response?: string) {
   const store = h.memory.store, current = store.knowledgePath(1, "main");
@@ -84,31 +86,29 @@ test("footer reports pending Raw, applicable facts, changed Knowledge, and histo
   const h = host(quiet);
   await h.turn(); // one Turn, two source entries, nothing noted and nothing extracted
   expect(footer(h)).toMatchObject({ ...enumerated(h), glyph: "○", role: "dim" });
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->0 memory: 0/0 cost: $0.00</dim>");
+  expect(footer(h)).toMatchObject({ glyph: "○", role: "dim", entries: "2", facts: "0", changedKnowledge: "0", knowledge: "0", cost: "0.00" });
 
   const written = facts(h, 3);
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 0/0 cost: $0.00</dim>"); // committed facts are immediately eligible
+  expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "0", knowledge: "0", cost: "0.00" }); // committed facts are immediately eligible
   expect(footer(h)).toMatchObject(enumerated(h));
 
   // Knowledge cites a fact without hiding the fact.
-  const knowledge = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[3]!
-    .execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, never npm",
-      category: "constraint", scope: "session", supports: [`F${written[0]!.id}`] }], skipped: [] });
-  expect(knowledge).not.toContain("rejected:");
+  knowledge(h.memory.store, h.memory.store.knowledgePath(1, "main", 1), "session", "constraint",
+    [written[0]!.id], "Use pnpm, never npm", { run: { kind: "manual", createdAt: time } });
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 1/1 cost: $0.00</dim>");
+  expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "1", knowledge: "1", cost: "0.00" });
   processPool(h, `session:${h.memory.store.getSession(1)!.id}`);
   await refresh(h);
   // R1FINAL does not falsely protect an untouched input when a synthetic run commits no output.
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 1/1 cost: $0.00</dim>");
+  expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "1", knowledge: "1", cost: "0.00" });
 
   // N's Raw progress is independent of D's Knowledge processing and historical fact rows.
   const noted = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: time },
     facts: [], entryIds: h.memory.store.sourcePath(1, "main", 1).map(e => e.id) });
   expect(noted.ok).toBe(true);
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->3 memory: 1/1 cost: $0.00</dim>");
+  expect(footer(h)).toMatchObject({ entries: "0", facts: "3", changedKnowledge: "1", knowledge: "1", cost: "0.00" });
   expect(footer(h)).toMatchObject(enumerated(h));
 
   // 51: the footer's cost is today's spend across the whole database — another session's run made
@@ -128,10 +128,8 @@ test("footer reports pending Raw, applicable facts, changed Knowledge, and histo
   expect(h.memory.spend(borrowed.id).cost).toBe(9.99);
   // Current session carries the composition; headless `/trace` prints the same body. Create real
   // pending work, then finish it through the current pool facade with observed Dreamer usage.
-  const extra = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, branch: "main", createdAt: today }, operations: [{
-    op: "create", handle: "$priced", author: "test", text: "priced Dreamer item", category: "constraint", scope: "session",
-    supports: [written[0]!.id], topics: [], reason: "exercise Dreamer spend", createdAt: today }] });
-  if (!extra.ok) throw new Error(extra.problems.join("; "));
+  knowledge(h.memory.store, h.memory.store.knowledgePath(1, "main", 1), "session", "constraint",
+    [written[0]!.id], "priced Dreamer item", { run: { kind: "manual", createdAt: today }, operation: { createdAt: today } });
   processPool(h, "session:1", today,
     JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } } }));
   await h.commands.get("trace")!.handler("", h.ctx);
@@ -156,7 +154,7 @@ test("24a/92: N stays pending through staging, only normal termination moves que
   h.provider(async c => notingFact(c));
   release(notingFact(h.conversations[0]!)); await h.drain();
   // Held facts and knowledge become visible together only after normal N termination.
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->1 memory: 0/0 cost: $0.00</dim>");
+  expect(footer(h)).toMatchObject({ glyph: "○", role: "dim", entries: "0", facts: "1", changedKnowledge: "0", knowledge: "0", cost: "0.00" });
 
   // A run that fails before its commit advances nothing at all.
   h.provider(async () => { throw new Error("offline"); });
@@ -210,13 +208,17 @@ test("24a: the counts follow the selected branch, so a sibling entry of the same
   await h.emit("agent_end");
   const common = [...h.entries];
   const write = (branch: string) => h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
-  expect(write("main")[2]!.execute({ facts: [{ text: "Use alpha everywhere", source: ["T1#E1"] }] })).not.toContain("rejected:");
+  const source = (ordinal: number) => h.memory.store.sourcePath(1, "main", 1)
+    .find(value => value.entryOrdinal === ordinal)!;
+  fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Alpha rule",
+    [{ entry: h.memory.store.getSourceEntry(source(1).id)!, text: "Use alpha everywhere" }]);
   expect(write("main")[3]!.execute({ operations: [{ op: "create", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
     supports: ["F1"], reason: "Admitted from the shared ancestry." }], skipped: [] })).not.toContain("rejected:");
   // A withdrawal bound to a sibling entry of the same Turn: only main holds it.
   h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });
   await h.emit("agent_end");
-  expect(write("main")[2]!.execute({ facts: [{ text: "Pi agent reports alpha withdrawn", source: ["T1#E4"] }] })).not.toContain("rejected:");
+  fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Alpha withdrawn",
+    [{ entry: h.memory.store.getSourceEntry(source(4).id)!, text: "Pi agent reports alpha withdrawn" }]);
   const handle = readHandle(write("main"), "K1");
   expect(write("main")[3]!.execute({ operations: [{ op: "archive", id: handle, supports: ["F2"], reason: "The rule was withdrawn on this path." }], skipped: [] })).not.toContain("rejected:");
   await refresh(h);
@@ -275,11 +277,10 @@ test("an enabled refresh uses one path snapshot and one bounded processed-versio
   const h = host(quiet);
   await h.turn();
   const written = facts(h, 6);
-  const created = h.memory.store.commitConsolidationRun({ path: { sessionId: 1, branch: "main", headTurnId: 1 },
-    run: { kind: "manual", sessionId: 1, branch: "main", createdAt: time },
-    operations: written.map((fact, i) => ({ op: "create" as const, handle: `$k${i}`, author: "test", text: `current ${i}`,
-      category: "understanding" as const, scope: "session" as const, supports: [fact.id], topics: [], reason: "test", createdAt: time })) });
-  expect(created.ok).toBe(true);
+  knowledgeBatch(h.memory.store, h.memory.store.knowledgePath(1, "main", 1),
+    written.map((item, i) => ({ scope: "session", category: "understanding", supports: [item.id],
+      text: `current ${i}`, author: "test", topics: [], reason: "test", createdAt: time })),
+    { kind: "manual", createdAt: time });
   const reads = countSourceReads(), builds = countPathBuilds(), bodies = countRunBodies();
   const rendered = vi.spyOn(rendering, "renderKnowledge"), processed = vi.spyOn(Store.prototype, "processedCurrentVersions");
   const snapshot = vi.spyOn(h.memory.store, "pathSnapshot");
@@ -304,7 +305,7 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   h.setHeaderTimestamp("2099-01-01T00:00:00.000Z");
   await h.emit("session_start");
   expect(h.memory.store.getSession(1)).toBeNull();
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: ?->? memory: ?/? cost: $0.00</dim>"); // 51: today's database-wide spend is readable without a session identity
+  expect(footer(h)).toMatchObject({ glyph: "○", role: "dim", entries: "?", facts: "?", changedKnowledge: "?", knowledge: "?", cost: "0.00" }); // today's database-wide spend remains readable
   await h.commands.get("trace")!.handler("", h.ctx);
   expect(h.notices.at(-1)).toContain("Trace Memory · No session");
   expect(h.notices.at(-1)).toContain("Noting        Unknown / Unknown");
@@ -324,9 +325,9 @@ test("24a/51: concurrent N and D indicator prefers N; off and no-theme fallback"
   const h = host({ "noting.triggerTokens": 1_000, "noting.forkModeDefault": false });
   await h.turn();
   expect(footer(h)).toMatchObject({ glyph: "○", role: "dim" });
-  const seed = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
-    .execute({ facts: [{ text: "User chose pnpm", source: ["T1#E1"] }] });
-  expect(seed).not.toContain("rejected:");
+  const source = h.memory.store.sourcePath(1, "main", 1).find(value => value.entryOrdinal === 1)!;
+  fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Package manager choice",
+    [{ entry: h.memory.store.getSourceEntry(source.id)!, text: "User chose pnpm" }]);
   const priorRequests = h.requests.length;
   const due = createDreamerTrigger(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1, 1);
   expect(h.memory.taskEligibility("dreaming", { sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ due: true });

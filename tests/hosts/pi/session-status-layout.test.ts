@@ -6,6 +6,7 @@ import { ExtensionSelectorComponent, initTheme } from "@earendil-works/pi-coding
 import { Container, Text, TuiAltScreen, TuiMainScreen, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { SessionPanel, showSessionPanel } from "../../../src/hosts/pi/session-panel.ts";
 import { host, reply } from "./test-host.ts";
+import { knowledge, legacyFacts } from "../../support/seed.ts";
 import { compositionMap, contextMap, statusBody } from "../../../src/hosts/pi/session-status.ts";
 import type { ContextComposition } from "../../../src/hosts/pi/context-composition.ts";
 import { tokens } from "../../../src/core/render/index.ts";
@@ -317,15 +318,12 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
   try {
     await h.turn();
     const store = h.memory.store;
-    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "test" }, facts: [
-      { turnId: 1, category: "decision", actor: "user", text: "Remember the choice", source: ["T1#user"], createdAt: "test" },
-    ] });
-    if (!noted.ok) throw Error(noted.problems.join());
-    const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "test" }, operations: [
-      { op: "create", handle: "$1", author: "test", text: "Remember the choice", category: "constraint", scope: "project", supports: [noted.facts[0]!.id], topics: [], reason: "initial", createdAt: "test" },
-    ] });
-    if (!created.ok) throw Error(created.problems.join());
-    const item = created.committed[0]!;
+    const user = store.sourcePath(1, "main", 1).find(value => store.getSourceEntry(value.id)?.role === "user")!;
+    const evidence = legacyFacts(store, { kind: "manual", sessionId: 1, createdAt: "test" },
+      [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], category: "decision", actor: "user",
+        text: "Remember the choice", createdAt: "test" }]).facts[0]!;
+    const item = knowledge(store, store.knowledgePath(1, "main", 1), "project", "constraint",
+      [evidence.id], "Remember the choice", { run: { kind: "manual", createdAt: "test" } });
     const pool = `project:${store.getSession(1)!.projectId}`;
     const pendingTokens = store.pendingVersions(pool, store.knowledgePath(1))[0]!.tokens;
     h.memory.setKnowledgeBudget("project", pendingTokens * 2);
@@ -424,7 +422,7 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     // The panel drops a trailing ".0" (session-status.ts), so the label follows the same rule.
     const toolLabel = `Tools ${(toolTokens / 1000).toFixed(1).replace(/\.0$/, "")}k (${(100 * toolTokens / total).toFixed(1)}%)`;
     const conversationLabel = `Conversation 12 (${(1200 / total).toFixed(1)}%)`;
-    for (const phrase of ["Trace Memory · S1 · pi:pi-test · On", "███████░░░ 72% 36 / 50",
+    for (const phrase of ["Trace Memory · S1 · pi:pi-test · On", "███████░░░ 74% 37 / 50",
       "global ░░░░░░░░░░", "project ░░░░░░░░░░", "session ░░░░░░░░░░",
       "Estimated usage by category", toolLabel, conversationLabel, "Free 955.5k (95.5% of window)"])
       expect(squashed).toContain(phrase.replace(/\s+/g, ""));

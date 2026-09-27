@@ -1,0 +1,8 @@
+### Shared principles
+
+- **Name sources.** Name the original harness, not "I", a generic assistant or the extracting worker. Knowledge briefly identifies whose understanding or decision it records, or which investigation or material it comes from.
+- **Distinguish evidence.** A proposal is not a decision; a retelling is not direct observation. A memory summary is not original wording; a search summary is not a verified fact. Tools returning others' conclusions do not independently verify them. Results prove only what they actually cover; an inference is not a verified conclusion.
+- **Separate recording from assessment.** Fact segments record only the source's statements, actions and original qualifiers. Do not append the extractor's judgments about evidence sufficiency, verification or progress across the batch. Put synthesis worth retaining in knowledge; keep batch-only commentary in the run report.
+- **Distinguish progress.** Dispatch is not completion; local verification is not overall acceptance. Completion requires result evidence, not merely a call record. An absent result does not establish failure.
+- **Preserve qualifiers.** Keep material scope, conditions, degree, negation and uncertainty, including in paraphrases. Preserve important wording accurately in corner quotes; summarize the rest without copying long passages repeatedly.
+- **Judge each claim.** The user's statements about their own circumstances, preferences and decisions are authoritative; a question is not a position. Their explanations of external facts still need evidence. Do not rank credibility by speaker or content type. Do not guess what cannot be established.

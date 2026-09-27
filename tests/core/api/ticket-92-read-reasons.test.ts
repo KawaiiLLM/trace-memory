@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { sourceSeededMemory } from "../../source-fixture.ts";
+import { fact } from "../../support/seed.ts";
 
 // 03 changes addresses, not 41b's reason-on-history-lines contract.
 test("92/41b: reasons belong to explicit history, not exact/current/collection bodies", () => {
@@ -9,7 +10,10 @@ test("92/41b: reasons belong to explicit history, not exact/current/collection b
     const session = memory.store.createSession({ host: "pi:reasons", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Retain the rule", startedAt: "now" });
     const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
-    expect(tools[2]!.execute({ facts: [{ text: "User requested the rule", source: [`T${turn.id}#E1`] }] })).toContain("ok: F1");
+    const user = memory.store.getSourceEntry(memory.store.listSourceEntries(session.id, turn.id)[0]!.id)!;
+    const created = fact(memory, { sessionId: session.id, branch: "main", headTurnId: turn.id }, "Rule requested",
+      [{ entry: user, text: "User requested the rule" }]);
+    expect(created.id).toBe(1);
     const content = { op: "create", text: "The durable rule", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "REASON_INITIAL" };
     expect(tools[3]!.execute({ operations: [content, { ...content, text: "Another identity", reason: "OTHER_REASON" }], skipped: [] })).toContain("committed");
     const tag = `K1#${memory.store.versionTag(1, 1)}`;
@@ -23,7 +27,9 @@ test("92/41b: reasons belong to explicit history, not exact/current/collection b
         expect(page).not.toContain("OTHER_REASON");
       }
     }
-    for (const [address, options] of [["K1", { versions: "history" }], ["K1", { versions: "all" }], ["K1..", {}]] as const) {
+    // 93 removes K..; history and all remain two distinct supported views.
+    expect(trace("K1..")).toContain("invalid public trace address");
+    for (const [address, options] of [["K1", { versions: "history" }], ["K1", { versions: "all" }]] as const) {
       let page = trace(address, { ...options, fields: ["reason"], cap: 1 });
       const pages = [page];
       for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {

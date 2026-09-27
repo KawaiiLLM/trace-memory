@@ -106,7 +106,7 @@ for (const change of ["leaf", "knowledge", "cancel"] as const) {
         else {
           const target = { sessionId: 1, branch: "main", headTurnId: memory.store.listTurns(1).at(-1)!.id };
           const note = memory.tools({ kind: "manual", ...target, currentTurnId: 1 }).find(tool => tool.name === "note")!;
-          const fact = JSON.parse(note.execute({ facts: [{ text: "Evidence", source: ["T1#E1"] }] })).factIds[0];
+          const fact = JSON.parse(note.execute({ facts: [{ title: "Evidence", sources: [{ address: "T1#E1", text: "Evidence" }] }] })).factIds[0];
           const result = memory.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: 1, createdAt: "now" },
             operations: [{ op: "create", handle: "$new", author: "fixture", category: "constraint", scope: "project",
               text: "Knowledge changed during child preparation", supports: [fact], topics: [], reason: "fixture", createdAt: "now" }] });
@@ -147,7 +147,7 @@ for (const delivery of ["landed", "missing", "offered-only", "budget-omitted"] a
       await vi.waitFor(() => expect(memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(1));
       const target = { sessionId: 1, branch: "main", headTurnId: memory.store.listTurns(1).at(-1)!.id };
       const note = memory.tools({ kind: "manual", ...target, currentTurnId: 1 }).find(tool => tool.name === "note")!;
-      const fact = JSON.parse(note.execute({ facts: [{ text: "User's original evidence", source: ["T1#E1"] }] })).factIds[0];
+      const fact = JSON.parse(note.execute({ facts: [{ title: "Original evidence", sources: [{ address: "T1#E1", text: "User's original evidence" }] }] })).factIds[0];
       const create = () => {
         const result = memory.store.commitConsolidationRun({ path: target,
           run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$new",

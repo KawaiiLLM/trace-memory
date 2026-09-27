@@ -21,9 +21,13 @@ function setup(store = new Store(":memory:"), projectName = "A", projectId?: num
   const session = store.createSession({ host, enrollmentChoice: true, projectId: project.id,
     projectDeclaration: "mark", startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
+  const entry = store.appendSourceEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture",
+    nativeId: `evidence-${turn.id}`, role: "user", text: "evidence", raw: "evidence", calls: [] });
   const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{
-    turnId: turn.id, category: "decision", actor: "user", text: "evidence", source: [`T${turn.id}#user`], createdAt: "now",
+    turnId: turn.id, category: "decision", actor: "user", text: "evidence", source: [`T${turn.id}#user`],
+    entryIds: [entry.id], createdAt: "now",
   }] });
+  if (noted.ok) expect(store.factEntries(noted.facts[0]!.id)).toEqual([entry.id]);
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
   const create = (scope: "global" | "project" | "session", text = `${scope} body`) => {

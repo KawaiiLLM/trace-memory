@@ -12,10 +12,8 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
   let trigger!: { knowledgeId: number; commit: number };
   const memory = TraceMemory(":memory:", async raw => {
     const task = raw as DreamingAgentInput;
-    expect(task.prompt).toContain("when a current item continues the same independent claim as an archived one, merge into the archived identity so the history stays traceable");
     expect(task.prompt).toContain("find the archived identity by the object's name with `versions: history`");
     expect(task.prompt).toContain("read the archive commit and its parent completely");
-    expect(task.prompt).toContain("topical relation alone does not revive");
     expect(task.material.changed).toContain(`New K${returned.knowledgeId}@v1:`);
     expect(task.material.changed).toContain("Returned widget state");
     task.tools.find(tool => tool.name === "check")!.execute({});
@@ -39,7 +37,7 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
   memory.selectEntries(session.id, "main", [entry.id]);
   const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   const factResult = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [
-    { turnId: turn.id, actor: "user", category: "decision", text: "Widget state", source: [`T${turn.id}#user`], createdAt: "now" },
+    { turnId: turn.id, actor: "user", category: "decision", text: "Widget state", source: [`T${turn.id}#user`], entryIds: [entry.id], createdAt: "now" },
   ] });
   if (!factResult.ok) throw new Error(factResult.problems.join("; "));
   const fact = factResult.facts[0]!.id;

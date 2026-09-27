@@ -6,8 +6,8 @@
 // Shape of the baseline size (defaults): about 2,000 source entries and 15 million Raw characters on
 // one session, with tool-heavy Turns (one Turn of 40 calls), non-text user boundaries, repeated text,
 // several native occurrences of the same tool call, at least 126 applicable facts, a sibling branch
-// whose selected ancestry contains a same-Turn entry that main's does not, facts written without
-// entry bindings (the address fallback), knowledge revisions with citations, consolidated facts, and
+// whose selected ancestry contains a same-Turn entry that main's does not, facts bound to their
+// actual source entries, knowledge revisions with citations, consolidated facts, and
 // a pending tail that no Noting run has taken.
 
 import { Store } from "../../src/core/store/index.ts";
@@ -154,12 +154,9 @@ export function generate(dbPath: string, options: FixtureOptions = {}): Fixture 
         if (t <= pendingFrom) {
           batchEntries.push(...mainEntries.slice(noted + batchEntries.length));
           if (t > 1 && prompt && t % factEvery === 0 && facts.length < targetFacts) {
-            // Most facts carry the entry bindings they were written against; a few keep the older
-            // shape with no bindings at all, which applicability answers from the addresses.
-            const bound = facts.length % 25 !== 0;
             const fact: FactCommitInput = { turnId: turn.id, category: "observation", actor: "user",
-              text: `${pick(LATIN)} ${pick(CJK)} ${facts.length}`, source: [`T${turn.id}#user`], createdAt: "2026-01-01T01:00:00Z",
-              ...(bound ? { entryIds: [userEntry] } : {}) };
+              text: `${pick(LATIN)} ${pick(CJK)} ${facts.length}`, source: [`T${turn.id}#user`], entryIds: [userEntry],
+              createdAt: "2026-01-01T01:00:00Z" };
             facts.push(fact); batchFacts.push(fact);
           }
           if (batchEntries.length >= 50) flush();

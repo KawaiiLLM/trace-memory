@@ -50,7 +50,7 @@ test.each(["automatic", "catchup"] as const)("%s releases a rejected slot once a
     for (const { id } of audit.entries) {
       const entry = runtime.store.getSourceEntry(id)!;
       expect(entry.blocks?.length).toBeGreaterThan(0);
-      expect(JSON.stringify(h.requests)).toContain(`[T${entry.turnId}#E${entry.entryOrdinal}@text]`);
+      expect(JSON.stringify(h.requests)).toContain(`[T${entry.turnId}#E${entry.entryOrdinal}@${entry.role === "toolResult" ? "observation" : entry.role}]`);
     }
     expect(release).toHaveBeenCalledTimes(1);
     expect(runtime.store.getClaim(1, "noting")).toBeNull();

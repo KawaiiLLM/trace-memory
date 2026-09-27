@@ -7,6 +7,7 @@ import { compactText, measuredMemory } from "../../../src/core/render/material.t
 import { contextComposition, type ContextComposition } from "../../../src/hosts/pi/context-composition.ts";
 import { compositionMap, percent, projectComposition, statusBody } from "../../../src/hosts/pi/session-status.ts";
 import { host } from "./test-host.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 // Exercise the installed native builder as an oracle; production uses only public APIs.
 const { buildSystemPrompt } = await import(new URL("core/system-prompt.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
@@ -426,10 +427,10 @@ test("initial and on/project supplement carriers share assembly measurement; ret
   try {
     await h.turn();
     const store = h.memory.store;
-    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "test" }, facts: [
-      { turnId: 1, category: "decision", actor: "user", text: "Rule", source: ["T1#user"], createdAt: "test" },
-    ] });
-    if (!noted.ok) throw Error(noted.problems.join());
+    const user = store.sourcePath(1, "main", 1).find(entry => store.getSourceEntry(entry.id)?.role === "user")!;
+    const noted = legacyFacts(store, { kind: "manual", sessionId: 1, createdAt: "test" },
+      [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], category: "decision", actor: "user",
+        text: "Rule", createdAt: "test" }]);
     const messages: any[] = [];
     for (const [i, command] of ["", "on", "project changed-project"].entries()) {
       const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "test" }, operations: [

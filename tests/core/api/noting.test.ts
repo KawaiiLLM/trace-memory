@@ -21,8 +21,10 @@ const request = { system: "actual host system", messages: [{ role: "user", conte
 // `note({facts: []})`. `silent` is the run that submits nothing at all, which is incomplete.
 const success = (batches: { facts: unknown[] }[]): ScriptResult => ({ outcome: "success", output: "Done.", noteInput: { facts: batches.flatMap((b) => b.facts) }, memoryInput: { operations: [], skipped: [] }, request, usage: { tokens: 12 } });
 const silent = (): ScriptResult => ({ outcome: "success", output: "Nothing to note.", request, usage: { tokens: 12 } });
-const fact = (extra = {}) => ({ text: memories.base, source: ["T1#E2"], ...extra });
-const batch = (turnId: number, facts = [fact()]) => ({ turn: `S${sessionId}/T${turnId}`, title: "mapC terrain", topic: "terrain", facts: facts.map((f) => ({ ...f, source: f.source[0] === "T1#E2" ? [`T${turnId}#E${hydrate(memory.store.listSourceEntries(sessionId), memory.store).find(e => e.turnId === turnId && e.role === "assistant")!.entryOrdinal}`] : f.source })) });
+const fact = (extra: Record<string, unknown> = {}) => ({ title: "mapC terrain", sources: [{ address: "T1#E2", text: memories.base }], ...extra });
+const batch = (turnId: number, facts = [fact()]) => ({ turn: `S${sessionId}/T${turnId}`, facts: facts.map(f => ({ ...f,
+  sources: f.sources.map(source => source.address === "T1#E2" ? { ...source,
+    address: `T${turnId}#E${hydrate(memory.store.listSourceEntries(sessionId), memory.store).find(e => e.turnId === turnId && e.role === "assistant")!.entryOrdinal}` } : source) })) });
 function open(config: ConfigOverride = {}) {
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async (raw) => {
     const input = raw as NotingAgentInput;
@@ -74,7 +76,7 @@ test("a turn arriving during the model call waits for the next trigger", async (
   expect(result.outcome).toBe("success");
   expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).length).toBeGreaterThan(0);
   expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  script.push(async () => success([batch(second.id, [fact({ source: [`T${second.id}#E1`], support: [["F1", "weak"]] })])]));
+  script.push(async () => success([batch(second.id, [fact({ sources: [{ address: `T${second.id}#E1`, text: memories.base }], support: [["F1", "weak"]] })])]));
   await noting(second.id);
   expect(calls[1]!.text).toContain(second.userPrompt!);
   expect(calls[1]!.material.facts[0]).toContain("[F1]");
@@ -141,7 +143,7 @@ for (const [label, changes, problem] of [
   ["forward handle", { support: [["$2", "weak"]] }, "$2"],
   ["malformed handle", { support: [["$x", "weak"]] }, "target"],
   ["relation shape", { support: ["F1"] }, "expected [target, strength]"],
-  ["embedded id", { text: "See F101" }, "must not embed"],
+  ["embedded id", { sources: [{ address: "T1#E2", text: "See F101" }] }, "must not embed"],
   ["event status", { status: "completed" }, "status"],
 ] as const) test(`bounces ${label} with problems and only a run record`, async () => {
   const t = turn(), output = [batch(t.id, [fact(changes)])];
@@ -218,12 +220,12 @@ test("fixture turn golden and noting input use identical rendering with receipts
     // 17a: automatic Raw uses completed entries; explicit trace retains its independent full read.
     const views = hydrate(memory.pendingEntries(sessionId, "main", first.id), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
     expect(input.material.entries.map(e => e.view).join("\n\n")).toBe(views);
-    expect(input.tools[0]!.execute({ address: "T1", tool: 2, full: true })).toBe(memory.trace("T1", { tool: 2, full: true }));
+    expect(input.tools[0]!.execute({ address: "T1", full: true })).toBe(memory.trace("T1", { full: true }));
     return success([]);
   });
   const result = await memory.noting({ sessionId, branch: "main", headTurnId: first.id, mode: "subagent" });
   if (result.outcome !== "success") throw new Error("expected success");
-  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).fetched[0].input).toEqual({ address: "T1", tool: 2, full: true });
+  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).fetched[0].input).toEqual({ address: "T1", full: true });
   expect(calls[0]!.tools[0]!.execute({ address: "T1" })).toContain("finished");
 });
 
@@ -231,25 +233,27 @@ test("fixture fact goldens include quote, sources and both relation directions a
   const first = turn(), second = turn(first.id, 1);
   // Stored legacy rows keep their original metadata and source selectors. New N
   // writes above exercise the new schema; this golden deliberately tests history.
+  const entries = hydrate(memory.store.listSourceEntries(sessionId), memory.store);
+  const firstAssistant = entries.find(entry => entry.turnId === first.id && entry.role === "assistant")!.id;
+  const secondAssistant = entries.find(entry => entry.turnId === second.id && entry.role === "assistant")!.id;
   const legacy = memory.store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time }, facts: [
-    { turnId: first.id, category: "observation", actor: "agent", text: memories.base, quote: memories.quote, source: ["T1#assistant"], createdAt: time },
-    { turnId: second.id, category: "interpretation", actor: "agent", text: memories.interpretation, source: ["T2#assistant"], support: [{ target: "$1", strength: "weak" }], createdAt: time },
-    { turnId: second.id, category: "observation", actor: "agent", text: memories.observation, source: ["T2#assistant"], negate: [{ target: "$1", strength: "strong" }], createdAt: time },
+    { turnId: first.id, category: "observation", actor: "agent", text: memories.base, quote: memories.quote, source: ["T1#assistant"], entryIds: [firstAssistant], createdAt: time },
+    { turnId: second.id, category: "interpretation", actor: "agent", text: memories.interpretation, source: ["T2#assistant"], entryIds: [secondAssistant], support: [{ target: "$1", strength: "weak" }], createdAt: time },
+    { turnId: second.id, category: "observation", actor: "agent", text: memories.observation, source: ["T2#assistant"], entryIds: [secondAssistant], negate: [{ target: "$1", strength: "strong" }], createdAt: time },
   ] });
   expect(legacy.ok).toBe(true);
   expect([1, 2, 3].map((id) => memory.trace(`F${id}`)).join("\n\n")).toBe(golden("facts"));
 });
 
-test("full expands selected calls; cap is the listing budget and address flags are rejected", () => {
+test("full expands whole entries; cap is the listing budget and address flags are rejected", () => {
   const t = turn();
-  const full = memory.trace(`T${t.id}`, { tool: 2, full: true });
+  const full = memory.trace(`T${t.id}`, { full: true });
   expect(full).toContain(fixture[0]!.calls[1]!.result!);
-  // 23c: `full` is the entry renderer's unbounded path, so the selected call carries the same labels
-  // every other view uses; the unselected one keeps its floor and its receipt.
-  expect(full).toContain("[T1#E5@call-2] Bash success: ");
-  expect(full).toContain("[T1#E3@call-1] mcp__plugin_claude-mnemo_mnemo__note(...)");
+  // Full rendering does not select one call or seal another; both keep their whole-entry addresses.
+  expect(full).toContain("[T1#E5@observation] Bash success: ");
+  expect(full).toContain("[T1#E3@assistant] mcp__plugin_claude-mnemo_mnemo__note(");
   expect(memory.trace(`T${t.id}`, { cap: 1 })).toContain("cursor=");
-  expect(() => memory.trace("T1", { tool: 99 })).toThrow("does not exist");
+  expect(() => memory.trace("T1", { tool: 99 } as never)).toThrow("tool parameter is removed");
   expect(() => memory.trace("T1 cap=0")).toThrow("invalid trace address");
 });
 

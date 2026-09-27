@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { host } from "./test-host.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 // Ticket 73, Pi reviews of c03010e and 8ac7be8: the truncation warning describes exactly the carrier
 // Pi appended, and is given once it has been appended (`session_compact`). No callback runs between
@@ -59,10 +60,11 @@ test("73: when the pending set changes during a callback, the warning follows th
       if (!message.includes("compaction preparing")) return;
       const store = h.memory.store, sessionId = 1;
       const head = store.listTurns(sessionId).at(-1)!.id;
-      const noted = store.commitNotingRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: "2026-09-23T00:00:00Z" },
-        entryIds: store.pendingEntryIds(sessionId, "main", head),
-        facts: [{ turnId: head, text: "noted elsewhere", category: "observation", actor: "user", source: [`T${head}#user`], createdAt: "2026-09-23T00:00:00Z" }] });
-      if (!noted.ok) throw new Error(JSON.stringify(noted));
+      const user = store.sourcePath(sessionId, "main", head).find(value => value.turnId === head && store.getSourceEntry(value.id)?.role === "user")!;
+      legacyFacts(store, { kind: "manual", sessionId, branch: "main", createdAt: "2026-09-23T00:00:00Z" },
+        [{ sources: [{ entry: user, address: `T${head}#E${user.entryOrdinal}` }], text: "noted elsewhere",
+          category: "observation", actor: "user", createdAt: "2026-09-23T00:00:00Z" }],
+        store.pendingEntryIds(sessionId, "main", head));
     });
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
     expect(result.compaction).toBeDefined();

@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { suppliedHandles } from "../../dreaming-skips.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -19,10 +20,9 @@ function fixture(runAgent?: Parameters<typeof TraceMemory>[1]) {
   const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "budget",
     role: "user", text: "evidence", raw: "evidence", calls: [] });
   memory.selectEntries(session.id, "main", [entry.id]);
-  const noted = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{
-    turnId: turn.id, category: "decision", actor: "user", text: "evidence", source: [`T${turn.id}#user`], createdAt: "now",
-  }] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const noted = legacyFacts(memory.store, { kind: "manual", sessionId: session.id, createdAt: "now" }, [{
+    sources: [{ entry, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "evidence", createdAt: "now",
+  }]);
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   let sequence = 0;
   const create = (text: string, scope: "global" | "project" | "session" = "project", topics: string[] = [], category: "constraint" | "open" | "goal" = "constraint") => {

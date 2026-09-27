@@ -16,7 +16,7 @@ function setup(second = false) {
   m.selectEntries(s.id, "main", [rootEntry.id]);
   const context = { kind: "manual" as const, sessionId: s.id, currentTurnId: t.id, branch: "main", triggerEntryId: rootEntry.id };
   const tools = m.tools(context);
-  expect(tools[2]!.execute({ facts: [{ text: "facts", source: [`T${t.id}#E1`] }] })).not.toContain("rejected:");
+  expect(tools[2]!.execute({ facts: [{ title: "Handle evidence", sources: [{ address: `T${t.id}#E1`, text: "facts" }] }] })).not.toContain("rejected:");
   const content = { text: "body A", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "test" };
   const write = (operations: unknown[], binding = tools) => binding[3]!.execute({ operations, skipped: [] });
   expect(write([{ op: "create", ...content }])).not.toContain("rejected:");
@@ -103,9 +103,9 @@ test("manual writers freeze fact sources and knowledge supports at the exact tri
   const later = a.m.store.listSourceEntries(1, a.t.id).at(-1)!;
   a.m.selectEntries(1, "main", [a.rootEntry.id, carrier.id, later.id]);
   const lateTools = a.m.tools({ ...a.context, triggerEntryId: later.id, entryIds: [a.rootEntry.id, carrier.id, later.id] });
-  expect(lateTools[2]!.execute({ facts: [{ text: "later", source: [`T${a.t.id}#E${later.entryOrdinal}`] }] })).not.toContain("rejected:");
+  expect(lateTools[2]!.execute({ facts: [{ title: "Later evidence", sources: [{ address: `T${a.t.id}#E${later.entryOrdinal}`, text: "later" }] }] })).not.toContain("rejected:");
   const earlyTools = a.m.tools({ ...a.context, triggerEntryId: carrier.id, entryIds: [a.rootEntry.id, carrier.id] });
-  expect(earlyTools[2]!.execute({ facts: [{ text: "too late", source: [`T${a.t.id}#E${later.entryOrdinal}`] }] })).toContain("invalid source");
+  expect(earlyTools[2]!.execute({ facts: [{ title: "Too late", sources: [{ address: `T${a.t.id}#E${later.entryOrdinal}`, text: "too late" }] }] })).toContain("invalid source");
   expect(earlyTools[3]!.execute({ operations: [{ op: "create", ...a.content, supports: ["F2"] }], skipped: [] })).toContain("after the exact triggering source prefix");
 });
 

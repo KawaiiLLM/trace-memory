@@ -15,7 +15,7 @@ function fixture() {
       ...(role === "toolResult" ? { toolCallId: calls[0]?.callId, isError: false } : {}) }), calls });
   return { m, turn, session, append, setNoter: (agent: typeof run) => { run = agent; } };
 }
-test("33: entry lists retain repeats/order; ranges tolerate sibling gaps; role and text collections preserve blocks", () => {
+test("33/93: entry lists retain repeats/order; ranges tolerate sibling gaps; whole-entry role reads preserve blocks", () => {
   const f = fixture();
   try {
     const user = f.append("user", "question"), calls = [{ ordinal: 1, name: "bash", callId: "opaque:a-b.c|d", input: '{"command":"run"}', status: "attempted" }];
@@ -27,16 +27,24 @@ test("33: entry lists retain repeats/order; ranges tolerate sibling gaps; role a
     const text = f.m.trace(`T${f.turn.id}`, options);
     expect(text.indexOf("before")).toBeLessThan(text.indexOf("bash(")); expect(text.indexOf("bash(")).toBeLessThan(text.indexOf("after"));
     expect(text).not.toContain("stored reasoning"); expect(text).not.toContain("sibling");
-    expect(f.m.trace(`T${f.turn.id}`, { ...options, full: true })).not.toContain("sibling");
-    expect(f.m.trace(`T${f.turn.id}#E2@thinking`, options)).toContain("stored reasoning");
-    const selected = f.m.trace(`T${f.turn.id}#E4,E2,E4@text`, options);
+    const fullTurn = f.m.trace(`T${f.turn.id}`, { ...options, full: true });
+    expect(fullTurn).not.toContain("sibling");
+    expect(fullTurn).toContain("stored reasoning");
+    const selected = f.m.trace(`T${f.turn.id}#E4,T${f.turn.id}#E2,T${f.turn.id}#E4`, options);
     expect(selected.indexOf("tool evidence")).toBeLessThan(selected.indexOf("before")); expect(selected.match(/tool evidence/g)).toHaveLength(2);
-    expect(selected).not.toContain("command=");
-    expect(f.m.trace(`T${f.turn.id}#E2..E4@assistant`, options)).toContain("before");
+    expect(selected).toContain('command="run"');
+    expect(selected).toContain("stored reasoning");
+    const range = f.m.trace(`T${f.turn.id}#E2..E4`, options);
+    expect(range).toContain("before");
+    expect(range).toContain("stored reasoning");
     expect(() => f.m.trace(`T${f.turn.id}#E${sibling.entryOrdinal}`, options)).toThrow(/does not exist/);
     expect(f.m.trace(`T${f.turn.id}@user`, options)).toContain("question");
-    expect(() => f.m.trace(`T${f.turn.id}#E1@thinking`, options)).toThrow(/does not exist/);
-    expect(f.m.trace(`T${f.turn.id}#E2@opaque:a-b.c|d`, options)).toContain('command="run"');
+    for (const removed of [`T${f.turn.id}#E1@thinking`, `T${f.turn.id}#E2@opaque:a-b.c|d`, `T${f.turn.id}#E2@text`])
+      expect(() => f.m.trace(removed, options)).toThrow(/invalid public trace address/);
+    const exact = f.m.trace(`T${f.turn.id}#E2@assistant`, options);
+    expect(exact).toContain('command="run"');
+    expect(exact).toContain("stored reasoning");
+    expect(f.m.trace(`T${f.turn.id}@assistant`, options)).toContain("stored reasoning");
   } finally { f.m.close(); }
 });
 test("33: Turn budgets each entry, entry budgets each block; null disables each independent ceiling", () => {
@@ -66,8 +74,8 @@ test("92: whole-entry frozen citations bind only that occurrence; block selector
     f.m.selectEntries(f.session.id, "main", [a.id, b.id, c.id]);
     f.setNoter(async input => {
       const noter = input.tools.find(t => t.name === "note")!;
-      const fact = (source: string) => ({ facts: [{ slot: "$1", text: "statement", source: [source] }] });
-      expect(noter.execute({ facts: [{ text: "statement", source: [`T${f.turn.id}#E3`] }] })).toContain("rejected:");
+      const fact = (source: string) => ({ facts: [{ slot: "$1", title: "Statement", sources: [{ address: source, text: "Pi agent reports a statement" }] }] });
+      expect(noter.execute({ facts: [{ title: "Rejected sibling", sources: [{ address: `T${f.turn.id}#E3`, text: "Sibling evidence" }] }] })).toContain("rejected:");
       for (const source of [`T${f.turn.id}#E2@thinking`, `T${f.turn.id}#E2@nonexistent`, `T${f.turn.id}#E2@text`]) expect(noter.execute(fact(source))).toContain("rejected:");
       expect(noter.execute(fact(`T${f.turn.id}#E2`))).toContain("held: $1");
       input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
@@ -80,7 +88,7 @@ test("92: whole-entry frozen citations bind only that occurrence; block selector
     expect(f.m.store.factCoveredByRaw(f.m.store.getFact(1)!, new Set([b.id]))).toBe(true);
     expect(f.m.store.entryNoted(c.id)).toBe(false);
     const image = f.append("user", [{ type: "image", data: "not evidence" }]);
-    expect(() => f.m.trace(`T${f.turn.id}#E${image.entryOrdinal}@text`)).toThrow();
+    expect(() => f.m.trace(`T${f.turn.id}#E${image.entryOrdinal}@text`)).toThrow(/invalid public trace address/);
   } finally { f.m.close(); }
 });
 test("33: malformed or changed-budget continuations never consume a cursor", () => {

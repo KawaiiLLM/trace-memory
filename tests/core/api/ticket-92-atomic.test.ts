@@ -29,7 +29,7 @@ function fixture(script: (task: NotingAgentInput) => Promise<Partial<RunAgentRes
   return { memory, file, session, turn, entries, path, run: () => memory.noting(path) };
 }
 const call = (task: NotingAgentInput, name: "note" | "memory", input: unknown) => task.tools.find(tool => tool.name === name)!.execute(input);
-const fact = (text = "User set the rule", source = "T1#E1") => ({ text, source: [source] });
+const fact = (text = "User set the rule", source = "T1#E1") => ({ title: "Rule evidence", sources: [{ address: source, text }] });
 const knowledge = (supports = ["$1"]) => ({ op: "create", text: "Use the stated rule", category: "constraint", scope: "session", supports, reason: "new rule", topics: [] });
 const emptyMemory = (task: NotingAgentInput) => call(task, "memory", { operations: [], skipped: [] });
 
@@ -306,7 +306,7 @@ test("04: stale archive no-op revalidates mapped evidence scope after another ow
   const foreign = f.memory.store.createSession({ host: "pi:foreign", projectId: f.session.projectId, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const turn = f.memory.store.appendTurn({ sessionId: foreign.id, kind: "turn", userPrompt: "Supporting evidence", startedAt: "now" });
   const note = f.memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: turn.id }).find(tool => tool.name === "note")!;
-  const foreignFact = JSON.parse(note.execute({ facts: [{ text: "Supporting evidence", source: [`T${turn.id}#E1`] }] })).factIds[0];
+  const foreignFact = JSON.parse(note.execute({ facts: [{ title: "Supporting evidence", sources: [{ address: `T${turn.id}#E1`, text: "Supporting evidence" }] }] })).factIds[0];
   const result = await f.run();
   expect(result).toMatchObject({ outcome: "failure", problems: [expect.stringContaining("not an available fact for project scope")] });
   expect(f.memory.store.listSessionFacts(f.session.id)).toHaveLength(1);
@@ -408,7 +408,7 @@ test("04: a globally selected successor outside reader scope is not a conversion
     const turn = f.memory.store.appendTurn({ sessionId: other.id, kind: "turn", userPrompt: "Foreign evidence", startedAt: "now" });
     const path = { sessionId: other.id, branch: "main", headTurnId: turn.id };
     const tools = f.memory.tools({ kind: "manual", ...path, currentTurnId: turn.id });
-    const fid = JSON.parse(tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Foreign evidence", source: [`T${turn.id}#E1`] }] })).factIds[0];
+    const fid = JSON.parse(tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Foreign evidence", sources: [{ address: `T${turn.id}#E1`, text: "Foreign evidence" }] }] })).factIds[0];
     const changed = commitNoterKnowledge(f.memory.store, { path, run: { sessionId: other.id, createdAt: "later" }, operations: [{
       op: "update", knowledgeId: seed.base.knowledgeId, baseCommit: seed.base.commit, text: "Foreign session-only rule", category: "constraint", scope: "session",
       topics: [], supports: [fid], reason: "narrow scope", createdAt: "later" }] });

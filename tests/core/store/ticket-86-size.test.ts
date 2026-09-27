@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { tokens } from "../../../src/core/render/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
+import { entry } from "../../support/seed.ts";
 
 const stores: Store[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); });
@@ -12,12 +13,13 @@ function fixture() {
   const session = store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
   const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+  const source = entry(store, session.id, turn.id, "evidence", "user", "evidence");
   const fact = (text: string, kind: "manual" | "noting" = "manual") => store.commitNotingRun({ run: { kind, sessionId: session.id, createdAt: "now" }, facts: [
-    { turnId: turn.id, text, category: "decision", actor: "user", source: [`T${turn.id}#user`], createdAt: "now" },
+    { turnId: turn.id, text, category: "decision", actor: "user", source: [`T${turn.id}#user`], entryIds: [source.id], createdAt: "now" },
   ] });
   const evidence = fact("An accepted direct observation");
   if (!evidence.ok) throw Error(evidence.problems.join("; "));
-  return { store, project, session, path, fact, evidence: evidence.facts[0]! };
+  return { store, project, session, path, source, fact, evidence: evidence.facts[0]! };
 }
 
 function sized(size: number) {
@@ -34,8 +36,8 @@ test("86: N fact write accepts 1000, rejects 1001 and rolls back the entire batc
   expect(f.fact(exact, "noting").ok).toBe(true);
   const before = f.store.listTurnFacts(f.path.headTurnId).length;
   const refused = f.store.commitNotingRun({ run: { kind: "noting", sessionId: f.session.id, createdAt: "now" }, facts: [
-    { turnId: f.path.headTurnId, text: "accepted before rejection", category: "decision", actor: "user", source: [`T${f.path.headTurnId}#user`], createdAt: "now" },
-    { turnId: f.path.headTurnId, text: over, category: "decision", actor: "user", source: [`T${f.path.headTurnId}#user`], createdAt: "now" },
+    { turnId: f.path.headTurnId, text: "accepted before rejection", category: "decision", actor: "user", source: [`T${f.path.headTurnId}#user`], entryIds: [f.source.id], createdAt: "now" },
+    { turnId: f.path.headTurnId, text: over, category: "decision", actor: "user", source: [`T${f.path.headTurnId}#user`], entryIds: [f.source.id], createdAt: "now" },
   ] });
   expect(refused.ok).toBe(false);
   if (!refused.ok) expect(refused.problems.join(" ")).toMatch(/Fact.*1000-token limit: 1001 tokens/);
@@ -61,7 +63,7 @@ test("92: held N create/update cap resulting text at 1000; manual memory remains
     const operation = (text: string, id?: string) => ({ op: id ? "update" : "create", ...(id ? { id } : {}),
       text, category: "constraint", scope: "project", supports: ["$1"], topics: [], reason: "User evidence" });
     script = task => {
-      expect(call(task, "note", { facts: [{ text: "User gave evidence", source: [`T${turn.id}#E1`] }] })).toContain("held: $1");
+      expect(call(task, "note", { facts: [{ title: "Evidence for size rule", sources: [{ address: `T${turn.id}#E1`, text: "User gave evidence" }] }] })).toContain("held: $1");
       expect(call(task, "memory", { operations: [operation("would roll back"), operation(over)], skipped: [] }))
         .toMatch(/Knowledge item.*1000-token limit: 1001 tokens/);
     };
@@ -73,7 +75,7 @@ test("92: held N create/update cap resulting text at 1000; manual memory remains
     expect(store.listSessionFacts(session.id)).toEqual([]);
     expect(store.pendingEntryIds(session.id, "main", turn.id)).toEqual(pending);
     script = task => {
-      expect(call(task, "note", { facts: [{ text: "User gave evidence", source: [`T${turn.id}#E1`] }] })).toContain("held: $1");
+      expect(call(task, "note", { facts: [{ title: "Evidence for size rule", sources: [{ address: `T${turn.id}#E1`, text: "User gave evidence" }] }] })).toContain("held: $1");
       expect(call(task, "memory", { operations: [operation(exact)], skipped: [] })).toContain("held: M1");
     };
     expect((await memory.noting(path)).outcome).toBe("success");
@@ -83,7 +85,7 @@ test("92: held N create/update cap resulting text at 1000; manual memory remains
     const nextPath = { ...path, headTurnId: next.id };
     const tag = `K${base.knowledge.id}#${store.versionTag(base.knowledge.id, base.revision.id)}`;
     script = task => {
-      expect(call(task, "note", { facts: [{ text: "User revised evidence", source: [`T${next.id}#E1`] }] })).toContain("held: $1");
+      expect(call(task, "note", { facts: [{ title: "Revised size evidence", sources: [{ address: `T${next.id}#E1`, text: "User revised evidence" }] }] })).toContain("held: $1");
       expect(call(task, "memory", { operations: [operation(over, tag)], skipped: [] }))
         .toMatch(/Knowledge item.*1000-token limit: 1001 tokens/);
     };
@@ -96,7 +98,7 @@ test("92: held N create/update cap resulting text at 1000; manual memory remains
     expect(store.listSessionFacts(session.id)).toEqual(factsBefore);
     expect(store.pendingEntryIds(session.id, "main", next.id)).toEqual(nextPending);
     script = task => {
-      expect(call(task, "note", { facts: [{ text: "User revised evidence", source: [`T${next.id}#E1`] }] })).toContain("held: $1");
+      expect(call(task, "note", { facts: [{ title: "Revised size evidence", sources: [{ address: `T${next.id}#E1`, text: "User revised evidence" }] }] })).toContain("held: $1");
       expect(call(task, "memory", { operations: [operation(exact, tag)], skipped: [] })).toContain("held: M1");
     };
     expect((await memory.noting(nextPath)).outcome).toBe("success");

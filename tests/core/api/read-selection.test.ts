@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
+import { fact } from "../../support/seed.ts";
 import { suppliedHandles } from "../../dreaming-skips.ts";
 import { wholeTrace } from "../../trace-pages.ts";
 import { toolDefinitions, tokens, type ListingOptions } from "../../../src/core/api/index.ts";
@@ -27,14 +28,11 @@ const identities = (text: string) => [...body(text).matchAll(/^\[(K\d+@\d+|F\d+|
 function owner(name: string, projectId = memory.store.createProject({ name, declaredBy: "mark" }).id) {
   const session = memory.store.createSession({ host: "fixture", projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: `needle ${name} Raw`, startedAt: time });
-  const entry = memory.store.listSourceEntries(session.id, turn.id).at(-1)!;
+  const entry = memory.store.getSourceEntry(memory.store.listSourceEntries(session.id, turn.id).at(-1)!.id)!;
   memory.selectEntries(session.id, "main", [entry.id]);
   const path = { sessionId: session.id, headTurnId: turn.id, branch: "main", triggerEntryId: entry.id };
   const run = { kind: "manual" as const, sessionId: session.id, branch: "main", createdAt: time };
-  const noted = memory.store.commitNotingRun({ run, facts: [{ turnId: turn.id, entryIds: [entry.id], text: `needle ${name} fact`,
-    source: [`T${turn.id}#E1`], createdAt: time }] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const supports = [noted.facts[0]!.id];
+  const supports = [fact(memory, path, `Needle ${name}`, [{ entry, text: `needle ${name} fact` }]).id];
   const put = async (text: string, scope: KnowledgeScope = "project", topics: string[] = [], base?: { knowledgeId: number; commit: number }, category: KnowledgeCategory = "reference") => {
     if (!base) {
       const result = memory.store.commitConsolidationRun({ path, run, operations: [{ op: "create", handle: "new", author: "fixture", text, scope, category, topics, supports, reason: `Reason ${text}`, createdAt: time }] });
@@ -135,7 +133,7 @@ test("41 named collections intersect scope and never widen explicit addresses", 
   for (const options of [{ scope: "session" as const }, { ...own, scope: "session" as const }])
     expect(() => memory.trace("own", options)).toThrow("scope:session requires a session context");
   // Exact evidence ignores scope even when that scope cannot resolve an implicit owner context.
-  for (const address of [`F${foreign.factId}`, `T${foreign.turn.id}`, `K${knowledge.at(-1)!.knowledgeId}@${knowledge.at(-1)!.commit}`])
+  for (const address of [`F${foreign.factId}`, `T${foreign.turn.id}`, history(knowledge.at(-1)!)])
     expect(body(memory.trace(address, { scope: "session", category: "open" }))).toBe(body(memory.trace(address)));
 });
 
@@ -198,7 +196,8 @@ test("41 long histories select before paging and freeze bodies, status and owner
   const history = wholeTrace(memory, `K${old.knowledgeId}`, { ...who, versions: "history", cap: 1 });
   expect(history.match(/^  K1@\d+ /gm)).toHaveLength(25);
   expect(history).toContain("reason: Reason needle");
-  const explicit = wholeTrace(memory, `K${old.knowledgeId}..`, { ...who, cap: 1 });
+  expect(() => memory.trace(`K${old.knowledgeId}..`, who)).toThrow(/invalid public trace address/);
+  const explicit = wholeTrace(memory, Array.from({ length: 25 }, (_, index) => `K${old.knowledgeId}@v${index + 1}`).join(","), { ...who, cap: 1 });
   expect(explicit.match(/^\[K1@\d+\]/gm)).toHaveLength(25);
   const repeated = wholeTrace(memory, `K1,K1`, { ...who, versions: "history", cap: 1 });
   expect(repeated.match(/^  K1@\d+ /gm)).toHaveLength(50);
@@ -212,9 +211,9 @@ test("64b global current ignores parent scope while explicit history remains fil
   const all = memory.search("needle", "knowledge", { ...foreign, scope: "global", versions: "all" });
   expect(identities(all)).toEqual([`K${widened.knowledgeId}@${widened.commit}`]);
   expect(all).not.toContain(`[K${old.knowledgeId}@${old.commit}]`);
-  const history = wholeTrace(memory, `K${old.knowledgeId}..`, { ...foreign, scope: "global" });
-  expect(history).toContain(`[K${old.knowledgeId}@${old.commit}]`);
-  expect(history).toContain(`[K${widened.knowledgeId}@${widened.commit}]`);
+  const exact = wholeTrace(memory, `${history(old)},${history(widened)}`, { ...foreign, scope: "global" });
+  expect(exact).toContain("needle private parent");
+  expect(exact).toContain("needle global child");
   expect(identities(memory.search("needle", "knowledge", { ...foreign, versions: "all", scope: "project" }))).toEqual([]);
 });
 

@@ -17,7 +17,7 @@ function target(memory: Memory, options: { closed?: boolean; enabled?: boolean; 
   memory.selectEntries(session.id, path.branch, [entry.id]);
   if (options.facts) {
     const result = memory.tools({ kind: "manual", sessionId: session.id, branch: path.branch, currentTurnId: turn.id })[2]!
-      .execute({ facts: Array.from({ length: options.facts }, (_, i) => ({ text: `Target claim ${i}`, source: [`T${turn.id}#E1`] })) });
+      .execute({ facts: Array.from({ length: options.facts }, (_, i) => ({ title: `Target claim ${i}`, sources: [{ address: `T${turn.id}#E1`, text: `Target claim ${i}` }] })) });
     expect(result).not.toContain("rejected:");
   }
   if (options.noted) expect(memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: path.branch, createdAt: at }, facts: [], entryIds: [entry.id] }).ok).toBe(true);
@@ -160,7 +160,7 @@ test("an owned D pool uses a real pending version and keeps its global seat sepa
   try {
     await h.turn();
     const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
-      .execute({ facts: [{ text: "User chose pnpm", source: ["T1#E1"] }] });
+      .execute({ facts: [{ title: "Package choice", sources: [{ address: "T1#E1", text: "User chose pnpm" }] }] });
     expect(receipt).not.toContain("rejected:");
     const path = { sessionId: 1, branch: "main", headTurnId: 1 };
     const due = createDreamerTrigger(h.memory, path, 1, 1);
@@ -202,7 +202,7 @@ test("N commit rejects a replaced borrowed claim token without publishing progre
     h.memory.store.invalidateExecutor(old.executorId);
     const replacement = h.memory.store.acquireClaim(t, "noting", old.executorId, true)!;
     expect(replacement.token).not.toBe(old.token);
-    input.tools[2]!.execute({ facts: [{ text: "Late", source: [`T${t.headTurnId}#E1`] }] });
+    input.tools[2]!.execute({ facts: [{ title: "Late", sources: [{ address: `T${t.headTurnId}#E1`, text: "Late" }] }] });
     input.tools[3]!.execute({ operations: [], skipped: [] });
     finish(); expect((await pending).outcome).not.toBe("success");
     expect(h.memory.store.getClaim(t.sessionId, "noting")!.token).toBe(replacement.token);
@@ -242,7 +242,7 @@ test("one shutdown deadline fences borrowed N and owned D even when both provide
   try {
     await h.turn();
     const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
-      .execute({ facts: [{ text: "User chose pnpm", source: ["T1#E1"] }] });
+      .execute({ facts: [{ title: "Package choice", sources: [{ address: "T1#E1", text: "User chose pnpm" }] }] });
     expect(receipt).not.toContain("rejected:");
     const due = createDreamerTrigger(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1, 1);
     const t = target(h.memory);
@@ -430,7 +430,7 @@ test("disabled executors cannot acquire or commit borrowed N; project change fen
 test("failed own capacity admission leaves its N slot free for a smaller closed tail", async () => {
   const h = host({ "noting.triggerTokens": 30 });
   try {
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 19000 };
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 20000 };
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);

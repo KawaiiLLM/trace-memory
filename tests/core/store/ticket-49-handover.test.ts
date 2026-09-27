@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { commitNoterKnowledge, historicalConsolidation } from "../../noting-knowledge-fixture.ts";
 import { Store, type KnowledgeOperationInput, type KnowledgePath, type TaskTarget } from "../../../src/core/store/index.ts";
+import { entry, legacyFacts } from "../../support/seed.ts";
 
 const stores: Store[] = [], dirs: string[] = [];
 afterEach(() => {
@@ -16,10 +17,10 @@ function session(store: Store, projectId: number, declaration: "undeclared" | "m
   const value = store.createSession({ host: `test-${Math.random()}`, projectId, projectDeclaration: declaration,
     enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: value.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
-  const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: value.id, createdAt: "now" }, facts: [
-    { turnId: turn.id, category: "decision", actor: "user", text: "evidence", source: [`T${turn.id}#user`], createdAt: "now" },
-  ] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const source = entry(store, value.id, turn.id, `user-${turn.id}`, "user", "evidence");
+  const noted = legacyFacts(store, { kind: "manual", sessionId: value.id, branch: "main", createdAt: "now" }, [
+    { sources: [{ entry: source, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "evidence", createdAt: "now" },
+  ]);
   return { value, turn, fact: noted.facts[0]!, path: { sessionId: value.id, branch: "main", headTurnId: turn.id } };
 }
 

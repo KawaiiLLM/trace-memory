@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, test } from "vitest";
 import { sourceSeededMemory } from "../../source-fixture.ts";
+import { knowledge, legacyFacts } from "../../support/seed.ts";
 import { host, notingFact } from "./test-host.ts";
 
 // A legacy delivery table must survive reopening without becoming a worker gate, prompt delivery
@@ -17,14 +18,13 @@ function betaDatabase(directory: string) {
   const project = memory.store.createProject({ name: "beta", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "pi:beta", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: "now", userPrompt: "用 pnpm，不要 npm", assistantText: "好的。" });
-  const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: "now" },
-    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "用 pnpm", source: [`T${turn.id}#user`], createdAt: "now" }],
-    entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(e => e.id) });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const consolidated = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" },
-    operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "beta",
-      text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [noted.facts[0]!.id], createdAt: "now" }] });
-  if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
+  const path = memory.store.sourcePath(session.id, "main", turn.id);
+  const user = path.find(value => memory.store.getSourceEntry(value.id)?.role === "user")!;
+  const noted = legacyFacts(memory.store, { kind: "noting", sessionId: session.id, branch: "main", createdAt: "now" },
+    [{ sources: [{ entry: user, address: `T${turn.id}#E${user.entryOrdinal}` }], category: "decision", actor: "user",
+      text: "用 pnpm", createdAt: "now" }], path.map(value => value.id));
+  knowledge(memory.store, memory.store.knowledgePath(session.id, "main", turn.id), "project", "constraint",
+    [noted.facts[0]!.id], "项目用 pnpm。", { run: { kind: "manual", createdAt: "now" } });
   const historical = memory.store.recordRun({ kind: "consolidation", sessionId: session.id, branch: "main", createdAt: "now", outcome: "success" });
   memory.store.db.exec(`CREATE TABLE pending_deliveries (
     run_id INTEGER NOT NULL REFERENCES runs(id),

@@ -1,4 +1,5 @@
 import { readHandle } from "../../read-handle-fixture.ts";
+import { fact as seedFact } from "../../support/seed.ts";
 import { afterEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -15,9 +16,10 @@ function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>) {
   const entries = memory.store.listSourceEntries(s.id);
   memory.selectEntries(s.id, "main", entries.map(entry => entry.id));
   triggerEntryId = entries.at(-1)!.id;
-  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  tools[2]!.execute({ facts: [{ text: "Use pnpm", source: ["T1#E1"] }] });
-  return tools[3]!;
+  const source = memory.store.getSourceEntry(entries[0]!.id)!;
+  const evidence = seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "Use pnpm", [{ entry: source, text: "Use pnpm" }]);
+  expect(evidence.text).toBe("Use pnpm");
+  return memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[3]!;
 }
 const success = (): RunAgentResult => ({ outcome: "success", output: "Done", request: { last: true } });
 const integrate = () => memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
@@ -74,7 +76,7 @@ test("a rejected batch can be corrected before the first valid submission", asyn
 for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`N ${mode} after staging publishes nothing`, async () => {
   setup(async input => {
     input.reportRequest({ provider: "captured" });
-    input.tools[2]!.execute({ facts: [{ text: "Additional evidence", source: ["T1#E1"] }] });
+    input.tools[2]!.execute({ facts: [{ title: "Additional evidence", sources: [{ address: "T1#E1", text: "Additional evidence" }] }] });
     expect(input.tools[3]!.execute(batch)).toContain("held");
     expect(memory.store.getKnowledge(1)).toBeNull();
     if (mode === "throw" || mode === "abort") { const error = new Error("late provider error"); if (mode === "abort") error.name = "AbortError"; throw error; }
@@ -114,7 +116,8 @@ test("memory rejects malformed items, obsolete fields and invisible evidence wit
   const p = memory.store.createProject({ name: "foreign", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "secret", startedAt: "now" });
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [{ text: "secret", source: [`T${t.id}#E1`] }] });
+  const foreign = memory.store.listSourceEntries(s.id)[0]!;
+  seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "secret", [{ entry: memory.store.getSourceEntry(foreign.id)!, text: "secret" }]);
   expect(tool.execute({ operations: [{ ...create, supports: ["F2"] }], skipped: [] })).toContain("not an available fact");
 });
 
@@ -150,7 +153,7 @@ test("manual memory accepts create and archive but rejects Dreamer maintenance o
 test("N terminal success-audit failure rolls back facts, knowledge and Raw progress", async () => {
   setup(async input => {
     input.reportRequest({ first: true });
-    expect(input.tools[2]!.execute({ facts: [{ text: "New evidence", source: ["T1#E1"] }] })).toContain("held");
+    expect(input.tools[2]!.execute({ facts: [{ title: "New evidence", sources: [{ address: "T1#E1", text: "New evidence" }] }] })).toContain("held");
     expect(input.tools[3]!.execute({ operations: [{ ...create, supports: ["$1"] }], skipped: [] })).toContain("held");
     return success();
   });
@@ -174,7 +177,7 @@ test("N terminal success-audit failure rolls back facts, knowledge and Raw progr
 test("N post-success claim-release failure reports cleanup without undoing terminal publication", async () => {
   setup(async input => {
     input.reportRequest({ exact: "terminal request" });
-    input.tools[2]!.execute({ facts: [{ text: "New evidence", source: ["T1#E1"] }] });
+    input.tools[2]!.execute({ facts: [{ title: "New evidence", sources: [{ address: "T1#E1", text: "New evidence" }] }] });
     input.tools[3]!.execute({ operations: [{ ...create, supports: ["$1"] }], skipped: [] });
     return success();
   });
@@ -277,8 +280,11 @@ test("21a 2026-09-08: a commit-level because is rejected by name, also beside a 
 
 test("21a 2026-09-08: one supports list holds both the text's grounds and the fact that prompted the change", async () => {
   const write = setup(async () => success());
-  memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-    { text: "npm is banned outright", source: ["T1#E1"], negate: [["F1", "strong"]] }] });
+  const source = memory.store.getSourceEntry(memory.store.listSourceEntries(1)[0]!.id)!;
+  const correction = seedFact(memory, { sessionId: 1, branch: "main", headTurnId: 1 }, "npm is banned outright",
+    [{ entry: source, text: "npm is banned outright" }], [[1, "strong"]]);
+  expect(correction.id).toBe(2);
+  expect(memory.store.listFactRelations(correction.id)).toContainEqual({ fromFact: 2, toFact: 1, kind: "negate", strength: "strong" });
   expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
   const update = { ...create, op: "update", id: read(1), text: "Use pnpm; npm is banned outright", supports: ["F1", "F2"],
     reason: "The user withdrew the softer rule; F2 corrects F1." };
@@ -310,7 +316,7 @@ test("21a 2026-09-08: reason shows in commit history, diffs and the run, never i
   });
   expect(result.outcome).toBe("success");
   expect(memory.trace("K1", { versions: "history", fields: ["reason"] })).toContain("reason: Re-checked 42 files; wording unchanged.");
-  expect(memory.trace(`K1@1..K1@${updatedCommit}`, { fields: ["reason"] })).toContain("reason: Initial admission of this conclusion. -> Re-checked 42 files; wording unchanged.");
+  expect(memory.trace("K1@v1..v2", { fields: ["reason"] })).toContain("reason: Initial admission of this conclusion. -> Re-checked 42 files; wording unchanged.");
   expect(memory.trace(`R${memory.store.listRuns(1).at(-1)!.id}`)).toContain(`K1@${updatedCommit} (update: Re-checked 42 files; wording unchanged.)`);
   const automatic = memory.inject({ sessionId: 1, headTurnId: 1, branch: "main" });
   expect(automatic).toContain("Use pnpm"); expect(automatic).not.toContain("Re-checked 42 files");
@@ -355,14 +361,15 @@ test("21b 2026-09-08: labels are trimmed, deduplicated and code-point ordered, a
     .toContain("topics: inapplicable field");
 });
 
-test("21b 2026-09-08: reordering the same label set renders the same metadata, and an empty array renders none", () => {
+test("21b 2026-09-08: reordering the same label set stores the same topics; an empty array stays unclassified", () => {
   const write = setup(async () => success());
-  write.execute({ operations: [{ ...create, topics: ["storage", "auth"] }, { ...create, text: "Commit the lockfile", topics: [" auth ", "storage"] },
-    { ...create, text: "Run the tests", topics: [] }], skipped: [] }); // the third is explicitly unclassified
-  const metadata = (address: string) => memory.trace(address).split("\n")[1];
-  expect(metadata("K1@1")).toBe('  change supports: F1 · topics: ["auth","storage"]');
-  expect(metadata("K2@2")).toBe(metadata("K1@1")); // the same set, submitted in another order
-  expect(metadata("K3@3")).toBe("  change supports: F1"); // unclassified: no metadata at all
+  expect(JSON.parse(write.execute({ operations: [{ ...create, topics: ["storage", "auth"] },
+    { ...create, text: "Commit the lockfile", topics: [" auth ", "storage"] },
+    { ...create, text: "Run the tests", topics: [] }], skipped: [] })).committed).toHaveLength(3);
+  expect(memory.store.currentCommit(1)[0]!.topics).toEqual(["auth", "storage"]);
+  expect(memory.store.currentCommit(2)[0]!.topics).toEqual(memory.store.currentCommit(1)[0]!.topics);
+  expect(memory.store.currentCommit(3)[0]!.topics).toEqual([]);
+  expect(memory.store.currentCommit(3)[0]!.supports).toEqual([1]);
 });
 
 test("21b 2026-09-08: a topic-only update is an ordinary update; old commits keep their labels, clearing is explicit, merge states the survivor's set and archive inherits", async () => {
@@ -393,12 +400,8 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   expect(memory.store.getKnowledgeRevision(1, cleanupCommit)!.text).toBe(memory.store.getKnowledgeRevision(1, 1)!.text);
   expect(memory.store.getKnowledgeRevision(1, 1)!.topics).toEqual(["packaging"]); // the old commit keeps its old classification
   expect(memory.store.getKnowledgeRevision(1, cleanupCommit)!.topics).toEqual(["packaging", "tooling"]);
-  expect(memory.trace(`K1@1..K1@${cleanupCommit}`)).toContain('topics: ["packaging"] -> ["packaging","tooling"]');
-  expect(memory.trace("K1@1")).toContain('topics: ["packaging"]');
   // Clearing is explicit: an empty array, never an omitted field.
   expect(memory.store.getKnowledgeRevision(1, clearedCommit)!.topics).toEqual([]);
-  expect(memory.trace(`K1@${clearedCommit}`)).not.toContain("topics:");
-  expect(memory.trace(`K1@${cleanupCommit}..K1@${clearedCommit}`)).toContain('topics: ["packaging","tooling"] -> []');
   // Merge supplies the survivor's complete set; no implicit union of every parent's labels.
   expect(memory.store.currentCommit(1)[0]!.topics).toEqual(["packaging"]);
   expect(memory.store.getKnowledgeRevision(2, 2)!.topics).toEqual(["lockfile"]); // the absorbed parent keeps its own
@@ -406,5 +409,4 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", topics: ["packaging"] });
   const archivedCommit = memory.store.currentCommit(1)[0]!.id;
   expect(archivedCommit).toBeGreaterThan(mergedCommit);
-  expect(memory.trace(`K1@${archivedCommit}`)).toContain('topics: ["packaging"]');
 });

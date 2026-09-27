@@ -3,6 +3,7 @@ import { TraceMemory } from "../../../src/core/api/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { resolveFactSource, sourceAddresses } from "../../../src/core/model/source.ts";
 import { renderEntryIndex } from "../../../src/core/render/index.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 function fixture() {
   const m = TraceMemory(":memory:", async () => { throw Error("offline only"); }, {}, undefined, piSourceBlocks);
@@ -23,45 +24,51 @@ for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} reject
     const tools = f.m.tools(kind === "manual" ? { kind, sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }
       : { kind, sessionId: f.sessionId, branch: "main", entryIds: f.entries.map(e => e.id), range: { from: "S1/T1", to: "S1/T1" } });
     const note = tools.find(t => t.name === "note")!, trace = tools.find(t => t.name === "trace")!;
-    const fact = (source: string[]) => ({ text: "An observation", source });
-    for (const source of ["T1#E1", "T1#E1@thinking", "T1#E2@thinking"]) {
-      expect(note.execute({ facts: [fact(["T1#E2"]), fact([source])] })).toContain("invalid source");
-      expect(f.m.store.listTurnFacts(1)).toHaveLength(0);
-      expect(f.m.store.entryNoted(f.pure.id)).toBe(false);
-    }
-    expect(trace.execute({ address: "T1#E1@thinking" })).toContain("Private inference");
-    expect(trace.execute({ address: "T1#E2@thinking" })).toContain("Private inference");
-    expect(trace.execute({ address: "T1", full: true })).not.toContain("Private inference");
+    const fact = (address: string) => ({ title: "Evidence check", sources: [{ address, text: "An observation" }] });
+    expect(note.execute({ facts: [fact("T1#E2"), fact("T1#E1")] })).toContain("invalid source");
+    expect(f.m.store.listTurnFacts(1)).toHaveLength(0);
+    expect(f.m.store.entryNoted(f.pure.id)).toBe(false);
+    for (const address of ["T1#E1@thinking", "T1#E2@thinking"])
+      expect(note.execute({ facts: [fact(address)] })).toContain("rejected:");
+    expect(trace.execute({ address: "T1#E1" })).toContain("Private inference");
+    expect(trace.execute({ address: "T1#E2@assistant" })).toContain("Private inference");
+    expect(trace.execute({ address: "T1", full: true })).toContain("Private inference");
     const carry = f.m.branchSummary(f.sessionId, "main", f.turnId);
     expect(carry).toContain("Public explanation");
     expect(carry).not.toContain("Private inference");
-    expect(renderEntryIndex(f.pure)).toContain("[T1#E1]");
+    expect(renderEntryIndex(f.pure)).toContain("[T1#E1@assistant]");
     expect(renderEntryIndex(f.mixed)).not.toContain("thinking");
     expect(resolveFactSource(f.entries, "T1#E2")[0]!.blocks.map(b => b.kind)).toEqual(["text", "call"]);
-    expect(note.execute({ facts: [fact(["T1#E2"]), fact(["T1#E3"]), fact(["T1#E2", "T1#E3"])] })).not.toContain("rejected:");
+    const accepted = note.execute({ facts: [fact("T1#E2"), fact("T1#E3"), { title: "Mixed evidence", sources: [
+      { address: "T1#E2", text: "Public explanation" }, { address: "T1#E3", text: "Passed" }] }] });
+    if (kind === "manual") expect(JSON.parse(accepted).factIds).toHaveLength(3);
+    else expect(accepted).toContain("held");
   } finally { f.m.close(); }
 });
 
-test.each([true, false])("thinking: historical facts and knowledge remain visible (entry bindings: %s)", bound => {
+test("thinking: bound historical facts and knowledge retain stored sources but display whole entries", () => {
   const f = fixture();
   try {
     // Simulate a fact already stored under the reviewed policy; never use new-note validation to import history.
     const sources = ["T1#E1@thinking", "T1#E1"];
-    const legacy = f.m.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "now" }, entryIds: [f.pure.id], facts: sources.map(source => ({ turnId: 1, category: "observation" as const, actor: "agent" as const, text: "Historical inference", source: [source], ...(bound ? { entryIds: [f.pure.id] } : {}), createdAt: "now" })) });
-    if (!legacy.ok) throw Error(legacy.problems.join());
-    const knowledge = f.m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", text: "Historical knowledge", category: "understanding", scope: "project", supports: legacy.facts.map(fact => fact.id), reason: "Historical support", topics: [], createdAt: "now" }] });
+    const legacy = legacyFacts(f.m.store, { kind: "noting", sessionId: f.sessionId, branch: "main", createdAt: "now" },
+      sources.map(address => ({ sources: [{ entry: f.pure, address }], text: "Historical inference",
+        category: "observation" as const, actor: "agent" as const, createdAt: "now" })), [f.pure.id]).facts;
+    const knowledge = f.m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", text: "Historical knowledge", category: "understanding", scope: "project", supports: legacy.map(fact => fact.id), reason: "Historical support", topics: [], createdAt: "now" }] });
     expect(knowledge.ok).toBe(true);
     expect(sourceAddresses(f.pure)).toEqual(expect.arrayContaining(sources));
     const raw = f.m.store.getSourceEntry(f.pure.id)!.raw;
-    for (const fact of legacy.facts) {
+    for (const fact of legacy) {
       expect(f.m.store.getFact(fact.id)!.source).toEqual(fact.source);
-      expect(f.m.store.factCoveredByRaw(fact, new Set([f.pure.id]))).toBe(bound);
+      expect(f.m.store.factCoveredByRaw(fact, new Set([f.pure.id]))).toBe(true);
       expect(f.m.store.factOnPath(fact, { sessionId: 1, branch: "main", headTurnId: 1 })).toBe(true);
       expect(f.m.trace(`F${fact.id}`)).toContain("Historical inference");
+      expect(f.m.trace(`F${fact.id}`)).toContain("T1#E1");
+      expect(f.m.trace(`F${fact.id}`)).not.toContain("@thinking");
     }
     expect(f.m.store.currentKnowledge({ sessionId: 1, branch: "main", headTurnId: 1 })).toHaveLength(1);
     expect(f.m.trace("K1")).toContain("Historical knowledge");
-    expect(f.m.trace("T1#E1@thinking")).toContain("Private inference");
+    expect(f.m.trace("T1#E1")).toContain("Private inference");
     expect(f.m.store.getSourceEntry(f.pure.id)!.raw).toBe(raw);
   } finally { f.m.close(); }
 });

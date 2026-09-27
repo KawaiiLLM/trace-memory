@@ -11,7 +11,7 @@ import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
 import { tokens, tokensJoined, JoinedTokens } from "./tokens.ts";
 export { tokens, tokensJoined, JoinedTokens };
 
-export interface TurnOptions { tool?: number; full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean }
+export interface TurnOptions { full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean; includeThinking?: boolean }
 export interface Rendered { content: string; receipts: string[] }
 
 /** Ticket 30 "One bounded Raw entry view": the three numbers of the one profile. `E` is the most one
@@ -270,24 +270,24 @@ export interface EntryView extends Rendered { omitted: number[] }
  * lines; only the budgeted path builds the `Part` machinery — and its character arrays — around them,
  * which is what makes `full` free of every budget device (23c ruling 4). */
 function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (address: string) => PartChoice,
-  selector?: Selector): { ordinal: number | null; choice: PartChoice; whole: () => string; floor: () => string; part: () => Part }[] {
+  selector?: Selector, includeThinking = false): { ordinal: number | null; choice: PartChoice; whole: () => string; floor: () => string; part: () => Part }[] {
   const sources: ReturnType<typeof sourceParts> = [];
   const blocks = sourceBlocks(entry);
-  if (blocks.length && blocks.every(block => block.kind === "thinking") && selector?.kind !== "thinking"
+  if (blocks.length && blocks.every(block => block.kind === "thinking") && !includeThinking && selector?.kind !== "thinking"
     && !selector && choose(`T${entry.turnId}#assistant`) !== "drop") {
     const label = `[${entryAddress(entry)}] assistant`, body = "[thinking omitted]";
     sources.push({ ordinal: null, choice: "render", whole: () => bodyLine(label, body), floor: () => bodyLine(label, body), part: () => textPart(label, body) });
   }
   for (const block of blocks) {
     const tool = block.kind === "call" || block.kind === "result";
-    if (block.kind === "thinking" && selector?.kind !== "thinking") continue;
+    if (block.kind === "thinking" && !includeThinking && selector?.kind !== "thinking") continue;
     if (selector?.kind === "thinking" && block.kind !== "thinking") continue;
     if (selector?.kind === "call" && (!tool || block.call.callId !== selector.id)) continue;
     if (selector?.kind === "text" && block.kind !== "text" && block.kind !== "result") continue;
     const legacy = `T${entry.turnId}#${tool ? `t${block.call.ordinal}` : entry.role === "user" ? "user" : "assistant"}`;
     const choice = choose(legacy);
     if (choice === "drop") continue;
-    const address = fragmentAddress(entry, block);
+    const address = `${entryAddress(entry)}@${entry.role === "toolResult" ? "observation" : entry.role}`;
     const role = ` ${entry.role}`;
     if ("text" in block) {
       const label = `[${address}]${role}`, body = block.text;
@@ -310,10 +310,10 @@ function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (a
 /** The unbounded path (23c ruling 4): the same parts, the same line format, no budget at all. It takes
  * no profile and calls no budget function — no cut, no allocation, no character-array split and no
  * token measurement — so a `full` read of a large result copies stored strings as the deleted evidence
- * path did. A sealed part still shows its floor, which is what `tool` selection asks of it. */
+ * path did. A sealed part still shows its floor. */
 export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor = rawResultText,
-  choose: (address: string) => PartChoice = () => "render", selector?: Selector): EntryView {
-  const sources = sourceParts(entry, resultText, choose, selector);
+  choose: (address: string) => PartChoice = () => "render", selector?: Selector, includeThinking = false): EntryView {
+  const sources = sourceParts(entry, resultText, choose, selector, includeThinking);
   return { receipts: [], content: sources.map((source) => source.choice === "floor" ? source.floor() : source.whole()).join("\n"),
     omitted: sources.filter((source) => source.ordinal !== null && source.choice === "floor").map((source) => source.ordinal!) };
 }
@@ -329,8 +329,8 @@ export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor
  * the text part yield. Nothing is emitted shorter than a part's minimum and no budget is exceeded to
  * make room: when even the minima cannot fit `E`, the capacity error leaves the entry pending. */
 export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultText: ResultExtractor = rawResultText,
-  choose: (address: string) => PartChoice = () => "render", selector?: Selector, perBlock = false): EntryView {
-  const sources = sourceParts(entry, resultText, choose, selector);
+  choose: (address: string) => PartChoice = () => "render", selector?: Selector, perBlock = false, includeThinking = false): EntryView {
+  const sources = sourceParts(entry, resultText, choose, selector, includeThinking);
   if (!sources.length) return { content: "", receipts: [], omitted: [] };
   const ordinals = sources.map((source) => source.ordinal);
   const isResult = entry.role === "toolResult";
@@ -377,9 +377,8 @@ export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultTex
  * source entries, in path order, each rendered by the entry renderer under the caller's profile. Several
  * assistant messages in one Turn therefore each show, a call with several native result occurrences
  * shows each occurrence, and a sibling branch's entries never appear — the caller's branch selected the
- * entries this assembles (`Store.listSourceEntries`). `tool` selects which call's parts are rendered
- * within their budgets; every other call keeps its label line, its omission marker and the receipt that
- * fetches it whole, which is the metadata 22c preserved. A `#user`, `#assistant` or `#t<n>` suffix
+ * entries this assembles (`Store.listSourceEntries`). An omitted call keeps its label line, its
+ * omission marker and a whole-entry expansion receipt. A historical `#user`, `#assistant` or `#t<n>` suffix
  * reads that one source part and drops the rest. `full` is the same assembly through the unbounded
  * path and the raw extractor (23c ruling 4): the same labels, the stored arguments, result text and
  * `details` uncut. Each selected native occurrence remains its own entry; compression never changes
@@ -397,19 +396,22 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
   const choose = (address: string): PartChoice => {
     const suffix = address.slice(address.indexOf("#") + 1);
     if (part) return suffix === part ? "render" : "drop";
-    return options.tool === undefined || !/^t\d+$/.test(suffix) || suffix === `t${options.tool}` ? "render" : "floor";
+    return "render";
   };
   const lines = part || options.blocks || options.selector ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
   const omitted = new Set<string>();
+  let omittedCalls = 0;
   for (const entry of entries) {
-    const view = options.full ? renderEntryWhole(entry, resultText, choose, options.selector) : renderEntry(entry, profile, resultText, choose, options.selector, options.blocks);
+    const view = options.full ? renderEntryWhole(entry, resultText, choose, options.selector, options.includeThinking !== false)
+      : renderEntry(entry, profile, resultText, choose, options.selector, options.blocks, options.includeThinking !== false);
     if (view.content) lines.push(view.content);
     for (const ordinal of view.omitted) {
       const call = entry.calls.find(call => call.ordinal === ordinal)!;
-      omitted.add(fragmentAddress(entry, { kind: entry.role === "toolResult" ? "result" : "call", call }));
+      omittedCalls++;
+      omitted.add(entryAddress(entry));
     }
   }
-  const receipts = omitted.size ? [`T${turn.id}: ${omitted.size} omitted calls (including partial calls)`,
+  const receipts = omittedCalls ? [`T${turn.id}: ${omittedCalls} omitted calls (including partial calls)`,
     ...[...omitted].map(address => `expand: trace(${JSON.stringify({ address, itemBudget: null, toolCallBudget: null, toolResultBudget: null })})`)] : [];
   return { content: lines.join("\n"), receipts };
 }
@@ -439,9 +441,7 @@ const string = (value: unknown): string => typeof value === "string" ? value : v
 /** Identity mapping only, never another Raw preview. Fragment labels share persisted source
  * authority with rendering and citations; repeated text blocks need only one index address. */
 export function renderEntryIndex(entry: SourceEntry): string {
-  const addresses = [...new Set(sourceBlocks(entry).filter(block => block.kind !== "thinking")
-    .map(block => fragmentAddress(entry, block)))];
-  return `[${entryAddress(entry)}] ${entry.role}: ${addresses.join(", ")}`;
+  return `[${entryAddress(entry)}@${entry.role === "toolResult" ? "observation" : entry.role}] ${entry.role}`;
 }
 
 /** How a stored run mode reads (ticket 19 "Historical truth"). New work records `fork` (inherited
@@ -506,9 +506,15 @@ export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity
     const attribution = fact.roles?.[index];
     return attribution ? `${source} (${attribution.role === "assistant" ? attribution.harness : attribution.role})` : source;
   });
+  if (fact.title !== undefined) {
+    if (!fact.segments || !fact.roles || fact.segments.length !== fact.source.length || fact.roles.length !== fact.source.length ||
+        fact.segments.join("\n") !== fact.text) throw new Error(`F${fact.id}: incomplete titled fact`);
+    const body = fact.segments.map((text, i) => `[${fact.source[i]!.replace(/@(user|assistant|observation)$/u, "")}@${fact.roles![i]!.role}] ${text}`).join("\n");
+    return renderSemantic(`[F${fact.id}] ${fact.title}\n`, body, `${edges.length ? `\n  ${edges.join(" · ")}` : ""}\n`, cap, frame);
+  }
   return renderSemantic(`[F${fact.id}] ${fact.createdAt} ${legacy}${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`, fact.text,
     `${edges.length ? ` · ${edges.join(" · ")}` : ""}\n` + [...(fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`]),
-      `  source: ${sources.join(", ")}`].join("\n"), cap, frame);
+      `  source: ${(fact.boundAddresses ?? sources).join(", ")}`].join("\n"), cap, frame);
 }
 
 /** Search previews keep identity outside the optional field set. Unlike complete semantic records,
@@ -529,7 +535,13 @@ function renderPreview(prefix: string, body: string, suffix: string, cap: number
   return tokens(build(0)) <= cap ? build(fit(build, cut.list.length, cap))
     : inline(`${prefix.trimEnd()} ${truncated(cut.characters)}${suffix}`);
 }
-export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80): string {
+export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80, query?: string): string {
+  if (fact.title !== undefined) {
+    if (query === undefined) return renderPreview(`[F${fact.id}] `, fact.title, "", cap, true);
+    const at = fact.text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+    const excerpt = at < 0 ? fact.title : `…${fact.text.slice(Math.max(0, at - 30), at + query.length + 30)}…`;
+    return renderPreview(`[F${fact.id}] ${fact.title} — `, excerpt, "", cap, fields.has("text"));
+  }
   const prefix = `[F${fact.id}] ${fact.category && fact.actor ? `[${fact.category}/${fact.actor}] ` : ""}${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`;
   return renderPreview(prefix, fact.text, "", cap, fields.has("text"));
 }
@@ -544,7 +556,8 @@ export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevisio
   return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
-export const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
+export const factAddresses = (ids: number[], titles?: ReadonlyMap<number, string>): string => ids.map(id =>
+  `F${id}${titles?.get(id) ? ` ${titles.get(id)}` : ""}`).join(", ") || "none";
 // 21a: commit history carries the authored message; the compact automatic knowledge line does not.
 const commitLine = (r: KnowledgeRevision): string =>
   `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)} reason: ${r.reason}`;
@@ -562,11 +575,11 @@ export const renderCommitHistory = (revisions: KnowledgeRevision[], fields?: Rea
 
 export function renderKnowledgePreview(value: KnowledgeWithRevision, status: string,
   fields: ReadonlySet<string>, cap = 80, parents: KnowledgeRevision[] = [], children: KnowledgeRevision[] = [],
-  address?: (revision: KnowledgeRevision) => string): string {
+  address?: (revision: KnowledgeRevision) => string, supportTitles?: ReadonlyMap<number, string>): string {
   const r = value.revision, supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
   const shown = address ?? ((revision: KnowledgeRevision) => `K${revision.knowledgeId}@${revision.id}`);
   const suffix = [
-    ...(fields.has("supports") ? [`${supportLabel}: ${factAddresses(r.supports)}`] : []),
+    ...(fields.has("supports") ? [`${supportLabel}: ${factAddresses(r.supports, supportTitles)}`] : []),
     ...(fields.has("topics") && r.topics.length ? [`topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`status: ${status}`] : []),
     ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
@@ -578,7 +591,7 @@ export function renderKnowledgePreview(value: KnowledgeWithRevision, status: str
 
 export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity,
   effectiveGrounds: number[] = value.revision.supports, fields?: ReadonlySet<string>, historyLine = false, pathStatus?: string,
-  address?: (revision: KnowledgeRevision) => string, versionLabel?: string): string {
+  address?: (revision: KnowledgeRevision) => string, versionLabel?: string, supportTitles?: ReadonlyMap<number, string>): string {
   const shown = address ?? ((r: KnowledgeRevision) => `K${r.knowledgeId}@${r.id}`);
   const addresses = (commits: KnowledgeRevision[]) => commits.map(shown).join(", ") || "none";
   const direct = new Set(value.revision.supports), inherited = effectiveGrounds.filter(id => !direct.has(id));
@@ -593,7 +606,7 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
   const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "";
   const prefix = `[${shown(r)}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] `;
   const suffix = [
-    ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}${fields.has("topics") ? topicList(r.topics) : ""}`,
+    ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports, supportTitles)}${fields.has("topics") ? topicList(r.topics) : ""}`,
       ...(r.supportSemantics === "change" ? [`\n  inherited lineage supports: ${factAddresses(inherited)}`] : [])] : []),
     ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`\n  status: ${r.op} ${r.createdAt}${r.actorRole ? `; actor ${r.actorRole}; run R${r.runId}${!r.supports.length ? "; maintenance judgment" : ""}` : ""}`] : []),

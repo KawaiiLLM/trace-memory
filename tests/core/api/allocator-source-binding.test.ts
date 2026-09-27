@@ -58,10 +58,12 @@ for (const count of [1, 40]) test(`coverage SQL count is bounded per batch: ${co
     const operations = queries.map(([sql]) => String(sql).replace(/\s+/g, " ").trim());
     // Current-knowledge graph, path-applicable facts and the final Raw/source binding proof each
     // read once per batch. Retired C no longer queries consolidated-on-path membership.
-    expect(operations).toHaveLength(3);
+    expect(operations).toHaveLength(4);
     expect(operations.filter(sql => sql.startsWith("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?))")))
       .toHaveLength(2);
     expect(operations.filter(sql => sql.includes("FROM fact_sources b JOIN facts f ON f.id = b.fact_id WHERE f.id IN (SELECT value FROM json_each(?))")))
+      .toHaveLength(1);
+    expect(operations.filter(sql => sql.includes("FROM fact_sources fs JOIN source_entries e ON e.id = fs.entry_id WHERE fs.fact_id IN (SELECT value FROM json_each(?))")))
       .toHaveLength(1);
     expect(operations.some(sql => /WHERE (?:f\.)?id = \?$/.test(sql))).toBe(false);
     spy.mockRestore();

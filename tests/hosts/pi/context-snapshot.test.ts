@@ -9,6 +9,7 @@ import { call, fixture, piSession, say, toolResults } from "./native-fixture.ts"
 import extension from "../../../src/hosts/pi/index.ts";
 import { host } from "./test-host.ts";
 import { tokens } from "../../../src/core/api/index.ts";
+import { knowledge, legacyFacts } from "../../support/seed.ts";
 
 const quiet = { "noting.triggerTokens": 1_000_000_000 };
 
@@ -42,7 +43,8 @@ test("a real Pi tool can request its current-node snapshot before its first resu
       if (!snapshot.available) throw new Error(snapshot.message);
       expect(snapshot.node).toEqual({ nativeSessionId: f.manager.getSessionId(), nativeLeafId: leaf });
       expect(snapshot.text).toContain("CURRENT_NODE_PROBE");
-      expect(snapshot.text).toContain(`probe_${index}`);
+      // Entry-level Raw shows the call's name; generated call IDs are no longer public selectors.
+      expect(snapshot.text).toContain("snapshot_probe()");
       expect(unchanged).toBe(true);
     }
     // The second call also sees the preceding tool result in the same Turn.
@@ -61,23 +63,19 @@ function databaseSnapshot(h: ReturnType<typeof host>) {
 
 function seedMaterial(h: ReturnType<typeof host>) {
   const store = h.memory.store;
-  const noted = store.commitNotingRun({
-    run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "seed" },
-    entryIds: [],
-    facts: [
-      { turnId: 1, category: "decision", actor: "user", text: "SNAPSHOT_KNOWLEDGE_EVIDENCE", source: ["T1#user"], createdAt: "seed" },
-      { turnId: 1, category: "observation", actor: "agent", text: "SNAPSHOT_PENDING_FACT", source: ["T1#assistant"], createdAt: "seed" },
-    ],
-  });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const knowledge = store.commitConsolidationRun({
-    path: { sessionId: 1, branch: "main", headTurnId: 1 },
-    run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "seed" },
-    operations: [{ op: "create", handle: "$k", topics: [], reason: "Initial admission.", author: "fixture",
-      text: "SNAPSHOT_KNOWLEDGE", category: "constraint", scope: "session", supports: [noted.facts[0]!.id], createdAt: "seed" }],
-  });
-  if (!knowledge.ok) throw new Error(knowledge.problems.join("; "));
-  return { pendingFactId: noted.facts[1]!.id, knowledgeCommitId: knowledge.committed[0]!.commit };
+  const sources = store.sourcePath(1, "main", 1);
+  const source = (role: "user" | "assistant") => sources.find(entry => store.getSourceEntry(entry.id)?.role === role)!;
+  const user = source("user"), assistant = source("assistant");
+  const noted = legacyFacts(store, { kind: "noting", sessionId: 1, branch: "main", createdAt: "seed" }, [
+    { sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], category: "decision", actor: "user",
+      text: "SNAPSHOT_KNOWLEDGE_EVIDENCE", createdAt: "seed" },
+    { sources: [{ entry: assistant, address: `T1#E${assistant.entryOrdinal}` }], category: "observation", actor: "agent",
+      text: "SNAPSHOT_PENDING_FACT", createdAt: "seed" },
+  ]);
+  const committed = knowledge(store, store.knowledgePath(1, "main", 1), "session", "constraint",
+    [noted.facts[0]!.id], "SNAPSHOT_KNOWLEDGE", { run: { kind: "manual", createdAt: "seed" },
+      operation: { createdAt: "seed", topics: [] } });
+  return { pendingFactId: noted.facts[1]!.id, knowledgeCommitId: committed.commit };
 }
 
 test("current snapshot is the existing empty-coverage compact at the exact persisted node and is read-only", async () => {

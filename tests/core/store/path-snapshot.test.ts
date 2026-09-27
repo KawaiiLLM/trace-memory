@@ -21,10 +21,9 @@ beforeEach(() => {
 });
 afterEach(() => { memory.close(); rmSync(dir, { recursive: true, force: true }); });
 
-/** A session of `turns` Turns, each with a user prompt, a tool call with its result and a reply, and
- * one fact per Turn. Every `unbound`-th fact is written without entry bindings — the older shape
- * whose applicability is answered from the citable addresses. */
-function history(turns: number, options: { unbound?: number } = {}) {
+/** A session of `turns` Turns, each with a user prompt, a tool call with its result and a reply,
+ * and one bound fact per Turn. */
+function history(turns: number) {
   const store = memory.store;
   const projectId = store.createProject({ name: `p${turns}`, declaredBy: "marker" }).id;
   const session = store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId });
@@ -42,7 +41,7 @@ function history(turns: number, options: { unbound?: number } = {}) {
     entryIds: entries.map(e => e.id),
     facts: turnIds.map((turnId, i) => ({ turnId, category: "observation" as const, actor: "user" as const, text: `fact ${i}`,
       source: [`T${turnId}#user`], createdAt: time,
-      ...(options.unbound && i % options.unbound === 0 ? {} : { entryIds: [entries.find(e => e.turnId === turnId && e.role === "user")!.id] }) })) });
+      entryIds: [entries.find(e => e.turnId === turnId && e.role === "user")!.id] })) });
   if (!committed.ok) throw new Error(committed.problems.join("; "));
   const path: KnowledgePath = { sessionId: session.id, headTurnId: turnIds.at(-1)!, branch: "main" };
   const knowledge = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time },
@@ -91,18 +90,16 @@ test("22a: an identity question loads no Raw payload, and rendering reads each e
   reads.restore();
 });
 
-test("22a: the shared snapshot returns exactly what the per-fact rebuild returns, bindings or addresses", () => {
-  for (const unbound of [0, 3]) {
-    const { session, path } = history(6, { unbound });
-    expect(memory.store.listBranchFacts(session.id, "main", path.headTurnId)).toEqual(uncached(path));
-    expect(memory.store.consolidationBatch(session.id, "main", path.headTurnId!).map(f => f.id))
-      .toEqual(uncached(path).filter(f => !memory.store.consolidatedOnPath(f.id, path)).map(f => f.id));
-    expect(memory.store.citationProblem(uncached(path).map(f => f.id), "session", path)).toBeNull();
-  }
+test("22a: the shared snapshot returns exactly what the per-fact rebuild returns for bound facts", () => {
+  const { session, path } = history(6);
+  expect(memory.store.listBranchFacts(session.id, "main", path.headTurnId)).toEqual(uncached(path));
+  expect(memory.store.consolidationBatch(session.id, "main", path.headTurnId!).map(f => f.id))
+    .toEqual(uncached(path).filter(f => !memory.store.consolidatedOnPath(f.id, path)).map(f => f.id));
+  expect(memory.store.citationProblem(uncached(path).map(f => f.id), "session", path)).toBeNull();
 });
 
-test("22a: a same-Turn sibling occurrence stays off this branch, with bindings and without", () => {
-  const { session, path, turnIds, entries } = history(3, { unbound: 2 });
+test("22a: a bound same-Turn sibling occurrence stays off this branch", () => {
+  const { session, path, turnIds, entries } = history(3);
   const store = memory.store;
   // A second assistant occurrence inside the last Turn that only the sibling branch selects.
   const sibling = store.appendSourceEntry({ sessionId: session.id, nativeLineage: "fixture", nativeId: "sibling-1",
@@ -119,8 +116,8 @@ test("22a: a same-Turn sibling occurrence stays off this branch, with bindings a
   expect(store.listBranchFacts(session.id, "sibling", siblingPath.headTurnId)).toEqual(uncached(siblingPath));
 });
 
-test("32b performance: batch and ordinary applicability agree for bindings, fallback, foreign facts and historical tips", () => {
-  const { session, path, turnIds, entries, facts, knowledgeId } = history(3, { unbound: 2 });
+test("32b performance: batch and ordinary applicability agree for bindings, foreign facts and historical tips", () => {
+  const { session, path, turnIds, entries, facts, knowledgeId } = history(3);
   const store = memory.store;
   const sibling = store.appendSourceEntry({ sessionId: session.id, nativeLineage: "fixture", nativeId: "batch-sibling",
     turnId: turnIds.at(-1)!, role: "assistant", text: "sibling", raw: "{}", calls: [] });

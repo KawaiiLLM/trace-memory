@@ -23,7 +23,7 @@ test("92/03: branch history owns stable ordinals, membership/status follows the 
     const facts = paths.map(path => {
       activate(path);
       const note = memory.tools({ kind: "manual", sessionId: session.id, branch: path.branch, currentTurnId: path.headTurnId! }).find(t => t.name === "note")!;
-      const result = JSON.parse(note.execute({ facts: [{ text: `Evidence ${path.branch}`, source: [`T${path.headTurnId}#E1`] }] }));
+      const result = JSON.parse(note.execute({ facts: [{ title: `Evidence ${path.branch}`, sources: [{ address: `T${path.headTurnId}#E1`, text: `Evidence ${path.branch}` }] }] }));
       expect(result.factIds).toHaveLength(1);
       return result.factIds[0] as number;
     });
@@ -54,7 +54,7 @@ test("92/03: branch history owns stable ordinals, membership/status follows the 
     expect(history).toContain(`[K${id}@v2]`);
     expect(history).not.toContain("Right body");
     expect(history).toContain("superseded");
-    const all = read(paths[1]!, `K${id}..`);
+    const all = read(paths[1]!, `K${id}`, "all");
     expect(all).toContain(`[K${id}@v3]`);
     expect(all).toContain("another branch");
     expect(all).not.toMatch(/K\d+@\d+/);
@@ -68,7 +68,7 @@ test("92/03: branch history owns stable ordinals, membership/status follows the 
     const foreign = store.createSession({ projectId: foreignProject.id, host: "pi:foreign", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
     const foreignTurn = store.appendTurn({ sessionId: foreign.id, kind: "turn", userPrompt: "outside", startedAt: "now" });
     const tools = memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: foreignTurn.id });
-    const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Outside evidence", source: [`T${foreignTurn.id}#E1`] }] })).factIds[0];
+    const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Outside evidence", sources: [{ address: `T${foreignTurn.id}#E1`, text: "Outside evidence" }] }] })).factIds[0];
     expect(tools.find(t => t.name === "trace")!.execute({ address: `K${id}@v2` })).toContain("Left body");
     const rejected = tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "archive", id: `K${id}#${store.versionTag(id, first.commit)}`, supports: [`F${fact}`], reason: "outside" }], skipped: [] });
     expect(rejected).toContain("rejected:");

@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { TraceMemory, DEFAULT_CONFIG, renderEntry, tokens } from "../../../src/core/api/index.ts";
 import { renderFact, renderFactGroups } from "../../../src/core/render/index.ts";
+import { rawWindowTokens } from "../../../src/core/render/material.ts";
 import { unifiedFixture } from "../../fixtures/unified-entry.ts";
 
 const time = "2026-09-01T00:00:00Z";
@@ -21,20 +22,21 @@ test("33: fixed realistic fixture prices the exact Raw bytes for status, trigger
     memory.selectEntries(sessionId, "main", entries.map(entry => entry.id));
     const views = entries.map(entry => renderEntry(entry, memory.config.render).content);
     const actual = views.join("\n\n");
-    expect(Buffer.byteLength(actual)).toBe(108406);
-    expect(tokens(actual)).toBe(25739);
+    expect(Buffer.byteLength(actual)).toBe(108766);
+    expect(tokens(actual)).toBe(25619);
     expect(memory.pendingTokens("noting", target)).toEqual({ tokens: tokens(actual), trigger: 10000, state: "known" });
     expect(memory.config.noting).toEqual(DEFAULT_CONFIG.noting);
     expect(memory.taskEligibility("noting", target)).toEqual({ due: true });
     const batch = memory.notingBatch(target);
     expect(batch).toHaveLength(92);
-    expect(tokens(views.slice(0, batch.length).join("\n\n"))).toBeLessThanOrEqual(10000);
-    expect(tokens(views.slice(0, batch.length + 1).join("\n\n"))).toBeGreaterThan(10000);
-    for (const count of [92, 93]) {
+    expect(rawWindowTokens(views.slice(0, batch.length), [])).toBeLessThanOrEqual(10000);
+    expect(tokens(views.slice(0, batch.length + 1).join("\n\n"))).toBeLessThanOrEqual(10000); // bare Raw is not the batch charge
+    expect(rawWindowTokens(views.slice(0, batch.length + 1), [])).toBeGreaterThan(10000); // full framing rejects the next entry
+    for (const count of [93, 94]) {
       memory.selectEntries(sessionId, "main", entries.slice(0, count).map(entry => entry.id));
       const measured = tokens(views.slice(0, count).join("\n\n"));
       expect(memory.pendingTokens("noting", target).tokens).toBe(measured);
-      expect(memory.taskEligibility("noting", target).due).toBe(count === 93);
+      expect(memory.taskEligibility("noting", target).due).toBe(count === 94);
     }
   } finally { memory.close(); }
 });

@@ -1,18 +1,24 @@
 ### Knowledge
 
-A knowledge item is the versioned arc of one object: one object, one independently changeable claim or state, one identity.
-- A version has a `text` (the body), a `category`, a `scope`, `topics`, `supports` and a `reason` (the commit message). `supports` are the facts of this version: an evidence-driven change cites only its evidence; a maintenance change carries its parents' supports, copied by the system at commit.
-- Identity is the claim or state itself, not a label, a category or a current value: one role's default of Sol high, then Astra high, then Sol medium is one item in three versions. A change to that claim or state — its content, its category or its wording — belongs to that identity: update the exact continuing version. Merging two identities together, splitting one apart, and reviewing every change as a diff against the version it last confirmed are the Dreamer's alone.
+A knowledge item is the continuing understanding of one topic, carried through an enduring identity and immutable versions. Identity is not a title, category or current value.
+- Each version's `text` is the complete current understanding, not an appended fragment.
+- A version carries a `category`, `scope`, `topics`, `supports` and `reason`.
+- `supports` are direct fact evidence. Evidence-driven changes cite their change evidence; maintenance inherits exact parents' supports through the system. Citing evidence does not change its source or strength.
+- `reason` explains this change; it is neither the body nor evidence.
+- The system records exact parents and archived status. Parents record lineage, not evidence; archived status is distinct from applicability, validity and visibility.
+- A change to the same topic's understanding, state, evidence or expression continues its identity. Update its exact continuing version. Merge, split and review of supplied change diffs are the Dreamer's alone.
 
-**Two kinds.** Established knowledge: `constraint`, `understanding`, `goal`, `reference`. Pending knowledge: `open`.
+**Five categories**, labeling the main use:
+- **constraint** — constraints, preferences and working rules that action must respect.
+- **understanding** — the current understanding and its reasons: concepts, mechanisms, designs and lessons.
+- **goal** — what is being pursued and what counts as reaching it.
+- **open** — what remains unsettled and what evidence or decision is needed.
+- **reference** — an object, value or material worth remembering, when it is needed and where to look.
 
-**Five categories.** First decide whether an item is worth retaining; its category then labels its main use, not admission. Choose the closest category when none fits precisely.
-- **constraint** — what must later action respect? User rules, preferences, conventions and limits; not a one-off step.
-- **understanding** — what is understood about an object now, and why? Mechanisms, design reasons, concepts, lessons and what a refuted path taught.
-- **goal** — what is being pursued, and what counts as reaching it? Current intent and success criteria; not one step's plan.
-- **open** — what remains unsettled or unverified? Name both sides and missing evidence when accounts conflict.
-- **reference** — what object, value or material merits later lookup, and why? Name the location and when to use it, never an address alone.
+**scope.** The default is `project`.
+- `session`: holds only in this session, such as one experiment's result or a reply being awaited.
+- `project`: holds in this project, including narrower matters needed across its sessions. State that narrower range in the body.
+- `global`: holds across projects, such as user preferences and general working methods.
+- Domain knowledge tied to a project's subject belongs to that project, including the literature and tools studied for it.
 
-**scope.** `session`: holds only in this session (paths and checksums of this run, numbers from one experiment, a reply being waited on). `project`: holds in this project; something narrower than the project but needed across sessions (this snapshot, this ticket) is `project` with the range stated in the text. `global`: holds across projects — the user, the general environment, general working method. Domain knowledge visibly tied to one project's subject, including the literature and tools studied for it, is never `global`; it is `project` knowledge of the project that studies it.
-
-**topics.** Subject labels, never kinds: concrete module names or domain terms (`core/store`, extraction, billing), never category words or the project's own name. A label classifies only: it grants no scope, evidence, lifecycle or coverage.
+**topics.** Subject labels, which may be empty. They determine neither identity nor authority. Use module names or domain terms, not category words or the project's own name. Labels confer no scope, evidence, lifecycle or coverage.

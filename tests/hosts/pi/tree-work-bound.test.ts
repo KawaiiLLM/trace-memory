@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { Store } from "../../../src/core/store/index.ts";
+import { knowledge, knowledgeBatch, legacyFacts } from "../../support/seed.ts";
 import { host, reply } from "./test-host.ts";
 
 // Exercise both host event boundaries, not merely the standalone branch renderer.
@@ -11,14 +12,14 @@ test("67: a long before-tree carry and after-tree restore have bounded projectio
     await h.emit("session_start");
     const store = h.memory.store, head = store.listTurns(1).at(-1)!.id;
     for (const lineage of ["sibling-open", "closed-retained"]) store.setCurrentPath(1, "main", head, lineage);
-    const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, facts: [
-      { turnId: head, source: [`T${head}#user`], actor: "user", category: "decision", text: "retain evidence", createdAt: "now" },
-    ] });
-    if (!facts.ok) throw new Error(facts.problems.join("; "));
-    const written = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations:
-      Array.from({ length: 80 }, (_, i) => ({ op: "create" as const, handle: `$k${i}`, author: "test", text: `rule ${i}`,
-        category: "constraint" as const, scope: "session" as const, supports: [facts.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" })) });
-    if (!written.ok) throw new Error(written.problems.join("; "));
+    const user = store.sourcePath(1, "main", head).find(value => value.turnId === head && store.getSourceEntry(value.id)?.role === "user")!;
+    const evidence = legacyFacts(store, { kind: "manual", sessionId: 1, createdAt: "now" },
+      [{ sources: [{ entry: user, address: `T${head}#E${user.entryOrdinal}` }], actor: "user",
+        category: "decision", text: "retain evidence", createdAt: "now" }]).facts[0]!;
+    knowledgeBatch(store, store.knowledgePath(1, "main", head),
+      Array.from({ length: 80 }, (_, i) => ({ author: "test", text: `rule ${i}`, category: "constraint" as const,
+        scope: "session" as const, supports: [evidence.id], topics: [], reason: "fixture", createdAt: "now" })),
+      { kind: "manual", createdAt: "now" });
     const projection = vi.spyOn(Store.prototype, "commitGraphInput");
     const publication = vi.spyOn(Store.prototype, "publishSourcePath");
     const eligibility = vi.spyOn(Store.prototype, "duePools");
@@ -54,11 +55,10 @@ test("67: real ancestor rewind and sibling switch preserve evidence carry with d
     const ancestor = [...h.entries], store = h.memory.store;
     const root = store.listTurns(1).at(-1)!.id;
     const fact = (sessionId: number, turnId: number, entryId: number, text: string) => {
-      const result = store.commitNotingRun({ run: { kind: "manual", sessionId, createdAt: "seed" }, facts: [
-        { turnId, entryIds: [entryId], source: [`T${turnId}#user`], actor: "user", category: "decision", text, createdAt: "seed" },
-      ] });
-      if (!result.ok) throw new Error(result.problems.join("; "));
-      return result.facts[0]!.id;
+      const source = store.getSourceEntry(entryId)!;
+      return legacyFacts(store, { kind: "manual", sessionId, createdAt: "seed" },
+        [{ sources: [{ entry: source, address: `T${turnId}#E${source.entryOrdinal}` }], actor: "user",
+          category: "decision", text, createdAt: "seed" }]).facts[0]!.id;
     };
     const rootFact = fact(1, root, store.listSourceEntries(1, root)[0]!.id, "ROOT FACT");
     h.persist({ role: "user", content: "LEFT EVIDENCE", timestamp: 1 });
@@ -86,11 +86,8 @@ test("67: real ancestor rewind and sibling switch preserve evidence carry with d
       owners.push({ sessionId: session.id, root: base.id, rootEntry: baseEntry.id, leftFact: branches[0]!, rightFact: branches[1]! });
     }
     const create = (text: string, supports: number[]) => {
-      const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [
-        { op: "create", handle: "$k", author: "test", text, category: "constraint", scope: "global", supports,
-          topics: [], reason: "carry fixture", createdAt: "seed" },
-      ] });
-      if (!result.ok) throw new Error(result.problems.join("; "));
+      knowledge(store, store.knowledgePath(1), "global", "constraint", supports, text,
+        { run: { kind: "manual", createdAt: "seed" } });
     };
     create("ROOT RULE", [rootFact]); create("LEFT RULE", [leftFact]);
     for (let i = 0; i < 80; i++) {

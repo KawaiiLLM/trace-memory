@@ -3,7 +3,8 @@
 // fact's relations and the Turn occurrences an assembled trace shows. Writing either between two
 // pages must not change a page the query already established.
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory, hydrate } from "../../source-fixture.ts";
+import { legacyFacts } from "../../support/seed.ts";
 const time = "2026-09-09T00:00:00Z";
 
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -36,15 +37,15 @@ function paged(scope: "facts" | "raw", query: string, between: () => void) {
 
 test("22c: a fact negated between two pages does not add a relation to the established page", () => {
   const { store, sessionId, turn } = session();
-  const note = (text: string, more: object = {}) => {
-    const result = store.commitNotingRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time },
-      facts: [{ turnId: turn.id, category: "observation", actor: "user", text, source: [`T${turn.id}#user`], createdAt: time, ...more }] });
-    if (!result.ok) throw new Error(result.problems.join("; "));
-    return result.facts[0]!;
-  };
+  const user = hydrate(store.listSourceEntries(sessionId, turn.id), store).find(entry => entry.role === "user")!;
+  const note = (text: string, negate: { target: string; strength: "strong" }[] = []) =>
+    legacyFacts(store, { kind: "manual", sessionId, branch: "main", createdAt: time }, [{
+      category: "observation", actor: "user", text, createdAt: time, negate,
+      sources: [{ entry: user, address: `T${turn.id}#E${user.entryOrdinal}` }],
+    }]).facts[0]!;
   note("needle first");
   const second = note("needle second");
-  const { joined, whole } = paged("facts", "needle", () => note("later correction", { negate: [{ target: `F${second.id}`, strength: "strong" }] }));
+  const { joined, whole } = paged("facts", "needle", () => note("later correction", [{ target: `F${second.id}`, strength: "strong" }]));
   expect(joined).toBe(whole);
 });
 

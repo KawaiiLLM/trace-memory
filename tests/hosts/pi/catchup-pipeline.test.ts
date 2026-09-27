@@ -42,7 +42,7 @@ function retain(c: Parameters<typeof notingFact>[0]): Reply {
 }
 function seed(h: ReturnType<typeof host>) {
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Keep this conclusion.", source: ["T1#E1"] }] })).toContain("ok: F1");
+  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Keep conclusion", sources: [{ address: "T1#E1", text: "Keep this conclusion." }] }] })).toContain("ok: F1");
   expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", topics: [],
     reason: "Seed pending revision", text: "Rule " + "word ".repeat(120), category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
   return h.memory.store.listKnowledgeRevisions().at(-1)!;
@@ -200,7 +200,7 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
       role: "user", text: "foreign", raw: JSON.stringify({ role: "user", content: "foreign" }), calls: [] });
     store.selectSourcePath(foreign.id, "main", [entry.id]);
     const tools = h.memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: turn.id });
-    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Foreign rule", source: [`T${turn.id}#E1`] }] })).toContain("ok:");
+    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Foreign rule", sources: [{ address: `T${turn.id}#E1`, text: "Foreign rule" }] }] })).toContain("ok:");
     const fact = store.listSessionFacts(foreign.id)[0]!;
     expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: "Foreign rule", category: "constraint",
       scope: "session", supports: [`F${fact.id}`], topics: [], reason: "Foreign pending pool" }], skipped: [] })).not.toContain("rejected:");
@@ -230,7 +230,7 @@ for (const correct of [false, true]) test(`86: bounced N ${correct ? "retries th
       if (results.length === 0) {
         attempts++; checks.push(eligibility.mock.calls.length);
         if (attempts > (correct ? 2 : 3)) throw new Error("Noter retried beyond its scripted terminal outcome");
-        return call("note", { facts: correct && attempts > 1 ? [] : [{ text: "Rejected source", source: ["T99999#E1"] }] });
+        return call("note", { facts: correct && attempts > 1 ? [] : [{ title: "Rejected source", sources: [{ address: "T99999#E1", text: "Rejected source" }] }] });
       }
       if (!c.messages.some(m => m.role === "toolResult" && m.toolName === "memory")) return call("memory", { operations: [], skipped: [] });
       return reply("Done");

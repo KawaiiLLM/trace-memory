@@ -15,7 +15,8 @@ for (const [label, make] of [["subagent", fixture], ["fork", forkFixture]] as co
       if (toolResults(body) >= 2) return say("Done.");
       if (submitted(body)) return call("memory-empty", "memory", { operations: [], skipped: [] });
       const prior = f.h.memory.store.listSessionFacts(1).length;
-      return call(`note-${prior}`, "note", prior ? { facts: [{ ...noteBatch.facts[0], source: ["T2#E1"], support: [["F1", "strong"]] }] } : noteBatch);
+      return call(`note-${prior}`, "note", prior ? { facts: [{ ...noteBatch.facts[0], sources: [{ address: "T2#E1", text: noteBatch.facts[0]!.sources[0]!.text }],
+        support: [["F1", "strong"]] }] } : noteBatch);
     });
     await f.turn();
     await f.turn();

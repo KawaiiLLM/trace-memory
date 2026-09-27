@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { TraceMemory, noVisibility, type Injection } from "../../src/core/api/index.ts";
 import { Store } from "../../src/core/store/index.ts";
+import { knowledge, legacyFacts } from "../support/seed.ts";
 import { bindingMutexPath, bindingPath, recordSessionStart, readBinding, updateBinding } from "../../src/hosts/cc/binding.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { ccRetainedMessageView, ccSessionStartInjection, ccVisibleView, decodeCcInjection, encodeCcInjection, handleCcHook, readCompleteTranscript,
@@ -648,15 +649,13 @@ test("43d provisional first prompt injects global knowledge without allocating o
   const session = memory.store.createSession({ enrollmentChoice: true, host: "fixture", projectId: project.id,
     startedAt: time(0), firstReplyAt: time(0) });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: time(0), userPrompt: "global rule" });
-  const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, createdAt: time(0) },
-    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "global rule",
-      source: [`T${turn.id}#user`], createdAt: time(0) }] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const committed = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: time(0) },
-    operations: [{ op: "create", topics: [], reason: "fixture", handle: "$global", author: "fixture",
-      text: "global knowledge before first reply", supports: [noted.facts[0]!.id], createdAt: time(0),
-      category: "constraint", scope: "global" }] });
-  if (!committed.ok) throw new Error(committed.problems.join("; "));
+  const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "global-rule",
+    role: "user", text: "global rule", raw: "global rule", calls: [] });
+  const evidence = legacyFacts(memory.store, { kind: "noting", sessionId: session.id, createdAt: time(0) },
+    [{ sources: [{ entry, address: `T${turn.id}#E${entry.entryOrdinal}` }], text: "global rule",
+      category: "decision", actor: "user", createdAt: time(0) }]).facts[0]!;
+  knowledge(memory.store, memory.store.knowledgePath(session.id, "main", turn.id), "global", "constraint",
+    [evidence.id], "global knowledge before first reply", { run: { kind: "manual", createdAt: time(0) } });
   memory.store.close();
   writeFileSync(transcriptPath, line(user("first-user", null, "first prompt before any assistant reply")));
   const reopen = vi.spyOn(Store.prototype, "reopenSession");

@@ -39,7 +39,7 @@ function session() {
 }
 const turn = (sessionId: number, parentTurnId: number | null, user: string, assistant: string) =>
   memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: user, assistantText: assistant, startedAt: time });
-const fact = (source: string) => ({ text: `Observed at ${source}`, source: [source] });
+const fact = (source: string) => ({ title: "Observed boundary", sources: [{ address: source, text: `Observed at ${source}` }] });
 
 test.each([
   ["noting", false], ["noting", true],

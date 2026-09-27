@@ -15,6 +15,7 @@ import { budgetMaterial, compactText, rawWindowTokens, injectionText, knowledgeB
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { suppliedHandles } from "../../dreaming-skips.ts";
+import { fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts } from "../../support/seed.ts";
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: NotingAgentInput[], scenarios: AdmittedDreamerScenarios;
 const time = "2026-09-08T00:00:00Z";
@@ -41,10 +42,13 @@ function seeded() {
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "用 pnpm，不要 npm", assistantText: "好的。", startedAt: time });
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command: "pnpm install" }), result: JSON.stringify({ stdout: "done", stderr: "" }), status: "success" });
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Use pnpm", source: [`T${t.id}#E1`] }] })).toContain("ok: F1");
-  expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain('"committed"');
+  const path = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  const user = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store).find(e => e.role === "user")!;
+  expect(seedFact(memory, path, "Package manager decision", [{ entry: user, text: "Use pnpm" }]).id).toBe(1);
+  expect(seedKnowledge(memory.store, path, "project", "constraint", [1], "The project uses pnpm",
+    { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [] } }).knowledgeId).toBe(1);
   knowledgeBlock = `<knowledge>\n${KNOWLEDGE_RECENCY_NOTICE}\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] The project uses pnpm\n  change supports: F1\n</knowledge>`;
-  return { s, t, read: (address: string) => tools.find(tool => tool.name === "trace")!.execute({ address, cap: Number.MAX_SAFE_INTEGER }) };
+  return { s, t, user, read: (address: string) => tools.find(tool => tool.name === "trace")!.execute({ address, cap: Number.MAX_SAFE_INTEGER }) };
 }
 let knowledgeBlock: string;
 const views = (sessionId: number, head: number) =>
@@ -85,8 +89,12 @@ test("92: fresh N names its target and range, then shares compact Knowledge, fac
   const raw = views(s.id, t.id);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const input = calls[0]! as NotingAgentInput;
-  expect(input.text).toBe(["Target session agent: fake", `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`, knowledgeBlock,
-    `<episodic>\nRecent facts (by Turn):\n\n[T1] ${time} (selected facts)\n${memory.trace("F1")}\n\nRaw:\n\n${raw}\n</episodic>`].join("\n\n"));
+  expect(input.material.harness).toBe("fake");
+  expect(input.text).toContain(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`);
+  expect(input.material.facts).toHaveLength(1);
+  expect(input.material.facts[0]).toContain("[F1] Package manager decision");
+  expect(input.material.entries.map(entry => entry.id)).toEqual(input.entryIds);
+  expect(input.text).toContain(raw);
   expect(knowledgeBlockOf(input.material)).toBe(knowledgeBlock);
   expect(input.supplied.knowledgeCommitIds).toEqual([1]);
   expect(memory.inject(s.id)).toBe(knowledgeBlock);
@@ -99,8 +107,12 @@ test("29b 2026-09-10: a fork whose whole target is visible injects no Raw and ke
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
     visible: visibleTarget(memory, s.id, "main", t.id) });
   const input = calls[0]! as NotingAgentInput;
-  expect(input.text).toBe(["Target session agent: fake", `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`,
-    `Sources:\n[T${t.id}#E1] user: T${t.id}#E1@text\n[T${t.id}#E2] assistant: T${t.id}#E2@text\n[T${t.id}#E3] assistant: T${t.id}#E3@call-1\n[T${t.id}#E4] toolResult: T${t.id}#E4@call-1`].join("\n\n"));
+  expect(input.material.harness).toBe("fake");
+  expect(input.text).toContain(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`);
+  expect(input.material.sources).toEqual([
+    `[T${t.id}#E1@user] user`, `[T${t.id}#E2@assistant] assistant`,
+    `[T${t.id}#E3@assistant] assistant`, `[T${t.id}#E4@observation] toolResult`,
+  ]);
   expect(input.material.head).toBeNull(); // This synthetic sequence ends with a result, not E2.
   // The raw turns and the injected knowledge are already in that conversation.
   expect(input.text).not.toContain("Raw:");
@@ -118,16 +130,17 @@ test("29b 2026-09-10: a fork whose whole target is visible injects no Raw and ke
 test("20a 2026-09-08: the main agent's initial injection is knowledge and receipts only, and compact is knowledge, historical facts, pending Raw, receipts", async () => {
   const { s, t } = seeded();
   expect(memory.inject(s.id)).toBe(knowledgeBlock); // knowledge-only: no facts, no Raw, no range
-  expect(compacted(memory.compact(s.id, "main", t.id))).toBe([knowledgeBlock,
-    `<episodic>\nRecent facts (by Turn):\n\n[T1] ${time} (selected facts)\n${memory.trace("F1")}\n\nRaw:\n\n${views(s.id, t.id)}\n</episodic>`].join("\n\n"));
+  const compact = compacted(memory.compact(s.id, "main", t.id));
+  expect(compact.startsWith(knowledgeBlock)).toBe(true);
+  expect(compact).toContain("[F1] Package manager decision");
+  expect(compact).toContain(views(s.id, t.id));
 });
 
 test("20a/92: N tasks with different Raw and facts retain byte-identical Knowledge blocks", () => {
-  const { s, t } = seeded();
+  const { s, t, user } = seeded();
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" as const };
   const earlier = freezeNoting(memory.store, target, memory.config);
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [{ text: "Still pnpm", source: [`T${t.id}#E1`] }] });
+  seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "Package manager follow-up", [{ entry: user, text: "Still pnpm" }]);
   memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeLineage: "next", nativeId: "next", role: "user", text: "Next task", raw: "", calls: [] });
   const later = freezeNoting(memory.store, target, memory.config);
   expect(earlier.entries.map(entry => entry.id)).not.toEqual(later.entries.map(entry => entry.id));
@@ -144,7 +157,7 @@ test("20a/92: N tasks with different Raw and facts retain byte-identical Knowled
 });
 
 test("20a/92: N facts and Knowledge budget receipts follow the dynamic material", async () => {
-  const { s, t } = seeded();
+  const { s, t, user } = seeded();
   const raw = views(s.id, t.id);
   // Facts have an independent window; its omission receipt follows the complete Raw block.
   const factReceipt = "omitted 1 older facts; expand: F1";
@@ -163,7 +176,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
     reason: "Exercise a database-derived omission boundary.", text: "The project uses pnpm " + "word ".repeat(5_200),
     category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
   setKnowledgeCapacity(memory, 5_000);
-  tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Keep pnpm", source: [`T${t.id}#E1`] }] });
+  seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "Package manager retained", [{ entry: user, text: "Keep pnpm" }]);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const next = calls.at(-1)!;
   expect(next.material.receipts).toEqual([receipt]);
@@ -225,12 +238,13 @@ test("20b 2026-09-08 scenario 3: exactly-at fits and one over does not, with lab
 /** The same scenario end to end, at the ruled defaults: a task with more knowledge, more facts and
  * more Raw than any budget holds still sends each block within its own 10,000-token allowance. */
 function overloaded() {
-  const { s, t } = seeded();
-  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  for (let i = 0; i < 12; i++) tools.find(tool => tool.name === "note")!.execute({ facts: Array.from({ length: 20 }, (_, k) =>
-    ({ text: `claim ${i}.${k} ` + "word ".repeat(40), source: [`T${t.id}#E1`] })) });
-  for (let i = 0; i < 30; i++) tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.",
-    text: `rule ${i} ` + "word ".repeat(500), category: i % 2 ? "constraint" : "understanding", scope: "project", supports: ["F1"] }], skipped: [] });
+  const { s, t, user } = seeded();
+  const path = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  for (let i = 0; i < 12; i++) seedFacts(memory, path, Array.from({ length: 20 }, (_, k) => ({
+    title: `claim ${i}.${k}`, sources: [{ entry: user, text: `claim ${i}.${k} ` + "word ".repeat(40) }],
+  })));
+  for (let i = 0; i < 30; i++) seedKnowledge(memory.store, path, "project", i % 2 ? "constraint" : "understanding", [1],
+    `rule ${i} ` + "word ".repeat(500), { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [] } });
   for (let i = 0; i < 6; i++) memory.appendEntry({ sessionId: s.id, nativeLineage: "big", nativeId: `b${i}`, turnId: t.id,
     role: "assistant", text: `entry ${i} ` + "word ".repeat(3000), raw: "", calls: [] });
   return { s, t };
@@ -322,8 +336,9 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   // Restore enough room for the subject and the explicitly accounted worker trigger.
   setKnowledgeCapacity(memory, 12_000);
   // Identical selected revisions and topics retain their bytes when N's preceding facts change.
-  const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [{ text, source: [`T${t.id}#E1`] }] });
+  const user = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store).find(e => e.role === "user")!;
+  const note = (text: string) => seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id },
+    "Package manager evidence", [{ entry: user, text }]);
   note("Keep pnpm");
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   note("Still pnpm");
@@ -362,10 +377,9 @@ test("25a 2026-09-09: the history and Raw allowances are independent — neither
 });
 
 test("25a 2026-09-09: a Noter freeze keeps its history inside the reserved allowance even when the Raw batch is tiny", async () => {
-  const { s, t } = seeded();
-  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  for (let i = 0; i < 8; i++) tools.find(tool => tool.name === "note")!
-    .execute({ facts: [{ text: `history ${i} ` + "word ".repeat(120), source: [`T${t.id}#E1`] }] });
+  const { s, t, user } = seeded();
+  for (let i = 0; i < 8; i++) seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id },
+    `History ${i}`, [{ entry: user, text: `history ${i} ` + "word ".repeat(120) }]);
   // Independent facts cap: a small Raw batch cannot enlarge it.
   const room = 400;
   memory.config.compaction.factsTokens = room;
@@ -391,12 +405,17 @@ test("25a 2026-09-09: the branch carry's fact payload and the Noter's history bl
   const later = "2026-09-09T00:00:00Z";
   const second = memory.store.appendTurn({ sessionId: s.id, parentTurnId: first.id, kind: "turn", userPrompt: "再来一次", assistantText: "好。", startedAt: later });
   // One committed batch spanning two Turns and one multi-Turn citation.
-  const write = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: later }, facts: [
-      { turnId: second.id, category: "observation", actor: "user", text: "late claim", quote: null, source: [`T${second.id}#user`], createdAt: later },
-      { turnId: first.id, category: "observation", actor: "user", text: "early claim", quote: null, source: [`T${first.id}#user`], createdAt: time },
-      { turnId: first.id, category: "observation", actor: "user", text: "multi-source claim", quote: null, source: [`T${first.id}#user`, `T${second.id}#assistant`], createdAt: time },
-    ] });
-  if (!write.ok) throw new Error(write.problems.join("; "));
+  const path = { sessionId: s.id, branch: "main", headTurnId: second.id };
+  const entries = hydrate(memory.store.listSourceEntries(s.id), memory.store);
+  const firstUser = entries.find(e => e.turnId === first.id && e.role === "user")!;
+  const secondUser = entries.find(e => e.turnId === second.id && e.role === "user")!;
+  const secondAssistant = entries.find(e => e.turnId === second.id && e.role === "assistant")!;
+  legacyFacts(memory.store, { kind: "noting", sessionId: s.id, branch: path.branch, createdAt: later }, [
+    { sources: [{ entry: secondUser, address: `T${second.id}#user` }], text: "late claim", category: "observation", actor: "user", createdAt: later },
+    { sources: [{ entry: firstUser, address: `T${first.id}#user` }], text: "early claim", category: "observation", actor: "user", createdAt: time },
+    { sources: [{ entry: firstUser, address: `T${first.id}#user` },
+      { entry: secondAssistant, address: `T${second.id}#assistant` }], text: "multi-source claim", category: "observation", actor: "user", createdAt: time },
+  ]);
   const carry = memory.branchSummary(s.id, "main", second.id);
   // A later Noting task whose history is exactly that same selected set and annotation snapshot.
   memory.appendEntry({ sessionId: s.id, nativeLineage: "shared", nativeId: "e1", turnId: second.id, role: "assistant", text: "still here", raw: "", calls: [] });
@@ -436,9 +455,9 @@ test("29b 2026-09-10: a fork is priced as its inherited measure plus the instruc
 
 /** `count` extra facts on the seeded Turn, oldest first, each long enough to be worth budgeting. */
 function history(sessionId: number, turnId: number, count: number) {
-  const note = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId }).find(tool => tool.name === "note")!;
-  for (let i = 0; i < count; i++)
-    note.execute({ facts: [{ text: `Older claim ${i} ` + "detail ".repeat(20), source: [`T${turnId}#E1`] }] });
+  const user = hydrate(memory.store.listSourceEntries(sessionId, turnId), memory.store).find(e => e.role === "user")!;
+  for (let i = 0; i < count; i++) seedFact(memory, { sessionId, branch: "main", headTurnId: turnId },
+    `Older claim ${i}`, [{ entry: user, text: `Older claim ${i} ` + "detail ".repeat(20) }]);
 }
 
 /** Case 10. The allowance is set to hold exactly three fact lines. With the newest facts visible, the
@@ -497,7 +516,7 @@ test("29b 2026-09-10 (case 12): a fork with no newly supplied Raw still commits 
   const noter = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
     calls.push(input);
-    committed = input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Noted from the inherited context", source: [`T${t.id}#E1`] }] }) as string;
+    committed = input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Inherited context", sources: [{ address: `T${t.id}#E1`, text: "Noted from the inherited context" }] }] }) as string;
     expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] })).toContain("held");
     return { outcome: "success", output: "", request: { fake: true } };
   });
@@ -534,7 +553,7 @@ test("29b/92 (case 13): fresh N receives one full material dispatch across its t
     calls.push(input);
     if (input.kind === "noting") {
       // Two tool rounds inside one run: the child keeps its own messages and nothing is resent.
-      input.tools.find(tool => tool.name === "trace")!.execute({ address: `T${t.id}#user` }); rounds++;
+      input.tools.find(tool => tool.name === "trace")!.execute({ address: `T${t.id}#E1@user` }); rounds++;
       input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
       input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] }); rounds++;
     }
@@ -566,8 +585,8 @@ test("29b/92: foreground Knowledge is an exact-version delta with stale state no
   tools[0]!.execute({ address: "K1@v1" });
   const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: tag(1, 1),
     topics: [], reason: "The rule was restated.", text: "The project uses pnpm only", category: "constraint", scope: "project", supports: ["F1"] }, tag(1, 1)))[0]!;
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ text: "Keep pnpm", source: [`T${t.id}#E1`] }] });
+  seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "Package manager retained",
+    [{ entry: hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store).find(e => e.role === "user")!, text: "Keep pnpm" }]);
   const current = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!.revision.id;
   expect(current).toBe(changed.commit);
 

@@ -6,6 +6,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { host, notingFact, reply } from "./test-host.ts";
+import { legacyFacts, knowledgeBatch } from "../../support/seed.ts";
 import { TuiAltScreen, getKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
 
 // Package smoke supplies the installed entry. Node refuses native type stripping under node_modules;
@@ -109,14 +110,19 @@ try {
 }
 
 // 64c: an ingested entry starts a real pool Dreamer. Compaction remains separate from processing.
-const dreamer = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000}, { extension });
+const dreamer = host({ "noting.triggerTokens": 1_000_000 }, { extension });
 try {
   await dreamer.emit("session_start"); await dreamer.turn();
   const store = dreamer.memory.store;
-  const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "smoke" }, facts: [{ turnId: 1, category: "decision", actor: "user", text: "Remember the choice", source: ["T1#user"], createdAt: "smoke" }] });
-  assert.ok(facts.ok);
-  const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "smoke" }, operations: [{ op: "create", handle: "$1", author: "smoke", text: "Remember the choice ".repeat(2000), category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: [], reason: "initial", createdAt: "smoke" }] });
-  assert.ok(created.ok);
+  const source = store.sourcePath(1, "main", 1).find(entry => store.getSourceEntry(entry.id)?.role === "user")!;
+  const facts = legacyFacts(store, { kind: "manual", sessionId: 1, createdAt: "smoke" }, [{
+    sources: [{ entry: source, address: "T1#user" }], category: "decision", actor: "user",
+    text: "Remember the choice", createdAt: "smoke",
+  }]);
+  const created = knowledgeBatch(store, store.knowledgePath(1, "main", 1), [{
+    author: "smoke", text: "Remember the choice ".repeat(2000), category: "constraint", scope: "project",
+    supports: [facts.facts[0]!.id], topics: [], reason: "initial", createdAt: "smoke",
+  }], { kind: "manual", createdAt: "smoke" });
   const item = created.committed[0]!;
   const pool = `project:${store.getSession(1)!.projectId}`;
   dreamer.memory.setKnowledgeBudget("project", store.pendingPoolWeight(pool, store.knowledgePath(1, "main")) * 2);
@@ -149,7 +155,7 @@ try {
     .map(row => Number(row.revision_id)), [archive.id]);
   assert.deepEqual(store.pendingVersions(pool, store.knowledgePath(1, "main")), []);
   // Exact archive reads preserve the inherited direct support and parent provenance.
-  assert.ok(dreamer.memory.trace(`K${item.knowledgeId}@${archive.id}`).includes(`F${facts.facts[0]!.id}`));
+  assert.ok(dreamer.memory.trace(`K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, archive.id)}`).includes(`F${facts.facts[0]!.id}`));
   assert.ok(dreamer.notices.some(n => n.includes("compaction preparing")));
   assert.ok(!dreamer.notices.some(n => n.includes("compaction used")), "before returning a carrier is not persisted success");
   const entry = dreamer.compaction(compacted.compaction.summary, { details: compacted.compaction.details });

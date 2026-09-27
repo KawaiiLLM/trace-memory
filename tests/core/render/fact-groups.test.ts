@@ -1,7 +1,8 @@
 import { expect, test } from "vitest";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { budgetFacts, charge, renderFact, renderFactGroups } from "../../../src/core/render/index.ts";
-import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 const fact = (id: number, turnId: number, text = `claim ${id}`): Fact => ({ id, turnId, text,
   category: "observation", actor: "user", quote: null, source: [`T${turnId}#user`], createdAt: "recorded time" });
@@ -66,13 +67,18 @@ test("carry, compact and fresh Noter history share the one fact-group renderer",
     const s = m.store.createSession({ host: "fake", projectId, startedAt: early, firstReplyAt: early, enrollmentChoice: true });
     const a = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "early", assistantText: "early reply", startedAt: early });
     const b = m.store.appendTurn({ sessionId: s.id, parentTurnId: a.id, kind: "turn", userPrompt: "late", assistantText: "late reply", startedAt: late });
-    const write = m.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: late }, facts: [
-        { ...fact(1, b.id, "late fact"), createdAt: late },
-        { ...fact(2, a.id, "early fact"), createdAt: early },
-        { ...fact(3, a.id, "multi-source fact"), source: [`T${a.id}#user`, `T${b.id}#assistant`], createdAt: early },
-      ] });
-    if (!write.ok) throw new Error(write.problems.join("; "));
-    const expected = renderFactGroups(write.facts, f => m.trace(`F${f.id}`), m.store.factTurnTimes(write.facts)).join("\n");
+    const path = { sessionId: s.id, branch: "main", headTurnId: b.id };
+    const entries = hydrate(m.store.listSourceEntries(s.id), m.store);
+    const aUser = entries.find(e => e.turnId === a.id && e.role === "user")!;
+    const bUser = entries.find(e => e.turnId === b.id && e.role === "user")!;
+    const bAssistant = entries.find(e => e.turnId === b.id && e.role === "assistant")!;
+    const { facts } = legacyFacts(m.store, { kind: "noting", sessionId: s.id, branch: path.branch, createdAt: late }, [
+      { sources: [{ entry: bUser, address: `T${b.id}#user` }], text: "late fact", category: "observation", actor: "user", createdAt: late },
+      { sources: [{ entry: aUser, address: `T${a.id}#user` }], text: "early fact", category: "observation", actor: "user", createdAt: early },
+      { sources: [{ entry: aUser, address: `T${a.id}#user` },
+        { entry: bAssistant, address: `T${b.id}#assistant` }], text: "multi-source fact", category: "observation", actor: "user", createdAt: early },
+    ]);
+    const expected = renderFactGroups(facts, f => m.trace(`F${f.id}`), m.store.factTurnTimes(facts)).join("\n");
     expect([...expected.matchAll(/\[F(\d+)\]/g)].map(match => Number(match[1]))).toEqual([2, 3, 1]);
     // 29d retired the fifth consumer this list used to open with, the per-prompt `<noted>` delivery;
     // the remaining four still share the one renderer, which is what the ruling is about.

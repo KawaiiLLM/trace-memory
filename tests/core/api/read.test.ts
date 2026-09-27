@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { wholeTrace } from "../../trace-pages.ts";
+import { fact as seedFact, legacyFacts } from "../../support/seed.ts";
 import { readFileSync } from "node:fs";
 import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION , hydrate } from "../../source-fixture.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection, setSharedAllowance } from "../../knowledge-budget-fixture.ts";
@@ -31,11 +32,14 @@ function turn(sessionId: number, text = fixture.base, parentTurnId?: number) {
   return memory.store.appendTurn({ sessionId, userPrompt: text, assistantText: null, parentTurnId, kind: "turn", startedAt: time });
 }
 function noting(sessionId: number, turnId: number, text = fixture.base, branch = "main") {
-  const result = memory.store.commitNotingRun({ run: { sessionId, branch, kind: "noting", createdAt: time },
-    facts: [{ turnId, text, category: "decision", actor: "user", source: [`T${turnId}#user`], createdAt: time }],
-    entryIds: hydrate(memory.store.sourcePath(sessionId, branch, turnId), memory.store).map(e => e.id) });
-  if (!result.ok) throw new Error(result.problems.join("\n"));
-  return result;
+  const selected = memory.store.sourcePath(sessionId, branch, turnId);
+  const users = hydrate(memory.store.listSourceEntries(sessionId, turnId), memory.store).filter(entry => entry.role === "user");
+  expect(users).toHaveLength(1);
+  const user = users[0]!;
+  expect(selected.map(entry => entry.id)).toContain(user.id);
+  return legacyFacts(memory.store, { sessionId, branch, kind: "noting", createdAt: time },
+    [{ text, category: "decision", actor: "user", sources: [{ entry: user, address: `T${turnId}#E${user.entryOrdinal}` }], createdAt: time }],
+    selected.map(entry => entry.id));
 }
 function knowledge(sessionId: number, factId: number, category: "constraint" | "open" | "goal" | "understanding" | "reference" = "constraint",
   scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time, topics: string[] = [], historicalManual = false) {
@@ -72,12 +76,16 @@ const defaultWindows = () => {
 
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
   const { s, t } = populated();
-  turn(s.id, rawFixture[1].userPrompt, t.id);
+  const next = turn(s.id, rawFixture[1].userPrompt, t.id);
   const knowledge = `<knowledge>\nItems are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] 地形层和高度层一起读。\n  change supports: F1\n</knowledge>`;
   expect(memory.inject(s.id)).toBe(knowledge);
-  // 92 replaces only the Knowledge format; the historical fact and Raw golden stays byte-identical.
-  const episodic = golden("compact").slice(golden("compact").indexOf("\n\n<episodic>"));
-  expect(compacted(memory.compact(s.id, "main"))).toBe(knowledge + episodic);
+  // The exact bound source is already supplied as Raw, so the Fact is not duplicated.
+  const compact = memory.compact(s.id, "main");
+  if ("native" in compact) throw new Error(compact.reason);
+  expect(compact.supplied.factIds).toEqual([]);
+  expect(compact.supplied.entries.map(entry => entry.id)).toEqual(
+    memory.store.sourcePath(s.id, "main", next.id).map(entry => entry.id));
+  expect(compacted(compact)).toContain("地形层和高度层需要一起读。");
   expect(calls).toBe(0);
 });
 
@@ -169,6 +177,8 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
   // 17a: an omitted head resolves one path, never a union of sibling queues.
   expect(compacted(memory.compact(s.id))).not.toContain("abandoned raw");
   const n = noting(s.id, selected.id, fixture.interpretation);
+  // Both exact sources are covered while Raw is supplied; exclude Raw to exercise the independent Fact window.
+  Object.assign(memory.config.compaction, { rawTokens: 0, sharedAllowanceTokens: 0 });
   const whole = memory.compact(s.id, "main", selected.id);
   const full = compacted(whole);
   expect(full.indexOf("[F1]")).toBeLessThan(full.indexOf(`[F${n.facts[0]!.id}]`)); // chronological presentation
@@ -195,16 +205,20 @@ test("20c/92: pending Raw and historical facts fit their independent windows wit
   const text = compacted(result);
   // Every pending entry is present in its normal shared view, and both historical facts fit beside them.
   for (const entry of pending) expect(text).toContain(renderEntry(entry, memory.config.render).content);
-  expect(text).toContain(`[F${second.id}]`); expect(text).toContain("[F1]");
+  expect(text).not.toContain(`[F${second.id}]`); expect(text).not.toContain("[F1]"); // Raw fully covers their bound sources
   expect(text).not.toContain("compact-only");
   // Reading a snapshot is not extraction: no model call, no run, no progress, no claim.
   expect(calls).toBe(0);
   expect(memory.store.listRuns(s.id)).toHaveLength(runsBefore);
   expect(hydrate(memory.pendingEntries(s.id, "main", selected.id), memory.store).map(e => e.id)).toEqual(pending.map(e => e.id));
-  // A tight independent facts window keeps the newest, truncates F1 and receipts it outside
-  // the body. Neither fact borrows shared allowance.
-  const windows = charged(result);
-  Object.assign(memory.config.compaction, { factsTokens: Math.ceil(windows.facts * 0.8), sharedAllowanceTokens: 0 });
+  // Exclude Raw for this independent Fact-window measurement: source coverage is then absent.
+  Object.assign(memory.config.compaction, { rawTokens: 0, sharedAllowanceTokens: 0 });
+  const factWhole = memory.compact(s.id, "main", selected.id);
+  if ("native" in factWhole) throw new Error(factWhole.reason);
+  expect(factWhole.supplied.factIds).toEqual([second.id, 1]); // selection newest-first; rendering remains chronological
+  const windows = charged(factWhole);
+  expect(windows.facts).toBeGreaterThan(0);
+  Object.assign(memory.config.compaction, { factsTokens: Math.ceil(windows.facts * 0.8) });
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${second.id}]`); expect(limited).not.toContain("[F1]");
   expect(limited).toContain("omitted 1 older facts; expand: F1");
@@ -240,10 +254,10 @@ test("20c/23 scenario 10, rescaled by 73: one bounded view of every entry under 
   const own = pending.filter(entry => entry.turnId === next.id);
   const call = own.find(entry => entry.role === "assistant" && entry.calls.length)!;
   const resultEntry = own.find(entry => entry.role === "toolResult")!;
-  expect(text.indexOf(`[T${next.id}#E1@text] user:`)).toBeLessThan(text.indexOf(`[T${next.id}#E${call.entryOrdinal}@`));
+  expect(text.indexOf(`[T${next.id}#E1@user] user:`)).toBeLessThan(text.indexOf(`[T${next.id}#E${call.entryOrdinal}@`));
   // Tool identity and status remain, and so does what `C` and `R` can hold of the payload.
-  expect(text).toContain(`[T${next.id}#E${call.entryOrdinal}@${call.calls[0]!.callId}] Bash(command="SECRET_ARGUMENT")`);
-  expect(text).toContain(`[T${next.id}#E${resultEntry.entryOrdinal}@${resultEntry.calls[0]!.callId}] Bash success: `);
+  expect(text).toContain(`[T${next.id}#E${call.entryOrdinal}@assistant] Bash(command="SECRET_ARGUMENT")`);
+  expect(text).toContain(`[T${next.id}#E${resultEntry.entryOrdinal}@observation] Bash success: `);
   expect(text).toContain("SECRET_RESULT"); expect(text).not.toContain("x".repeat(4_000));
   // User text is excerpted, and the omission is marked in the one wording every view uses.
   expect(text).toContain("USER_HEAD"); expect(text).not.toContain(body);
@@ -264,9 +278,9 @@ test("20c/23 scenario 10, rescaled by 73: one bounded view of every entry under 
   defaultWindows();
   // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled
   // read without `full` (23b) is the same bounded view of the same entry, cut where the budgets bite.
-  expect(wholeTrace(memory, `T${next.id}#user`, { full: true })).toContain(body);
-  expect(memory.trace(`T${next.id}#user`)).toContain("USER_HEAD");
-  const full = wholeTrace(memory, `T${next.id}`, { tool: 1, full: true });
+  expect(wholeTrace(memory, `T${next.id}#E1`, { full: true })).toContain(body);
+  expect(memory.trace(`T${next.id}#E1`)).toContain("USER_HEAD");
+  const full = wholeTrace(memory, `T${next.id}`, { full: true });
   expect(full).toContain("SECRET_ARGUMENT");
   expect(full).toContain("SECRET_RESULT");
 });
@@ -362,7 +376,7 @@ test("73: when the bounded views miss the Raw window compact truncates to the ne
   expect(compacted(named)).not.toContain("raw ceiling");
   // Truncation is a receipt, not a summary: nothing was read differently, processed or erased.
   expect(hydrate(memory.pendingEntries(s.id, "main", parent), memory.store).map(e => e.id)).toEqual(pending);
-  expect(memory.trace(`T${parent}#user`)).toContain("entry 39");
+  expect(memory.trace(`T${parent}#E1@user`)).toContain("entry 39");
   expect(calls).toBe(0);
 });
 
@@ -378,15 +392,19 @@ test("64c/92: the independent facts window bounds history while Knowledge and Ra
   // Historical C processing is irrelevant to the now-independent facts window.
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store)).toHaveLength(0);
   // No pending Raw: facts fill their own window; the three windows stay inside the envelope.
+  Object.assign(memory.config.compaction, { rawTokens: 0, sharedAllowanceTokens: 0 });
   const roomy = memory.compact(s.id, "main", t.id);
   const spare = compacted(roomy);
-  expect("native" in roomy ? 0 : roomy.supplied.factIds.length).toBeLessThan(facts.length);
+  if ("native" in roomy) throw new Error(roomy.reason);
+  expect(roomy.supplied.factIds.length).toBeGreaterThan(0);
+  expect(roomy.supplied.factIds.length).toBeLessThan(facts.length);
   expect(spare).toContain("older facts; expand:");
   expect(charged(roomy).facts).toBeLessThanOrEqual(10_000);
   const windows = charged(roomy);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   // Add ten large pending Raw views, then give Raw its measured size and explicitly shrink the
   // facts window. Raw does not take capacity from facts.
+  memory.config.compaction.rawTokens = 10_000;
   for (let i = 0; i < 10; i++) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: `big${i}`, turnId: t.id,
     role: "assistant", text: "word ".repeat(1_940), raw: "", calls: [] });
   const pending = hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store);
@@ -417,14 +435,18 @@ test("25c 2026-09-09, rescaled by 73: pending membership is processing progress 
   const noted = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "done", turnId: t.id, role: "assistant", text: "PARTIAL_NOTED", raw: "", calls: [] });
   const open = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "open", turnId: t.id, role: "assistant", text: "PARTIAL_PENDING " + "word ".repeat(1_500), raw: "", calls: [] });
   // One Turn, two entries, one of them processed: progress is per entry, never a Turn watermark.
-  const run = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
-    facts: [{ turnId: t.id, text: "PARTIAL_FACT", category: "observation", actor: "user", source: [`T${t.id}#user`], createdAt: time }],
-    entryIds: [noted.id] });
-  expect(run.ok).toBe(true);
+  const run = legacyFacts(memory.store, { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
+    [{ text: "PARTIAL_FACT", category: "observation", actor: "agent", sources: [
+      { entry: noted, address: `T${t.id}#E${noted.entryOrdinal}` }], createdAt: time }], [noted.id]);
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
   const bounded = compacted(memory.compact(s.id, "main", t.id));
   expect(bounded).toContain("PARTIAL_PENDING");
-  expect(bounded).toContain("PARTIAL_FACT");
+  expect(bounded).not.toContain("PARTIAL_FACT"); // fully covered by the selected Raw source
+  Object.assign(memory.config.compaction, { rawTokens: 0, sharedAllowanceTokens: 0 });
+  const factOnly = memory.compact(s.id, "main", t.id);
+  expect(compacted(factOnly)).toContain("PARTIAL_FACT");
+  expect(charged(factOnly).facts).toBeGreaterThan(0);
+  defaultWindows();
   // 28a refill (b): the already-extracted entry is not pending, and it is not excluded on that
   // account either — the spare allowance supplies recent applicable already-extracted Raw beside the
   // pending views. Membership is what `pendingEntries` says, never presence in the block.
@@ -465,8 +487,8 @@ test("29d: a noting commit records its facts and leaves no delivery intent behin
 test("branch facts use run ownership independently of audit JSON", () => {
   const s = session(), t = turn(s.id);
   const first = noting(s.id, t.id, "noted", "main");
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "other", currentTurnId: t.id })[2]!.execute({
-    facts: [{ text: "manual", source: [`T${t.id}#E1`] }] });
+  const user = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store).find(entry => entry.role === "user")!;
+  seedFact(memory, { sessionId: s.id, branch: "other", headTurnId: t.id }, "Manual branch fact", [{ entry: user, text: "manual" }]);
   const manual = memory.store.listRuns(s.id).at(-1)!;
   memory.store.db.exec("UPDATE run_bodies SET response = 'not JSON'"); // 79: response lives in run_bodies
   expect(memory.store.listBranchFacts(s.id, "main").map(f => f.text)).toEqual(["noted", "manual"]); // facts belong to their turn, whichever branch wrote them
@@ -565,7 +587,8 @@ test("opaque cursors continue search snapshots and trace session, comma, revisio
   const last = memory.search("ignored", "all", { cursor });
   expect(last).toContain("[F2]"); expect(last).not.toContain("cursor="); expect(last).toContain("No hit does not mean absent");
   expect(() => memory.trace(`cursor=${cursor}`)).toThrow("unknown or expired cursor");
-  for (const address of [`S${s.id}`, "mapC", `F${f.id},K${e}`, `K${e}`, `F${f.id}..`]) {
+    expect(() => memory.trace(`F${f.id}..`)).toThrow(/invalid public trace address/);
+  for (const address of [`S${s.id}`, "mapC", `F${f.id},K${e}`, `K${e}`, `F${f.id},F2`]) {
     const full = memory.trace(address), chunks: string[] = [];
     let part = memory.trace(address, { cap: 1 });
     for (;;) {
@@ -611,10 +634,11 @@ test("project mark merges an undeclared own project, relabels facts and knowledg
 
 test("listing line caps still apply with an explicit large search token budget", () => {
   const s = session(), t = turn(s.id);
-  const result = memory.store.commitNotingRun({ run: { sessionId: s.id, kind: "noting", createdAt: time },
-    facts: Array.from({ length: 101 }, (_, i) => ({ turnId: t.id, text: `needle ${i}`, category: "observation" as const,
-      actor: "agent" as const, source: [`T${t.id}#assistant`], createdAt: time })) });
-  expect(result.ok).toBe(true);
+  const user = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store).find(entry => entry.role === "user")!;
+  const result = legacyFacts(memory.store, { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
+    Array.from({ length: 101 }, (_, i) => ({ text: `needle ${i}`, category: "observation" as const,
+      actor: "user" as const, sources: [{ entry: user, address: `T${t.id}#E${user.entryOrdinal}` }], createdAt: time })));
+  expect(result.facts).toHaveLength(101);
   const first = memory.search("needle", "all", { maxTokens: 8000 });
   expect(first.split("\n").filter((l) => l.startsWith("[F"))).toHaveLength(100);
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
@@ -763,11 +787,10 @@ test("21b 2026-09-08: labels match literally, never as JSON syntax, and empty to
 
 /** Facts of one Turn, without advancing Raw progress or creating C processing marks. */
 function pendingFacts(sessionId: number, turnId: number, texts: string[], branch = "main") {
-  const result = memory.store.commitNotingRun({ run: { sessionId, branch, kind: "noting", createdAt: time },
-    facts: texts.map(text => ({ turnId, text, category: "observation" as const, actor: "user" as const, source: [`T${turnId}#user`], createdAt: time })),
-    entryIds: [] });
-  if (!result.ok) throw new Error(result.problems.join("\n"));
-  return result.facts;
+  const user = hydrate(memory.store.listSourceEntries(sessionId, turnId), memory.store).find(entry => entry.role === "user")!;
+  return legacyFacts(memory.store, { sessionId, branch, kind: "noting", createdAt: time },
+    texts.map(text => ({ text, category: "observation" as const, actor: "user" as const,
+      sources: [{ entry: user, address: `T${turnId}#E${user.entryOrdinal}` }], createdAt: time })), []).facts;
 }
 const entry = (sessionId: number, turnId: number, nativeId: string, text: string) =>
   memory.appendEntry({ sessionId, nativeLineage: "x", nativeId, turnId, role: "assistant", text, raw: "", calls: [] });

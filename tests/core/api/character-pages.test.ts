@@ -12,7 +12,7 @@ function raw(text: string) {
   const projectId = memory.store.createProject({ name: `character-pages-${++serial}`, declaredBy: "marker" }).id;
   const sessionId = memory.store.createSession({ host: "fake", projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true }).id;
   const turn = memory.store.appendTurn({ sessionId, kind: "turn", userPrompt: text, startedAt: time });
-  return { sessionId, turn, expected: `[T${turn.id}#E1@text] user: ${text}` };
+  return { sessionId, turn, expected: `[T${turn.id}#E1@user] user: ${text}` };
 }
 
 function drain(first: string, options: Parameters<typeof memory.trace>[1]) {

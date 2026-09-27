@@ -23,7 +23,7 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker h
       round++;
       expect(memory.store.listSessionFacts(session.id)).toEqual([]);
       expect(memory.store.currentKnowledge(path)).toEqual([]);
-      if (round === 1) return call("note-held", "note", { facts: [{ text: "User set a durable rule", source: ["T1#E1"] }] });
+      if (round === 1) return call("note-held", "note", { facts: [{ title: "Durable rule", sources: [{ address: "T1#E1", text: "User set a durable rule" }] }] });
       if (round === 2) return call("memory-held", "memory", { operations: [{ op: "create", text: "Follow the durable rule", category: "constraint",
         scope: "session", topics: [], supports: ["$1"], reason: "User requirement" }], skipped: [] });
       return ending === "success" ? say("Done") : broken();
@@ -64,7 +64,7 @@ for (const obsolete of [false, true]) test(`04: real Pi fork shared schemas pres
     const session = memory.store.createSession({ projectId: project.id, host: "pi:fork", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "用 pnpm，不要 npm", assistantText: "Parent reply", startedAt: "now" });
     const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-    const fact = (text: string) => ({ text, source: ["T1#E1"] });
+    const fact = (text: string) => ({ title: text, sources: [{ address: "T1#E1", text }] });
     const knowledge = (text: string, supports: string[]) => ({ op: "create", text, category: "constraint", scope: "session", topics: [], supports, reason: "user rule" });
     let round = 0;
     f.script(() => {
@@ -113,7 +113,7 @@ for (const kind of ["note", "memory"] as const)
         const session = memory.store.createSession({ projectId: project.id, host: "pi:envelope", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
         const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", assistantText: "Explanation", startedAt: "now" });
         const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-        const fact = (text: string) => ({ text, source: ["T1#E1"] });
+        const fact = (text: string) => ({ title: text, sources: [{ address: "T1#E1", text }] });
         const value = (text: string) => kind === "note" ? fact(text) : { op: "create", text, category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "rule" };
         const field = kind === "note" ? "facts" : "operations", prefix = kind === "note" ? "$" : "M";
         const base = kind === "note" ? {} : { skipped: [] };
@@ -141,7 +141,7 @@ for (const kind of ["note", "memory"] as const)
         expect(texts.sort()).toEqual(corrected ? ["appended", "corrected", "sibling"] : []);
         if (!("runId" in result)) throw new Error("missing run");
         const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
-        expect(audit.toolCalls.filter((item: any) => item.input?.[field]?.[0]?.text === "refused")).toHaveLength(1);
+        expect(audit.toolCalls.filter((item: any) => item.input?.[field]?.[0]?.[kind === "note" ? "title" : "text"] === "refused")).toHaveLength(1);
         if (corrected) expect(audit.toolCalls.at(-1).result).toContain(`held: ${prefix}3`);
       } finally { memory.close(); await f.dispose(); }
     });
@@ -162,10 +162,12 @@ for (const [kind, corrected] of [["note", false], ["note", true], ["trace", fals
     let round = 0;
     f.script(() => {
       round++;
-      if (round === 1) return call("valid", "note", { facts: [{ text: "original", source: ["T1#E1"] }, { text: "sibling", source: ["T1#E2"] }] });
-      if (round === 2) return call("invalid", kind, kind === "note" ? { facts: [{ slot: "$1", source: ["T1#E1"] }] } : {});
+      if (round === 1) return call("valid", "note", { facts: [
+        { title: "original", sources: [{ address: "T1#E1", text: "original" }] },
+        { title: "sibling", sources: [{ address: "T1#E2", text: "sibling" }] }] });
+      if (round === 2) return call("invalid", kind, kind === "note" ? { facts: [{ slot: "$1", title: "invalid" }] } : {});
       if (round === 3) return call("memory-empty", "memory", { operations: [], skipped: [] });
-      if (round === 4 && corrected) return call("corrected", "note", { facts: [{ slot: "$1", text: "corrected", source: ["T1#E1"] }] });
+      if (round === 4 && corrected) return call("corrected", "note", { facts: [{ slot: "$1", title: "corrected", sources: [{ address: "T1#E1", text: "corrected" }] }] });
       return say("Done");
     });
     const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: turn.id, mode: "subagent" });
@@ -174,6 +176,6 @@ for (const [kind, corrected] of [["note", false], ["note", true], ["trace", fals
     expect(facts.map(fact => fact.text).sort()).toEqual(corrected ? ["corrected", "sibling"] : kind === "trace" ? ["original", "sibling"] : []);
     if (!("runId" in result)) throw new Error("missing run");
     const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
-    expect(audit.toolCalls.filter((item: any) => item.input?.facts?.[0]?.slot === "$1" && !item.input.facts[0].text)).toHaveLength(kind === "note" ? 1 : 0);
+    expect(audit.toolCalls.filter((item: any) => item.input?.facts?.[0]?.slot === "$1" && !item.input.facts[0].sources)).toHaveLength(kind === "note" ? 1 : 0);
   } finally { memory.close(); await f.dispose(); }
 });

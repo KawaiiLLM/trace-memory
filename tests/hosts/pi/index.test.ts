@@ -3,7 +3,7 @@ import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { host as createHost, reply, notingFact, noteHeld, usage, type Reply } from "./test-host.ts";
-import { compacted } from "../../source-fixture.ts";
+import { compacted, seedSourceEntry } from "../../source-fixture.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 
@@ -41,9 +41,15 @@ test("92 Pi registered tool rejects old fields and writes entry roles through th
   const note = h.tools.get("note")!;
   await expect(note.execute("bad", { facts: [{ text: "invalid", source: [source], actor: "user" }] }, undefined, undefined, h.ctx))
     .rejects.toThrow(/unexpected field/);
-  const accepted = await note.execute("good", { facts: [{ text: "User chose the newer policy", source: [source] }] }, undefined, undefined, h.ctx);
+  await expect(note.execute("old", { facts: [{ text: "old shape", source: [source] }] }, undefined, undefined, h.ctx))
+    .rejects.toThrow(/title|unexpected field/);
+  const accepted = await note.execute("good", { facts: [{ title: "Newer policy", sources: [{ address: source, text: "User chose the newer policy" }] }] }, undefined, undefined, h.ctx);
   const result = JSON.parse(accepted.content[0].text);
   expect(h.memory.store.getFact(result.factIds[0])!.roles).toEqual([{ role: "user" }]);
+  expect(h.memory.store.getFact(result.factIds[0])!.title).toBe("Newer policy");
+  const trace = h.tools.get("trace")!;
+  await expect(trace.execute("tool-removed", { address: source, tool: 0 }, undefined, undefined, h.ctx))
+    .rejects.toThrow(/unexpected parameter|unexpected field/);
   const write = h.tools.get("memory")!;
   const created = await write.execute("create", { operations: [{ op: "create", text: "Keep the chosen policy", category: "constraint", scope: "session",
     topics: [], supports: [`F${result.factIds[0]}`], reason: "policy" }], skipped: [] }, undefined, undefined, h.ctx);
@@ -54,6 +60,19 @@ test("92 Pi registered tool rejects old fields and writes entry roles through th
   // The registered adapter never traces or registers this injected version before archive.
   const archived = await write.execute("archive", { operations: [{ op: "archive", id: tag, supports: [`F${result.factIds[0]}`], reason: "replaced" }], skipped: [] }, undefined, undefined, h.ctx);
   expect(JSON.parse(archived.content[0].text).committed[0].version).toBe(`K${identity.knowledgeId}@v2`);
+});
+
+test("legacy source-only fact without an entry binding fails as damaged data", async () => {
+  const h = host();
+  const project = h.memory.store.createProject({ name: "damaged-entry", declaredBy: "mark" });
+  const session = h.memory.store.createSession({ host: "fixture", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+  const turn = h.memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: "now", userPrompt: "rule" });
+  const result = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, createdAt: "now" }, facts: [
+    { turnId: turn.id, category: "decision", actor: "user", text: "rule", source: [`T${turn.id}#user`], createdAt: "now" },
+  ] });
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.problems.join(" ")).toMatch(/source|entry|binding/);
+  expect(h.memory.store.listSessionFacts(session.id)).toEqual([]);
 });
 
 test("smoke: the default extension loads and registers the Pi hooks, tools, and read-only command", async () => {
@@ -111,8 +130,10 @@ test("first prompt injects only global knowledge; project knowledge requires an 
   const p = h.memory.store.createProject({ name: "project-name", declaredBy: "mark" });
   const s = h.memory.store.createSession({ enrollmentChoice: true, host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const t = h.memory.store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
+  seedSourceEntry(h.memory, t.id, "user", "规则");
+  const userEntry = h.memory.store.listSourceEntries(s.id).at(-1)!;
   const recorded = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, createdAt: "now" }, facts: [
-    { turnId: t.id, category: "observation", actor: "user", text: "规则", source: [`T${t.id}#user`], createdAt: "now" },
+    { turnId: t.id, entryIds: [userEntry.id], category: "observation", actor: "user", text: "规则", source: [`T${t.id}#user`], createdAt: "now" },
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   const seeded = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, createdAt: "now" }, operations: [
@@ -225,7 +246,9 @@ test("29d: the knowledge block is offered until the selected context carries it,
   const store = h.memory.store, p = store.createProject({ name: "project-name", declaredBy: "mark" });
   const seed = store.createSession({ enrollmentChoice: true, host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const st = store.appendTurn({ sessionId: seed.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
-  const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: seed.id, createdAt: "now" }, facts: [{ turnId: st.id, category: "decision", actor: "user", text: "规则", source: [`T${st.id}#user`], createdAt: "now" }] });
+  seedSourceEntry(h.memory, st.id, "user", "规则");
+  const seedEntry = store.listSourceEntries(seed.id).at(-1)!;
+  const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: seed.id, createdAt: "now" }, facts: [{ turnId: st.id, entryIds: [seedEntry.id], category: "decision", actor: "user", text: "规则", source: [`T${st.id}#user`], createdAt: "now" }] });
   if (!noted.ok) throw new Error("seed");
   store.commitConsolidationRun({ run: { kind: "manual", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "全局规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" }] });
   // A prompt whose message Pi never persisted leaves no baseline, so the next prompt offers it again.
@@ -334,7 +357,7 @@ test("knowledge is injected once per visible baseline, only once something exist
   const p = h.memory.store.getSession(1)!.projectId;
   const t = h.memory.store.getTurn(1)!;
   const recorded = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" },
-    facts: [{ turnId: t.id, category: "decision", actor: "user", text: "用 pnpm", source: ["T1#user"], createdAt: "2026-09-06T00:00:00Z" }] });
+    facts: [{ turnId: t.id, entryIds: [h.memory.store.sourcePath(1, "main", t.id).find(e => e.turnId === t.id && h.memory.store.getSourceEntry(e.id)?.role === "user")!.id], category: "decision", actor: "user", text: "用 pnpm", source: ["T1#user"], createdAt: "2026-09-06T00:00:00Z" }] });
   if (!recorded.ok) throw new Error("setup");
   h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" }, operations: [
     { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
@@ -430,8 +453,10 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   const target = store.createProject({ name: "named", declaredBy: "mark" });
   const peer = store.createSession({ enrollmentChoice: true, host: "peer", projectId: target.id, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", startedAt: "now", userPrompt: "用 pnpm，不要 npm" });
+  seedSourceEntry(h.memory, turn.id, "user", "用 pnpm，不要 npm");
+  const peerEntry = store.listSourceEntries(peer.id).at(-1)!;
   const recorded = store.commitNotingRun({ run: { kind: "noting", sessionId: peer.id, createdAt: "now" }, facts: [
-    { turnId: turn.id, category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [`T${turn.id}#user`], createdAt: "now" },
+    { turnId: turn.id, entryIds: [peerEntry.id], category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [`T${turn.id}#user`], createdAt: "now" },
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   seed(peer.id, recorded.facts[0]!.id, ["project"]);
@@ -589,19 +614,19 @@ test("spec overflow policy: a subagent noting fetches cut evidence through the t
   const h = host({ "noting.triggerTokens": 1000, "noting.forkModeDefault": false, notingModel: "fake/noter" });
   await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "Bash", input: { command: "pnpm test" }, content: [{ type: "text", text: "x".repeat(5000) + "\n1 passed" }], isError: false });
-  const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1", tool: 1, full: true } };
+  const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1#E1..E5", full: true } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.answer("word ".repeat(1000)); await h.emit("agent_settled"); await h.drain();
   expect(h.conversations).toHaveLength(3);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
   expect(result.toolCallId).toBe("call-1"); expect(result.isError).toBe(false);
-  expect(result.content[0]!.text).toBe(h.memory.trace("T1", { tool: 1, full: true }));
+  expect(result.content[0]!.text).toBe(h.memory.trace("T1#E1..E5", { full: true }));
   expect(result.content[0]!.text).toContain("x".repeat(5000));
   expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.response!).fetched).toEqual([{ address: "T1", input: { address: "T1", tool: 1, full: true }, content: h.memory.trace("T1", { tool: 1, full: true }) }]);
+  expect(JSON.parse(run.response!).fetched).toEqual([{ address: "T1#E1..E5", input: { address: "T1#E1..E5", full: true }, content: h.memory.trace("T1#E1..E5", { full: true }) }]);
   expect(JSON.parse(run.request!)).toEqual(h.requests[2]);
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
@@ -629,7 +654,7 @@ test("main facade tools bind each call to the current turn, commit immediately a
     await h.emit("tool_result", { toolCallId: name === "note" ? "n1" : undefined, toolName: name, input, ...result, isError: false });
     return result.content[0].text as string;
   };
-  const note = { facts: [{ text: "Use pnpm", source: ["T1#E1"] }] };
+  const note = { facts: [{ title: "Package choice", sources: [{ address: "T1#E1", text: "Use pnpm" }] }] };
   expect(await call("note", note)).toContain("ok: F1");
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
   expect(h.memory.store.listRuns(1)[0]).toMatchObject({ kind: "manual", branch: "main", rangeFrom: "S1/T1", request: JSON.stringify(note) });
@@ -682,7 +707,7 @@ test("rejected manual writes throw for Pi to record one failed raw tool call", a
 test("main trace can fetch historical rejected tool evidence without becoming a failed call", async () => {
   const h = host(); await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "read", input: {}, content: [{ type: "text", text: "rejected: previous operation" }], isError: true });
-  const input = { address: "T1", tool: 1, full: true };
+  const input = { address: "T1", full: true };
   const result = await h.tools.get("trace").execute("read-old", input, undefined, undefined, h.ctx);
   expect(result.content[0].text).toContain("rejected: previous operation");
   await h.emit("tool_result", { toolName: "trace", input, ...result, isError: false });
@@ -746,7 +771,7 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   const note = (text: string) => {
     const current = state(), tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: current.head, branch: current.branch,
       triggerEntryId: target().triggerEntryId });
-    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ text, source: [`T${current.head}#E1`] }] }));
+    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ title: text, sources: [{ address: `T${current.head}#E1`, text }] }] }));
     expect(receipt.results[0]).toMatch(/^ok:/);
     return receipt.factIds[0] as number;
   };

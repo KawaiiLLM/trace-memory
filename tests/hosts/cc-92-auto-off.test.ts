@@ -29,7 +29,7 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     const entries = memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id);
     const tools = memory.tools({ kind: "manual", ...target, currentTurnId: turn.id });
-    const factResult = tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Three rules have distinct purposes", source: [`T${turn.id}#E1`] }] });
+    const factResult = tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Three rules", sources: [{ address: `T${turn.id}#E1`, text: "Three rules have distinct purposes" }] }] });
     expect(factResult).not.toContain("rejected:");
     const factReceipt = JSON.parse(factResult);
     expect(factReceipt.factIds).toHaveLength(1);

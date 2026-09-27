@@ -1055,7 +1055,7 @@ test("scheduler reserves independent N/D slots and failed worker completion does
   const seed = append(memory, session.id, "seed", "A pending raw source.");
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: seed.turn.id });
   expect(manual.find(value => value.name === "note")!.execute({ facts: [{
-    text: "A separate pending fact.", source: [`T${seed.turn.id}#E1`] }] })).toContain("ok: F1");
+    title: "Pending fact", sources: [{ address: `T${seed.turn.id}#E1`, text: "A separate pending fact." }] }] })).toContain("ok: F1");
   expect(manual.find(value => value.name === "memory")!.execute({ operations: [{ op: "create", text: "Pending maintenance", category: "constraint",
     scope: "session", topics: [], supports: ["F1"], reason: "Seed D pool" }], skipped: [] })).not.toContain("rejected:");
   const diagnostics: string[] = [], notingAdmission = vi.spyOn(memory, "noting"), dreamingAdmission = vi.spyOn(memory, "dream");
@@ -1107,7 +1107,7 @@ test("manual catchup drains bounded Noting but leaves below-threshold facts and 
     expect(input.kind).toBe("noting");
     admissions.push({ kind: input.kind, model: input.model, thinking: input.subagentThinkingLevel });
     if (input.kind === "noting") {
-      const facts = input.material.entries.map((entry, index) => ({ text: `Observed catchup item ${entry.id}.`, source: [entry.view.match(/\[T\d+#E\d+/)![0].slice(1)] }));
+      const facts = input.material.entries.map((entry, index) => ({ title: `Catchup item ${entry.id}`, sources: [{ address: entry.view.match(/\[T\d+#E\d+/)![0].slice(1), text: `Observed catchup item ${entry.id}.` }] }));
       const note = input.tools.find(tool => tool.name === "note")!, batch = { facts };
       note.execute(batch);
       input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
@@ -1151,7 +1151,7 @@ test("86: a bounced N retries the frozen entry before checking other phases afte
     expect(input.kind).toBe("noting");
     const note = input.tools.find(tool => tool.name === "note")!;
     if (++attempts === 1) {
-      expect(note.execute({ facts: [{ text: "Rejected.", source: ["T99999#E1"] }] })).toContain("rejected:");
+      expect(note.execute({ facts: [{ title: "Rejected source", sources: [{ address: "T99999#E1", text: "Rejected." }] }] })).toContain("rejected:");
     } else {
       expect(attempts).toBe(2);
       expect(note.execute({ facts: [] })).toContain('"held"');
@@ -1188,7 +1188,7 @@ test("86: rejected uncorrected N submissions bounce and retry without C/D checks
     attempts++;
     if (attempts > 3) throw new Error("N retried beyond automatic off");
     const result = input.tools.find(tool => tool.name === "note")!.execute({ facts: [{
-      text: "Rejected source.", source: ["T99999#E1"] }] });
+      title: "Rejected source", sources: [{ address: "T99999#E1", text: "Rejected source." }] }] });
     expect(result).toContain("rejected:");
     input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     // The worker ends without correcting this rejected tool call.
@@ -1224,7 +1224,7 @@ test("92: catchup retries failed N without publishing held facts or knowledge tw
     expect(memory.store.listSessionFacts(input.sessionId)).toEqual([]);
     expect(memory.store.currentKnowledge()).toEqual([]);
     const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
-    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Durable evidence", source: [source] }] })).toContain("held");
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Durable evidence", sources: [{ address: source, text: "Durable evidence" }] }] })).toContain("held");
     expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text: "Durable reference", category: "reference",
       scope: "session", topics: [], supports: ["$1"], reason: "Supported" }], skipped: [] })).toContain("held");
     return { outcome: attempts === 1 ? "failure" : "success", output: "terminal", audit: { available: false, reason: "test" } };
@@ -1278,7 +1278,7 @@ test("92: stop discards held N output; restart processes the same pending Raw at
     const input = raw as NotingAgentInput;
     expect(input.kind).toBe("noting");
     const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
-    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Held until terminal success", source: [source] }] })).toContain('"held"');
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Held fact", sources: [{ address: source, text: "Held until terminal success" }] }] })).toContain('"held"');
     input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
     if (++attempts === 1) {
       noted();

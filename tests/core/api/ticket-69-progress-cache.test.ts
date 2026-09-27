@@ -23,7 +23,7 @@ function seeded() {
   const turnId = store.appendTurn({ sessionId, kind: "turn", userPrompt: "first", assistantText: "answer", startedAt: time }).id;
   const entry = store.appendSourceEntry({ sessionId, turnId, nativeLineage: "n", nativeId: "u1", role: "user", text: "hi", raw: "hi", calls: [] });
   memory.selectEntries(sessionId, "main", [entry.id]);
-  return { memory, store, sessionId, turnId };
+  return { memory, store, sessionId, turnId, entryId: entry.id };
 }
 
 test("ticket 69: a cached refresh issues no listBranchFacts or currentKnowledge query", () => {
@@ -53,13 +53,13 @@ test("ticket 69: entries always stays live across a cached refresh", () => {
 });
 
 test("ticket 69: the cache invalidates on a commit made through a second Store connection to the same file", () => {
-  const { memory, sessionId, turnId } = seeded();
+  const { memory, sessionId, turnId, entryId } = seeded();
   const observer = TraceMemory(dbPath, async () => ({ outcome: "failure" as const, output: "no model" }));
   try {
     const before = memory.progress(sessionId, "main", turnId);
     expect(before.facts).toBe(0);
     const committed = observer.store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time },
-      facts: [{ turnId, category: "observation", actor: "user", text: "seen via a second connection", source: ["T" + turnId + "#user"], createdAt: time }] });
+      facts: [{ turnId, category: "observation", actor: "user", text: "seen via a second connection", source: ["T" + turnId + "#user"], entryIds: [entryId], createdAt: time }] });
     if (!committed.ok) throw new Error(committed.problems.join("; "));
     const after = memory.progress(sessionId, "main", turnId);
     expect(after.facts).toBe(1);
@@ -69,11 +69,11 @@ test("ticket 69: the cache invalidates on a commit made through a second Store c
 });
 
 test("ticket 69: the cache invalidates on N knowledge publication and D settlement through another connection", () => {
-  const { memory, sessionId, turnId } = seeded();
+  const { memory, sessionId, turnId, entryId } = seeded();
   const store = new Store(dbPath);
   try {
     const noted = store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time },
-      facts: [{ turnId, category: "observation", actor: "user", text: "fact one", source: ["T" + turnId + "#user"], createdAt: time }] });
+      facts: [{ turnId, category: "observation", actor: "user", text: "fact one", source: ["T" + turnId + "#user"], entryIds: [entryId], createdAt: time }] });
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const primed = memory.progress(sessionId, "main", turnId);
     expect(primed).toMatchObject({ facts: 1, knowledge: 0 });

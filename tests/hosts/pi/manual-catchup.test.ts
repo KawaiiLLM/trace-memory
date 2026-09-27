@@ -38,8 +38,8 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     await h.emit("session_start"); // import only; no automatic trigger (17a/17b)
     const head = h.memory.store.listTurns(1).at(-1)!.id;
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { text: "Pre-existing A", source: ["T1#E1"] },
-      { text: "Pre-existing B", source: ["T1#E1"] },
+      { title: "Pre-existing A", sources: [{ address: "T1#E1", text: "Pre-existing A" }] },
+      { title: "Pre-existing B", sources: [{ address: "T1#E1", text: "Pre-existing B" }] },
     ] });
     h.provider(async c => notingFact(c));
     await command(h, "catchup");
@@ -54,7 +54,7 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     // A later ordinary Turn and a later manual fact must stay outside this already-completed target.
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { text: "Later, unrelated", source: ["T1#E1"] } ] });
+      { title: "Later unrelated", sources: [{ address: "T1#E1", text: "Later, unrelated" }] } ] });
     expect(h.requests.length).toBe(requestsBefore); // nothing auto-triggered (both are far below threshold)
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
     expect(h.memory.store.listSessionFacts(1).some(f => f.text === "Later, unrelated")).toBe(true);
@@ -96,8 +96,8 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
   try {
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { text: "Needs consolidation A", source: ["T1#E1"] },
-      { text: "Needs consolidation B", source: ["T1#E1"] },
+      { title: "Consolidation A", sources: [{ address: "T1#E1", text: "Needs consolidation A" }] },
+      { title: "Consolidation B", sources: [{ address: "T1#E1", text: "Needs consolidation B" }] },
     ] });
     const release = hold(h);
     h.persist(reply("word ".repeat(15000))); await h.emit("agent_end"); await h.drain();
@@ -124,7 +124,7 @@ test("18b 2026-09-08: a foreign claim on the target shows Waiting without steali
   try {
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { text: "Foreign claim target", source: ["T1#E1"] } ] });
+      { title: "Foreign claim", sources: [{ address: "T1#E1", text: "Foreign claim target" }] } ] });
     const other = TraceMemory(h.dbPath, async () => { throw new Error("no model expected"); });
     try {
       const foreign = other.store.acquireClaim({ sessionId: 1, branch: "main", headTurnId: 1 }, "noting", "foreign-executor")!;
@@ -226,7 +226,7 @@ test("18b 2026-09-08: switching tree paths during catchup ends it; it is never r
   try {
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { text: "Old path fact", source: ["T1#E1"] } ] });
+      { title: "Old path", sources: [{ address: "T1#E1", text: "Old path fact" }] } ] });
     h.provider(async (_c, signal) => new Promise<Reply>(resolve => signal!.addEventListener("abort", () => resolve({ ...reply(""), stopReason: "aborted" }), { once: true })));
     await command(h, "catchup");
     await h.drain();

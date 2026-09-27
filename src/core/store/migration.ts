@@ -45,6 +45,14 @@ export function migrateFactAndKnowledge92(db: DatabaseSync): void {
     db.exec("ALTER TABLE facts ADD COLUMN source_roles TEXT");
 }
 
+export function migrateFactSegments93(db: DatabaseSync): void {
+  if (!db.isTransaction) throw new Error("93 migration requires Store's schema transaction");
+  if (!db.prepare("PRAGMA table_info(facts)").all().some(row => row.name === "title"))
+    db.exec("ALTER TABLE facts ADD COLUMN title TEXT");
+  if (!db.prepare("PRAGMA table_info(fact_sources)").all().some(row => row.name === "segment_text"))
+    db.exec("ALTER TABLE fact_sources ADD COLUMN segment_text TEXT");
+}
+
 const RETIRED_64D_TABLES = [
   "settled_knowledge_events", "processed_knowledge_versions", "dreaming_completions",
   "dreaming_range_versions", "knowledge_weights", "knowledge_marks",

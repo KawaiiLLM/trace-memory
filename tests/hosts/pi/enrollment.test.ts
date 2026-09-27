@@ -6,11 +6,18 @@ import { join } from "node:path";
 import { host, reply, notingFact } from "./test-host.ts";
 import { TraceMemory, DEFAULT_CONFIG } from "../../../src/core/api/index.ts";
 import { compacted , hydrate } from "../../source-fixture.ts";
+import { fact } from "../../support/seed.ts";
 const hosts: ReturnType<typeof host>[] = [];
 const setup = (config: Record<string, unknown> = {}) => { const h = host(config); hosts.push(h); return h; };
 afterEach(async () => { for (const h of hosts.splice(0)) await h.dispose(); });
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
 const state = (h: ReturnType<typeof host>) => h.entries.filter(e => e.customType === "trace-memory").at(-1).data;
+const seedFact = (h: ReturnType<typeof host>, text: string) => {
+  const store = h.memory.store;
+  const user = store.sourcePath(1, "main", 1).find(entry => store.getSourceEntry(entry.id)?.role === "user")!;
+  return fact(h.memory, store.knowledgePath(1, "main", 1), text,
+    [{ entry: store.getSourceEntry(user.id)!, text }]);
+};
 
 test.each(["before", "after", "equal", "missing", "malformed"])("18a 2026-09-08: native header default (%s), never first-seen time", async kind => {
   const h = setup();
@@ -141,7 +148,7 @@ test.each([true, false])("34c: automatic material ignores the Noter mode (%s); d
   // This enrollment/delivery case uses the real immediate manual bindings for committed setup.
   // Live N publication is exercised separately by the host atomic and scheduler tests.
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Shared rule", source: ["T1#E1"] }] })).toContain("ok:");
+  expect(seedFact(h, "Shared rule").text).toBe("Shared rule");
   expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission",
     text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
   expect((await h.prompt("no receipts"))?.message?.content ?? "").not.toContain("<noted>");
@@ -269,7 +276,7 @@ test("18a 2026-09-08: concurrent first initialization and restart keep one atomi
 test("18a 2026-09-08: another process disables before the transaction; prior success survives", async () => {
   const h = setup(); await h.turn();
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Already committed", source: ["T1#E1"] }] })).toContain("ok: F1");
+  expect(seedFact(h, "Already committed").id).toBe(1);
   const before = h.memory.store.listRuns(1);
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
     import { TraceMemory } from ${JSON.stringify(new URL("../../../src/core/api/index.ts", import.meta.url).href)};
@@ -291,7 +298,7 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
 test.each([true, false])("92: disable during D rejects late %s mutation and preserves the pending revision", async submit => {
   const h = setup({ "dreaming.triggerTokens": 1 }); await h.turn();
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "Pending knowledge", source: ["T1#E1"] }] })).toContain("ok: F1");
+  expect(seedFact(h, "Pending knowledge").id).toBe(1);
   expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: "Retain rule", category: "constraint",
     scope: "session", topics: [], supports: ["F1"], reason: "Seed pending D revision" }], skipped: [] })).not.toContain("rejected:");
   const original = h.memory.store.listKnowledgeRevisions()[0]!;

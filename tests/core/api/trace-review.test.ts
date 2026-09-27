@@ -14,14 +14,15 @@ const setup = () => {
 };
 const profile = { entryTokens: 10_000, toolInputTokens: 300, toolResultTokens: 300 };
 
-test("review 80e: a stored compaction summary is readable through trace, full and budgeted, and by its #assistant address", () => {
+test("review 80e: a stored compaction summary is readable without fabricating an entry", () => {
   const { m, s } = setup();
   try {
     const t = m.store.appendTurn({ sessionId: s.id, kind: "compaction", assistantText: "PERSISTED COMPACTION SUMMARY", startedAt: "t" });
     expect(hydrate(m.store.listSourceEntries(s.id, t.id), m.store)).toEqual([]); // summaries are deliberately not Raw source entries
     expect(m.trace(`T${t.id}`, { full: true })).toBe(`[T${t.id}] compaction summary (not Raw evidence): PERSISTED COMPACTION SUMMARY`);
     expect(m.trace(`T${t.id}`)).toContain("PERSISTED COMPACTION SUMMARY");
-    expect(m.trace(`T${t.id}#assistant`, { full: true })).toBe(`[T${t.id}] compaction summary (not Raw evidence): PERSISTED COMPACTION SUMMARY`);
+    // 93 retired Turn block selectors; summaries have no entry address.
+    expect(() => m.trace(`T${t.id}#assistant`, { full: true })).toThrow(/invalid public trace address/);
     expect(() => m.trace(`T${t.id}#E1`)).toThrow(/does not exist/);
     expect(m.trace(`T${t.id}`)).not.toContain(`#assistant]`);
     // Display only: neither an E source nor a citable-looking legacy label is fabricated.
@@ -58,13 +59,12 @@ test("review 80e: a root-array JSON payload is cut on escape-safe units, never i
     const text = renderEntry(entry, { entryTokens: 10_000, toolInputTokens: C, toolResultTokens: C }).content;
     const marker = text.indexOf("[...");
     expect(marker).toBeGreaterThan(0);
-    const head = text.slice("[T1#E1] tool(".length, marker);
+    const head = text.slice(text.indexOf("tool(") + "tool(".length, marker);
     expect((/\\+$/.exec(head)?.[0].length ?? 0) % 2).toBe(0); // a head never ends on a lone backslash
     expect(head.startsWith("[\"xxa\\nb")).toBe(true); // the compact JSON text, not the raw payload re-quoted
   }
   const withInput = (value: string) => ({ ...entry, calls: [{ ...entry.calls[0]!, input: value }] });
   // A root string is a quoted value; a root number is its JSON text; text that is not JSON stays raw.
-  expect(renderEntry(withInput(JSON.stringify("plain")), profile).content).toBe("[T1#E1] tool(\"plain\")");
-  expect(renderEntry(withInput("42"), profile).content).toBe("[T1#E1] tool(42)");
-  expect(renderEntry(withInput("not json"), profile).content).toBe("[T1#E1] tool(not json)");
+  for (const [input, expected] of [[JSON.stringify("plain"), 'tool("plain")'], ["42", "tool(42)"], ["not json", "tool(not json)"]])
+    expect(renderEntry(withInput(input!), profile).content).toContain(expected);
 });

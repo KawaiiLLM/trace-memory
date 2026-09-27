@@ -37,7 +37,7 @@ export const toolResults = (body: Body) => (body.messages ?? []).filter((m: Body
 export const submitted = (body: Body) => (body.messages ?? []).some((m: Body) =>
   (m.tool_calls ?? []).some((c: Body) => c.function?.name === "note"));
 
-export const noteBatch = { facts: [{ text: "用 pnpm，不要 npm", source: ["T1#E1"] }] };
+export const noteBatch = { facts: [{ title: "选择 pnpm", sources: [{ address: "T1#E1", text: "用 pnpm，不要 npm" }] }] };
 export const memoryBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
 
 /** A real Pi parent session that really runs extensions: `DefaultResourceLoader` accepts inline

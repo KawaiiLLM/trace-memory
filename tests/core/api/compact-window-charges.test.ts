@@ -2,7 +2,8 @@
 // the output never exceeds the envelope. A Raw receipt and entry view receipts leave the allowance
 // with the Raw window; an empty window emits nothing; only a capacity error omits an entry quietly.
 import { expect, test } from "vitest";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
+import { legacyFacts } from "../../support/seed.ts";
 import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
@@ -23,9 +24,10 @@ test("73: the Raw window's receipt leaves the shared allowance with it, so facts
   try {
     memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeId: "new", nativeLineage: "fixture", role: "assistant",
       text: "new ".repeat(40), raw: "", calls: [] });
-    const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: at },
-      facts: [{ turnId: turn.id, text: "fact ".repeat(45), category: "observation", actor: "user", source: [`T${turn.id}#user`], createdAt: at }] });
-    if (!noted.ok) throw new Error(JSON.stringify(noted));
+    const user = hydrate(memory.store.listSourceEntries(session.id, turn.id), memory.store).find(entry => entry.role === "user")!;
+    legacyFacts(memory.store, { kind: "noting", sessionId: session.id, branch: "main", createdAt: at }, [{
+      sources: [{ entry: user, address: `T${turn.id}#user` }], text: "fact ".repeat(45), category: "observation", actor: "user", createdAt: at,
+    }]);
     Object.assign(memory.config.compaction, { rawTokens: 30, factsTokens: 40, sharedAllowanceTokens: 100 });
     const result = memory.compact(session.id, "main", turn.id);
     if ("native" in result) throw new Error("native");
@@ -39,10 +41,10 @@ test("73: the Raw window's receipt leaves the shared allowance with it, so facts
 test("73: windows with no room even for a bare receipt emit nothing — no titles, tags or receipts", () => {
   const { memory, session, turn } = setup();
   try {
-    const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: at },
-      entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id),
-      facts: [{ turnId: turn.id, text: "fact ".repeat(300), category: "observation", actor: "user", source: [`T${turn.id}#user`], createdAt: at }] });
-    if (!noted.ok) throw new Error(JSON.stringify(noted));
+    const user = hydrate(memory.store.listSourceEntries(session.id, turn.id), memory.store).find(entry => entry.role === "user")!;
+    const noted = legacyFacts(memory.store, { kind: "noting", sessionId: session.id, branch: "main", createdAt: at }, [{
+      sources: [{ entry: user, address: `T${turn.id}#user` }], text: "fact ".repeat(300), category: "observation", actor: "user", createdAt: at,
+    }], memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id));
     const created = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: at },
       operations: [{ op: "create", handle: "$k", author: "test", text: "knowledge", category: "constraint", scope: "project", topics: [],
         supports: [noted.facts[0]!.id], reason: "fixture", createdAt: at }] });
@@ -94,11 +96,11 @@ test("73: processed material never borrows — its receipts and framing fit its 
       parent = next.id;
     }
     const path = memory.store.sourcePath(session.id, "main", parent);
-    const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: at },
-      entryIds: path.map(entry => entry.id),
-      facts: Array.from({ length: 12 }, (_, i) => ({ turnId: parent, text: `fact ${i} ${"word ".repeat(15)}`, category: "observation" as const,
-        actor: "user" as const, source: [`T${parent}#user`], createdAt: at })) });
-    if (!noted.ok) throw new Error(JSON.stringify(noted));
+    const user = hydrate(memory.store.listSourceEntries(session.id, parent), memory.store).find(entry => entry.role === "user")!;
+    const noted = legacyFacts(memory.store, { kind: "noting", sessionId: session.id, branch: "main", createdAt: at },
+      Array.from({ length: 12 }, (_, i) => ({ sources: [{ entry: user, address: `T${parent}#user` }],
+        text: `fact ${i} ${"word ".repeat(15)}`, category: "observation" as const, actor: "user" as const, createdAt: at })),
+      path.map(entry => entry.id));
     for (const fact of noted.facts) memory.store.markConsolidated(fact.id, noted.runId, memory.store.getSession(session.id)!.projectId);
     Object.assign(memory.config.compaction, { rawTokens: 110, factsTokens: 160, sharedAllowanceTokens: 10_000 });
     const result = memory.compact(session.id, "main", parent);

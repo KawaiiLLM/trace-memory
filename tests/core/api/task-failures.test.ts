@@ -3,7 +3,8 @@ import { suppliedHandles } from "../../dreaming-skips.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory, type NotingAgentInput, type RunAgent, type TraceMemory } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory, type NotingAgentInput, type RunAgent, type TraceMemory } from "../../source-fixture.ts";
+import { legacyFacts } from "../../support/seed.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import type { DreamingAgentInput } from "../../../src/core/api/index.ts";
 
@@ -24,6 +25,13 @@ function seed(m: TraceMemory) {
 const note = (m: TraceMemory, target: ReturnType<typeof seed>, extra = {}) => m.noting({ ...target, mode: "subagent", model: "fake", ...extra });
 const streaks = (m: TraceMemory) => m.store.db.prepare("SELECT * FROM task_failures ORDER BY session_id,phase,head").all();
 const execution = (m: TraceMemory, runId: number) => String(m.store.db.prepare("SELECT execution_id FROM execution_runs WHERE run_id = ?").get(runId)!.execution_id);
+const boundUser = (m: TraceMemory, target: ReturnType<typeof seed>) =>
+  hydrate(m.store.listSourceEntries(target.sessionId, target.headTurnId), m.store).find(entry => entry.role === "user")!;
+const decision = (m: TraceMemory, target: ReturnType<typeof seed>, text: string) =>
+  legacyFacts(m.store, { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, [{
+    sources: [{ entry: boundUser(m, target), address: `T${target.headTurnId}#user` }],
+    text, category: "decision", actor: "user", createdAt: "now",
+  }]);
 
 for (const final of ["success", "failure"] as const) test(`32c: fork refusal + ${final} settles one execution; restart replay cannot count intermediate attempts`, async () => {
   const db = file();
@@ -72,9 +80,7 @@ test("32c: borrowed failures continue across executors, disable only the target 
   const second = open(db);
   await note(second, target, options);
   // Other target-phase work remains claimed while the third failure is settled.
-  const fact = second.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
-    { turnId: target.headTurnId, category: "decision", actor: "user", text: "retained fact", source: [`T${target.headTurnId}#user`], createdAt: "now" }] });
-  if (!fact.ok) throw Error(fact.problems.join("; "));
+  const fact = decision(second, target, "retained fact");
   const knowledge = second.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, operations: [{
     op: "create", handle: "$1", author: "test", text: "pending maintenance", category: "constraint", scope: "session",
     supports: [fact.facts[0]!.id], reason: "evidence", topics: [], createdAt: "now",
@@ -107,9 +113,7 @@ test("92: N auto-off fences late D writes, settles skips and own output, and pre
   });
   const target = seed(m), other = seed(m);
   await note(m, target); await note(m, target);
-  const noted = m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
-    { turnId: target.headTurnId, category: "decision", actor: "user", text: "retained evidence", source: [`T${target.headTurnId}#user`], createdAt: "now" }] });
-  if (!noted.ok) throw Error(noted.problems.join("; "));
+  const noted = decision(m, target, "retained evidence");
   const created = m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, path: target, operations: [1, 2, 3].map(n => ({
     op: "create", handle: `$${n}`, author: "test", text: `pending maintenance ${n}`, category: "constraint", scope: "session",
     supports: [noted.facts[0]!.id], reason: "evidence", topics: [], createdAt: "now",
@@ -132,7 +136,7 @@ test("92: N auto-off fences late D writes, settles skips and own output, and pre
     return new Promise(resolve => input.signal!.addEventListener("abort", () => {
       expect(m.store.getClaim(target.sessionId, "dreaming")).toEqual(claim);
       expect(late()).toContain("rejected:");
-      expect(manual.execute({ facts: [{ text: "late note", source: [`T${target.headTurnId}#E1`] }] })).toContain("Disabled");
+      expect(manual.execute({ facts: [{ title: "Late note", sources: [{ address: `T${target.headTurnId}#E1`, text: "late note" }] }] })).toContain("Disabled");
       resolve({ outcome: "cancelled", output: "aborted", request });
     }, { once: true }));
   };
@@ -166,10 +170,10 @@ test.each([false, true])("92: corrected refusal resets only after atomic termina
   let attempt = 0;
   const good = open(db, async raw => {
     const tools = (raw as NotingAgentInput).tools;
-    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "invalid citation", source: ["T999#E1"] }] })).toContain("rejected");
+    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Invalid citation", sources: [{ address: "T999#E1", text: "invalid citation" }] }] })).toContain("rejected");
     expect(tools.find(t => t.name === "note")!.execute({ facts: [], drop: ["$1"] })).not.toContain("rejected:");
     const text = `accepted attempt ${++attempt}`;
-    expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ text, source: [`T${t.headTurnId}#E1`] }] })).toContain("held: $2");
+    expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Held evidence", sources: [{ address: `T${t.headTurnId}#E1`, text }] }] })).toContain("held: $2");
     expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text,
       category: "constraint", scope: "session", supports: ["$2"], topics: [], reason: "joint extraction" }], skipped: [] })).toContain("held");
     expect(good.store.listSessionFacts(t.sessionId)).toEqual([]);
@@ -228,9 +232,7 @@ test("68: Dreamer terminal outcomes consume accepted skips; a later range settle
   });
   m.config.dreaming.triggerTokens = 1;
   const target = seed(m);
-  const facts = m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
-    { turnId: target.headTurnId, category: "decision", actor: "user", text: "evidence", source: [`T${target.headTurnId}#user`], createdAt: "now" }] });
-  if (!facts.ok) throw Error("fixture failed");
+  const facts = decision(m, target, "evidence");
   const create = (handle: string) => {
     const result = m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, path: target, operations: [
       { op: "create", handle, author: "test", text: `${handle} ${"work ".repeat(600)}`, category: "constraint", scope: "session",
@@ -274,10 +276,7 @@ test("86: three Dreamer failures on one unchanged pending revision turn memory o
   });
   m.config.dreaming.triggerTokens = 1;
   const target = seed(m), pool = `session:${target.sessionId}`;
-  const facts = m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
-    { turnId: target.headTurnId, category: "decision", actor: "user", text: "evidence", source: [`T${target.headTurnId}#user`], createdAt: "now" },
-  ] });
-  if (!facts.ok) throw Error(facts.problems.join("; "));
+  const facts = decision(m, target, "evidence");
   const create = (text: string) => {
     const committed = m.store.commitConsolidationRun({ path: target,
       run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, operations: [

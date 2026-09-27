@@ -261,7 +261,8 @@ test("79 item 1 (Pi review of 5ee34b5): a note citing one entry hydrates only th
   try {
     counter.reset();
     const note = memory.tools({ kind: "manual", sessionId: base.sessionId, currentTurnId: base.headTurnId, branch: base.branch })[2]!;
-    note.execute({ facts: [{ category: "observation", actor: "user", text: "one-entry citation", source: [address] }] });
+    expect(JSON.parse(note.execute({ facts: [{ title: "One entry citation", sources: [
+      { address, text: "one-entry citation" }] }] })).factIds).toHaveLength(1);
     const hydrated = counter.reads();
     expect(hydrated).toBeGreaterThan(0); // resolution needed this Turn's body to match the address
     expect(hydrated).toBeLessThan(20); // one Turn's entries, nowhere near the 2,000+ entry path

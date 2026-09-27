@@ -66,18 +66,25 @@ test("upgrade isolates recognized malformed rows, preserves evidence and ordinal
     for (const entry of entries.slice(1, 5)) {
       expect(m.store.getSourceEntry(entry.id)).toEqual(entry);
       expect(m.store.db.prepare("SELECT blocks FROM source_entry_raw WHERE entry_id = ?").get(entry.id)!.blocks).toBe("null");
-      const note = m.tools({ kind: "manual", sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }).find(t => t.name === "note")!;
-      for (const selector of ["text", "thinking", "private-call-id"]) expect(note.execute({ facts: [{ text: "No invented fragments", source: [`T1#E${entry.entryOrdinal}@${selector}`] }] })).toContain("invalid source");
+      // 93 retires fragment selectors. A malformed call mapping cannot establish a callable
+      // fragment, but its whole entry may still have admissible text; don't assert otherwise.
     }
+    // E2's native raw.content holds only a toolCall with a broken call map. Its old text projection
+    // is still readable through whole-entry sourceBlocks fallback, without inventing a mapped call.
+    expect(JSON.parse(inputs[1]!.raw).content).toEqual([f.block]);
+    expect(m.store.getSourceEntry(entries[1]!.id)!.calls).toEqual([]);
+    expect(m.trace("T1#E2", { full: true })).toContain("legacy projection");
+    expect(m.trace("T1#E2", { full: true })).not.toContain("bash(");
     expect(m.trace("T1#E3", { full: true })).toContain("legacy projection");
     expect(m.trace("T1#E5", { full: true })).toContain("original result bytes");
     const legacyNote = m.tools({ kind: "manual", sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }).find(t => t.name === "note")!;
-    expect(legacyNote.execute({ facts: [{ text: "Legacy evidence remains usable", source: ["T1#E3"] }] })).toContain("ok: F2");
-    expect(legacyNote.execute({ facts: [{ text: "Legacy tool selectors are read-only", source: ["T1#t7"] }] })).toContain("rejected:");
+    expect(legacyNote.execute({ facts: [{ title: "Legacy evidence", sources: [{ address: "T1#E3", text: "Legacy evidence remains usable" }] }] })).toContain("ok: F2");
+    expect(legacyNote.execute({ facts: [{ title: "Retired selector", sources: [{ address: "T1#t7", text: "Legacy tool selectors are read-only" }] }] })).toContain("rejected:");
     expect(m.store.getFact(1)!.source).toEqual(["T1#t7"]);
-    expect(m.trace("T1#t7", { full: true })).toContain("bash");
-    expect(m.trace("T1#E1@text")).toContain("normal text");
-    expect(m.trace("T1#E6@private-call-id")).toContain("bash");
+    // 93 retires block selectors only on the public reader; historical stored citations remain intact.
+    expect(() => m.trace("T1#t7", { full: true })).toThrow("invalid public trace address");
+    expect(m.trace("T1#E1")).toContain("normal text");
+    expect(m.trace("T1#E6")).toContain("bash");
     expect(m.store.getSourceEntry(entries[2]!.id)!.calls[0]!.ordinal).toBe(7);
     m.close(); m = TraceMemory(f.path, async () => { throw Error("offline only"); }, {}, undefined, normalize);
     expect(normalize).toHaveBeenCalledTimes(inputs.length);

@@ -5,14 +5,17 @@ import { expect, test, vi } from "vitest";
 import { host } from "./test-host.ts";
 import { fixture, worker, toolResults, say, noteAndMemory, noteBatch } from "./native-fixture.ts";
 import { countRunBodies } from "../../perf/fixture.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 test("24a review: a footer refresh with session-scoped knowledge reads no run audit body", async () => {
   const h = host({ "noting.triggerTokens": 1e9 });
   try {
     await h.turn();
-    const noted = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "t" },
-      facts: [{ turnId: 1, category: "observation", actor: "user", text: "evidence", source: ["T1#user"], createdAt: "t" }] });
-    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    const store = h.memory.store;
+    const user = store.sourcePath(1, "main", 1).find(entry => store.getSourceEntry(entry.id)?.role === "user")!;
+    const noted = legacyFacts(store, { kind: "noting", sessionId: 1, branch: "main", createdAt: "t" },
+      [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], category: "observation", actor: "user",
+        text: "evidence", createdAt: "t" }]);
     // The originating manual run carries a megabyte of request audit: scope resolution must not read it.
     const integrated = h.memory.store.commitConsolidationRun({ path: { sessionId: 1, branch: "main", headTurnId: 1 },
       run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "t", request: "Q".repeat(1_000_000),

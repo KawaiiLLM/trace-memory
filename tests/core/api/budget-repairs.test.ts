@@ -24,7 +24,8 @@ function seeded(config: Record<string, unknown> = {}) {
   const s = m.store.createSession({ host: "review", startedAt: "2026-09-08", firstReplyAt: "2026-09-08", projectId: p.id, enrollmentChoice: true });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });
   const tools = m.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ facts: [{ text, source: [`T${t.id}#E1`], ...extra }] });
+  const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ facts: [
+    { title: "Review evidence", sources: [{ address: `T${t.id}#E1`, text }], ...extra }] });
   const knowledge = (text: string) => tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
   return { m, calls, s, t, note, knowledge, scenarios };
 }
@@ -196,7 +197,7 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
       return { outcome: "success", output: "updated", request };
     });
     expect(result.outcome).toBe("success");
-    expect(f.m.trace(`K1@1..K1@${updatedCommit}`)).toContain('topics: ["a, b"] -> ["a","b"]');
-    expect(f.m.trace("K1@1")).toContain('topics: ["a, b"]');
+    expect(f.m.trace(`K1@v1..v${f.m.store.versionOrdinal(1, updatedCommit)}`)).toContain('topics: ["a, b"] -> ["a","b"]');
+    expect(f.m.trace("K1@v1")).toContain('topics: ["a, b"]');
   } finally { f.m.close(); }
 });

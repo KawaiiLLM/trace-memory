@@ -67,7 +67,7 @@ test("22c: a full trace obtains the Turn's occurrences once, whatever the sessio
   const counter = countSourceReads();
   const reads = (session: typeof short) => {
     counter.reset();
-    const text = memory.trace(`T${session.heavy}`, { tool: 1, full: true });
+    const text = memory.trace(`T${session.heavy}`, { full: true });
     return { reads: counter.reads(), text };
   };
   try {
@@ -77,12 +77,12 @@ test("22c: a full trace obtains the Turn's occurrences once, whatever the sessio
     const entries = memory.store.listSourceEntries(long.sessionId).filter(e => e.turnId === long.heavy).length;
     expect(a.reads).toBeLessThanOrEqual(entries);
     // Ordinal 1 has two native result occurrences; the selected call renders both, in entry order.
-    expect(b.text).toContain(`[T${long.heavy}#E3@call-30] read success: result 12.0`);
+    expect(b.text).toContain(`[T${long.heavy}#E3@observation] read success: result 12.0`);
     expect(b.text.indexOf("result 12.0")).toBeGreaterThan(-1);
     expect(b.text.indexOf("the second occurrence")).toBeGreaterThan(b.text.indexOf("result 12.0"));
-    // The other 11 calls are still named as metadata, and they are not full results.
-    for (let ordinal = 2; ordinal <= 12; ordinal++) expect(b.text).toContain(`#E${ordinal * 2}@call-${ordinal + 29}`);
-    expect(b.text).not.toContain("result 12.11");
+    // Whole-entry full includes every call and result; no call is selected or silently sealed.
+    for (let ordinal = 2; ordinal <= 12; ordinal++) expect(b.text).toContain(`#E${ordinal * 2}@assistant`);
+    expect(b.text).toContain("result 12.11");
     // 23b assembles the read without `full` from the same Turn-scoped occurrences, at the same cost,
     // and shows each of them in entry order instead of merging them into one call's evidence.
     counter.reset();
@@ -90,11 +90,11 @@ test("22c: a full trace obtains the Turn's occurrences once, whatever the sessio
     expect(counter.reads()).toBe(a.reads);
     expect(assembled.indexOf("result 12.0")).toBeGreaterThan(-1);
     expect(assembled.indexOf("the second occurrence")).toBeGreaterThan(assembled.indexOf("result 12.0"));
-    // Every ordinal of the Turn is traceable at the same Turn-scoped cost.
+    // Each call is readable by its own entry, without a call selector or sibling result.
     for (let ordinal = 1; ordinal <= 12; ordinal++) {
       counter.reset();
-      expect(memory.trace(`T${long.heavy}`, { tool: ordinal, full: true })).toContain(`#E${ordinal * 2}@call-${ordinal + 29}`);
-      expect(counter.reads()).toBe(a.reads);
+      expect(memory.trace(`T${long.heavy}#E${ordinal * 2}`, { full: true })).toContain(`#E${ordinal * 2}@assistant] read(`);
+      expect(counter.reads()).toBeLessThanOrEqual(a.reads);
     }
   } finally { counter.restore(); }
 });
@@ -105,9 +105,11 @@ async function knowledgeCorpus(knowledge: number, revisions: number) {
   const store = memory.store, { sessionId, headTurnId } = conversation(3, 1);
   const path = { sessionId, branch: "main", headTurnId };
   store.selectSourcePath(sessionId, "main", store.listSourceEntries(sessionId).map(e => e.id));
+  const entries = store.listSourceEntries(sessionId);
+  const cited = store.hydrateSourceEntries(entries.map(e => e.id)).find(e => e.turnId === headTurnId && e.role === "user")!;
   const noted = store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time },
-    facts: [{ turnId: headTurnId, category: "observation", actor: "user", text: "evidence", source: [`T${headTurnId}#user`], createdAt: time }],
-    entryIds: store.listSourceEntries(sessionId).map(e => e.id) });
+    facts: [{ turnId: headTurnId, category: "observation", actor: "user", text: "evidence", source: [`T${headTurnId}#user`], entryIds: [cited.id], createdAt: time }],
+    entryIds: entries.map(e => e.id) });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const supports = [noted.facts[0]!.id];
   const tips: { knowledgeId: number; commit: number }[] = [];

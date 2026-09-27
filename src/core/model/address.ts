@@ -1,5 +1,5 @@
 /** Address syntax only. No database access and no cursor side effects. */
-export type Selector = { kind: "role"; role: "user" | "assistant" | "toolResult" }
+export type Selector = { kind: "role"; role: "user" | "assistant" | "toolResult" | "observation" }
   | { kind: "text" | "thinking" | "facts" } | { kind: "call"; id: string };
 export interface TurnAddress {
   turn: number; session?: number; legacy?: "user" | "assistant" | `t${number}`;
@@ -22,7 +22,7 @@ function selector(value: string): Selector {
   }
   if (value === "F*") return { kind: "facts" };
   if (value === "text" || value === "thinking") return { kind: value };
-  if (value === "user" || value === "assistant" || value === "toolResult") return { kind: "role", role: value };
+  if (value === "user" || value === "assistant" || value === "toolResult" || value === "observation") return { kind: "role", role: value };
   if (!value || /[\uD800-\uDFFF]/u.test(value) || callSelector(value) !== value) throw new Error("invalid content selector; quote opaque IDs containing delimiters as JSON strings");
   return { kind: "call", id: value };
 }
@@ -92,6 +92,29 @@ export function traceTargets(expression: string): string[] {
   }
   for (const target of targets) {
     if (/^K\d/.test(target) && !/^[A-Z]\d+-[A-Z]\d+$/.test(target) && !parseKnowledgeAddress(target)) throw new Error(`invalid trace address: ${target}`);
+  }
+  return targets;
+}
+
+/** Public navigation only; historical source addresses keep using parseTurnAddress/resolveSource. */
+export function publicTraceTargets(expression: string): string[] {
+  const targets = expression.split(",").map(part => part.trim());
+  if (targets.some(part => !part)) throw new Error("invalid trace address: empty target");
+  for (const target of targets) {
+    if (/^(?:S\d+\/)?T\d/.test(target)) {
+      const parsed = parseTurnAddress(target);
+      if (!parsed || parsed.legacy || (parsed.entries && parsed.entries.length !== 1)) throw new Error(`invalid public trace address: ${target}`);
+      if (parsed.selector && (parsed.selector.kind !== "role" || parsed.selector.role === "toolResult")) throw new Error(`invalid public trace address: ${target}`);
+      continue;
+    }
+    if (/^K\d/.test(target)) {
+      const parsed = parseKnowledgeAddress(target);
+      if (!parsed || parsed.history || !parsed.tag && !parsed.ordinal && !/^K[1-9]\d*$/.test(target)) throw new Error(`invalid public trace address: ${target}`);
+      continue;
+    }
+    if (/^(?:F|R|S)[1-9]\d*$/.test(target)) continue;
+    if (/^[A-Z]\d/.test(target) || /^E\d/.test(target) || /^S\d+\//.test(target)) throw new Error(`invalid public trace address: ${target}`);
+    // Non-address targets are looked up as existing project names by the reader.
   }
   return targets;
 }

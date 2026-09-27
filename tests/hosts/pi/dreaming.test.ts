@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
+import { legacyFacts } from "../../support/seed.ts";
 
 const workflowHeadings = (JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as { promptOrder: string[] }).promptOrder;
 const call = (id: string, name: string, args: unknown): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id, name, arguments: args as JsonObject }] });
@@ -15,9 +16,11 @@ async function seeded(config: Record<string, unknown> = {}, text = "Keep the use
   const h = host({ "noting.triggerTokens": 1000000, "dreaming.triggerTokens": 1, ...config });
   await h.emit("session_start"); await h.turn();
   const store = h.memory.store;
-  const f = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, facts: [{ turnId: 1, source: ["T1#user"], actor: "user", category: "decision", text, createdAt: "now" }] });
-  if (!f.ok) throw Error(f.problems.join());
-  const content = { text, category: "constraint" as const, scope: "project" as const, supports: [f.facts[0]!.id], topics: [], reason: "evidence", createdAt: "now" };
+  const user = store.sourcePath(1, "main", 1).find(value => store.getSourceEntry(value.id)?.role === "user")!;
+  const evidence = legacyFacts(store, { kind: "manual", sessionId: 1, createdAt: "now" },
+    [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], text,
+      category: "decision", actor: "user", createdAt: "now" }]).facts[0]!;
+  const content = { text, category: "constraint" as const, scope: "project" as const, supports: [evidence.id], topics: [], reason: "evidence", createdAt: "now" };
   const c = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
   if (!c.ok) throw Error(c.problems.join());
   const path = store.knowledgePath(1);
@@ -168,9 +171,6 @@ test("64c native host: a fitting residual ends successfully without a repair rou
       priorStage = position;
     }
     expect(initialSystem).not.toContain("### Intensity, set by the failed check");
-    expect(initialSystem).toContain("When over budget, protect first: user constraints and corrections, milestone results, errors and lessons, designs and their reasons, important deadlines, open matters.");
-    expect(initialSystem).toContain("An archive states who fully carries the information, what evidence proves it expired, or what the budget trade actually lost.");
-    expect(initialSystem).toContain("Old, short, rarely used or finished is by itself no proof of no value.");
     expect(initialSystem).not.toMatch(/global 4,000|project 10,000|session 1,000|applicable block within 15,000/);
     expect(repairSystems).toEqual([]); expect(repairToolSets).toEqual([]); expect(repairHistory).toBeUndefined();
     expect(repairMessages).toEqual([]);

@@ -131,7 +131,9 @@ test("64b: global current selects one direct-fact branch and rejects the histori
   expect(changed).not.toContain(`K${f.base.knowledgeId}@v3`);
   expect(changed).not.toContain(`K${f.base.knowledgeId}@v2`);
   expect(tokens(changed)).toBeLessThanOrEqual(10000);
-  const history = f.memory.trace(`K${f.base.knowledgeId}..`, { ...rightPath, versions: "all" });
+  const trace = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "right", currentTurnId: f.turn.id })
+    .find(tool => tool.name === "trace")!;
+  const history = trace.execute({ address: `K${f.base.knowledgeId}`, versions: "all", itemBudget: null, pageBudget: 8000 });
   expect(history).toContain("left knowledge");
   expect(history).toContain("right knowledge");
 });

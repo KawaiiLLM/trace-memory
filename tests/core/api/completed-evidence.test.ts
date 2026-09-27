@@ -43,7 +43,9 @@ for (const kind of ["manual", "noting"] as const) test.each(["success", "failure
     try {
       const result = f.append("toolResult", 2, "reused", status), dispatch = f.append("assistant", 2);
       f.select([dispatch, result]);
-      const fact = { text: `Pi agent dispatched tests; the tool returned ${status}.`, source: [address(result), address(dispatch)] };
+      const fact = { title: "Test dispatch and result", sources: [
+        { address: address(result), text: `The tool returned ${status}.` },
+        { address: address(dispatch), text: "Pi agent dispatched tests." }] };
       if (kind === "manual") expect(JSON.parse(f.manual().execute({ facts: [fact] })).factIds).toHaveLength(1);
       else {
         const done = await f.noting([dispatch, result], input => {
@@ -56,8 +58,10 @@ for (const kind of ["manual", "noting"] as const) test.each(["success", "failure
         expect(f.m.store.entryNoted(dispatch.id)).toBe(true);
       }
       const stored = f.m.store.listTurnFacts(f.turn.id)[0]!;
-      expect(stored).toMatchObject({ category: null, actor: null, status: null, source: fact.source,
-        roles: [{ role: "observation" }, { role: "assistant", harness: "Pi agent" }] });
+      expect(stored).toMatchObject({ category: null, actor: null, status: null, title: fact.title,
+        source: [address(dispatch), address(result)],
+        roles: [{ role: "assistant", harness: "Pi agent" }, { role: "observation" }],
+        text: `Pi agent dispatched tests.\nThe tool returned ${status}.` });
       expect(new Set(f.m.store.factEntries(stored.id))).toEqual(new Set([dispatch.id, result.id]));
     } finally { f.m.close(); }
   });
@@ -67,7 +71,7 @@ for (const kind of ["manual", "noting"] as const) test.each(["category", "actor"
     const f = setup();
     try {
       const dispatch = f.append("assistant"); f.select([dispatch]);
-      const fact = { text: "Pi agent reported completion; this is an agent claim.", source: [address(dispatch)] };
+      const fact = { title: "Claimed completion", sources: [{ address: address(dispatch), text: "Pi agent reported completion; this is an agent claim." }] };
       const batch = { facts: [fact, { ...fact, [field]: field === "status" ? "completed" : "user" }] };
       if (kind === "manual") expect(f.manual().execute(batch)).toContain(`${field}: unexpected field`);
       else {
@@ -87,7 +91,8 @@ for (const kind of ["manual", "noting"] as const) test.each(["T1", "T1#assistant
     const f = setup();
     try {
       const dispatch = f.append("assistant"), result = f.append("toolResult"); f.select([dispatch, result]);
-      const facts = [{ text: "Pi agent started tests.", source: [address(dispatch)] }, { text: "Invalid source shape", source: [source] }];
+      const facts = [{ title: "Dispatch", sources: [{ address: address(dispatch), text: "Pi agent started tests." }] },
+        { title: "Invalid source shape", sources: [{ address: source, text: "Invalid source shape" }] }];
       if (kind === "manual") expect(f.manual().execute({ facts })).toContain("invalid source");
       else {
         const done = await f.noting([dispatch, result], input => {
@@ -110,7 +115,7 @@ test.each(["already present", "arrives later"])("92 evidence: N cannot cite a re
     const done = await f.noting([dispatch], input => {
       result ??= f.append("toolResult");
       f.select([dispatch, result]);
-      expect(input.tools.find(t => t.name === "note")!.execute({ facts: [{ text: "The tool returned a result", source: [address(result)] }] })).toContain("invalid source");
+      expect(input.tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Result outside range", sources: [{ address: address(result), text: "The tool returned a result" }] }] })).toContain("invalid source");
       input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
     });
     expect(done.outcome).toBe("bounced");
@@ -125,14 +130,16 @@ test("92 evidence: historical completion fields and selected-block sources stay 
     const dispatch = f.append("assistant"); f.select([dispatch]);
     const source = [`${address(dispatch)}@text`];
     const legacy = f.m.store.commitNotingRun({ run: { kind: "manual", sessionId: f.sessionId, createdAt: time }, facts: [{
-      turnId: f.turn.id, category: "event", actor: "agent", status: "completed", quote: "reported", text: "Historical delivery", source, createdAt: time,
+      turnId: f.turn.id, category: "event", actor: "agent", status: "completed", quote: "reported", text: "Historical delivery", source, entryIds: [dispatch.id], createdAt: time,
     }] });
     if (!legacy.ok) throw new Error(legacy.problems.join("; "));
     const fact = legacy.facts[0]!;
     const before = f.m.store.getFact(fact.id);
     expect(f.m.trace(`F${fact.id}`)).toContain("completed: Historical delivery");
-    expect(f.m.trace(`F${fact.id}`)).toContain(source[0]);
-    expect(f.m.trace(source[0]!)).toContain("Pi agent reported starting tests.");
+    expect(f.m.trace(`F${fact.id}`)).toContain(address(dispatch));
+    expect(f.m.trace(`F${fact.id}`)).not.toContain("@text");
+    expect(() => f.m.trace(source[0]!)).toThrow();
+    expect(f.m.trace(address(dispatch))).toContain("Pi agent reported starting tests.");
     expect(f.m.store.getFact(fact.id)).toEqual(before);
   } finally { f.m.close(); }
 });

@@ -1,6 +1,7 @@
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { expect, test } from "vitest";
-import { sourceSeededMemory, type DreamingAgentInput } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory, type DreamingAgentInput } from "../../source-fixture.ts";
+import { fact as seedFact, legacyFacts } from "../../support/seed.ts";
 
 test("92/03: D skips tagless diffs by history address; mutation diagnostics separate model versions from human commits", async () => {
   let scenario!: (task: DreamingAgentInput) => void;
@@ -15,12 +16,11 @@ test("92/03: D skips tagless diffs by history address; mutation diagnostics sepa
     const session = store.createSession({ projectId: project.id, host: "pi:dream", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
     const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Evidence", startedAt: "now" });
     const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-    const tools = memory.tools({ kind: "manual", ...target, currentTurnId: turn.id });
-    const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ facts: [{ text: "User gave evidence", source: [`T${turn.id}#E1`] }] })).factIds[0];
-    const legacy = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{
-      turnId: turn.id, category: "observation", actor: "agent", text: "Legacy mixed episode", source: [`T${turn.id}#user`], createdAt: "now",
-    }] });
-    if (!legacy.ok) throw new Error(legacy.problems.join("; "));
+    const user = hydrate(store.listSourceEntries(session.id, turn.id), store).find(entry => entry.role === "user")!;
+    const fact = seedFact(memory, target, "Evidence", [{ entry: user, text: "User gave evidence" }]).id;
+    const legacy = legacyFacts(store, { kind: "manual", sessionId: session.id, createdAt: "now" }, [{
+      sources: [{ entry: user, address: `T${turn.id}#user` }], category: "observation", actor: "agent", text: "Legacy mixed episode", createdAt: "now",
+    }]);
     const content = { category: "constraint" as const, scope: "project" as const, topics: [], supports: [fact, legacy.facts[0]!.id], reason: "fixture", createdAt: "now" };
     const created = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [1, 2, 3].map(n => ({ op: "create", handle: `$${n}`, author: "test", ...content, text: `Rule ${n}` })) });
     if (!created.ok) throw new Error(created.problems.join("; "));
