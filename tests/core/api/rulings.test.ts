@@ -2672,48 +2672,27 @@ test("47: read-version descriptions name current, history and all without making
 
 
 
-test("61/92: definitions stay shared, and N and D retain the maintainer's principle blocks", () => {
-  const block = (name: string) => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8");
-  const definitions = ["model", "facts", "knowledge"].map(block).join("\n");
-  for (const leaked of ["There is no open category", "first decide whether", "never becomes pending", "**Object state.**", "**Status.**", "however small", "weighs as an assistant claim"])
-    expect(definitions, `definition blocks carry no principle: ${leaked}`).not.toContain(leaked);
-  const principles = ["admission", "atomicity", "completeness", "pending", "citations"].map(block);
-  expect(principles[0]).toContain("Knowledge carries the macro understanding that guides the direction of work, not the concrete detail that understanding lets one derive easily.");
-  expect(principles[0]).toContain("What enters knowledge is the understanding whose absence could cause a wrong decision, a pitfall met again or repeated work later; this includes but is not limited to:");
-  expect(principles[0]).toContain("What does not enter knowledge is information that carries no surprise given the resident knowledge — what one step of reasoning from it yields; this includes but is not limited to:");
-  expect(principles[1]).toContain("`scope` defaults to `project`.");
-  expect(principles[1]).toContain("different independent claims are maintained apart");
-  expect(block("knowledge")).toContain("one independently changeable claim or state, one identity");
-  expect(block("knowledge")).toContain("Identity is the claim or state itself, not a label, a category or a current value");
-  expect(block("knowledge")).toContain("belongs to that identity: update the exact continuing version");
-  expect(principles[2]).toContain("Its body names the strength of its evidence: whether it comes from the user, the assistant or an observation, and whether it is a decision, a proposal, a question, an event or the like.");
-  expect(loadPrompt("dreaming.md")).toContain("- Split an item that fails Atomicity.");
-  expect(loadPrompt("dreaming.md")).toContain("When over budget, remove first:");
-  expect(principles[3]).toContain("Reliability of fact evidence: by source, user > observation > assistant.");
-  expect(principles[3]).not.toContain("by category");
-  expect(principles[3]).toContain("A matter worth tracking that still awaits an answer, adoption, verification or completion belongs to `open`");
-  expect(principles[3]).toContain("Incompatible claims about one object under the same conditions, with evidence insufficient to explain or decide, remain in `open` with both accounts and missing evidence named.");
-  expect(principles[4]).toContain("never pad them for coverage");
-  for (const file of ["noting.md", "dreaming.md"] as const) {
+// The maintainer's current principle note supersedes 61/92's sentence pins. Semantic alignment is
+// reviewed against the frozen note with the change; keep composition and stage authority here.
+test("N and D compose shared definitions and principles with their permitted maintenance operations", () => {
+  const block = (name: string) => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8").trimEnd();
+  const shared = ["model", "facts", "knowledge", "common", "admission", "atomicity", "completeness", "citations", "pending", "updating", "archiving"];
+  for (const file of STAGE_PROMPTS) {
     const composed = loadPrompt(file);
-    for (const text of [...principles, ...["model", "facts", "knowledge"].map(block)]) expect(composed).toContain(text.trimEnd());
+    for (const name of shared) expect(composed, `${file}: ${name}`).toContain(block(name));
     expect(composed).not.toContain("<!-- include:");
   }
-  const noting = loadPrompt("noting.md");
-  expect(noting).toContain(block("facts").trimEnd());
-  expect(noting).toContain("- Tell the sources apart — the user, the assistant, an observation; one fact carries one source's conclusion.");
-  expect(noting).toContain("- A fact stands alone: a decision carries its reason and source, an event its progress; the scene is understood without the raw.");
-  expect(noting).toContain("- Strength is the degree to which the evidence supports or negates the target claim, not the tone of agreement or objection.");
-  for (const gone of ["Authority", "The body", "Protection", "### Reading", "### Evidence", "### Certification", "### Identity", "Exactly one of four", "The receipt is not a reading list", "When unsure, do not write"])
-    for (const file of STAGE_PROMPTS) expect(loadPrompt(file), `${file}: ${gone}`).not.toContain(gone);
-  const dreaming = loadPrompt("dreaming.md");
-  for (const heading of ["### Splitting", "### Merging", "### Archiving", "### Updating"]) expect(dreaming).toContain(heading);
-  expect(dreaming).toContain("- Merge when several items state the same claim; keep each one's unique conditions, reasons and degree of evidence, and the merged item must satisfy Atomicity. A change of state of one conclusion updates its identity; a superseded old state is never a reason to merge.");
+  const noting = loadPrompt("noting.md"), dreaming = loadPrompt("dreaming.md");
+  for (const heading of ["### Updating", "### Archiving"]) {
+    expect(noting).toContain(heading);
+    expect(dreaming).toContain(heading);
+  }
+  for (const heading of ["### Splitting", "### Merging"]) {
+    expect(noting).not.toContain(heading);
+    expect(dreaming).toContain(heading);
+  }
   expect(dreaming).toContain("Comparison is within one scope; items of different scopes are never merged.");
   expect(dreaming).toContain("A merge may omit `text`: the later parent's body then becomes the survivor's next version verbatim.");
-  expect(dreaming).toContain("- Remove knowledge that fails the Admission principles.");
-  expect(dreaming).not.toContain("Default is no change");
-  expect(dreaming).toContain("An archive states who fully carries the information, what evidence proves it expired, or what the budget trade actually lost. Old, short, rarely used or finished is by itself no proof of no value.");
 });
 
 

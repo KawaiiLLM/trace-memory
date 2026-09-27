@@ -1,19 +1,21 @@
 ### Facts
 
-A fact is one topic's slice over a continuous stretch of conversation. Its short, nonempty, single-line `title` names what happened, not just the conclusion. A slice may draw on several entries and Turns.
+A fact is one topic's slice over a continuous stretch of conversation, restoring what happened. It may span entries and Turns. Its short, nonempty, single-line `title` identifies the episode; it does not replace the body.
 
-Its `sources` each contain an `address` for one contributing whole entry and `text` for that entry's contribution. Core orders the segments by the selected path and joins their text into the body. Each source's role comes from its entry, not the writer.
-
-A new fact has no fact-wide category, actor, status or quote. Historical rows retain those fields and their stored source strings unchanged.
+Its nonempty `sources` contain one `{address,text}` segment per contributing whole entry. Each segment has nonempty text describing that source's contribution to the topic. Core orders segments by path and joins them with line breaks into the fact's `text`; the writer supplies no separate body.
 
 Each cited entry has a core-derived `role`:
 - `user` — a user's message.
-- `assistant` — an agent message or tool call.
-- `observation` — a tool result.
+- `assistant` — the original agent's message or tool call.
+- `observation` — a tool result; this does not mean its content was independently verified.
 
-Assistant sources show their original harness (Pi agent or Claude Code), not the executor's harness. A report quoted by a user remains a user entry; an agent claiming an observation remains an assistant entry. The fact text names who said or did each thing and distinguishes evidence from claims.
+An `address` names a whole entry, such as `T123#E2`, never an internal block or thinking-only entry. Assistant sources retain their original harness (Pi agent or Claude Code), not the executor's harness. A relayed report retains the role of the entry relaying it.
+
+Progress and necessary verbatim wording belong in the source segments. A new fact has no fact-wide category, actor, status or quote. Historical rows retain those fields and their stored source strings unchanged.
 
 **Optional relations, each strong or weak.**
-- **support** — this fact affirms the target: adoption, approval, agreement, an answer, a restatement, execution of a ruling. "Done as requested" supports the ruling.
-- **negate** — this fact opposes or invalidates the target: withdrawal, veto, found wrong, a new state overturning the old, doubt, objection, evidence that does not fit.
-- **strong** — the raw states the relation (the user withdraws the rule; a test output contradicts the claim; the user says "adopt this"). **weak** — the relation is inferred, or the evidence is partial (a passing remark, a result fitting only part of the claim, an objection not carried through).
+- **support** — this fact affirms the target: adoption, approval, agreement, an answer, a restatement, execution of a ruling.
+- **negate** — this fact opposes the target: withdrawal, veto, correction, a changed state, doubt or contrary evidence.
+- **strong** — the Raw states the relation explicitly. **weak** — the relation is inferred or its evidence is partial.
+
+Strength describes how the evidence supports or negates the target, not the tone of agreement or objection.

@@ -16,28 +16,23 @@ Name the original agent's harness (Pi agent or Claude Code) in both layers, not 
 
 ## Principles
 
-### Admission
+<!-- include: common -->
 
-- Extract the facts that could create, ground, correct, close or negate knowledge, and the facts a later judgment of the work turns on.
-- Routine operations and trivial steps stay in the raw.
+### Selecting facts
 
-### Atomicity
+Keep enough for a newcomer to recover the main discussion, important branches, reasoning and turns. Record what was discussed and why, what was proposed or observed, and the conclusions or questions.
+- Keep important objects, nontrivial reasoning, key examples, evidence, comparisons and questions or ideas worth continuing. Unsettled, unapproved or unsuitable for knowledge does not mean unworthy of a fact. A seriously considered explanation may matter even after rejection.
+- Leave details in Raw when omission changes neither understanding, grounds for judgment, turning points nor future direction. Omit repetition, routine operations and trivial process. Do not mechanically exclude numbers, code, tests or process information.
+- Write simple content briefly and develop complex discussion as needed. Do not pad detail, pursue exhaustive coverage or target a fixed compression ratio. Do not retain only final conclusions; each fact need not repeat all background.
 
-- One fact carries one claim that can be approved, negated or verified on its own.
-- Different independent claims about one object are recorded apart; the conditions and reasons a claim needs stay with it.
-- Tell the sources apart — the user, the assistant, an observation; one fact carries one source's conclusion.
+### Organizing facts
 
-### Completeness
-
-- A fact is a conclusion without its process: the trivial reasoning that led to it is not kept.
-- A fact stands alone: a decision carries its reason and source, an event its progress; the scene is understood without the raw.
-
-### Relations
-
-- `source` cites the minimal sufficient original evidence for the claim. Between facts, support and negate relations express how a claim bears on an earlier one, as the basis for judging whether the earlier claim still holds.
-- Strong on explicit evidence, weak on evidence that is real but not obvious, none without evidence.
-- A proposal is not a decision; a relayed report is not a direct observation; a dispatch is not a completion; the Noter's own inference is not added.
-- Strength is the degree to which the evidence supports or negates the target claim, not the tone of agreement or objection.
+1. Keep one topic's question, proposal, evidence, objection, revision and decision together. Do not split by speaker or activity. Discussion, retrieval, analysis and implementation can share a slice; skip unrelated interleaving. Comparing objects does not necessarily make several topics.
+2. Start a new slice at a topic change or batch end. If capacity is tight, remove repetition and non-key detail before splitting by subtopic. Do not mechanically separate evidence from the analysis it supports. Record later corrections in later slices, without rewriting earlier facts.
+3. Give the episode a title describing what the discussion or work was doing. A final conclusion alone is not a title; a title does not replace the body.
+4. Give each contributing entry its own cited segment, in occurrence order. Record only its contribution to this topic. The same entry may contribute to different facts about different topics. Add neither the extractor's explanation nor later explanations to an earlier segment.
+5. Tool-result segments record actual returns; agent segments record the original agent's analysis, proposals or actions. Calls without new contributions, repeated searches and routine steps need no citation.
+6. Resolve references to concrete objects. For approval, withdrawal, objection or correction, say what it concerns, what the earlier position was and what changed. Do not merely say the user agreed or overturned something.
 
 ## Knowledge principles
 
@@ -47,9 +42,15 @@ Name the original agent's harness (Pi agent or Claude Code) in both layers, not 
 
 <!-- include: completeness -->
 
+<!-- include: citations -->
+
 <!-- include: pending -->
 
-<!-- include: citations -->
+Assess value, evidence and completeness before choosing an operation. Do not rewrite merely to perform an operation.
+
+<!-- include: updating -->
+
+<!-- include: archiving -->
 
 ## Inputs
 
