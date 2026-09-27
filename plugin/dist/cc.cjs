@@ -9954,7 +9954,11 @@ function classifySourceRecord(record3) {
   const text = !nativePrompt && typeof content === "string" ? humanCommandPrompt(content) ?? content : textBlocks(content).join("\n");
   return { kind: "user", record: record3, nativeId: id, timestamp: timestamp(record3), text, calls: [] };
 }
-var messageKey = (record3) => typeof record3.message?.id === "string" ? (0, import_node_crypto12.hash)("sha256", JSON.stringify([record3.message.id, record3.message.content]), "base64") : void 0;
+var messageKey = (source) => {
+  const message = source?.record.message;
+  const identity = source?.kind === "toolResult" ? [message.content] : source?.kind === "assistant" && typeof message?.id === "string" ? [message.id, message.content] : void 0;
+  return identity && (0, import_node_crypto12.hash)("sha256", JSON.stringify(identity), "base64");
+};
 var nodeOf = (record3, writtenBefore) => {
   const uuid5 = nativeId(record3);
   if (!uuid5) return null;
@@ -9966,7 +9970,7 @@ var nodeOf = (record3, writtenBefore) => {
       sourceKind: source?.kind ?? null,
       calls: source?.kind === "assistant" ? source.calls.map((call) => ({ id: call.callId, name: call.name })) : [],
       timestamp: source?.timestamp ?? timestamp(record3),
-      ...source?.kind === "assistant" ? { messageKey: messageKey(record3) } : {}
+      messageKey: messageKey(source)
     };
   } catch (error3) {
     if (!(error3 instanceof CcNativeLineageError)) throw error3;
@@ -9984,7 +9988,7 @@ var CcTranscriptScan = class {
   nodes;
   snapshot;
   callCarriers;
-  /** Each assistant message key and the latest row written with it. */
+  /** Each message key and the latest row written with it. */
   messageKeys;
   stamp;
   reset;

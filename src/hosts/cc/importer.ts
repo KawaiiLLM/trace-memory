@@ -345,7 +345,7 @@ export class CcProjection {
         }
         return { association: { turnId: known.turnId, entryId: known.id }, calls };
       }
-      // A row Claude Code wrote again across a compaction is the row it repeats: no entry, no tool call.
+      // A row Claude Code wrote again across a compaction is the row it repeats: no entry, no tool call or result.
       const original = scan.node(source.nativeId)?.copyOf;
       if (original !== undefined) {
         const turnId = scan.node(original)?.turnId;

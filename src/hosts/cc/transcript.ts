@@ -72,10 +72,11 @@ export interface CcNativeNode {
   importProblem?: string;
   turnId?: number;
   entryId?: number;
-  /** An assistant row's message id and content, hashed: what a copy shares with the row it repeats. */
+  /** An assistant row's message id and content, or a tool result's content, hashed: what a copy shares
+   * with the row it repeats. */
   messageKey?: string;
-  /** An earlier row with the same message id and content: Claude Code wrote this one again across a
-   * compaction, under a new uuid. It is that row, not new Raw. */
+  /** An earlier row with the same key: Claude Code wrote this one again across a compaction, under a
+   * new uuid. It is that row, not new Raw. */
   copyOf?: string;
   /** The parent a tool result names, when the scan continues it from that parent's later copy. */
   namedParent?: string;
@@ -192,11 +193,16 @@ export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | n
 }
 
 /** Claude Code 2.1.280 splits one API message into rows sharing its id, one per content block, so
- * the id alone does not identify a row; the id with the row's content does.
- * ponytail: hashes every assistant row while indexing (about 1 ms per MB of assistant content); a
- * cheap block fingerprint with an exact re-read on a match would avoid it if a full scan needs it. */
-const messageKey = (record: CcNativeRecord): string | undefined => typeof record.message?.id === "string"
-  ? hash("sha256", JSON.stringify([record.message.id, record.message.content]), "base64") : undefined;
+ * the id alone does not identify an assistant row; the id with the row's content does. A tool result's
+ * content names the calls it answers; the result it writes again across a compaction differs only in uuid.
+ * ponytail: hashes every assistant and tool-result row while indexing (about 1 ms per MB of their
+ * content); a cheap block fingerprint with an exact re-read on a match would avoid it if a full scan needs it. */
+const messageKey = (source: CcSourceRecord | null): string | undefined => {
+  const message = source?.record.message;
+  const identity = source?.kind === "toolResult" ? [message!.content]
+    : source?.kind === "assistant" && typeof message?.id === "string" ? [message.id, message.content] : undefined;
+  return identity && hash("sha256", JSON.stringify(identity), "base64");
+};
 
 const nodeOf = (record: CcNativeRecord, writtenBefore: (uuid: string) => boolean): CcNativeNode | null => {
   const uuid = nativeId(record);
@@ -205,7 +211,7 @@ const nodeOf = (record: CcNativeRecord, writtenBefore: (uuid: string) => boolean
   try {
     return { uuid, parentUuid: nativeParentId(record, writtenBefore), sourceKind: source?.kind ?? null,
       calls: source?.kind === "assistant" ? source.calls.map(call => ({ id: call.callId, name: call.name })) : [], timestamp: source?.timestamp ?? timestamp(record),
-      ...(source?.kind === "assistant" ? { messageKey: messageKey(record) } : {}) };
+      messageKey: messageKey(source) };
   } catch (error) {
     if (!(error instanceof CcNativeLineageError)) throw error;
     return { uuid, parentUuid: null, sourceKind: source?.kind ?? null,
@@ -217,7 +223,7 @@ export class CcTranscriptScan {
   readonly nodes: Map<string, CcNativeNode>;
   readonly snapshot: CcTranscriptSnapshot;
   readonly callCarriers: Map<string, Set<string>>;
-  /** Each assistant message key and the latest row written with it. */
+  /** Each message key and the latest row written with it. */
   readonly messageKeys: Map<string, string>;
   readonly stamp: FileStamp;
   readonly reset: boolean;

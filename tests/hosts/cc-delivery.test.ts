@@ -211,6 +211,8 @@ test("a compaction that interrupts a tool call is on the path of the prompts aft
       { ...result, uuid: "result-copy", parentUuid: "call" }, assistant("a2", "result-copy"));
     expect(f.commits(await f.prompt("p3"))).toEqual([]);
     await f.append(user("u3", "a2", "p3"), assistant("a3", "u3"));
+    // Both copies are the rows they repeat, not new entries.
+    expect(["call-copy", "result-copy"].map(uuid => f.store.findSourceEntry(f.sessionId, f.nativeSession, uuid))).toEqual([null, null]);
     const compaction = f.store.findNativeTurn(f.sessionId, f.nativeSession, "cb")!.turnId;
     expect(f.store.getTurn(f.turnOf("u3"))!.parentTurnId).toBe(compaction);
     expect([...f.delivered(f.turnOf("u3")).knowledgeCommitIds]).toEqual([rule, added]);

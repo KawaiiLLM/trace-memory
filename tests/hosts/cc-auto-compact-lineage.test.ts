@@ -92,14 +92,14 @@ test("a reply that goes on after an automatic compaction belongs to the Turn of 
 /** Claude Code 2.1.280's automatic compaction in the middle of a reply, while a tool call is in flight, as recorded in a
  * production transcript (2026-09-27): after the summary it writes the in-flight message again under new uuids, one row per
  * content block as before, with the same message id and content and only its usage changed; the tool result follows again,
- * naming the call's original row as its parent. */
+ * naming the call's original row as its parent, and differs from the first only in its uuid. */
 const inFlight = (uuid: string, parentUuid: string, second: number, block: Record<string, unknown>): CcNativeRecord => ({
   uuid, parentUuid, type: "assistant", timestamp: at(second),
   message: { id: "msg-1", role: "assistant", content: [block], usage: { output_tokens: 7 } },
 });
-const toolResult = (uuid: string, parentUuid: string, second: number): CcNativeRecord => ({
-  uuid, parentUuid, type: "user", timestamp: at(second), sourceToolAssistantUUID: "call",
-  message: { role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: "listing" }] },
+const toolResult = (uuid: string, parentUuid: string, second: number, callId = "call-1", content = "listing"): CcNativeRecord => ({
+  uuid, parentUuid, type: "user", timestamp: at(second), sourceToolAssistantUUID: parentUuid,
+  message: { role: "user", content: [{ type: "tool_result", tool_use_id: callId, content }] },
 });
 const copied = (record: CcNativeRecord, uuid: string, parentUuid: string): CcNativeRecord => record.type === "assistant"
   ? { ...record, uuid, parentUuid, message: { ...record.message, usage: { output_tokens: 0 } } } : { ...record, uuid, parentUuid };
@@ -116,7 +116,7 @@ const midReplyCompacted = (): CcNativeRecord[] => {
     attachment("x2", "result-copy", 7)];
 };
 
-test("a message an automatic compaction writes again under new uuids is imported once, with its tool call", async () => {
+test("a message and its tool result that an automatic compaction writes again under new uuids are imported once", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-cc-auto-compact-")); dirs.push(dir);
   const transcriptPath = join(dir, "native.jsonl");
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), baseline: "2025-01-01T00:00:00.000Z" });
@@ -127,16 +127,34 @@ test("a message an automatic compaction writes again under new uuids is imported
     const result = await importer.reconcile(), store = importer.memory.store;
     expect(result.problems).toEqual([]);
     const prompted = store.findSourceEntry(result.coreSessionId!, "auto-compact", "u1")!.turnId;
-    // The two rows sharing one message id with different content remain two entries.
+    // The two rows sharing one message id with different content remain two entries; the result written again is the result.
     expect(store.listSourceEntries(result.coreSessionId!, prompted).map(entry => entry.nativeId))
-      .toEqual(["u1", "thinking", "call", "result", "result-copy"]);
+      .toEqual(["u1", "thinking", "call", "result"]);
     expect(store.listToolCalls(prompted).map(call => call.name)).toEqual(["Bash"]);
   } finally { importer.close(); }
 });
 
+test("tool results that share only their content, or only their call, stay distinct", async () => {
+  const call = (uuid: string, parentUuid: string, second: number, id: string) =>
+    inFlight(uuid, parentUuid, second, { type: "tool_use", id, name: "Bash", input: { command: id } });
+  const records = [prompt("u1", null, 1), call("call", "u1", 2, "call-1"), toolResult("result", "call", 3),
+    call("call-2", "result", 4, "call-2"), toolResult("result-2", "call-2", 5, "call-2"),
+    toolResult("result-changed", "result-2", 6, "call-1", "changed")];
+  const dir = mkdtempSync(join(tmpdir(), "tm-cc-auto-compact-")); dirs.push(dir);
+  const transcriptPath = join(dir, "native.jsonl");
+  const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), baseline: "2025-01-01T00:00:00.000Z" });
+  writeFileSync(transcriptPath, records.map(record => `${JSON.stringify(record)}\n`).join(""));
+  const importer = new CcImporter(config, await recordSessionStart(config,
+    { hook_event_name: "SessionStart", session_id: "auto-compact", transcript_path: transcriptPath }, at(1)));
+  try {
+    const result = await importer.reconcile(), store = importer.memory.store;
+    expect(result.problems).toEqual([]);
+    expect(result.selectedEntryIds.map(id => store.getSourceEntry(id)!.nativeId)).toEqual(records.map(record => record.uuid));
+  } finally { importer.close(); }
+});
+
 test("rows arriving one by one across that compaction import the same entries, Turns and selected path as one scan of the finished file", async () => {
-  const records = [...midReplyCompacted(), assistant("a1", "x2", 8), prompt("u2", "a1", 9), assistant("a2", "u2", 10)];
-  const project = async (oneByOne: boolean) => {
+  const project = async (records: CcNativeRecord[], oneByOne: boolean) => {
     const dir = mkdtempSync(join(tmpdir(), "tm-cc-auto-compact-")); dirs.push(dir);
     const transcriptPath = join(dir, "native.jsonl");
     const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), baseline: "2025-01-01T00:00:00.000Z" });
@@ -151,7 +169,7 @@ test("rows arriving one by one across that compaction import the same entries, T
         result = await importer.reconcile();
         expect(result.problems).toEqual([]);
         // While the copies are the last rows, the head a prompt would follow is the compaction.
-        if (record.uuid === "thinking-copy" || record.uuid === "call-copy")
+        if (record.uuid === "thinking-copy" || record.uuid === "call-copy" || record.uuid === "result-copy")
           expect(readBinding(config, "auto-compact")!.selectedHeadTurnId).toBe(compaction().id);
       }
       expect(result.problems).toEqual([]);
@@ -161,12 +179,19 @@ test("rows arriving one by one across that compaction import the same entries, T
         turns: store.db.prepare("SELECT id, kind, parent_turn_id FROM turns ORDER BY id").all().map(row => ({ ...row })),
         paths: store.db.prepare("SELECT branch FROM source_paths").all().map(row => row.branch),
         branch: result.branch, head: result.headTurnId, path: result.selectedEntryIds.map(id => store.getSourceEntry(id)!.nativeId),
+        promptParent: readBinding(config, "auto-compact")!.selectedHeadTurnId,
       };
     } finally { importer.close(); }
   };
-  const fresh = await project(false);
-  expect(fresh.path).toEqual(["u1", "thinking", "call", "result", "result-copy", "a1", "u2", "a2"]);
+  // Up to the compaction's last source row, the copied result is the leaf.
+  const compacted = midReplyCompacted(), leaf = await project(compacted, false);
+  expect(leaf.path).toEqual(["u1", "thinking", "call", "result"]);
+  expect(leaf.promptParent).toBe(2);
+  expect(await project(compacted, true)).toEqual(leaf);
+  const records = [...compacted, assistant("a1", "x2", 8), prompt("u2", "a1", 9), assistant("a2", "u2", 10)];
+  const fresh = await project(records, false);
+  expect(fresh.path).toEqual(["u1", "thinking", "call", "result", "a1", "u2", "a2"]);
   expect(fresh.turns).toEqual([{ id: 1, kind: "turn", parent_turn_id: null }, { id: 2, kind: "compaction", parent_turn_id: 1 },
     { id: 3, kind: "turn", parent_turn_id: 2 }]);
-  expect(await project(true)).toEqual(fresh);
+  expect(await project(records, true)).toEqual(fresh);
 });
