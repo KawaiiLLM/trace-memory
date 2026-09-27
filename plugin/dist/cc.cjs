@@ -2532,12 +2532,8 @@ var Store = class {
   /** One binding read for the selected new facts, preserving their Core-ordered authored sources. */
   hydrateFactSegments(facts) {
     const legacy = facts.filter((f) => f.title === void 0);
-    const nativeAddresses = this.factBoundAddresses(legacy.map((f) => f.id));
-    for (const fact of legacy) {
-      const bound = nativeAddresses.get(fact.id);
-      if (fact.source.length && !bound?.length) throw new Error(`F${fact.id}: missing legacy source bindings`);
-      fact.boundAddresses = bound ?? [];
-    }
+    const nativeAddresses = this.factBoundAddresses(legacy);
+    for (const fact of legacy) fact.boundAddresses = nativeAddresses.get(fact.id) ?? [];
     const selected = facts.filter((f) => f.title !== void 0);
     if (!selected.length) return facts;
     const bindings = /* @__PURE__ */ new Map();
@@ -2572,14 +2568,13 @@ var Store = class {
   listTurnFacts(turnId) {
     return this.hydrateFactSegments(this.db.prepare("SELECT * FROM facts WHERE turn_id = ? ORDER BY id").all(turnId).map(toFact));
   }
-  /** A missing legacy binding cannot appear in turnFactBindings; reject rather than silently omit it. */
+  /** Find authored sources for this Turn even when the binding used to discover them is gone. */
   assertTurnLegacyBindings(turnId, sessionId) {
     const prefix = `T${turnId}#`, qualified = `S[0-9]*/T${turnId}#*`;
-    const row = this.db.prepare(`SELECT f.id FROM facts f JOIN turns owner ON owner.id=f.turn_id,
+    const facts = this.db.prepare(`SELECT DISTINCT f.id, f.source FROM facts f JOIN turns owner ON owner.id=f.turn_id,
       json_each(f.source) source WHERE owner.session_id=? AND f.title IS NULL
-      AND NOT EXISTS (SELECT 1 FROM fact_sources fs WHERE fs.fact_id=f.id)
-      AND (substr(source.value,1,?)=? OR source.value GLOB ?) ORDER BY f.id LIMIT 1`).get(sessionId, prefix.length, prefix, qualified);
-    if (row) throw new Error(`F${row.id}: missing legacy source bindings`);
+      AND (substr(source.value,1,?)=? OR source.value GLOB ?) ORDER BY f.id`).all(sessionId, prefix.length, prefix, qualified);
+    this.factBoundAddresses(facts.map((fact) => ({ id: fact.id, source: JSON.parse(fact.source) })));
   }
   /** Source membership for a Turn, not ownership by the first contributing Turn. */
   turnFactBindings(turnId) {
@@ -3686,13 +3681,35 @@ var Store = class {
       bound.get(Number(row.fact_id)).push(Number(row.entry_id));
     return bound;
   }
-  /** Native addresses of all actual bindings; historic block spellings can bind multiple entries. */
-  factBoundAddresses(factIds) {
+  /** Validate each authored legacy source against actual bindings using metadata only; never infer extra display entries. */
+  factBoundAddresses(facts) {
     const result = /* @__PURE__ */ new Map();
-    if (!factIds.length) return result;
-    for (const row of this.db.prepare(`SELECT fs.fact_id, e.turn_id, e.entry_ordinal FROM fact_sources fs
-      JOIN source_entries e ON e.id = fs.entry_id WHERE fs.fact_id IN (SELECT value FROM json_each(?)) ORDER BY fs.fact_id, fs.entry_id`).all(JSON.stringify([...new Set(factIds)])))
-      result.set(row.fact_id, [...result.get(row.fact_id) ?? [], `T${row.turn_id}#E${row.entry_ordinal}`]);
+    if (!facts.length) return result;
+    const bound = /* @__PURE__ */ new Map();
+    for (const row of this.db.prepare(`SELECT fs.fact_id, e.session_id, e.turn_id, e.entry_ordinal, e.addresses FROM fact_sources fs
+      JOIN source_entries e ON e.id = fs.entry_id WHERE fs.fact_id IN (SELECT value FROM json_each(?)) ORDER BY fs.fact_id, fs.entry_id`).all(JSON.stringify([...new Set(facts.map((fact) => fact.id))]))) {
+      const native = `T${row.turn_id}#E${row.entry_ordinal}`;
+      result.set(row.fact_id, [...result.get(row.fact_id) ?? [], native]);
+      const keys = bound.get(row.fact_id) ?? /* @__PURE__ */ new Set();
+      keys.add(native);
+      keys.add(`S${row.session_id}/${native}`);
+      for (const address2 of JSON.parse(row.addresses)) {
+        const key = sourceKey(address2);
+        keys.add(key);
+        keys.add(`S${row.session_id}/${key}`);
+      }
+      bound.set(row.fact_id, keys);
+    }
+    for (const fact of facts) {
+      const keys = bound.get(fact.id);
+      if (fact.source.length && (!result.get(fact.id)?.length || fact.source.some((source) => {
+        const session = /^S([1-9]\d*)\//.exec(source);
+        const unqualified = session ? source.slice(session[0].length) : source;
+        const entry = /^T([1-9]\d*)#E([1-9]\d*)(?:@.*)?$/u.exec(unqualified);
+        const key = entry ? `T${entry[1]}#E${entry[2]}` : sourceKey(unqualified);
+        return !keys?.has((session ? `S${session[1]}/` : "") + key);
+      }))) throw new Error(`F${fact.id}: missing legacy source bindings`);
+    }
     return result;
   }
   /** Fact and Raw readers keep their supplied frozen path. Foreign facts remain available for their
@@ -5515,7 +5532,7 @@ function renderSemantic(prefix, body, suffix, cap = Infinity, frame = (text) => 
   if (tokens(build(0)) > cap) throw new Error("semantic item capacity cannot hold identity and evidence metadata");
   return build(fit(build, cut2.list.length, cap));
 }
-function renderFact(fact, relations, cap = Infinity, frame = (text) => text, boundAddresses) {
+function renderFact(fact, relations, cap = Infinity, frame = (text) => text) {
   const edges = relations.map((r) => r.fromFact === fact.id ? `${r.kind} F${r.toFact} ${r.strength}` : `inbound ${r.kind} F${r.fromFact} ${r.strength}`);
   const legacy = fact.category && fact.actor ? `[${fact.category}/${fact.actor}] ` : "";
   const sources = fact.source.map((source, index) => {
@@ -5536,7 +5553,7 @@ function renderFact(fact, relations, cap = Infinity, frame = (text) => text, bou
     `${edges.length ? ` \xB7 ${edges.join(" \xB7 ")}` : ""}
 ` + [
       ...fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`],
-      `  source: ${(boundAddresses ?? fact.boundAddresses ?? sources).join(", ")}`
+      `  source: ${(fact.boundAddresses ?? sources).join(", ")}`
     ].join("\n"),
     cap,
     frame
