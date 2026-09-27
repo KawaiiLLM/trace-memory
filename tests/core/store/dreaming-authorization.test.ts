@@ -18,9 +18,9 @@ function fixture(path = ":memory:") {
   const entry = seedEntry(store, session.id, turn.id, "trigger", "user", "rule");
   store.selectSourcePath(session.id, "main", [entry.id]);
   const selected = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-  const evidence = legacyFact(store, selected, [{ entry, address: `T${turn.id}#user` }], "rule");
+  const evidence = legacyFact(store, selected, [{ entry, address: `T${turn.id}#user` }], "rule", "decision");
   const content = { supports: [evidence.id], reason: "evidence", text: "rule", category: "constraint" as const, scope: "project" as const, topics: [], createdAt: "now" };
-  const item = seedKnowledge(store, selected, "project", content.supports, content.text);
+  const item = seedKnowledge(store, selected, "project", content.category, content.supports, content.text);
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   const claim = store.acquireClaim(target, "dreaming", "test")!;
   const range = store.retainKnowledgePoolRange(target, `project:${project.id}`, claim);
@@ -43,17 +43,17 @@ test("64b: writer branch visibility rejects a live session base atomically while
     store.selectSourcePath(session.id, "right", [rootEntry.id, rightEntry.id]);
     const note = (turnId: number, branch: string, sourceEntry: ReturnType<typeof seedEntry>, text: string) =>
       legacyFact(store, { sessionId: session.id, branch, headTurnId: turnId },
-        [{ entry: sourceEntry, address: `T${turnId}#user` }], text);
+        [{ entry: sourceEntry, address: `T${turnId}#user` }], text, "decision");
     const rootFact = note(root.id, "left", rootEntry, "shared evidence");
     const leftFact = note(left.id, "left", leftEntry, "session evidence");
     const writerFact = note(writerBranch === "left" ? left.id : right.id, writerBranch,
       writerBranch === "left" ? leftEntry : rightEntry, "writer evidence");
-    const create = (scope: "session" | "project" | "global", factId: number, handle: string) => {
+    const create = (scope: "session" | "project" | "global", factId: number) => {
       return seedKnowledge(store, { sessionId: session.id, branch: scope === "session" ? "left" : writerBranch,
         headTurnId: scope === "session" ? left.id : writerBranch === "left" ? left.id : right.id },
-        scope, [factId], `${scope} base`);
+        scope, "constraint", [factId], `${scope} base`);
     };
-    const sessionBase = create("session", leftFact.id, "$s"), projectBase = create("project", rootFact.id, "$p"), globalBase = create("global", rootFact.id, "$g");
+    const sessionBase = create("session", leftFact.id), projectBase = create("project", rootFact.id), globalBase = create("global", rootFact.id);
     store.setCurrentPath(session.id, "left", left.id, "native-left");
     store.setCurrentPath(session.id, "right", right.id, "native-right");
     const target = { sessionId: session.id, branch: writerBranch, headTurnId: writerBranch === "left" ? left.id : right.id,
@@ -120,7 +120,7 @@ test("64b: empty-support merge unions both exact parents and split copies its ex
   const merged = fixture();
   const mergedEntry = merged.store.getSourceEntry(merged.target.triggerEntryId!)!;
   const secondFact = legacyFact(merged.store, merged.target,
-    [{ entry: mergedEntry, address: `T${merged.target.headTurnId}#user` }], "second rule");
+    [{ entry: mergedEntry, address: `T${merged.target.headTurnId}#user` }], "second rule", "decision");
   const second = merged.store.commitConsolidationRun({ run: { kind: "manual", sessionId: merged.target.sessionId, createdAt: "now" }, operations: [{
     op: "create", handle: "$2", author: "test", ...merged.content, text: "second rule", supports: [secondFact.id],
   }] });
@@ -149,7 +149,7 @@ test("64b: empty-support merge unions both exact parents and split copies its ex
 test("64b: explicit evidence is not augmented and invalid evidence rolls back the whole batch", () => {
   const f = fixture();
   const evidence = legacyFact(f.store, f.target,
-    [{ entry: f.store.getSourceEntry(f.target.triggerEntryId!)!, address: `T${f.target.headTurnId}#user` }], "replacement evidence");
+    [{ entry: f.store.getSourceEntry(f.target.triggerEntryId!)!, address: `T${f.target.headTurnId}#user` }], "replacement evidence", "decision");
   const another = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{
     op: "create", handle: "$2", author: "test", ...f.content, text: "another rule",
   }] });

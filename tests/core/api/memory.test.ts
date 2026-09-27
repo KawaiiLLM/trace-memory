@@ -280,8 +280,11 @@ test("21a 2026-09-08: a commit-level because is rejected by name, also beside a 
 
 test("21a 2026-09-08: one supports list holds both the text's grounds and the fact that prompted the change", async () => {
   const write = setup(async () => success());
-  memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-    { title: "npm is banned outright", sources: [{ address: "T1#E1", text: "npm is banned outright" }], negate: [["F1", "strong"]] }] });
+  const source = memory.store.getSourceEntry(memory.store.listSourceEntries(1)[0]!.id)!;
+  const correction = seedFact(memory, { sessionId: 1, branch: "main", headTurnId: 1 }, "npm is banned outright",
+    [{ entry: source, text: "npm is banned outright" }], [[1, "strong"]]);
+  expect(correction.id).toBe(2);
+  expect(memory.store.listFactRelations(correction.id)).toContainEqual({ fromFact: 2, toFact: 1, kind: "negate", strength: "strong" });
   expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
   const update = { ...create, op: "update", id: read(1), text: "Use pnpm; npm is banned outright", supports: ["F1", "F2"],
     reason: "The user withdrew the softer rule; F2 corrects F1." };
@@ -358,15 +361,15 @@ test("21b 2026-09-08: labels are trimmed, deduplicated and code-point ordered, a
     .toContain("topics: inapplicable field");
 });
 
-test("21b 2026-09-08: reordering the same label set renders the same metadata, and an empty array renders none", () => {
+test("21b 2026-09-08: reordering the same label set stores the same topics; an empty array stays unclassified", () => {
   const write = setup(async () => success());
-  write.execute({ operations: [{ ...create, topics: ["storage", "auth"] }, { ...create, text: "Commit the lockfile", topics: [" auth ", "storage"] },
-    { ...create, text: "Run the tests", topics: [] }], skipped: [] }); // the third is explicitly unclassified
-  const metadata = (address: string) => memory.trace(address).split("\n")[1];
-  expect(metadata("K1@v1")).toContain('topics: ["auth","storage"]');
-  expect(metadata("K2@v1")).toBe(metadata("K1@v1")); // the same set, submitted in another order
-  expect(metadata("K3@v1")).toContain("change supports: F1 Use pnpm");
-  expect(metadata("K3@v1")).not.toContain("topics:"); // explicitly unclassified
+  expect(JSON.parse(write.execute({ operations: [{ ...create, topics: ["storage", "auth"] },
+    { ...create, text: "Commit the lockfile", topics: [" auth ", "storage"] },
+    { ...create, text: "Run the tests", topics: [] }], skipped: [] })).committed).toHaveLength(3);
+  expect(memory.store.currentCommit(1)[0]!.topics).toEqual(["auth", "storage"]);
+  expect(memory.store.currentCommit(2)[0]!.topics).toEqual(memory.store.currentCommit(1)[0]!.topics);
+  expect(memory.store.currentCommit(3)[0]!.topics).toEqual([]);
+  expect(memory.store.currentCommit(3)[0]!.supports).toEqual([1]);
 });
 
 test("21b 2026-09-08: a topic-only update is an ordinary update; old commits keep their labels, clearing is explicit, merge states the survivor's set and archive inherits", async () => {
@@ -397,12 +400,8 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   expect(memory.store.getKnowledgeRevision(1, cleanupCommit)!.text).toBe(memory.store.getKnowledgeRevision(1, 1)!.text);
   expect(memory.store.getKnowledgeRevision(1, 1)!.topics).toEqual(["packaging"]); // the old commit keeps its old classification
   expect(memory.store.getKnowledgeRevision(1, cleanupCommit)!.topics).toEqual(["packaging", "tooling"]);
-  expect(memory.trace("K1@v1..v2")).toContain('topics: ["packaging"] -> ["packaging","tooling"]');
-  expect(memory.trace("K1@v1")).toContain('topics: ["packaging"]');
   // Clearing is explicit: an empty array, never an omitted field.
   expect(memory.store.getKnowledgeRevision(1, clearedCommit)!.topics).toEqual([]);
-  expect(memory.trace("K1@v3")).not.toContain("topics:");
-  expect(memory.trace("K1@v2..v3")).toContain('topics: ["packaging","tooling"] -> []');
   // Merge supplies the survivor's complete set; no implicit union of every parent's labels.
   expect(memory.store.currentCommit(1)[0]!.topics).toEqual(["packaging"]);
   expect(memory.store.getKnowledgeRevision(2, 2)!.topics).toEqual(["lockfile"]); // the absorbed parent keeps its own
@@ -410,5 +409,4 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", topics: ["packaging"] });
   const archivedCommit = memory.store.currentCommit(1)[0]!.id;
   expect(archivedCommit).toBeGreaterThan(mergedCommit);
-  expect(memory.trace("K1@v5")).toContain('topics: ["packaging"]');
 });

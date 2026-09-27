@@ -25,7 +25,7 @@ function fact(store: Store, sessionId: number, branch: string, turnId: number, a
   return legacyFact(store, { sessionId, branch, headTurnId: turnId }, [{ entry: bound, address }], `evidence ${address}`);
 }
 function knowledge(store: Store, path: KnowledgePath, factId: number, label: string) {
-  return commitKnowledge(store, path, "global", [factId], label);
+  return commitKnowledge(store, path, "global", "understanding", [factId], label);
 }
 
 /** Independent preserved route: one ordinary pathSnapshot/factOnPath evaluation per direct support. */
