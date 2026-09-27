@@ -47,8 +47,8 @@ test("17a 2026-09-08: attach imports earlier native history, preserves repeated 
     const entries = hydrate(h.memory.pendingEntries(1, "main", 2), h.memory.store);
     expect(entries.map(e => [e.turnId, e.role, e.text])).toEqual([[1, "user", "same"], [1, "assistant", "same answer"], [1, "assistant", "same answer"], [2, "user", "same"], [2, "assistant", "same answer"], [2, "assistant", ""]]);
     expect(new Set(entries.map(e => e.nativeId)).size).toBe(6);
-    expect(h.memory.trace("T1#assistant", { full: true })).toBe("[T1#E2@text] assistant: same answer\n[T1#E3@text] assistant: same answer");
-    expect(h.memory.trace("T2#E3@thinking", { full: true })).toContain("private");
+    expect(h.memory.trace("T1@assistant", { full: true })).toBe("[T1#E2@assistant] assistant: same answer\n[T1#E3@assistant] assistant: same answer");
+    expect(h.memory.trace("T2#E3@assistant", { full: true })).toContain("private");
     await h.emit("session_start");
     expect(hydrate(h.memory.pendingEntries(1, "main", 2), h.memory.store)).toEqual(entries);
     expect(h.memory.store.getSession(2)).toBeNull();
@@ -89,12 +89,12 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bi
     const oldView = renderEntry(before[1]!, h.memory.config.render).content;
     await h.emit("tool_result", { toolCallId: "call", toolName: "bash", input: { command: "check" }, content: [{ type: "text", text: "late result" }], isError: false });
     await h.answer("late assistant");
-    const read = input.tools.find(t => t.name === "trace")!.execute({ address: "T1#t1", full: true });
+    const lateResult = hydrate(h.memory.store.sourcePath(1, "main", 1), h.memory.store).find(entry => entry.role === "toolResult")!;
+    const read = input.tools.find(t => t.name === "trace")!.execute({ address: `T1#E${lateResult.entryOrdinal}`, full: true });
     expect(read).toContain("late result");
     const note = input.tools.find(t => t.name === "note")!;
-    const lateResult = hydrate(h.memory.store.sourcePath(1, "main", 1), h.memory.store).find(entry => entry.role === "toolResult")!;
-    expect(note.execute({ facts: [{ text: "Late evidence", source: [`T1#E${lateResult.entryOrdinal}`] }] })).toContain("rejected:");
-    const held = JSON.parse(note.execute({ facts: [{ slot: "$1", text: "The first response was produced.", source: [`T1#E${before[1]!.entryOrdinal}`] }] }));
+    expect(note.execute({ facts: [{ title: "Late evidence", sources: [{ address: `T1#E${lateResult.entryOrdinal}`, text: "Late evidence" }] }] })).toContain("rejected:");
+    const held = JSON.parse(note.execute({ facts: [{ slot: "$1", title: "First response", sources: [{ address: `T1#E${before[1]!.entryOrdinal}`, text: "The first response was produced." }] }] }));
     expect(held.held).toEqual(["$1"]);
     expect(h.memory.store.listSessionFacts(1)).toEqual([]);
     input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
@@ -110,7 +110,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bi
     expect(audit).toMatchObject({ branch: "main", viewVersion: "50-v1-whitespace-pricing", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
     await h.emit("session_start");
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)).toEqual(after);
-    expect(h.memory.trace("T1#t1", { full: true })).toContain("late result");
+    expect(h.memory.trace(`T1#E${lateResult.entryOrdinal}`, { full: true })).toContain("late result");
     const next = TraceMemory(join(h.dir, "trace.db"), async raw => {
       const forkInput = raw as NotingAgentInput;
       // 29b: with the whole target visible the fork supplies no Raw body, so the only entry text it
@@ -267,8 +267,8 @@ test("33: thinking-only messages are stored for explicit reads, never added to a
     await h.emit("agent_settled"); await h.drain();
     expect(h.conversations).toHaveLength(0); // answered-Turn trigger superseded 2026-09-08 by 17b
     expect(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).map(e => e.role)).toEqual(["user", "assistant"]);
-    expect(h.memory.trace("T1#E2@thinking", { full: true })).toContain("private reasoning");
-    expect(h.memory.trace("T1@text", { full: true })).not.toContain("private reasoning");
+    expect(h.memory.trace("T1#E2@assistant", { full: true })).toContain("private reasoning");
+    expect(() => h.memory.trace("T1@text", { full: true })).toThrow(/invalid public trace address/);
     expect(compacted(h.memory.compact(1, "main", 1))).not.toContain("private reasoning");
   } finally { await h.dispose(); }
 });
