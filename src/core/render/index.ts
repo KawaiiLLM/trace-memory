@@ -498,8 +498,7 @@ export function renderSemantic(prefix: string, body: string, suffix: string, cap
   if (tokens(build(0)) > cap) throw new Error("semantic item capacity cannot hold identity and evidence metadata");
   return build(fit(build, cut.list.length, cap));
 }
-export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity, frame: (text: string) => string = text => text,
-  boundAddresses?: readonly string[]): string {
+export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity, frame: (text: string) => string = text => text): string {
   const edges = relations.map((r) => r.fromFact === fact.id
     ? `${r.kind} F${r.toFact} ${r.strength}` : `inbound ${r.kind} F${r.fromFact} ${r.strength}`);
   const legacy = fact.category && fact.actor ? `[${fact.category}/${fact.actor}] ` : "";
@@ -515,7 +514,7 @@ export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity
   }
   return renderSemantic(`[F${fact.id}] ${fact.createdAt} ${legacy}${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`, fact.text,
     `${edges.length ? ` · ${edges.join(" · ")}` : ""}\n` + [...(fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`]),
-      `  source: ${(boundAddresses ?? fact.boundAddresses ?? sources).join(", ")}`].join("\n"), cap, frame);
+      `  source: ${(fact.boundAddresses ?? sources).join(", ")}`].join("\n"), cap, frame);
 }
 
 /** Search previews keep identity outside the optional field set. Unlike complete semantic records,
