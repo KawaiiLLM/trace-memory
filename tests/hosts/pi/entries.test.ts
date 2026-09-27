@@ -175,7 +175,9 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
   try {
     await h.prompt("check"); await h.answer("observed");
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    tools[2]!.execute({ facts: [{ text: "A useful fact", source: ["T1#E1"] }] });
+    const written = JSON.parse(tools[2]!.execute({ facts: [{ title: "Useful observation", sources: [{ address: "T1#E1", text: "A useful fact" }] }] }));
+    expect(written.results[0]).not.toMatch(/^rejected:/);
+    expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
     await h.emit("tool_result", { toolName: "read", input: { path: "large" }, content: [{ type: "text", text: "head " + "word ".repeat(60000) + " tail" }], isError: false });
     const entries = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
     expect(tokens(entries.map(e => e.raw).join("\n\n"))).toBeGreaterThan(20000);
@@ -221,7 +223,8 @@ test("17a 2026-09-08: forks reuse shared identities and ordinals but native shor
       .toEqual([{ lineage: "fork-native-session", branch }, { lineage: "pi-test", branch: "main" }]);
     const fork = hydrate(h.memory.pendingEntries(1, branch, 1), h.memory.store)[0]!;
     const manual = h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
-    expect(JSON.parse(manual[2]!.execute({ facts: [{ text: "Sibling result", source: [`T1#E${original.entryOrdinal}`] }] })).results[0]).toMatch(/^rejected:/);
+    expect(JSON.parse(manual[2]!.execute({ facts: [{ title: "Sibling result", sources: [{ address: `T1#E${original.entryOrdinal}`, text: "Sibling result" }] }] })).results[0])
+      .toMatch(/^rejected: invalid source/);
     expect([original.nativeId, fork.nativeId]).toEqual(["collision", "collision"]);
     expect(original.nativeLineage).not.toBe(fork.nativeLineage);
     expect([initial[1]!.calls[0]!.ordinal, original.calls[0]!.ordinal, fork.calls[0]!.ordinal]).toEqual([1, 2, 3]);
@@ -230,9 +233,9 @@ test("17a 2026-09-08: forks reuse shared identities and ordinals but native shor
     try {
       expect(hydrate(reopened.pendingEntries(1, branch, 1), reopened.store)).toEqual([fork]);
       // 23c: `full` renders the stored arguments under the entry view's labels, values uncut.
-      expect(reopened.trace("T1#t1", { full: true })).toContain('bash(command="first")');
-      expect(reopened.trace("T1#t2", { full: true })).toContain('bash(command="original tail")');
-      expect(reopened.trace("T1#t3", { full: true })).toContain('bash(command="fork tail")');
+      expect(reopened.trace(`T1#E${initial[1]!.entryOrdinal}`, { full: true })).toContain('bash(command="first")');
+      expect(reopened.trace(`T1#E${original.entryOrdinal}`, { full: true })).toContain('bash(command="original tail")');
+      expect(reopened.trace(`T1#E${fork.entryOrdinal}`, { full: true })).toContain('bash(command="fork tail")');
     } finally { reopened.close(); }
   } finally { noter.close(); await h.dispose(); }
 });
@@ -251,10 +254,13 @@ test("17a 2026-09-08: shared-call fork results retain both originals through unr
     const branch = h.entries.filter(e => e.type === "custom").at(-1)!.data.branch;
     expect(branch).not.toBe("main");
     await h.emit("tool_result", { toolCallId: "shared", toolName: "bash", input: {}, content: [{ type: "text", text: "RESULT B" }], isError: true });
-    const full = h.memory.trace("T1#t1", { full: true });
-    expect(full).toContain(`[T1#E2@shared] bash(command="check", timeout=20)`); // 23c: `full` under the entry view's own labels
-    expect(full.match(/RESULT [AB]/g)).toEqual(["RESULT A", "RESULT B"]);
-    expect(full).toMatch(/bash success:[\s\S]*RESULT A[\s\S]*bash failure:[\s\S]*RESULT B/);
+    const results = hydrate(h.memory.store.listSourceEntries(1), h.memory.store).filter(e => e.role === "toolResult");
+    expect(results).toHaveLength(2);
+    expect(h.memory.trace("T1#E2", { full: true })).toContain(`[T1#E2@assistant] bash(command="check", timeout=20)`);
+    const first = h.memory.trace(`T1#E${results[0]!.entryOrdinal}`, { full: true });
+    const second = h.memory.trace(`T1#E${results[1]!.entryOrdinal}`, { full: true });
+    expect(first).toContain(`bash success: ${JSON.stringify({ content: [{ type: "text", text: "RESULT A" }] })}`);
+    expect(second).toContain(`bash failure: ${JSON.stringify({ content: [{ type: "text", text: "RESULT B" }] })}`);
     expect(hydrate(h.memory.pendingEntries(1, branch, 1), h.memory.store).flatMap(e => e.calls.map(c => c.result).filter(Boolean)).join("\n")).not.toContain("RESULT A");
   } finally { await h.dispose(); }
 });
@@ -289,8 +295,8 @@ test("17a 2026-09-08: huge native JSON arguments and results remain byte-exact t
     expect(before.raw).toBe(JSON.stringify(message));
     // 23c: `full` renders the same labels as every other view, the stored value bytes uncut â€” the
     // argument strings are JSON-encoded exactly as they were stored, and the result is the raw string.
-    expect(wholeTrace(h.memory, "T1#t1", { full: true })).toBe(`[T1#E2@huge] bash(command=${JSON.stringify(args.command)}, timeout=42, env=${JSON.stringify(args.env)})`
-      + `\n[T1#E3@huge] bash success: ${JSON.stringify({ content, details })}`);
+    expect(wholeTrace(h.memory, "T1#E2", { full: true })).toBe(`[T1#E2@assistant] bash(command=${JSON.stringify(args.command)}, timeout=42, env=${JSON.stringify(args.env)})`);
+    expect(wholeTrace(h.memory, "T1#E3", { full: true })).toBe(`[T1#E3@observation] bash success: ${JSON.stringify({ content, details })}`);
     const result = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).find(e => e.role === "toolResult")!;
     expect(JSON.parse(result.raw)).toMatchObject({ content, details, toolCallId: "huge", toolName: "bash", isError: false });
     expect(renderEntry(h.memory.store.getSourceEntry(before.id)!, h.memory.config.render).content).toBe(argumentView);
@@ -328,12 +334,12 @@ test("review 2026-09-08 P1: a sibling entry of the same Turn is off-path for fac
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "sibling-only", name: "bash", arguments: { command: "adopt alpha" } }] });
     await h.emit("agent_end");
     let tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(tools[2]!.execute({ facts: [{ text: "Adopt alpha", source: ["T1#E3"] }] })).not.toContain("rejected:");
+    expect(tools[2]!.execute({ facts: [{ title: "Alpha adopted on sibling", sources: [{ address: "T1#E3", text: "Pi agent adopted alpha." }] }] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(branch).not.toBe("main");
     tools = h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
-    expect(tools[2]!.execute({ facts: [{ text: "Adopt alpha", source: ["T1#E3"] }] })).toContain("rejected:");
+    expect(tools[2]!.execute({ facts: [{ title: "Alpha adopted on sibling", sources: [{ address: "T1#E3", text: "Pi agent adopted alpha." }] }] })).toContain("invalid source T1#E3");
     expect(h.memory.store.listBranchFacts(1, branch, 1)).toHaveLength(0); // F1 cites the sibling entry: off this path
     const knowledge = tools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] });
     expect(knowledge).toContain("rejected:");
@@ -367,7 +373,10 @@ test("64b/P1b: frozen Fact isolation remains reader-path local while Knowledge f
     const common = [...h.entries];
     h.persist(reply("ALPHA_ONLY: adopt alpha.")); await h.emit("agent_end");
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(tools[2]!.execute({ facts: [{ text: "Pi agent proposed: ALPHA_ONLY: adopt alpha.", source: ["T1#E2", "T1#E3"] }] })).not.toContain("rejected:");
+    expect(tools[2]!.execute({ facts: [{ title: "Pi agent proposed alpha", sources: [
+      { address: "T1#E2", text: "Pi agent gave a shared interim observation." },
+      { address: "T1#E3", text: "Pi agent proposed: ALPHA_ONLY: adopt alpha." },
+    ] }] })).not.toContain("rejected:");
     expect(h.memory.store.factEntries(1)).toHaveLength(2); // both exact assistant sources remain required by the fact
     expect(tools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
@@ -409,7 +418,7 @@ test("review 2026-09-08 P3: the Noter's active knowledge follows the branch path
     await h.prompt("Investigate"); await h.answer("Shared interim."); const common = [...h.entries];
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "alpha", name: "bash", arguments: { command: "adopt alpha" } }] }); await h.emit("agent_end");
     const t = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(t[2]!.execute({ facts: [{ text: "Use alpha", source: ["T1#E3"] }] })).not.toContain("rejected:");
+    expect(t[2]!.execute({ facts: [{ title: "Alpha policy on sibling", sources: [{ address: "T1#E3", text: "Pi agent proposed using alpha." }] }] })).not.toContain("rejected:");
     expect(t[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "SIBLING_POLICY_ALPHA", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
@@ -444,14 +453,14 @@ test("64b/21a: an archive follows its support owner's foreground without changin
     const common = [...h.entries];
     const write = (branch: string) => h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
     let tools = write("main");
-    expect(tools[2]!.execute({ facts: [{ text: "Use alpha everywhere", source: ["T1#E1"] }] })).not.toContain("rejected:");
+    expect(tools[2]!.execute({ facts: [{ title: "Alpha policy", sources: [{ address: "T1#E1", text: "The user asked to investigate alpha." }] }] })).not.toContain("rejected:");
     expect(tools[3]!.execute({ operations: [{ op: "create", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
       supports: ["F1"], reason: "Admitted from the shared ancestry." }], skipped: [] })).not.toContain("rejected:");
     // The withdrawal is bound to a sibling entry of the same Turn: only this path holds it.
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });
     await h.emit("agent_end");
     tools = write("main");
-    expect(tools[2]!.execute({ facts: [{ text: "Alpha is withdrawn", source: ["T1#E4"] }] })).not.toContain("rejected:");
+    expect(tools[2]!.execute({ facts: [{ title: "Alpha withdrawn", sources: [{ address: "T1#E4", text: "Pi agent withdrew alpha on this path." }] }] })).not.toContain("rejected:");
     const base = readHandle(tools, "K1");
     expect(tools[3]!.execute({ operations: [{ op: "archive", id: base, supports: ["F2"], reason: "The user withdrew the rule on this path." }], skipped: [] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
@@ -485,17 +494,17 @@ test("23 2026-09-09: the Pi extractor unwraps a real tool-result message shape â
     expect(piResultText(stored.calls[0]!.result!)).toEqual({ text: "first block\n[image omitted]\nthird block", details: JSON.stringify(details) });
     // Core applies the registered extractor and never inspects the envelope itself.
     expect(renderEntry(stored, h.memory.config.render, h.memory.resultText).content)
-      .toBe("[T1#E3@call-1] read success: first block\n[image omitted]\nthird block\n[... 37 characters of details truncated]");
+      .toBe("[T1#E3@observation] read success: first block\n[image omitted]\nthird block\n[... 37 characters of details truncated]");
     // An empty `details` object is not dropped structured data, so nothing is marked for it.
     expect(piResultText(JSON.stringify({ content: [{ type: "text", text: "plain" }], details: {} }))).toEqual({ text: "plain" });
     // A result string that is not this host's envelope is the string itself.
     expect(piResultText("not json")).toEqual({ text: "not json" });
     // `full` still renders the stored envelope uncut.
-    expect(h.memory.trace("T1#t1", { full: true })).toContain(JSON.stringify({ content, details }));
+    expect(h.memory.trace("T1#E3", { full: true })).toContain(JSON.stringify({ content, details }));
   } finally { await h.dispose(); }
 });
 
-test("33: the Noter carries exact entry/block labels with opaque call IDs, not native message identity",  async () => {
+test("33/93: the Noter carries whole-entry role labels, not native message identity",  async () => {
   const h = host({ ...quiet, "noting.forkModeDefault": false });
   try {
     h.provider(async () => reply("Done."));
@@ -507,10 +516,10 @@ test("33: the Noter carries exact entry/block labels with opaque call IDs, not n
     await h.commands.get("trace").handler("catchup", h.ctx); // the whole turn, tool result included
     for (let i = 0; i < 40 && !h.conversations.length; i++) await h.drain();
     const sent = String(h.conversations.at(-1)!.messages[0]!.content);
-    expect(sent).toContain("[T1#E1@text] user: ");
-    expect(sent).toContain("[T1#E2@text] assistant: ");
-    expect(sent).toContain(`[T1#E2@native-call-id-9] bash(command="pnpm install")`);
-    expect(sent).toContain("[T1#E3@native-call-id-9] bash success: done");
+    expect(sent).toContain("[T1#E1@user] user: ");
+    expect(sent).toContain("[T1#E2@assistant] assistant: ");
+    expect(sent).toContain(`[T1#E2@assistant] bash(command="pnpm install")`);
+    expect(sent).toContain("[T1#E3@observation] bash success: done");
     expect(sent).not.toContain("[entry ["); // no native-identity header
     expect(sent).not.toContain("tool="); // the 17a label shape is gone with it
     // The identities are still bound, in storage and in the run audit.
