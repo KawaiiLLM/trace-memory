@@ -15,7 +15,7 @@ import { budgetMaterial, compactText, rawWindowTokens, injectionText, knowledgeB
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { suppliedHandles } from "../../dreaming-skips.ts";
-import { fact as seedFact, facts as seedFacts, legacyFacts } from "../../support/seed.ts";
+import { fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts } from "../../support/seed.ts";
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: NotingAgentInput[], scenarios: AdmittedDreamerScenarios;
 const time = "2026-09-08T00:00:00Z";
@@ -45,7 +45,8 @@ function seeded() {
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const user = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store).find(e => e.role === "user")!;
   expect(seedFact(memory, path, "Package manager decision", [{ entry: user, text: "Use pnpm" }]).id).toBe(1);
-  expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain('"committed"');
+  expect(seedKnowledge(memory.store, path, "project", "constraint", [1], "The project uses pnpm",
+    { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [] } }).knowledgeId).toBe(1);
   knowledgeBlock = `<knowledge>\n${KNOWLEDGE_RECENCY_NOTICE}\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] The project uses pnpm\n  change supports: F1\n</knowledge>`;
   return { s, t, user, read: (address: string) => tools.find(tool => tool.name === "trace")!.execute({ address, cap: Number.MAX_SAFE_INTEGER }) };
 }
@@ -88,6 +89,7 @@ test("92: fresh N names its target and range, then shares compact Knowledge, fac
   const raw = views(s.id, t.id);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const input = calls[0]! as NotingAgentInput;
+  expect(input.material.harness).toBe("fake");
   expect(input.text).toContain(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`);
   expect(input.material.facts).toHaveLength(1);
   expect(input.material.facts[0]).toContain("[F1] Package manager decision");
@@ -105,6 +107,7 @@ test("29b 2026-09-10: a fork whose whole target is visible injects no Raw and ke
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
     visible: visibleTarget(memory, s.id, "main", t.id) });
   const input = calls[0]! as NotingAgentInput;
+  expect(input.material.harness).toBe("fake");
   expect(input.text).toContain(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`);
   expect(input.material.sources).toEqual([
     `[T${t.id}#E1@user] user`, `[T${t.id}#E2@assistant] assistant`,
@@ -236,13 +239,12 @@ test("20b 2026-09-08 scenario 3: exactly-at fits and one over does not, with lab
  * more Raw than any budget holds still sends each block within its own 10,000-token allowance. */
 function overloaded() {
   const { s, t, user } = seeded();
-  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id };
   for (let i = 0; i < 12; i++) seedFacts(memory, path, Array.from({ length: 20 }, (_, k) => ({
     title: `claim ${i}.${k}`, sources: [{ entry: user, text: `claim ${i}.${k} ` + "word ".repeat(40) }],
   })));
-  for (let i = 0; i < 30; i++) tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.",
-    text: `rule ${i} ` + "word ".repeat(500), category: i % 2 ? "constraint" : "understanding", scope: "project", supports: ["F1"] }], skipped: [] });
+  for (let i = 0; i < 30; i++) seedKnowledge(memory.store, path, "project", i % 2 ? "constraint" : "understanding", [1],
+    `rule ${i} ` + "word ".repeat(500), { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [] } });
   for (let i = 0; i < 6; i++) memory.appendEntry({ sessionId: s.id, nativeLineage: "big", nativeId: `b${i}`, turnId: t.id,
     role: "assistant", text: `entry ${i} ` + "word ".repeat(3000), raw: "", calls: [] });
   return { s, t };
