@@ -41792,6 +41792,40 @@ function rebuiltCompactSegment(selected, index) {
     throw new Error(`native compact boundary ${String(boundary.uuid)} has unknown preservation metadata`);
   return selected.records.slice(index);
 }
+function selectedRebuiltContinuation(records, selected) {
+  const boundary = selected.records.at(-1);
+  if (boundary.type !== "system" || boundary.subtype !== "compact_boundary" || !object6(boundary.compactMetadata) || Object.hasOwn(boundary.compactMetadata, "preservedMessages") || Object.hasOwn(boundary.compactMetadata, "preservedSegment")) return selected;
+  const start = records.indexOf(boundary);
+  const childrenByParent = /* @__PURE__ */ new Map();
+  for (const record3 of records.slice(start + 1)) {
+    if (record3.isSidechain === true || typeof record3.uuid !== "string") continue;
+    const parent2 = nativeParentId(record3);
+    if (parent2 !== null) childrenByParent.set(parent2, [...childrenByParent.get(parent2) ?? [], record3]);
+  }
+  const continuation = [];
+  let parent = boundary.uuid, promptId, parentPosition = start;
+  for (; ; ) {
+    const children = childrenByParent.get(parent) ?? [];
+    if (children.length > 1) throw new Error("native retained context has ambiguous compact tails");
+    const child = children[0];
+    if (!child) break;
+    const childPosition = records.indexOf(child);
+    if (childPosition <= parentPosition || continuation.some((record3) => record3.uuid === child.uuid) || child.uuid === boundary.uuid)
+      throw new Error(`native retained tail cycle at ${child.uuid}`);
+    if (!continuation.length) {
+      if (child.type !== "user" || child.isCompactSummary !== true || child.isVisibleInTranscriptOnly !== true || child.parentUuid !== boundary.uuid || typeof child.promptId !== "string" || !child.promptId)
+        throw new Error(`native compact boundary ${boundary.uuid} has unknown preservation metadata`);
+      promptId = child.promptId;
+    } else if (child.type !== "attachment" && !(child.type === "user" && child.isCompactSummary !== true && child.isVisibleInTranscriptOnly !== true && child.promptId === promptId && typeof child.message?.content === "string" && classifySourceRecord(child) === null)) {
+      throw new Error(`native compact boundary ${boundary.uuid} has unknown preservation metadata`);
+    }
+    continuation.push(child);
+    parent = child.uuid;
+    parentPosition = childPosition;
+  }
+  if (!continuation.length) throw new Error(`native compact boundary ${boundary.uuid} has unknown preservation metadata`);
+  return { ...selected, records: [...selected.records, ...continuation] };
+}
 function nativePreservation(record3, byId) {
   if (record3.type !== "system" || record3.subtype !== "compact_boundary" || typeof record3.uuid !== "string") return null;
   const metadata = object6(record3.compactMetadata) ? record3.compactMetadata : null;
@@ -41893,9 +41927,10 @@ function selectedPreservation(records, selected, byId) {
   return chosen;
 }
 function selectedCcVisibleRecords(records) {
-  const selected = selectedRetentionPath(records);
-  if (selected.problem) throw new Error(selected.problem);
-  if (!selected.leafUuid) return [];
+  const source = selectedRetentionPath(records);
+  if (source.problem) throw new Error(source.problem);
+  if (!source.leafUuid) return [];
+  const selected = selectedRebuiltContinuation(records, source);
   const positions = /* @__PURE__ */ new Map();
   const byId = /* @__PURE__ */ new Map();
   records.forEach((record3, index) => {
@@ -41910,7 +41945,7 @@ function selectedCcVisibleRecords(records) {
     const segment = rebuiltCompactSegment(selected, latestBoundary);
     const ids = new Set(segment.map((record3) => record3.uuid));
     const promptId = segment[1].promptId;
-    for (const id of retainedTail(records, ids, positions.get(selected.leafUuid), (record3) => hasKnowledgeAttachment(record3) || isRebuiltCarrier(record3, promptId))) ids.add(id);
+    for (const id of retainedTail(records, ids, positions.get(source.leafUuid), (record3) => hasKnowledgeAttachment(record3) || isRebuiltCarrier(record3, promptId))) ids.add(id);
     return records.filter((record3) => typeof record3.uuid === "string" && ids.has(record3.uuid));
   }
   const preservation = selectedPreservation(records, selected, byId);
@@ -41920,7 +41955,7 @@ function selectedCcVisibleRecords(records) {
     retained.add(preservation.shape.boundary.uuid);
     for (const record3 of selected.records.slice(preservation.retainedStart)) retained.add(record3.uuid);
   } else for (const id of selectedIds) retained.add(id);
-  const tail = retainedTail(records, retained, positions.get(selected.leafUuid));
+  const tail = retainedTail(records, retained, positions.get(source.leafUuid));
   for (const id of tail) retained.add(id);
   return records.filter((record3) => typeof record3.uuid === "string" && retained.has(record3.uuid));
 }

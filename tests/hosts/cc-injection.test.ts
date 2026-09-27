@@ -266,6 +266,80 @@ test("92 rebuilt source path includes only its strict post-source carrier tail, 
   expect(() => ccVisibleView(tampered, binding)).toThrow("invalid Knowledge envelope");
 });
 
+test.each([false, true])("92 selected compact boundary restores its native summary tail (function carrier: %s)", carrier => {
+  const content = encodeCcInjection(binding, { ...injection("retained body", [27]), knowledgeTokens: 19 });
+  const records: CcNativeRecord[] = [
+    user("source", null, "original"), assistant("reply", "source", "before compact"),
+    { uuid: "boundary", parentUuid: null, logicalParentUuid: "reply", type: "system", subtype: "compact_boundary",
+      compactMetadata: { trigger: "manual", preTokens: 15, postTokens: 300 } },
+    { uuid: "summary", parentUuid: "boundary", type: "user", isCompactSummary: true,
+      isVisibleInTranscriptOnly: true, promptId: "p1", message: { role: "user", content: "summary text" } },
+    ...(carrier ? [{ uuid: "carrier", parentUuid: "summary", type: "user", promptId: "p1",
+      message: { role: "user", content } }] : []),
+  ];
+  expect(selectedCcVisibleRecords(records).map(record => record.uuid)).toEqual(carrier
+    ? ["boundary", "summary", "carrier"] : ["boundary", "summary"]);
+  const visible = ccVisibleView(records, binding);
+  expect([...visible.knowledgeCommitIds]).toEqual(carrier ? [27] : []);
+  expect(visible.knowledgeTokens).toBe(carrier ? 19 : 0);
+  expect([...visible.raw.keys()]).toEqual([]);
+  if (carrier) {
+    const copied = [...records, user("copied", "carrier", content)];
+    expect([...ccVisibleView(copied, binding).knowledgeCommitIds]).toEqual([27]);
+    expect(ccVisibleView(copied, binding).knowledgeTokens).toBe(19);
+    const changed = structuredClone(records);
+    (changed.at(-1)!.message as { content: string }).content = content.replace("retained body", "corrupted body");
+    expect(() => ccVisibleView(changed, binding)).toThrow("invalid Knowledge envelope");
+  }
+  const alternate = [...records, user("other", "reply", "different branch")];
+  expect(selectedCcVisibleRecords(alternate).map(record => record.uuid)).toEqual(["source", "reply", "other"]);
+  expect([...ccVisibleView(alternate, binding).knowledgeCommitIds]).toEqual([]);
+  const sibling = [...records, { uuid: "sibling", parentUuid: "summary", type: "attachment" }];
+  if (carrier) expect(() => selectedCcVisibleRecords(sibling)).toThrow("ambiguous");
+  const missing = records.filter(record => record.uuid !== "summary");
+  expect(() => selectedCcVisibleRecords(missing)).toThrow("unknown preservation metadata");
+  const malformed = structuredClone(records);
+  malformed.find(record => record.uuid === "summary")!.isVisibleInTranscriptOnly = false;
+  expect(() => selectedCcVisibleRecords(malformed)).toThrow("unknown preservation metadata");
+});
+
+test.each([false, true])("92 manual compact native prefix: summary plus command and optional function carrier (%s)", on => {
+  const content = encodeCcInjection(binding, { ...injection("native function body", [31]), knowledgeTokens: 23 });
+  const records: CcNativeRecord[] = [
+    user("source", null, "old"), assistant("reply", "source", "old reply"),
+    { uuid: "boundary", parentUuid: null, logicalParentUuid: "reply", type: "system", subtype: "compact_boundary",
+      compactMetadata: { trigger: "manual", preTokens: 15, postTokens: 291 } },
+    { uuid: "summary", parentUuid: "boundary", type: "user", isCompactSummary: true,
+      isVisibleInTranscriptOnly: true, promptId: "compact-prompt", message: { role: "user", content: "summary" } },
+    ...(on ? [
+      { uuid: "native-attachment-1", parentUuid: "summary", type: "attachment" },
+      { uuid: "native-attachment-2", parentUuid: "native-attachment-1", type: "attachment" },
+      { uuid: "carrier", parentUuid: "native-attachment-2", type: "user", promptId: "compact-prompt",
+        message: { role: "user", content } },
+    ] : []),
+    { uuid: "caveat", parentUuid: on ? "carrier" : "summary", type: "user", isMeta: true,
+      promptId: "compact-prompt", message: { role: "user", content: "<local-command-caveat>" } },
+    { uuid: "command", parentUuid: "caveat", type: "user", promptId: "compact-prompt",
+      message: { role: "user", content: "<command-name>/compact</command-name>" } },
+    { uuid: "stdout", parentUuid: "command", type: "user", promptId: "compact-prompt",
+      message: { role: "user", content: "<local-command-stdout>done" } },
+    { type: "queue-operation", operation: "dequeue" },
+  ];
+  const selected = selectedCcVisibleRecords(records);
+  expect(selected.map(record => record.uuid)).toEqual(records.slice(2, -1).map(record => record.uuid));
+  const view = ccVisibleView(records, binding);
+  expect([...view.knowledgeCommitIds]).toEqual(on ? [31] : []);
+  expect(view.knowledgeTokens).toBe(on ? 23 : 0);
+  expect([...view.raw.keys()]).toEqual([]);
+  // A later real source on another branch supersedes this selected boundary and its entire tail.
+  expect([...ccVisibleView([...records, user("other", "reply", "new branch")], binding).knowledgeCommitIds]).toEqual([]);
+  const sibling = [...records, { uuid: "other-summary", parentUuid: "boundary", type: "user",
+    isCompactSummary: true, isVisibleInTranscriptOnly: true, promptId: "compact-prompt" }];
+  expect(() => selectedCcVisibleRecords(sibling)).toThrow("ambiguous compact tails");
+  const cycle = [...records, { uuid: "summary", parentUuid: "stdout", type: "attachment" }];
+  expect(() => selectedCcVisibleRecords(cycle)).toThrow("native retained tail cycle");
+});
+
 test("92 Prompt Hook attachments count each selected occurrence, not identical user text", () => {
   const content = encodeCcInjection(binding, { ...injection("prompt body", [19]), knowledgeTokens: 7 });
   const promptAttachment = { ...attachment("prompt-hook", "u", content), attachment: {
