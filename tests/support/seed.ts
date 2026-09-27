@@ -1,6 +1,6 @@
 import type { TraceMemory } from "../source-fixture.ts";
 import { commitNoterKnowledge } from "../noting-knowledge-fixture.ts";
-import type { Store, KnowledgePath, SourceEntry } from "../../src/core/store/index.ts";
+import type { Store, KnowledgePath, SourceEntry, SourceEntryMeta, FactCommitInput, RunInput } from "../../src/core/store/index.ts";
 import type { Fact, FactCategory, KnowledgeCategory } from "../../src/core/model/index.ts";
 
 const at = "2026-09-21T00:00:00.000Z";
@@ -34,23 +34,44 @@ export function fact(memory: TraceMemory, path: KnowledgePath, title: string,
   return committed;
 }
 
-/** Historical Store row; preserve each authored source spelling and bind its actual native entry. */
-export function legacyFact(store: Store, path: KnowledgePath, sources: readonly { entry: SourceEntry; address: string }[],
-  text: string, category: FactCategory = "observation"): Fact {
-  if (!sources.length) throw new Error("legacy fact requires bound entries");
-  const result = store.commitNotingRun({ run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
-    facts: [{ turnId: sources[0]!.entry.turnId, category, actor: "user", text, source: sources.map(source => source.address),
-      entryIds: sources.map(source => source.entry.id), createdAt: at }] });
-  if (!result.ok) throw new Error(result.problems.join("; "));
-  return result.facts[0]!;
+type BoundSource = { entry: Pick<SourceEntryMeta, "id" | "turnId" | "entryOrdinal">; address: string };
+type LegacySeed = Pick<FactCommitInput, "text" | "category" | "actor" | "createdAt" | "support" | "negate"> & {
+  sources: readonly BoundSource[];
+};
+type SeedRun = Pick<RunInput, "kind" | "sessionId" | "branch" | "createdAt">;
+
+function legacyRow(seed: LegacySeed): FactCommitInput {
+  if (!seed.sources.length) throw new Error("legacy fact requires bound entries");
+  return { turnId: seed.sources[0]!.entry.turnId, text: seed.text, category: seed.category, actor: seed.actor,
+    createdAt: seed.createdAt, source: seed.sources.map(source => source.address),
+    entryIds: seed.sources.map(source => source.entry.id),
+    ...(seed.support ? { support: seed.support } : {}), ...(seed.negate ? { negate: seed.negate } : {}) };
 }
 
-/** Real N publication path; caller supplies scope, evidence and selected path. */
+/** One historical run; leave local $n and permanent F<n> relations to Store's atomic resolver. */
+export function legacyFacts(store: Store, run: SeedRun, seeds: readonly LegacySeed[]): { runId: number; facts: Fact[] } {
+  const result = store.commitNotingRun({ run, facts: seeds.map(legacyRow) });
+  if (!result.ok) throw new Error(result.problems.join("; "));
+  return { runId: result.runId, facts: result.facts };
+}
+
+/** Single historical row; same construction as a batch, with explicit legacy defaults. */
+export function legacyFact(store: Store, path: KnowledgePath, sources: readonly BoundSource[],
+  text: string, category: FactCategory = "observation"): Fact {
+  return legacyFacts(store, { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
+    [{ sources, text, category, actor: "user", createdAt: at }]).facts[0]!;
+}
+
+/** Real manual or N knowledge publication; caller supplies scope, evidence and selected path. */
 export function knowledge(store: Store, path: KnowledgePath, scope: "global" | "project" | "session",
-  category: KnowledgeCategory, supports: number[], text: string) {
-  const result = commitNoterKnowledge(store, { path, run: { sessionId: path.sessionId, branch: path.branch, createdAt: at },
-    operations: [{ op: "create", handle: "$1", author: "test", text, category, scope,
-      supports, topics: [], reason: "fixture", createdAt: at }] });
+  category: KnowledgeCategory, supports: number[], text: string,
+  run: { kind: "manual" | "noting"; createdAt: string } = { kind: "noting", createdAt: at }) {
+  const operation = { op: "create" as const, handle: "$1", author: "test", text, category, scope,
+    supports, topics: [], reason: "fixture", createdAt: run.createdAt };
+  const recorded = { kind: run.kind, sessionId: path.sessionId, branch: path.branch, createdAt: run.createdAt };
+  const result = run.kind === "manual"
+    ? store.commitConsolidationRun({ path, run: recorded, operations: [operation] })
+    : commitNoterKnowledge(store, { path, run: { sessionId: path.sessionId, branch: path.branch, createdAt: run.createdAt }, operations: [operation] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   if (result.committed.length !== 1) throw new Error("knowledge seed did not commit one revision");
   return result.committed[0]!;
