@@ -430,19 +430,22 @@ export class CcProjection {
         if (!scan.reset && scan.selectedLeafUuid === this.binding.selectedLeafUuid && this.lastResult) {
           headTurnId = this.lastResult.headTurnId;
         } else {
-          const priorLeaf = this.binding.selectedLeafUuid, extension = [] as NonNullable<ReturnType<CcTranscriptScan["node"]>>[];
+          const priorLeaf = this.binding.selectedLeafUuid;
+          let extension: NonNullable<ReturnType<CcTranscriptScan["node"]>>[] = [];
           let continuous = false;
           if (!scan.reset && priorLeaf && scan.selectedLeafUuid && this.lastResult) {
-            let cursor = scan.node(scan.selectedLeafUuid); const seen = new Set<string>();
-            while (cursor && !seen.has(cursor.uuid)) {
-              if (cursor.uuid === priorLeaf) { continuous = true; break; }
-              seen.add(cursor.uuid); extension.push(cursor);
-              cursor = cursor.parentUuid ? scan.node(cursor.parentUuid) : undefined;
-            }
+            // 108: the same shared walk `selectedPath` uses, so a 4-day-old open session's incremental
+            // "continuous" import and a fresh "reset" rebuild never disagree about a parallel batch's
+            // membership. A `problem` here (cycle/missing parent) is simply not continuous, as an
+            // exhausted walk with no match already was; the full rebuild below surfaces it properly.
+            const walk = scan.walkAncestry(scan.selectedLeafUuid, priorLeaf);
+            continuous = walk.reachedStop;
+            if (continuous) extension = walk.nodes;
           }
           let selectedNodes: typeof extension;
           if (continuous) {
-            selectedNodes = extension.reverse();
+            // `extension` is already oldest-first: `walkAncestry` returns forward order.
+            selectedNodes = extension;
             for (const node of selectedNodes) if (ownsEntry(node)) {
               if (node.entryId === undefined) {
                 if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);

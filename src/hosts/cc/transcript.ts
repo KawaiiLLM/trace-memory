@@ -80,6 +80,10 @@ export interface CcNativeNode {
   copyOf?: string;
   /** The parent a tool result names, when the scan continues it from that parent's later copy. */
   namedParent?: string;
+  /** 108: an assistant tool-use row's own API message id (shared, unlike `messageKey`, by every row
+   * Claude Code splits one multi-block message into). Several parallel calls in one assistant message
+   * share it; used only to find their own result rows for `selectedPath`, never as source identity. */
+  apiMessageId?: string;
 }
 
 interface FileStamp { size: number; modifiedMs: number; changedMs: number; device: number; inode: number }
@@ -238,6 +242,9 @@ const messageKey = (source: CcSourceRecord | null): string | undefined => {
   return identity && hash("sha256", JSON.stringify(identity), "base64");
 };
 
+const apiMessageId = (source: CcSourceRecord | null): string | undefined =>
+  source?.kind === "assistant" && typeof source.record.message?.id === "string" ? source.record.message.id : undefined;
+
 const nodeOf = (record: CcNativeRecord, writtenBefore: (uuid: string) => boolean): CcNativeNode | null => {
   const uuid = nativeId(record);
   if (!uuid) return null;
@@ -245,7 +252,7 @@ const nodeOf = (record: CcNativeRecord, writtenBefore: (uuid: string) => boolean
   try {
     return { uuid, parentUuid: nativeParentId(record, writtenBefore), sourceKind: source?.kind ?? null,
       calls: source?.kind === "assistant" ? source.calls.map(call => ({ id: call.callId, name: call.name })) : [], timestamp: source?.timestamp ?? timestamp(record),
-      messageKey: messageKey(source) };
+      messageKey: messageKey(source), apiMessageId: apiMessageId(source) };
   } catch (error) {
     if (!(error instanceof CcNativeLineageError)) throw error;
     return { uuid, parentUuid: null, sourceKind: source?.kind ?? null,
@@ -296,20 +303,72 @@ export class CcTranscriptScan {
     if (!this.problems.includes(problem)) this.problems.push(problem);
   }
 
-  selectedPath(): { leafUuid: string | null; nodes: CcNativeNode[]; problem?: string } {
-    if (!this.selectedLeafUuid) return { leafUuid: null, nodes: [] };
+  private childrenIndex: Map<string, CcNativeNode[]> | undefined;
+  /** 108: Claude Code parents each parallel call under the previous call (one shared native API
+   * message id, `messageKey`'s own doc comment on splitting one message across rows), but parents
+   * each call's result under that call directly, never under another result. So a call node has two
+   * possible children — the next call, and its own result — and a plain single-parent ancestry walk
+   * from whichever result happened to be written last follows only one branch at each step, silently
+   * dropping every other call in the batch along with its result. Neither is an alternate future:
+   * every one of them reached the model in the same turn. Walking forward from the batch's earliest
+   * call (found by `walkAncestry` below) through the "next call" edge at each step, collecting each
+   * call's own result along the way, recovers exactly the members a plain walk misses. Members already
+   * on the path (the leaf's own ancestor chain) are filtered by the caller, not here. */
+  private parallelBatchMembers(firstCallUuid: string): CcNativeNode[] {
+    if (!this.childrenIndex) {
+      const children = new Map<string, CcNativeNode[]>();
+      for (const node of this.nodes.values()) if (node.parentUuid !== null) {
+        const list = children.get(node.parentUuid);
+        if (list) list.push(node); else children.set(node.parentUuid, [node]);
+      }
+      this.childrenIndex = children;
+    }
+    const members: CcNativeNode[] = [];
+    let call: CcNativeNode | undefined = this.node(firstCallUuid);
+    while (call) {
+      const children = this.childrenIndex.get(call.uuid) ?? [];
+      for (const child of children) if (child.sourceKind === "toolResult") members.push(child);
+      const next: CcNativeNode | undefined = children.find(child => child.apiMessageId === call!.apiMessageId);
+      if (next) members.push(next);
+      call = next;
+    }
+    return members;
+  }
+
+  /** The single shared backward walk both `selectedPath` (root-bound) and the importer's incremental
+   * "continuous" extension (bound at its prior leaf) use, so the two never disagree about membership.
+   * `stopAtUuid`, when given, ends the walk there (exclusive, not itself validated or included) and
+   * `reachedStop` reports whether it was found before the root or a lineage problem. */
+  walkAncestry(leafUuid: string, stopAtUuid?: string): { nodes: CcNativeNode[]; problem?: string; reachedStop: boolean } {
     const reverse: CcNativeNode[] = [], seen = new Set<string>();
-    let current = this.node(this.selectedLeafUuid);
+    let current = this.node(leafUuid);
     while (current) {
-      if (seen.has(current.uuid)) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: `native lineage cycle at ${current.uuid}` };
-      if (current.lineageProblem) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: current.lineageProblem };
-      if (current.importProblem) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: current.importProblem };
-      seen.add(current.uuid); reverse.push(current);
+      if (stopAtUuid !== undefined && current.uuid === stopAtUuid) return { nodes: reverse.reverse(), reachedStop: true };
+      if (seen.has(current.uuid)) return { nodes: [], problem: `native lineage cycle at ${current.uuid}`, reachedStop: false };
+      if (current.lineageProblem) return { nodes: [], problem: current.lineageProblem, reachedStop: false };
+      if (current.importProblem) return { nodes: [], problem: current.importProblem, reachedStop: false };
+      seen.add(current.uuid);
+      // 108: entering a parallel batch's earliest call (no ancestor shares its message id): recover
+      // every other call in the batch and each one's own result, in call order, right after it. Pushed
+      // here in reverse of that order: this whole array is reversed once at the end (below).
+      const enteringBatch = current.apiMessageId !== undefined &&
+        (current.parentUuid === null || this.node(current.parentUuid)?.apiMessageId !== current.apiMessageId);
+      if (enteringBatch) {
+        const members = this.parallelBatchMembers(current.uuid).filter(member => !seen.has(member.uuid));
+        for (const member of members.reverse()) { seen.add(member.uuid); reverse.push(member); }
+      }
+      reverse.push(current);
       if (current.parentUuid === null) break;
       current = this.node(current.parentUuid);
-      if (!current) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: `native lineage parent ${reverse.at(-1)!.parentUuid} is missing` };
+      if (!current) return { nodes: [], problem: `native lineage parent ${reverse.at(-1)!.parentUuid} is missing`, reachedStop: false };
     }
-    return { leafUuid: this.selectedLeafUuid, nodes: reverse.reverse() };
+    return { nodes: reverse.reverse(), reachedStop: false };
+  }
+
+  selectedPath(): { leafUuid: string | null; nodes: CcNativeNode[]; problem?: string } {
+    if (!this.selectedLeafUuid) return { leafUuid: null, nodes: [] };
+    const walk = this.walkAncestry(this.selectedLeafUuid);
+    return { leafUuid: this.selectedLeafUuid, nodes: walk.nodes, ...(walk.problem !== undefined ? { problem: walk.problem } : {}) };
   }
 
 }

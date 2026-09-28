@@ -22,6 +22,14 @@ const user = (uuid: string, parentUuid: string | null, promptId: string): CcNati
   timestamp: time(++clock), promptSource: "typed", promptId, message: { role: "user", content: uuid } });
 const assistant = (uuid: string, parentUuid: string): CcNativeRecord => ({ uuid, parentUuid, type: "assistant",
   timestamp: time(++clock), message: { role: "assistant", content: [{ type: "text", text: uuid }] } });
+/** 108: one parallel tool call, split into its own row as Claude Code 2.1.280 does, sharing `msgId`
+ * (its native API message id) with the other calls of the same batch. */
+const assistantToolUse = (uuid: string, parentUuid: string, msgId: string, callId: string): CcNativeRecord => ({ uuid, parentUuid, type: "assistant",
+  timestamp: time(++clock), message: { id: msgId, role: "assistant", content: [{ type: "tool_use", id: callId, name: "Read", input: { file_path: uuid } }] } });
+/** 108: a parallel call's own result, parented under its call directly — never under another result,
+ * as a real pinned-CC-2.1.280 transcript does (ticket 102's Part 2 evidence). */
+const toolResultRow = (uuid: string, parentUuid: string, callId: string, content: string): CcNativeRecord => ({ uuid, parentUuid, type: "user",
+  timestamp: time(++clock), message: { role: "user", content: [{ type: "tool_result", tool_use_id: callId, content }] } });
 const attachment = (uuid: string, parentUuid: string, content: string): CcNativeRecord => ({ uuid, parentUuid, type: "attachment",
   timestamp: time(++clock), attachment: { type: "hook_additional_context", hookEvent: "UserPromptSubmit", content: [content] } });
 
@@ -380,6 +388,24 @@ test("102 requirement 14: an automatic compaction's block ends with Claude Code'
     // Unchanged: the carrier still decodes either way (classifier and `/trace` recognition).
     expect(decodeCcInjection(carrierIn(manual.text), f.visible())).not.toBeNull();
     expect(decodeCcInjection(carrierIn(auto.text), f.visible())).not.toBeNull();
+  } finally { f.close(); }
+});
+
+test("108: several parallel calls' results, each parented under its own call rather than the previous result, all reach the compaction's Raw window", async () => {
+  const f = await fixture();
+  try {
+    // The chain announcing four parallel calls, as a real pinned Claude Code 2.1.280 splits one
+    // message (102 Part 2 evidence, /private/tmp/tm102-review.I2x7dw/pre-compaction.jsonl).
+    await f.append(user("u2", "a1", "p2"),
+      assistantToolUse("call-1", "u2", "msg-batch", "toolu_1"), assistantToolUse("call-2", "call-1", "msg-batch", "toolu_2"),
+      assistantToolUse("call-3", "call-2", "msg-batch", "toolu_3"), assistantToolUse("call-4", "call-3", "msg-batch", "toolu_4"));
+    // Completion (write) order differs from call order — as it did in the real evidence — and each
+    // result parents under its own call, never the previous result. The second append exercises the
+    // importer's incremental "continuous" extension (108 also fixed there, not only the full rebuild).
+    await f.append(toolResultRow("res-3", "call-3", "toolu_3", "R3"), toolResultRow("res-1", "call-1", "toolu_1", "R1"));
+    await f.append(toolResultRow("res-4", "call-4", "toolu_4", "R4"), toolResultRow("res-2", "call-2", "toolu_2", "R2"));
+    const built = (await f.build("res-2"))!;
+    for (const content of ["R1", "R2", "R3", "R4"]) expect(built.text).toContain(content);
   } finally { f.close(); }
 });
 
