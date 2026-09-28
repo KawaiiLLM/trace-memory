@@ -10123,7 +10123,7 @@ var CcTranscriptScan = class {
     const anchor = this.batchOf(prior), read = new Set(this.readIds), walked = /* @__PURE__ */ new Set(), reverse = [];
     let current = this.node(leafUuid);
     while (current && current.uuid !== priorLeafUuid && this.batchOf(current) !== anchor) {
-      if (walked.has(current.uuid) || current.lineageProblem || current.importProblem || current.sourceKind && !read.has(current.uuid)) return null;
+      if (walked.has(current.uuid) || current.selected || current.lineageProblem || current.importProblem || current.sourceKind && !read.has(current.uuid)) return null;
       walked.add(current.uuid);
       reverse.push(current);
       current = current.parentUuid === null ? void 0 : this.node(current.parentUuid);
@@ -10132,7 +10132,7 @@ var CcTranscriptScan = class {
     const batches = /* @__PURE__ */ new Set([anchor, ...reverse.map((node) => this.batchOf(node))]), members = /* @__PURE__ */ new Map();
     for (const uuid5 of this.readIds) if (!walked.has(uuid5)) {
       const node = this.node(uuid5), batch = this.batchOf(node);
-      if (batch === uuid5) continue;
+      if (batch === uuid5 || node.selected) continue;
       if (batches.has(batch)) join4(members, batch, node);
       else if (!read.has(batch)) return null;
     }
@@ -10434,7 +10434,10 @@ var CcTranscriptCursor = class {
     onIngestGap?.(import_node_perf_hooks.performance.now() - sliceStart);
     return finish2();
   }
-  commit(scan, problem) {
+  /** `confirmed`: the rows the caller just published as (part of) the selected path, marked so a later
+   * scan's `pathExtension` never proposes them again, however their UUID resurfaces (98). Empty when the
+   * caller published nothing (a rejected or not-ready scan). */
+  commit(scan, problem, confirmed = []) {
     if (scan.reset) this.unresolvedProblems.clear();
     for (const value of scan.newProblems) this.unresolvedProblems.add(value);
     if (scan.reset) {
@@ -10442,6 +10445,7 @@ var CcTranscriptCursor = class {
       this.callCarriers = scan.callCarriers;
       this.messageKeys = scan.messageKeys;
     }
+    for (const node of confirmed) node.selected = true;
     this.stamp = scan.stamp;
     this.completeOffset = scan.completeOffset;
     this.lineCount = scan.lineCount;
@@ -40735,6 +40739,7 @@ var CcProjection = class {
     };
     let scan;
     let branch = this.binding.branch, selectedEntryIds = null, selectedDelta = [], headTurnId = null, projectionReady = true;
+    let confirmedNodes = [];
     try {
       scan = await this.transcript.scanCooperative(
         this.binding.transcriptPath,
@@ -40760,10 +40765,9 @@ var CcProjection = class {
             continuous = appended !== null;
             if (appended) extension = appended;
           }
-          let selectedNodes;
           if (continuous) {
-            selectedNodes = extension;
-            for (const node of selectedNodes) if (ownsEntry(node)) {
+            confirmedNodes = extension;
+            for (const node of confirmedNodes) if (ownsEntry(node)) {
               if (node.entryId === void 0) {
                 if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                 projectionReady = false;
@@ -40776,11 +40780,10 @@ var CcProjection = class {
             if (selected.problem) {
               addProblem(selected.problem);
               projectionReady = false;
-              selectedNodes = [];
             } else {
-              selectedNodes = selected.nodes;
+              confirmedNodes = selected.nodes;
               selectedEntryIds = [];
-              for (const node of selectedNodes) if (ownsEntry(node)) {
+              for (const node of confirmedNodes) if (ownsEntry(node)) {
                 if (node.entryId === void 0) {
                   if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                   projectionReady = false;
@@ -40793,7 +40796,7 @@ var CcProjection = class {
             }
           }
           if (projectionReady) {
-            headTurnId = [...selectedNodes].reverse().find((node) => node.turnId !== void 0)?.turnId ?? this.lastResult?.headTurnId ?? this.binding.clearedFrom?.compactionTurnId ?? null;
+            headTurnId = [...confirmedNodes].reverse().find((node) => node.turnId !== void 0)?.turnId ?? this.lastResult?.headTurnId ?? this.binding.clearedFrom?.compactionTurnId ?? null;
             const selectedState = continuous ? this.expectedPath : null;
             if (continuous && headTurnId !== null && selectedState) {
               try {
@@ -40812,6 +40815,7 @@ var CcProjection = class {
                   addProblem(rebuilt.problem);
                   projectionReady = false;
                 } else {
+                  confirmedNodes = rebuilt.nodes;
                   selectedEntryIds = [];
                   for (const node of rebuilt.nodes) if (ownsEntry(node)) {
                     if (node.entryId === void 0) {
@@ -40872,7 +40876,7 @@ var CcProjection = class {
       this.expectedPath = null;
       throw error3;
     }
-    this.transcript.commit(completed, problems[0]);
+    this.transcript.commit(completed, problems[0], projectionReady ? confirmedNodes : []);
     const state = problems.length ? "not-ready" : "ready";
     const selectedMembership = selectedEntryIds === null ? null : new Set(selectedEntryIds);
     const newlyImported = selectedEntryIds === null && appendedEntryIds.length ? new Set(appendedEntryIds) : null;
