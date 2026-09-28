@@ -103,6 +103,12 @@ test("CC retry configuration is a native count only and preserves omission", () 
     .toThrow("accepts only maxRetries");
 });
 
+test("CC Dreamer wall-clock bound defaults to thirty minutes, and an explicit value still wins (103)", () => {
+  const f = fixture();
+  expect(resolveCcHostConfig(f.input).coreConfig.dreaming.timeoutMs).toBe(1_800_000);
+  expect(resolveCcHostConfig({ ...f.input, "dreaming.timeoutMs": 44_444 }).coreConfig.dreaming.timeoutMs).toBe(44_444);
+});
+
 test("CC validates flat phase controls once and propagates them through the importer", () => {
   const f = fixture();
   const config = resolveCcHostConfig({ ...f.input, closedSessionScope: "global",
