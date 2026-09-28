@@ -5,10 +5,10 @@ import { applyEdits, modify, type FormattingOptions } from "jsonc-parser";
 import { CC_CONTEXT_HEADROOM, CC_EFFORT_LEVELS, resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
 import type { SettingsRowId } from "../trace-menu.ts";
 
-export type CcSettingId = Exclude<SettingsRowId, `${string}.mode`>;
+export type CcSettingId = SettingsRowId;
 export interface SettingOutcome { saved: boolean; applied: boolean; diagnostic?: string }
 const PHASE_KEYS: Partial<Record<CcSettingId, keyof CcHostConfig>> = {
-  "noting.model": "notingModel", "noting.thinking": "notingThinking",
+  "noting.mode": "noting.forkModeDefault", "noting.model": "notingModel", "noting.thinking": "notingThinking",
   "dreaming.model": "dreaming.model", "dreaming.thinking": "dreaming.thinking",
   closedSessionScope: "closedSessionScope",
 };
@@ -30,11 +30,12 @@ export function editedCcConfig(text: string, id: CcSettingId, value: string, cap
   if (id !== "closedSessionScope" && !input.worker) throw new Error("CC worker must be configured to edit phase settings");
   if (id === "closedSessionScope" && !["off", "project", "global"].includes(value))
     throw new Error("closedSessionScope must be off, project or global");
+  if (id === "noting.mode" && !["fork", "subagent"].includes(value)) throw new Error("CC Noter mode must be fork or subagent");
   if (id.endsWith(".thinking") && !CC_EFFORT_LEVELS.includes(value as typeof CC_EFFORT_LEVELS[number]))
     throw new Error(`thinking must be ${CC_EFFORT_LEVELS.join(", ")}`);
   if (id.endsWith(".model") && (!value.trim() || value === "session" || value === "follow foreground"))
     throw new Error("CC model must be an explicit model id");
-  let output = editJson(text, [key], value);
+  let output = editJson(text, [key], id === "noting.mode" ? value === "fork" : value);
   if (id.endsWith(".model")) {
     const known = Object.hasOwn(input.worker!.contextWindows, value);
     if (known && capacity !== undefined) throw new Error("capacity already exists for this model");

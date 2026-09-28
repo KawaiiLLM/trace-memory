@@ -312,6 +312,21 @@ export const register = (on: any) => {
     const row = selectedSetting;
     if (!row) throw new Error("Trace Memory: no setting selected");
     const label = buildSettingsChoices(reply.settings).find(choice => choice.id === row)?.label ?? row;
+    if (row === "noting.mode") return <Box flexDirection="column"><Text>{label}</Text>
+      <Select key="noting-mode" label="Noter mode" autoFocus
+        options={["subagent", "fork"].map(value => ({ value, label: value }))}
+        onSelect={(value: string) => {
+          void (async () => {
+            try {
+              const result = JSON.parse(await run("setting", [row, value])) as { saved: boolean; applied: boolean; diagnostic?: string };
+              notice = `Setting ${result.saved ? "saved" : "not saved"}; ${result.applied ? "applied" : "not applied"}${result.diagnostic ? `: ${result.diagnostic}` : ""}`;
+              if (result.saved && result.applied) await reload(); else $.ui.invalidate("ui.render");
+            } catch (error) { notice = String(error); $.ui.invalidate("ui.render"); }
+            screen = "settings"; $.ui.invalidate("ui.render");
+          })();
+        }} />
+      <Select key="mode-back" label="Action" options={[back]} onSelect={() => { screen = "settings"; $.ui.invalidate("ui.render"); }} />
+    </Box>;
     if (row === "closedSessionScope") return <Box flexDirection="column"><Text>{label}</Text>
       <Select key="scope-choice" label="Closed sessions" autoFocus
         options={["off", "project", "global"].map(value => ({ value, label: value }))}

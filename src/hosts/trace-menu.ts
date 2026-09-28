@@ -338,15 +338,12 @@ export const TRACE_SETTINGS_FIXTURE: SettingsInput = {
   closedSessionScope: "project",
 };
 
-/** Claude Code has no fork mode (ticket: "the mode column exists on Pi only"), and CC validation
- * accepts neither "follow foreground" as a model nor "inherit" as a thinking level (ticket, Claude
- * Code settings section) — so the Noter row cannot show Pi's fork-tied defaults. This fixture is
- * otherwise identical to `TRACE_SETTINGS_FIXTURE`; see the report for the maintainer question this
- * raises (what CC's own Noter default should be). */
+/** Claude Code now shares Pi's Noter mode key (98) while retaining its explicit fresh-worker model
+ * and thinking requirements. */
 export const TRACE_SETTINGS_FIXTURE_CC: SettingsInput = {
   ...TRACE_SETTINGS_FIXTURE,
   workers: [
-    { phase: "Noter", model: "claude-sonnet-5", thinking: "medium" },
+    { phase: "Noter", mode: "subagent", model: "claude-sonnet-5", thinking: "medium" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" },
   ],
 };

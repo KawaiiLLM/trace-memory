@@ -272,8 +272,10 @@ export class CcCoordinator {
             };
             for (const [section, settings] of Object.entries(value.coreConfig)) {
               if (section === "closedSessionScope") continue;
-              if (settings && typeof settings === "object") for (const [field, current] of Object.entries(settings))
+              if (settings && typeof settings === "object") for (const [field, current] of Object.entries(settings)) {
+                if (section === "noting" && field === "forkModeDefault") continue;
                 fields[`${section}.${field}`] = current;
+              }
               else fields[section] = settings;
             }
             return fields;
@@ -286,8 +288,10 @@ export class CcCoordinator {
             if (next.worker?.contextWindows[model] !== capacity)
               throw new Error(`CC executor cannot hot-apply a changed capacity for ${model}`);
           // No reconciliation or admission: only subsequent tasks observe these replacements.
-          if (next.closedSessionScope !== this.appliedConfig.closedSessionScope)
-            this.importer.memory.configure({ closedSessionScope: next.closedSessionScope });
+          if (next.closedSessionScope !== this.appliedConfig.closedSessionScope ||
+              next.coreConfig.noting.forkModeDefault !== this.appliedConfig.coreConfig.noting.forkModeDefault)
+            this.importer.memory.configure({ closedSessionScope: next.closedSessionScope,
+              noting: { forkModeDefault: next.coreConfig.noting.forkModeDefault } });
           this.importer.applyWorker(next);
           this.scheduler.applyWorker(next.worker);
           this.appliedConfig = next;

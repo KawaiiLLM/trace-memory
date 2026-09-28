@@ -79,11 +79,15 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
       const name = (["Noter", "Dreamer"] as const)[index]!;
       const current = effective?.worker?.phases[phase];
       const saved = config.worker?.phases[phase];
-      const sources = !effective ? { model: "effective configuration unavailable", thinking: "effective configuration unavailable" }
-        : saved && current && (saved.model !== current.model || saved.thinking !== current.thinking)
+      const modeChanged = phase === "noting" && config.coreConfig.noting.forkModeDefault !== active.coreConfig.noting.forkModeDefault;
+      const sources = !effective ? { model: "effective configuration unavailable", thinking: "effective configuration unavailable",
+        ...(phase === "noting" ? { mode: "effective configuration unavailable" } : {}) }
+        : saved && current && (saved.model !== current.model || saved.thinking !== current.thinking || modeChanged)
           ? { ...(saved.model !== current.model ? { model: "saved file differs from running executor" } : {}),
-              ...(saved.thinking !== current.thinking ? { thinking: "saved file differs from running executor" } : {}) } : undefined;
-      return { phase: name, model: current?.model ?? "unavailable", thinking: current?.thinking ?? "unavailable", ...(sources ? { sources } : {}) };
+              ...(saved.thinking !== current.thinking ? { thinking: "saved file differs from running executor" } : {}),
+              ...(modeChanged ? { mode: "saved file differs from running executor" } : {}) } : undefined;
+      return { phase: name, ...(phase === "noting" ? { mode: active.coreConfig.noting.forkModeDefault ? "fork" : "subagent" } : {}),
+        model: current?.model ?? "unavailable", thinking: current?.thinking ?? "unavailable", ...(sources ? { sources } : {}) };
     });
     const settings: SettingsInput = { database: config.dbPath,
       budgets: { global: budgets.global, project: budgets.project, session: budgets.session,

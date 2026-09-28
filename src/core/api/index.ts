@@ -10,6 +10,7 @@ export { memoryFiles, memoryPath, memoryGlob, MEMORY_ROOT, MEMORY_READ_ONLY } fr
 export type { MemoryReader, MemoryPage, MemoryGrepMode, MemoryGrepOptions, MemoryListing } from "./files.ts";
 // 29a/53: core owns only the host-neutral visibility contract; each host reads its own envelopes.
 import type { VisibleView } from "./visible.ts";
+export { selectNotingMode } from "./fork.ts";
 export { deliveredView, knowledgeStateKey, noVisibility } from "./visible.ts";
 export type { InitialContext, KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.

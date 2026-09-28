@@ -45,6 +45,7 @@ export interface CcHostConfig {
   stateDir: string;
   notingModel?: string;
   notingThinking?: string;
+  "noting.forkModeDefault"?: boolean;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
   "noting.triggerTokens"?: number;
@@ -165,7 +166,10 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
     [keys.model, keys.thinking].flatMap(key => input[key as keyof CcHostConfig] === undefined ? [] : [[key, input[key as keyof CcHostConfig]]]))) as Partial<ResolvedCcHostConfig>;
   const coreConfig = validateConfig({
     closedSessionScope,
-    ...(input["noting.triggerTokens"] === undefined ? {} : { noting: { triggerTokens: input["noting.triggerTokens"] } }),
+    ...(input["noting.triggerTokens"] === undefined && input["noting.forkModeDefault"] === undefined ? {} : { noting: {
+      ...(input["noting.triggerTokens"] === undefined ? {} : { triggerTokens: input["noting.triggerTokens"] }),
+      ...(input["noting.forkModeDefault"] === undefined ? {} : { forkModeDefault: input["noting.forkModeDefault"] }),
+    } }),
     ...(input["dreaming.triggerTokens"] === undefined && input["dreaming.timeoutMs"] === undefined ? {} : { dreaming: {
       ...(input["dreaming.triggerTokens"] === undefined ? {} : { triggerTokens: input["dreaming.triggerTokens"] }),
       ...(input["dreaming.timeoutMs"] === undefined ? {} : { timeoutMs: input["dreaming.timeoutMs"] }),

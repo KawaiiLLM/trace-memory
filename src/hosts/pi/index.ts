@@ -12,7 +12,7 @@ import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggle
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
+import { TraceMemory, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -119,6 +119,14 @@ export default function (pi: ExtensionAPI) {
    * at the moment it launches, and handed to the worker as a value: either the parent state to fork
    * at or the reason it was refused. Every condition is rechecked here for every task, so a task
    * queued before a transition cannot bypass one. */
+  const rawUnavailable = (entries: readonly { id: number; turnId: number; nativeId: string }[]): string | undefined =>
+    selectNotingMode({ requested: "fork", publicationPending: false, visible: visible(binding()), pending: () => entries,
+      batch: () => entries }).fallbackReason;
+  const unpublishedKnowledge = (target: TaskTarget): string | undefined => {
+    const delta = memory.injection(target, delivered(target));
+    return delta.knowledgeCommitIds.length || delta.knowledgeStates?.length
+      ? "Knowledge publication: ordinary deliverable material has not landed in the exact parent context" : undefined;
+  };
   const forkLaunch = (context: ExtensionContext, input: NotingAgentInput,
       model: { id: string; provider: string }, piId: string): ForkLaunch | { refused: string } => {
     // 19c cache-miss latch: the requested mode stays fork; admission resolves it to subagent
@@ -341,41 +349,23 @@ export default function (pi: ExtensionAPI) {
    * A view with no Raw at all is unknown coverage, not proven absence, and is refused for the same
    * reason 27a refuses an unknown context measure: nothing about the inherited context is
    * established, so there is no fork base to check a target against. */
-  const rawUnavailable = (entries: readonly { id: number; turnId: number; nativeId: string }[]): string | undefined => {
-    const view = visible(binding());
-    if (!view.raw.size) return "Raw availability: the selected context holds no conversation entry of ours, so nothing establishes that this task's evidence is inherited";
-    const missing = entries.find(entry => !view.raw.has(entry.nativeId));
-    return missing ? `Raw availability: entry ${missing.id} (T${missing.turnId}, native ${missing.nativeId}) of this batch is not in the inherited context:`
-      + " Pi retained no source for it and no compaction carrier supplied its bounded view" : undefined;
-  };
   /** Why a requested fork will not run with inherited context for this task, decided against this
    * host's live state at admission — before anything is frozen, so the refused task is admitted once
    * more as a subagent with fresh material (27c): the cache-miss latch is set, or 29c's Raw
    * availability rule refuses the batch. Undefined means it may fork. Neither refusal is a latch:
    * both are re-decided for every task, and 27c records the reason rather than only its verdict,
    * because the reason is what the run audit and the one warning say. */
-  const unpublishedKnowledge = (target: TaskTarget): string | undefined => {
-    const delta = memory.injection(target, delivered(target));
-    return delta.knowledgeCommitIds.length || delta.knowledgeStates?.length
-      ? "Knowledge publication: ordinary deliverable material has not landed in the exact parent context" : undefined;
-  };
   const forkRefused = (requested: "fork" | "subagent", task?: ForkTask): string | undefined => {
     if (requested !== "fork") return;
     const suppression = suppressed();
     if (suppression) return latchReason(suppression);
-    // Only Noting can fork and therefore requires inherited Raw coverage.
     if (task?.kind !== "noting") return;
-    const unpublished = unpublishedKnowledge(task.target);
-    if (unpublished) return unpublished;
     const view = visible(binding());
-    if (!view.raw.size) return rawUnavailable([]);
-    // 29c: the target is the batch a freeze of this task would select — the pending set this task's
-    // boundary admits, cut to the oldest prefix that fits `noting.batchTokens`. Asking core for it
-    // renders those entries, which is what a freeze costs, so it is asked only once the whole pending
-    // set (a superset of that batch) is known to be missing something at all.
-    const pending = memory.pendingEntries(task.target.sessionId, task.target.branch, task.target.headTurnId);
-    if (!pending.some(entry => !view.raw.has(entry.nativeId))) return;
-    return rawUnavailable(memory.notingBatch(task.target, task.boundary));
+    const delta = memory.injection(task.target, delivered(task.target));
+    return selectNotingMode({ requested,
+      publicationPending: !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length), visible: view,
+      pending: () => memory.pendingEntries(task.target.sessionId, task.target.branch, task.target.headTurnId),
+      batch: () => memory.notingBatch(task.target, task.boundary) }).fallbackReason;
   };
   /** The mode a task of this session will actually run in, for the readiness wait and the budget;
    * the requested mode is still what the run record keeps. */
