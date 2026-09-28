@@ -80,11 +80,7 @@ function buildPendingSection(input) {
     heading: "Pending / trigger",
     noting: pendingRow("Noting", input.noting),
     dreamingHeading: "Dreaming",
-    dreaming: {
-      global: pendingRow("global", input.dreaming.global),
-      project: pendingRow("project", input.dreaming.project),
-      session: pendingRow("session", input.dreaming.session)
-    }
+    dreaming: [pendingRow("pending", input.dreaming.pending), pendingRow("knowledge", input.dreaming.knowledge)]
   };
 }
 function buildSpendSection(input) {
@@ -187,9 +183,8 @@ var TRACE_MENU_FIXTURE = {
   pending: {
     noting: { tokens: 3200, trigger: 1e4 },
     dreaming: {
-      global: { tokens: 0, trigger: 4e3 },
-      project: { tokens: 1500, trigger: 5e3 },
-      session: { tokens: 319, trigger: 1e3 }
+      pending: { tokens: 1819, trigger: 5e3 },
+      knowledge: { tokens: 17300, trigger: 3e4 }
     }
   },
   spend: {
@@ -381,10 +376,8 @@ function renderTraceMenu(input, cc) {
     pendingHeading: model.pending.heading,
     pendingLines: [
       pendingLine("Noting", model.pending.noting),
-      "  Dreaming",
-      pendingLine("global", model.pending.dreaming.global, "    "),
-      pendingLine("project", model.pending.dreaming.project, "    "),
-      pendingLine("session", model.pending.dreaming.session, "    ")
+      `  ${model.pending.dreamingHeading}`,
+      ...model.pending.dreaming.map((row) => pendingLine(row.label, row, "    "))
     ],
     spendLines: [model.spend.sessionLine, `        ${model.spend.phaseLine}`, model.spend.todayLine],
     notices: model.notices,
