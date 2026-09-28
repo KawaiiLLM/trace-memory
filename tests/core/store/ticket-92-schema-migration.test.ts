@@ -56,6 +56,25 @@ function downgrade(db: DatabaseSync) {
   db.exec("PRAGMA foreign_keys=ON");
 }
 
+test("archive-kind upgrade preserves legacy empty-body archives and their missing kind", () => {
+  const f = fixture();
+  const parent = f.store.listKnowledgeRevisions()[0]!;
+  const run = f.store.db.prepare("SELECT run_id FROM knowledge_revisions WHERE id=?").get(parent.id) as { run_id: number };
+  const archive = Number(f.store.db.prepare(`INSERT INTO knowledge_revisions
+    (knowledge_id,parent_id,text,category,scope,supports,support_semantics,op,reason,topics,run_id,created_at,actor_role)
+    VALUES (?,?,'','mechanism','session',?,'change','archive','legacy archived','[]',?,'now','manual')`)
+    .run(parent.knowledgeId, parent.id, JSON.stringify(f.facts), run.run_id).lastInsertRowid);
+  f.store.db.exec("ALTER TABLE knowledge_revisions DROP COLUMN archive_kind");
+  f.store.close();
+  const upgraded = new Store(f.path);
+  try {
+    expect(upgraded.getKnowledgeRevision(parent.knowledgeId, archive)).toMatchObject({ op: "archive", text: "", archiveKind: null });
+    expect(upgraded.db.prepare("SELECT id, text, archive_kind FROM knowledge_revisions WHERE id=?").get(archive))
+      .toEqual({ id: archive, text: "", archive_kind: null });
+    expect(upgraded.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { upgraded.close(); }
+});
+
 test("92 schema upgrade retains legacy rows, source bindings, relation, indexes, ids and second-open state", () => {
   const f = fixture();
   f.store.db.exec("CREATE INDEX legacy_fact_text ON facts(text); CREATE TRIGGER legacy_fact_keep AFTER INSERT ON facts BEGIN SELECT 1; END");
@@ -121,23 +140,26 @@ test("92: only five new knowledge categories write through Store; old revisions 
   } finally { f.store.close(); }
 });
 
-test("92 archive normalizes inherited legacy categories while explicit legacy writes stay forbidden", () => {
-  for (const [legacy, current] of [["mechanism", "understanding"], ["term", "understanding"], ["dispute", "open"]] as const) {
+test("99 budget archive preserves inherited legacy category, body, scope and topics without allowing new legacy categories", () => {
+  for (const legacy of ["mechanism", "term", "dispute"] as const) {
     const f = fixture();
     try {
       const base = f.store.db.prepare("SELECT id,knowledge_id FROM knowledge_revisions").get() as { id: number; knowledge_id: number };
-      f.store.db.prepare("UPDATE knowledge_revisions SET category=? WHERE id=?").run(legacy, base.id);
+      f.store.db.prepare("UPDATE knowledge_revisions SET category=?, topics=? WHERE id=?").run(legacy, '["legacy-topic"]', base.id);
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
       const invalidUpdate = f.store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId: f.session.id, createdAt: "now" },
         operations: [{ op: "update", knowledgeId: base.knowledge_id, baseCommit: base.id, text: "invalid new revision",
           category: legacy, scope: "session", supports: [f.facts[0]!], reason: "old category", topics: [], createdAt: "now" }] });
       expect(invalidUpdate.ok).toBe(false);
       const archive = f.store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
-        operations: [{ op: "archive", knowledgeId: base.knowledge_id, baseCommit: base.id,
+        operations: [{ op: "archive", kind: "budget", knowledgeId: base.knowledge_id, baseCommit: base.id,
           supports: [f.facts[0]!], reason: "Retire legacy item", createdAt: "now" }] });
       if (!archive.ok) throw new Error(archive.problems.join("; "));
-      expect(f.store.getKnowledgeRevision(base.knowledge_id, base.id)!.category).toBe(legacy);
-      expect(f.store.getKnowledgeRevision(base.knowledge_id, archive.committed[0]!.commit)!.category).toBe(current);
+      const parent = f.store.getKnowledgeRevision(base.knowledge_id, base.id)!;
+      const child = f.store.getKnowledgeRevision(base.knowledge_id, archive.committed[0]!.commit)!;
+      expect(parent.category).toBe(legacy);
+      expect(child).toMatchObject({ op: "archive", archiveKind: "budget", text: parent.text,
+        category: parent.category, scope: parent.scope, topics: parent.topics });
       const rejected = f.store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
         operations: [{ op: "create", handle: "$old", author: "manual", text: "invalid", category: legacy,
           scope: "session", supports: [f.facts[0]!], reason: "invalid category", topics: [], createdAt: "now" }] });

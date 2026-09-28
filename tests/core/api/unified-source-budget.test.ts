@@ -101,7 +101,7 @@ test("92: partial semantic reads omit tags; full history paging reveals a tag bu
       const base = `K1#${m.store.versionTag(1, 1)}`;
       const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: base, text: "Current replacement", category: "understanding", scope: "project",
         supports: ["F1"], reason: "Make the large revision historical for the read-ledger test.", topics: [] },
-      { op: "archive", id: `K${firstTrigger.knowledgeId}#${m.store.versionTag(firstTrigger.knowledgeId, firstTrigger.commit)}`, supports: ["F1"], reason: "Retire the initial fixture trigger." }], skipped: [] }));
+      { op: "archive", kind: "budget", id: `K${firstTrigger.knowledgeId}#${m.store.versionTag(firstTrigger.knowledgeId, firstTrigger.commit)}`, supports: ["F1"], reason: "Retire the initial fixture trigger." }], skipped: [] }));
       expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1).version).toBe("K1@v2");
       return { outcome: "success", output: "settled", request };
     });
@@ -129,7 +129,7 @@ test("92: partial semantic reads omit tags; full history paging reveals a tag bu
       expect(edit()).toContain("current: K1@v2");
       expect(drain(read.execute({ address: "K1@v1", itemBudget: null }))).toContain(oldTag);
       expect(edit()).toContain("base is not the latest effective applicable revision; current: K1@v2");
-      write.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}#${m.store.versionTag(trigger.knowledgeId, trigger.commit)}`,  supports: ["F1"], reason: "Retire the explicit fixture trigger." }], skipped: [] });
+      write.execute({ operations: [{ op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${m.store.versionTag(trigger.knowledgeId, trigger.commit)}`,  supports: ["F1"], reason: "Retire the explicit fixture trigger." }], skipped: [] });
       return { outcome: "success", output: "read ledger checked", request };
     });
     if (result.outcome !== "success") throw new Error(JSON.stringify(result));

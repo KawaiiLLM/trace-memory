@@ -51,7 +51,7 @@ test("73: windows with no room even for a bare receipt emit nothing — no title
     if (!created.ok) throw new Error(JSON.stringify(created));
     const base = created.committed[0]!;
     const archived = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: at },
-      operations: [{ op: "archive", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [noted.facts[0]!.id], reason: "archive", createdAt: at }] });
+      operations: [{ op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [noted.facts[0]!.id], reason: "archive", createdAt: at }] });
     if (!archived.ok) throw new Error(JSON.stringify(archived));
     const visible = noVisibility(); visible.knowledgeCommitIds.add(base.commit); // a status notice is now due
     Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, sharedAllowanceTokens: 1 });

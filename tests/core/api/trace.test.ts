@@ -51,7 +51,7 @@ async function consolidation(...operations: Operation[]) {
       }
       if (operation.op === "archive") {
         const id = exact(operation.knowledgeId, operation.baseCommit);
-        return { op: "archive", id, supports: operation.supports.map(value => `F${value}`), reason: operation.reason };
+        return { op: "archive", kind: "budget", id, supports: operation.supports.map(value => `F${value}`), reason: operation.reason };
       }
       if (operation.op === "merge") {
         const id = exact(operation.intoKnowledgeId, operation.intoBaseCommit), absorb = operation.absorb.map(parent => exact(parent.knowledgeId, parent.baseCommit));
@@ -62,7 +62,7 @@ async function consolidation(...operations: Operation[]) {
     });
     const triggerAddress = exact(trigger.knowledgeId, trigger.commit);
     const supplied = new Set(suppliedHandles(input.material.changed)); for (const address of addressed) supplied.delete(address);
-    const receipt = JSON.parse(write.execute({ operations: [...converted, { op: "archive", id: triggerAddress, supports: [`F${triggerFact}`], reason: "Retire the explicit trace trigger." }],
+    const receipt = JSON.parse(write.execute({ operations: [...converted, { op: "archive", kind: "budget", id: triggerAddress, supports: [`F${triggerFact}`], reason: "Retire the explicit trace trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied item." })) }));
     committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
       .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId,
@@ -152,10 +152,10 @@ test("merged knowledge retain their snapshot and frozen survivor revision; archi
   expect(memory.trace(`K${absorbed}`)).toContain(`merged_into: K1@${merged.commit} (from K2@2)`);
   expect(memory.trace(version(absorbed, 2))).toContain(`children: K1@${merged.commit}`);
   expect(memory.trace(version(absorbed, 2))).not.toContain("later survivor");
-  const archivedRevision = (await consolidation({ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: survivor, baseCommit: later.commit, supports: [4], createdAt: time }))[0]!;
+  const archivedRevision = (await consolidation({ op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: survivor, baseCommit: later.commit, supports: [4], createdAt: time }))[0]!;
   expect(memory.trace(`K${survivor}`)).not.toContain(`[K1@${archivedRevision.commit}]`);
-  expect(memory.trace(`K${survivor}`, { versions: "history" })).toContain(`[K1@${archivedRevision.commit}] [reference/project] \n  change supports: F4`);
-  expect(memory.trace(version(survivor, archivedRevision.commit), { fields: ["text", "supports", "status", "reason"] })).toContain(`status: archive ${dreamTime}`);
+  expect(memory.trace(`K${survivor}`, { versions: "history" })).toContain(`[K1@${archivedRevision.commit}] [reference/project] later survivor\n  change supports: F4`);
+  expect(memory.trace(version(survivor, archivedRevision.commit), { fields: ["text", "supports", "status", "reason"] })).toContain(`status: archive (budget) ${dreamTime}`);
   expect(memory.trace(`K${survivor}`, { versions: "history", fields: ["reason"] })).toContain(`K1@${archivedRevision.commit} reason: ${archived}`);
 });
 

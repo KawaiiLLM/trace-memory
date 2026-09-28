@@ -94,7 +94,7 @@ test("64b: stale guidance follows split descendants instead of reporting the old
   expect(split.ok).toBe(true);
   if (!split.ok) return;
   const before = f.store.listKnowledgeRevisions().length;
-  const stale = f.store.commitConsolidationRun({ run: f.run, path: f.target, operations: [{ op: "archive",
+  const stale = f.store.commitConsolidationRun({ run: f.run, path: f.target, operations: [{ op: "archive", kind: "budget",
     knowledgeId: f.stable.knowledgeId, baseCommit: f.stable.commit, supports: [], reason: "stale", createdAt: at }] });
   expect(stale.ok).toBe(false);
   const problem = stale.ok ? "" : stale.problems.join("; ");

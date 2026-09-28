@@ -137,6 +137,8 @@ export interface KnowledgeRevision {
   /** Legacy lists ground the complete result; new lists contain only this revision's change grounds. */
   supportSemantics: SupportSemantics;
   op: KnowledgeOp;
+  /** Legacy archives have no kind. */
+  archiveKind?: "budget" | "invalid" | null;
   /** The commit message: why this change was made. Never evidence, scope or applicability (ticket 21a). */
   reason: string;
   /** Subject labels of this revision: classification only, never scope, lifecycle or citation rights (21b). */
@@ -267,6 +269,7 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
 // ---- Memory tool input ----
 export interface MemoryOperation {
   op: "create" | "update" | "merge" | "split" | "archive";
+  kind?: "budget" | "invalid";
   id?: string;
   absorb?: string[];
   children?: { text: string; category: KnowledgeCategory; topics: string[] }[];
@@ -277,6 +280,12 @@ export interface MemoryOperation {
   reason?: string;
   topics?: string[];
 }
+// Syntactic floor only: models supply the grounds/evidence; code rejects an empty or bare status label.
+export function substantiveArchiveStatement(text: unknown): text is string {
+  return typeof text === "string" && !!text.trim() &&
+    !/^(?:invalid|obsolete|无效|过时|失效)[。.!！]?$/iu.test(text.trim());
+}
+
 export interface MemoryBatch {
   operations: MemoryOperation[];
   /** The Consolidator skips a range fact; the Dreamer skips a supplied knowledge handle (59). */

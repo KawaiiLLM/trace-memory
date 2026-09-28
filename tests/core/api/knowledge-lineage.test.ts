@@ -71,7 +71,7 @@ function fixture() {
       });
       const triggerAddress = tagged(store, trigger.knowledgeId, trigger.commit), supplied = new Set(suppliedHandles(input.material.changed));
       supplied.delete(history(store, trigger.knowledgeId, trigger.commit)); for (const address of addressed) supplied.delete(address);
-      const receipt = JSON.parse(tool.execute({ operations: [...converted, { op: "archive", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit lineage trigger." }],
+      const receipt = JSON.parse(tool.execute({ operations: [...converted, { op: "archive", kind: "budget", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit lineage trigger." }],
         skipped: [...supplied].map(knowledge => ({ knowledge, because: "No lineage maintenance is needed for this supplied item." })) }));
       committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
         .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId, commit: store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1])) }));
@@ -162,7 +162,7 @@ test("64b: a merge keeps exactly two historical parents but applicability uses o
       text: "illegal three-parent merge", category: "constraint", scope: "project", topics: [], supports: [`F${f.rootFact}`], reason: "invalid fixture" }], skipped: [] });
     expect(malformed).toContain("absorb as exactly one distinct other parent");
     const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(history(f.store, trigger.knowledgeId, trigger.commit));
-    tool.execute({ operations: [{ op: "archive", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [`F${f.rootFact}`], reason: "Retire the explicit invalid-merge trigger." }],
+    tool.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [`F${f.rootFact}`], reason: "Retire the explicit invalid-merge trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "The rejected malformed merge makes no valid change." })) });
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "malformed merge rejected", request };
@@ -196,7 +196,7 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
       text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }], skipped: [] }));
     expect(update.committed).toHaveLength(1);
     trace.execute({ address: history(memory.store, trigger.knowledgeId, trigger.commit), itemBudget: null });
-    expect(tool.execute({ operations: [{ op: "archive", id: tagged(memory.store, trigger.knowledgeId, trigger.commit),
+    expect(tool.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(memory.store, trigger.knowledgeId, trigger.commit),
       supports: [], reason: "Retire the explicit split trigger." }], skipped: [] })).toContain("committed");
     expect(input.tools.find(t => t.name === "check")!.execute({})).toContain("Blockers: none");
     attempted = true;

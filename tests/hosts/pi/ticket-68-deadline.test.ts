@@ -47,7 +47,7 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
     expect(task.signal?.aborted).toBe(true);
     expect(store.getClaim(session.id, "dreaming")).toBeNull();
     expect(store.openDreamingRange(session.id, "main")).toBeNull();
-    const lateWrite = task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", id: `K${item.knowledgeId}@${item.commit}`, supports: [], reason: "too late" }], skipped: [] });
+    const lateWrite = task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", kind: "budget", id: `K${item.knowledgeId}@${item.commit}`, supports: [], reason: "too late" }], skipped: [] });
     expect(lateWrite).toBe("rejected: run has finished");
     expect(store.pendingVersions(`project:${project.id}`, target)).toHaveLength(1);
     vi.useRealTimers();

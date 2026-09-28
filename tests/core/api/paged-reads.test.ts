@@ -136,7 +136,7 @@ async function knowledgeCorpus(knowledge: number, revisions: number) {
     }
     const triggerAddress = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
     const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(`K${trigger.knowledgeId}@v1`); for (const address of consumed) supplied.delete(address);
-    write.execute({ operations: [{ op: "archive", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit paged-read trigger." }],
+    write.execute({ operations: [{ op: "archive", kind: "budget", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit paged-read trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No further corpus maintenance is needed." })) });
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "corpus revisions complete", request };
@@ -206,7 +206,7 @@ test("22c: continuation is complete and stable, and a commit between pages moves
         input.tools.find(tool => tool.name === "memory")!.execute({ operations: [
           { op: "update", id: base, text: "SEARCHNEEDLE later conclusion",
             category: "understanding", scope: "session", supports: corpus.supports.map(id => `F${id}`), reason: "between pages", topics: [] },
-          { op: "archive", id: `K${trigger.knowledgeId}#${other.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: corpus.supports.map(id => `F${id}`), reason: "Retire the explicit between-pages trigger." },
+          { op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${other.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: corpus.supports.map(id => `F${id}`), reason: "Retire the explicit between-pages trigger." },
         ], skipped: [] });
         expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
         return { outcome: "success", output: "between-pages revision complete", request };

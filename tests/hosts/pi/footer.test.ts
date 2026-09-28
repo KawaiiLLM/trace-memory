@@ -220,7 +220,7 @@ test("24a: the counts follow the selected branch, so a sibling entry of the same
   fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Alpha withdrawn",
     [{ entry: h.memory.store.getSourceEntry(source(4).id)!, text: "Pi agent reports alpha withdrawn" }]);
   const handle = readHandle(write("main"), "K1");
-  expect(write("main")[3]!.execute({ operations: [{ op: "archive", id: handle, supports: ["F2"], reason: "The rule was withdrawn on this path." }], skipped: [] })).not.toContain("rejected:");
+  expect(write("main")[3]!.execute({ operations: [{ op: "archive", kind: "budget", id: handle, supports: ["F2"], reason: "The rule was withdrawn on this path." }], skipped: [] })).not.toContain("rejected:");
   await refresh(h);
   const onMain = footer(h);
   expect(onMain).toMatchObject({ ...enumerated(h), facts: "2", knowledge: "0" }); // archived here

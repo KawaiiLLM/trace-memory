@@ -103,7 +103,7 @@ test("visibility includes global, own project and own session only, excluding in
   const outside = knowledge(foreign.id, noting(foreign.id, turn(foreign.id).id).facts[0]!.id), global = knowledge(foreign.id, f.id, "goal", "global");
   const archived = knowledge(s.id, f.id, "reference");
   memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "manual", createdAt: time },
-    operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: archived, baseCommit: archived, supports: [f.id], createdAt: time }] });
+    operations: [{ op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: archived, baseCommit: archived, supports: [f.id], createdAt: time }] });
   for (const block of [memory.inject(s.id), compacted(memory.compact(s.id))]) {
     expect(block).toContain(`[K${own}#${memory.store.versionTag(own, own)}]`); expect(block).toContain(`[K${global}#${memory.store.versionTag(global, global)}]`);
     for (const id of [other, outside, archived]) expect(block).not.toContain(`[K${id}#`);
@@ -677,7 +677,7 @@ test("search marks historical, merged and archived knowledge hits so they do not
     const receipt = JSON.parse(write.execute({ operations: [
       { op: "update", id: tag(a, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "Use npm for installs", category: "constraint", scope: "project", supports: ["F1"] },
       { op: "merge", id: tag(b, b), absorb: [tag(c, c)], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: ["F1"] },
-      { op: "archive", id: tag(trigger1.knowledgeId, trigger1.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
+      { op: "archive", kind: "budget", id: tag(trigger1.knowledgeId, trigger1.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
     ], skipped: [] }));
     expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === a)!.version).toBe(`K${a}@v2`);
     expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === b)!.version).toBe(`K${b}@v2`);
@@ -693,8 +693,8 @@ test("search marks historical, merged and archived knowledge hits so they do not
     trace.execute({ address: tag(b, merged.commit), itemBudget: null });
     trace.execute({ address: tag(trigger2.knowledgeId, trigger2.commit), itemBudget: null });
     write.execute({ operations: [
-      { op: "archive", id: tag(b, merged.commit), supports: ["F1"], reason: "Retired: the cited evidence withdraws this conclusion." },
-      { op: "archive", id: tag(trigger2.knowledgeId, trigger2.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
+      { op: "archive", kind: "budget", id: tag(b, merged.commit), supports: ["F1"], reason: "Retired: the cited evidence withdraws this conclusion." },
+      { op: "archive", kind: "budget", id: tag(trigger2.knowledgeId, trigger2.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
     ], skipped: [] });
     return { outcome: "success", output: "maintenance complete", request: { fixture: "archive merged result", trigger: trigger2 } };
   });
@@ -723,7 +723,7 @@ test("reads resolve any existing address: another session's history, current rev
     const receipt = JSON.parse(write.execute({ operations: [
       { op: "update", id: tag(k, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "private goal now",
         category: "goal", scope: "session", supports: ["F1"] },
-      { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
+      { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
     ], skipped: [] }));
     expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === k)!.version).toBe(`K${k}@v2`);
     privateRevision = { knowledgeId: k, commit: memory.store.resolveVersionOrdinal(k, 2) };

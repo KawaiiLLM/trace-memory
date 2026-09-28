@@ -79,7 +79,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       text: "beta.5 is current", category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Version bumped.", createdAt: time }]);
     expect(updated.ok).toBe(true);
     if (!updated.ok) return;
-    const archived = publishN(f.session.id, [{ op: "archive", knowledgeId: baseCommit.knowledgeId, baseCommit: updated.committed[0]!.commit,
+    const archived = publishN(f.session.id, [{ op: "archive", kind: "budget", knowledgeId: baseCommit.knowledgeId, baseCommit: updated.committed[0]!.commit,
       supports: [f.fact2], reason: "Retired.", createdAt: time }]);
     expect(archived.ok).toBe(true);
 
@@ -313,7 +313,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       expect(blind).not.toContain("moved rule");
       const corrected = memoryTool.execute({ operations: [{ op: "update", id: currentTag, text: "corrected rule",
         category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: "Correct." },
-        { op: "archive", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the explicit fixture trigger." }], skipped: [] });
+        { op: "archive", kind: "budget", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the explicit fixture trigger." }], skipped: [] });
       expect(corrected).toContain('"committed"');
       return { outcome: "success", output: "scenario complete", request };
     });
@@ -383,7 +383,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
       const pool = `project:${f.session.projectId}`;
       const beforeSize = memory.store.knowledgePools(path).find(p => p.pool === pool)!.tokens;
-      const archived = publishN(f.session.id, [{ op: "archive", knowledgeId: first.knowledgeId, baseCommit: first.commit,
+      const archived = publishN(f.session.id, [{ op: "archive", kind: "budget", knowledgeId: first.knowledgeId, baseCommit: first.commit,
         supports: [f.fact2], reason: "No longer holds.", createdAt: time }]);
       if (!archived.ok) throw new Error(archived.problems.join("; "));
       const pools = memory.store.knowledgePools(path);
@@ -404,7 +404,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const first = created0.committed[0]!;
-      const archived = publishN(f.session.id, [{ op: "archive", knowledgeId: first.knowledgeId, baseCommit: first.commit,
+      const archived = publishN(f.session.id, [{ op: "archive", kind: "budget", knowledgeId: first.knowledgeId, baseCommit: first.commit,
         supports: [f.fact2], reason: "Never confirmed.", createdAt: time }]);
       if (!archived.ok) throw new Error(archived.problems.join("; "));
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
@@ -429,7 +429,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
         category: "reference", scope: "project", topics: [], supports: [f.fact2], reason: "Changed.", createdAt: time }]);
       if (!updated.ok) throw new Error(updated.problems.join("; "));
       const stateB = updated.committed[0]!;
-      const archived = publishN(f.session.id, [{ op: "archive", knowledgeId: stateB.knowledgeId, baseCommit: stateB.commit,
+      const archived = publishN(f.session.id, [{ op: "archive", kind: "budget", knowledgeId: stateB.knowledgeId, baseCommit: stateB.commit,
         supports: [f.fact3], reason: "Retired.", createdAt: time }]);
       if (!archived.ok) throw new Error(archived.problems.join("; "));
       const pending = memory.store.pendingVersions(pool, path)[0]!;
@@ -470,8 +470,8 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       const dreamed = await scenarios.run(memory, path, input => {
         input.reportRequest({});
         const write = input.tools.find(tool => tool.name === "memory")!;
-        const receipt = JSON.parse(write.execute({ operations: [{ op: "archive", id: readHandle(input.tools, history(item)), supports: [`F${fact}`], reason: "D retires it." },
-          { op: "archive", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
+        const receipt = JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: readHandle(input.tools, history(item)), supports: [`F${fact}`], reason: "D retires it." },
+          { op: "archive", kind: "budget", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
         expect(receipt.committed).toHaveLength(2);
         return { outcome: "success", output: "D archived it", request: {} };
       });
@@ -503,7 +503,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       if (!createdRun.ok) throw new Error(createdRun.problems.join("; "));
       const item = createdRun.committed[0]!;
       const cArchived = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
-        operations: [{ op: "archive", knowledgeId: item.knowledgeId, baseCommit: item.commit, supports: [fact], reason: "C retires it.", createdAt: time }] });
+        operations: [{ op: "archive", kind: "budget", knowledgeId: item.knowledgeId, baseCommit: item.commit, supports: [fact], reason: "C retires it.", createdAt: time }] });
       if (!cArchived.ok) throw new Error(cArchived.problems.join("; "));
       const archiveCommit = cArchived.committed[0]!;
       const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId };
@@ -517,7 +517,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
         const write = input.tools.find(tool => tool.name === "memory")!;
         const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(input.tools, history(archiveCommit)),
           text: "revived body", category: "reference", scope: "project", topics: [], supports: [`F${fact}`], reason: "Revived." },
-          { op: "archive", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
+          { op: "archive", kind: "budget", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
         expect(receipt.committed).toHaveLength(2);
         return { outcome: "success", output: "revived", request: {} };
       });
@@ -683,7 +683,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       const updateWeight = memory.store.pendingVersions(pool, path)[0]!.tokens;
       expect(updateWeight).toBeGreaterThan(0);
       expect(updateWeight).toBeLessThan(createWeight); // a one-word edit barely moves the trigger
-      const archived = publishN(f.session.id, [{ op: "archive", knowledgeId: v1.knowledgeId, baseCommit: edited.committed[0]!.commit,
+      const archived = publishN(f.session.id, [{ op: "archive", kind: "budget", knowledgeId: v1.knowledgeId, baseCommit: edited.committed[0]!.commit,
         supports: [f.fact3], reason: "Retired.", createdAt: time }]);
       if (!archived.ok) throw new Error(archived.problems.join("; "));
       const archiveWeight = memory.store.pendingVersions(pool, path)[0]!.tokens;
@@ -699,7 +699,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     expect(memoryTool.execute(created(f.fact, "manual item"))).toContain('"committed"');
     const tag = readHandle(tools, "K1");
     expect(memoryTool.execute({ operations: [{ ...created(f.fact, "changed").operations[0], op: "update", id: tag }], skipped: [] })).toContain("Dreamer");
-    expect(memoryTool.execute({ operations: [{ op: "archive", id: tag, supports: [`F${f.fact}`], reason: "Retired." }], skipped: [] })).toContain('"committed"');
+    expect(memoryTool.execute({ operations: [{ op: "archive", kind: "budget", id: tag, supports: [`F${f.fact}`], reason: "Retired." }], skipped: [] })).toContain('"committed"');
   });
 
   test("prompt and material contain no second-round cues", async () => {

@@ -35,15 +35,15 @@ describe("checkMemoryBatch", async () => {
 
   test("76/92: accepts N archive of a current tagged version", async () => {
     const { problems, value } = await checkMemoryBatch((tag: (id: number) => string) => ({ operations: [
-      { op: "archive", reason: "Retire stale knowledge.", id: tag(9), supports: ["F5"] },
+      { op: "archive", kind: "budget", reason: "Retire stale knowledge.", id: tag(9), supports: ["F5"] },
     ], skipped: [] }));
     expect(problems).toEqual([]);
-    expect(value!.operations[0]).toMatchObject({ op: "archive" });
+    expect(value!.operations[0]).toMatchObject({ op: "archive", kind: "budget" });
   });
 
   test("76/92: rejects N archive of a nonexistent version", async () => {
     const { problems } = await checkMemoryBatch({ operations: [
-      { op: "archive", reason: "Retire stale knowledge.", id: "K99#abcd", supports: ["F5"] },
+      { op: "archive", kind: "budget", reason: "Retire stale knowledge.", id: "K99#abcd", supports: ["F5"] },
     ], skipped: [] });
     expect((problems ?? []).join(" ")).toContain("knowledge version does not exist");
   });

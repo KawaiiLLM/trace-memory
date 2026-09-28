@@ -234,7 +234,7 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     writer.setCurrentPath(a.session.id, "main", a.second.id, "one"); check();
     const updated = writer.commitConsolidationRun({ path: paths[0]!,
       run: { kind: "manual", sessionId: a.session.id, branch: "main", createdAt: at },
-      operations: [{ op: "archive", knowledgeId: base.knowledgeId, baseCommit: base.commit,
+      operations: [{ op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit,
         supports: [a.facts[1]!.id], reason: "new evidence", createdAt: at }] });
     if (!updated.ok) throw Error(updated.problems.join("; "));
     const archiveRefresh = measureRefresh(a.session.id);
@@ -383,7 +383,7 @@ test("88: every external commit, foreground move and rollback agrees with a fres
           }
           case "archive": {
             const base = active().at(random() % active().length)!;
-            runOp({ op: "archive", knowledgeId: base.knowledgeId, baseCommit: base.id,
+            runOp({ op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.id,
               supports: [a.facts[0]!.id], reason: "random archive", createdAt: at });
             break;
           }

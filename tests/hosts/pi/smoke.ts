@@ -133,7 +133,7 @@ try {
     if (replies++) return reply("Retired the supplied rule; history preserved.");
     const version = `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`;
     assert.ok(String(conversation.messages[0]!.content).includes(version), "the frozen complete body supplies its exact mutation tag");
-    return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: { operations: [{ op: "archive", id: version, supports: [], reason: "Deliberate active-memory retirement; history preserved" }], skipped: [] } }] };
+    return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: { operations: [{ op: "archive", kind: "budget", id: version, supports: [], reason: "Deliberate active-memory retirement; history preserved" }], skipped: [] } }] };
   });
   await dreamer.turn(); await dreamer.drain();
   const compacted = await dreamer.emit("session_before_compact", { preparation: { tokensBefore: 100000 } });

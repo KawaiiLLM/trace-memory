@@ -25,7 +25,7 @@ function fixture(path = ":memory:") {
   const claim = store.acquireClaim(target, "dreaming", "test")!;
   const range = store.retainKnowledgePoolRange(target, `project:${project.id}`, claim);
   const run: RunInput = { kind: "dreaming", sessionId: session.id, branch: "main", claim, dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", head: range.anchor, origin: range.origin }), createdAt: "now" };
-  const archive = { op: "archive" as const, knowledgeId: item.knowledgeId, baseCommit: item.commit, supports: [], reason: "Retire lower-priority active memory; history retained", createdAt: "now" };
+  const archive = { op: "archive" as const, kind: "budget" as const, knowledgeId: item.knowledgeId, baseCommit: item.commit, supports: [], reason: "Retire lower-priority active memory; history retained", createdAt: "now" };
   return { store, content, item, target, run, archive };
 }
 
@@ -159,7 +159,7 @@ test("64b: explicit evidence is not augmented and invalid evidence rolls back th
   const invalid = f.store.commitConsolidationRun({ run, path: f.target, operations: [
     { op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, text: "evidence rewrite", category: "constraint", scope: "project",
       supports: [evidence.id], topics: [], reason: "Apply evidence.", createdAt: "now" },
-    { op: "archive", knowledgeId: another.committed[0]!.knowledgeId, baseCommit: another.committed[0]!.commit,
+    { op: "archive", kind: "budget", knowledgeId: another.committed[0]!.knowledgeId, baseCommit: another.committed[0]!.commit,
       supports: [999_999], reason: "Invalid evidence.", createdAt: "now" },
   ] });
   expect(invalid.ok).toBe(false);
@@ -314,7 +314,7 @@ test.each(["update", "archive"] as const)("34a: create plus authorized family %s
   const f = fixture(), run = f.store.bindDreamingRun(f.run);
   const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [
     { op: "create", handle: "$split", author: "test", ...f.content },
-    { ...f.content, ...f.archive, op, supports: op === "archive" ? [] : f.content.supports },
+    op === "archive" ? { ...f.archive, supports: [] } : { ...f.content, op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit },
   ] });
   expect(result.ok).toBe(false);
   expect(f.store.listKnowledgeRevisions()).toHaveLength(1);

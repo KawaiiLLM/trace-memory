@@ -59,7 +59,7 @@ export function knowledgeReadSelection(store: Store, options: ListingOptions, na
     const successors = graph.resolved.filter(r => r.id !== hit.id && descendants.has(r.id));
     const selected = successors.length ? successors
       : graph.resolved.filter(r => r.id !== hit.id && r.knowledgeId === hit.knowledgeId);
-    return selected.length && selected.every(r => r.op === "archive") ? (path ? "archived on this path" : "archived")
+    return selected.length && selected.every(r => r.op === "archive") ? (path ? "archived on this path (historical version)" : "archived (historical version)")
       : selected.length ? `superseded${path ? " on this path" : ""} by ${selected.map(r => options.modelFacing
         ? `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}` : `K${r.knowledgeId}@${r.id}`).join(", ")}`
       : path ? "not current on this path" : "not globally current";

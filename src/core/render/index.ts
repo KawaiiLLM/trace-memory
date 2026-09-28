@@ -560,10 +560,10 @@ export const factAddresses = (ids: number[], titles?: ReadonlyMap<number, string
   `F${id}${titles?.get(id) ? ` ${titles.get(id)}` : ""}`).join(", ") || "none";
 // 21a: commit history carries the authored message; the compact automatic knowledge line does not.
 const commitLine = (r: KnowledgeRevision): string =>
-  `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)} reason: ${r.reason}`;
+  `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}${r.op === "archive" && r.archiveKind ? ` kind: ${r.archiveKind}` : ""} reason: ${r.reason}`;
 const selectedCommitLine = (r: KnowledgeRevision, fields: ReadonlySet<string>, address = `K${r.knowledgeId}@${r.id}`): string => [
   `  ${address}`,
-  ...(fields.has("status") ? [r.op, r.createdAt] : []),
+  ...(fields.has("status") ? [r.op, ...(r.op === "archive" && r.archiveKind ? [`kind: ${r.archiveKind}`] : []), r.createdAt] : []),
   ...(fields.has("supports") ? [`${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}`] : []),
   ...(fields.has("topics") && r.topics.length ? [`topics: ${JSON.stringify(r.topics)}`] : []),
   ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
@@ -581,7 +581,7 @@ export function renderKnowledgePreview(value: KnowledgeWithRevision, status: str
   const suffix = [
     ...(fields.has("supports") ? [`${supportLabel}: ${factAddresses(r.supports, supportTitles)}`] : []),
     ...(fields.has("topics") && r.topics.length ? [`topics: ${JSON.stringify(r.topics)}`] : []),
-    ...(fields.has("status") ? [`status: ${status}`] : []),
+    ...(fields.has("status") ? [`status: ${status}${r.op === "archive" && r.archiveKind ? `; kind: ${r.archiveKind}` : ""}`] : []),
     ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
     ...(fields.has("links") ? [`parents: ${parents.map(shown).join(", ") || "none"}`, `children: ${children.map(shown).join(", ") || "none"}`] : []),
   ];
@@ -609,7 +609,7 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
     ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports, supportTitles)}${fields.has("topics") ? topicList(r.topics) : ""}`,
       ...(r.supportSemantics === "change" ? [`\n  inherited lineage supports: ${factAddresses(inherited)}`] : [])] : []),
     ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
-    ...(fields.has("status") ? [`\n  status: ${r.op} ${r.createdAt}${r.actorRole ? `; actor ${r.actorRole}; run R${r.runId}${!r.supports.length ? "; maintenance judgment" : ""}` : ""}`] : []),
+    ...(fields.has("status") ? [`\n  status: ${r.op}${r.op === "archive" && r.archiveKind ? ` (${r.archiveKind})` : ""} ${r.createdAt}${r.actorRole ? `; actor ${r.actorRole}; run R${r.runId}${!r.supports.length ? "; maintenance judgment" : ""}` : ""}`] : []),
     ...(fields.has("status") && pathStatus ? [`\n  status: ${pathStatus}`] : []),
     ...(fields.has("links") ? [`\n  parents: ${addresses(parents)}`, `\n  children: ${addresses(children)}`] : []),
     ...(historyLine ? [`\n${selectedCommitLine(r, fields, versionLabel ?? (address ? `K${r.knowledgeId}` : undefined))}`] : []),

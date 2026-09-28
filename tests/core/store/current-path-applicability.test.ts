@@ -198,7 +198,7 @@ test("64b pilot: an admitted Dreamer child uses only its direct foreground suppo
         text: "child claim", category: "constraint", scope: "global", supports: [`F${childFact.id}`], topics: [], reason: "Child revision." },
       { op: "update", id: directTag,
         text: "child explicitly citing A", category: "constraint", scope: "global", supports: [`F${parentFact.id}`], topics: [], reason: "Direct A support." },
-      { op: "archive", id: triggerTag, supports: [`F${childFact.id}`], reason: "Retire explicit trigger." }], skipped: [] }));
+      { op: "archive", kind: "budget", id: triggerTag, supports: [`F${childFact.id}`], reason: "Retire explicit trigger." }], skipped: [] }));
       const published = receipt.committed.map((value: { knowledgeId: number; version: string }) => ({ knowledgeId: value.knowledgeId,
         commit: store.resolveVersionOrdinal(value.knowledgeId, Number(/@v(\d+)$/.exec(value.version)![1])) }));
       child = published.find((value: { knowledgeId: number }) => value.knowledgeId === parent.knowledgeId)!;
@@ -243,7 +243,7 @@ test("64b validity pilot: later applicable commit wins independent of restore or
   const base = create(store, aMain, rootFact.id, "global", "base body");
   const archived = store.commitConsolidationRun({ path: aMain,
     run: { kind: "manual", sessionId: a.id, branch: "main", createdAt: at },
-    operations: [{ op: "archive", knowledgeId: base.knowledgeId, baseCommit: base.commit,
+    operations: [{ op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit,
       supports: [archiveFact.id], reason: "Archive on A child.", createdAt: at }] });
   if (!archived.ok) throw new Error(archived.problems.join("; "));
   const archiveCommit = archived.committed[0]!.commit;
@@ -268,7 +268,7 @@ test("64b validity pilot: later applicable commit wins independent of restore or
     trace.execute({ address: triggerTag, itemBudget: null, pageBudget: 8000 });
     const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: baseTag,
       text: "B replacement", category: "constraint", scope: "global", supports: [`F${bFact.id}`], topics: [], reason: "Replace rewound base." },
-    { op: "archive", id: triggerTag, supports: [`F${bFact.id}`], reason: "Retire trigger." }], skipped: [] }));
+    { op: "archive", kind: "budget", id: triggerTag, supports: [`F${bFact.id}`], reason: "Retire trigger." }], skipped: [] }));
     const published = receipt.committed.find((value: { knowledgeId: number }) => value.knowledgeId === base.knowledgeId)!;
     replacement = { knowledgeId: base.knowledgeId, commit: store.resolveVersionOrdinal(base.knowledgeId, Number(/@v(\d+)$/.exec(published.version)![1])) };
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
@@ -342,7 +342,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
         const receipt = JSON.parse(write.execute({ operations: [
           { op: "update", id: tag(prior), text, category: "constraint", scope,
             supports: [`F${ownerFact.id}`], reason: "Change current visibility.", topics: [] },
-          { op: "archive", id: tag(trigger), supports: [`F${ownerFact.id}`], reason: "Retire trigger." },
+          { op: "archive", kind: "budget", id: tag(trigger), supports: [`F${ownerFact.id}`], reason: "Retire trigger." },
         ], skipped: [] }));
         const published = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === prior.knowledgeId);
         changed = { knowledgeId: prior.knowledgeId, commit: store.resolveVersionOrdinal(prior.knowledgeId, Number(/@v(\d+)$/.exec(published.version)![1])) };
@@ -379,7 +379,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
       expect(write.execute({ operations: [{ op: "update", id: tag(base), text: "stale peer edit",
         category: "constraint", scope: "project", supports: [`F${peerFact.id}`], reason: "Must remain stale.", topics: [] }], skipped: [] }))
         .toContain("base is not the latest effective applicable revision");
-      write.execute({ operations: [{ op: "archive", id: tag(staleTrigger),
+      write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(staleTrigger),
         supports: [`F${peerFact.id}`], reason: "Retire stale probe trigger." }], skipped: [] });
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
       return { outcome: "success", output: "stale hidden base refused", request };
@@ -404,7 +404,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
       expect(store.listKnowledgeRevisions()).toHaveLength(before);
       expect(store.currentCommit(widened.knowledgeId, ownerPath).map(item => item.id)).toEqual([widened.commit]);
       expect(store.currentCommit(privateParent.knowledgeId, ownerPath).map(item => item.id)).toEqual([privateParent.commit]);
-      expect(write.execute({ operations: [{ op: "archive", id: tag(mergeTrigger),
+      expect(write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(mergeTrigger),
         supports: [], reason: "Retire cross-scope probe trigger." }], skipped: [] })).toContain("committed");
       return { outcome: "success", output: "cross-scope merge refused", request };
     });
@@ -421,7 +421,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
         absorb: [tag(projectParent)], text: "illegal result scope",
         category: "constraint", scope: "session", supports: [`F${ownerFact.id}`], reason: "Must be refused.", topics: [] }], skipped: [] }))
         .toContain("merge parents and result must share one scope");
-      expect(write.execute({ operations: [{ op: "archive", id: tag(resultScopeTrigger),
+      expect(write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(resultScopeTrigger),
         supports: [], reason: "Retire result-scope probe trigger." }], skipped: [] })).toContain("committed");
       return { outcome: "success", output: "result scope refused", request };
     });
@@ -444,7 +444,7 @@ test("64b validity pilot: competing same-base Store writes commit once and stale
       run: { kind: "manual", sessionId: owner.id, branch: "main", createdAt: at }, operations: [
         ...(includeCreate ? [{ op: "create" as const, handle: "$partial", author: "test", text: "must roll back",
           category: "constraint" as const, scope: "session" as const, supports: [fact.id], topics: [], reason: "Atomic probe.", createdAt: at }] : []),
-        { op: "archive" as const, knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fact.id], reason, createdAt: at },
+        { op: "archive" as const, kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fact.id], reason, createdAt: at },
       ] });
     const winner = attempt(first, "Winner.");
     expect(winner.ok).toBe(true);

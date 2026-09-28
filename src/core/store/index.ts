@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assignVersionTag, migrateVersionTags } from "./version-tags.ts";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
-import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
+import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
@@ -16,7 +16,7 @@ import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, with
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
 import { factAddresses, renderKnowledge, renderKnowledgeChange, tokens } from "../render/index.ts";
-import { isKnowledgeCategory, knowledgeCategoryGroup } from "../model/index.ts";
+import { isKnowledgeCategory, substantiveArchiveStatement } from "../model/index.ts";
 import type {
   Actor,
   Knowledge,
@@ -208,6 +208,7 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
   run_id INTEGER REFERENCES runs(id),
   created_at TEXT NOT NULL,
   actor_role TEXT CHECK(actor_role IS NULL OR actor_role IN ('noting','consolidation','dreaming','manual')),
+  archive_kind TEXT CHECK (archive_kind IS NULL OR archive_kind IN ('budget','invalid')),
   UNIQUE (knowledge_id, id)
 );
 
@@ -571,7 +572,10 @@ export type KnowledgeOperationInput =
       op: "archive";
       knowledgeId: number;
       baseCommit: number;
-      /** 21a/21b: an archive carries its own evidence; text, category, scope and topics come from the parent. */
+      /** The chosen archive cause is mandatory on new writes. */
+      kind: "budget" | "invalid";
+      /** Only invalidation supplies a replacement archive statement. */
+      text?: string;
       supports: number[];
       reason: string;
       createdAt: string;
@@ -748,6 +752,7 @@ function toKnowledgeRevision(row: any): KnowledgeRevision {
     supports: JSON.parse(row.supports),
     supportSemantics: row.support_semantics ?? "complete_result",
     op: row.op,
+    archiveKind: row.archive_kind ?? null,
     reason: row.reason,
     topics: JSON.parse(row.topics),
     runId: row.run_id,
@@ -1208,6 +1213,7 @@ export class Store {
       migrateKnowledgeLineage(this.db, true);
       migrateFactAndKnowledge92(this.db);
       migrateFactSegments93(this.db);
+      migrateArchiveKind99(this.db);
       migrateVersionTags(this.db);
       // The policy is part of the same schema transaction. Concurrent openers serialize at BEGIN;
       // INSERT OR IGNORE preserves an edited existing row and initializes an absent row once.
@@ -3749,7 +3755,11 @@ export class Store {
    * descendant is a Noter concurrency conversion. Other invalid bases remain errors. */
   normalizeNotingOperation(op: KnowledgeOperationInput, path: KnowledgePath): KnowledgeOperationInput | null {
     if (op.op !== "create" && op.op !== "update" && op.op !== "archive") throw new Error("Noter permits create, update and archive only");
-    if (op.op !== "archive") this.requireWorkerItemSize(op.text, "Knowledge item");
+    if (op.op === "archive") {
+      const problem = this.archiveProblem(op);
+      if (problem) throw new Error(problem);
+    }
+    if (op.op !== "archive" || op.kind === "invalid") this.requireWorkerItemSize(op.text!, "Knowledge item");
     if (op.op === "create") return op;
     const input = this.commitGraphInput();
     const bad = this.baseDiagnostic(op.knowledgeId, op.baseCommit, path, false, input.metadata);
@@ -3768,6 +3778,14 @@ export class Store {
     this.requireWorkerItemSize(text, "Knowledge item");
     const { knowledgeId: _knowledgeId, baseCommit: _baseCommit, ...content } = op;
     return { ...content, op: "create", handle: address, author: "noting", text };
+  }
+
+  private archiveProblem(op: Extract<KnowledgeOperationInput, { op: "archive" }>): string | null {
+    if (op.kind !== "budget" && op.kind !== "invalid") return "archive kind must be budget or invalid";
+    if (op.kind === "invalid" && !substantiveArchiveStatement(op.text))
+      return "invalid archive requires a substantive statement of grounds and evidence";
+    if (op.kind === "budget" && op.text !== undefined) return "budget archive cannot replace the parent body";
+    return null;
   }
 
   private requireWorkerItemSize(text: string, label: string): void {
@@ -3823,15 +3841,23 @@ export class Store {
     if ((!supports.length && (!dreaming || op.op === "create")) || supports.some(id => !Number.isSafeInteger(id) || id <= 0))
       return { ok: false, reason: "supports must not be empty" };
     if (typeof op.reason !== "string" || !op.reason.trim()) return { ok: false, reason: "reason must be a non-empty commit message" };
+    if (op.op === "archive") {
+      const problem = this.archiveProblem(op);
+      if (problem) return { ok: false, reason: problem };
+    }
     const bad = this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId));
     if (bad) return { ok: false, reason: bad };
     const insertRevision = (knowledgeId: number, parentId: number | null, text: string, category: KnowledgeCategory, topics: string[], revisionOp: KnowledgeOp) => {
-      if (!isKnowledgeCategory(category)) throw new Error(`invalid new knowledge category ${category}`);
-      if (role !== "manual") this.requireWorkerItemSize(text, "Knowledge item");
+      if (!isKnowledgeCategory(category) && !(revisionOp === "archive" && category === prior?.category))
+        throw new Error(`invalid new knowledge category ${category}`);
+      // Budget stores the exact parent body; old valid parents may exceed the new-write cap.
+      if (role !== "manual" && !(revisionOp === "archive" && op.op === "archive" && op.kind === "budget"))
+        this.requireWorkerItemSize(text, "Knowledge item");
       const info = this.db.prepare(`INSERT INTO knowledge_revisions
-        (knowledge_id, parent_id, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role)
-        VALUES (?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, text, category, scope,
-          JSON.stringify(supports), revisionOp, op.reason, JSON.stringify(topics), runId, op.createdAt, role);
+        (knowledge_id, parent_id, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role, archive_kind)
+        VALUES (?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, text, category, scope,
+          JSON.stringify(supports), revisionOp, op.reason, JSON.stringify(topics), runId, op.createdAt, role,
+          revisionOp === "archive" ? (op as Extract<KnowledgeOperationInput, { op: "archive" }>).kind : null);
       const commitId = Number(info.lastInsertRowid);
       assignVersionTag(this.db, knowledgeId, commitId);
       return commitId;
@@ -3855,11 +3881,11 @@ export class Store {
     const knowledgeId = op.op === "create" ? Number(this.db.prepare(
       "INSERT INTO knowledge (project_id, origin_session_id, author) VALUES (?, ?, ?)",
     ).run(projectId, sessionId, op.author).lastInsertRowid) : targets[0]!.knowledgeId;
-    const text = op.op === "archive" ? "" : op.op === "merge" && op.text === undefined
+    const text = op.op === "archive" ? op.kind === "budget" ? prior!.text : op.text! : op.op === "merge" && op.text === undefined
       ? this.knowledgeRevision(Math.max(op.intoBaseCommit, op.absorb[0]!.baseCommit))!.text
       : op.text!;
     const commitId = insertRevision(knowledgeId, prior?.id ?? null, text,
-      op.op === "archive" ? knowledgeCategoryGroup(prior!.category) : op.category, op.op === "archive" ? prior!.topics : op.topics, op.op);
+      op.op === "archive" ? prior!.category : op.category, op.op === "archive" ? prior!.topics : op.topics, op.op);
     if (op.op === "merge") for (const parent of op.absorb) {
       this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)")
         .run(parent.knowledgeId, parent.baseCommit, knowledgeId, commitId);

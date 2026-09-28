@@ -79,7 +79,7 @@ async function diverge(f: Fixture, branch: "left" | "right", triggerEntryId: num
     const receipt = write.execute({ operations: [
       { op: "update", id: tag(f.base.knowledgeId, f.base.commit), text, category: "constraint", scope: "project",
         supports: [`F${f.branchFacts[branch]}`], topics: [], reason: `${branch} evidence-driven divergence.` },
-      { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire trigger." },
+      { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire trigger." },
     ], skipped: [] });
     expect(receipt).toContain('"committed"');
     skipRest(input, [`K${f.base.knowledgeId}@v${f.memory.store.versionOrdinal(f.base.knowledgeId, f.base.commit)}`, `K${trigger.knowledgeId}@v1`]);

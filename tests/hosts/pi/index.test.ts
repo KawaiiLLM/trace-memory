@@ -58,7 +58,7 @@ test("92 Pi registered tool rejects old fields and writes entry roles through th
   const injection = h.memory.injection({ sessionId: 1, branch: "main", headTurnId: 1 });
   const tag = injection.text.match(new RegExp(`K${identity.knowledgeId}#[a-z]{4,}`))![0];
   // The registered adapter never traces or registers this injected version before archive.
-  const archived = await write.execute("archive", { operations: [{ op: "archive", id: tag, supports: [`F${result.factIds[0]}`], reason: "replaced" }], skipped: [] }, undefined, undefined, h.ctx);
+  const archived = await write.execute("archive", { operations: [{ op: "archive", kind: "budget", id: tag, supports: [`F${result.factIds[0]}`], reason: "replaced" }], skipped: [] }, undefined, undefined, h.ctx);
   expect(JSON.parse(archived.content[0].text).committed[0].version).toBe(`K${identity.knowledgeId}@v2`);
 });
 
@@ -805,7 +805,7 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
       ] };
       if (round === 2) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `write-${sequence}`, name: "memory", arguments: {
         operations: [{ op: "update", id: baseAddress, text, category: "constraint", scope: "project", topics: [], supports: [`F${factId}`], reason: `Update from ${path.branch}.` },
-          { op: "archive", id: triggerAddress, supports: [], reason: "Retire explicit host trigger." }] as const, skipped: [],
+          { op: "archive", kind: "budget", id: triggerAddress, supports: [], reason: "Retire explicit host trigger." }] as const, skipped: [],
       } }] };
       return reply("Done.");
     });

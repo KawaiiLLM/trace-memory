@@ -139,7 +139,7 @@ test("writers always rebuild: base validation of an archive sees its own transac
   store.db.prepare = ((sql: string) => { if (revisionsQuery(sql)) calls.push(sql); return original(sql); }) as typeof store.db.prepare;
   // "archive" has a base to validate, so `applyKnowledgeOperation`'s `writerInput` is not skipped.
   const archived = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "archive", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [factId], reason: "no longer needed", createdAt: time }] });
+    operations: [{ op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [factId], reason: "no longer needed", createdAt: time }] });
   store.db.prepare = original;
   expect(archived.ok).toBe(true);
   // Base validation rebuilds fresh — `applyKnowledgeOperation`'s `writerInput` never names a session.

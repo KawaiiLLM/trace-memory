@@ -48,7 +48,7 @@ function owner(name: string, projectId = memory.store.createProject({ name, decl
       const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(history(base)); supplied.delete(history(trigger));
       const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [
         { op: "update", id: baseAddress, text, scope, category, topics, supports: supports.map(id => `F${id}`), reason: `Reason ${text}` },
-        { op: "archive", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit selection trigger." },
+        { op: "archive", kind: "budget", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit selection trigger." },
       ], skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied fixture item." })) }));
       changed = committedVersion(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === base.knowledgeId)!);
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
@@ -234,8 +234,8 @@ test("41 archives and merged-away identities have no current body but remain his
     expect(identities(memory.search("needle", "knowledge", who))).toEqual([`K${result.knowledgeId}@${result.commit}`]);
     expect(memory.search("absorbed", "knowledge", { ...who, versions: "history" })).toContain(`superseded on this path by K${result.knowledgeId}@${result.commit}`);
     const resultTag = readHandle(input.tools, history(result));
-    write.execute({ operations: [{ op: "archive", id: resultTag, supports: who.supports.map(id => `F${id}`), reason: "Archive" },
-      { op: "archive", id: readHandle(input.tools, history(trigger)), supports: who.supports.map(id => `F${id}`), reason: "Retire the explicit lifecycle trigger." }], skipped: [] });
+    write.execute({ operations: [{ op: "archive", kind: "budget", id: resultTag, supports: who.supports.map(id => `F${id}`), reason: "Archive" },
+      { op: "archive", kind: "budget", id: readHandle(input.tools, history(trigger)), supports: who.supports.map(id => `F${id}`), reason: "Retire the explicit lifecycle trigger." }], skipped: [] });
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "lifecycle complete", request: { fixture: "lifecycle merge and archive" } };
   });
@@ -280,7 +280,7 @@ test("92 complete collections expose tags, metadata and history references do no
   const update = JSON.parse(tools[3]!.execute({ operations: [{ op: "update", id: currentTag,
     text: "edited", category: "reference", scope: "project", supports: [`F${who.factId}`], topics: [], reason: "Edit" }], skipped: [] }));
   expect(update.results[0]).toContain("update belongs to the Dreamer");
-  const archive = (id: string) => JSON.parse(tools[3]!.execute({ operations: [{ op: "archive", id,
+  const archive = (id: string) => JSON.parse(tools[3]!.execute({ operations: [{ op: "archive", kind: "budget", id,
     supports: [`F${who.factId}`], reason: "Retire" }], skipped: [] }));
   expect(archive(oldTag).results[0]).toContain("base is not the latest effective applicable revision");
   expect(archive(currentTag).committed).toHaveLength(1);

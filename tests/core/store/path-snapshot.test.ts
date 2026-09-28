@@ -170,7 +170,7 @@ test("32b performance: batch and ordinary applicability agree for bindings, fore
   const siblingPath = { ...path, branch: "sibling" };
   const base = store.currentCommit(knowledgeId, path)[0]!;
   const archived = store.commitConsolidationRun({ path: siblingPath, run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{
-    op: "archive", knowledgeId, baseCommit: base.id, supports: [noted.facts[0]!.id], reason: "sibling only", createdAt: time }] });
+    op: "archive", kind: "budget", knowledgeId, baseCommit: base.id, supports: [noted.facts[0]!.id], reason: "sibling only", createdAt: time }] });
   if (!archived.ok) throw Error(archived.problems.join());
   // Both public status counts must describe the same selected path, including a rewind or no head.
   for (const p of [path, siblingPath, { ...path, headTurnId: turnIds[0]! }, { ...path, headTurnId: null }]) {

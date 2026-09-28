@@ -88,7 +88,7 @@ test("85: a pending-triggered deterministic Dreamer still archives until its sel
   const outcome = await state.scenarios.run(state.memory, state.target, task => {
     task.acknowledgeRequest();
     const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [
-      { op: "archive", id: handle(state, state.items[0]!), supports: [], reason: "Reviewed low-value routine progress retired to fit budget" }],
+      { op: "archive", kind: "budget", id: handle(state, state.items[0]!), supports: [], reason: "Reviewed low-value routine progress retired to fit budget" }],
       skipped: [] }));
     expect(receipt.committed).toHaveLength(1);
     expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
@@ -124,7 +124,7 @@ test("35c archive and no-op skip preserve the compared survivor and original no-
   const disposition = reviewed.result as { archiveParent: number; survivorParent: number; reason: string };
   const state = seeded(reviewed.parents), archived = state.items[disposition.archiveParent]!, survivor = state.items[disposition.survivorParent]!;
   const outcome = await state.scenarios.run(state.memory, state.target, task => {
-    const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", id: handle(state, archived), supports: [], reason: disposition.reason }],
+    const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", kind: "budget", id: handle(state, archived), supports: [], reason: disposition.reason }],
       skipped: [{ knowledge: history(state, survivor), because: "Compared survivor already states the claim" },
         { knowledge: history(state, state.trigger), because: "fixture trigger has no maintenance meaning" }] }));
     expect(receipt.committed).toHaveLength(1);
@@ -132,7 +132,7 @@ test("35c archive and no-op skip preserve the compared survivor and original no-
   });
   expect(outcome.outcome).toBe("success");
   expect(state.store.currentCommit(survivor.knowledgeId, state.target)[0]).toMatchObject({ text: reviewed.parents[disposition.survivorParent]!.text });
-  expect(state.store.currentCommit(archived.knowledgeId, state.target)[0]).toMatchObject({ op: "archive", text: "" });
+  expect(state.store.currentCommit(archived.knowledgeId, state.target)[0]).toMatchObject({ op: "archive", archiveKind: "budget", text: reviewed.parents[disposition.archiveParent]!.text });
   const processed = state.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id")
     .all(`project:${state.store.getSession(state.target.sessionId)!.projectId}`).map(row => Number(row.revision_id));
   expect(processed).toContain(survivor.commit); // accepted skip

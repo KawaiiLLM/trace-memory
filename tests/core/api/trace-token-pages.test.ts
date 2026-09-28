@@ -239,7 +239,7 @@ test.each(["K1@v1", "F1,K1@v1,T1#E3"])("admitted Dreamer drains token-paged hist
     trace.execute({ address: "K1@v1", itemBudget: null });
     write.execute({ operations: [{ op: "update", id: `K1#${memory.store.versionTag(1, 1)}`, text: "current replacement", category: "understanding", scope: "project",
       supports: ["F1"], reason: "Make the large revision historical for the stateless pagination test.", topics: [] },
-    { op: "archive", id: `K${firstTrigger.knowledgeId}#${memory.store.versionTag(firstTrigger.knowledgeId, firstTrigger.commit)}`, supports: ["F1"], reason: "Retire the initial pagination trigger." }], skipped: [] });
+    { op: "archive", kind: "budget", id: `K${firstTrigger.knowledgeId}#${memory.store.versionTag(firstTrigger.knowledgeId, firstTrigger.commit)}`, supports: ["F1"], reason: "Retire the initial pagination trigger." }], skipped: [] });
     return { outcome: "success", output: "settled", request };
   });
   if (settled.outcome !== "success") throw new Error(JSON.stringify(settled));
@@ -263,7 +263,7 @@ test.each(["K1@v1", "F1,K1@v1,T1#E3"])("admitted Dreamer drains token-paged hist
     expect(joined).toBe(expected);
     const tag = `K${trigger.knowledgeId}#${memory.store.versionTag(trigger.knowledgeId, trigger.commit)}`;
     trace.execute({ address: tag, itemBudget: null });
-    write.execute({ operations: [{ op: "archive", id: tag,
+    write.execute({ operations: [{ op: "archive", kind: "budget", id: tag,
       supports: ["F1"], reason: "Retire the explicit fixture trigger." }], skipped: [] });
     return { outcome: "success", output: "pagination checked", request };
   });

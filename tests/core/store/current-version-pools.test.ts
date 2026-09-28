@@ -126,7 +126,7 @@ test("64c current versions: repeated updates count once at the latest rendered r
   expect(pending[0]!.material).not.toContain("v2 with more body");
   expect(pending[0]!.tokens).toBe(tokens(pending[0]!.material));
 
-  const archived = f.store.commitConsolidationRun({ run: admitted.run, path: f.target, operations: [{ op: "archive",
+  const archived = f.store.commitConsolidationRun({ run: admitted.run, path: f.target, operations: [{ op: "archive", kind: "budget",
     knowledgeId: item.knowledgeId, baseCommit: v3.commit, supports: [], reason: "done", createdAt: "now" }] });
   expect(archived.ok).toBe(true);
   expect(f.store.pendingVersions("global", f.target)).toEqual([]);
@@ -197,7 +197,7 @@ test.each(["update", "archive", "split"] as const)("64c pool authority: global r
   const f = setup(), global = f.create("global"), project = f.create("project"), admitted = begin(f, "global");
   const operation = op === "update" ? { op, knowledgeId: project.knowledgeId, baseCommit: project.commit,
     text: "forbidden", category: "constraint" as const, scope: "project" as const, supports: [], topics: [], reason: "cross pool", createdAt: "now" }
-    : op === "archive" ? { op, knowledgeId: project.knowledgeId, baseCommit: project.commit, supports: [], reason: "cross pool", createdAt: "now" }
+    : op === "archive" ? { op, kind: "budget" as const, knowledgeId: project.knowledgeId, baseCommit: project.commit, supports: [], reason: "cross pool", createdAt: "now" }
     : { op, knowledgeId: project.knowledgeId, baseCommit: project.commit, supports: [], reason: "cross pool", createdAt: "now",
       children: [{ text: "one", category: "constraint" as const, topics: [] }, { text: "two", category: "constraint" as const, topics: [] }] };
   const before = { revisions: f.store.listKnowledgeRevisions(), links: f.store.listKnowledgeLinks(project.knowledgeId) };
@@ -228,7 +228,7 @@ test("64c pool authority: a valid same-pool write followed by a wrong-pool base 
   const result = f.store.commitConsolidationRun({ run: admitted.run, path: f.target, operations: [
     { op: "update", knowledgeId: global.knowledgeId, baseCommit: global.commit, text: "would commit", category: "constraint",
       scope: "global", supports: [], topics: [], reason: "same pool", createdAt: "now" },
-    { op: "archive", knowledgeId: project.knowledgeId, baseCommit: project.commit, supports: [], reason: "wrong pool", createdAt: "now" },
+    { op: "archive", kind: "budget", knowledgeId: project.knowledgeId, baseCommit: project.commit, supports: [], reason: "wrong pool", createdAt: "now" },
   ] });
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.problems.join(" ")).toContain(`outside Dreamer pool global`);
@@ -330,7 +330,7 @@ test.each(["current", "archive-parent"] as const)("92: pool metadata batching re
   if (shape === "archive-parent") {
     const archived = f.store.commitConsolidationRun({ path: f.target,
       run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" },
-      operations: [{ op: "archive", knowledgeId: item.knowledgeId, baseCommit: item.commit,
+      operations: [{ op: "archive", kind: "budget", knowledgeId: item.knowledgeId, baseCommit: item.commit,
         supports: [f.fact.id], reason: "Retire body", createdAt: "now" }] });
     expect(archived.ok).toBe(true);
   }
@@ -356,7 +356,7 @@ test("67: create batches skip writer graphs while consuming operations recheck a
     expect(bad.ok).toBe(false);
     expect(f.store.listKnowledgeRevisions()).toEqual(before);
     const base = before[0]!;
-    const archive = { op: "archive" as const, knowledgeId: base.knowledgeId, baseCommit: base.id,
+    const archive = { op: "archive" as const, kind: "budget" as const, knowledgeId: base.knowledgeId, baseCommit: base.id,
       supports: [f.fact.id], reason: "test", createdAt: "now" };
     graph.mockClear();
     const consumed = f.store.commitConsolidationRun({ path: f.target,
@@ -433,7 +433,7 @@ test("67: admission observes intervening knowledge mutation and preserves enroll
   f.store.setEnrollment(f.session.id, true);
   const archived = f.store.commitConsolidationRun({ path: f.target,
     run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" },
-    operations: [{ op: "archive", knowledgeId: item.knowledgeId, baseCommit: item.commit,
+    operations: [{ op: "archive", kind: "budget", knowledgeId: item.knowledgeId, baseCommit: item.commit,
       supports: [f.fact.id], reason: "no longer required", createdAt: "now" }] });
   expect(archived.ok).toBe(true);
   expect(f.store.admitKnowledgePool(f.target, "fresh")).toEqual({ outcome: "empty" });

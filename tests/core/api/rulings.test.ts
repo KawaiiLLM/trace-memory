@@ -323,7 +323,7 @@ test("2026-09-07: four tools, no other model-facing surface", () => {
   for (const tool of tools) { expect(tool.parameters.type).toBe("object"); expect(typeof tool.execute).toBe("function"); }
   expect(tools[2]!.description).toContain("Both note and memory are required in N");
   expect(tools[3]!.description).toContain("Manual writers may create/archive only");
-  expect(tools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion." }, { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion." }], skipped: [] })).toContain("rejected:");
+  expect(tools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion." }, { op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion." }], skipped: [] })).toContain("rejected:");
 });
 
 // “if any fails, the result lists each item's outcome in order ... and nothing is written.”
@@ -402,6 +402,33 @@ function memoryWriter() {
   return { s, t, path, tools, write, create };
 }
 
+test("2026-09-28, 99: archive kind is required; budget retains parent while invalidation records grounds", () => {
+  const { s, path, tools, write, create } = memoryWriter();
+  const budgetBase = write([create]).committed[0];
+  const invalidBase = write([{ ...create, text: "Old unique guidance" }]).committed[0];
+  const budgetId = budgetBase.knowledgeId, invalidId = invalidBase.knowledgeId;
+  const budgetTag = tagged(budgetId, commitOf(budgetBase));
+  const invalidTag = tagged(invalidId, commitOf(invalidBase));
+  const attempted = (id: string, extra: Record<string, unknown>) => write([{ op: "archive", id, supports: ["F1"], reason: "archival decision", ...extra }]);
+  expect(attempted(budgetTag, {}).results[0]).toContain("archive kind must be budget or invalid");
+  expect(attempted(invalidTag, { kind: "invalid", text: "obsolete" }).results[0]).toContain("substantive statement");
+  expect(attempted(invalidTag, { kind: "invalid", text: "The rule no longer holds: the user corrected its basis; another rule replaces it." }).committed).toHaveLength(1);
+  expect(attempted(budgetTag, { kind: "budget" }).committed).toHaveLength(1);
+  const invalid = memory.store.currentCommit(invalidId, path)[0]!, budget = memory.store.currentCommit(budgetId, path)[0]!;
+  expect(invalid).toMatchObject({ op: "archive", archiveKind: "invalid", category: "constraint", scope: "project", topics: [] });
+  expect(invalid.text).toContain("no longer holds");
+  expect(budget).toMatchObject({ op: "archive", archiveKind: "budget", text: create.text,
+    category: "constraint", scope: "project", topics: [] });
+  expect(memory.store.currentKnowledge(path)).toEqual([]);
+  expect(memory.inject(s.id)).not.toContain("Old unique guidance");
+  const trace = tools[0]!, search = tools[1]!;
+  expect(trace.execute({ address: history(invalidId, invalid.id) })).toContain("status: archive (invalid)");
+  expect(trace.execute({ address: history(budgetId, budget.id) })).toContain("status: archive (budget)");
+  const found = search.execute({ query: "Old unique guidance", layer: "knowledge", versions: "history" });
+  expect(found).toContain(`[K${invalidId}@v1]`);
+  expect(found).toContain("archived on this path (historical version)");
+});
+
 test("2026-09-24, 85: '余量只有一点，几乎必然导致每次C都会触发D' — over budget alone never makes Dreaming due", async () => {
   const { path, create, write } = memoryWriter();
   const first = write([{ ...create, text: "Durable user constraint ".repeat(150) }]).committed[0] as { knowledgeId: number; version: string };
@@ -459,7 +486,7 @@ test("2026-09-07: one operation shape, inapplicable fields rejected", () => {
   const { create, write } = memoryWriter();
   write([create]);
   const update = { ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: "K1" };
-  const archive = { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K1", supports: ["F1"] };
+  const archive = { op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K1", supports: ["F1"] };
   for (const operation of [create, update, { ...update, op: "merge", reason: "Merged duplicate knowledge into the survivor.", absorb: ["K2"] }, archive]) {
     for (const required of ["reason", "supports"]) {
       const missing = { ...operation } as Record<string, unknown>; delete missing[required];
@@ -510,14 +537,14 @@ test("2026-09-07: merge atomic", async () => {
     for (const item of [first, second]) completeToolRead(trace, item.version);
     const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the survivor.",
       id: tagged(first.knowledgeId, first.commit), absorb: [tagged(second.knowledgeId, second.commit)], supports: ["F1", "F2"] };
-    expect(JSON.parse(writeTool.execute({ operations: [merge, { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.",
+    expect(JSON.parse(writeTool.execute({ operations: [merge, { op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.",
       id: "K999", supports: [] }], skipped: [] })).results[1]).toContain("rejected:");
     expect(memory.store.currentCommit(first.knowledgeId)[0]?.id).toBe(first.commit);
     expect(memory.store.currentCommit(second.knowledgeId)[0]?.op).toBe("create");
     expect(memory.store.listKnowledgeLinks(second.knowledgeId)).toEqual([]);
     const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
     completeToolRead(trace, triggerAddress);
-    merged = JSON.parse(writeTool.execute({ operations: [merge, { op: "archive", id: triggerAddress, supports: ["F2"],
+    merged = JSON.parse(writeTool.execute({ operations: [merge, { op: "archive", kind: "budget", id: triggerAddress, supports: ["F2"],
       reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     return { outcome: "success", output: "merged", request };
   });
@@ -721,7 +748,7 @@ async function admittedWrite(
     for (const address of exact) completeToolRead(trace, address);
     const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
     completeToolRead(trace, triggerAddress);
-    receipt = JSON.parse(write.execute({ operations: [...operations, { op: "archive", id: triggerAddress,
+    receipt = JSON.parse(write.execute({ operations: [...operations, { op: "archive", kind: "budget", id: triggerAddress,
       supports: [path.fact], reason: "Retire the explicit fixture trigger." }],
       skipped: skipped.map(knowledge => ({ knowledge, because: "This supplied identity is unrelated to the asserted maintenance." })) }));
     return { outcome: "success", output: "maintenance complete", request };
@@ -786,7 +813,7 @@ test("2026-09-07 B: store rechecks every base inside the transaction and rolls b
   const run = memory.store.bindRunOrigin({ kind: "manual", sessionId: root.sessionId, createdAt: time }, origin);
   const result = memory.store.commitConsolidationRun({ path: root, run, operations: [
     { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "Must roll back", category: "goal", scope: "project", supports: [1], createdAt: time },
-    { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 1, baseCommit: 1, supports: [1], createdAt: time },
+    { op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 1, baseCommit: 1, supports: [1], createdAt: time },
   ] });
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("stale batch committed");
@@ -813,7 +840,7 @@ test("2026-09-07 B: reading a historical commit never refreshes the base to an u
       reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }], skipped: [] })).toContain(`current: ${successor.version}`);
     expect(completeToolRead(trace, successor.version)).toContain("Unread successor");
     const corrected = JSON.parse(memoryTool.execute({ operations: [{ op: "update", id: tagged(1, commitOf(successor)), topics: [],
-      reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }, { op: "archive",
+      reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }, { op: "archive", kind: "budget",
       id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     expect(corrected.committed[0].knowledgeId).toBe(1);
     return { outcome: "success", output: "scenario complete", request };
@@ -860,7 +887,7 @@ test("92: search previews and cursor fragments conceal tags and cannot make a st
     expect(page).toContain(successorTag);
     const done = edit(successorTag); expect(done.committed[0].knowledgeId).toBe(1);
     completeToolRead(trace, history(trigger.knowledgeId, trigger.commit));
-    expect(JSON.parse(write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit),
+    expect(JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit),
       supports: [other.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] })).committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request };
   });
@@ -886,7 +913,7 @@ test("92: trace K1 cap=1 exposes the complete body's tag without refreshing a st
     expect(pages.join("\n")).toContain(tagged(1, commitOf(successor)));
     expect(edit(tagged(1, 1)).results[0]).toContain(`current: ${successor.version}`);
     expect(edit(tagged(1, commitOf(successor))).committed[0].knowledgeId).toBe(1);
-    expect(JSON.parse(write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
+    expect(JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
       reason: "Retire the explicit fixture trigger." }], skipped: [] })).committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request };
   });
@@ -915,7 +942,7 @@ test.each([false, true])("trace cap=1 completes the frozen K read through actual
     }
     expect(count).toBeGreaterThan(1);
     if (!committed) { expect(page).toContain(exact); expect(edit().committed[0].knowledgeId).toBe(created.knowledgeId); }
-    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
+    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
       reason: "Retire the explicit fixture trigger." }], skipped: [{ knowledge: "K1@v1", because: "Unrelated fixture base needs no maintenance." }] }));
     expect(retired.committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request };
@@ -956,7 +983,7 @@ test("92: a mixed multi-K read exposes exact body tags; abandoned cursors expire
       expect(receipt.committed).toHaveLength(remaining.length); for (const item of remaining) maintained.add(item.knowledgeId);
     }
     expect(maintained.size).toBe(2);
-    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
+    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
       reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     expect(retired.committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request };
@@ -990,7 +1017,7 @@ test.each(["K2", "K2@v1", "K2,F1,F2,K1", "F1,F2,K2@v1,K1,K2"])("paged %s exposes
     expect(submit(`K${created.knowledgeId}`).results[0]).toContain("supply an exact K#tag version");
     // The known exact tag works without another read; pagination holds no grant ledger.
     expect(submit(latestTag).committed[0].knowledgeId).toBe(created.knowledgeId);
-    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit),
+    const retired = JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit),
       supports: [other.fact], reason: "Retire the explicit fixture trigger." }],
       skipped: [{ knowledge: "K1@v1", because: "Unrelated fixture base needs no maintenance." }] }));
     expect(retired.committed).toHaveLength(1);
@@ -1121,7 +1148,7 @@ test("41b/92: fields control tag display, while a known exact tag needs no read 
     const finiteTag = tagged(1, commitOf(finite));
     expect(trace.execute({ address: finite.version, full: true })).toContain(finiteTag);
     expect(update(finiteTag, "FULL-COMPLETE").committed[0].knowledgeId).toBe(1);
-    write.execute({ operations: [{ op: "archive", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
+    write.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
       reason: "Retire the explicit fixture trigger." }], skipped: [] });
     return { outcome: "success", output: "scenario complete", request };
   });
@@ -1178,7 +1205,7 @@ test("41 review: search history defaults show existing statuses while current an
 
   const archived = c.write([{ op: "create", text: "ARCHIVE-STATUS", category: "constraint", scope: "project",
     supports: [c.fact], topics: [], reason: "Archive status fixture." }]).committed[0];
-  await admittedWrite(c, createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 3), [{ op: "archive",
+  await admittedWrite(c, createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 3), [{ op: "archive", kind: "budget",
     id: tagged(archived.knowledgeId, archived.commit), supports: [c.fact], reason: "Archive status fixture." }],
     [secondStatus.version]);
   expect(memory.search("ARCHIVE-STATUS", "knowledge", { ...path, versions: "history" })).toContain("status: archived on this path");
@@ -1348,7 +1375,7 @@ test("64b: stale absorbed bases name the surviving current commit across merge l
     const supplied = suppliedHandles(input.material.changed)
       .filter((knowledge: string) => knowledge !== history(staleTrigger.knowledgeId, staleTrigger.commit))
       .map((knowledge: string) => ({ knowledge, because: "The stale absorbed edit was correctly refused." }));
-    write.execute({ operations: [{ op: "archive", id: tagged(staleTrigger.knowledgeId, staleTrigger.commit), supports: [other.fact],
+    write.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(staleTrigger.knowledgeId, staleTrigger.commit), supports: [other.fact],
       reason: "Retire explicit trigger." }], skipped: supplied });
     return { outcome: "success", output: "stale absorbed handle checked", request };
   });
@@ -1404,7 +1431,7 @@ test("16b: search notes describe the supplied path, including archives and unres
   expect(memory.search("C version", "knowledge", { ...root, versions: "all", fields: ["text", "status"] })).toContain("current on this path");
   expect(c.tools[0]!.execute({ address: "K1" })).toContain("C version");
   const archiveTrigger = createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 3);
-  const archived = await admittedWrite(c, archiveTrigger, [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.",
+  const archived = await admittedWrite(c, archiveTrigger, [{ op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.",
     id: tagged(1, cCommit), supports: [c.fact] }]);
   expect(archived.committed[0].knowledgeId).toBe(1);
   expect(memory.search("C version", "knowledge", { ...c, versions: "history", fields: ["text", "status"] })).toContain("archived on this path");
@@ -2063,7 +2090,7 @@ test("21a 2026-09-08: the two-array write shape and the empty-supports archive a
   expect(write([create]).committed).toHaveLength(1);
   const trigger = createDreamerTrigger(memory, path, 1, 1);
   const archived = await admittedWrite({ ...path, fact: "F1" }, trigger,
-    [{ op: "archive", id: tagged(1, 1), supports: ["F1"], reason: "Withdrawn by the user." }]);
+    [{ op: "archive", kind: "budget", id: tagged(1, 1), supports: ["F1"], reason: "Withdrawn by the user." }]);
   const archiveCommit = archived.committed[0].commit as number;
   expect(memory.store.getKnowledgeRevision(1, archiveCommit)?.supports).toEqual([1]); // no longer cleared
 });
@@ -2087,11 +2114,11 @@ test("64b/21a: an archive's supports face the same session/project/global table 
       const otherSupplied = suppliedHandles(input.material.changed)
         .filter((knowledge: string) => knowledge !== created.version && knowledge !== history(trigger.knowledgeId, trigger.commit))
         .map((knowledge: string) => ({ knowledge, because: "Unrelated current knowledge is unchanged by the archive scope check." }));
-      first = write.execute({ operations: [{ op: "archive", id: address, supports: [origin.fact], reason: `Retired on ${origin.branch} evidence.` },
-        { op: "archive", id: triggerAddress, supports: [c.fact], reason: "Retire explicit trigger." }], skipped: otherSupplied });
+      first = write.execute({ operations: [{ op: "archive", kind: "budget", id: address, supports: [origin.fact], reason: `Retired on ${origin.branch} evidence.` },
+        { op: "archive", kind: "budget", id: triggerAddress, supports: [c.fact], reason: "Retire explicit trigger." }], skipped: otherSupplied });
       if (allowed) return { outcome: "success", output: "archived", request };
       expect(first).toContain("rejected:");
-      const corrected = write.execute({ operations: [{ op: "archive", id: triggerAddress,
+      const corrected = write.execute({ operations: [{ op: "archive", kind: "budget", id: triggerAddress,
         supports: [c.fact], reason: "Retire explicit trigger." }], skipped: [{ knowledge: created.version, because: "Foreign support is outside this archive's scope." }, ...otherSupplied] });
       expect(corrected).toContain('"committed"');
       return { outcome: "success", output: "scope refusal checked", request };
@@ -2109,10 +2136,10 @@ test("64b/21a: an archive's supports face the same session/project/global table 
     const otherSupplied = suppliedHandles(input.material.changed)
       .filter((knowledge: string) => knowledge !== created.version && knowledge !== history(trigger.knowledgeId, trigger.commit))
       .map((knowledge: string) => ({ knowledge, because: "Unrelated current knowledge is unchanged by the reason-bypass check." }));
-    rejected = write.execute({ operations: [{ op: "archive", id: address, supports: [outside.fact],
+    rejected = write.execute({ operations: [{ op: "archive", kind: "budget", id: address, supports: [outside.fact],
       reason: `The user adopted ${outside.fact} on this path.` }], skipped: [] });
     expect(rejected).toContain("rejected:");
-    write.execute({ operations: [{ op: "archive", id: triggerAddress, supports: [c.fact], reason: "Retire explicit trigger." }],
+    write.execute({ operations: [{ op: "archive", kind: "budget", id: triggerAddress, supports: [c.fact], reason: "Retire explicit trigger." }],
       skipped: [{ knowledge: created.version, because: "Reason prose cannot adopt a foreign fact." }, ...otherSupplied] });
     return { outcome: "success", output: "reason refusal checked", request };
   });
@@ -2143,11 +2170,11 @@ test("64b/21b: a shared label changes no applicability and follows the owner's p
   const request = { fixture: "topic archive tagged base" }; let archiveCommit = 0, topicReceipt: any;
   const archiveRun = await admittedScenarios.run(memory, third, input => {
     input.reportRequest(request); const trace = input.tools[0]!, write = input.tools.find(tool => tool.name === "memory")!;
-    const op = { op: "archive", id: tagged(1, cCommit), supports: [third.fact], reason: "Retired on this path." };
+    const op = { op: "archive", kind: "budget", id: tagged(1, cCommit), supports: [third.fact], reason: "Retired on this path." };
     // Read the globally selected base; labels do not grant write authority.
     completeToolRead(trace, history(1, cCommit));
     completeToolRead(trace, history(archiveTrigger.knowledgeId, archiveTrigger.commit));
-    const receipt = topicReceipt = JSON.parse(write.execute({ operations: [op, { op: "archive", id: tagged(archiveTrigger.knowledgeId, archiveTrigger.commit),
+    const receipt = topicReceipt = JSON.parse(write.execute({ operations: [op, { op: "archive", kind: "budget", id: tagged(archiveTrigger.knowledgeId, archiveTrigger.commit),
       supports: [third.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     const archived = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1);
     if (!archived) throw new Error(`topic archive did not commit: ${JSON.stringify(receipt)}`);
@@ -2190,10 +2217,10 @@ test("21b 2026-09-08: topics are revision metadata only — no fact or note fiel
   expect(tools[2]!.execute({ facts: [{ text: "Labelled fact", source: ["T1#E1"], topics: ["packaging"] }] })).toContain("rejected:");
   const schema = (toolDefinitions.find(t => t.name === "memory")!.parameters.properties as Record<string, any>).operations.items;
   expect(schema.properties.topics).toEqual({ type: "array", items: { type: "string", minLength: 1 } });
-  // Required for the content operations, rejected on archive, through the one existing branch.
-  expect(schema.allOf.at(-1)).toEqual({ if: { properties: { op: { const: "archive" } } },
-    then: { not: { anyOf: ["text", "category", "scope", "topics"].map(key => ({ required: [key] })) } },
-    else: { required: ["text", "category", "scope", "topics"] } });
+  // Topics stay inherited on archives; the archive branch requires an explicit kind.
+  expect(schema.allOf.at(-1).then.required).toContain("kind");
+  expect(schema.allOf.at(-1).then.allOf[0].not.anyOf).toContainEqual({ required: ["topics"] });
+  expect(schema.allOf.at(-1).else.required).toContain("topics");
   expect(schema.required).toEqual(["op", "supports", "reason"]);
   // A label is written by the ordinary batch, with no model call and no independent catalog block.
   expect(write([{ ...create, topics: ["packaging"] }]).committed).toHaveLength(1);
@@ -2572,7 +2599,7 @@ test("64b/29/31: archived divergent history follows the owner's shared foregroun
   const dCommit = (await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
   publish(c);
   const archived = await admittedWrite(c, createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 3),
-    [{ op: "archive", id: tagged(1, cCommit), reason: "Withdraw C only.", supports: [c.fact] }]);
+    [{ op: "archive", kind: "budget", id: tagged(1, cCommit), reason: "Withdraw C only.", supports: [c.fact] }]);
   expect(archived.committed[0].knowledgeId).toBe(1);
   publish(d);
   const selected = peer();

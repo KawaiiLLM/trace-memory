@@ -65,8 +65,8 @@ async function maintain(f: ReturnType<typeof fixture>, branch: "left" | "right",
     const receipt = write.execute({ operations: [
       { op: "update", id: tag(f.base.knowledgeId, f.base.commit), text, category: "constraint", scope: "project",
         supports: evidence === undefined ? [] : [`F${evidence}`], topics: [], reason: `${branch} maintenance.` },
-      ...olderTriggers.map(item => ({ op: "archive", id: tag(item.knowledge.id, item.revision.id), supports: [], reason: "Retire earlier explicit trigger." })),
-      { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
+      ...olderTriggers.map(item => ({ op: "archive", kind: "budget", id: tag(item.knowledge.id, item.revision.id), supports: [], reason: "Retire earlier explicit trigger." })),
+      { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
     ], skipped: [] });
     expect(receipt).toContain('"committed"');
     return { outcome: "success", output: "maintained", request };
@@ -114,14 +114,14 @@ test("64b: global current selects one direct-fact branch and rejects the histori
     const refused = write.execute({ operations: [
       { op: "update", id: tag(f.base.knowledgeId, leftTip.id), text: "stale sibling edit", category: "constraint",
         scope: "project", supports: [], topics: [], reason: "Probe the historical sibling write fence." },
-      { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Would otherwise be valid." },
+      { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Would otherwise be valid." },
     ], skipped: [] });
     // 76: baseProblem now names the current version when the identity has a visible one on this branch,
     // instead of the generic "missing, archived, inapplicable or outside the writer's scope" fallback.
     expect(refused).toContain(`K${f.base.knowledgeId}@v2 is not current on this branch; current is K${f.base.knowledgeId}@v3`);
     expect(f.memory.store.listKnowledgeRevisions()).toHaveLength(before);
     expect(write.execute({ operations: [
-      { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
+      { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
     ], skipped: [] })).toContain('"committed"');
     skipRest(input, [`K${trigger.knowledgeId}@v1`]);
     return { outcome: "success", output: "global current checked", request };

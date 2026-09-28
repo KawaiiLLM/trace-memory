@@ -49,7 +49,7 @@ async function updateKnowledge(path: { sessionId: number; branch: string; headTu
     fullRead(trace, tag);
     const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [
       { op: "update", id: tag, text, category: "understanding", scope: "session", supports: [`F${factId}`], reason: "test", topics: [] },
-      { op: "archive", id: `K${trigger.knowledgeId}#${memory.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: [`F${factId}`], reason: "Retire the explicit interval trigger." },
+      { op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${memory.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: [`F${factId}`], reason: "Retire the explicit interval trigger." },
     ], skipped: [] }));
     const item = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === base.knowledgeId)!;
     changed = { knowledgeId: item.knowledgeId, commit: memory.store.resolveVersionOrdinal(item.knowledgeId, Number(/@v(\d+)$/.exec(item.version)![1])) };

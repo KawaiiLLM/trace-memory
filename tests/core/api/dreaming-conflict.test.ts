@@ -59,7 +59,7 @@ test("64c external maintenance is atomically refused by the live seat and succee
   f.setAgent(async task => { task.acknowledgeRequest(); admitted.release(); await release.wait; return success; });
   const running = f.memory.dream(f.target);
   await admitted.wait;
-  const operation = { op: "archive" as const, knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit,
+  const operation = { op: "archive" as const, kind: "budget" as const, knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit,
     supports: f.content.supports, reason: "external archive", createdAt: "now" };
   const before = f.store.listKnowledgeRevisions().length;
   const blocked = f.other.store.commitConsolidationRun({ path: f.otherPath,

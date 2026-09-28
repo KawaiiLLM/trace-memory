@@ -73,7 +73,7 @@ async function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, s
     for (const item of currentTriggers) trace.execute({ address: tagged(f.store, item.knowledge.id, item.revision.id), itemBudget: null, pageBudget: 8_000 });
     const common = { text, category: "constraint", scope: "project", supports: [`F${f.branchFacts[branch]}`], topics: [], reason: `${operation} on ${branch}.` };
     let operationInput: Record<string, unknown>;
-    if (operation === "archive") operationInput = { op: "archive", id: tagged(f.store, f.base.knowledgeId, f.base.commit), supports: common.supports, reason: common.reason };
+    if (operation === "archive") operationInput = { op: "archive", kind: "budget", id: tagged(f.store, f.base.knowledgeId, f.base.commit), supports: common.supports, reason: common.reason };
     else if (operation === "split") operationInput = { op: "split", id: tagged(f.store, f.base.knowledgeId, f.base.commit), supports: common.supports, reason: common.reason,
       children: [{ text: `${text} one`, category: "constraint", topics: [] }, { text: `${text} two`, category: "constraint", topics: [] }] };
     else if (operation === "merge-into") {
@@ -85,7 +85,7 @@ async function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, s
       trace.execute({ address: tagged(f.store, survivor.knowledgeId, survivor.commit), itemBudget: null });
       operationInput = { op: "merge", id: tagged(f.store, survivor.knowledgeId, survivor.commit), absorb: [tagged(f.store, f.base.knowledgeId, f.base.commit)], ...common };
     } else operationInput = { op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit), ...common };
-    const receipt = write.execute({ operations: [operationInput, ...currentTriggers.map(item => ({ op: "archive",
+    const receipt = write.execute({ operations: [operationInput, ...currentTriggers.map(item => ({ op: "archive", kind: "budget",
       id: tagged(f.store, item.knowledge.id, item.revision.id), supports: [], reason: "Retire explicit trigger." }))], skipped: [] });
     expect(receipt).toContain('"committed"');
     const consumed = [history(f.store, f.base.knowledgeId, f.base.commit),
@@ -107,7 +107,7 @@ test.each(["archive", "split", "merge-into", "merge-absorb"] as const)(
     const leftPath = f.path("left");
     const stale = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "left", currentTurnId: f.turn.id, triggerEntryId: f.entries.left.id });
     stale.find(tool => tool.name === "trace")!.execute({ address: tagged(f.store, f.base.knowledgeId, f.base.commit), itemBudget: null });
-    expect(stale.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
+    expect(stale.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
       supports: [`F${f.fact}`], reason: "Probe the stale base." }], skipped: [] })).toContain("base is not the latest effective applicable revision");
     await runOperation(f, "right", 2, "update", `${operation} divergent result`);
     expect(f.store.currentCommit(f.base.knowledgeId, f.path("right"))[0]!.text).toBe(`${operation} divergent result`);
@@ -139,7 +139,7 @@ test.each([false, true])("64b: stale Dreamer completion fails unless corrected (
     const first = JSON.parse(write.execute({ operations: [
       { op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit), text: "first successor", category: "constraint",
         scope: "project", supports: [], topics: [], reason: "First maintenance." },
-      { op: "archive", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
+      { op: "archive", kind: "budget", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
     ], skipped: [] })).committed[0] as { version: string };
     const stale = write.execute({ operations: [{ op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
       text: "unresolved stale submission", category: "constraint", scope: "project", supports: [], topics: [], reason: "Must fail." }], skipped: [] });

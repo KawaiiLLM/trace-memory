@@ -195,7 +195,7 @@ test("a fact backlink groups citing history under visible current identity, incl
   const id = create.committed[0].knowledgeId;
   const firstCommit = m.store.resolveVersionOrdinal(id, 1);
   const tag = m.store.versionTag(id, firstCommit);
-  const archive = JSON.parse(memory.execute({ operations: [{ op: "archive", id: `K${id}#${tag}`,
+  const archive = JSON.parse(memory.execute({ operations: [{ op: "archive", kind: "budget", id: `K${id}#${tag}`,
     reason: "reconsidered", supports: ["F2"] }], skipped: [] }));
   expect(archive.committed).toHaveLength(1);
   const text = m.trace("F1,F2", { sessionId: session.id, branch: "main", headTurnId: second.id, pageBudget: null });
