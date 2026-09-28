@@ -8509,7 +8509,7 @@ function prepareDreaming(store, input, config3, claim, path, { pool: due, range 
   const remainderValues = due.versions.filter((value) => !pendingRevisionIds.has(value.revision.id));
   const remainder = tokens(processedBlock(remainderValues, (value) => due.rendered.get(value.revision.id)));
   const excludedSize = due.tokens - remainder;
-  const processedExcessOrder = remainder > due.budget ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items occupy ${excludedSize}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under Budget priorities until that remainder fits, then deliberate the pending items below.` : "";
+  const processedExcessOrder = remainder > due.budget ? pending.length ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items occupy ${excludedSize}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under Budget priorities until that remainder fits, then deliberate the pending items below.` : ` This pool is ${due.tokens}/${due.budget} tokens, over budget, and this run has no pending items. Reduce the already-processed knowledge under Budget priorities until the pool fits.` : "";
   const references = due.versions.filter((value) => !frozenIds.has(value.revision.id));
   const budgets2 = store.knowledgeBudgets();
   const knowledgeCapacity = budgets2.injection + config3.compaction.sharedAllowanceTokens;
