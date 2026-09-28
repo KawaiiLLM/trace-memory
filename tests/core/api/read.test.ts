@@ -77,7 +77,7 @@ const defaultWindows = () => {
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
   const { s, t } = populated();
   const next = turn(s.id, rawFixture[1].userPrompt, t.id);
-  const knowledge = `<knowledge>\nItems are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] 地形层和高度层一起读。\n  change supports: F1\n</knowledge>`;
+  const knowledge = `<knowledge>\nItems are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.\nSession S${s.id}: a subagent inherits this session's knowledge by reading /tm/S${s.id}/knowledge.\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] 地形层和高度层一起读。\n  change supports: F1\n</knowledge>`;
   expect(memory.inject(s.id)).toBe(knowledge);
   // The exact bound source is already supplied as Raw, so the Fact is not duplicated.
   const compact = memory.compact(s.id, "main");

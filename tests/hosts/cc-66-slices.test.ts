@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { ccInjectionLength, decodeCcInjection, encodeCcInjection, type CcVisibleBinding } from "../../src/hosts/cc/injection.ts";
 import { transportItemText } from "../../src/core/render/material.ts";
-import { sliceCcInjection, CC_SLICE_COUNT, CC_SLICE_LIMIT, CC_KNOWLEDGE_RECENCY_NOTICE } from "../../src/hosts/cc/slices.ts";
+import { sliceCcInjection, ccKnowledgeHeader, CC_SLICE_COUNT, CC_SLICE_LIMIT, CC_KNOWLEDGE_RECENCY_NOTICE } from "../../src/hosts/cc/slices.ts";
 import type { TransportItem } from "../../src/core/render/material.ts";
 import { renderKnowledgeBlock, tokens } from "../../src/core/render/index.ts";
 
@@ -70,16 +70,16 @@ test("66 legacy oversized omission receipt keeps its actual bounded expansion", 
 test("66 slice marker fits its extended host framing bound without changing the 10k UTF-16 cap", () => {
   const native: CcVisibleBinding = { db: "123456789:123456789", nativeSession: "12345678-1234-1234-1234-123456789012", coreSession: 123 };
   const base: TransportItem = { kind: "knowledge", category: "constraint", commitId: 1, address: "K1@1", text: "" };
-  const frame = encodeCcInjection(native, { text: transportItemText(base, CC_KNOWLEDGE_RECENCY_NOTICE), knowledgeCommitIds: [1],
+  const frame = encodeCcInjection(native, { text: transportItemText(base, ccKnowledgeHeader(native)), knowledgeCommitIds: [1],
     factIds: [], entryIds: [], slice: [23, 24] });
-  const oldFraming = frame.length - transportItemText(base, CC_KNOWLEDGE_RECENCY_NOTICE).length;
+  const oldFraming = frame.length - transportItemText(base, ccKnowledgeHeader(native)).length;
   expect(oldFraming).toBeGreaterThan(300 + 12);
   const short: CcVisibleBinding = { ...native, db: "1:2" };
-  const shortFrame = encodeCcInjection(short, { text: transportItemText(base, CC_KNOWLEDGE_RECENCY_NOTICE), knowledgeCommitIds: [1],
+  const shortFrame = encodeCcInjection(short, { text: transportItemText(base, ccKnowledgeHeader(short)), knowledgeCommitIds: [1],
     factIds: [], entryIds: [], slice: [0, 24] });
   for (const target of [9999, 10000, 10001]) {
     const item: TransportItem = { ...base, text: `${"x".repeat(target - shortFrame.length - 30)}😀` };
-    const encode = () => { const text = transportItemText(item, CC_KNOWLEDGE_RECENCY_NOTICE);
+    const encode = () => { const text = transportItemText(item, ccKnowledgeHeader(short));
       return encodeCcInjection(short, { text, knowledgeTokens: tokens(text), knowledgeCommitIds: [1],
         factIds: [], entryIds: [], slice: [0, 24] }); };
     while (encode().length < target) item.text = "x" + item.text;
@@ -96,7 +96,7 @@ test("92 CC placement prices the final single knowledge list, including exact UT
   const first: TransportItem = { kind: "knowledge", category: "reference", commitId: 1, address: "K1@v1", text: `[K1#aaaa] ${"a".repeat(3_000)}` };
   const emptySecond: TransportItem = { kind: "knowledge", category: "reference", commitId: 2, address: "K2@v1", text: "[K2#bbbb] " };
   const membership = { knowledgeCommitIds: [1, 2], factIds: [], entryIds: [], slice: [0, 24] as [number, number] };
-  const body = (second: TransportItem) => renderKnowledgeBlock([first, second].map(item => ({ category: "items", text: item.text })), CC_KNOWLEDGE_RECENCY_NOTICE);
+  const body = (second: TransportItem) => renderKnowledgeBlock([first, second].map(item => ({ category: "items", text: item.text })), ccKnowledgeHeader(binding));
   const initial = encodeCcInjection(binding, { ...membership, text: body(emptySecond) }).length;
   for (const target of [9999, 10000, 10001]) {
     const second = { ...emptySecond, text: emptySecond.text + "x".repeat(target - initial - 30) + "😀" };

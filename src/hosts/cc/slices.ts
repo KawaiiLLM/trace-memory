@@ -1,11 +1,16 @@
 import { ccInjectionLength, encodeCcInjection, type CcHookOutput, type CcVisibleBinding } from "./injection.ts";
-import { expandList, knowledgeBlockParts } from "../../core/render/index.ts";
+import { expandList, knowledgeBlockParts, sessionKnowledgeNotice } from "../../core/render/index.ts";
 import { transportItemText, type TransportItem } from "../../core/render/material.ts";
 import { tokens } from "../../core/render/tokens.ts";
 
 export const CC_SLICE_COUNT = 24;
 export const CC_SLICE_LIMIT = 10_000;
 export const CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segments, order knowledge by the header's p[0] segment number, then by position within that segment: higher segments and later items are newer. Arrival order is not recency. For claims about the same object, the newer item takes precedence until maintenance merges them.";
+
+/** 101 (ruled): a bound session's knowledge header also names it and the path a subagent inherits
+ * its knowledge from. */
+export const ccKnowledgeHeader = (binding: CcVisibleBinding): string => binding.coreSession === null
+  ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE);
 
 const address = (item: TransportItem): string => item.kind === "knowledge" ? item.address
   : item.kind === "fact" ? `F${item.factId}` : item.kind === "raw" ? item.address
@@ -36,14 +41,15 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     entryIds: members.flatMap(item => item.kind === "raw" ? [item.entryId] : []),
     slice: [index, CC_SLICE_COUNT] as [number, number],
   });
-  const itemText = (item: TransportItem) => transportItemText(item, CC_KNOWLEDGE_RECENCY_NOTICE);
+  const header = ccKnowledgeHeader(binding);
+  const itemText = (item: TransportItem) => transportItemText(item, header);
   // One exact assembly for trial character size, Knowledge cost and emitted bytes. Trials do not
   // compute digests; each final carrier has one knowledge list with its own domain framing.
   const assemble = (items: TransportItem[], index: number) => {
     const members = [...items].sort((a, b) => rank(a) - rank(b) ||
       (a.kind === "knowledge" && b.kind === "knowledge" ? a.commitId - b.commitId : 0));
     const knowledge = knowledgeBlockParts(members.filter(item => item.kind === "knowledge")
-      .map(item => ({ category: "items", text: item.text })), CC_KNOWLEDGE_RECENCY_NOTICE);
+      .map(item => ({ category: "items", text: item.text })), header);
     const sections = [
       ...members.filter(item => item.kind === "state").map(item => [itemText(item)]),
       ...(knowledge.length ? [knowledge] : []),

@@ -757,6 +757,10 @@ export const expandList = (addresses: string[]): string => addresses.length <= E
   : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 
 export const KNOWLEDGE_RECENCY_NOTICE = "Items are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.";
+/** 101 (ruled): a session's own knowledge header also names the session and the path a subagent
+ * inherits its knowledge from, so a main agent can pass one line to a subagent. */
+export const sessionKnowledgeNotice = (sessionId: number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): string =>
+  `${recencyNotice}\nSession S${sessionId}: a subagent inherits this session's knowledge by reading /tm/S${sessionId}/knowledge.`;
 
 export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision[]): string[] =>
   KNOWLEDGE_CATEGORIES.flatMap(category => {
@@ -778,9 +782,9 @@ const orderedKnowledge = (knowledge: KnowledgeWithRevision[], line: (knowledge: 
       category: knowledgeCategoryGroup(value.revision.category), text, id: value.knowledge.id, commit: value.revision.id, size: tokens(text) + 1,
     }; });
 
-const knowledgeBody = (items: RenderedKnowledgeItem[]): Omit<BudgetedKnowledge, "receipts"> => ({
+const knowledgeBody = (items: RenderedKnowledgeItem[], recencyNotice = KNOWLEDGE_RECENCY_NOTICE): Omit<BudgetedKnowledge, "receipts"> => ({
   groups: items.length ? [{ category: "items", text: items.map(item => item.text).join("\n") }] : [],
-  cost: items.length ? tokens(xmlBlock("knowledge", KNOWLEDGE_RECENCY_NOTICE)) + items.reduce((sum, item) => sum + item.size, 0) : 0,
+  cost: items.length ? tokens(xmlBlock("knowledge", recencyNotice)) + items.reduce((sum, item) => sum + item.size, 0) : 0,
   commits: items.map(item => item.commit),
 });
 
@@ -797,7 +801,7 @@ export function wholeKnowledge(knowledge: KnowledgeWithRevision[], line: (knowle
  * No item is rewritten to fit, and omitted items remain stored and traceable. */
 export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge,
   budget = "Knowledge capacity", required?: ReadonlySet<number>,
-  priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number): BudgetedKnowledge {
+  priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): BudgetedKnowledge {
   // Selection remains newest-first; presentation is a single oldest-first list.
   const ordered = orderedKnowledge(knowledge, line);
   const byCommit = new Map(knowledge.map(value => [value.revision.id, value]));
@@ -807,7 +811,7 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   const selected = (kept: number) => ordered.filter(item => required?.has(item.commit) || ranks.get(item.commit)! < kept);
   const receipts = (kept: number) => renderKnowledgeOmissions(optional.slice(kept).map(item => byCommit.get(item.commit)!));
   // Prefix trials need only scalar costs; build grouped text and commit lists after selection.
-  const outerCost = tokens(xmlBlock("knowledge", KNOWLEDGE_RECENCY_NOTICE));
+  const outerCost = tokens(xmlBlock("knowledge", recencyNotice));
   const bodyCost = (kept: number) => {
     const items = selected(kept);
     return items.length ? outerCost + items.reduce((sum, item) => sum + item.size, 0) : 0;
@@ -824,7 +828,7 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   while (kept > 0 && cost(kept) > cap) kept--;
   // Required bodies and emitted receipts must fit too; report capacity rather than emit oversize.
   if (cost(kept) > cap) throw new Error(`Knowledge capacity: the omission receipt alone (${cost(kept)} tokens) exceeds ${budget} (${cap})`);
-  const body = knowledgeBody(selected(kept));
+  const body = knowledgeBody(selected(kept), recencyNotice);
   return { ...body, receipts: emittedReceipts(kept), cost: cost(kept) };
 }
 

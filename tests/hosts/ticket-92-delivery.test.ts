@@ -6,7 +6,7 @@ import { tokens, renderKnowledgeBlock } from "../../src/core/render/index.ts";
 import { visibleView } from "../../src/hosts/pi/visible.ts";
 import { visibility } from "../../src/hosts/pi/index.ts";
 import { decodeCcInjection, encodeCcInjection } from "../../src/hosts/cc/injection.ts";
-import { sliceCcInjection, CC_KNOWLEDGE_RECENCY_NOTICE } from "../../src/hosts/cc/slices.ts";
+import { sliceCcInjection, ccKnowledgeHeader } from "../../src/hosts/cc/slices.ts";
 
 const pi = { db: "fixture", session: 1, pi: "native" };
 const cc = { db: "fixture", coreSession: 1, nativeSession: "native" };
@@ -35,7 +35,7 @@ test("92 each final CC slice charges its K framing and notices, not facts, Raw o
     const parts = [
       ...(header.states.length ? [`${KNOWLEDGE_STATUS_TITLE}\n${state.text}`] : []),
       renderKnowledgeBlock(values.filter(value => value.kind === "knowledge" && header.commits.includes(value.commitId))
-        .map(value => ({ category: "reference", text: value.text })), CC_KNOWLEDGE_RECENCY_NOTICE),
+        .map(value => ({ category: "reference", text: value.text })), ccKnowledgeHeader(cc)),
       ...(header.slice![0] === 0 ? ["Receipts:\nomitted 1 reference knowledge; expand: K3"] : []),
     ].filter(Boolean);
     expect(header.knowledgeTokens).toBe(tokens(parts.join("\n\n")));

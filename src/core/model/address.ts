@@ -118,3 +118,36 @@ export function publicTraceTargets(expression: string): string[] {
   }
   return targets;
 }
+
+/** 101: the root of Trace Memory's read-only virtual files, and what a write under it is told. */
+export const MEMORY_ROOT = "/tm";
+export const MEMORY_READ_ONLY = `${MEMORY_ROOT}/ is Trace Memory and read-only: record facts with the note tool and knowledge with the memory tool.`;
+
+/** 101: the `/tm` path a host tool argument names, or null for every other path. This is the one
+ * prefix check a host runs before answering a tool call itself, which bypasses the host's own
+ * permission and path checks. Only an absolute path counts. It is normalised lexically — empty and
+ * `.` segments dropped, `..` applied — and must then be `/tm` or lie under `/tm/`, so `/tmp`,
+ * `/tm-foo`, a relative path and a `..` that leaves `/tm` are not memory paths. Nothing is resolved
+ * on disk: a symbolic link is never read as `/tm`. */
+export function memoryPath(value: unknown): string | null {
+  if (typeof value !== "string" || !value.startsWith("/")) return null;
+  const segments: string[] = [];
+  for (const segment of value.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") segments.pop(); else segments.push(segment);
+  }
+  return segments[0] === "tm" ? `/${segments.join("/")}` : null;
+}
+
+/** 101: the `/tm` glob a Glob call names (an absolute pattern, or a relative one under an absolute
+ * search path), or null. Its literal leading segments, up to the first holding a glob character,
+ * must pass `memoryPath`. */
+export function memoryGlob(pattern: unknown, path?: unknown): string | null {
+  if (typeof pattern !== "string" || !pattern) return null;
+  const full = pattern.startsWith("/") ? pattern : typeof path === "string" && path.startsWith("/") ? `${path.replace(/\/+$/, "")}/${pattern}` : null;
+  if (!full) return null;
+  const segments = full.split("/"), wild = segments.findIndex(segment => /[*?[\]{}]/.test(segment));
+  const literal = wild < 0 ? full : segments.slice(0, wild).join("/") || "/";
+  const root = memoryPath(literal);
+  return root === null ? null : wild < 0 ? root : [root, ...segments.slice(wild)].join("/");
+}
