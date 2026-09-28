@@ -1,6 +1,7 @@
 // Function-hooks module for Claude Code 2.1.280. Bundled from this source for the isolated hooks VM.
 import { buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type SettingsRowId, type TraceMenuInput, type SettingsInput } from "../../src/hosts/trace-menu.ts";
 import { renderTraceMenu, renderTraceMenuText, renderTraceSettings, type CcContextBreakdown, type CcMemorySplit } from "../../src/hosts/cc/trace-menu-render.ts";
+import { MEMORY_READ_ONLY, memoryGlob, memoryPath } from "../../src/core/model/address.ts";
 
 const PINNED_VERSION = "2.1.280";
 type Reply = { menu: TraceMenuInput; settings: SettingsInput; context: { presence: "confirmed" | "unavailable"; estimatedMessagesTokens?: number; memory?: CcMemorySplit }; runs: { id: number; phase: string; status: string; cost: number; at: string }[] };
@@ -76,7 +77,57 @@ async function nativeCompaction($: any, e: any, next: any, session: string) {
   }
 }
 
+// 101: one `/tm` operation through `cc.cjs fs`, for this native session's reader. An answer made here
+// skips Claude Code's permission and path checks, so every caller first checks the exact `/tm` prefix.
+async function memoryFiles($: any, args: string[]): Promise<any> {
+  const root = $.plugin.root, session = await $.session.id();
+  const run = await $.process.run(["node", `${root}/dist/cc.cjs`, "fs", "--config", `${root}/cc.config.json`, "--session", session, ...args]);
+  if (run.exitCode !== 0) throw new Error(String(run.stderr || `exit ${run.exitCode}`).replace(/^Trace Memory CC: /, "").trim());
+  return JSON.parse(run.stdout);
+}
+const failure = (error: unknown) => ({ deny: error instanceof Error ? error.message : String(error) });
+const listed = (listing: { lines: string[]; cut?: string }) => listing.cut ? [...listing.lines, listing.cut] : listing.lines;
+
 export const register = (on: any) => {
+  // 101: Read, Grep and Glob under /tm are Trace Memory's read-only files; every other path reaches the
+  // real tool through `next` untouched. Edit, Write and NotebookEdit under /tm are refused.
+  on("tool.call", { tool: "Read" }, async ($: any, e: any, next: any) => {
+    const path = memoryPath(e.file_path);
+    if (path === null) return next(e);
+    try {
+      const page = await memoryFiles($, ["read", path, String(e.offset ?? 1), ...(e.limit === undefined ? [] : [String(e.limit)])]);
+      const lines = listed(page);
+      return { result: { type: "text", file: { filePath: e.file_path, content: lines.join("\n"), numLines: lines.length,
+        startLine: page.startLine, totalLines: page.totalLines } } };
+    } catch (error) { return failure(error); }
+  });
+  on("tool.call", { tool: "Grep" }, async ($: any, e: any, next: any) => {
+    const path = memoryPath(e.path);
+    if (path === null) return next(e);
+    const mode = e.output_mode === "content" || e.output_mode === "count" ? e.output_mode : "files_with_matches";
+    const context = e["-C"] ?? e.context;
+    try {
+      const listing = await memoryFiles($, ["grep", mode === "content" ? "-n" : mode === "count" ? "-c" : "-l", ...(e["-i"] ? ["-i"] : []),
+        ...(context !== undefined ? ["-C", String(context)] : []), ...(e["-A"] !== undefined ? ["-A", String(e["-A"])] : []),
+        ...(e["-B"] !== undefined ? ["-B", String(e["-B"])] : []), ...(e.glob ? ["--glob", e.glob] : []),
+        ...(e.offset ? ["--offset", String(e.offset)] : []), ...(e.head_limit ? ["--limit", String(e.head_limit)] : []), "--", e.pattern, path]);
+      const lines = listed(listing);
+      return { result: mode === "files_with_matches" ? { mode, numFiles: listing.lines.length, filenames: lines }
+        : { mode, numFiles: 0, filenames: [], content: lines.join("\n"), numLines: lines.length } };
+    } catch (error) { return failure(error); }
+  });
+  on("tool.call", { tool: "Glob" }, async ($: any, e: any, next: any) => {
+    const pattern = memoryGlob(e.pattern, e.path);
+    if (pattern === null) return next(e);
+    try {
+      const listing = await memoryFiles($, ["glob", pattern]);
+      return { result: { durationMs: 0, numFiles: listing.lines.length, filenames: listed(listing), truncated: !!listing.cut } };
+    } catch (error) { return failure(error); }
+  });
+  on("tool.call", { tool: "Edit" }, ($: any, e: any, next: any) => memoryPath(e.file_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
+  on("tool.call", { tool: "Write" }, ($: any, e: any, next: any) => memoryPath(e.file_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
+  on("tool.call", { tool: "NotebookEdit" }, ($: any, e: any, next: any) => memoryPath(e.notebook_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
+
   on("session.compact", async ($: any, e: any, next: any) => {
     // A plugin's or a precomputed compaction, and a subagent's or fork's own, stay Claude Code's.
     if (e.trigger === "precompute" || e.trigger === "plugin" || e.agentId) return next(e);
