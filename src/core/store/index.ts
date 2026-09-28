@@ -1799,9 +1799,12 @@ export class Store {
   }
 
   /** Called only by atomic Store operations. Pending discovery is private and synchronous, so
-   * admission can reuse its own projection without accepting prepared authority from a caller. */
+   * admission can reuse its own projection without accepting prepared authority from a caller.
+   * `leaseMs` defaults to the historical fixed 30 minutes; a dreaming admission overrides it so the
+   * claim outlives the configured wall-clock bound (104 F1: otherwise a timeout's own claim can lapse
+   * before terminal settlement reads it, misfiling the run as cancelled instead of a failure). */
   private acquireAvailableClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed: boolean,
-    hasPending: () => boolean, eligible: () => boolean): TaskClaim | null {
+    hasPending: () => boolean, eligible: () => boolean, leaseMs = 30 * 60_000): TaskClaim | null {
     if (!executorId || !this.enabled(target.sessionId)) return null;
     if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
     const pending = hasPending();
@@ -1818,7 +1821,7 @@ export class Store {
     if (current && current.expiresAt > now && !takeover) return null;
     if (phase === "dreaming" && this.otherSessionOwnsDreamerSeat(target.sessionId, now)) return null;
     const claim: TaskClaim = { sessionId: target.sessionId, phase, executorId,
-      token: takeover ? current.token : randomUUID(), expiresAt: now + 30 * 60_000, borrowed, reserved: false };
+      token: takeover ? current.token : randomUUID(), expiresAt: now + leaseMs, borrowed, reserved: false };
     this.db.prepare(`INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, ?, ?, ?, ?, ?, 0)
       ON CONFLICT (session_id, phase) DO UPDATE SET executor_id = excluded.executor_id, token = excluded.token,
       expires_at = excluded.expires_at, borrowed = excluded.borrowed, reserved = 0`)
@@ -4072,15 +4075,18 @@ export class Store {
   }
 
   /** One atomic admission snapshot covers discovery, claim availability and the frozen range.
-   * Claim/range bookkeeping does not mutate knowledge, processing records or source cursors. */
+   * Claim/range bookkeeping does not mutate knowledge, processing records or source cursors.
+   * `claimLeaseMs`, when supplied, overrides the claim's lease (104 F1: the caller derives it from
+   * the configured Dreaming wall-clock bound so a timed-out run's own claim cannot lapse first). */
   admitKnowledgePool(target: TaskTarget, executorId: string, borrowed = false, executorSessionId?: number,
-    dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS, sharedAllowanceTokens = DEFAULT_SHARED_ALLOWANCE_TOKENS) {
+    dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS, sharedAllowanceTokens = DEFAULT_SHARED_ALLOWANCE_TOKENS,
+    claimLeaseMs?: number) {
     return this.transaction(() => {
       if (!this.enabled(target.sessionId) || (executorSessionId !== undefined && !this.enabled(executorSessionId)))
         return { outcome: "dropped" as const };
       const pool = this.dueProjection(target, dreamingTriggerTokens, sharedAllowanceTokens);
       if (!pool) return { outcome: "empty" as const };
-      const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true);
+      const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true, claimLeaseMs);
       if (!claim) return { outcome: "dropped" as const };
       const range = this.retainProjectedPoolRange(target, pool, claim);
       return { outcome: "admitted" as const, claim, pool, range };

@@ -42,6 +42,11 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
     store.freezeKnowledgePool(path, claim, config.dreaming.triggerTokens, config.compaction.sharedAllowanceTokens));
 }
 
+/** 104 F1: the claim lease outlives the configured wall-clock bound by this margin, so the terminal
+ * settlement in `core/api/index.ts` still finds the claim current when a run times out — otherwise a
+ * lease equal to the bound races the timeout and can lapse first, misfiling the failure as cancelled. */
+const CLAIM_LEASE_MARGIN_MS = 60_000;
+
 /** Facade admission and material assembly stay in one transaction. No prepared snapshot is accepted
  * from outside: Store discovers, claims and reserves before the private read-only assembler runs. */
 export function admitDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig, executorId: string) {
@@ -49,7 +54,8 @@ export function admitDreaming(store: Store, input: DreamingInput, config: TraceM
     const path = { sessionId: input.sessionId, branch: input.branch,
       headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
     const admitted = store.admitKnowledgePool(path, executorId, input.borrowed, input.executorSessionId,
-      config.dreaming.triggerTokens, config.compaction.sharedAllowanceTokens);
+      config.dreaming.triggerTokens, config.compaction.sharedAllowanceTokens,
+      config.dreaming.timeoutMs + CLAIM_LEASE_MARGIN_MS);
     if (admitted.outcome !== "admitted") return admitted;
     return { outcome: "admitted" as const, claim: admitted.claim,
       frozen: prepareDreaming(store, input, config, admitted.claim, path, admitted) };

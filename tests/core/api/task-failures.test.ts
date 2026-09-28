@@ -341,6 +341,33 @@ test("104: a timeout, an over-budget end and a run with no pending item each cou
   expect(streaks(m).filter(row => row.phase === "dreaming")).toMatchObject([{ head: null, pool, count: 3 }]);
 });
 
+test("104 F1: three consecutive timeouts at the default 30-minute bound settle as failure and turn memory off", async () => {
+  vi.useFakeTimers();
+  try {
+    const m = open(":memory:", async raw => {
+      const input = raw as DreamingAgentInput;
+      input.acknowledgeRequest();
+      return new Promise<never>(() => {}); // never resolves; only the wall-clock bound ends the run
+    });
+    m.config.dreaming.triggerTokens = 1;
+    const target = seed(m), pool = `session:${target.sessionId}`;
+    const facts = decision(m, target, "evidence");
+    const made = m.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" },
+      operations: [{ op: "create", handle: "$1", author: "test", text: `Session rule ${"word ".repeat(200)}`, category: "constraint",
+        scope: "session", topics: [], supports: [facts.facts[0]!.id], reason: "evidence", createdAt: "now" }] });
+    if (!made.ok) throw Error(made.problems.join("; "));
+    const dreamStreak = () => streaks(m).filter(row => row.phase === "dreaming");
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const running = m.dream(target);
+      await vi.advanceTimersByTimeAsync(m.config.dreaming.timeoutMs);
+      const settled = await running;
+      expect(settled.outcome, `attempt ${attempt}: ${JSON.stringify(settled)}`).toBe("failure");
+    }
+    expect(dreamStreak()).toMatchObject([{ head: null, pool, count: 3 }]);
+    expect(m.store.enabled(target.sessionId)).toBe(false);
+  } finally { vi.useRealTimers(); }
+});
+
 test("92: successful N publication resets its own task in the terminal transaction", async () => {
   let succeed = false;
   const m = open(":memory:", async raw => {

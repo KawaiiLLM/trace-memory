@@ -2335,8 +2335,11 @@ var Store = class {
     }, eligible));
   }
   /** Called only by atomic Store operations. Pending discovery is private and synchronous, so
-   * admission can reuse its own projection without accepting prepared authority from a caller. */
-  acquireAvailableClaim(target, phase, executorId, borrowed, hasPending, eligible) {
+   * admission can reuse its own projection without accepting prepared authority from a caller.
+   * `leaseMs` defaults to the historical fixed 30 minutes; a dreaming admission overrides it so the
+   * claim outlives the configured wall-clock bound (104 F1: otherwise a timeout's own claim can lapse
+   * before terminal settlement reads it, misfiling the run as cancelled instead of a failure). */
+  acquireAvailableClaim(target, phase, executorId, borrowed, hasPending, eligible, leaseMs = 30 * 6e4) {
     if (!executorId || !this.enabled(target.sessionId)) return null;
     if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
     const pending = hasPending();
@@ -2356,7 +2359,7 @@ var Store = class {
       phase,
       executorId,
       token: takeover ? current.token : (0, import_node_crypto3.randomUUID)(),
-      expiresAt: now + 30 * 6e4,
+      expiresAt: now + leaseMs,
       borrowed,
       reserved: false
     };
@@ -4525,14 +4528,16 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     return pool === "global" ? budgets2.global : pool.startsWith("project:") ? budgets2.project : budgets2.session;
   }
   /** One atomic admission snapshot covers discovery, claim availability and the frozen range.
-   * Claim/range bookkeeping does not mutate knowledge, processing records or source cursors. */
-  admitKnowledgePool(target, executorId, borrowed = false, executorSessionId, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS, sharedAllowanceTokens = DEFAULT_SHARED_ALLOWANCE_TOKENS) {
+   * Claim/range bookkeeping does not mutate knowledge, processing records or source cursors.
+   * `claimLeaseMs`, when supplied, overrides the claim's lease (104 F1: the caller derives it from
+   * the configured Dreaming wall-clock bound so a timed-out run's own claim cannot lapse first). */
+  admitKnowledgePool(target, executorId, borrowed = false, executorSessionId, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS, sharedAllowanceTokens = DEFAULT_SHARED_ALLOWANCE_TOKENS, claimLeaseMs) {
     return this.transaction(() => {
       if (!this.enabled(target.sessionId) || executorSessionId !== void 0 && !this.enabled(executorSessionId))
         return { outcome: "dropped" };
       const pool = this.dueProjection(target, dreamingTriggerTokens, sharedAllowanceTokens);
       if (!pool) return { outcome: "empty" };
-      const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true);
+      const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true, claimLeaseMs);
       if (!claim) return { outcome: "dropped" };
       const range = this.retainProjectedPoolRange(target, pool, claim);
       return { outcome: "admitted", claim, pool, range };
@@ -8471,6 +8476,7 @@ function renderDreamingCheckReceipt(result, address2 = String) {
 // src/core/dreaming/index.ts
 var prompt2 = loadPrompt("dreaming.md");
 var promptHash2 = (0, import_node_crypto7.createHash)("sha256").update(prompt2).digest("hex");
+var CLAIM_LEASE_MARGIN_MS = 6e4;
 function admitDreaming(store, input, config3, executorId) {
   return store.transaction(() => {
     const path = {
@@ -8484,7 +8490,8 @@ function admitDreaming(store, input, config3, executorId) {
       input.borrowed,
       input.executorSessionId,
       config3.dreaming.triggerTokens,
-      config3.compaction.sharedAllowanceTokens
+      config3.compaction.sharedAllowanceTokens,
+      config3.dreaming.timeoutMs + CLAIM_LEASE_MARGIN_MS
     );
     if (admitted.outcome !== "admitted") return admitted;
     return {
