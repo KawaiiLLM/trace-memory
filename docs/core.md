@@ -128,9 +128,15 @@ or extra atomicity mechanism is introduced. Partial writes survive; a version al
 not return merely because the model intended another update. A range ends once, and own outputs do
 not immediately trigger the same pool. Run audits report deliberated versus frozen item counts.
 
-Dreamer has no tool-round ceiling. The shared `dreaming.timeoutMs` default is 600,000 milliseconds
+Dreamer has no tool-round ceiling. The shared `dreaming.timeoutMs` default is 1,800,000 milliseconds
 on both hosts, including Pi where this adds a new time bound. Expiry closes writes, fails the run with
 the bound in its reason, settles partial work and releases its claim; it is not a completed pass.
+
+At the start of a run, when the frozen pool's size without this run's pending items already exceeds
+its budget, the task material states the pool, pending, remainder and budget numbers and directs the
+run to reduce the already-processed knowledge first under Budget priorities, before deliberating the
+pending items. Both measures come from the same pool projection `check` reports from; the run's own
+final `check` and the "Over budget" loop are unchanged.
 
 Budget excess is not a due condition; a pending-triggered run still archives until its pool fits.
 Project relabelling creates no processing event or knowledge revision. It removes destination-pool

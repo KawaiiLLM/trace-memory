@@ -103,7 +103,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     triggerTokens: 10_000,
     maxToolRounds: 0,
   },
-  dreaming: { triggerTokens: DEFAULT_DREAMING_TRIGGER_TOKENS, maxToolRounds: 0, timeoutMs: 600_000 },
+  dreaming: { triggerTokens: DEFAULT_DREAMING_TRIGGER_TOKENS, maxToolRounds: 0, timeoutMs: 1_800_000 },
   compaction: {
     factsTokens: 10_000,
     rawTokens: 10_000,

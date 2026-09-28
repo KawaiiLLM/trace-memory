@@ -34,8 +34,8 @@ function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, dre
 
 const exactRequest = { exact: "request" };
 
-test("68 defaults pin flat Dreamer trigger, unlimited rounds and ten-minute deadline", () => {
-  expect(DEFAULT_CONFIG.dreaming).toEqual({ triggerTokens: 5_000, maxToolRounds: 0, timeoutMs: 600_000 });
+test("68 defaults pin flat Dreamer trigger, unlimited rounds and thirty-minute deadline (103)", () => {
+  expect(DEFAULT_CONFIG.dreaming).toEqual({ triggerTokens: 5_000, maxToolRounds: 0, timeoutMs: 1_800_000 });
   expect(() => validateConfig({ dreaming: { maxToolRounds: 1 } })).toThrow(/Dreamer requires 0/);
   expect(() => validateConfig({ dreaming: { timeoutMs: 2_147_483_648 } })).toThrow(/dreaming.timeoutMs.*at most 2147483647/);
 });

@@ -265,3 +265,84 @@ test("64c frozen material preserves changed and direct-fact capacity guarantees 
   });
   expect(result.outcome).toBe("success");
 });
+
+test("103 order instruction: present when the pool without this run's pending items still exceeds budget, from check's own measure", async () => {
+  const f = fixture();
+  f.memory.config.dreaming.triggerTokens = 1;
+  const projectPool = `project:${f.project.id}`;
+  const base = f.create("Already-processed project knowledge that stays after this run. ".repeat(30));
+  const firstRun = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest();
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      skipped: [{ knowledge: history(f, base), because: "fixture: mark processed" }] });
+    return success;
+  });
+  expect(firstRun.outcome, JSON.stringify(firstRun)).toBe("success");
+
+  const trigger = f.create("A later small pending correction.");
+  const projected = f.store.knowledgePools(f.target).find(pool => pool.pool === projectPool)!;
+  const pendingWeight = projected.pending.reduce((sum, value) => sum + value.tokens, 0);
+  const remainder = projected.tokens - pendingWeight;
+  f.store.setKnowledgeBudget("project", remainder - 1);
+
+  let seenBound = "", checkReceipt = "";
+  const secondRun = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest();
+    seenBound = task.material.bound;
+    checkReceipt = String(task.tools.find(tool => tool.name === "check")!.execute({}));
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      skipped: [{ knowledge: history(f, trigger), because: "fixture reviewed unchanged" }] });
+    return success;
+  });
+  expect(secondRun.outcome, JSON.stringify(secondRun)).toBe("success");
+
+  const match = seenBound.match(/This pool is (\d+)\/(\d+) tokens; this run's pending items weigh (\d+); without them it is still (\d+), over budget\./);
+  expect(match, seenBound).toBeTruthy();
+  const poolTokens = Number(match![1]), budget = Number(match![2]), weight = Number(match![3]), shownRemainder = Number(match![4]);
+  expect(poolTokens - weight).toBe(shownRemainder);
+  expect(shownRemainder).toBeGreaterThan(budget);
+  expect(checkReceipt).toContain(`${projectPool}: ${poolTokens}/${budget} tokens`);
+});
+
+test("103 order instruction: absent at the boundary where the remainder exactly equals budget", async () => {
+  const f = fixture();
+  f.memory.config.dreaming.triggerTokens = 1;
+  const projectPool = `project:${f.project.id}`;
+  const base = f.create("Already-processed project knowledge that stays after this run. ".repeat(30));
+  const firstRun = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest();
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      skipped: [{ knowledge: history(f, base), because: "fixture: mark processed" }] });
+    return success;
+  });
+  expect(firstRun.outcome, JSON.stringify(firstRun)).toBe("success");
+
+  const trigger = f.create("A later small pending correction.");
+  const projected = f.store.knowledgePools(f.target).find(pool => pool.pool === projectPool)!;
+  const pendingWeight = projected.pending.reduce((sum, value) => sum + value.tokens, 0);
+  const remainder = projected.tokens - pendingWeight;
+  f.store.setKnowledgeBudget("project", remainder); // exactly at budget, not over
+
+  let seenBound = "";
+  const secondRun = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest();
+    seenBound = task.material.bound;
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      skipped: [{ knowledge: history(f, trigger), because: "fixture reviewed unchanged" }] });
+    return success;
+  });
+  expect(secondRun.outcome, JSON.stringify(secondRun)).toBe("success");
+  expect(seenBound).toBe(`Run wall-clock bound: ${f.memory.config.dreaming.timeoutMs} ms. Wrap up before this deadline.`);
+});
+
+test("103 order instruction: absent when the pool without this run's pending items is within budget", async () => {
+  const f = fixture();
+  const { result } = await admitted(f, (task, trigger) => {
+    task.acknowledgeRequest();
+    expect(task.material.bound).toBe(`Run wall-clock bound: ${f.memory.config.dreaming.timeoutMs} ms. Wrap up before this deadline.`);
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      skipped: [{ knowledge: history(f, trigger), because: "fixture reviewed unchanged" }] });
+    return success;
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+});

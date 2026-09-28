@@ -106,7 +106,7 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 - `dreaming.model` and `dreaming.thinking` use the same model/thinking Settings selectors,
   defaults and precedence as the other phases. Dreamer has no fork option or new settings page.
   `dreaming.maxToolRounds` is fixed at 0 (unlimited). The shared `dreaming.timeoutMs` default is
-  600,000 milliseconds; this adds a wall-clock bound to Pi. Expiry fails the run, fences writes and
+  1,800,000 milliseconds; this adds a wall-clock bound to Pi. Expiry fails the run, fences writes and
   releases its claim. Provider retries do not reset the deadline. Budget checks no longer trigger a host-generated repair pass; the model may correct rejected
   tool calls within the same bounded run.
 - `notingModel` and `consolidationModel` accept `provider/model-id`, or `session`. Omission

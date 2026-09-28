@@ -129,6 +129,7 @@ test("32d: Dreamer preferences reuse Settings with no mode or advanced page", as
   expect(() => validateConfig({ dreaming: { maxToolRounds: 51 } })).toThrow(/dreaming.maxToolRounds/);
   expect(parseLayer({ "dreaming.triggerTokens": 6000, "dreaming.timeoutMs": 120000 }).dreaming)
     .toMatchObject({ triggerTokens: 6000, timeoutMs: 120000 });
+  expect(parseLayer({}).dreaming).toMatchObject({ timeoutMs: 1_800_000 }); // 103: default rises to thirty minutes
   expect(h.requests).toEqual([]);
 });
 
