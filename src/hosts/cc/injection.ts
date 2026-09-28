@@ -41,7 +41,7 @@ export interface CcHookOutput { hookSpecificOutput: { hookEventName: "SessionSta
   transportKnowledgeAllowance?: number;
   /** 73 "Truncation is announced in the foreground": Claude Code 2.1.280's hook runner turns this
    * top-level field into a user-visible `hook_system_message`, capped at 4,000 characters. Present
-   * only when `/clear`'s compaction omitted unprocessed material. */
+   * only when a slice's transport omitted pending material. */
   systemMessage?: string }
 
 type InjectionMembership = Omit<CcInjectionPayload, "text">;
@@ -189,7 +189,7 @@ export function ccDeliveryHead(binding: CcSessionBinding, memory: Memory): { own
     throw new Error("bound Claude Code core session or project disagrees with the database");
   const turnOf = (uuid: string) => store.findSourceEntry(core, binding.nativeSessionId, uuid)?.turnId
     ?? store.findNativeTurn(core, binding.nativeSessionId, uuid)?.turnId;
-  // 63: a cleared native session's root continues from the compaction its clear appended.
+  // 63: a native session linked by a clear before 102 continues from the compaction it appended.
   const root = binding.clearedFrom?.compactionTurnId ?? null;
   let headTurnId: number | null = root;
   if (binding.selectedLeafUuid !== null) {
@@ -264,17 +264,6 @@ async function deliver<T>(config: ResolvedCcHostConfig, input: Pick<CcHookInput,
     // owned by the concurrently running MCP process.
     memory.store.close();
   }
-}
-
-/** Record an already-rendered publication (a frozen `/clear` compaction) at its compaction node. */
-export function recordCcBaseline(config: ResolvedCcHostConfig, binding: CcSessionBinding, outputs: readonly (CcHookOutput | null)[]): void {
-  const turnId = binding.clearedFrom?.compactionTurnId;
-  if (turnId == null || binding.coreSessionId === null) return;
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC clear Hook cannot run model work"); }, config.coreConfig);
-  try {
-    const visible = { db: databaseIdentity(config.dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
-    memory.store.recordKnowledgeDelivery({ owner: coreHostOf(binding), turnId }, outputs.flatMap(value => partOf(value, visible)));
-  } finally { memory.store.close(); }
 }
 
 /** SessionStart's only preparation: enrollment and the provisional project. */

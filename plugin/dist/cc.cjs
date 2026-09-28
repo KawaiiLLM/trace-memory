@@ -34,9 +34,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/hosts/cc/index.ts
-var import_node_fs14 = require("node:fs");
+var import_node_fs13 = require("node:fs");
 var import_node_crypto17 = require("node:crypto");
-var import_node_path12 = require("node:path");
+var import_node_path11 = require("node:path");
 var import_node_url = require("node:url");
 
 // src/hosts/cc/config.ts
@@ -3196,7 +3196,7 @@ var Store = class {
           ownerRevisions.set(owner, revisions);
         }
       }
-      const join11 = (id, parent) => {
+      const join10 = (id, parent) => {
         const left = componentOf.get(id), right = componentOf.get(parent);
         if (right === void 0) throw Error(`knowledge lineage references missing commit ${parent}`);
         if (left === right) return;
@@ -3206,7 +3206,7 @@ var Store = class {
         }
         components.delete(right);
       };
-      for (const revision of input2.revisions) for (const parent of input2.parents.get(revision.id) ?? []) join11(revision.id, parent);
+      for (const revision of input2.revisions) for (const parent of input2.parents.get(revision.id) ?? []) join10(revision.id, parent);
       const results = new Map([...components].map(([id, revisions]) => [id, this.graphComponent(input2, revisions)]));
       const liveness = /* @__PURE__ */ new Map();
       for (const ids of owners2.values()) for (const id of ids) {
@@ -40816,11 +40816,8 @@ var CcProjection = class {
 var CcImporter = class {
   memory;
   projection;
-  config;
   runAgent;
   workerDependencies;
-  /** 63: every native lineage this facade has served; the source normalizer renders them all. */
-  lineages = /* @__PURE__ */ new Set();
   reopened = false;
   constructor(config3, binding, workerDependencies = {}) {
     let memory;
@@ -40830,16 +40827,14 @@ var CcImporter = class {
       workerDependencies,
       (kind) => memory.config[kind].maxToolRounds
     ) : void 0;
-    this.lineages.add(binding.nativeSessionId);
     memory = TraceMemory(
       config3.dbPath,
       (input) => this.runAgent ? this.runAgent(input) : unavailableRunner(),
       config3.coreConfig,
       void 0,
-      (entry) => this.lineages.has(entry.nativeLineage) ? ccSourceBlocks(entry) : void 0
+      (entry) => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : void 0
     );
     this.memory = memory;
-    this.config = config3;
     this.projection = new CcProjection(config3, binding, memory);
   }
   currentBinding() {
@@ -40853,13 +40848,6 @@ var CcImporter = class {
       this.workerDependencies,
       (kind) => this.memory.config[kind].maxToolRounds
     ) : void 0;
-  }
-  /** 63: project another native lineage of the same core session on the same facade. */
-  retarget(binding) {
-    const current = this.projection.currentBinding();
-    if (binding.coreSessionId !== current.coreSessionId) throw new Error("CC importer retarget must stay on the same core session");
-    this.lineages.add(binding.nativeSessionId);
-    this.projection = new CcProjection(this.config, binding, this.memory);
   }
   persistedCall(toolUseId, toolName) {
     return this.projection.persistedCall(toolUseId, toolName);
@@ -40927,8 +40915,7 @@ var closeServer = (server) => new Promise((resolve4) => {
   }
   server.close(() => resolve4());
 });
-async function startControlServer(config3, initial, memory, bindingTimeoutMs, signal, handlers) {
-  let binding = initial;
+async function startControlServer(config3, binding, memory, bindingTimeoutMs, signal, handlers) {
   const token = (0, import_node_crypto13.randomUUID)(), path = socketPath(config3, token);
   const executor = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: (/* @__PURE__ */ new Date()).toISOString() };
   (0, import_node_fs7.mkdirSync)((0, import_node_path6.dirname)(path), { recursive: true });
@@ -41040,19 +41027,9 @@ async function startControlServer(config3, initial, memory, bindingTimeoutMs, si
     }
     throw error3;
   }
-  const attachTo = (target) => updateBinding(config3, target.nativeSessionId, (current) => {
-    if (!current) throw new Error("CC binding disappeared before executor attach");
-    if (current.transcriptPath !== target.transcriptPath) throw new Error("CC binding changed before executor attach");
-    if (current.executor && current.executor.token !== token) {
-      const liveness = executorLiveness(current.executor);
-      if (liveness === "alive") throw new Error(`CC session already has a live executor process ${current.executor.pid}`);
-      if (liveness === "unknown") throw new Error(`cannot establish liveness of CC executor process ${current.executor.pid}`);
-    }
-    return { ...current, executor };
-  }, bindingTimeoutMs);
-  const release = (target) => updateBinding(
+  const release = () => updateBinding(
     config3,
-    target.nativeSessionId,
+    binding.nativeSessionId,
     (current) => !current || current.executor?.token !== token ? current : { ...current, executor: null }
   );
   return { executor, close: async (preserveExecutor = false) => {
@@ -41062,16 +41039,9 @@ async function startControlServer(config3, initial, memory, bindingTimeoutMs, si
       try {
         (0, import_node_fs7.rmSync)(path, { force: true });
       } finally {
-        if (!preserveExecutor) await release(binding);
+        if (!preserveExecutor) await release();
       }
     }
-  }, retarget: async (next) => {
-    const current = readBinding(config3, binding.nativeSessionId) ?? binding;
-    if (next.coreSessionId === null || next.coreSessionId !== current.coreSessionId) throw new Error("CC control retarget must stay on the same core session");
-    await attachTo(next);
-    const previous = binding;
-    binding = next;
-    await release(previous);
   } };
 }
 function request(executor, verb, timeoutMs, detail = {}) {
@@ -41656,6 +41626,14 @@ function writeCcStatus(stateDir, status) {
 function removeCcStatus(stateDir, nativeSessionId) {
   (0, import_node_fs8.rmSync)(statusPath(stateDir, nativeSessionId), { force: true });
 }
+function readCcStatus(stateDir, nativeSessionId) {
+  try {
+    return JSON.parse((0, import_node_fs8.readFileSync)(statusPath(stateDir, nativeSessionId), "utf8"));
+  } catch (error3) {
+    if (error3.code === "ENOENT") return null;
+    throw error3;
+  }
+}
 
 // src/hosts/cc/lifecycle.ts
 var wait2 = (milliseconds) => new Promise((resolve4) => setTimeout(resolve4, milliseconds));
@@ -41712,7 +41690,6 @@ async function recordCcSessionEnd(config3, input) {
   if (!binding) return { confirmed: false, reason, diagnostic: "trusted binding is missing" };
   if (binding.dbPath !== config3.dbPath || binding.transcriptPath !== input.transcript_path)
     throw new Error("SessionEnd disagrees with the trusted binding");
-  if (input.reason === "clear") return { confirmed: false, reason, diagnostic: "clear continues the core session" };
   const nativeProcess = currentNativeProcess();
   if (!nativeProcess || !binding.nativeProcess)
     return { confirmed: false, reason, diagnostic: "SessionEnd native process identity is unavailable; a matching SessionStart is required" };
@@ -41779,6 +41756,8 @@ var CcCoordinator = class {
   /** Ticket 75: the last published (path, state) key, so a no-op stat-wake-up reconcile writes
    * nothing — publishing is a lifecycle event, never a timer. */
   lastStatusKey = null;
+  /** 102: the retargets in order, each after the last; shutdown waits for the one in flight. */
+  following = Promise.resolve(true);
   constructor(config3, nativeSessionId, diagnostic = (message) => console.error(`Trace Memory CC: ${message}`), importTuning, journal = () => {
   }) {
     validateNativeSessionId(nativeSessionId);
@@ -42010,7 +41989,7 @@ var CcCoordinator = class {
     await this.requestReconcile("startup");
   }
   /** 65: follow the SessionStart Hook's session id while no binding has been attached. Returns false
-   * once attached — re-targeting a live facade is the handoff of ticket 63, not a rename. */
+   * once attached: `retargetTo` follows it from then on. */
   adoptNativeSessionId(nativeSessionId) {
     validateNativeSessionId(nativeSessionId);
     if (nativeSessionId === this.nativeSessionId) return true;
@@ -42021,42 +42000,34 @@ var CcCoordinator = class {
     if (this.poll) void this.requestReconcile("session adoption");
     return true;
   }
-  /** 63: serve the native session this one was cleared into — same facade, same core session, new
-   * lineage. Runs on the reconcile queue so no import is in flight while the projection is swapped.
-   * Returns false when the target is not a clear-child of the current session. */
+  /** 102: this Claude Code process now serves another native session (`/clear`, or `/resume` inside
+   * the process). Leave the attached one as an exit does, then attach to the new one as at startup:
+   * its own binding, core session, project (62) and enrollment. One at a time; false once closing. */
   retargetTo(nativeSessionId) {
     validateNativeSessionId(nativeSessionId);
-    const release = this.holdImport();
-    const done = this.queue.then(async () => {
-      try {
-        if (this.closed || this.closing || !this.importer || !this.control) return false;
-        const current = this.importer.currentBinding(), next = readBinding(this.config, nativeSessionId);
-        if (!next || next.clearedFrom?.nativeSessionId !== current.nativeSessionId || next.coreSessionId !== current.coreSessionId) return false;
-        this.observe("retarget-start", { from: current.nativeSessionId, to: nativeSessionId });
-        this.transcriptWatcher?.close();
-        this.transcriptWatcher = null;
-        await this.control.retarget(next);
-        this.importer.retarget(next);
-        const previousNativeSessionId = this.nativeSessionId;
-        this.nativeSessionId = nativeSessionId;
-        this.watchTranscript(next);
-        this.publish("retarget");
-        removeCcStatus(this.config.stateDir, previousNativeSessionId);
-        this.observe("retarget-complete", { to: nativeSessionId });
-        return true;
-      } finally {
-        release();
-      }
-    }).then((result2) => result2, (error3) => {
+    return this.following = this.following.then(() => this.follow(nativeSessionId)).catch((error3) => {
       this.diagnostic(`retarget to ${nativeSessionId} failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
       return false;
     });
-    this.queue = done.then(() => null);
-    const result = done;
-    void result.then((retargeted) => {
-      if (retargeted) void this.requestReconcile("retarget");
-    });
-    return result;
+  }
+  async follow(nativeSessionId) {
+    if (this.closing || this.closed) return false;
+    if (this.adoptNativeSessionId(nativeSessionId)) return true;
+    const release = this.holdImport(), previous = this.nativeSessionId, token = this.control?.executor.token;
+    try {
+      this.observe("retarget-start", { from: previous, to: nativeSessionId });
+      await this.leave();
+      this.nativeSessionId = nativeSessionId;
+      this.lastReconcile = null;
+      this.lastStatusKey = null;
+      await this.discardAttachment();
+      if (token !== void 0 && readCcStatus(this.config.stateDir, previous)?.token === token) removeCcStatus(this.config.stateDir, previous);
+      this.observe("retarget-complete", { from: previous, to: nativeSessionId });
+    } finally {
+      release();
+    }
+    void this.requestReconcile("retarget");
+    return true;
   }
   requestReconcile(reason, final = false, deadline) {
     if (!final && this.wakeQueued) return this.queue;
@@ -42146,6 +42117,23 @@ var CcCoordinator = class {
     this.transcriptWatcher?.close();
     this.transcriptWatcher = null;
   }
+  /** What an exit does to the attached session (shutdown and 102's retarget): its work stops, a final
+   * sync bounded by its deadline imports the transcript's tail, and its tasks are cancelled and settled
+   * and their claims released. The caller holds imports. */
+  async leave() {
+    this.scheduler?.stop();
+    this.transcriptWatcher?.close();
+    this.transcriptWatcher = null;
+    await this.queue;
+    this.importer?.memory.cancelTasks(true);
+    const result = await this.finalReconcile();
+    if (this.importer) {
+      this.importer.memory.forceTasks();
+      await this.scheduler?.settle();
+      this.importer.memory.store.releaseExecutor(this.importer.memory.executorId);
+    }
+    return result;
+  }
   async finalReconcile() {
     const deadline = Date.now() + this.config.finalSyncTimeoutMs;
     let stable = 0, signature = null, latest = null;
@@ -42194,14 +42182,8 @@ var CcCoordinator = class {
     this.observe("shutdown-begin", { reason });
     let result = { confirmed: false, reason: "no bound importer", diagnostic: "binding was never established" };
     try {
-      await this.queue;
-      this.importer?.memory.cancelTasks(true);
-      result = await this.finalReconcile();
-      if (this.importer) {
-        this.importer.memory.forceTasks();
-        await this.scheduler?.settle();
-        this.importer.memory.store.releaseExecutor(this.importer.memory.executorId);
-      }
+      await this.following;
+      result = await this.leave();
       const owner = this.control?.executor.token;
       if (this.control) await this.control.close(true);
       try {
@@ -42448,19 +42430,6 @@ async function deliver(config3, input, event, emit, options = {}) {
       memory.store.recordKnowledgeDelivery({ owner: head.owner, ...at }, parts);
     });
     return result;
-  } finally {
-    memory.store.close();
-  }
-}
-function recordCcBaseline(config3, binding, outputs) {
-  const turnId = binding.clearedFrom?.compactionTurnId;
-  if (turnId == null || binding.coreSessionId === null) return;
-  const memory = TraceMemory(config3.dbPath, async () => {
-    throw new Error("CC clear Hook cannot run model work");
-  }, config3.coreConfig);
-  try {
-    const visible = { db: databaseIdentity(config3.dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
-    memory.store.recordKnowledgeDelivery({ owner: coreHostOf(binding), turnId }, outputs.flatMap((value) => partOf(value, visible)));
   } finally {
     memory.store.close();
   }
@@ -42842,167 +42811,9 @@ async function declareCcProject(config3, nativeSessionId, name) {
   }
 }
 
-// src/hosts/cc/clear.ts
+// src/hosts/cc/menu-context.ts
 var import_node_fs11 = require("node:fs");
 var import_node_path9 = require("node:path");
-async function ccHandleClear(config3, input) {
-  const pid = parsePid(process.env.CLAUDE_PID);
-  if (pid === null) return { handled: false };
-  const record3 = assignedNativeSession(config3, [{ pid, startedAt: processStartedAt(pid) }]);
-  if (!record3) return { handled: false };
-  const parentBinding = readBinding(config3, record3.nativeSessionId);
-  if (!parentBinding) return { handled: false };
-  const childId = validateNativeSessionId(input.session_id);
-  const nativeProcess = currentNativeProcess();
-  const createdAt = readTranscriptCreatedAt(input.transcript_path);
-  if (parentBinding.coreSessionId === null) {
-    await recordSessionStart(config3, input, createdAt);
-    await updateBinding(config3, childId, (current) => current && current.coreSessionId === null ? { ...current, projectId: parentBinding.projectId, enrollment: parentBinding.enrollment } : current);
-    return { handled: true, output: await ccSessionStartInjection(config3, input) };
-  }
-  return withCcBindingLock(config3, childId, (locked) => prepareBoundClear(
-    config3,
-    input,
-    parentBinding,
-    childId,
-    createdAt,
-    nativeProcess,
-    locked
-  ), 55e3);
-}
-async function prepareBoundClear(config3, input, parentBinding, childId, createdAt, nativeProcess, locked) {
-  const existing = locked.read();
-  const staged = (0, import_node_path9.join)(config3.stateDir, "session-start", `${childId}.clear.json`);
-  if (existing?.clearedFrom) {
-    let output;
-    try {
-      output = JSON.parse((0, import_node_fs11.readFileSync)(staged, "utf8"));
-    } catch {
-      throw new Error(`clear child ${childId} has no frozen compaction carrier`);
-    }
-    if (existing.dbPath !== config3.dbPath || existing.transcriptPath !== input.transcript_path)
-      throw new Error("clear child binding disagrees with configured database or transcript");
-    locked.update((current) => renewNativeBinding(current, nativeProcess));
-    return { handled: true, output };
-  }
-  if (existing) throw new Error(`clear child ${childId} is already bound without a frozen compaction`);
-  const memory = TraceMemory(
-    config3.dbPath,
-    async () => {
-      throw new Error("CC clear Hook cannot run model work");
-    },
-    config3.coreConfig,
-    void 0,
-    (entry) => entry.nativeLineage === parentBinding.nativeSessionId ? ccSourceBlocks(entry) : void 0
-  );
-  try {
-    const projection = new CcProjection(config3, parentBinding, memory);
-    const projected = await projection.synchronize();
-    const synced = projection.currentBinding();
-    if (projected.state === "not-ready")
-      throw new Error(projected.problems.join("; ") || "parent native source projection is not ready");
-    if (synced.coreSessionId === null) return { handled: false };
-    const core = synced.coreSessionId;
-    const at = (/* @__PURE__ */ new Date()).toISOString();
-    const linkChild = async (clearedFrom, lastCompactionNotice) => {
-      locked.update((current) => {
-        if (current) {
-          if (current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
-            throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
-          return { ...renewNativeBinding(current, nativeProcess), lastCompactionNotice };
-        }
-        return {
-          version: 1,
-          nativeSessionId: childId,
-          transcriptPath: input.transcript_path,
-          dbPath: config3.dbPath,
-          nativeCreatedAt: createdAt,
-          enrollment: synced.enrollment,
-          coreSessionId: core,
-          projectId: synced.projectId,
-          // 64b: each native lineage owns an independent persisted source path. Reusing the
-          // parent's branch would let the child overwrite the parent's retained foreground.
-          branch: `cc:${childId}`,
-          selectedLeafUuid: null,
-          executor: null,
-          lastClose: null,
-          ...nativeProcess ? { nativeProcess } : {},
-          ...synced.cwd !== void 0 ? { cwd: synced.cwd } : {},
-          coreHost: coreHostOf(synced),
-          clearedFrom,
-          lastCompactionNotice
-        };
-      });
-      await updateBinding(config3, synced.nativeSessionId, (current) => current && current.transcriptPath === synced.transcriptPath ? { ...current, clearedInto: { nativeSessionId: childId, at } } : current);
-    };
-    if (!memory.store.enabled(core)) {
-      const inheritedEntryIds2 = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
-      publishFrozenClear(staged, null);
-      await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: null, inheritedEntryIds: inheritedEntryIds2 }, null);
-      return { handled: true, output: null };
-    }
-    if (!synced.selectedLeafUuid) throw new Error("parent Claude Code session has no selected native source to compact from");
-    const entry = memory.store.findSourceEntry(core, synced.nativeSessionId, synced.selectedLeafUuid);
-    const nativeTurn = memory.store.findNativeTurn(core, synced.nativeSessionId, synced.selectedLeafUuid);
-    const headTurnId = entry?.turnId ?? nativeTurn?.turnId;
-    if (!headTurnId) throw new Error("parent Claude Code selected native source has no persisted core Turn");
-    const compacted = memory.compact(core, synced.branch, headTurnId, [], true);
-    if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation unexpectedly: ${compacted.reason}`);
-    const injection = {
-      text: compacted.text,
-      knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
-      knowledgeTokens: compacted.supplied.knowledgeTokens,
-      knowledgeStates: compacted.supplied.knowledgeStates,
-      factIds: compacted.supplied.factIds,
-      entryIds: compacted.supplied.entries.map((entry2) => entry2.id),
-      composition: compacted.composition
-    };
-    const systemMessage = ccTruncationWarning(compacted.truncated);
-    const visibleBinding = { db: databaseIdentity(config3.dbPath), nativeSession: childId, coreSession: core };
-    const output = injection.text ? {
-      hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },
-      transportItems: compacted.transportItems,
-      transportKnowledgeAllowance: compacted.knowledgeAllowance,
-      ...systemMessage ? { systemMessage } : {}
-    } : systemMessage ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }, systemMessage } : null;
-    publishFrozenClear(staged, output);
-    const turn = memory.store.appendTurn({
-      sessionId: core,
-      parentTurnId: headTurnId,
-      kind: "compaction",
-      assistantText: injection.text,
-      startedAt: at,
-      endedAt: at
-    });
-    const inheritedEntryIds = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
-    await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: turn.id, inheritedEntryIds }, systemMessage ?? null);
-    return { handled: true, output };
-  } finally {
-    memory.store.close();
-  }
-}
-function readPreparedClear(config3, input) {
-  const binding = readBinding(config3, validateNativeSessionId(input.session_id));
-  if (!binding?.clearedFrom || binding.dbPath !== config3.dbPath || binding.transcriptPath !== input.transcript_path)
-    throw new Error("prepared clear binding is unavailable or changed");
-  const staged = (0, import_node_path9.join)(config3.stateDir, "session-start", `${input.session_id}.clear.json`);
-  try {
-    return JSON.parse((0, import_node_fs11.readFileSync)(staged, "utf8"));
-  } catch {
-    throw new Error(`clear child ${input.session_id} has no frozen compaction carrier`);
-  }
-}
-function publishFrozenClear(path, output) {
-  if ((0, import_node_fs11.existsSync)(path)) throw new Error(`frozen clear carrier already exists at ${path}; refusing to repeat compaction`);
-  (0, import_node_fs11.mkdirSync)((0, import_node_path9.dirname)(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.tmp`;
-  (0, import_node_fs11.writeFileSync)(temporary, JSON.stringify(output), { flag: "wx", mode: 384 });
-  (0, import_node_fs11.renameSync)(temporary, path);
-}
-
-// src/hosts/cc/menu-context.ts
-var import_node_fs12 = require("node:fs");
-var import_node_path10 = require("node:path");
 
 // node_modules/@earendil-works/pi-tui/dist/terminal-image.js
 function getPngDimensions(base64Data) {
@@ -43189,12 +43000,12 @@ function carrier(text, identity) {
     return { retained: payload, offset: HOOK_CONTEXT.length };
   }
   const preview = /^<persisted-output>\n[^\n]*Full output saved to: ([^\n]+)\n\nPreview \(first 2KB\):\n([\s\S]+)\n\.\.\.\n<\/persisted-output>$/.exec(payload);
-  if (!preview || !(0, import_node_path10.isAbsolute)(preview[1])) throw new Error("malformed native memory preview");
+  if (!preview || !(0, import_node_path9.isAbsolute)(preview[1])) throw new Error("malformed native memory preview");
   const retained = preview[2], header = decodeCcInjectionHeader(retained, identity);
   if (!header) throw new Error("memory preview failed identity verification");
   let full;
   try {
-    full = (0, import_node_fs12.readFileSync)(preview[1], "utf8");
+    full = (0, import_node_fs11.readFileSync)(preview[1], "utf8");
   } catch (error3) {
     if (error3.code !== "ENOENT") throw error3;
   }
@@ -43390,8 +43201,8 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
 }
 
 // src/hosts/cc/menu-config.ts
-var import_node_fs13 = require("node:fs");
-var import_node_path11 = require("node:path");
+var import_node_fs12 = require("node:fs");
+var import_node_path10 = require("node:path");
 var import_node_crypto16 = require("node:crypto");
 
 // node_modules/jsonc-parser/lib/esm/impl/scanner.js
@@ -44767,25 +44578,25 @@ function editedCcConfig(text, id, value, capacity) {
 }
 function saveCcConfig(path, original, updated) {
   const next = resolveCcHostConfig(JSON.parse(updated));
-  if ((0, import_node_fs13.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
+  if ((0, import_node_fs12.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
   const temporary = `${path}.${process.pid}.${(0, import_node_crypto16.randomUUID)()}`;
   let fd;
   try {
-    fd = (0, import_node_fs13.openSync)(temporary, "wx", 384);
-    (0, import_node_fs13.writeFileSync)(fd, updated);
-    (0, import_node_fs13.fsyncSync)(fd);
-    (0, import_node_fs13.closeSync)(fd);
+    fd = (0, import_node_fs12.openSync)(temporary, "wx", 384);
+    (0, import_node_fs12.writeFileSync)(fd, updated);
+    (0, import_node_fs12.fsyncSync)(fd);
+    (0, import_node_fs12.closeSync)(fd);
     fd = void 0;
-    (0, import_node_fs13.renameSync)(temporary, path);
-    const dir = (0, import_node_fs13.openSync)((0, import_node_path11.dirname)(path), "r");
+    (0, import_node_fs12.renameSync)(temporary, path);
+    const dir = (0, import_node_fs12.openSync)((0, import_node_path10.dirname)(path), "r");
     try {
-      (0, import_node_fs13.fsyncSync)(dir);
+      (0, import_node_fs12.fsyncSync)(dir);
     } finally {
-      (0, import_node_fs13.closeSync)(dir);
+      (0, import_node_fs12.closeSync)(dir);
     }
   } catch (error3) {
-    if (fd !== void 0) (0, import_node_fs13.closeSync)(fd);
-    (0, import_node_fs13.rmSync)(temporary, { force: true });
+    if (fd !== void 0) (0, import_node_fs12.closeSync)(fd);
+    (0, import_node_fs12.rmSync)(temporary, { force: true });
     throw error3;
   }
   return next;
@@ -44859,23 +44670,12 @@ async function handleCcHook(configInput, input, prepareOnly = false) {
   const config3 = resolveCcHostConfig(configInput);
   validateNativeSessionId(input.session_id);
   if (input.hook_event_name === "SessionStart") {
-    const publish = () => {
-      try {
-        if (!publishNativeSession(config3, input)) console.error("Trace Memory CC: CLAUDE_PID is not set; the executor keeps its own session id");
-      } catch (error3) {
-        console.error(`Trace Memory CC: native session publish failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
-      }
-    };
-    if (input.source === "clear") {
-      const cleared = await ccHandleClear(config3, input);
-      if (cleared.handled) {
-        publish();
-        if (!prepareOnly) recordCcBaseline(config3, readBinding(config3, input.session_id), [cleared.output]);
-        return cleared.output;
-      }
-    }
     await recordSessionStart(config3, input, readBinding(config3, input.session_id) ? null : readTranscriptCreatedAt(input.transcript_path));
-    publish();
+    try {
+      if (!publishNativeSession(config3, input)) console.error("Trace Memory CC: CLAUDE_PID is not set; the executor keeps its own session id");
+    } catch (error3) {
+      console.error(`Trace Memory CC: native session publish failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+    }
     if (prepareOnly) {
       await ccPrepareSessionStartInjection(config3, input);
       return null;
@@ -44889,13 +44689,13 @@ async function handleCcHook(configInput, input, prepareOnly = false) {
 }
 async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID) {
   const config3 = resolveCcHostConfig(configInput), sessionId = validateNativeSessionId(nativeSessionId);
-  const runtimeDirectory = (0, import_node_path12.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path12.join)(runtimeDirectory, `${sessionId}.jsonl`);
-  (0, import_node_fs14.mkdirSync)(runtimeDirectory, { recursive: true });
+  const runtimeDirectory = (0, import_node_path11.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path11.join)(runtimeDirectory, `${sessionId}.jsonl`);
+  (0, import_node_fs13.mkdirSync)(runtimeDirectory, { recursive: true });
   const runtimeEvent = (event, details = {}) => {
     const value = { event, at: Date.now(), pid: process.pid, ...details };
     console.error(`Trace Memory CC: lifecycle ${JSON.stringify(value)}`);
     try {
-      (0, import_node_fs14.appendFileSync)(runtimePath, `${JSON.stringify(value)}
+      (0, import_node_fs13.appendFileSync)(runtimePath, `${JSON.stringify(value)}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -44905,28 +44705,20 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
   const coordinator = new CcCoordinator(config3, sessionId, (message) => {
     console.error(`Trace Memory CC: ${message}`);
     try {
-      (0, import_node_fs14.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
+      (0, import_node_fs13.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
     }
   }, void 0, runtimeEvent);
   const foreground = new CcForegroundTools(coordinator);
-  let follower = null, journaledChange = null;
+  let follower = null;
   try {
     const ancestors = processAncestors();
     runtimeEvent("native-ancestors", { ancestors });
     follower = followNativeSession(config3, ancestors, (record3) => {
       if (coordinator.adoptNativeSessionId(record3.nativeSessionId)) return;
-      void coordinator.retargetTo(record3.nativeSessionId).then((retargeted) => {
-        if (retargeted) {
-          runtimeEvent("session-id-retargeted", { to: record3.nativeSessionId });
-          return;
-        }
-        if (journaledChange === record3.nativeSessionId) return;
-        journaledChange = record3.nativeSessionId;
-        runtimeEvent("session-id-changed-after-attach", { attached: coordinator.nativeSessionId, hook: record3.nativeSessionId, source: record3.source });
-      });
+      void coordinator.retargetTo(record3.nativeSessionId).then((retargeted) => runtimeEvent(retargeted ? "session-id-retargeted" : "session-id-retarget-failed", { to: record3.nativeSessionId, source: record3.source }));
     }, (message) => runtimeEvent("native-session-follow", { message }));
   } catch (error3) {
     runtimeEvent("native-session-follow-unavailable", { error: error3 instanceof Error ? error3.message : String(error3) });
@@ -45024,7 +44816,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
 function readConfig(path) {
   if (!path.startsWith("/")) throw new Error("CC configuration path must be absolute");
   upgradeSettingsFile(path, void 0, (values) => resolveCcHostConfig(values), (message) => console.warn(message));
-  return resolveCcHostConfig(JSON.parse((0, import_node_fs14.readFileSync)(path, "utf8")));
+  return resolveCcHostConfig(JSON.parse((0, import_node_fs13.readFileSync)(path, "utf8")));
 }
 async function readStdin() {
   let input = "";
@@ -45089,27 +44881,20 @@ async function runCcCommand(argv = process.argv.slice(2)) {
         throw new Error("CC SessionStart has no structured transport material");
       return sliceCcInjection(visible, output2?.transportItems ?? [], output2?.systemMessage, output2?.transportKnowledgeAllowance);
     };
-    const clearing = input.source === "clear" ? readBinding(config3, input.session_id) : null;
-    let output, slices, snapshot2 = null;
-    if (clearing?.clearedFrom) {
-      output = readPreparedClear(config3, input);
-      slices = sliced(output, { db: databaseIdentity(config3.dbPath), nativeSession: input.session_id, coreSession: clearing.coreSessionId });
-      recordCcBaseline(config3, clearing, slices);
-    } else ({ output, slices, snapshot: snapshot2 } = await ccPreparedSessionStartInjection(config3, input, sliced));
+    const { output, slices, snapshot: snapshot2 } = await ccPreparedSessionStartInjection(config3, input, sliced);
     const bound = readBinding(config3, input.session_id);
     if (!bound) throw new Error("CC SessionStart has no binding after preparation");
-    if (input.source !== "clear" && bound.lastCompactionNotice || input.source === "clear" && bound.clearedFrom && slices[0]?.systemMessage !== bound.lastCompactionNotice) {
+    if (bound.lastCompactionNotice) {
       await updateBinding(config3, input.session_id, (current) => {
         if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
           throw new Error("CC binding changed before transport warning was recorded");
-        return { ...current, lastCompactionNotice: input.source === "clear" ? slices[0]?.systemMessage ?? null : null };
+        return { ...current, lastCompactionNotice: null };
       });
     }
     const selection = (0, import_node_crypto17.createHash)("sha256").update(JSON.stringify({
       material: output?.transportItems ?? [],
       warning: output?.systemMessage ?? null,
-      knowledgeAllowance: output?.transportKnowledgeAllowance ?? null,
-      frozenClear: input.source === "clear" && bound.clearedFrom ? bound.clearedFrom.compactionTurnId : null
+      knowledgeAllowance: output?.transportKnowledgeAllowance ?? null
     })).digest("hex");
     process.stdout.write(`${JSON.stringify({ selection, snapshot: snapshot2, slices })}
 `);
@@ -45166,7 +44951,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
     } finally {
       store.close();
     }
-    const original = (0, import_node_fs14.readFileSync)(configPath, "utf8");
+    const original = (0, import_node_fs13.readFileSync)(configPath, "utf8");
     const updated = editedCcConfig(original, id, value, capacity);
     const prepared = resolveCcHostConfig(JSON.parse(updated));
     if (prepared.dbPath !== config3.dbPath || prepared.stateDir !== config3.stateDir) throw new Error("setting cannot change database or state directory");
@@ -45192,7 +44977,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify(result)}
 `);
 }
-var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path12.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
+var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path11.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
 if (direct) void runCcCommand().catch((error3) => {
   console.error(`Trace Memory CC: ${error3 instanceof Error ? error3.message : String(error3)}`);
   process.exitCode = 1;

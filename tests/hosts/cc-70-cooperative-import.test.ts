@@ -8,7 +8,6 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { readBinding, recordSessionStart, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
 import { CcCoordinator } from "../../src/hosts/cc/lifecycle.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
-import { handleCcHook } from "../../src/hosts/cc/index.ts";
 import { publishNativeSession } from "../../src/hosts/cc/native-session.ts";
 import { Store } from "../../src/core/store/index.ts";
 import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
@@ -194,14 +193,14 @@ test("shutdown's final sync stops at its deadline instead of importing the whole
   expect(result.confirmed).toBe(false);
 });
 
-test("a selected-path retarget aborts a scan running across a real pause instead of waiting behind it", async () => {
+test("a retarget aborts a scan running across a real pause instead of waiting behind it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-cc-70-retarget-")); dirs.push(dir);
   const stateDir = mkdtempSync("/tmp/tmcc-70-retarget-"); dirs.push(stateDir);
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
     pollIntervalMs: 100_000, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2 });
   const parentId = "retarget-parent", childId = "retarget-child";
   const parentPath = join(dir, "parent.jsonl"), childPath = join(dir, "child.jsonl");
-  const seed = records(1); // small: the initial startup and the clear Hook's own resync stay fast
+  const seed = records(1); // small: the initial startup stays fast
   writeFileSync(parentPath, seed.map(line).join(""));
   writeFileSync(childPath, "");
   vi.stubEnv("CLAUDE_PID", "90099");
@@ -212,9 +211,8 @@ test("a selected-path retarget aborts a scan running across a real pause instead
   const coordinator = new CcCoordinator(config, parentId, message => diagnostics.push(message), TUNING);
   try {
     await coordinator.start(); // small seed transcript: allocates the core session and finishes fast
-    // clearedFrom is only assigned once the parent has an allocated core session (ccHandleClear's
-    // non-provisional branch), which requires the seed import above to have run first.
-    await handleCcHook(config, { hook_event_name: "SessionStart", source: "clear", session_id: childId, transcript_path: childPath });
+    // 102: the process's next native session (`/clear`), which the executor follows.
+    await recordSessionStart(config, { hook_event_name: "SessionStart", source: "clear", session_id: childId, transcript_path: childPath }, null);
     const beforeGrow = entryCount(config.dbPath);
     // Grow the parent transcript well past the seed and start a fresh (tuned, pausing) reconcile of
     // it — this is the scan retargetTo must abort instead of waiting behind.
@@ -273,8 +271,9 @@ test("off does not wait behind a reconcile already queued ahead of it", async ()
 test("retarget does not wait behind a reconcile already queued ahead of it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-cc-70-retarget-queued-")); dirs.push(dir);
   const stateDir = mkdtempSync("/tmp/tmcc-70-retarget-queued-"); dirs.push(stateDir);
+  // 102: a retarget leaves the session as an exit does, with a final sync bounded by this deadline.
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
-    pollIntervalMs: 100_000, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2 });
+    pollIntervalMs: 100_000, finalSyncTimeoutMs: 100, finalSyncStablePolls: 2 });
   const parentId = "retarget-parent-queued", childId = "retarget-child-queued";
   const parentPath = join(dir, "parent.jsonl"), childPath = join(dir, "child.jsonl");
   const seed = records(1);
@@ -287,7 +286,7 @@ test("retarget does not wait behind a reconcile already queued ahead of it", asy
   const coordinator = new CcCoordinator(config, parentId, () => {}, TUNING);
   try {
     await coordinator.start(); // small seed transcript: allocates the core session and finishes fast
-    await handleCcHook(config, { hook_event_name: "SessionStart", source: "clear", session_id: childId, transcript_path: childPath });
+    await recordSessionStart(config, { hook_event_name: "SessionStart", source: "clear", session_id: childId, transcript_path: childPath }, null);
     const beforeGrow = entryCount(config.dbPath);
     writeFileSync(parentPath, [...seed, ...records(PAIRS).slice(2)].map(line).join(""));
     const growing = coordinator.requestReconcile("grown parent transcript");

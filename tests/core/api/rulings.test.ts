@@ -5,7 +5,7 @@ import { compacted, recorded } from "../../source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
 // from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,14 +20,25 @@ import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
 import { resolveCcHostConfig } from "../../../src/hosts/cc/config.ts";
-import { recordSessionStart } from "../../../src/hosts/cc/binding.ts";
-import { recordCcSessionEnd } from "../../../src/hosts/cc/lifecycle.ts";
+import { readBinding, recordSessionStart } from "../../../src/hosts/cc/binding.ts";
+import { CcCoordinator, recordCcSessionEnd } from "../../../src/hosts/cc/lifecycle.ts";
+import { handleCcHook } from "../../../src/hosts/cc/index.ts";
 import * as ccNative from "../../../src/hosts/cc/native-session.ts";
 import { CcImporter } from "../../../src/hosts/cc/importer.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts, session as seedSession } from "../../support/seed.ts";
 import { ccCompaction, ccDeltaInjection, databaseIdentity, decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../../src/hosts/cc/slices.ts";
+import type { DirectoryOptions } from "../../../src/core/project/directory.ts";
+
+// 62 excludes temporary directories, where every fixture lives. As in directory-projects.test.ts, the
+// hosts' `directoryAllocation` receives the exclusions a test sets; unset, it keeps the defaults.
+const directoryExclusions = vi.hoisted(() => ({ excluded: undefined as DirectoryOptions["excluded"] }));
+vi.mock("../../../src/core/project/directory.ts", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../../src/core/project/directory.ts")>();
+  return { ...actual, directoryAllocation: (...args: Parameters<typeof actual.directoryAllocation>) =>
+    actual.directoryAllocation(args[0], args[1], args[2], args[3] ?? { excluded: directoryExclusions.excluded }) };
+});
 
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -133,39 +144,48 @@ test("2026-09-24, 86: 'catchup 选A' and '任务失败后不检查' — retry th
   } finally { scheduler.stop(); await scheduler.settle(); checks.mockRestore(); retryMemory.close(); }
 });
 
-test("2026-09-24, 86: '除了 clear，任何 SessionEnd 都算正常关闭' — native end closes without an executor", async () => {
-  const config = resolveCcHostConfig({ dbPath: join(directory, "cc.sqlite"), stateDir: join(directory, "cc-state"), baseline: "2025-01-01T00:00:00.000Z" });
-  const transcript = join(directory, "cc.jsonl"), nativeId = "ruled-close";
-  writeFileSync(transcript, [
+test("2026-09-28, 102: 'A /clear 像退出一样正常关闭旧会话，执行器跟到本进程的新会话，和启动时一样。现在用cwd做自动归属，所以新会话应该是同一个project' — supersedes 86's '除了 clear，任何 SessionEnd 都算正常关闭'", async () => {
+  // Control sockets live under stateDir: keep it short enough for a Unix-domain path.
+  const stateDir = mkdtempSync("/tmp/tm102r-"), cwd = join(directory, "repository");
+  mkdirSync(cwd);
+  directoryExclusions.excluded = { home: join(directory, "home"), temporary: [] }; // the fixture's cwd counts as a directory
+  const config = resolveCcHostConfig({ dbPath: join(directory, "cc.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
+    pollIntervalMs: 10, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2 });
+  const exchange = (path: string) => writeFileSync(path, [
     { uuid: "u", parentUuid: null, type: "user", timestamp: time, promptId: "p", promptSource: "sdk", userType: "external", message: { role: "user", content: "rule" } },
     { uuid: "a", parentUuid: "u", type: "assistant", timestamp: time, message: { role: "assistant", content: [{ type: "text", text: "recorded" }] } },
   ].map(record => JSON.stringify(record)).join("\n") + "\n");
-  // API-level 86 contract: the OS process probe uses `ps`, which the network Seatbelt denies.
-  // Only its identity outlet is controlled; binding and Store lifecycle remain real.
+  const start = (session_id: string, source: "startup" | "clear") =>
+    handleCcHook(config, { hook_event_name: "SessionStart", session_id, transcript_path: join(directory, `${session_id}.jsonl`), source, cwd });
+  // The OS process probe uses `ps`, which the network Seatbelt denies. Only its identity outlet is
+  // controlled: one Claude Code process runs both sessions; binding, executor and Store stay real.
   const identity = vi.spyOn(ccNative, "currentNativeProcess").mockReturnValue({ pid: process.pid, startedAt: "fixture-start" });
+  exchange(join(directory, "before-clear.jsonl"));
+  await start("before-clear", "startup");
+  const coordinator = new CcCoordinator(config, "before-clear", () => {});
+  const store = new Store(config.dbPath);
   try {
-    const binding = await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: nativeId, transcript_path: transcript }, time);
-    const importer = new CcImporter(config, binding);
-    let id: number;
-    try { id = (await importer.reconcile()).coreSessionId!; } finally { importer.close(); }
-    const input = { hook_event_name: "SessionEnd" as const, session_id: nativeId, transcript_path: transcript };
-    expect((await recordCcSessionEnd(config, { ...input, reason: "clear" })).confirmed).toBe(false);
-    const open = new Store(config.dbPath);
-    try { expect(open.getSession(id)!.closedAt).toBeNull(); } finally { open.close(); }
-    identity.mockReturnValue(null);
-    const unavailable = await recordCcSessionEnd(config, { ...input, reason: "other" });
-    expect(unavailable).toMatchObject({ confirmed: false, diagnostic: expect.stringContaining("identity is unavailable") });
-    identity.mockReturnValue({ pid: process.pid, startedAt: "different-start" });
-    const stale = await recordCcSessionEnd(config, { ...input, reason: "other" });
-    expect(stale).toMatchObject({ confirmed: false, diagnostic: expect.stringContaining("earlier native process") });
-    const stillOpen = new Store(config.dbPath);
-    try { expect(stillOpen.getSession(id)!.closedAt).toBeNull(); } finally { stillOpen.close(); }
-    identity.mockReturnValue({ pid: process.pid, startedAt: "fixture-start" });
-    const ended = await recordCcSessionEnd(config, { ...input, reason: "other" });
-    expect(ended, JSON.stringify(ended)).toMatchObject({ confirmed: true, reason: "SessionEnd other" });
-    const closed = new Store(config.dbPath);
-    try { expect(closed.getSession(id)!.closedAt).not.toBeNull(); } finally { closed.close(); }
-  } finally { identity.mockRestore(); }
+    await coordinator.start();
+    const before = readBinding(config, "before-clear")!;
+    expect(before.executor?.pid).toBe(process.pid);
+    // /clear: Claude Code ends the session, then starts a new one in the same process and directory.
+    expect(await recordCcSessionEnd(config, { hook_event_name: "SessionEnd", session_id: "before-clear",
+      transcript_path: join(directory, "before-clear.jsonl"), reason: "clear" })).toMatchObject({ confirmed: true, reason: "SessionEnd clear" });
+    expect(store.getSession(before.coreSessionId!)!.closedAt).not.toBeNull();
+    await start("after-clear", "clear");
+    expect(await coordinator.retargetTo("after-clear")).toBe(true);
+    exchange(join(directory, "after-clear.jsonl"));
+    await vi.waitFor(() => expect(readBinding(config, "after-clear")!.coreSessionId).not.toBeNull(), { timeout: 5_000 });
+    const after = readBinding(config, "after-clear")!;
+    expect(after.executor?.pid).toBe(process.pid);
+    expect(readBinding(config, "before-clear")!.executor).toBeNull();
+    expect(after.coreSessionId).not.toBe(before.coreSessionId);
+    expect(after.clearedFrom).toBeUndefined();
+    expect(store.getSession(after.coreSessionId!)!.projectId).toBe(before.projectId);
+  } finally {
+    await coordinator.shutdown("test"); store.close(); identity.mockRestore();
+    directoryExclusions.excluded = undefined; rmSync(stateDir, { recursive: true, force: true });
+  }
 });
 
 test("2026-09-28, 102: '需要保留当前这一轮的情况' and '会话钩子只用来补投递' — the block ends with the trigger, and the hooks add nothing after it", async () => {

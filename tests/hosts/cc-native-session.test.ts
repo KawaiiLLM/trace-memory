@@ -81,7 +81,7 @@ test("an executor started with the picker's id adopts the Hook's id and attaches
     expect(adopted).toEqual(["chosen"]);
     expect(readBinding(f.config, "chosen")!.executor!.pid).toBe(process.pid);
     expect(diagnostics.some(message => message.includes("session-id-adopted") && message.includes("fresh-picker-id"))).toBe(true);
-    // After attach a differing assignment is refused: re-targeting a live facade is ticket 63.
+    // After attach a differing assignment is refused: following it is `retargetTo` (102).
     publishNativeSession(f.config, f.hook("cleared", "startup"), 515151);
     await until(() => adopted.length === 2);
     expect(adopted[1]).toBe("refused:cleared");

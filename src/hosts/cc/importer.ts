@@ -261,7 +261,7 @@ export class CcProjection {
       }
       return null;
     };
-    // 63: a native session cleared into from another continues that core session; its root
+    // 63: a native session linked by a `/clear` before 102 continues that core session; its root
     // records descend from the compaction Turn the clear appended under the parent's head.
     const rootTurn = () => this.binding.clearedFrom?.compactionTurnId ?? null;
     const parentOf = (record: CcNativeRecord, scan: CcTranscriptScan): string | null => {
@@ -492,7 +492,7 @@ export class CcProjection {
               }
             } else if (continuous) selectedEntryIds = [...(this.memory.store.selectedSourceEntryIds(sessionId, branch) ?? []), ...selectedDelta];
             if (projectionReady && selectedEntryIds) {
-              // 63: a cleared child's path begins with its parent's persisted ancestry.
+              // 63: a linked child's path begins with its parent's persisted ancestry (kept by 102).
               const inherited = this.binding.clearedFrom?.inheritedEntryIds ?? [];
               if (inherited.length && !inherited.every((id, index) => selectedEntryIds![index] === id))
                 selectedEntryIds = [...inherited, ...selectedEntryIds];
@@ -563,12 +563,9 @@ export class CcProjection {
 
 export class CcImporter {
   readonly memory: TraceMemoryFacade;
-  private projection: CcProjection;
-  private readonly config: ResolvedCcHostConfig;
+  private readonly projection: CcProjection;
   private runAgent: ReturnType<typeof createCcRunAgent> | undefined;
   private readonly workerDependencies: CcWorkerDependencies;
-  /** 63: every native lineage this facade has served; the source normalizer renders them all. */
-  private readonly lineages = new Set<string>();
   private reopened = false;
 
   constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, workerDependencies: CcWorkerDependencies = {}) {
@@ -576,12 +573,10 @@ export class CcImporter {
     this.workerDependencies = workerDependencies;
     this.runAgent = config.worker ? createCcRunAgent(config, workerDependencies,
       kind => memory.config[kind].maxToolRounds) : undefined;
-    this.lineages.add(binding.nativeSessionId);
     memory = TraceMemory(config.dbPath, input => this.runAgent ? this.runAgent(input) : unavailableRunner(),
       config.coreConfig, undefined,
-      entry => this.lineages.has(entry.nativeLineage) ? ccSourceBlocks(entry) : undefined);
+      entry => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : undefined);
     this.memory = memory;
-    this.config = config;
     this.projection = new CcProjection(config, binding, memory);
   }
 
@@ -591,13 +586,6 @@ export class CcImporter {
   applyWorker(config: ResolvedCcHostConfig): void {
     this.runAgent = config.worker ? createCcRunAgent(config, this.workerDependencies,
       kind => this.memory.config[kind].maxToolRounds) : undefined;
-  }
-  /** 63: project another native lineage of the same core session on the same facade. */
-  retarget(binding: CcSessionBinding): void {
-    const current = this.projection.currentBinding();
-    if (binding.coreSessionId !== current.coreSessionId) throw new Error("CC importer retarget must stay on the same core session");
-    this.lineages.add(binding.nativeSessionId);
-    this.projection = new CcProjection(this.config, binding, this.memory);
   }
   persistedCall(toolUseId: string, toolName: "note" | "memory"): CcPersistedCall | null {
     return this.projection.persistedCall(toolUseId, toolName);
