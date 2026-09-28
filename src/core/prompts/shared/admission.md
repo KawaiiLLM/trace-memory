@@ -2,8 +2,10 @@
 
 Ask what deletion would lose: only recoverable detail, or awareness that a relevant concept, object, experience, question or reason exists?
 - Preserve enough to recognize, understand and judge. This may be user intent, an object, understanding gained from events, mechanisms, reasons, lessons, open questions or a reference. It need not be an abstract rule.
-- Leave detail in facts, Raw, old versions or authoritative documents when existing understanding locates it and omission does not impair judgment. Do not copy lists and values available through one lookup.
+- Leave detail in facts, Raw, old versions or authoritative documents when existing understanding locates it and omission does not impair judgment. For work in progress, keep the necessary goal, the state existing evidence supports, key open points and where to check; do not accumulate process records and statistics that can be queried directly. Keep concrete values needed to identify an object, state a condition or explain a judgment.
 - Do not create equivalent duplicates or trivial conclusions existing knowledge already yields. When an existing topic changes, update its identity.
+
+A lasting convention does not become a one-off detail because it appears inside a dispatch, execution instructions or a routine exchange; judge it by its content, source and range of application. Recurrence is a cue to review it. It neither widens that range nor turns an agent's requirement into a user ruling.
 
 Rank by the actual consequences of forgetting, not a fixed priority of categories. Would it lose a discussion thread, misread the user, cause a wrong choice, repeat a refuted approach, miss an unresolved matter or greatly increase recovery cost?
 
