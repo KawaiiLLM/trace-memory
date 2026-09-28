@@ -87,7 +87,7 @@ test("64c: Pi does not borrow a due closed-session Dreamer target", async () => 
       [{ sources: [{ entry, address: `T${turn.id}#E${entry.entryOrdinal}` }], actor: "user", category: "decision",
         text: "closed rule", createdAt: "now" }], [entry.id]);
     const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: closed.id, createdAt: "now" }, operations: [{ op: "create",
-      handle: "$closed", author: "test", text: "closed ".repeat(1_000), category: "constraint", scope: "session",
+      handle: "$closed", author: "test", text: "closed ".repeat(5_500), category: "constraint", scope: "session", // 104: summed pending reaches 5k
       supports: [noted.facts[0]!.id], topics: [], reason: "closed session test", createdAt: "now" }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     store.closeSession(closed.id);

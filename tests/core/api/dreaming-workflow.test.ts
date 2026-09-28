@@ -89,7 +89,7 @@ test("85: a pending-triggered deterministic Dreamer still archives until its sel
     task.acknowledgeRequest();
     const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [
       { op: "archive", kind: "budget", id: handle(state, state.items[0]!), supports: [], reason: "Reviewed low-value routine progress retired to fit budget" }],
-      skipped: [] }));
+      skipped: [{ knowledge: history(state, state.trigger), because: "fixture trigger has no maintenance meaning" }] }));
     expect(receipt.committed).toHaveLength(1);
     expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return success;

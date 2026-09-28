@@ -72,7 +72,7 @@ test.each(["consolidation", "budget", "cursor-back", "branch-switch", "path-rewr
       const claim = writer.acquireClaim(path, "dreaming", "memo-input-test")!;
       const range = writer.retainKnowledgePoolRange(path, `session:${sessionId}`, claim);
       if (kind === "pool-state") writer.setKnowledgeBudget("session", 1);
-      const executionId = writer.beginExecution({ sessionId, phase: "dreaming", head: range.anchor, origin: range.origin });
+      const executionId = writer.beginExecution({ sessionId, phase: "dreaming", pool: range.pool!, origin: range.origin });
       const run = writer.bindDreamingRun({ kind: "dreaming", sessionId, branch: "main", dreamingRangeId: range.id,
         executionId, claim, createdAt: time });
       mutate = () => { writer.completeKnowledgePoolRange(run, "success", range.eventIds); writer.releaseClaim(claim); };

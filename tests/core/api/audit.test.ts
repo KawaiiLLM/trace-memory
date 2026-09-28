@@ -29,5 +29,5 @@ for (const phase of ["noting", "dreaming"] as const)
     if (result.outcome !== "failure") throw new Error(`expected a failure, got ${result.outcome}`);
     expect(JSON.parse(memory.store.getRun(result.runId)!.request!)).toEqual({ captured: true });
     expect(JSON.parse(memory.store.getRun(result.runId)!.response!).problems).toEqual(phase === "noting"
-      ? ["offline failure"] : ["offline failure", "runAgent must return the exact provider request"]);
+      ? ["offline failure"] : ["frozen versions not deliberated: K1@v1", "offline failure", "runAgent must return the exact provider request"]);
   });

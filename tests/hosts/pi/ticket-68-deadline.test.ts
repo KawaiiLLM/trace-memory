@@ -1,15 +1,20 @@
 import { expect, test, vi } from "vitest";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { runNative } from "../../../src/hosts/pi/native.ts";
-import { fixture, say } from "./native-fixture.ts";
+import { call, fixture, say } from "./native-fixture.ts";
 
 test("68: shared deadline fences a real Pi worker, releases its claim and permits the next run", async () => {
   const f = await fixture({ "noting.triggerTokens": 1e9 });
   let release!: () => void, entered!: () => void;
   const ready = new Promise<void>(resolve => { entered = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
-  let first = true;
-  f.script(async () => { if (first) { first = false; entered(); await gate; } return say("Finished."); });
+  let requests = 0, frozen = "";
+  // 104: the next run succeeds only by deliberating its frozen item, so it skips it before finishing.
+  f.script(async () => {
+    if (++requests === 1) { entered(); await gate; return say("Finished."); }
+    return requests === 2 ? call("skip", "memory", { operations: [], skipped: [{ knowledge: frozen, because: "Reviewed unchanged" }] })
+      : say("Finished.");
+  });
   const nativeWork: Promise<unknown>[] = [];
   let task!: DreamingAgentInput;
   const memory = TraceMemory(":memory:", async input => {
@@ -36,6 +41,7 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
     const made = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", text: "A durable rule", category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
     if (!made.ok) throw new Error(made.problems.join("; "));
     const item = made.committed[0]!;
+    frozen = `K${item.knowledgeId}@v1`;
     const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const running = memory.dream(target);

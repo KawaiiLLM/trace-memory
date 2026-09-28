@@ -46,7 +46,7 @@ test("85: Pi does not launch Dreamer for an over-budget pool below its pending t
   const path = { sessionId: 1, branch: "main", headTurnId: store.knowledgePath(1, "main").headTurnId! };
   const claim = store.acquireClaim(path, "dreaming", "fixture")!;
   const range = store.retainKnowledgePoolRange(path, pool, claim);
-  const executionId = store.beginExecution({ sessionId: 1, phase: "dreaming", head: range.anchor, origin: range.origin });
+  const executionId = store.beginExecution({ sessionId: 1, phase: "dreaming", pool: range.pool!, origin: range.origin });
   const run = store.bindDreamingRun({ kind: "dreaming", sessionId: 1, branch: path.branch,
     dreamingRangeId: range.id, executionId, claim, createdAt: "now" });
   store.completeKnowledgePoolRange(run, "success", range.eventIds);
@@ -128,7 +128,7 @@ test("32d native host: pass ends after all intermediate tool turns; first memory
   } finally { await h.dispose(); }
 });
 
-test("64c native host: a fitting residual ends successfully without a repair round", async () => {
+test("64c native host: a reads-only first pass ends without a repair round; 104: its undeliberated item fails the run", async () => {
   const { h, store, item, pool } = await seeded({}, "budget ".repeat(6000));
   try {
     // 6k changed body fits admission; 4.5k processed outside the family makes the pool over-cap.
@@ -155,9 +155,9 @@ test("64c native host: a fitting residual ends successfully without a repair rou
     }, { autoStop: false });
     await h.turn();
     const run = await terminal(h), audit = JSON.parse(run.response!);
-    expect(run.outcome).toBe("success"); expect(tools).toBe(24); expect(audit.rounds).toBe(24);
+    expect(run.outcome).toBe("failure"); expect(tools).toBe(24); expect(audit.rounds).toBe(24);
     expect(audit.repaired).toBeUndefined(); expect(audit.retries).toBeUndefined();
-    expect(audit.problems).toEqual([]);
+    expect(audit.problems).toEqual([`frozen versions not deliberated: K${item.knowledgeId}@v1`]);
     expect(processedIn(store, pool, item.commit)).toBe(false); // Reads alone do not deliberate or consume the input.
     expect(store.pendingVersions(pool, store.knowledgePath(1)).map(value => value.revisionId)).toContain(item.commit);
     const log = readFileSync(audit.nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));

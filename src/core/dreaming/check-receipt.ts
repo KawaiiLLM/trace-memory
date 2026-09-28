@@ -8,8 +8,8 @@ export interface DreamingCheckResult {
   problems: string[];
 }
 
-/** A scheduling receipt, not an acceptance gate. Budget excess is work for this
- * pool; only rejected memory operations are blockers for the current attempt. */
+/** The run's acceptance (104): blockers are rejected memory operations, the frozen pool over its
+ * budget and frozen versions not yet deliberated. The run succeeds only with none left. */
 export function renderDreamingCheckReceipt(result: DreamingCheckResult, address: (commit: number) => string = String): string {
   const total = (value: DreamingCheckResult["totals"][number]) =>
     `- ${value.pool}: ${value.tokens}/${value.budget} tokens`;

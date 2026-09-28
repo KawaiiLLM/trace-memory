@@ -63,7 +63,7 @@ test("Dreaming projection follows the selected head and current project, not dat
     const turn = s.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "reader", startedAt: "now" });
     const reader = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     // All fixture knowledge is project-scoped; only the project pool carries pending material.
-    const projectTokens = (target: typeof targetA) => memory.dreamingPending(target).pools!.find(pool => pool.scope === "project")!.tokens;
+    const projectTokens = (target: typeof targetA) => memory.dreamingPending(target).pending!.tokens;
     const small = projectTokens(targetA), large = projectTokens(targetB);
     expect(large).toBeGreaterThan(small);
     expect(projectTokens(reader)).toBe(small);
@@ -76,7 +76,7 @@ test("Dreaming projection follows the selected head and current project, not dat
   } finally { memory.close(); }
 });
 
-test("dreamingPending lists every pool in fixed order (global, project, session), each with its own pending tokens and effective trigger matching duePools", () => {
+test("104: dreamingPending is the session's summed pending weight and knowledge total, the figures duePools decides on", () => {
   const memory = sourceSeededMemory(":memory:", vi.fn());
   try {
     const store = memory.store, project = store.createProject({ name: "P", declaredBy: "mark" });
@@ -92,35 +92,24 @@ test("dreamingPending lists every pool in fixed order (global, project, session)
       ] });
       if (!written.ok) throw Error(written.problems.join());
     };
-    // Three pools with different pending amounts. Budgets stay above each pool's whole rendered
-    // size so the pending threshold alone determines due/not-due.
+    // Three pools with pending material. Budgets stay above each pool's whole rendered size, so
+    // the summed pending weight alone decides.
     create("global", "global body ".repeat(5));
     create("project", "project body ".repeat(30));
     create("session", "session body ".repeat(15));
     memory.setKnowledgeBudget("global", 150);
     memory.setKnowledgeBudget("project", 200);
     memory.setKnowledgeBudget("session", 120);
-    memory.config.dreaming.triggerTokens = 80;
     const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-    const result = memory.dreamingPending(target);
-    expect(result.state).toBe("known");
-    const pools = result.pools!;
-    expect(pools.map(pool => pool.scope)).toEqual(["global", "project", "session"]);
-    const [global, projectPool, sessionPool] = pools;
-    // Different pending amounts (project's longer body outweighs the others).
-    expect(global!.tokens).toBeGreaterThan(0);
-    expect(projectPool!.tokens).toBeGreaterThan(global!.tokens);
-    expect(projectPool!.tokens).toBeGreaterThan(sessionPool!.tokens);
-    // Effective trigger is min(configured trigger cap, pool budget); every budget here exceeds the
-    // 80-token cap, so the cap itself binds for all three pools.
-    for (const pool of pools) expect(pool.trigger).toBe(80);
-    // Each pool's due decision agrees with duePools: a pool at/over its trigger with pending
-    // material is due. Only project's pending clears the shared 80-token trigger.
-    const due = new Set(store.duePools(target, memory.config.dreaming.triggerTokens).map(pool => pool.pool));
-    for (const pool of pools) expect(due.has(pool.pool)).toBe(pool.tokens >= pool.trigger);
-    expect(due.has(projectPool!.pool)).toBe(true);
-    expect(due.has(global!.pool)).toBe(false);
-    expect(due.has(sessionPool!.pool)).toBe(false);
+    const pools = store.knowledgePools(target);
+    expect(pools.every(pool => pool.pending.length > 0 && pool.tokens <= pool.budget)).toBe(true);
+    const pending = pools.reduce((sum, pool) => sum + pool.pending.reduce((total, value) => total + value.tokens, 0), 0);
+    memory.config.dreaming.triggerTokens = pending;
+    expect(memory.dreamingPending(target)).toEqual({ state: "known", pending: { tokens: pending, trigger: pending },
+      knowledge: { tokens: pools.reduce((sum, pool) => sum + pool.tokens, 0), window: 150 + 200 + 120 + memory.config.compaction.sharedAllowanceTokens } });
+    expect(memory.taskEligibility("dreaming", target).due).toBe(true);
+    memory.config.dreaming.triggerTokens = pending + 1;
+    expect(memory.taskEligibility("dreaming", target).due).toBe(false);
   } finally { memory.close(); }
 });
 

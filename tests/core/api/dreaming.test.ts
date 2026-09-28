@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
@@ -242,9 +242,11 @@ test("64c reference material is genuinely non-empty, capped and receipted when c
     const supplied = [...task.material.processed.matchAll(/\[K\d+#[a-z]+\]/g)].length;
     expect(supplied).toBeGreaterThan(0);
     expect(supplied).toBeLessThan(references.length);
+    skipRest(task);
     return success;
   });
-  expect(result.outcome).toBe("success");
+  // 104: the oversized references keep the pool over its budget, so the run is not a success.
+  expect(result).toMatchObject({ outcome: "failure", problems: [expect.stringContaining("over budget")] });
 });
 
 test("64c frozen material preserves changed and direct-fact capacity guarantees with honest omission", async () => {
@@ -262,6 +264,7 @@ test("64c frozen material preserves changed and direct-fact capacity guarantees 
     expect(task.material.facts).toContain("first-direct-fact");
     expect(task.material.facts).toContain("Omitted whole direct facts beyond 10000");
     expect(task.material.facts).not.toContain("second-direct-fact");
+    skipRest(task); // 104: success deliberates the whole frozen range
     return success;
   });
   expect(result.outcome).toBe("success");
@@ -310,7 +313,8 @@ test("103 order instruction: absent for a small update — the excluded size is 
       skipped: [{ knowledge: `K${updated.knowledgeId}@v${f.store.versionOrdinal(updated.knowledgeId, updated.commit)}`, because: "fixture reviewed unchanged" }] });
     return success;
   });
-  expect(secondRun.outcome, JSON.stringify(secondRun)).toBe("success");
+  // 104: the fixture budget keeps the pool over budget, so the run is not a success.
+  expect(secondRun, JSON.stringify(secondRun)).toMatchObject({ outcome: "failure", problems: [expect.stringContaining("over budget")] });
   expect(seenBound).toBe(`Run wall-clock bound: ${f.memory.config.dreaming.timeoutMs} ms. Wrap up before this deadline.`);
 });
 
@@ -326,7 +330,8 @@ test("103 order instruction: absent at the boundary where the remainder exactly 
       skipped: [{ knowledge: `K${updated.knowledgeId}@v${f.store.versionOrdinal(updated.knowledgeId, updated.commit)}`, because: "fixture reviewed unchanged" }] });
     return success;
   });
-  expect(secondRun.outcome, JSON.stringify(secondRun)).toBe("success");
+  // 104: the fixture budget keeps the pool over budget, so the run is not a success.
+  expect(secondRun, JSON.stringify(secondRun)).toMatchObject({ outcome: "failure", problems: [expect.stringContaining("over budget")] });
   expect(seenBound).toBe(`Run wall-clock bound: ${f.memory.config.dreaming.timeoutMs} ms. Wrap up before this deadline.`);
 });
 
@@ -368,7 +373,8 @@ test("103 order instruction: present for an archive — the excluded size is 0, 
       skipped: [{ knowledge: `K${archivedItem.knowledgeId}@v${f.store.versionOrdinal(archivedItem.knowledgeId, archivedItem.commit)}`, because: "fixture reviewed unchanged" }] });
     return success;
   });
-  expect(secondRun.outcome, JSON.stringify(secondRun)).toBe("success");
+  // 104: the fixture budget keeps the pool over budget, so the run is not a success.
+  expect(secondRun, JSON.stringify(secondRun)).toMatchObject({ outcome: "failure", problems: [expect.stringContaining("over budget")] });
 
   const match = seenBound.match(/This pool is (\d+)\/(\d+) tokens; this run's pending items occupy (\d+); without them it is still (\d+), over budget\./);
   expect(match, seenBound).toBeTruthy();

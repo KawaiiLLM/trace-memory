@@ -200,7 +200,9 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       expect(receipt.results[0]).toContain(history(cMoved));
       // D finishes the run through its own separate, valid submission (the per-item discipline: one
       // rejection's blast radius stays one item).
+      // 104: success deliberates the whole frozen range, the refused stale base included.
       const closed = JSON.parse(write.execute({ operations: [], skipped: [
+        { knowledge: history(k5), because: "Superseded by N while frozen; no operation on the stale base." },
         { knowledge: history(trigger), because: "No maintenance needed for the explicit fixture trigger." }] }));
       expect(closed.committed).toEqual([]);
       return { outcome: "success", output: "D saw the refusal", request: {} };

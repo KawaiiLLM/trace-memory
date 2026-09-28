@@ -97,7 +97,8 @@ test.each(["success", "failure", "cancelled"] as const)("68 %s consumes an accep
   const first = f.create("project", "first ".repeat(20));
   const second = f.create("project", "second ".repeat(20));
   const result = await f.memory.dream(f.target);
-  expect(result.outcome).toBe(outcome === "success" ? "success" : outcome);
+  // 104: an untouched frozen version turns a reported success into a failure.
+  expect(result.outcome).toBe(outcome === "cancelled" ? "cancelled" : "failure");
   expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed ORDER BY revision_id").all().map(row => Number(row.revision_id))).toEqual([first.commit]);
   expect(f.store.pendingVersions(`project:${f.project.id}`, f.target).map(value => value.revisionId)).toEqual([second.commit]);
 });
@@ -123,36 +124,14 @@ test("68 own output is processed, its superseded parent needs no processing row,
   expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
 });
 
-test("68 each pool's effective trigger follows the shared configured cap, not its own raw budget ratio", () => {
-  const f = setup(async () => ({ outcome: "success", output: "unused", request: exactRequest }), { triggerTokens: 1 });
-  f.create("global", "global body ".repeat(20));
-  f.create("project", "project body ".repeat(20));
-  const globalWeight = f.store.pendingPoolWeight("global", f.target);
-  const projectPool = `project:${f.project.id}`, projectWeight = f.store.pendingPoolWeight(projectPool, f.target);
-  f.store.setKnowledgeBudget("global", globalWeight * 3);
-  f.store.setKnowledgeBudget("project", projectWeight * 4);
-  f.memory.config.dreaming.triggerTokens = projectWeight;
-  expect(globalWeight / (globalWeight * 3)).toBeGreaterThan(projectWeight / (projectWeight * 4)); // global has the tighter raw budget ratio
-  const pools = f.memory.dreamingPending(f.target).pools!;
-  const global = pools.find(pool => pool.scope === "global")!, project = pools.find(pool => pool.scope === "project")!;
-  // Both budgets exceed the configured cap, so the shared cap binds identically for both pools
-  // despite global's raw ratio being tighter — each pool's own figure, not a cross-pool selection.
-  expect(global).toMatchObject({ tokens: globalWeight, trigger: projectWeight });
-  expect(project).toMatchObject({ tokens: projectWeight, trigger: projectWeight });
-});
-
-test("68 each pool uses min(configured trigger cap, pool budget) and untouched pending stays due", async () => {
+test("68 untouched pending stays pending and due after a failed run", async () => {
   const f = setup(async task => { task.acknowledgeRequest(); return { outcome: "failure", output: "cut", request: exactRequest }; }, { triggerTokens: 5_000 });
   const first = f.create("session", "first ".repeat(80));
   const second = f.create("session", "second ".repeat(80));
   const pool = `session:${f.session.id}`;
-  const pending = f.store.pendingVersions(pool, f.target);
-  const budget = pending[0]!.tokens + 10;
-  f.store.setKnowledgeBudget("session", budget);
-  expect(f.store.pendingPoolWeight(pool, f.target)).toBeLessThan(5_000);
-  expect(f.memory.dreamingPending(f.target).pools!.find(value => value.pool === pool)).toMatchObject({ trigger: budget });
-  expect(f.store.duePools(f.target, 5_000).some(value => value.pool === pool)).toBe(true);
+  f.memory.config.dreaming.triggerTokens = f.store.pendingPoolWeight(pool, f.target);
+  expect(f.store.duePools(f.target, f.memory.config.dreaming.triggerTokens).some(value => value.pool === pool)).toBe(true);
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([first.commit, second.commit]);
-  expect(f.store.duePools(f.target, 5_000).some(value => value.pool === pool)).toBe(true);
+  expect(f.store.duePools(f.target, f.memory.config.dreaming.triggerTokens).some(value => value.pool === pool)).toBe(true);
 });

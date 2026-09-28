@@ -835,7 +835,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       const dreamClaim = claims.find(claim => claim.phase === "dreaming")!;
       const range = store.retainKnowledgePoolRange(target, `session:${s.id}`, dreamClaim);
       const dreamRun = store.bindDreamingRun({ kind: "dreaming", sessionId: s.id, branch: "main", claim: dreamClaim,
-        dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: s.id, phase: "dreaming", head: range.anchor }), createdAt: consolidationAt });
+        dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: s.id, phase: "dreaming", pool: range.pool! }), createdAt: consolidationAt });
       const time = vi.spyOn(Date, "now").mockReturnValue(clock + 30 * 60_000);
       try {
         for (const stale of claims) {

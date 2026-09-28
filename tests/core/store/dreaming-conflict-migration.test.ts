@@ -12,7 +12,7 @@ function legacy() {
   const file = join(dir, "old.sqlite"), store = new Store(file); stores.push(store);
   const project = store.createProject({ name: "legacy", declaredBy: "mark" });
   const session = store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-  const executionId = store.beginExecution({ sessionId: session.id, phase: "dreaming", head: 1 });
+  const executionId = store.beginExecution({ sessionId: session.id, phase: "dreaming", pool: `project:${project.id}` });
   const run = store.recordRun({ kind: "dreaming", sessionId: session.id, executionId, outcome: "failure", createdAt: "old" });
   store.settleExecution(executionId, "failure", run.id, "legacy failure");
   const removed = store.recordRun({ kind: "manual", sessionId: session.id, outcome: "success", createdAt: "removed" });

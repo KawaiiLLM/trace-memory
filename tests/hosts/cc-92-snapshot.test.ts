@@ -106,7 +106,7 @@ test("92: real staging renders once across an external mid-snapshot commit and 2
     const range = memory.store.retainKnowledgePoolRange(path, "global", claim);
     const run = memory.store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", projectId: project.id,
       claim, dreamingRangeId: range.id, executionId: memory.store.beginExecution({ sessionId: session.id,
-        phase: "dreaming", head: range.anchor, origin: range.origin }), createdAt: "later" });
+        phase: "dreaming", pool: range.pool!, origin: range.origin }), createdAt: "later" });
     const changed = memory.store.commitConsolidationRun({ path, run,
       operations: [{ ...content, op: "update", knowledgeId: created.committed[0]!.knowledgeId, baseCommit: oldIds[0]!,
         text: "NEW concurrent rule" }] });

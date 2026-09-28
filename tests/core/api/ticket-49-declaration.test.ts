@@ -54,6 +54,19 @@ for (const phase of ["noting"] as const) {
   });
 }
 
+test("104: declaration refuses while the session's knowledge overflows its window, pending below the trigger", () => {
+  const f = base(true);
+  knowledge(f);
+  f.memory.config.noting.triggerTokens = 1e9;
+  expect(f.memory.dreamingPending(f.path).pending!.tokens).toBeLessThan(f.memory.config.dreaming.triggerTokens);
+  for (const scope of ["global", "project", "session"] as const) f.memory.setKnowledgeBudget(scope, 0);
+  f.memory.config.compaction.sharedAllowanceTokens = 0;
+  expect(() => f.memory.declareProject(f.session.id, "overflowing", "mark", f.path)).toThrow(/dreaming is due/);
+  expect(f.store.findProjectByName("overflowing")).toBeNull();
+  f.memory.config.compaction.sharedAllowanceTokens = 10_000;
+  expect(f.memory.declareProject(f.session.id, "fits", "mark", f.path)).toContain("fits");
+});
+
 test("49: material below N/D thresholds moves without an automatic flush", () => {
   const f = base(true);
   knowledge(f);
@@ -64,7 +77,7 @@ test("49: material below N/D thresholds moves without an automatic flush", () =>
     f.memory.config[phase].triggerTokens = measured + 1;
   }
   // The fixture's knowledge is project-scoped; only the project pool carries pending material.
-  const projectPending = () => f.memory.dreamingPending(f.path).pools!.find(pool => pool.scope === "project")!.tokens;
+  const projectPending = () => f.memory.dreamingPending(f.path).pending!.tokens;
   const dreaming = projectPending();
   expect(dreaming).toBeGreaterThan(0);
   f.memory.setKnowledgeBudget("project", dreaming * 2 + 2);
@@ -174,7 +187,7 @@ test.each(["source", "target", "unrelated"] as const)("86: a %s project peer's l
   expect(held).not.toBeNull();
   const range = f.store.retainKnowledgePoolRange(peerPath, `project:${peerProject.id}`, held);
   const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: peerSession.id, branch: "main", projectId: peerProject.id,
-    claim: held, dreamingRangeId: range.id, executionId: f.store.beginExecution({ sessionId: peerSession.id, phase: "dreaming", head: range.anchor, origin: range.origin }), createdAt: "now" });
+    claim: held, dreamingRangeId: range.id, executionId: f.store.beginExecution({ sessionId: peerSession.id, phase: "dreaming", pool: range.pool!, origin: range.origin }), createdAt: "now" });
   const move = () => f.memory.declareProject(f.session.id, destination.name, "mark", f.path);
   expect(move()).toContain(destination.name);
   expect(f.store.getSession(f.session.id)!.projectId).toBe(destination.id);

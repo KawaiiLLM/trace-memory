@@ -73,7 +73,7 @@ test("64c facade leaves an external mid-run revision pending while recording the
   const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); await wait; return ok; });
   const first = f.create("project", "first rule ".repeat(20));
   const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", Math.floor(f.store.pendingPoolWeight(pool, f.target) * 1.5));
+  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 3); // 104: the late arrival still fits
   const running = f.memory.dream(f.target);
   await new Promise(resolve => setTimeout(resolve, 0));
   const late = f.create("project", "late rule ".repeat(10));
@@ -257,21 +257,21 @@ test("68 untouched residual stays due before and after an older version becomes 
   expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
 });
 
-test("85: an untouched residual above the pending threshold remains due", async () => {
+test("85/104: an untouched residual above the pending threshold remains due; the run ending over budget fails", async () => {
   const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
   for (let i = 0; i < 14; i++) f.create("project", `rule ${i} ` + "words ".repeat(800));
   const pool = `project:${f.project.id}`, pending = f.store.pendingVersions(pool, f.target);
   const one = tokens(["Pending current knowledge:", pending[0]!.material].join("\n"));
   expect(tokens(["Pending current knowledge:", pending[0]!.material, pending[1]!.material].join("\n"))).toBeGreaterThan(one);
   f.store.setKnowledgeBudget("project", one);
-  expect((await f.memory.dream(f.target)).outcome).toBe("success");
+  expect((await f.memory.dream(f.target)).outcome).toBe("failure"); // 104: success needs the pool within its budget
   const residual = f.store.pendingPoolWeight(pool, f.target);
   expect(residual * 2).toBeGreaterThanOrEqual(one);
   expect(f.store.duePools(f.target, 1).some(value => value.pool === pool)).toBe(true);
 });
 
 test("64c successful terminal transaction persists the full provider audit", async () => {
-  const f = fixture(async task => { task.acknowledgeRequest(); return { ...ok, usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.1 }, nativeLog: "/tmp/dream.jsonl" }; });
+  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return { ...ok, usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.1 }, nativeLog: "/tmp/dream.jsonl" }; });
   f.create("project", "audited rule");
   const pool = `project:${f.project.id}`;
   f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
@@ -308,30 +308,6 @@ test("64c rejected terminal transaction rolls back processing but preserves atte
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
   expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([item.commit]);
   expect(JSON.parse(f.store.getRun(result.runId)!.response!)).toMatchObject({ check: { pool }, output: "done" });
-});
-
-test("85: over-budget without pending is not due; growth and budget edits adjust pending threshold", async () => {
-  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
-  f.create("project", "large ".repeat(100));
-  const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
-  expect((await f.memory.dream(f.target)).outcome).toBe("success");
-
-  const firstSize = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
-  f.store.setKnowledgeBudget("project", firstSize - 1);
-  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(false);
-  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(false);
-
-  f.create("project", "growth");
-  const weight = f.store.pendingPoolWeight(pool, f.target);
-  f.store.setKnowledgeBudget("project", weight + 1);
-  expect(f.store.duePools(f.target, 5000).some(value => value.pool === pool)).toBe(false);
-  f.store.setKnowledgeBudget("project", weight);
-  expect(f.store.duePools(f.target, 5000).some(value => value.pool === pool)).toBe(true);
-  // The configured trigger is 1 in this fixture, but a below-budget framing still fits.
-  f.store.setKnowledgeBudget("project", firstSize + weight + 100);
-  expect((await f.memory.dream(f.target)).outcome).toBe("success");
-  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(false);
 });
 
 test("85: a cancelled pending run does not consume its frozen versions", async () => {

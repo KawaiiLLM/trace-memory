@@ -3,6 +3,7 @@ import { fact as seedFact } from "../../support/seed.ts";
 import { afterEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { skipRest } from "../../dreaming-skips.ts";
 let memory: ReturnType<typeof sourceSeededMemory>, admittedScenarios: AdmittedDreamerScenarios, triggerEntryId: number;
 afterEach(() => memory?.close());
 const create = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
@@ -211,6 +212,7 @@ test("21a 2026-09-08: create, update, merge and archive all carry nonempty suppo
     expect(merge.committed).toHaveLength(1);
     const merged = merge.committed[0]; expect(merged.version).toBe("K1@v2");
     expect(JSON.parse(dream.execute({ operations: [{ op: "archive", kind: "budget", id: read(1, 2), supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] })).committed).toHaveLength(1);
+    expect(skipRest(input, ["K1@v1", "K2@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
     return { outcome: "success", output: "maintained", request };
   });
   expect(result.outcome).toBe("success");
@@ -293,6 +295,7 @@ test("21a 2026-09-08: one supports list holds both the text's grounds and the fa
     const request = { fixture: "multi-fact supports" }; input.reportRequest(request);
     input.tools[0]!.execute({ address: "K1@v1", itemBudget: null });
     expect(input.tools[3]!.execute({ operations: [update], skipped: [] })).toContain("committed");
+    expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
     return { outcome: "success", output: "updated", request };
   });
   expect(result.outcome).toBe("success");
@@ -312,6 +315,7 @@ test("21a 2026-09-08: reason shows in commit history, diffs and the run, never i
     const receipt = JSON.parse(input.tools[3]!.execute({ operations: [{ op: "update", id: read(1), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
     expect(receipt.committed[0].version).toBe("K1@v2");
     updatedCommit = memory.store.resolveVersionOrdinal(1, 2);
+    expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
     return { outcome: "success", output: "updated", request };
   });
   expect(result.outcome).toBe("success");
@@ -333,6 +337,7 @@ test("21a 2026-09-08: a reason-only update on a stale base is rejected like any 
     expect(sharpened.version).toBe("K1@v2");
     expect(input.tools[3]!.execute({ operations: [{ op: "update", id: original, text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Classification cleanup only." }], skipped: [] })).toContain("base is not the latest effective applicable revision; current: K1@v2");
     expect(input.tools[3]!.execute({ operations: [{ op: "update", id: read(1, 2), text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Corrected the stale address without changing the conclusion." }], skipped: [] })).toContain("committed");
+    expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
     return { outcome: "success", output: "stale corrected", request };
   });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
@@ -394,6 +399,7 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
     expect(merged.committed[0].version).toBe("K1@v4");
     mergedCommit = memory.store.resolveVersionOrdinal(1, 4);
     dream.execute({ operations: [{ op: "archive", kind: "budget", id: read(1, 4), supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] });
+    expect(skipRest(input, ["K1@v1", "K2@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
     return { outcome: "success", output: "maintained", request };
   });
   expect(result.outcome).toBe("success");

@@ -67,7 +67,7 @@ function processPool(h: Host, pool: string, createdAt = time, response?: string)
   const claim = store.acquireClaim(path, "dreaming", "footer-test");
   if (!claim) throw new Error("dreaming claim unavailable");
   const range = store.retainKnowledgePoolRange(path, pool, claim);
-  const executionId = store.beginExecution({ sessionId: 1, phase: "dreaming", head: range.anchor, origin: range.origin });
+  const executionId = store.beginExecution({ sessionId: 1, phase: "dreaming", pool: range.pool!, origin: range.origin });
   const run = store.bindDreamingRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
     executionId, claim, createdAt, response });
   store.completeKnowledgePoolRange(run, "success");

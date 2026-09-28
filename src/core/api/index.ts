@@ -12,7 +12,7 @@ export { deliveredView, knowledgeStateKey, noVisibility } from "./visible.ts";
 export type { InitialContext, KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
-import { DEFAULT_DREAMING_TRIGGER_TOKENS } from "../store/processing.ts";
+import { DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS } from "../store/processing.ts";
 
 import { freezeNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
@@ -107,7 +107,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
   compaction: {
     factsTokens: 10_000,
     rawTokens: 10_000,
-    sharedAllowanceTokens: 10_000,
+    sharedAllowanceTokens: DEFAULT_SHARED_ALLOWANCE_TOKENS,
   },
 };
 
@@ -365,9 +365,6 @@ export interface AgentControl {
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
 
-/** One Knowledge pool's Dreaming projection: `pool` is the store's key (`global`,
- * `project:<id>`, `session:<id>`), `scope` its kind. */
-export interface DreamingPoolPending { scope: "global" | "project" | "session"; pool: string; tokens: number; trigger: number }
 
 // ---- Façade ----
 
@@ -379,21 +376,18 @@ export interface TraceMemory {
   readonly resultText: ResultExtractor;
   taskEligibility(phase: Phase, target: TaskTarget): { due: boolean };
   /** On-demand, read-only trigger material estimates; no admission, grants or cache writes. Covers
-   * Noting only — Dreaming's Knowledge pools trigger independently, so its
-   * projection is `dreamingPending`. With `upToTrigger`, Noting is counted only up to its trigger
+   * Noting only — Dreaming has two conditions, so its projection is `dreamingPending`. With `upToTrigger`, Noting is counted only up to its trigger
    * (maintainer, 2026-09-25, for the `/trace` menus): a larger backlog reports `atLeast` with its
    * exact pending entry count, because rendering every entry of a long backlog took seconds. */
   pendingTokens(phase: "noting", target?: TaskTarget, upToTrigger?: boolean):
     | { tokens: number; trigger: number; state: "known"; atLeast?: true; entries?: number }
     | { tokens: null; trigger: number | null; state: "no session" | "unavailable" };
-  /** Same read-only contract as `pendingTokens`, one entry per applicable Knowledge pool (fixed
-   * order global, project, session) since each pool is due on its own budget-derived trigger and
-   * is never merged into a single figure (maintainer 2026-09-24: scopes trigger separately, so each
-   * must be shown separately). `trigger` is `min(dreaming.triggerTokens, pool.budget)`, exactly what
-   * `taskEligibility("dreaming")`/`duePools` use to decide that pool is due. */
+  /** Same read-only contract as `pendingTokens`, for the session's two Dreamer conditions (104):
+   * pending weight summed across its applicable pools against the trigger, and their knowledge
+   * total, as `check` measures it, against the injection base plus the shared allowance. */
   dreamingPending(target?: TaskTarget):
-    | { state: "known"; pools: DreamingPoolPending[] }
-    | { state: "no session" | "unavailable"; pools: null };
+    | { state: "known"; pending: { tokens: number; trigger: number }; knowledge: { tokens: number; window: number } }
+    | { state: "no session" | "unavailable"; pending: null; knowledge: null };
   /** Terminal worker settlement, including Dreamer's future worker: persist first, then abort
    * locally owned target tasks on automatic off. Attempt refusal is not terminal settlement. */
   settleExecution(id: string, outcome: import("../store/executions.ts").ExecutionOutcome, runId: number, reason?: string): ReturnType<Store["settleExecution"]>;
@@ -827,20 +821,20 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         : { tokens: trigger, trigger, state: "known", atLeast: true, entries: pending.length };
     } catch { return { tokens: null, trigger, state: "unavailable" }; }
   };
-  const poolScope = (pool: string): DreamingPoolPending["scope"] =>
-    pool === "global" ? "global" : pool.startsWith("project:") ? "project" : "session";
   const dreamingPending: TraceMemory["dreamingPending"] = target => {
-    if (!target) return { state: "no session", pools: null };
+    if (!target) return { state: "no session", pending: null, knowledge: null };
     try {
-      if (store.closed || !store.getSession(target.sessionId)) return { state: "unavailable", pools: null };
-      const pools = store.knowledgePools(target, cfg.dreaming.triggerTokens).map(size => ({
-        scope: poolScope(size.pool), pool: size.pool,
-        tokens: size.pending.reduce((sum, value) => sum + value.tokens, 0),
-        trigger: Math.min(cfg.dreaming.triggerTokens, size.budget),
-      }));
-      return { state: "known", pools };
-    } catch { return { state: "unavailable", pools: null }; }
+      if (store.closed || !store.getSession(target.sessionId)) return { state: "unavailable", pending: null, knowledge: null };
+      const pools = store.knowledgePools(target);
+      return { state: "known",
+        pending: { tokens: pools.reduce((sum, pool) => sum + pool.pending.reduce((total, value) => total + value.tokens, 0), 0),
+          trigger: cfg.dreaming.triggerTokens },
+        knowledge: { tokens: pools.reduce((sum, pool) => sum + pool.tokens, 0),
+          window: store.knowledgeBudgets().injection + cfg.compaction.sharedAllowanceTokens } };
+    } catch { return { state: "unavailable", pending: null, knowledge: null }; }
   };
+  const dreamingDue = (target: TaskTarget) =>
+    store.duePools(target, cfg.dreaming.triggerTokens, cfg.compaction.sharedAllowanceTokens).length > 0;
   // 29d: eligibility is the trigger threshold and nothing else. The delivery pause that used to hold
   // a fork-mode Noting task until its predecessor's facts had been delivered to the foreground went
   // with the deliveries themselves (parent 29: "Old pending rows cannot pause either phase once the
@@ -849,8 +843,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const taskEligibility = (phase: Phase, target: TaskTarget) => {
     if (phase !== "noting" && phase !== "dreaming") throw new Error(`Unsupported live phase: ${phase}`);
     if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false };
-    return { due: phase === "noting" ? notingDue(target)
-      : store.duePools(target, cfg.dreaming.triggerTokens).length > 0 };
+    return { due: phase === "noting" ? notingDue(target) : dreamingDue(target) };
   };
   const execute = async (phase: Phase, input: NotingInput): Promise<NotingResult | DreamingResult> => {
     // Noting may fork; borrowed work and manual catchup explicitly request fresh context.
@@ -884,9 +877,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         projectId = store.getSession(input.sessionId)!.projectId;
         const frozen = admitted.frozen;
         origin = frozen.range.origin;
-        // The range id is audit/binding authority, not logical task identity: each retry reserves a
-        // fresh range for the same oldest pending revision. Failure streaks follow that revision.
-        executionId = store.beginExecution({ sessionId: target.sessionId, phase, head: frozen.range.anchor, origin }, input.executionId);
+        // The range id is audit/binding authority, not logical task identity: 104 keys the Dreamer's
+        // logical task on its pool, so every run on one pool continues the same failure streak.
+        executionId = store.beginExecution({ sessionId: target.sessionId, phase, pool: frozen.pool, origin }, input.executionId);
         return frozen;
       }
       const pendingNow = store.pendingEntries(target.sessionId, target.branch, target.headTurnId);
@@ -1068,8 +1061,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const selected = path?.branch !== undefined && path.headTurnId !== null
         ? { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId } : undefined;
       const project = store.declareProject(sessionId, name, source, selected && { path: selected, atTrigger: phase => phase === "noting"
-        ? notingDue(selected)
-        : store.duePools(selected, cfg.dreaming.triggerTokens).length > 0 });
+        ? notingDue(selected) : dreamingDue(selected) });
       return `S${sessionId} project: ${project.name} (${store.projectDeclaration(sessionId)})`;
     },
   };

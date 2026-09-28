@@ -1654,7 +1654,7 @@ export default function (pi: ExtensionAPI) {
       const s = state.sessionId ? memory.store.getSession(state.sessionId) : null;
       lines.push(`Project: ${s ? `${memory.store.getProject(s.projectId)!.name} (${memory.store.projectDeclaration(s.id)})` : state.project ?? "Unassigned"}`);
       if (s && !enabled()) for (const task of memory.store.taskFailures(s.id).filter(t => t.count >= 3))
-        recovery.push(`Automatic off: ${task.phase}, backlog head ${task.head}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`);
+        recovery.push(`Automatic off: ${task.phase}, ${task.pool ? `pool ${task.pool}` : `backlog head ${task.head}`}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`);
     } catch { recovery.push("Project / recovery: Unknown (unavailable)"); }
     let cost: string; const composition: string[] = [];
     try {
@@ -1687,8 +1687,6 @@ export default function (pi: ExtensionAPI) {
     const target = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
     const noting = memory.pendingTokens("noting", target, true);
     const dreaming = memory.dreamingPending(target);
-    const pools = Object.fromEntries((dreaming.pools ?? []).map(pool => [pool.scope, { tokens: pool.tokens, trigger: pool.trigger }]));
-    const unavailable = { tokens: null, trigger: memory.config.dreaming.triggerTokens };
     const totals = state.sessionId ? memory.spend(state.sessionId) : undefined;
     const notices: string[] = [];
     if (state.sessionId && !enabled()) for (const task of memory.store.taskFailures(state.sessionId).filter(t => t.count >= 3))
@@ -1712,7 +1710,8 @@ export default function (pi: ExtensionAPI) {
           ...(["Conversation", "Other"] as const).map(name => ({ name, tokens: composition.amounts[name] })),
         ], complete: composition.complete },
       pending: { noting: { tokens: noting.tokens, trigger: noting.trigger, ...(noting.state === "known" && noting.atLeast ? { atLeast: true, entries: noting.entries } : {}) },
-        dreaming: { global: pools.global ?? unavailable, project: pools.project ?? unavailable, session: pools.session ?? unavailable } },
+        dreaming: { pending: dreaming.pending ?? { tokens: null, trigger: memory.config.dreaming.triggerTokens },
+          knowledge: dreaming.knowledge ? { tokens: dreaming.knowledge.tokens, trigger: dreaming.knowledge.window } : { tokens: null, trigger: null } } },
       spend: { session: totals?.cost ?? 0,
         noting: { runs: totals?.runs.noting ?? 0, cost: totals?.costs.noting ?? 0 },
         consolidation: { runs: totals?.runs.consolidation ?? 0, cost: totals?.costs.consolidation ?? 0 },

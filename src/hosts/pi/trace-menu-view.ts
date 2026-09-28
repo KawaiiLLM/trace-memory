@@ -130,8 +130,7 @@ export function renderTraceMenu(input: TraceMenuInput, width: number, paint: Pai
   };
   lines.push(pendingLine(model.pending.noting));
   lines.push(`  ${model.pending.dreamingHeading}`);
-  for (const pool of [model.pending.dreaming.global, model.pending.dreaming.project, model.pending.dreaming.session])
-    lines.push(pendingLine(pool, "    "));
+  for (const row of model.pending.dreaming) lines.push(pendingLine(row, "    "));
   lines.push("");
 
   lines.push(model.spend.sessionLine);

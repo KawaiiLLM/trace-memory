@@ -11,6 +11,24 @@ export interface KnowledgeBudgets extends KnowledgeBudgetValues {
 }
 export const DEFAULT_KNOWLEDGE_BUDGETS: KnowledgeBudgetValues = { global: 4_000, project: 15_000, session: 1_000 };
 export const DEFAULT_DREAMING_TRIGGER_TOKENS = 5_000;
+export const DEFAULT_SHARED_ALLOWANCE_TOKENS = 10_000;
+
+/** 104: one Dreamer evaluation per session context, over its applicable pools. Due when their sizes
+ * (as `check` measures them) exceed `window`, the injection base plus the shared allowance, or when
+ * their nonempty pending weight, summed, reaches the trigger. The run's pool is the largest excess
+ * over its own budget, else the most pending weight; ties keep the fixed global, project, session order. */
+export function dueKnowledgePool<T extends KnowledgePoolSize & { pending: readonly { tokens: number }[] }>(
+  pools: readonly T[], window: number, triggerTokens: number): T | undefined {
+  const weight = (pool: T) => pool.pending.reduce((sum, value) => sum + value.tokens, 0);
+  const excess = (pool: T) => pool.tokens - pool.budget;
+  const overflow = pools.reduce((sum, pool) => sum + pool.tokens, 0) > window;
+  const pending = pools.some(pool => pool.pending.length) && pools.reduce((sum, pool) => sum + weight(pool), 0) >= triggerTokens;
+  if (!overflow && !pending) return undefined;
+  const over = pools.filter(pool => excess(pool) > 0);
+  if (over.length) return over.reduce((best, pool) => excess(pool) > excess(best) ? pool : best);
+  const candidates = pools.filter(pool => pool.pending.length);
+  return candidates.length ? candidates.reduce((best, pool) => weight(pool) > weight(best) ? pool : best) : undefined;
+}
 
 /** Database policy owns the base window only. The shared allowance is a fixed configuration value
  * (`compaction.sharedAllowanceTokens`), never derived from the maintenance triggers (73). */
@@ -69,7 +87,8 @@ export interface DreamingRange {
   sessionId: number;
   branch: string;
   headTurnId: number;
-  anchor: number;
+  /** The oldest frozen revision; null for a range with none (104: a pool chosen for its excess). */
+  anchor: number | null;
   eventIds: number[];
   origin: TriggerOrigin | null;
   pool: string | null;

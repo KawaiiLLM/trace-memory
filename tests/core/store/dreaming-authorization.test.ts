@@ -24,7 +24,7 @@ function fixture(path = ":memory:") {
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   const claim = store.acquireClaim(target, "dreaming", "test")!;
   const range = store.retainKnowledgePoolRange(target, `project:${project.id}`, claim);
-  const run: RunInput = { kind: "dreaming", sessionId: session.id, branch: "main", claim, dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", head: range.anchor, origin: range.origin }), createdAt: "now" };
+  const run: RunInput = { kind: "dreaming", sessionId: session.id, branch: "main", claim, dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", pool: range.pool!, origin: range.origin }), createdAt: "now" };
   const archive = { op: "archive" as const, kind: "budget" as const, knowledgeId: item.knowledgeId, baseCommit: item.commit, supports: [], reason: "Retire lower-priority active memory; history retained", createdAt: "now" };
   return { store, content, item, target, run, archive };
 }
@@ -61,7 +61,7 @@ test("64b: writer branch visibility rejects a live session base atomically while
     const claim = store.acquireClaim(target, "dreaming", `writer-${writerBranch}`)!;
     const range = store.retainKnowledgePoolRange(target, `project:${project.id}`, claim);
     const raw: RunInput = { kind: "dreaming", sessionId: session.id, branch: writerBranch, claim, dreamingRangeId: range.id,
-      executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", head: range.anchor, origin: range.origin }), createdAt: "now" };
+      executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", pool: range.pool!, origin: range.origin }), createdAt: "now" };
     return { store, session, target, run: store.bindDreamingRun(raw), sessionBase, projectBase, globalBase, writerFact };
   };
   const operation = (base: { knowledgeId: number; commit: number }, factId: number, text: string) => ({ op: "update" as const,

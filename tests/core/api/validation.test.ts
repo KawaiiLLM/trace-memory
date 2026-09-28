@@ -129,7 +129,8 @@ describe("checkMemoryBatch", async () => {
       const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: turn.id });
       expect(result.outcome, JSON.stringify(result)).toBe("failure");
       if (result.outcome !== "failure") throw new Error("expected refused D batch");
-      expect(result.problems).toEqual(["rejected: not-an-id: supply an exact K#tag version; not-an-id: knowledge version does not exist"]);
+      expect(result.problems).toEqual(["rejected: not-an-id: supply an exact K#tag version; not-an-id: knowledge version does not exist",
+        "frozen versions not deliberated: K1@v1"]); // 104: the refused merge left its frozen base undeliberated
       expect(reached).toBe(true);
       expect(memory.store.listKnowledgeRevisions()).toHaveLength(1);
     } finally { memory.close(); }

@@ -421,8 +421,11 @@ test("64b scope visibility: global current hides older visible revisions, reject
         absorb: [tag(projectParent)], text: "illegal result scope",
         category: "constraint", scope: "session", supports: [`F${ownerFact.id}`], reason: "Must be refused.", topics: [] }], skipped: [] }))
         .toContain("merge parents and result must share one scope");
+      // 104: success needs every frozen version deliberated, so the untouched merge parent is skipped.
       expect(write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(resultScopeTrigger),
-        supports: [], reason: "Retire result-scope probe trigger." }], skipped: [] })).toContain("committed");
+        supports: [], reason: "Retire result-scope probe trigger." }], skipped: [{ knowledge:
+        `K${projectParent.knowledgeId}@v${store.versionOrdinal(projectParent.knowledgeId, projectParent.commit)}`,
+        because: "Merge refused; the parent stays as it is." }] })).toContain("committed");
       return { outcome: "success", output: "result scope refused", request };
     });
     expect(resultScopeRun.outcome, JSON.stringify(resultScopeRun)).toBe("success");

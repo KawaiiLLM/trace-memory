@@ -308,10 +308,8 @@ export function renderTraceMenu(input: TraceMenuInput, cc: { breakdown?: CcConte
     pendingHeading: model.pending.heading,
     pendingLines: [
       pendingLine("Noting", model.pending.noting),
-      "  Dreaming",
-      pendingLine("global", model.pending.dreaming.global, "    "),
-      pendingLine("project", model.pending.dreaming.project, "    "),
-      pendingLine("session", model.pending.dreaming.session, "    "),
+      `  ${model.pending.dreamingHeading}`,
+      ...model.pending.dreaming.map(row => pendingLine(row.label, row, "    ")),
     ],
     spendLines: [model.spend.sessionLine, `        ${model.spend.phaseLine}`, model.spend.todayLine],
     notices: model.notices,

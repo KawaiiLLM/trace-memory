@@ -9,7 +9,7 @@ A long-term test protects one of these:
 - **Tool contracts.** What `note`, `memory`, `trace` and `search` accept, reject and return, by structure.
 - **Host delivery.** What reaches the model on each host: injection, compaction, carriers and their accounting.
 - **Storage.** Migrations, atomic publication and rollback, idempotence, and preservation of existing rows.
-- **Ruled performance bounds.** Tickets 79, 80, 87 and 88, and Claude Code's 100 ms heartbeat gate.
+- **Ruled performance bounds.** Tickets 79, 80, 87, 88 and 104, and Claude Code's 100 ms heartbeat gate.
 - **A real regression.** A defect a user or a review found, reproduced at the boundary where it occurred.
 
 It does not protect:

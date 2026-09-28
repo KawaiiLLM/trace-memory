@@ -78,7 +78,7 @@ function retainedFixture() {
   const range = store.retainKnowledgePoolRange(target, `project:${f.session.projectId}`, claim);
   expect(range.eventIds).toEqual([stable.committed[0]!.commit, unrelated.committed[0]!.commit]);
   const run: RunInput = store.bindDreamingRun({ kind: "dreaming", sessionId: f.session.id, branch: "left", claim,
-    dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: f.session.id, phase: "dreaming", head: range.anchor, origin: range.origin }), createdAt: at });
+    dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: f.session.id, phase: "dreaming", pool: range.pool!, origin: range.origin }), createdAt: at });
   return { ...f, store, target, range, claim, run, stable: stable.committed[0]!, unrelated: unrelated.committed[0]!,
     foreign, foreignRoot };
 }

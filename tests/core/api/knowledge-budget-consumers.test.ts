@@ -90,6 +90,7 @@ test("64c zero changed-pool cap still dispatches the oldest pending revision; fa
   const f = fixture();
   const created = f.create("changed");
   zeroBase(f.memory);
+  f.memory.config.dreaming.triggerTokens = 1; // 104: due on the session's summed pending, not on a zero pool budget
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   expect(f.captured).toHaveLength(1);
   expect(f.captured[0]!.material.changed).toContain(`New K${created.knowledgeId}@v1`);

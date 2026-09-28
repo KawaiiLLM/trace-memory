@@ -58,14 +58,16 @@ Dreaming maintains one due Knowledge pool in a fresh subagent. The three pool id
 `global`, `project:<id>` and `session:<id>`. After every ingested entry, the host checks the pools
 visible at that node independently. Pending membership is the current visible, non-archived revision
 of each identity for which that pool has no `(pool, revision)` processing record. Intermediate
-revisions do not accumulate weight. A pool is due when nonempty pending reaches
-`min(dreaming.triggerTokens, pool budget)`; excess size alone does not trigger a run.
+revisions do not accumulate weight. A run is due for the session (104) when its pools' total size
+exceeds the Knowledge base plus the shared allowance, or when their nonempty pending weight, summed,
+reaches `dreaming.triggerTokens`. It takes the pool most over its own budget, else the pool with the
+most pending weight. After a successful run the completion checkpoint checks again at once.
 
 Each run freezes one due pool and an oldest eligible prefix under that pool's soft batch budget.
 The first item is included even when its complete framing exceeds the batch budget; later items wait.
-The database defaults are Global 4,000, Project 15,000 and Session 1,000 tokens. With the configured
-5,000-token cap, effective pending triggers are 4,000/5,000/1,000. Small pools have a reachable pending
-path at their full budget; excess pool size alone never triggers a run. There is one database-wide Dreamer seat. The ordinary target claim,
+The database defaults are Global 4,000, Project 15,000 and Session 1,000 tokens, so the overflow window
+is 30,000 with the default 10,000 shared allowance. One pool over its budget within that window
+triggers nothing by itself. There is one database-wide Dreamer seat. The ordinary target claim,
 token, expiry, reserved takeover and project/range checks remain commit fences; a stale or lost claim
 cannot commit. Dreaming has no closed-session borrowing, frozen family, pool-budget write gate or
 retry range. Material windows and actual model context capacity remain hard limits.
@@ -118,9 +120,11 @@ committing one decision before moving to the next. It compares only within a sco
 ruling can displace an older ruling; an assistant proposal or report cannot. Archiving preserves a
 named survivor or cites evidence that the item is obsolete, contradicted, completed or abandoned;
 when over budget, the prompt continues archiving in its protection order and checking until pools fit.
-Budget excess is a maintenance trigger and report, never a write or completion gate.
+Budget excess is never a write gate.
 
-`check` reports current pool sizes, budgets and operation failures; it is not an acceptance gate.
+`check` reports current pool sizes, budgets and blockers: operation failures, the frozen pool over its
+budget and frozen versions neither operated on nor skipped. A run succeeds only with no blocker (104);
+a timeout never succeeds.
 A run records `(pool, revision)` only for frozen versions explicitly skipped and revisions it wrote.
 Skipped versions use the existing processing table; terminal settlement adds own output and closes the
 range, including on failure or cancellation. Untouched frozen versions remain pending. No skip table
@@ -138,7 +142,7 @@ run to reduce the already-processed knowledge first under Budget priorities, bef
 pending items. Both measures come from the same pool projection `check` reports from; the run's own
 final `check` and the "Over budget" loop are unchanged.
 
-Budget excess is not a due condition; a pending-triggered run still archives until its pool fits.
+A run archives until its pool fits; one pool's excess alone makes no session due.
 Project relabelling creates no processing event or knowledge revision. It removes destination-pool
 processing records only for moved-in project versions, so returning versions become pending again.
 Unrelated destination records and global/session records are unchanged; order follows revision creation.
@@ -159,7 +163,7 @@ Run `npm test` for the Vitest suite, `npm run typecheck` for TypeScript, and
 
 ## Logical-task outcomes (32c)
 
-A logical task is `(target session, phase, oldest selected backlog item)`, independent of its run ids. Noting uses the first frozen source entry, Consolidation the first selected fact, and Dreamer the first pending revision, not the range ID. A Dreamer range is terminal after one run; a catchup retry admits a new range and preserves prior committed work.
+A logical task is `(target session, phase, backlog key)`, independent of its run ids. Noting uses the first frozen source entry and Consolidation the first selected fact (`head`); since 104 the Dreamer uses its pool (`pool`), whatever each run's range holds. Existing rows keep their revision `head` and no pool. A Dreamer range is terminal after one run; a catchup retry admits a new range and preserves prior committed work.
 
 Ticket 86's one-time normal-open upgrade clears only legacy Dreamer failure counters, whose heads used range IDs and could collide with revision IDs. SQLite `user_version = 1` records completion in the same transaction; reopening preserves new counters. N/C counters, run/execution audit and enrollment are unchanged. Historical execution heads retain their original meaning; they are not rewritten.
 

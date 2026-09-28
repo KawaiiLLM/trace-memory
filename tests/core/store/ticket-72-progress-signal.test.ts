@@ -62,7 +62,7 @@ test("85: settling a Dreaming range changes the signal through processing record
   const range = store.retainKnowledgePoolRange(path, `session:${sessionId}`, claim);
   // Shrink the budget after the range froze; range settlement still writes processing records.
   store.setKnowledgeBudget("session", 1);
-  const executionId = store.beginExecution({ sessionId, phase: "dreaming", head: range.anchor, origin: range.origin });
+  const executionId = store.beginExecution({ sessionId, phase: "dreaming", pool: range.pool!, origin: range.origin });
   const run = store.bindDreamingRun({ kind: "dreaming", sessionId, branch: "main", dreamingRangeId: range.id, executionId, claim, createdAt: time });
   const before = store.progressSignal(sessionId);
   store.completeKnowledgePoolRange(run, "success", range.eventIds); // skip records, no pool-state write

@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { skipRest } from "../../dreaming-skips.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -124,6 +125,8 @@ test("64b/48: a later invalid operation rolls revival, links and revisions back 
     expect(f.store.listKnowledgeLinks(active.knowledgeId)).toEqual(before.links);
     expect(write.execute({ operations: [{ op: "archive", kind: "budget", id: f.tag(trigger),
       supports: [], reason: "Retire rollback trigger" }], skipped: [] })).toContain("committed");
+    // 104: the rolled-back batch left the returned identity undeliberated; the run skips it.
+    expect(skipRest(input, [`K${trigger.knowledgeId}@v1`])).toContain("committed");
     return { outcome: "success", output: "rollback verified", request };
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");

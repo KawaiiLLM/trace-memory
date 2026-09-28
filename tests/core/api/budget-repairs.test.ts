@@ -8,6 +8,7 @@ import { renderFact } from "../../../src/core/render/index.ts";
 import { budgetMaterial, compactText, injectionText, notingText, rawWindowTokens, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { skipRest } from "../../dreaming-skips.ts";
 
 function seeded(config: Record<string, unknown> = {}) {
   const calls: NotingAgentInput[] = [];
@@ -194,6 +195,7 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
       const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: base, ...content, topics: ["a", "b"] }], skipped: [] }));
       expect(receipt.committed[0].version).toBe("K1@v2");
       updatedCommit = f.m.store.resolveVersionOrdinal(1, 2);
+      expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
       return { outcome: "success", output: "updated", request };
     });
     expect(result.outcome).toBe("success");

@@ -233,7 +233,7 @@ test("68 untouched frozen and post-freeze versions remain pending without affect
     unprocessed = f.create("unprocessed", [f.facts[0]!.id]);
     return { outcome: "success", output: "reviewed", request: { fixture: "delivery is independent" } };
   });
-  expect(result.outcome).toBe("success");
+  expect(result.outcome).toBe("failure"); // 104: the untouched frozen version is not deliberated
   expect(f.memory.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([processed.commit, unprocessed.commit]);
   expect(f.memory.injection(f.target).knowledgeCommitIds).toEqual([processed.commit, unprocessed.commit]);
 });
