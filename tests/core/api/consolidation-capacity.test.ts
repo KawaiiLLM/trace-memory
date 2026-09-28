@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { freezeNoting, NOTING_CAPACITY } from "../../../src/core/noting/index.ts";
-import { renderKnowledge, renderKnowledgeBlock, tokens, wholeKnowledge, budgetKnowledge } from "../../../src/core/render/index.ts";
+import { renderKnowledge, renderKnowledgeBlock, sessionKnowledgeNotice, tokens, budgetKnowledge } from "../../../src/core/render/index.ts";
 import { recorded, seedSourceEntry, sourceSeededMemory } from "../../source-fixture.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 
@@ -39,7 +39,9 @@ function fixture(texts: (string | { text: string; category: "constraint" | "open
 
 test("45: a whole applicable pool fitting its exact rendered capacity has no omission receipt", () => {
   const f = fixture(["whole applicable rule " + "word ".repeat(5_100)]);
-  const exact = wholeKnowledge(f.values, value => renderKnowledge(value, `K${value.knowledge.id}#${f.memory.store.versionTag(value.knowledge.id, value.revision.id)}`)).cost;
+  // 101: the block N receives carries its session's header, so the exact capacity prices it.
+  const exact = budgetKnowledge(f.values, Infinity, value => renderKnowledge(value, `K${value.knowledge.id}#${f.memory.store.versionTag(value.knowledge.id, value.revision.id)}`),
+    undefined, undefined, undefined, sessionKnowledgeNotice(f.target.sessionId)).cost;
   expect(exact).toBeGreaterThanOrEqual(5_000);
   setKnowledgeCapacity(f.memory, exact);
   const frozen = f.freeze();

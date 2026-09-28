@@ -22,7 +22,7 @@ const h = host({ "noting.triggerTokens": 30 }, { extension });
 try {
   // The default data directory must never be interpreted as a project marker file.
   mkdirSync(join(h.dir, ".trace-memory"));
-  assert.deepEqual([...h.tools.keys()], ["trace", "search", "note", "memory"]);
+  assert.deepEqual([...h.tools.keys()], ["read", "grep", "trace", "search", "note", "memory"]); // 101: /tm through read and grep
   h.provider(async conversation => notingFact(conversation));
   await h.emit("session_start");
   await h.turn();
