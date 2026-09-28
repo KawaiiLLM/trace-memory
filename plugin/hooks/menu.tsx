@@ -501,7 +501,9 @@ export const register = (on) => {
       const built = JSON.parse(decode(await $.process.run(
         ["node", `${$.plugin.root}/dist/cc.cjs`, "hook-compact", "--config", `${$.plugin.root}/cc.config.json`],
         // The newest message's handle is its transcript row's uuid: the trigger the build waits for.
-        { stdin: JSON.stringify({ session_id: session, trigger: e.messages.at(-1)?.handle }) }
+        // `auto` (requirement 14, ruled) tells the build whether to end the block with Claude Code's
+        // own native continue sentence, after its framing; a manual `/compact` gets none.
+        { stdin: JSON.stringify({ session_id: session, trigger: e.messages.at(-1)?.handle, auto: e.trigger === "auto" }) }
       ), "Trace Memory compaction"));
       if (!built.passThrough) {
         if (typeof built.text !== "string" || !built.text) throw new Error("compaction returned no block");

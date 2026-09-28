@@ -10,7 +10,7 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { ccCompaction, ccDeltaInjection, ccSessionStartInjection, databaseIdentity, decodeCcInjection, encodeCcInjection } from "../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../src/hosts/cc/slices.ts";
-import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+import { CC_AUTO_CONTINUE_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccStripAutoContinue, classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 import { readCcMenu } from "../../src/hosts/cc/menu.ts";
 
 const dirs: string[] = [];
@@ -59,8 +59,9 @@ async function fixture(texts = ["Use pnpm."], settings: Record<string, unknown> 
     restartExecutor: async () => { importer.close(); importer = new CcImporter(config, readBinding(config, nativeSession)!); await importer.reconcile(); },
     prompt: (promptId: string) => ccDeltaInjection(config, input, { kind: "prompt", promptId }, slicer),
     compact: () => ccDeltaInjection(config, input, { kind: "compact" }, slicer),
-    /** 102: Trace Memory's compaction, waiting for the row `trigger`. */
-    build: (trigger: string) => ccCompaction(config, { session_id: nativeSession, trigger }),
+    /** 102: Trace Memory's compaction, waiting for the row `trigger`. `auto` (requirement 14) is the
+     * caller's own manual/auto event trigger, distinct from the row. */
+    build: (trigger: string, auto?: boolean) => ccCompaction(config, { session_id: nativeSession, trigger, auto }),
     sessionStart: (source: "compact" | "resume") => ccSessionStartInjection(config, { hook_event_name: "SessionStart", source, ...input }),
     resume: () => ccSessionStartInjection(config, { hook_event_name: "SessionStart", source: "resume", ...input }),
     delivered: (headTurnId: number) => store.deliveredKnowledge({ owner: `cc:${nativeSession}`, sessionId, branch: readBinding(config, nativeSession)!.branch, headTurnId }),
@@ -285,11 +286,14 @@ const installedBlock = (uuid: string, logicalParentUuid: string, text: string, p
   { uuid, parentUuid: null, logicalParentUuid, type: "system", subtype: "compact_boundary", timestamp: time(++clock),
     compactMetadata: { trigger: "auto", preTokens: 1000 } } as CcNativeRecord,
   { uuid: `${uuid}-block`, parentUuid: uuid, type: "user", promptId, timestamp: time(++clock), message: { role: "user", content: text } } as CcNativeRecord];
-/** 102 (ruled): the returned compaction is its carrier in Pi's compaction framing; the carrier inside. */
+/** 102 (ruled): the returned compaction is its carrier in Pi's compaction framing; the carrier inside.
+ * Requirement 14: an optional trailing auto-continue sentence, outside the framing, is stripped first
+ * so this stays a structural check of the framing, not of that sentence. */
 const carrierIn = (text: string): string => {
-  expect(text.startsWith(COMPACTION_SUMMARY_PREFIX)).toBe(true);
-  expect(text.endsWith(COMPACTION_SUMMARY_SUFFIX)).toBe(true);
-  return text.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
+  const framed = ccStripAutoContinue(text);
+  expect(framed.startsWith(COMPACTION_SUMMARY_PREFIX)).toBe(true);
+  expect(framed.endsWith(COMPACTION_SUMMARY_SUFFIX)).toBe(true);
+  return framed.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
 };
 
 test("102 a Trace Memory compaction's node holds exactly what its block emitted; the hooks add nothing after it", async () => {
@@ -366,6 +370,19 @@ test("102 an unbound or disabled session passes through; a path that moves durin
   } finally { f.close(); }
 });
 
+test("102 requirement 14: an automatic compaction's block ends with Claude Code's own continue sentence after the framing; a manual one never does", async () => {
+  const f = await fixture();
+  try {
+    await f.append(user("u2", "a1", "p2"));
+    const manual = (await f.build("u2"))!, auto = (await f.build("u2", true))!;
+    expect(manual.text.endsWith(CC_AUTO_CONTINUE_SUFFIX)).toBe(false);
+    expect(auto.text.endsWith(CC_AUTO_CONTINUE_SUFFIX)).toBe(true);
+    // Unchanged: the carrier still decodes either way (classifier and `/trace` recognition).
+    expect(decodeCcInjection(carrierIn(manual.text), f.visible())).not.toBeNull();
+    expect(decodeCcInjection(carrierIn(auto.text), f.visible())).not.toBeNull();
+  } finally { f.close(); }
+});
+
 test("102 /trace splits a compaction carrier by its compaction's recorded delivery; a carrier nothing recorded stays unavailable", async () => {
   const f = await fixture();
   try {
@@ -379,6 +396,15 @@ test("102 /trace splits a compaction carrier by its compaction's recorded delive
     expect(split.memory!.knowledge).toBeGreaterThan(0);
     expect(split.memory!.raw).toBeGreaterThan(0);
     expect(Object.values(split.memory!).reduce((sum, value) => sum + value, 0)).toBe(split.estimatedMessagesTokens);
+    // Requirement 14: the same automatic compaction's block, with its trailing continue sentence, is
+    // still recognised, and its Knowledge/facts/Raw accounting is unchanged — the sentence, like the
+    // framing around it, is host framing outside those three, not a fourth memory bucket.
+    const autoBuilt = (await f.build("u2", true))!;
+    expect(autoBuilt.text.endsWith(CC_AUTO_CONTINUE_SUFFIX)).toBe(true);
+    const autoSplit = context(autoBuilt.text);
+    expect(autoSplit.presence).toBe("confirmed");
+    expect(autoSplit.memory).toMatchObject({ knowledge: split.memory!.knowledge, facts: split.memory!.facts, raw: split.memory!.raw });
+    expect(autoSplit.memory!.unclassified).toBeGreaterThan(split.memory!.unclassified); // the sentence's own tokens
     // 82's rule stands for a verified envelope whose Knowledge and cost no compaction recorded.
     const unrecorded = encodeCcInjection(f.visible(), { text: "<knowledge>\nnever delivered\n</knowledge>", knowledgeCommitIds: [], knowledgeTokens: 3 });
     expect(context(unrecorded)).toMatchObject({ presence: "unavailable", reason: "native function carrier provenance unavailable in Messages snapshot" });

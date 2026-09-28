@@ -29,7 +29,7 @@ import { Store } from "../../../src/core/store/index.ts";
 import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts, session as seedSession } from "../../support/seed.ts";
 import { ccCompaction, ccDeltaInjection, databaseIdentity, decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../../src/hosts/cc/slices.ts";
-import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../../../src/hosts/cc/transcript.ts";
+import { CC_AUTO_CONTINUE_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccStripAutoContinue } from "../../../src/hosts/cc/transcript.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import type { DirectoryOptions } from "../../../src/core/project/directory.ts";
 
@@ -222,6 +222,42 @@ test("2026-09-28, 102: '需要保留当前这一轮的情况', '会话钩子只�
     const next = await ccDeltaInjection(config, { session_id: nativeId, transcript_path: transcript }, { kind: "prompt", promptId: "p3" },
       (output, binding) => sliceCcInjection(binding, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance));
     expect(next.filter(Boolean)).toEqual([]);
+  } finally { importer.close(); store.close(); }
+});
+
+test("2026-09-28, 102: on the paid Haiku check, proposed 'after an automatic compaction only, end the message with Claude Code's own instruction to continue the last task; and investigate the missing results', the maintainer answered '1. 可以 2. 查一下' — an automatic compaction's block ends with it after the framing, a manual one never does, and both still decode", async () => {
+  const config = resolveCcHostConfig({ dbPath: join(directory, "cc102b.sqlite"), stateDir: join(directory, "cc102b-state"), baseline: "2025-01-01T00:00:00.000Z" });
+  const transcript = join(directory, "cc102b.jsonl"), nativeId = "ruled-continue";
+  const row = (value: Record<string, unknown>) => `${JSON.stringify({ timestamp: time, ...value })}\n`;
+  writeFileSync(transcript, row({ uuid: "u", parentUuid: null, type: "user", promptId: "p", promptSource: "sdk", message: { role: "user", content: "earlier" } }) +
+    row({ uuid: "a", parentUuid: "u", type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "answered" }] } }) +
+    row({ uuid: "t", parentUuid: "a", type: "user", promptId: "p2", promptSource: "sdk", message: { role: "user", content: "the pending task" } }));
+  const importer = new CcImporter(config, await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: nativeId, transcript_path: transcript }, time));
+  const store = new Store(config.dbPath);
+  try {
+    const core = (await importer.reconcile()).coreSessionId!;
+    const seed = seedSession(store, store.getSession(core)!.projectId, "seed");
+    const turn = store.appendTurn({ sessionId: seed.id, kind: "turn", userPrompt: "rule", startedAt: time });
+    const source = seedEntry(store, seed.id, turn.id, "rule", "user");
+    const fact = legacyFacts(store, { kind: "manual", sessionId: seed.id, createdAt: time }, [{ sources: [{ entry: source,
+      address: `T${turn.id}#E${source.entryOrdinal}` }], text: "rule", category: "decision", actor: "user", createdAt: time }]).facts[0]!;
+    seedKnowledge(store, { sessionId: seed.id, headTurnId: turn.id }, "global", "constraint", [fact.id], "Use pnpm.");
+    const visible = { db: databaseIdentity(config.dbPath), nativeSession: nativeId, coreSession: core };
+    // Structure only, never a whole-text snapshot: the sentence's presence/absence and the carrier's
+    // continued decodability, not the sentence's literal wording (which the transcript.ts constant
+    // cites and carries).
+    const auto = (await ccCompaction(config, { session_id: nativeId, trigger: "t", auto: true }))!;
+    const manual = (await ccCompaction(config, { session_id: nativeId, trigger: "t" }))!;
+    expect(auto.text.endsWith(CC_AUTO_CONTINUE_SUFFIX)).toBe(true);
+    expect(manual.text.endsWith(CC_AUTO_CONTINUE_SUFFIX)).toBe(false);
+    // Unchanged: both still end with Pi's own framing once the optional sentence is stripped, and the
+    // carrier inside still decodes — the classifier and `/trace` recognise the message either way.
+    expect(manual.text.endsWith(COMPACTION_SUMMARY_SUFFIX)).toBe(true);
+    expect(ccStripAutoContinue(auto.text).endsWith(COMPACTION_SUMMARY_SUFFIX)).toBe(true);
+    for (const built of [auto, manual]) {
+      const carrier = ccStripAutoContinue(built.text).slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
+      expect(decodeCcInjection(carrier, visible)).not.toBeNull();
+    }
   } finally { importer.close(); store.close(); }
 });
 

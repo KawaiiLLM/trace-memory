@@ -6,7 +6,7 @@ import type { TransportItem } from "../../core/render/material.ts";
 import type { KnowledgePath, Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
-import { CC_INJECTION_BEGIN, CC_INJECTION_HEADER, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
+import { CC_AUTO_CONTINUE_SUFFIX, CC_INJECTION_BEGIN, CC_INJECTION_HEADER, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
 import { CcProjection } from "./importer.ts";
 import { executorLiveness } from "./control.ts";
 
@@ -370,8 +370,11 @@ const TRIGGER_WAIT_MS = 10_000;
  * starts), so the build waits for the row and for the live executor to import it, reading only the
  * tail after the stored leaf (97); without a live executor the importer runs here. The block's
  * Knowledge is recorded as the delivery of the compaction the import will append after that leaf,
- * before the text is returned. Null: an unbound or disabled session, which keeps native compaction. */
-export async function ccCompaction(config: ResolvedCcHostConfig, input: Pick<CcHookInput, "session_id"> & { trigger: string }):
+ * before the text is returned. Null: an unbound or disabled session, which keeps native compaction.
+ * `auto` (requirement 14, ruled): the caller's own `manual`/`auto` event trigger, distinct from the
+ * handle above; only `auto` gets the trailing continue sentence. */
+export async function ccCompaction(config: ResolvedCcHostConfig,
+  input: Pick<CcHookInput, "session_id"> & { trigger: string; auto?: boolean }):
   Promise<{ text: string; warning?: string } | null> {
   const initial = readBinding(config, input.session_id);
   if (!initial) return null;
@@ -415,9 +418,12 @@ export async function ccCompaction(config: ResolvedCcHostConfig, input: Pick<CcH
     if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation: ${compacted.reason}`);
     // 102 (ruled): the one place the carrier is framed as Pi frames a compaction summary; the delivery
     // below is recorded from the same supplied material, and the framing is outside its Knowledge cost.
+    // Requirement 14 (ruled): an automatic compaction's block also ends with Claude Code's own native
+    // continue sentence, after the framing; a manual `/compact` gets none.
     const text = COMPACTION_SUMMARY_PREFIX + encodeCcInjection({ db: databaseIdentity(config.dbPath), nativeSession: lineage, coreSession: core }, {
       text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
-      knowledgeStates: compacted.supplied.knowledgeStates, factIds: compacted.supplied.factIds, entryIds: compacted.supplied.entries.map(entry => entry.id) }) + COMPACTION_SUMMARY_SUFFIX;
+      knowledgeStates: compacted.supplied.knowledgeStates, factIds: compacted.supplied.factIds, entryIds: compacted.supplied.entries.map(entry => entry.id) }) +
+      COMPACTION_SUMMARY_SUFFIX + (input.auto ? CC_AUTO_CONTINUE_SUFFIX : "");
     memory.store.transaction(() => {
       const current = readBinding(config, input.session_id);
       if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch ||

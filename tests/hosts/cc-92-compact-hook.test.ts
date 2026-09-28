@@ -115,8 +115,9 @@ test.each(["manual", "auto"])("102: a %s compaction installs Trace Memory's bloc
   expect(await compact(f.host, { ...event, trigger }, f.next)).toEqual({ messages: [{ role: "user", text: block, toolUses: [] }] });
   expect(f.next).not.toHaveBeenCalled();
   expect(f.run).not.toHaveBeenCalled();
-  // The build waits for the newest message's row: its handle.
-  expect(JSON.parse(f.build.mock.calls[0]![1].stdin)).toEqual({ session_id: "session-A", trigger: "row-uuid" });
+  // The build waits for the newest message's row: its handle. Requirement 14 (ruled): the event's own
+  // trigger, manual or auto, rides along separately as `auto`, distinct from the handle above.
+  expect(JSON.parse(f.build.mock.calls[0]![1].stdin)).toEqual({ session_id: "session-A", trigger: "row-uuid", auto: trigger === "auto" });
   expect(f.log).not.toHaveBeenCalled();
 });
 

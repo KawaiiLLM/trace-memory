@@ -16,7 +16,7 @@ import { readBinding } from "../../src/hosts/cc/binding.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { ccNativeTranscriptPath } from "../../src/hosts/cc/worker.ts";
 import { CC_INJECTION_HEADER, databaseIdentity, decodeCcInjection } from "../../src/hosts/cc/injection.ts";
-import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccCarrierStart } from "../../src/hosts/cc/transcript.ts";
+import { CC_AUTO_CONTINUE_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccCarrierStart, ccStripAutoContinue } from "../../src/hosts/cc/transcript.ts";
 import { entry, knowledge, legacyFacts, session } from "../support/seed.ts";
 import { createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
 
@@ -57,10 +57,12 @@ const summarises = (body: Body) => JSON.stringify(body.messages).includes("CRITI
  * Claude Code ends each merged text with a newline. */
 const blockOf = (body: Body) => texts(body.messages?.[0]?.content)
   .find(text => text.startsWith(COMPACTION_SUMMARY_PREFIX) && isCarrier(text))?.replace(/\n$/, "");
-/** The carrier inside that framing, which closes with Pi's suffix. */
+/** The carrier inside that framing, which closes with Pi's suffix, once an automatic compaction's
+ * own trailing continue sentence (requirement 14) is stripped. */
 const carrierOf = (block: string) => {
-  expect(block.endsWith(COMPACTION_SUMMARY_SUFFIX)).toBe(true);
-  return block.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
+  const framed = ccStripAutoContinue(block);
+  expect(framed.endsWith(COMPACTION_SUMMARY_SUFFIX)).toBe(true);
+  return framed.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
 };
 const carriers = (body: Body) => JSON.stringify(body.messages).split(CC_INJECTION_HEADER).length - 1;
 /** A Trace Memory carrier, bare (a supplement) or framed (a compaction). */
@@ -218,6 +220,7 @@ test("manual /compact installs the block in place of Claude Code's summary; --re
   const { at, block, raw } = installed(result);
   expect(lastUserText(result.requests[at]!)).toContain("AFTER prompt");
   expect(raw.at(-1)).toContain("ACK T3 second part"); // the newest Raw is the last reply before /compact
+  expect(block.endsWith(CC_AUTO_CONTINUE_SUFFIX)).toBe(false); // requirement 14: manual gets no continue sentence
   expect(result.resumed.length).toBeGreaterThan(0);
   expect(blockOf(result.resumed[0]!)).toBe(block);
   expect(carriers(result.resumed[0]!)).toBe(1);
@@ -226,9 +229,10 @@ test("manual /compact installs the block in place of Claude Code's summary; --re
 test("a threshold compaction at a prompt ends its block with that prompt", async () => {
   const result = await run({ prompts: [T[0]!, "T3 BIG", "AUTO-TRIGGER prompt", "AFTER prompt"], autocompact: "100k",
     reply: body => ({ ...ack(body), usage: promptOf(body).includes("BIG") ? 110_000 : 1000 }) });
-  const { at, raw } = installed(result);
+  const { at, block, raw } = installed(result);
   expect(lastUserText(result.requests[at]!)).not.toContain("AFTER prompt"); // the interrupted turn continues on the block
   expect(raw.at(-1)).toMatch(/@user\] user: AUTO-TRIGGER prompt/);
+  expect(block.endsWith(CC_AUTO_CONTINUE_SUFFIX)).toBe(true); // requirement 14: an automatic compaction gets the continue sentence
 }, 180_000);
 
 test("a threshold compaction in the middle of a turn ends its block with the tool call and its result", async () => {
@@ -239,19 +243,21 @@ test("a threshold compaction in the middle of a turn ends its block with the too
       called = true;
       return { blocks: [{ type: "tool_use", id: "toolu_glob_1", name: "Glob", input: { pattern: "*.nothing" } }], usage: 110_000 };
     } });
-  const { raw } = installed(result);
+  const { block, raw } = installed(result);
   expect(raw.slice(-2).map(line => line.replace(/^\[T\d+#E\d+@(\w+)\].*$/, "$1"))).toEqual(["assistant", "observation"]);
   expect(raw.at(-2)).toContain("Glob(");
   expect(raw.at(-3)).toMatch(/@user\] user: MID-TURN prompt/);
+  expect(block.endsWith(CC_AUTO_CONTINUE_SUFFIX)).toBe(true); // requirement 14: an automatic compaction gets the continue sentence
 }, 180_000);
 
 test("a prompt that is too long compacts with the block and retries on it", async () => {
   let refused = false;
   const result = await run({ prompts: [...T, "PTL-TRIGGER prompt", "AFTER prompt"],
     reply: body => lastUserText(body).includes("PTL-TRIGGER") && !refused ? (refused = true, { status: 400 }) : ack(body) });
-  const { raw } = installed(result);
+  const { block, raw } = installed(result);
   expect(refused).toBe(true);
   expect(raw.at(-1)).toMatch(/@user\] user: PTL-TRIGGER prompt/);
+  expect(block.endsWith(CC_AUTO_CONTINUE_SUFFIX)).toBe(true); // requirement 14: prompt-too-long is Claude Code's own auto path too
 }, 180_000);
 
 test("a compaction that omits pending Raw warns in the foreground, never the model", async () => {

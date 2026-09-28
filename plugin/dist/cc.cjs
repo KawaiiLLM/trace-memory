@@ -9884,6 +9884,9 @@ var COMPACTION_SUMMARY_SUFFIX = `
 var CARRIER_START = `${CC_INJECTION_BEGIN}
 ${CC_INJECTION_HEADER}`;
 var ccCarrierStart = (text) => text.startsWith(CARRIER_START) ? 0 : text.startsWith(COMPACTION_SUMMARY_PREFIX + CARRIER_START) ? COMPACTION_SUMMARY_PREFIX.length : -1;
+var CC_AUTO_CONTINUE_SUFFIX = `
+Continue the conversation from where it left off without asking the user any further questions. Resume directly \u2014 do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.`;
+var ccStripAutoContinue = (text) => text.endsWith(CC_AUTO_CONTINUE_SUFFIX) ? text.slice(0, -CC_AUTO_CONTINUE_SUFFIX.length) : text;
 var CcNativeLineageError = class extends Error {
 };
 function nativeParentId(record3, writtenBefore) {
@@ -42586,7 +42589,7 @@ async function ccCompaction(config3, input) {
       knowledgeStates: compacted.supplied.knowledgeStates,
       factIds: compacted.supplied.factIds,
       entryIds: compacted.supplied.entries.map((entry) => entry.id)
-    }) + COMPACTION_SUMMARY_SUFFIX;
+    }) + COMPACTION_SUMMARY_SUFFIX + (input.auto ? CC_AUTO_CONTINUE_SUFFIX : "");
     memory.store.transaction(() => {
       const current = readBinding(config3, input.session_id);
       if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch || current.selectedLeafUuid !== leaf || current.transcriptOffset !== offset || !importedToEnd(current))
@@ -43058,7 +43061,7 @@ function ccContextEvidence(binding, dbPath, snapshot2, recorded) {
       if (amount === null) return unavailable("unsupported Messages content or image dimensions/model");
       estimatedMessagesTokens += amount;
       if (message.role === "user" && block2.type === "text" && typeof block2.text === "string" && ccCarrierStart(block2.text) >= 0) {
-        const start = ccCarrierStart(block2.text), text = block2.text.endsWith("\n") ? block2.text.slice(0, -1) : block2.text;
+        const start = ccCarrierStart(block2.text), text = ccStripAutoContinue(block2.text.endsWith("\n") ? block2.text.slice(0, -1) : block2.text);
         const original = start === 0 ? text : text.endsWith(COMPACTION_SUMMARY_SUFFIX) ? text.slice(start, -COMPACTION_SUMMARY_SUFFIX.length) : "";
         const header = decodeCcInjection(original, identity);
         if (!header || !recorded?.(header)) return unavailable("native function carrier provenance unavailable in Messages snapshot");
@@ -44858,7 +44861,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
     const input = JSON.parse(await readStdin());
     validateNativeSessionId(input.session_id);
     if (typeof input.trigger !== "string" || !input.trigger) throw new Error("CC compaction requires the handle of its newest message");
-    const built = await ccCompaction(config3, { session_id: input.session_id, trigger: input.trigger });
+    const built = await ccCompaction(config3, { session_id: input.session_id, trigger: input.trigger, auto: input.auto === true });
     process.stdout.write(`${JSON.stringify(built ?? { passThrough: true })}
 `);
     return;

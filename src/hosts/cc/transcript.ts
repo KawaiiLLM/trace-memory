@@ -142,6 +142,19 @@ const CARRIER_START = `${CC_INJECTION_BEGIN}\n${CC_INJECTION_HEADER}`;
 /** Where a user text's carrier starts: at once, or after the compaction framing; -1 when it opens with neither. */
 export const ccCarrierStart = (text: string): number => text.startsWith(CARRIER_START) ? 0
   : text.startsWith(COMPACTION_SUMMARY_PREFIX + CARRIER_START) ? COMPACTION_SUMMARY_PREFIX.length : -1;
+/** 102 (ruled): after an automatic compaction only, the message the `session.compact` hook returns
+ * ends, after Pi's framed block, with Claude Code's own native instruction to continue the pending
+ * task without asking the user. Copied verbatim from the installed Claude Code 2.1.280
+ * (@anthropic-ai/claude-code 2.1.280), bin/claude.exe: the sentence its own reactive (automatic)
+ * compaction path appends to its summary message when `suppressFollowUpQuestions` is set, which only
+ * that path sets. A manual `/compact` never sets it and gets no such sentence. */
+export const CC_AUTO_CONTINUE_SUFFIX = "\nContinue the conversation from where it left off without asking the user any further questions. " +
+  "Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. " +
+  "Pick up the last task as if the break never happened.";
+/** The carrier recognition and `/trace` estimate (menu-context.ts) read up to Pi's own suffix; this
+ * strips an optional trailing auto-continue sentence first so that check is unchanged either way. */
+export const ccStripAutoContinue = (text: string): string =>
+  text.endsWith(CC_AUTO_CONTINUE_SUFFIX) ? text.slice(0, -CC_AUTO_CONTINUE_SUFFIX.length) : text;
 
 export class CcNativeLineageError extends Error {}
 
