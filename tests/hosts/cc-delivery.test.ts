@@ -11,6 +11,7 @@ import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { ccCompaction, ccDeltaInjection, ccSessionStartInjection, databaseIdentity, decodeCcInjection, encodeCcInjection } from "../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../src/hosts/cc/slices.ts";
 import { classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+import { readCcMenu } from "../../src/hosts/cc/menu.ts";
 
 const dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -355,5 +356,24 @@ test("102 an unbound or disabled session passes through; a path that moves durin
     expect(rows().count).toBe(before);
     f.store.setEnrollment(f.sessionId, false);
     expect(await f.build("u2")).toBeNull();
+  } finally { f.close(); }
+});
+
+test("102 /trace splits a compaction carrier by its compaction's recorded delivery; a carrier nothing recorded stays unavailable", async () => {
+  const f = await fixture();
+  try {
+    await f.append(user("u2", "a1", "p2"));
+    const built = (await f.build("u2"))!;
+    // Claude Code hands the returned block to the model as a bare user message ending in a newline.
+    const context = (text: string) => readCcMenu(f.config, f.nativeSession, undefined, 10, null,
+      { session: f.nativeSession, messages: [{ role: "user", content: [{ type: "text", text: `${text}\n` }] }] }).context;
+    const split = context(built.text);
+    expect(split.presence).toBe("confirmed");
+    expect(split.memory!.knowledge).toBeGreaterThan(0);
+    expect(split.memory!.raw).toBeGreaterThan(0);
+    expect(Object.values(split.memory!).reduce((sum, value) => sum + value, 0)).toBe(split.estimatedMessagesTokens);
+    // 82's rule stands for a verified envelope whose Knowledge and cost no compaction recorded.
+    const unrecorded = encodeCcInjection(f.visible(), { text: "<knowledge>\nnever delivered\n</knowledge>", knowledgeCommitIds: [], knowledgeTokens: 3 });
+    expect(context(unrecorded)).toMatchObject({ presence: "unavailable", reason: "native function carrier provenance unavailable in Messages snapshot" });
   } finally { f.close(); }
 });

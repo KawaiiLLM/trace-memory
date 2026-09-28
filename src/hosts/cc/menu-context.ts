@@ -74,10 +74,13 @@ function estimateBlock(block: Record<string, unknown>, model?: string): number |
   return null;
 }
 
+/** A compaction whose delivery was recorded with exactly this carrier's Knowledge and cost (97). */
+export type CcRecordedCompaction = (header: NonNullable<ReturnType<typeof decodeCcInjection>>) => boolean;
+
 /** No transcript or executor reads: authenticate only envelopes in the current API snapshot.
  * Native preview files are optional integrity evidence, never substitute context content. */
 export function ccContextEvidence(binding: Pick<CcSessionBinding, "nativeSessionId" | "coreSessionId">,
-  dbPath: string, snapshot?: CcContextSnapshot): CcContextEvidence {
+  dbPath: string, snapshot?: CcContextSnapshot, recorded?: CcRecordedCompaction): CcContextEvidence {
   if (!snapshot) return unavailable("current Messages snapshot unavailable");
   if (snapshot.session !== binding.nativeSessionId) return unavailable("native session changed");
   if (!Array.isArray(snapshot.messages) || snapshot.messages.length >= 4096) return unavailable("Messages snapshot incomplete");
@@ -94,9 +97,17 @@ export function ccContextEvidence(binding: Pick<CcSessionBinding, "nativeSession
       estimatedMessagesTokens += amount;
       // A function-added user message has no provenance in the API snapshot. A user can paste
       // the same valid envelope; role/content alone cannot authorize Knowledge classification.
+      // 102: a compaction delivery recorded with exactly this carrier's Knowledge and cost is taken as
+      // its source, an estimate; a carrier without such a record stays unavailable.
       if (message.role === "user" && block.type === "text" && typeof block.text === "string" &&
-          block.text.startsWith(`${CC_INJECTION_BEGIN}\n${CC_INJECTION_HEADER}`))
-        return unavailable("native function carrier provenance unavailable in Messages snapshot");
+          block.text.startsWith(`${CC_INJECTION_BEGIN}\n${CC_INJECTION_HEADER}`)) {
+        const original = block.text.endsWith("\n") ? block.text.slice(0, -1) : block.text;
+        const header = decodeCcInjection(original, identity);
+        if (!header || !recorded?.(header)) return unavailable("native function carrier provenance unavailable in Messages snapshot");
+        const parts = measureRetainedMemoryText(block.text, original, 0, original.length);
+        for (const key of memoryKeys) memory[key] += parts[key];
+        continue;
+      }
       if (message.role !== "user" || block.type !== "text" || typeof block.text !== "string" ||
           !block.text.startsWith(HOOK_CONTEXT) || !block.text.includes(CC_INJECTION_HEADER)) continue;
       let current: ReturnType<typeof carrier>;

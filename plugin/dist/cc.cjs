@@ -43034,7 +43034,7 @@ function estimateBlock(block2, model) {
   }
   return null;
 }
-function ccContextEvidence(binding, dbPath, snapshot2) {
+function ccContextEvidence(binding, dbPath, snapshot2, recorded) {
   if (!snapshot2) return unavailable("current Messages snapshot unavailable");
   if (snapshot2.session !== binding.nativeSessionId) return unavailable("native session changed");
   if (!Array.isArray(snapshot2.messages) || snapshot2.messages.length >= 4096) return unavailable("Messages snapshot incomplete");
@@ -43050,8 +43050,14 @@ function ccContextEvidence(binding, dbPath, snapshot2) {
       if (amount === null) return unavailable("unsupported Messages content or image dimensions/model");
       estimatedMessagesTokens += amount;
       if (message.role === "user" && block2.type === "text" && typeof block2.text === "string" && block2.text.startsWith(`${CC_INJECTION_BEGIN}
-${CC_INJECTION_HEADER}`))
-        return unavailable("native function carrier provenance unavailable in Messages snapshot");
+${CC_INJECTION_HEADER}`)) {
+        const original = block2.text.endsWith("\n") ? block2.text.slice(0, -1) : block2.text;
+        const header = decodeCcInjection(original, identity);
+        if (!header || !recorded?.(header)) return unavailable("native function carrier provenance unavailable in Messages snapshot");
+        const parts2 = measureRetainedMemoryText(block2.text, original, 0, original.length);
+        for (const key of memoryKeys) memory[key] += parts2[key];
+        continue;
+      }
       if (message.role !== "user" || block2.type !== "text" || typeof block2.text !== "string" || !block2.text.startsWith(HOOK_CONTEXT) || !block2.text.includes(CC_INJECTION_HEADER)) continue;
       let current;
       try {
@@ -43193,7 +43199,14 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
       notices,
       actions: { enabled: enabled2, retryForkAvailable: false }
     };
-    const context = ccContextEvidence(binding, config3.dbPath, current);
+    const recorded = store.db.prepare(`SELECT 1 FROM knowledge_deliveries WHERE owner = ? AND follows IS NOT NULL
+      AND commits = ? AND states = ? AND knowledge_tokens = ? LIMIT 1`);
+    const context = ccContextEvidence(binding, config3.dbPath, current, (header) => recorded.get(
+      coreHostOf(binding),
+      JSON.stringify(header.commits),
+      JSON.stringify(header.states.map(knowledgeStateKey)),
+      header.knowledgeTokens ?? 0
+    ) !== void 0);
     return { menu: data, settings, context, runs };
   } finally {
     memory.store.close();
