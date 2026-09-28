@@ -461,9 +461,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       ...(options.pageBudget === null ? { cap: Number.MAX_SAFE_INTEGER } : {}) };
     const collectionReceipts: string[] = [];
     const profile = readProfile(options, config.render);
-    const items = store.transaction(() => {
+    const items = store.readSnapshot(() => {
 
-      // Freeze only values under the write lock. Renderers close over these values, not queries.
+      // Freeze all values in one read snapshot. Renderers close over these values, not queries.
       const fields = new Set(options.fields!);
       const requestedFacts = targets.filter(target => /^F[1-9]\d*$/.test(target)).map(target => Number(target.slice(1)));
       const factReadSnapshot = { ids: store.existingFactIds(requestedFacts), relations: store.listFactRelationsOf(requestedFacts) };

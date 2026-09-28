@@ -56,6 +56,48 @@ function history(turns: number) {
 const uncached = (path: KnowledgePath): Fact[] =>
   memory.store.listSessionFacts(path.sessionId).filter(f => memory.store.factOnPath(f, path)).sort((a, b) => a.id - b.id);
 
+test("read snapshots keep one header and its rows across an external rewrite", () => {
+  const { session, path, entries } = history(2);
+  const store = memory.store, other = new Store(dbPath);
+  try {
+    const before = store.pathSnapshot(path);
+    store.readSnapshot(() => {
+      expect(store.pathSnapshot(path).entries!.ids.has(entries[0]!.id)).toBe(true);
+      other.selectSourcePath(session.id, "main", [entries[1]!.id]);
+      expect(store.pathSnapshot(path).entries!.ids.has(entries[0]!.id)).toBe(true);
+    });
+    expect(before.entries!.ids.has(entries[0]!.id)).toBe(true);
+    expect(store.readSnapshot(() => store.pathSnapshot(path).entries!.ids.has(entries[0]!.id))).toBe(false);
+    expect(store.readSnapshot(() => store.pathSnapshot(path).entries!.ids.has(entries[1]!.id))).toBe(true);
+  } finally { other.close(); }
+});
+
+test("nested read in a managed write cannot publish rolled-back path rows", () => {
+  const { session, path, entries } = history(2);
+  const store = memory.store, frozen = store.pathSnapshot(path);
+  expect(() => store.transaction(() => {
+    store.selectSourcePath(session.id, "main", [entries[1]!.id]);
+    expect(store.readSnapshot(() => store.pathSnapshot(path).entries!.ids.has(entries[0]!.id))).toBe(false);
+    throw new Error("rollback");
+  })).toThrow("rollback");
+  expect(store.readSnapshot(() => store.pathSnapshot(path).entries!.ids.has(entries[0]!.id))).toBe(true);
+  expect(frozen.entries!.ids.has(entries[0]!.id)).toBe(true);
+});
+
+test("a failed read snapshot releases its transaction and permits later writes", () => {
+  const { session, path, entries } = history(2);
+  const store = memory.store, frozen = store.pathSnapshot(path);
+  expect(() => store.readSnapshot(() => {
+    store.pathSnapshot(path);
+    expect(() => store.transaction(() => store.selectSourcePath(session.id, "main", [entries[1]!.id])))
+      .toThrow("write transaction inside a read transaction");
+    throw new Error("failed read");
+  })).toThrow("failed read");
+  store.selectSourcePath(session.id, "main", [entries[1]!.id]);
+  expect(store.pathSnapshot(path).entries!.ids.has(entries[0]!.id)).toBe(false);
+  expect(frozen.entries!.ids.has(entries[0]!.id)).toBe(true);
+});
+
 test("22a: applicability is answered from one membership per operation, whatever the fact count", () => {
   const small = history(8), large = history(16);
   const builds = countPathBuilds();
