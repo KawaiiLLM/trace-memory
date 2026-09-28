@@ -92,10 +92,23 @@ function reconcile(store: Store, file: string): Outcome {
   return { target: { sessionId, branch: binding.branch, toMark, alreadyMarked: noted.size, unimported } };
 }
 
-class Failed extends Error {}
+// Carries every session's failure so the caller can report them once the transaction has actually
+// rolled back. `--experimental-strip-types` (this script's own shebang usage) does not support
+// TypeScript parameter properties.
+class Failed extends Error {
+  failures: string[];
+  constructor(failures: string[]) { super(`${failures.length} sessions could not be processed`); this.failures = failures; }
+}
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
-function run(store: Store): void {
+// Pure except for `store.commitNotingRun` under --apply, which is itself inside the caller's
+// transaction. `skip` and "not imported yet" lines describe facts `reconcile` observed, true whether
+// or not this run (or its transaction) goes on to succeed, so they print immediately. Marking a
+// session not needing Noting is this run's actual write: that line is only true once the whole run
+// (and, under --apply, its transaction) has actually succeeded, so it is returned rather than printed,
+// and the caller prints it only after `store.transaction` returns -- never before, and never at all on
+// a rollback.
+function run(store: Store): string[] {
   const outcomes = readdirSync(values.bindings!).filter(file => file.endsWith(".json")).sort().map(file => {
     const name = file.slice(0, -".json".length);
     try { return { name, outcome: reconcile(store, file) }; }
@@ -112,32 +125,36 @@ function run(store: Store): void {
   for (const { name, target } of targets) if (target.unimported)
     console.log(`${name}: the transcript moved past the binding's leaf; ${target.unimported} rows the fix places are not imported yet ` +
       "and stay ordinary pending Raw");
+  const resultLines: string[] = [];
   for (const { name, target } of withWork) {
     if (!values.apply) {
-      console.log(`${name}: ${target.toMark.length} entries would be marked not needing Noting` +
+      resultLines.push(`${name}: ${target.toMark.length} entries would be marked not needing Noting` +
         (target.alreadyMarked ? ` (${target.alreadyMarked} already marked by an earlier --apply)` : ""));
       continue;
     }
     const result = store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, branch: target.branch,
       createdAt: new Date().toISOString(), model: "ticket-102-mark-parallel-backlog-noted",
       response: JSON.stringify({ ticket: 102, reason: REASON }) }, facts: [], entryIds: target.toMark });
-    if (result.ok) console.log(`${name}: marked ${target.toMark.length} entries not needing Noting (run ${result.runId})`);
+    if (result.ok) resultLines.push(`${name}: marked ${target.toMark.length} entries not needing Noting (run ${result.runId})`);
     else failures.push(`${name}: ${result.problems.join("; ")}`);
   }
-  for (const failure of failures) console.error(`FAIL ${failure}`);
-  if (failures.length) throw new Failed(`${failures.length} sessions could not be processed; nothing was written.`);
-  console.log(`\n${targets.length} sessions compared, ${skipped} skipped.`);
-  console.log(values.apply ? `Marked ${total} entries across ${withWork.length} sessions not needing Noting.`
+  if (failures.length) throw new Failed(failures);
+  resultLines.push(`\n${targets.length} sessions compared, ${skipped} skipped.`);
+  resultLines.push(values.apply ? `Marked ${total} entries across ${withWork.length} sessions not needing Noting.`
     : `Dry run: ${total} entries across ${withWork.length} sessions would be marked not needing Noting. Re-run with --apply to write.`);
+  return resultLines;
 }
 
 const store = new Store(values.db);
 if (!values.apply) store.db.exec("PRAGMA query_only = 1"); // dry run: belt against any write below
 try {
-  // --apply computes and writes in one transaction: a failure anywhere rolls every mark back.
-  if (values.apply) store.transaction(() => run(store)); else run(store);
+  // --apply computes and writes in one transaction: a failure anywhere rolls every mark back, so the
+  // result lines print only once `store.transaction` has returned, meaning the transaction committed.
+  const resultLines = values.apply ? store.transaction(() => run(store)) : run(store);
+  for (const line of resultLines) console.log(line);
 } catch (error) {
   if (!(error instanceof Failed)) throw error;
-  console.error(error.message);
+  for (const failure of error.failures) console.error(`FAIL ${failure}`);
+  console.error(`${error.failures.length} sessions could not be processed; nothing was written.`);
   process.exitCode = 1;
 } finally { store.close(); }
