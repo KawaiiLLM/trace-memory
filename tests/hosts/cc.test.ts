@@ -532,6 +532,37 @@ test("exact duplicate UUID evidence is idempotent while a repeated same-Turn cal
   } finally { importer.close(); }
 });
 
+// 102 review: a later scan's batch can repeat an already-imported parallel result verbatim (the same
+// UUID) alongside a genuinely new sibling result. Rereading that record must never change or break the
+// path: pathExtension must never propose a row already on it again, at any cost independent of history.
+test("a replayed parallel-batch result stays idempotent when a new sibling result arrives in the same scan", async () => {
+  const f = fixture();
+  writeFileSync(f.transcriptPath, f.records.slice(0, 2).map(line).join("")); // u1, a1
+  const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, at(1));
+  const importer = new CcImporter(f.config, binding);
+  try {
+    await importer.reconcile();
+    const callA = { uuid: "pb-call-a", parentUuid: "a1", type: "assistant", timestamp: at(3),
+      message: { id: "msg-parallel", role: "assistant", content: [{ type: "tool_use", id: "toolu-a", name: "Read", input: { path: "/tmp/a" } }] } };
+    const callB = { uuid: "pb-call-b", parentUuid: "pb-call-a", type: "assistant", timestamp: at(4),
+      message: { id: "msg-parallel", role: "assistant", content: [{ type: "tool_use", id: "toolu-b", name: "Read", input: { path: "/tmp/b" } }] } };
+    const resultA = { uuid: "pb-result-a", parentUuid: "pb-call-a", type: "user", timestamp: at(5),
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu-a", content: "A" }] } };
+    const resultB = { uuid: "pb-result-b", parentUuid: "pb-call-b", type: "user", timestamp: at(6),
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu-b", content: "B" }] } };
+    appendFileSync(f.transcriptPath, [callA, callB, resultA].map(line).join(""));
+    const first = await importer.reconcile();
+    expect(first.state).toBe("ready");
+    // The next scan's batch repeats resultA verbatim (same UUID) and also appends the new resultB.
+    appendFileSync(f.transcriptPath, [resultA, resultB].map(line).join(""));
+    const second = await importer.reconcile();
+    expect(second.state).toBe("ready");
+    const path = second.selectedEntryIds.map(id => importer.memory.store.getSourceEntry(id)!.nativeId);
+    expect(path).toEqual(["u1", "a1", "pb-call-a", "pb-call-b", "pb-result-a", "pb-result-b"]);
+  } finally { importer.close(); }
+});
+
 test("same-cwd native sessions remain isolated by trusted session and transcript bindings", async () => {
   const f = fixture(), otherPath = join(f.dir, "other.jsonl"), otherId = "native-session-2";
   writeFileSync(f.transcriptPath, f.records.map(line).join(""));

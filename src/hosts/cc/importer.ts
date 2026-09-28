@@ -421,6 +421,10 @@ export class CcProjection {
     let scan: CcTranscriptScan | CcTranscriptSnapshot;
     let branch = this.binding.branch, selectedEntryIds: number[] | null = null, selectedDelta: number[] = [],
       headTurnId: number | null = null, projectionReady = true;
+    // The rows this reconcile is about to publish as (part of) the selected path, so a successful
+    // commit can mark them (98): never proposed again by a later scan's `pathExtension`, however their
+    // UUID resurfaces.
+    let confirmedNodes: CcNativeNode[] = [];
     try {
       scan = await this.transcript.scanCooperative(this.binding.transcriptPath, visit,
         { signal, onIngestGap: instrumentation.onIngestGap, onPhase: instrumentation.onPhase,
@@ -440,10 +444,9 @@ export class CcProjection {
             continuous = appended !== null;
             if (appended) extension = appended;
           }
-          let selectedNodes: typeof extension;
           if (continuous) {
-            selectedNodes = extension;
-            for (const node of selectedNodes) if (ownsEntry(node)) {
+            confirmedNodes = extension;
+            for (const node of confirmedNodes) if (ownsEntry(node)) {
               if (node.entryId === undefined) {
                 if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                 projectionReady = false; break;
@@ -453,11 +456,11 @@ export class CcProjection {
           } else {
             const selected = scan.selectedPath();
             if (selected.problem) {
-              addProblem(selected.problem); projectionReady = false; selectedNodes = [];
+              addProblem(selected.problem); projectionReady = false;
             } else {
-              selectedNodes = selected.nodes;
+              confirmedNodes = selected.nodes;
               selectedEntryIds = [];
-              for (const node of selectedNodes) if (ownsEntry(node)) {
+              for (const node of confirmedNodes) if (ownsEntry(node)) {
                 if (node.entryId === undefined) {
                   if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                   projectionReady = false; break;
@@ -469,7 +472,7 @@ export class CcProjection {
             }
           }
           if (projectionReady) {
-            headTurnId = [...selectedNodes].reverse().find(node => node.turnId !== undefined)?.turnId ?? this.lastResult?.headTurnId
+            headTurnId = [...confirmedNodes].reverse().find(node => node.turnId !== undefined)?.turnId ?? this.lastResult?.headTurnId
               ?? this.binding.clearedFrom?.compactionTurnId ?? null;
             const selectedState = continuous ? this.expectedPath : null;
             if (continuous && headTurnId !== null && selectedState) {
@@ -483,6 +486,7 @@ export class CcProjection {
                 const rebuilt = scan.selectedPath();
                 if (rebuilt.problem) { addProblem(rebuilt.problem); projectionReady = false; }
                 else {
+                  confirmedNodes = rebuilt.nodes;
                   selectedEntryIds = [];
                   for (const node of rebuilt.nodes) if (ownsEntry(node)) {
                     if (node.entryId === undefined) { addProblem(`native source ${node.uuid} is not persisted`); projectionReady = false; break; }
@@ -540,7 +544,7 @@ export class CcProjection {
       this.expectedPath = null;
       throw error;
     }
-    this.transcript.commit(completed, problems[0]);
+    this.transcript.commit(completed, problems[0], projectionReady ? confirmedNodes : []);
     const state = problems.length ? "not-ready" : "ready";
     const selectedMembership = selectedEntryIds === null ? null : new Set(selectedEntryIds);
     const newlyImported = selectedEntryIds === null && appendedEntryIds.length ? new Set(appendedEntryIds) : null;

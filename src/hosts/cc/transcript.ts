@@ -83,6 +83,10 @@ export interface CcNativeNode {
   /** 108: an assistant row's native API message id, shared (unlike `messageKey`) by every row Claude
    * Code splits one message into. It groups a parallel batch for path selection, never source identity. */
   apiMessageId?: string;
+  /** Set once this row is confirmed on the persisted selected path (`CcTranscriptCursor.commit`'s
+   * `confirmed` list). A row a later scan rereads verbatim (same UUID) is never proposed again by
+   * `pathExtension`: membership is this one flag, not a walk of the path or the history. */
+  selected?: true;
 }
 
 interface FileStamp { size: number; modifiedMs: number; changedMs: number; device: number; inode: number }
@@ -380,7 +384,7 @@ export class CcTranscriptScan {
     const anchor = this.batchOf(prior), read = new Set(this.readIds), walked = new Set<string>(), reverse: CcNativeNode[] = [];
     let current = this.node(leafUuid);
     while (current && current.uuid !== priorLeafUuid && this.batchOf(current) !== anchor) {
-      if (walked.has(current.uuid) || current.lineageProblem || current.importProblem || current.sourceKind && !read.has(current.uuid)) return null;
+      if (walked.has(current.uuid) || current.selected || current.lineageProblem || current.importProblem || current.sourceKind && !read.has(current.uuid)) return null;
       walked.add(current.uuid); reverse.push(current);
       current = current.parentUuid === null ? undefined : this.node(current.parentUuid);
     }
@@ -388,7 +392,7 @@ export class CcTranscriptScan {
     const batches = new Set([anchor, ...reverse.map(node => this.batchOf(node))]), members = new Map<string, CcNativeNode[]>();
     for (const uuid of this.readIds) if (!walked.has(uuid)) {
       const node = this.node(uuid)!, batch = this.batchOf(node);
-      if (batch === uuid) continue;
+      if (batch === uuid || node.selected) continue;
       if (batches.has(batch)) join(members, batch, node);
       else if (!read.has(batch)) return null;
     }
@@ -644,10 +648,14 @@ export class CcTranscriptCursor {
     return finish();
   }
 
-  commit(scan: CcTranscriptScan, problem?: string): void {
+  /** `confirmed`: the rows the caller just published as (part of) the selected path, marked so a later
+   * scan's `pathExtension` never proposes them again, however their UUID resurfaces (98). Empty when the
+   * caller published nothing (a rejected or not-ready scan). */
+  commit(scan: CcTranscriptScan, problem?: string, confirmed: readonly CcNativeNode[] = []): void {
     if (scan.reset) this.unresolvedProblems.clear();
     for (const value of scan.newProblems) this.unresolvedProblems.add(value);
     if (scan.reset) { this.nodes = scan.nodes; this.callCarriers = scan.callCarriers; this.messageKeys = scan.messageKeys; }
+    for (const node of confirmed) node.selected = true;
     this.stamp = scan.stamp; this.completeOffset = scan.completeOffset;
     this.lineCount = scan.lineCount; this.recordCount = scan.snapshot.recordCount; this.selectedLeafUuid = scan.selectedLeafUuid;
     this.selectedLeafOffset = scan.selectedLeafOffset;
