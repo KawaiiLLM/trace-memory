@@ -4,7 +4,7 @@ import { parseKnowledgeAddress, publicTraceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, SourceEntryMeta, PathSnapshot } from "../store/index.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, knowledgeCategoryGroup, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
-import { budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
+import { budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, sessionKnowledgeNotice, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { injectionText, compactText, measuredMemory, type MemoryComposition, type SharedMaterial, type TransportItem, rawWindowTokens, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
@@ -371,6 +371,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     }));
     const current = values(graph.current.filter(revision => revision.op !== "archive"));
     const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? undefined : projectId, graph, true);
+    const notice = id === undefined ? undefined : sessionKnowledgeNotice(id);
 
     const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
     const states = allStates.filter(state => !(visible.knowledgeStates ?? new Set()).has(knowledgeStateKey(state.receipt)));
@@ -421,7 +422,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const build = (count: number) => {
       const selected = budgetKnowledge(ordered.slice(0, count), Infinity, line);
       const material = { knowledge: selected.groups,
-        receipts: count ? renderKnowledgeOmissions(ordered.slice(count)) : [] };
+        receipts: count ? renderKnowledgeOmissions(ordered.slice(count)) : [], knowledgeNotice: notice };
       return { selected, material, text: injectionText(material, selectedStates.map(state => state.text)) };
     };
     // Foreground allowance is charged to the exact rendered body, not the selector's conservative
@@ -736,8 +737,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // With nothing kept, a receipt that does not fit either leaves the notices window empty.
       const noteOmittedReceipt = noteCost(noteKept) <= knowledgeEnvelope ? noteReceipt(allNotes.length - noteKept) : [];
       const knowledgeNoticeCost = noteTextCost(noteKept) + receiptCharge(noteOmittedReceipt);
+      const notice = sessionKnowledgeNotice(sessionId);
       const active = budgetKnowledge(knowledge, Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
-        knowledgeLine, "Knowledge base plus shared allowance", new Set());
+        knowledgeLine, "Knowledge base plus shared allowance", new Set(), undefined, notice);
       const knowledgeUsed = knowledgeNoticeCost + active.cost;
       const sharedAfterKnowledge = sharedAllowance - Math.max(0, knowledgeUsed - caps.knowledge);
 
@@ -824,7 +826,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
 
       const material = { knowledge: active.groups, facts: lines(finalFacts),
         entries: suppliedRaw.map(s => ({ id: s.entry.id, view: s.content })),
-        receipts: [...suppliedRaw.flatMap(s => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...active.receipts, ...noteOmittedReceipt] };
+        receipts: [...suppliedRaw.flatMap(s => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...active.receipts, ...noteOmittedReceipt],
+        knowledgeNotice: notice };
       return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material), material,
         // Transport may repeat K framing, but cannot borrow bases reserved for facts/Raw.
         knowledgeAllowance: knowledgeEnvelope - Math.max(0, rawCharged - caps.raw)
@@ -848,7 +851,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         supplied: { entries: suppliedRaw.map(s => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" as const })),
           factIds: finalFacts.map(f => f.id), knowledgeCommitIds: active.commits,
           knowledgeTokens: tokens(injectionText({ knowledge: active.groups,
-            receipts: [...active.receipts, ...noteOmittedReceipt] }, notes)),
+            receipts: [...active.receipts, ...noteOmittedReceipt], knowledgeNotice: notice }, notes)),
           ...(noteKept ? { knowledgeStates: allNotes.slice(0, noteKept).map(note => note.receipt) } : {}) },
         // The per-window accounting beside the text, for the acceptance probe; diagnostics only.
         charged: { knowledge: knowledgeUsed, facts: factsWindowCost(finalFacts.length, finalFactReceipts), raw: rawCharged, envelope },

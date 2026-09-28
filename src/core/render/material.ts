@@ -96,6 +96,9 @@ export interface SharedMaterial {
   entries?: { id: number; view: string }[];
   /** Budget receipts for everything the views and the budgets left out. */
   receipts: string[];
+  /** 101 (ruled): the knowledge block's header when it is not the plain recency notice — a session's
+   * own material also names the session and the path a subagent inherits its knowledge from. */
+  knowledgeNotice?: string;
 }
 
 /** The frozen task material of one Noting run. Task-specific parts: the head reply and the source
@@ -279,7 +282,7 @@ const rawText = (material: SharedMaterial): string => (material.entries ?? []).m
 /** The leading knowledge block of all four consumers, and the only knowledge layout in this
  * repository. Nothing task-specific may enter it (see "Stable prefix" above); empty knowledge
  * renders no block at all rather than a bare title. */
-export const knowledgeBlock = (material: SharedMaterial): string => renderKnowledgeBlock(material.knowledge ?? []);
+export const knowledgeBlock = (material: SharedMaterial): string => renderKnowledgeBlock(material.knowledge ?? [], material.knowledgeNotice);
 const leading = (material: SharedMaterial): string[] => {
   const knowledge = knowledgeBlock(material);
   return knowledge ? [knowledge] : [];

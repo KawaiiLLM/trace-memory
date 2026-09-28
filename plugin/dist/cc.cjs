@@ -138,6 +138,18 @@ function publicTraceTargets(expression) {
   }
   return targets;
 }
+var MEMORY_ROOT = "/tm";
+var MEMORY_READ_ONLY = `${MEMORY_ROOT}/ is Trace Memory and read-only: record facts with the note tool and knowledge with the memory tool.`;
+function memoryPath(value) {
+  if (typeof value !== "string" || !value.startsWith("/")) return null;
+  const segments = [];
+  for (const segment of value.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") segments.pop();
+    else segments.push(segment);
+  }
+  return segments[0] === "tm" ? `/${segments.join("/")}` : null;
+}
 
 // src/core/model/source.ts
 var SourceNormalizationError = class extends Error {
@@ -960,8 +972,8 @@ function settleExecution(store, id, outcome, runId, reason = "", dreamingAuthori
     store.db.prepare(`INSERT INTO task_failures VALUES (?,?,?,?,?,?,?) ON CONFLICT(session_id,phase,head)
       DO UPDATE SET count = CASE WHEN excluded.count = 0 THEN 0 ELSE task_failures.count + 1 END,
       last_reason = excluded.last_reason, last_run_id = excluded.last_run_id, updated_at = excluded.updated_at`).run(...key, outcome === "success" ? 0 : 1, reason, runId, now);
-    const count = Number(store.db.prepare("SELECT count FROM task_failures WHERE session_id = ? AND phase = ? AND head = ?").get(...key).count);
-    if (count !== 3 || !store.enabled(Number(row.session_id))) return {};
+    const count2 = Number(store.db.prepare("SELECT count FROM task_failures WHERE session_id = ? AND phase = ? AND head = ?").get(...key).count);
+    if (count2 !== 3 || !store.enabled(Number(row.session_id))) return {};
     store.setEnrollment(Number(row.session_id), false);
     store.db.prepare(`UPDATE task_claims AS c SET expires_at = 0 WHERE session_id = ?
       AND NOT (phase = 'dreaming' AND reserved = 0 AND expires_at > ? AND EXISTS (
@@ -1395,10 +1407,10 @@ var usageFieldsSql = (expr) => `CASE WHEN json_valid(${expr}) THEN json_extract(
       '$.usage.input', '$.usage.output', '$.usage.cacheRead', '$.usage.cacheWrite', '$.usage.cost.total', '$.usage') END`;
 function usageFromFields(fields2) {
   if (fields2 === null) return [null, null, null, null, null];
-  const [input, output, cacheRead, cacheWrite, costTotal, usage] = JSON.parse(fields2);
-  if (usage === null) return [null, null, null, null, null];
-  const count = (value) => typeof value === "number" ? value : typeof value === "boolean" ? Number(value) : 0;
-  return [count(input), count(output), count(cacheRead), count(cacheWrite), count(costTotal)];
+  const [input, output, cacheRead, cacheWrite, costTotal, usage2] = JSON.parse(fields2);
+  if (usage2 === null) return [null, null, null, null, null];
+  const count2 = (value) => typeof value === "number" ? value : typeof value === "boolean" ? Number(value) : 0;
+  return [count2(input), count2(output), count2(cacheRead), count2(cacheWrite), count2(costTotal)];
 }
 var commitAddress = (knowledgeId2, commitId) => `K${knowledgeId2}@${commitId}`;
 var KnowledgeVersionProblem = class extends Error {
@@ -1540,8 +1552,8 @@ function pathPending(ids, key) {
     append(id) {
       ids.push(id);
     },
-    removePrefix(count) {
-      first += count;
+    removePrefix(count2) {
+      first += count2;
       if (first - base > 1024 && first - base > ids.length / 2) {
         ids.splice(0, first - base);
         base = first;
@@ -3841,13 +3853,13 @@ var Store = class {
         const turns2 = pathMembership(head.ids, head.positions, head.ids.length, () => true, true);
         const endpoint = endpointEntryId === void 0 ? void 0 : view.positions.get(endpointEntryId);
         if (endpointEntryId !== void 0 && (endpoint === void 0 || endpoint >= view.state.count || !turns2.has(view.turns.get(endpointEntryId)))) throw new Error("Material endpoint is not on the selected native path");
-        const count = endpoint === void 0 ? view.state.count : endpoint + 1;
-        const selected = pathMembership(view.ids, view.positions, count, (id) => turns2.has(view.turns.get(id)));
+        const count2 = endpoint === void 0 ? view.state.count : endpoint + 1;
+        const selected = pathMembership(view.ids, view.positions, count2, (id) => turns2.has(view.turns.get(id)));
         return { turns: turns2, entries: { ids: selected, addresses: (turnId) => {
           const addresses = /* @__PURE__ */ new Set();
           if (turns2.has(turnId)) {
             for (const id of view.entriesByTurn.get(turnId) ?? [])
-              if (view.positions.get(id) < count) for (const address2 of view.addresses.get(id)) addresses.add(address2);
+              if (view.positions.get(id) < count2) for (const address2 of view.addresses.get(id)) addresses.add(address2);
           }
           return addresses;
         } }, consolidatedRuns: /* @__PURE__ */ new Map() };
@@ -4612,6 +4624,22 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   listTurns(sessionId) {
     return this.db.prepare("SELECT * FROM turns WHERE session_id = ? ORDER BY id").all(sessionId).map(toTurn);
   }
+  /** 101: every session, for the `/tm` listing. */
+  listSessions() {
+    return this.db.prepare("SELECT * FROM sessions ORDER BY id").all().map(toSession);
+  }
+  /** 101: every fact's title, or the first line of a legacy untitled body, for the `/tm` listing. */
+  factHeadings() {
+    return this.db.prepare("SELECT id, COALESCE(title, substr(text, 1, 200)) AS heading FROM facts ORDER BY id").all().map((row) => ({ id: Number(row.id), heading: String(row.heading).split("\n")[0] }));
+  }
+  /** 101: a session's current selected head — its most advanced lineage cursor, or its newest Turn
+   * when no host has recorded a cursor. */
+  currentPath(sessionId) {
+    if (!this.getSession(sessionId)) throw new Error(`session S${sessionId} does not exist`);
+    const cursor = this.db.prepare(`SELECT branch, head_turn_id FROM session_lineage_cursors WHERE session_id = ?
+      ORDER BY head_turn_id DESC LIMIT 1`).get(sessionId);
+    return cursor ? { sessionId, branch: cursor.branch, headTurnId: Number(cursor.head_turn_id) } : this.knowledgePath(sessionId);
+  }
   findNativeTurn(sessionId, nativeLineage, nativeId2) {
     const row = this.db.prepare("SELECT turn_id, kind FROM native_turns WHERE session_id = ? AND native_lineage = ? AND native_id = ?").get(sessionId, nativeLineage, nativeId2);
     return row ? { turnId: row.turn_id, kind: row.kind } : null;
@@ -5084,8 +5112,8 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   selectedSourceEntrySnapshot(sessionId, branch) {
     const view = this.pathView(sessionId, branch);
     if (!view) return null;
-    const count = view.state.count;
-    return { state: view.state, count, tailId: view.state.tailId, ids: () => view.ids.slice(0, count) };
+    const count2 = view.state.count;
+    return { state: view.state, count: count2, tailId: view.state.tailId, ids: () => view.ids.slice(0, count2) };
   }
   /** Resolve a persisted native ancestry without exposing source_paths storage to a host adapter.
    * A later extension of the same branch is eligible; a sibling that diverged before the prefix is not. */
@@ -5170,11 +5198,11 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       const pathId = Number(this.db.prepare("SELECT id FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch).id);
       const insert = this.db.prepare("INSERT INTO source_path_entries(path_id,position,entry_id) VALUES (?,?,?)");
       newEntryIds.forEach((id, position) => insert.run(pathId, state.count + position, id));
-      const count = state.count + newEntryIds.length, tailId = newEntryIds.at(-1);
+      const count2 = state.count + newEntryIds.length, tailId = newEntryIds.at(-1);
       this.db.prepare(`UPDATE source_paths SET length = ?, tail_entry_id = ?, version = ?, hwm_entry_id = ?
-        WHERE session_id = ? AND branch = ?`).run(count, tailId, nextVersion, Math.max(hwm, ...newEntryIds), sessionId, branch);
+        WHERE session_id = ? AND branch = ?`).run(count2, tailId, nextVersion, Math.max(hwm, ...newEntryIds), sessionId, branch);
       this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
-      return { count, tailId, version: nextVersion };
+      return { count: count2, tailId, version: nextVersion };
     });
   }
   /** Ticket 72: only the writer knows whether the new list extends the stored one — an unbroken
@@ -5332,11 +5360,11 @@ function whitespaceRunTokens(length, newline, precedingPunctuation, indented, al
   return length > 1 || indented || alone ? Math.ceil(length / 128) : 0;
 }
 function whitespaceTokens(segment, previous, next) {
-  let count = 0, context = previous;
+  let count2 = 0, context = previous;
   const parts = segment.match(/\n+|[^\S\n]+/g);
   for (const part of parts) {
     const newline = part[0] === "\n";
-    count += whitespaceRunTokens(
+    count2 += whitespaceRunTokens(
       part.length,
       newline,
       newline && PUNCTUATION.test(context.slice(-1)),
@@ -5345,7 +5373,7 @@ function whitespaceTokens(segment, previous, next) {
     );
     context = part;
   }
-  return count;
+  return count2;
 }
 function segmentTokens(segment, previous, next) {
   if (/^\s+$/.test(segment)) return whitespaceTokens(segment, previous, next);
@@ -5465,7 +5493,7 @@ function fit(build, max, cap) {
 }
 function fairShares(total, costs) {
   const pool = Math.max(0, total);
-  const cut2 = (available, count, index) => Math.floor(available / count) + (index < available % count ? 1 : 0);
+  const cut2 = (available, count2, index) => Math.floor(available / count2) + (index < available % count2 ? 1 : 0);
   const equal = costs.map((_, index) => cut2(pool, costs.length, index));
   const short = costs.filter((cost, index) => cost <= equal[index]).length;
   if (!short || short === costs.length) return equal;
@@ -5489,12 +5517,12 @@ function units(text, json2) {
   return list;
 }
 function codePoints(text) {
-  let count = 0;
-  for (let index = 0; index < text.length; index++, count++) {
+  let count2 = 0;
+  for (let index = 0; index < text.length; index++, count2++) {
     const code = text.charCodeAt(index);
     if (code >= 55296 && code < 56320 && index + 1 < text.length && (text.charCodeAt(index + 1) & 64512) === 56320) index++;
   }
-  return count;
+  return count2;
 }
 function cutUnits(text, json2) {
   const list = units(text, json2);
@@ -5773,7 +5801,7 @@ function renderRun(run, factIds, commits, full = false) {
   } catch {
     response = {};
   }
-  const usage = response.usage ?? null;
+  const usage2 = response.usage ?? null;
   const calls = Array.isArray(response.toolCalls) ? response.toolCalls : [];
   const counts = /* @__PURE__ */ new Map();
   for (const c of calls) counts.set(c.name, (counts.get(c.name) ?? 0) + 1);
@@ -5785,7 +5813,7 @@ function renderRun(run, factIds, commits, full = false) {
     `  trigger origin: ${run.origin ? `S${run.origin.sessionId}/E${run.origin.entryIds.at(-1)}` : "unknown"}`,
     `  model ${run.model ?? "?"}  mode ${runMode(run.mode)}`,
     `  created: ${[...factIds.map((id) => `F${id}`), ...commits.map((c) => `K${c.knowledgeId}@${c.id} (${c.op}: ${c.reason})`)].join(", ") || "nothing"}`,
-    response.usageStatus === "unknown" ? "  usage: unknown  cost unknown" : `  usage: ${usage ? `in ${usage.input ?? 0} out ${usage.output ?? 0} cacheRead ${usage.cacheRead ?? 0} cacheWrite ${usage.cacheWrite ?? 0}` : "none"}  cost $${(usage?.cost?.total ?? 0).toFixed(4)}${response.usageStatus === "partial" ? " (known usage only; remaining cost unknown)" : ""}`,
+    response.usageStatus === "unknown" ? "  usage: unknown  cost unknown" : `  usage: ${usage2 ? `in ${usage2.input ?? 0} out ${usage2.output ?? 0} cacheRead ${usage2.cacheRead ?? 0} cacheWrite ${usage2.cacheWrite ?? 0}` : "none"}  cost $${(usage2?.cost?.total ?? 0).toFixed(4)}${response.usageStatus === "partial" ? " (known usage only; remaining cost unknown)" : ""}`,
     `  tools: ${[...counts].map(([n, k]) => `${n} \xD7${k}`).join(", ") || "none"}`,
     `  problems: ${problems.length ? problems.join("; ") : "none"}`
   ];
@@ -6067,6 +6095,8 @@ var charge = (parts) => parts.reduce((total, part) => total + tokens(part) + 1, 
 var EXPAND_LIMIT = 8;
 var expandList = (addresses) => addresses.length <= EXPAND_LIMIT ? addresses.join(", ") : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 var KNOWLEDGE_RECENCY_NOTICE = "Items are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.";
+var sessionKnowledgeNotice = (sessionId, recencyNotice = KNOWLEDGE_RECENCY_NOTICE) => `${recencyNotice}
+Session S${sessionId}: a subagent inherits this session's knowledge by reading /tm/S${sessionId}/knowledge.`;
 var renderKnowledgeOmissions = (omitted) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
   const members = omitted.filter((value) => knowledgeCategoryGroup(value.revision.category) === category);
   return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map((value) => `K${value.knowledge.id}`))}`] : [];
@@ -6081,19 +6111,19 @@ var orderedKnowledge = (knowledge, line) => [...knowledge].sort((a, b) => a.revi
     size: tokens(text) + 1
   };
 });
-var knowledgeBody = (items2) => ({
+var knowledgeBody = (items2, recencyNotice = KNOWLEDGE_RECENCY_NOTICE) => ({
   groups: items2.length ? [{ category: "items", text: items2.map((item) => item.text).join("\n") }] : [],
-  cost: items2.length ? tokens(xmlBlock("knowledge", KNOWLEDGE_RECENCY_NOTICE)) + items2.reduce((sum, item) => sum + item.size, 0) : 0,
+  cost: items2.length ? tokens(xmlBlock("knowledge", recencyNotice)) + items2.reduce((sum, item) => sum + item.size, 0) : 0,
   commits: items2.map((item) => item.commit)
 });
-function budgetKnowledge(knowledge, cap, line = renderKnowledge, budget = "Knowledge capacity", required3, priority) {
+function budgetKnowledge(knowledge, cap, line = renderKnowledge, budget = "Knowledge capacity", required3, priority, recencyNotice = KNOWLEDGE_RECENCY_NOTICE) {
   const ordered = orderedKnowledge(knowledge, line);
   const byCommit = new Map(knowledge.map((value) => [value.revision.id, value]));
   const optional3 = ordered.filter((item) => !required3?.has(item.commit)).sort((a, b) => priority ? priority(byCommit.get(a.commit), byCommit.get(b.commit)) : b.commit - a.commit);
   const ranks = new Map(optional3.map((item, index) => [item.commit, index]));
   const selected = (kept2) => ordered.filter((item) => required3?.has(item.commit) || ranks.get(item.commit) < kept2);
   const receipts = (kept2) => renderKnowledgeOmissions(optional3.slice(kept2).map((item) => byCommit.get(item.commit)));
-  const outerCost = tokens(xmlBlock("knowledge", KNOWLEDGE_RECENCY_NOTICE));
+  const outerCost = tokens(xmlBlock("knowledge", recencyNotice));
   const bodyCost = (kept2) => {
     const items2 = selected(kept2);
     return items2.length ? outerCost + items2.reduce((sum, item) => sum + item.size, 0) : 0;
@@ -6104,7 +6134,7 @@ function budgetKnowledge(knowledge, cap, line = renderKnowledge, budget = "Knowl
   while (kept < optional3.length && cost(kept + 1) <= cap) kept++;
   while (kept > 0 && cost(kept) > cap) kept--;
   if (cost(kept) > cap) throw new Error(`Knowledge capacity: the omission receipt alone (${cost(kept)} tokens) exceeds ${budget} (${cap})`);
-  const body = knowledgeBody(selected(kept));
+  const body = knowledgeBody(selected(kept), recencyNotice);
   return { ...body, receipts: emittedReceipts(kept), cost: cost(kept) };
 }
 var factTurnTime = (turnId, turns) => {
@@ -6129,8 +6159,8 @@ function factGroupLayout(facts, turns) {
   return ordered.flatMap(({ group, header }) => group.sort((a, b) => a.id - b.id).map((fact, index) => ({ fact, header: index === 0 ? `${header}
 ` : "" })));
 }
-function renderFactGroups(facts, line, turns, preview = false) {
-  return factGroupLayout(facts, turns).map(({ fact, header }, index) => preview ? line(fact, (text) => (index ? "\n" : "") + header + text).slice(index ? 1 : 0) : header + line(fact, (text) => text));
+function renderFactGroups(facts, line, turns, preview2 = false) {
+  return factGroupLayout(facts, turns).map(({ fact, header }, index) => preview2 ? line(fact, (text) => (index ? "\n" : "") + header + text).slice(index ? 1 : 0) : header + line(fact, (text) => text));
 }
 var xmlBlock = (tag, text) => `<${tag}>
 ${text}
@@ -6539,7 +6569,7 @@ var rawWindowTokens = (views, receipts) => (views.length ? charge([xmlBlock("epi
 var rangeLine = (range) => `Range: ${range.from}..${range.to}`;
 var block = (parts) => parts.join(BLOCK);
 var rawText = (material) => (material.entries ?? []).map((entry) => entry.view).join(BLOCK);
-var knowledgeBlock = (material) => renderKnowledgeBlock(material.knowledge ?? []);
+var knowledgeBlock = (material) => renderKnowledgeBlock(material.knowledge ?? [], material.knowledgeNotice);
 var leading = (material) => {
   const knowledge = knowledgeBlock(material);
   return knowledge ? [knowledge] : [];
@@ -6830,6 +6860,7 @@ function readFacade(store, config3, prepare = () => {
     }));
     const current = values(graph.current.filter((revision) => revision.op !== "archive"));
     const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? void 0 : projectId, graph, true);
+    const notice = id === void 0 ? void 0 : sessionKnowledgeNotice(id);
     const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
     const states = allStates.filter((state) => !(visible.knowledgeStates ?? /* @__PURE__ */ new Set()).has(knowledgeStateKey(state.receipt)));
     if (!delta.length && !states.length) return empty();
@@ -6844,7 +6875,7 @@ function readFacade(store, config3, prepare = () => {
     };
     const remaining = knowledgeCap - (visible.knowledgeTokens ?? unaccountedCost());
     if (remaining <= 0) return empty();
-    const buildStates = (count2) => injectionText({ knowledge: [], receipts: [] }, states.slice(0, count2).map((state) => state.text));
+    const buildStates = (count3) => injectionText({ knowledge: [], receipts: [] }, states.slice(0, count3).map((state) => state.text));
     const longest = (high, fits) => {
       let low = 0;
       while (low < high) {
@@ -6863,7 +6894,7 @@ function readFacade(store, config3, prepare = () => {
         address: `K${from.knowledgeId}@v${store.versionOrdinal(from.knowledgeId, from.id)}`
       };
     };
-    const stateCount = longest(states.length, (count2) => tokens(buildStates(count2)) <= remaining);
+    const stateCount = longest(states.length, (count3) => tokens(buildStates(count3)) <= remaining);
     if (stateCount < states.length) {
       if (!stateCount) return empty();
       const material2 = { knowledge: [], receipts: [] };
@@ -6879,16 +6910,17 @@ function readFacade(store, config3, prepare = () => {
     }
     const selectedStates = states.slice(0, stateCount);
     const ordered = [...delta].sort((a, b) => b.revision.id - a.revision.id);
-    const build = (count2) => {
-      const selected2 = budgetKnowledge(ordered.slice(0, count2), Infinity, line);
+    const build = (count3) => {
+      const selected2 = budgetKnowledge(ordered.slice(0, count3), Infinity, line);
       const material2 = {
         knowledge: selected2.groups,
-        receipts: count2 ? renderKnowledgeOmissions(ordered.slice(count2)) : []
+        receipts: count3 ? renderKnowledgeOmissions(ordered.slice(count3)) : [],
+        knowledgeNotice: notice
       };
       return { selected: selected2, material: material2, text: injectionText(material2, selectedStates.map((state) => state.text)) };
     };
-    const count = longest(ordered.length, (count2) => tokens(build(count2).text) <= remaining);
-    const { selected, material, text } = build(count);
+    const count2 = longest(ordered.length, (count3) => tokens(build(count3).text) <= remaining);
+    const { selected, material, text } = build(count2);
     if (tokens(text) > remaining || !selected.commits.length && !selectedStates.length) return empty();
     const rendered = measuredMemory(text, material);
     return {
@@ -7072,15 +7104,15 @@ function readFacade(store, config3, prepare = () => {
       cacheWrite: 0,
       cost: 0
     };
-    for (const { kind, usage } of store.listRunUsage(sessionId)) {
+    for (const { kind, usage: usage2 } of store.listRunUsage(sessionId)) {
       totals.runs[kind]++;
-      if (!usage) continue;
-      totals.input += usage.input;
-      totals.output += usage.output;
-      totals.cacheRead += usage.cacheRead;
-      totals.cacheWrite += usage.cacheWrite;
-      totals.cost += usage.cost;
-      totals.costs[kind] += usage.cost;
+      if (!usage2) continue;
+      totals.input += usage2.input;
+      totals.output += usage2.output;
+      totals.cacheRead += usage2.cacheRead;
+      totals.cacheWrite += usage2.cacheWrite;
+      totals.cost += usage2.cost;
+      totals.costs[kind] += usage2.cost;
     }
     return totals;
   };
@@ -7190,12 +7222,15 @@ function readFacade(store, config3, prepare = () => {
       const notes = allNotes.slice(0, noteKept).map((note) => note.text);
       const noteOmittedReceipt = noteCost(noteKept) <= knowledgeEnvelope ? noteReceipt(allNotes.length - noteKept) : [];
       const knowledgeNoticeCost = noteTextCost(noteKept) + receiptCharge(noteOmittedReceipt);
+      const notice = sessionKnowledgeNotice(sessionId);
       const active = budgetKnowledge(
         knowledge,
         Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
         knowledgeLine,
         "Knowledge base plus shared allowance",
-        /* @__PURE__ */ new Set()
+        /* @__PURE__ */ new Set(),
+        void 0,
+        notice
       );
       const knowledgeUsed = knowledgeNoticeCost + active.cost;
       const sharedAfterKnowledge = sharedAllowance - Math.max(0, knowledgeUsed - caps.knowledge);
@@ -7263,7 +7298,8 @@ function readFacade(store, config3, prepare = () => {
         knowledge: active.groups,
         facts: lines(finalFacts),
         entries: suppliedRaw.map((s) => ({ id: s.entry.id, view: s.content })),
-        receipts: [...suppliedRaw.flatMap((s) => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...active.receipts, ...noteOmittedReceipt]
+        receipts: [...suppliedRaw.flatMap((s) => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...active.receipts, ...noteOmittedReceipt],
+        knowledgeNotice: notice
       };
       return {
         ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
@@ -7311,7 +7347,8 @@ function readFacade(store, config3, prepare = () => {
           knowledgeCommitIds: active.commits,
           knowledgeTokens: tokens(injectionText({
             knowledge: active.groups,
-            receipts: [...active.receipts, ...noteOmittedReceipt]
+            receipts: [...active.receipts, ...noteOmittedReceipt],
+            knowledgeNotice: notice
           }, notes)),
           ...noteKept ? { knowledgeStates: allNotes.slice(0, noteKept).map((note) => note.receipt) } : {}
         },
@@ -7460,7 +7497,7 @@ function readFacade(store, config3, prepare = () => {
       const material = options.scope === "session" ? "this session; session knowledge" : options.scope === "project" ? "project sessions; project knowledge" : options.scope === "global" ? "all sessions; global knowledge" : reader ? "project sessions; global/project/session knowledge" : "all sessions; unrestricted knowledge owners";
       const filters = [`searched: ${material}, ${options.versions} versions`, ...options.category ? [`category=${options.category}`] : [], ...options.scope ? [`scope=${options.scope}`] : []].join(", ");
       const omitted = READ_FIELDS.filter((field) => !fields2.has(field));
-      const preview = `preview: ${fields2.size === 0 ? "identity only" : fields2.size === 1 && fields2.has("text") ? "text only" : `fields ${[...fields2].join(", ")}`}; omitted fields: ${omitted.join(", ") || "none"}`;
+      const preview2 = `preview: ${fields2.size === 0 ? "identity only" : fields2.size === 1 && fields2.has("text") ? "text only" : `fields ${[...fields2].join(", ")}`}; omitted fields: ${omitted.join(", ") || "none"}`;
       return page(
         { items: items2, format: format2, capture, ...batched ? { queryCap: perQuery } : {} },
         {
@@ -7471,7 +7508,7 @@ function readFacade(store, config3, prepare = () => {
         `Search uses literal substring search. No hit does not mean absent.
 ${filters}
 ${KNOWLEDGE_REPRESENTATIVE_RECEIPT}
-${preview}`,
+${preview2}`,
         "search"
       ).text;
     },
@@ -8067,6 +8104,308 @@ function bindTools(store, read, supplied, metadata, dreaming) {
   };
 }
 
+// src/core/api/files.ts
+var VISIBLE = `${MEMORY_ROOT}/knowledge`;
+var ALL = `${MEMORY_ROOT}/knowledge-all`;
+var SESSION = /^\/tm\/S([1-9]\d*)$/;
+var TURN = /^\/tm\/S([1-9]\d*)\/T([1-9]\d*)$/;
+var ENTRY = /^\/tm\/S([1-9]\d*)\/T([1-9]\d*)\/E([1-9]\d*)$/;
+var INHERITED = /^\/tm\/S([1-9]\d*)\/knowledge$/;
+var HISTORY = /^\/tm\/(K[1-9]\d*)\.history$/;
+var LEGEND = [
+  "Trace Memory, read-only (write with the note and memory tools). A file shows what trace(<address>) shows you. Grep lists matching files (content mode: path:line:text) and searches Raw entries in full, beyond their compressed view.",
+  "/tm/knowledge: your visible knowledge \xB7 /tm/knowledge-all: every knowledge identity, other projects and archived ones included, at its latest version (Grep there searches every version)",
+  "/tm/K<id>: current on your path \xB7 /tm/K<id>@v<n>: one version \xB7 /tm/K<id>#<tag>: an exact version \xB7 /tm/K<id>.history: its versions on your path",
+  "/tm/F<id>: a fact and the knowledge citing it \xB7 /tm/S<n>: a session's Turns \xB7 /tm/S<n>/T<t>: a Turn (its facts and unprocessed Raw), also the directory of its Raw entries E<k>",
+  "/tm/S<n>/knowledge: the knowledge a fresh context of S<n> receives (not listed; point a subagent at it) \xB7 /tm/<address>: any other trace address, e.g. /tm/T12#E1..E5",
+  ""
+];
+var PREVIEW = 160;
+var preview = (text) => {
+  const line = text.split("\n")[0];
+  return line.length > PREVIEW ? `${line.slice(0, PREVIEW)}\u2026` : line;
+};
+var count = (value) => value.toLocaleString("en");
+function globRegex(glob) {
+  let source = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        source += ".*";
+        i++;
+      } else source += "[^/]*";
+    } else if (c === "?") source += "[^/]";
+    else if (c === "{") source += "(?:";
+    else if (c === "}") source += ")";
+    else if (c === ",") source += /\{[^}]*$/.test(glob.slice(0, i)) ? "|" : ",";
+    else source += c.replace(/[.+^$()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`);
+}
+var basename = (path) => path.slice(path.lastIndexOf("/") + 1);
+var revisionBody = (revision, list) => revision.op === "archive" && !revision.text ? list.find((r) => r.id === revision.parentId)?.text ?? "" : revision.text;
+var MATCH_WINDOW = 300;
+function windowedLine(text, regex) {
+  if (text.length <= MATCH_WINDOW * 6) return text;
+  const match = regex.exec(text);
+  if (!match) return text;
+  const start = Math.max(0, match.index - MATCH_WINDOW), end = Math.min(text.length, match.index + match[0].length + MATCH_WINDOW);
+  const before = start > 0 ? `\u2026(${count(start)} characters omitted)\u2026 ` : "";
+  const after = end < text.length ? ` \u2026(${count(text.length - end)} characters omitted)\u2026` : "";
+  return `${before}${text.slice(start, end)}${after}`;
+}
+function capLines(lines, render, cap = MAX_PUBLIC_READ_TOKENS) {
+  let used = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const cost = tokens(`${render(lines[i], i)}
+`);
+    if (used + cost <= cap) {
+      used += cost;
+      continue;
+    }
+    const cutTokens = tokens(lines.slice(i).map((line2, j) => render(line2, i + j)).join("\n"));
+    if (i > 0) return { kept: lines.slice(0, i), cutTokens };
+    const line = lines[0];
+    let low = 0, high = line.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (tokens(render(line.slice(0, mid), 0)) <= cap) low = mid;
+      else high = mid - 1;
+    }
+    return { kept: [line.slice(0, low)], cutTokens: cutTokens - tokens(render(line.slice(0, low), 0)), cutChars: { kept: low, of: line.length } };
+  }
+  return { kept: [...lines] };
+}
+var capNotice = (tokensCut) => tokensCut === void 0 ? "" : `cut at the ${count(MAX_PUBLIC_READ_TOKENS)}-token cap (about ${count(tokensCut)} tokens not shown): `;
+function memoryFiles(memory, reader) {
+  const store = memory.store;
+  const bound = reader.sessionId === void 0 ? {} : {
+    sessionId: reader.sessionId,
+    headTurnId: reader.headTurnId,
+    ...reader.branch === void 0 ? {} : { branch: reader.branch }
+  };
+  const trace = (address2, extra = {}) => memory.trace(address2, { modelFacing: true, pageBudget: null, ...bound, ...extra });
+  const full = (address2) => memory.trace(address2, { modelFacing: true, pageBudget: null, itemBudget: null, ...bound });
+  const resolve4 = (raw) => {
+    const path = memoryPath(raw);
+    if (!path) throw new Error(`not a Trace Memory path: ${raw}`);
+    return path;
+  };
+  const session = (id) => {
+    const value = store.getSession(id);
+    if (!value) throw new Error(`no such path: session S${id} does not exist`);
+    return value;
+  };
+  const projectName = (id) => id === null ? "no project" : store.getProject(id)?.name ?? `project ${id}`;
+  const entriesOf = (sessionId, turnId) => {
+    if (store.getTurn(turnId)?.sessionId !== sessionId) throw new Error(`no such path: T${turnId} is not in S${sessionId}`);
+    return store.listSourceEntries(sessionId, turnId, sessionId === reader.sessionId ? reader.branch : void 0);
+  };
+  const visible = () => {
+    const projectId = reader.projectId ?? (reader.sessionId === void 0 ? void 0 : session(reader.sessionId).projectId);
+    return projectId === void 0 ? [] : store.listVisibleKnowledge(reader.sessionId ?? 0, projectId, reader.headTurnId, reader.branch);
+  };
+  const versions = () => {
+    const revisions = store.listKnowledgeRevisions();
+    const ordinals = store.versionOrdinals(revisions.map((revision) => revision.id));
+    const records = store.knowledgeRecords([...new Set(revisions.map((revision) => revision.knowledgeId))]);
+    const byIdentity = /* @__PURE__ */ new Map();
+    for (const revision of [...revisions].sort((a, b) => ordinals.get(a.id) - ordinals.get(b.id))) {
+      const list = byIdentity.get(revision.knowledgeId);
+      if (list) list.push(revision);
+      else byIdentity.set(revision.knowledgeId, [revision]);
+    }
+    return { identities: [...byIdentity].sort(([a], [b]) => a - b), records, ordinal: (revision) => ordinals.get(revision.id) };
+  };
+  const children = (path) => {
+    if (path === MEMORY_ROOT) return [
+      [VISIBLE, "directory: knowledge visible to you, current versions"],
+      [ALL, "directory: every knowledge identity in every scope and project, archived included"],
+      ...store.listSessions().map((s) => [`${MEMORY_ROOT}/S${s.id}`, `session \xB7 project ${projectName(s.projectId)} \xB7 ${s.host} \xB7 ${s.startedAt}`]),
+      ...store.factHeadings().map((f) => [`${MEMORY_ROOT}/F${f.id}`, preview(f.heading)])
+    ];
+    if (path === VISIBLE) return visible().map(({ knowledge, revision }) => [`${MEMORY_ROOT}/K${knowledge.id}`, `[${revision.category}/${revision.scope}] ${preview(revision.text)}`]);
+    if (path === ALL) {
+      const { identities, records, ordinal } = versions();
+      return identities.map(([id, list]) => {
+        const latest = list.at(-1), record3 = records.get(id);
+        const body = revisionBody(latest, list);
+        const owner = latest.scope === "global" ? "" : latest.scope === "session" ? ` S${record3.originSessionId}` : ` ${projectName(record3.projectId)}`;
+        const status = latest.op === "archive" ? ` (archived at v${ordinal(latest)}${latest.archiveKind ? `, ${latest.archiveKind}` : ""})` : "";
+        return [`${MEMORY_ROOT}/K${id}@v${ordinal(latest)}`, `[${latest.category}/${latest.scope}${owner}]${status} ${preview(body)}`];
+      });
+    }
+    let m;
+    if (m = SESSION.exec(path)) {
+      session(Number(m[1]));
+      return store.listTurns(Number(m[1])).map((turn) => [`${path}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`]);
+    }
+    if (m = TURN.exec(path)) return entriesOf(Number(m[1]), Number(m[2])).map((entry) => [`${path}/E${entry.entryOrdinal}`, ""]);
+    return null;
+  };
+  const fileText = (path) => {
+    let m;
+    if (m = INHERITED.exec(path)) {
+      const id = Number(m[1]);
+      return memory.injection(store.currentPath(id)).text || `(a fresh context at S${id}'s current head would receive no knowledge)`;
+    }
+    if (m = HISTORY.exec(path)) return trace(m[1], { versions: "history" });
+    if (m = ENTRY.exec(path)) return trace(`S${m[1]}/T${m[2]}#E${m[3]}`);
+    if (path === MEMORY_ROOT || path === VISIBLE || path === ALL || SESSION.test(path)) throw new Error(`${path} is a directory`);
+    return trace(path.slice(MEMORY_ROOT.length + 1));
+  };
+  const lines = (path) => {
+    const listing = TURN.test(path) ? null : children(path);
+    if (!listing) return fileText(path).split("\n");
+    return [...path === MEMORY_ROOT ? LEGEND : [], ...listing.length ? listing.map(([child, label]) => label ? `${child}  ${label}` : child) : ["(empty)"]];
+  };
+  const read = (raw, offset = 1, limit = 2e3) => {
+    const path = resolve4(raw), all = lines(path);
+    const start = Math.max(1, Math.floor(offset)), size = Math.max(1, Math.floor(limit));
+    if (start > all.length) throw new Error(`offset ${start} is past the end of ${path} (${all.length} lines)`);
+    const fit2 = capLines(all.slice(start - 1, start - 1 + size), (line, i) => `${start + i}	${line}`);
+    const next = start + fit2.kept.length;
+    if (next > all.length) return { lines: fit2.kept, startLine: start, totalLines: all.length };
+    const partial3 = fit2.cutChars ? `line ${start} shows ${count(fit2.cutChars.kept)} of ${count(fit2.cutChars.of)} characters; ` : "";
+    return {
+      lines: fit2.kept,
+      startLine: start,
+      totalLines: all.length,
+      cut: `[${capNotice(fit2.cutTokens)}${partial3}lines ${next}-${all.length} of ${all.length} not shown; continue with offset=${next}]`
+    };
+  };
+  const whole = (entry) => renderEntryWhole(entry, memory.resultText, void 0, void 0, true).content;
+  function* turnFiles(sessionId, turnId) {
+    const turn = `${MEMORY_ROOT}/S${sessionId}/T${turnId}`;
+    const meta3 = entriesOf(sessionId, turnId);
+    yield { path: turn, text: () => fileText(turn) };
+    for (const entry of store.hydrateSourceEntries(meta3.map((e) => e.id))) yield { path: `${turn}/E${entry.entryOrdinal}`, text: () => whole(entry) };
+  }
+  function* searched(path) {
+    if (path === MEMORY_ROOT) {
+      yield* searched(VISIBLE);
+      yield* searched(ALL);
+      for (const s of store.listSessions()) yield* searched(`${MEMORY_ROOT}/S${s.id}`);
+      for (const f of store.factHeadings()) yield { path: `${MEMORY_ROOT}/F${f.id}`, text: () => full(`F${f.id}`) };
+      return;
+    }
+    if (path === VISIBLE) {
+      for (const { knowledge } of visible()) yield { path: `${MEMORY_ROOT}/K${knowledge.id}`, text: () => full(`K${knowledge.id}`) };
+      return;
+    }
+    if (path === ALL) {
+      const { identities, ordinal } = versions();
+      for (const [id, list] of identities) {
+        const latest = list.at(-1), latestStatus = `latest v${ordinal(latest)}${latest.op === "archive" ? ", archived" : ""}`;
+        for (const revision of list) {
+          const address2 = `K${id}@v${ordinal(revision)}`;
+          const legacyEmpty = revision.op === "archive" && !revision.text;
+          yield {
+            path: `${MEMORY_ROOT}/${address2}`,
+            text: () => legacyEmpty ? revisionBody(revision, list) : full(address2),
+            mark: revision !== latest ? ` (historical; ${latestStatus})` : latest.op === "archive" ? " (archived)" : void 0
+          };
+        }
+      }
+      return;
+    }
+    let m;
+    if (m = SESSION.exec(path)) {
+      session(Number(m[1]));
+      for (const turn of store.listTurns(Number(m[1]))) yield* turnFiles(turn.sessionId, turn.id);
+      return;
+    }
+    if (m = TURN.exec(path)) {
+      yield* turnFiles(Number(m[1]), Number(m[2]));
+      return;
+    }
+    if (m = ENTRY.exec(path)) {
+      const entry = entriesOf(Number(m[1]), Number(m[2])).find((e) => e.entryOrdinal === Number(m[3]));
+      if (!entry) throw new Error(`no such path: ${path}`);
+      yield { path, text: () => whole(store.hydrateSourceEntries([entry.id])[0]) };
+      return;
+    }
+    if (INHERITED.test(path) || HISTORY.test(path)) {
+      yield { path, text: () => fileText(path) };
+      return;
+    }
+    yield { path, text: () => full(path.slice(MEMORY_ROOT.length + 1)) };
+  }
+  const CUT_RECEIPT_RESERVE = 200;
+  const page = (out, more, offset, limit, what, continuation) => {
+    const shown = out.slice(offset, offset + limit);
+    const fit2 = capLines(shown, (line) => line, MAX_PUBLIC_READ_TOKENS - CUT_RECEIPT_RESERVE);
+    const next = offset + fit2.kept.length;
+    if (!more && next >= out.length) return { lines: fit2.kept };
+    const rest = more ? `more ${what} follow` : `${what} ${next + 1}-${out.length} of ${out.length} not shown`;
+    return { lines: fit2.kept, cut: `[${capNotice(fit2.cutTokens)}${rest}; ${continuation ?? `continue with offset=${next}`}]` };
+  };
+  const grep = (pattern, raw, options = {}) => {
+    const root2 = resolve4(raw), mode = options.mode ?? "files_with_matches";
+    let regex;
+    try {
+      regex = new RegExp(options.literal ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern, options.ignoreCase ? "i" : "");
+    } catch (error3) {
+      throw new Error(`invalid pattern: ${error3.message}`);
+    }
+    const filter = options.glob ? globRegex(options.glob) : void 0;
+    const offset = Math.max(0, Math.floor(options.offset ?? 0)), limit = options.limit && options.limit > 0 ? Math.floor(options.limit) : Infinity;
+    const before = Math.max(0, options.before ?? 0), after = Math.max(0, options.after ?? 0);
+    const out = [];
+    let used = 0, more = false;
+    for (const file2 of searched(root2)) {
+      if (filter && !filter.test(options.glob.includes("/") ? file2.path.slice(root2.length + 1) : basename(file2.path))) continue;
+      const text = file2.text().split("\n");
+      if (mode === "files_with_matches") {
+        if (text.some((line) => regex.test(line))) out.push(file2.path + (file2.mark ?? ""));
+        continue;
+      }
+      const hits = text.flatMap((line, i) => regex.test(line) ? [i] : []);
+      if (!hits.length) continue;
+      if (mode === "count") {
+        out.push(`${file2.path}:${hits.length}`);
+        continue;
+      }
+      const shown = /* @__PURE__ */ new Set();
+      for (const i of hits) for (let j = Math.max(0, i - before); j <= Math.min(text.length - 1, i + after); j++) shown.add(j);
+      const hit = new Set(hits);
+      for (const i of [...shown].sort((a, b) => a - b)) {
+        const line = `${file2.path}${hit.has(i) ? ":" : "-"}${i + 1}${hit.has(i) ? ":" : "-"}${windowedLine(text[i], regex)}`;
+        out.push(line);
+        if (out.length > offset && (used += tokens(line)) > MAX_PUBLIC_READ_TOKENS || out.length >= offset + limit + 1) {
+          more = true;
+          break;
+        }
+      }
+      if (more) break;
+    }
+    if (!out.length) return { lines: [] };
+    return page(out, more, offset, limit, mode === "files_with_matches" ? "matching files" : mode === "count" ? "counts" : "matching lines");
+  };
+  const glob = (pattern) => {
+    const segments = resolve4(pattern).split("/").slice(2);
+    const found = /* @__PURE__ */ new Set();
+    const walk = (path, rest) => {
+      if (!rest.length) {
+        found.add(path);
+        return;
+      }
+      const [head, ...tail] = rest;
+      if (head === "**") {
+        walk(path, tail);
+        for (const [child] of children(path) ?? []) walk(child, rest);
+        return;
+      }
+      const matcher = globRegex(head);
+      for (const [child] of children(path) ?? []) if (matcher.test(basename(child))) walk(child, tail);
+    };
+    walk(MEMORY_ROOT, segments);
+    return found.size ? page([...found], false, 0, Infinity, "paths", "narrow the pattern") : { lines: [] };
+  };
+  return { read, grep, glob };
+}
+
 // src/core/api/index.ts
 var import_node_crypto8 = require("node:crypto");
 
@@ -8249,7 +8588,7 @@ function notingMaterial(frozen, view, assembled, selected, initial, inheriting) 
     // its own context. It covers the whole frozen range, not only what was supplied.
     sources,
     facts: inheriting ? [] : assembled.facts ?? [],
-    ...inheriting ? {} : { knowledge: assembled.knowledge },
+    ...inheriting ? {} : { knowledge: assembled.knowledge, knowledgeNotice: assembled.knowledgeNotice },
     receipts
   };
   const text = notingText(material, range);
@@ -8490,14 +8829,14 @@ function prepareDreaming(store, input, config3, claim, path, { pool: due, range 
   });
   const times = store.factTurnTimes(facts), snapshot2 = store.pathSnapshot(path);
   const relations = store.listFactRelationsOnPathOf(facts.map((fact) => fact.id), path, snapshot2);
-  const factText = (count2) => [
+  const factText = (count3) => [
     "Direct supporting facts:",
-    ...renderFactGroups(facts.slice(0, count2), (fact) => renderFact(fact, relations.get(fact.id) ?? []), times),
-    ...count2 < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count2).map((fact) => `F${fact.id}`).join(", ")}; expand with trace.`] : []
+    ...renderFactGroups(facts.slice(0, count3), (fact) => renderFact(fact, relations.get(fact.id) ?? []), times),
+    ...count3 < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count3).map((fact) => `F${fact.id}`).join(", ")}; expand with trace.`] : []
   ].join("\n");
-  let count = facts.length;
-  while (count && tokens(factText(count)) > 1e4) count--;
-  const direct2 = factText(count);
+  let count2 = facts.length;
+  while (count2 && tokens(factText(count2)) > 1e4) count2--;
+  const direct2 = factText(count2);
   if (tokens(direct2) > 1e4) throw new Error("Dreaming direct fact receipts exceed 10000");
   const material = {
     bound: `Run wall-clock bound: ${config3.dreaming.timeoutMs} ms. Wrap up before this deadline.${processedExcessOrder}`,
@@ -9076,8 +9415,8 @@ Knowledge: ${backlinks.join("; ")}` : "");
     if (!target) return { tokens: null, trigger, state: "no session" };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
-      const pending = pendingState(target), count = countPending(pending, upToTrigger ? trigger : Infinity);
-      return !upToTrigger || count < trigger ? { tokens: count, trigger, state: "known" } : { tokens: trigger, trigger, state: "known", atLeast: true, entries: pending.length };
+      const pending = pendingState(target), count2 = countPending(pending, upToTrigger ? trigger : Infinity);
+      return !upToTrigger || count2 < trigger ? { tokens: count2, trigger, state: "known" } : { tokens: trigger, trigger, state: "known", atLeast: true, entries: pending.length };
     } catch {
       return { tokens: null, trigger, state: "unavailable" };
     }
@@ -12838,20 +13177,20 @@ var require_resolve = __commonJS((exports2) => {
     return false;
   }
   function countKeys(schema) {
-    let count = 0;
+    let count2 = 0;
     for (const key in schema) {
       if (key === "$ref")
         return Infinity;
-      count++;
+      count2++;
       if (SIMPLE_INLINED.has(key))
         continue;
       if (typeof schema[key] == "object") {
-        (0, util_1.eachItem)(schema[key], (sch) => count += countKeys(sch));
+        (0, util_1.eachItem)(schema[key], (sch) => count2 += countKeys(sch));
       }
-      if (count === Infinity)
+      if (count2 === Infinity)
         return Infinity;
     }
-    return count;
+    return count2;
   }
   function getFullPath(resolver, id = "", normalize) {
     if (normalize !== false)
@@ -15701,8 +16040,8 @@ var require_contains = __commonJS((exports2) => {
       cxt.result(valid, () => cxt.reset());
       function validateItemsWithCount() {
         const schValid = gen.name("_valid");
-        const count = gen.let("count", 0);
-        validateItems(schValid, () => gen.if(schValid, () => checkLimits(count)));
+        const count2 = gen.let("count", 0);
+        validateItems(schValid, () => gen.if(schValid, () => checkLimits(count2)));
       }
       function validateItems(_valid, block2) {
         gen.forRange("i", 0, len, (i) => {
@@ -15715,16 +16054,16 @@ var require_contains = __commonJS((exports2) => {
           block2();
         });
       }
-      function checkLimits(count) {
-        gen.code((0, codegen_1._)`${count}++`);
+      function checkLimits(count2) {
+        gen.code((0, codegen_1._)`${count2}++`);
         if (max === void 0) {
-          gen.if((0, codegen_1._)`${count} >= ${min}`, () => gen.assign(valid, true).break());
+          gen.if((0, codegen_1._)`${count2} >= ${min}`, () => gen.assign(valid, true).break());
         } else {
-          gen.if((0, codegen_1._)`${count} > ${max}`, () => gen.assign(valid, false).break());
+          gen.if((0, codegen_1._)`${count2} > ${max}`, () => gen.assign(valid, false).break());
           if (min === 1)
             gen.assign(valid, true);
           else
-            gen.if((0, codegen_1._)`${count} >= ${min}`, () => gen.assign(valid, true));
+            gen.if((0, codegen_1._)`${count2} >= ${min}`, () => gen.assign(valid, true));
         }
       }
     }
@@ -40117,9 +40456,9 @@ function assistantUsage(messages) {
   for (const message of messages) {
     const id = message.message.id;
     if (typeof id !== "string") continue;
-    const usage = message.message.usage;
-    if (!usage || typeof usage !== "object") continue;
-    const counters = usage;
+    const usage2 = message.message.usage;
+    if (!usage2 || typeof usage2 !== "object") continue;
+    const counters = usage2;
     if (USAGE_COUNTERS.some((name) => typeof counters[name] !== "number")) continue;
     latest.set(id, {
       input: counters.input_tokens,
@@ -40130,16 +40469,16 @@ function assistantUsage(messages) {
   }
   if (!latest.size) return;
   const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  for (const usage of latest.values()) for (const key of ["input", "output", "cacheRead", "cacheWrite"]) totals[key] += usage[key];
+  for (const usage2 of latest.values()) for (const key of ["input", "output", "cacheRead", "cacheWrite"]) totals[key] += usage2[key];
   return totals;
 }
 function coreUsage(results) {
   if (!results.length) return;
   const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   for (const result of results) {
-    const usage = result.usage;
-    if (!usage || typeof usage !== "object") return;
-    const counters = usage;
+    const usage2 = result.usage;
+    if (!usage2 || typeof usage2 !== "object") return;
+    const counters = usage2;
     if (USAGE_COUNTERS.some((name) => typeof counters[name] !== "number")) return;
     totals.input += counters.input_tokens;
     totals.output += counters.output_tokens;
@@ -40267,8 +40606,8 @@ var CcAgentWorker = class {
       } : settled;
     };
     const progress = () => {
-      const usage = observedUsage();
-      task.reportProgress?.({ retries: [...retries], ...usage ? { usage } : {} });
+      const usage2 = observedUsage();
+      task.reportProgress?.({ retries: [...retries], ...usage2 ? { usage: usage2 } : {} });
     };
     let dreamState = "first";
     const toolsAllowed = () => task.kind !== "dreaming" || dreamState !== "complete";
@@ -40370,11 +40709,11 @@ var CcAgentWorker = class {
           if (protocolError) throw protocolError;
           if (!results.length) throw new Error("CC worker ended without an SDK result message");
           origins.requireDispatchedWrites();
-          const usage = observedUsage();
+          const usage2 = observedUsage();
           return {
             outcome,
             output,
-            ...usage ? { usage } : {},
+            ...usage2 ? { usage: usage2 } : {},
             ...retries.length ? { retries } : {},
             mode: "subagent",
             ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
@@ -40385,12 +40724,12 @@ var CcAgentWorker = class {
           controller.abort(error3);
           const cancelled = task.signal?.aborted === true;
           const cause = protocolError && !cancelled ? protocolError : error3;
-          const usage = observedUsage();
+          const usage2 = observedUsage();
           const specific = nativeFailureOutput ?? (cause instanceof Error ? cause.message : String(cause));
           return {
             outcome: cancelled ? "cancelled" : "failure",
             output: specific,
-            ...usage ? { usage } : {},
+            ...usage2 ? { usage: usage2 } : {},
             ...retries.length ? { retries } : {},
             mode: "subagent",
             ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
@@ -40546,7 +40885,7 @@ var CcProjection = class {
     const branch = rest.branch ?? this.binding.branch;
     const selected = sessionId === null || !published && this.lastResult ? null : this.memory.store.selectedSourceEntrySnapshot(sessionId, branch);
     const previous = selected ? null : this.lastResult;
-    const count = selectedEntryIds?.length ?? selected?.count ?? previous?.selectedCount ?? 0;
+    const count2 = selectedEntryIds?.length ?? selected?.count ?? previous?.selectedCount ?? 0;
     const result = {
       state,
       snapshot: snapshot2,
@@ -40556,8 +40895,8 @@ var CcProjection = class {
       appendedEntryIds: [],
       selectedAppendedEntryIds: [],
       problems,
-      selectedCount: count,
-      selectedTailId: selectedEntryIds ? selectedEntryIds[count - 1] ?? null : selected?.tailId ?? previous?.selectedTailId ?? null,
+      selectedCount: count2,
+      selectedTailId: selectedEntryIds ? selectedEntryIds[count2 - 1] ?? null : selected?.tailId ?? previous?.selectedTailId ?? null,
       ...rest
     };
     Object.defineProperty(result, "selectedEntryIds", { enumerable: true, get: () => selectedEntryIds?.slice() ?? selected?.ids() ?? previous?.selectedEntryIds ?? [] });
@@ -42374,7 +42713,7 @@ var databaseIdentity = (path) => {
 };
 var positiveId = (value) => Number.isSafeInteger(value) && Number(value) > 0;
 var object6 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
-var identityCount = (injection) => injection.knowledgeCommitIds.length + (injection.knowledgeStates ?? []).reduce((count, state) => count + 1 + state.toCommits.length, 0) + (injection.factIds?.length ?? 0) + (injection.entryIds?.length ?? 0);
+var identityCount = (injection) => injection.knowledgeCommitIds.length + (injection.knowledgeStates ?? []).reduce((count2, state) => count2 + 1 + state.toCommits.length, 0) + (injection.factIds?.length ?? 0) + (injection.entryIds?.length ?? 0);
 function injectionFrame(binding, injection, hash3) {
   if (injection.knowledgeTokens !== void 0 && (!Number.isSafeInteger(injection.knowledgeTokens) || injection.knowledgeTokens < 0))
     throw new Error("invalid Knowledge accounting metadata");
@@ -42752,6 +43091,7 @@ async function ccDeltaInjection(config3, input, event, slice) {
 var CC_SLICE_COUNT = 24;
 var CC_SLICE_LIMIT = 1e4;
 var CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segments, order knowledge by the header's p[0] segment number, then by position within that segment: higher segments and later items are newer. Arrival order is not recency. For claims about the same object, the newer item takes precedence until maintenance merges them.";
+var ccKnowledgeHeader = (binding) => binding.coreSession === null ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE);
 var address = (item) => item.kind === "knowledge" ? item.address : item.kind === "fact" ? `F${item.factId}` : item.kind === "raw" ? item.address : item.kind === "state" ? item.address : "";
 function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinity) {
   const slots = Array.from({ length: CC_SLICE_COUNT }, () => ({ items: [] }));
@@ -42775,10 +43115,11 @@ function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinit
     entryIds: members.flatMap((item) => item.kind === "raw" ? [item.entryId] : []),
     slice: [index, CC_SLICE_COUNT]
   });
-  const itemText = (item) => transportItemText(item, CC_KNOWLEDGE_RECENCY_NOTICE);
+  const header = ccKnowledgeHeader(binding);
+  const itemText = (item) => transportItemText(item, header);
   const assemble = (items3, index) => {
     const members = [...items3].sort((a, b) => rank(a) - rank(b) || (a.kind === "knowledge" && b.kind === "knowledge" ? a.commitId - b.commitId : 0));
-    const knowledge = knowledgeBlockParts(members.filter((item) => item.kind === "knowledge").map((item) => ({ category: "items", text: item.text })), CC_KNOWLEDGE_RECENCY_NOTICE);
+    const knowledge = knowledgeBlockParts(members.filter((item) => item.kind === "knowledge").map((item) => ({ category: "items", text: item.text })), header);
     const sections = [
       ...members.filter((item) => item.kind === "state").map((item) => [itemText(item)]),
       ...knowledge.length ? [knowledge] : [],
@@ -42815,13 +43156,13 @@ function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinit
   };
   for (const item of ordered.filter((item2) => item2.kind === "receipt")) {
     if (tryPlace(item)) continue;
-    const count = item.text.match(/omitted (\d+)/)?.[1];
+    const count2 = item.text.match(/omitted (\d+)/)?.[1];
     const expansion = item.text.split("expand: ")[1];
     const addresses = expansion?.match(/(?:K\d+(?:@v\d+)?|F\d+|T\d+#E\d+)/g) ?? [];
     const compact = {
       kind: "receipt",
       knowledge: item.knowledge,
-      text: `omitted ${count ?? "1"} ${count ? "items" : "receipt"}; expand: ${expandList(addresses)}`
+      text: `omitted ${count2 ?? "1"} ${count2 ? "items" : "receipt"}; expand: ${expandList(addresses)}`
     };
     if (!addresses.length || !tryPlace(compact)) throw new Error("CC core omission receipt has no usable expansion address");
   }
@@ -43144,13 +43485,13 @@ function carrier(text, identity) {
     if (!header2) throw new Error("memory carrier failed identity or digest verification");
     return { retained: payload, offset: HOOK_CONTEXT.length };
   }
-  const preview = /^<persisted-output>\n[^\n]*Full output saved to: ([^\n]+)\n\nPreview \(first 2KB\):\n([\s\S]+)\n\.\.\.\n<\/persisted-output>$/.exec(payload);
-  if (!preview || !(0, import_node_path9.isAbsolute)(preview[1])) throw new Error("malformed native memory preview");
-  const retained = preview[2], header = decodeCcInjectionHeader(retained, identity);
+  const preview2 = /^<persisted-output>\n[^\n]*Full output saved to: ([^\n]+)\n\nPreview \(first 2KB\):\n([\s\S]+)\n\.\.\.\n<\/persisted-output>$/.exec(payload);
+  if (!preview2 || !(0, import_node_path9.isAbsolute)(preview2[1])) throw new Error("malformed native memory preview");
+  const retained = preview2[2], header = decodeCcInjectionHeader(retained, identity);
   if (!header) throw new Error("memory preview failed identity verification");
   let full;
   try {
-    full = (0, import_node_fs11.readFileSync)(preview[1], "utf8");
+    full = (0, import_node_fs11.readFileSync)(preview2[1], "utf8");
   } catch (error3) {
     if (error3.code !== "ENOENT") throw error3;
   }
@@ -43367,10 +43708,10 @@ var import_node_crypto16 = require("node:crypto");
 function createScanner(text, ignoreTrivia = false) {
   const len = text.length;
   let pos = 0, value = "", tokenOffset = 0, token = 16, lineNumber = 0, lineStartOffset = 0, tokenLineStartOffset = 0, prevTokenLineStartOffset = 0, scanError = 0;
-  function scanHexDigits(count, exact) {
+  function scanHexDigits(count2, exact) {
     let digits = 0;
     let value2 = 0;
-    while (digits < count || !exact) {
+    while (digits < count2 || !exact) {
       let ch = text.charCodeAt(pos);
       if (ch >= 48 && ch <= 57) {
         value2 = value2 * 16 + ch - 48;
@@ -43384,7 +43725,7 @@ function createScanner(text, ignoreTrivia = false) {
       pos++;
       digits++;
     }
-    if (digits < count) {
+    if (digits < count2) {
       value2 = -1;
     }
     return value2;
@@ -44009,9 +44350,9 @@ function format(documentText, range, options) {
   }
   return editOperations;
 }
-function repeat(s, count) {
+function repeat(s, count2) {
   let result = "";
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < count2; i++) {
     result += s;
   }
   return result;
@@ -44760,6 +45101,80 @@ function saveCcConfig(path, original, updated) {
   return next;
 }
 
+// src/hosts/cc/files.ts
+var usage = "fs read <path> [offset] [limit] | fs grep [-i] [-n] [-c] [-F] [-A|-B|-C <n>] [--glob <g>] [--offset <n>] [--limit <n>] [--] <pattern> [path] | fs glob <pattern>";
+var integer3 = (value, name) => {
+  const number5 = Number(value);
+  if (value === void 0 || !Number.isSafeInteger(number5) || number5 < 0) throw new Error(`${name} must be a non-negative integer`);
+  return number5;
+};
+function parseGrepArgs(args) {
+  const options = {}, rest = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") {
+      rest.push(...args.slice(i + 1));
+      break;
+    }
+    if (arg === "--glob" || arg === "--offset" || arg === "--limit") {
+      const value = args[++i];
+      if (arg === "--glob") {
+        if (!value) throw new Error("--glob needs a pattern");
+        options.glob = value;
+      } else options[arg === "--offset" ? "offset" : "limit"] = integer3(value, arg);
+      continue;
+    }
+    if (!/^-[A-Za-z]/.test(arg)) {
+      rest.push(arg);
+      continue;
+    }
+    for (let j = 1; j < arg.length; j++) {
+      const flag = arg[j];
+      if (flag === "i") options.ignoreCase = true;
+      else if (flag === "n") options.mode = "content";
+      else if (flag === "c") options.mode = "count";
+      else if (flag === "l") options.mode = "files_with_matches";
+      else if (flag === "F") options.literal = true;
+      else if (flag === "A" || flag === "B" || flag === "C") {
+        const value = integer3(arg.slice(j + 1) || args[++i], `-${flag}`);
+        if (flag !== "A") options.before = value;
+        if (flag !== "B") options.after = value;
+        break;
+      } else throw new Error(`unknown grep flag -${flag}; ${usage}`);
+    }
+  }
+  const [pattern, path = "/tm", ...extra] = rest;
+  if (pattern === void 0 || extra.length) throw new Error(usage);
+  return { pattern, path, options };
+}
+function runCcFiles(config3, nativeSessionId, [op, ...args]) {
+  const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
+  const memory = TraceMemory(config3.dbPath, async () => {
+    throw new Error("/tm reads run no model work");
+  }, config3.coreConfig);
+  try {
+    const core = binding?.dbPath === config3.dbPath ? binding.coreSessionId : null;
+    const reader = core !== null && memory.store.getSession(core) ? { ...memory.store.knowledgePath(core, binding.branch), projectId: memory.store.getSession(core).projectId } : { ...binding?.dbPath === config3.dbPath && binding.projectId !== null ? { projectId: binding.projectId } : {} };
+    const files = memoryFiles(memory, reader);
+    if (op === "read") {
+      const [path, offset, limit, ...extra] = args;
+      if (!path || extra.length) throw new Error(usage);
+      return files.read(path, offset === void 0 ? void 0 : integer3(offset, "offset"), limit === void 0 ? void 0 : integer3(limit, "limit"));
+    }
+    if (op === "grep") {
+      const { pattern, path, options } = parseGrepArgs(args);
+      return files.grep(pattern, path, options);
+    }
+    if (op === "glob") {
+      if (args.length !== 1) throw new Error(usage);
+      return files.glob(args[0]);
+    }
+    throw new Error(`${op === "write" || op === "edit" ? `${op}: /tm is read-only` : `unknown operation ${String(op)}`}; ${usage}`);
+  } finally {
+    memory.store.close();
+  }
+}
+
 // src/hosts/trace-menu.ts
 function parseRunsCount(input) {
   if (!/^[1-9]\d*$/.test(input) || !Number.isSafeInteger(Number(input)))
@@ -44984,8 +45399,8 @@ async function readStdin() {
 }
 async function runCcCommand(argv = process.argv.slice(2)) {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "hook-compact" && command !== "cli" || configFlag !== "--config" || !configPath)
-    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
+  if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "hook-compact" && command !== "cli" && command !== "fs" || configFlag !== "--config" || !configPath)
+    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|grep|glob ...");
   const config3 = readConfig(configPath);
   if (command === "mcp") {
     await runCcStdioMcp(config3);
@@ -45060,6 +45475,11 @@ async function runCcCommand(argv = process.argv.slice(2)) {
   }
   if (sessionFlag !== "--session" || !nativeSessionId || !verb)
     throw new Error("CLI requires --session <native-id> and a command");
+  if (command === "fs") {
+    process.stdout.write(`${JSON.stringify(runCcFiles(config3, nativeSessionId, [verb, ...rest]))}
+`);
+    return;
+  }
   if (verb === "menu" || verb === "runs") {
     if (rest[0] !== "--json" || verb === "menu" && !(rest.length === 1 || rest.length === 2 && rest[1] === "--snapshot") || verb === "runs" && rest.length !== 2)
       throw new Error(verb === "runs" ? "runs requires --json <count>" : "menu requires --json [--snapshot]");

@@ -26,9 +26,10 @@ import { handleCcHook } from "../../../src/hosts/cc/index.ts";
 import * as ccNative from "../../../src/hosts/cc/native-session.ts";
 import { CcImporter } from "../../../src/hosts/cc/importer.ts";
 import { Store } from "../../../src/core/store/index.ts";
-import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts, session as seedSession } from "../../support/seed.ts";
+import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyArchive, legacyFacts, session as seedSession } from "../../support/seed.ts";
 import { ccCompaction, ccDeltaInjection, databaseIdentity, decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../../src/hosts/cc/slices.ts";
+import { KNOWLEDGE_RECENCY_NOTICE } from "../../../src/core/render/index.ts";
 import { CC_AUTO_CONTINUE_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccStripAutoContinue } from "../../../src/hosts/cc/transcript.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import type { DirectoryOptions } from "../../../src/core/project/directory.ts";
@@ -522,6 +523,46 @@ test("2026-09-28, 99: archive kind is required; budget retains parent while inva
   const found = search.execute({ query: "Old unique guidance", layer: "knowledge", versions: "history" });
   expect(found).toContain(`[K${invalidId}@v1]`);
   expect(found).toContain("archived on this path (historical version)");
+});
+
+test("2026-09-28, 101: 'grep 直接搜完整原文' — grep reaches Raw beyond its compressed and fact-projected views", () => {
+  const { s, t } = session();
+  memory.store.appendToolCall({ turnId: t.id, name: "Read", input: JSON.stringify({ path: "notes.md" }), status: "success",
+    result: `${"filler ".repeat(2_000)}hashline-deep-in-raw${" tail".repeat(50)}` });
+  const { path } = memoryWriter();
+  recorded(memory, s.id, "main", t.id);
+  const found = api.memoryFiles(memory, path).grep("hashline-deep-in-raw", `/tm/S${s.id}`).lines;
+  expect(found).toHaveLength(1);
+  const [, entryOrdinal] = /\/E(\d+)$/.exec(found[0]!)!;
+  expect(found[0]).toBe(`/tm/S${s.id}/T${t.id}/E${entryOrdinal}`);
+  // Neither the Turn's fact projection nor the entry's compressed view holds the text.
+  expect(memory.trace(`S${s.id}/T${t.id}`, { ...path, pageBudget: null })).not.toContain("hashline-deep-in-raw");
+  expect(memory.trace(`T${t.id}#E${entryOrdinal}`, { ...path, pageBudget: null })).not.toContain("hashline-deep-in-raw");
+});
+
+test("2026-09-28, 101: '1-2. 可以' (1) — an archive written before 99 lists and searches with its parent's body; its own version stays empty", () => {
+  const { path, write, create } = memoryWriter();
+  const base = write([{ ...create, text: "Legacy okapi guidance" }]).committed[0];
+  const commit = legacyArchive(memory.store, path, base.knowledgeId, commitOf(base), [1]);
+  const files = api.memoryFiles(memory, path);
+  expect(files.read("/tm/knowledge-all").lines.find(line => line.startsWith(`/tm/K${base.knowledgeId}@`)))
+    .toBe(`/tm/K${base.knowledgeId}@v2  [constraint/project p] (archived at v2) Legacy okapi guidance`);
+  expect(files.grep("okapi", "/tm/knowledge-all").lines).toEqual([`/tm/K${base.knowledgeId}@v1 (historical; latest v2, archived)`,
+    `/tm/K${base.knowledgeId}@v2 (archived)`]);
+  expect(memory.store.getKnowledgeRevision(base.knowledgeId, commit)!.text).toBe("");
+  expect(files.read(`/tm/K${base.knowledgeId}@v2`).lines.join("\n")).not.toContain("okapi");
+});
+
+test("2026-09-28, 101: '1-2. 可以' (2) — the injected knowledge notice names the session and /tm/S<n>/knowledge", () => {
+  const { s, t } = session();
+  seededKnowledge(s.id, t.id);
+  const line = `Session S${s.id}: a subagent inherits this session's knowledge by reading /tm/S${s.id}/knowledge.`;
+  expect(memory.inject(s.id).split("\n").slice(0, 3)).toEqual(["<knowledge>", KNOWLEDGE_RECENCY_NOTICE, line]);
+  expect(compacted(memory.compact(s.id, "main", t.id))).toContain(`${KNOWLEDGE_RECENCY_NOTICE}\n${line}\n`);
+  const cc = sliceCcInjection({ db: "db", nativeSession: "native", coreSession: s.id }, memory.injection(s.id, undefined, true).transportItems!)
+    .filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext).join("\n");
+  expect(cc).toContain(line);
+  expect(memory.inject({ projectId: memory.store.getSession(s.id)!.projectId })).not.toContain("Session S");
 });
 
 test("2026-09-24, 85: '余量只有一点，几乎必然导致每次C都会触发D' — over budget alone never makes Dreaming due", async () => {

@@ -404,6 +404,29 @@ function renderTraceSettings(input) {
   };
 }
 
+// src/core/model/address.ts
+var MEMORY_ROOT = "/tm";
+var MEMORY_READ_ONLY = `${MEMORY_ROOT}/ is Trace Memory and read-only: record facts with the note tool and knowledge with the memory tool.`;
+function memoryPath(value) {
+  if (typeof value !== "string" || !value.startsWith("/")) return null;
+  const segments = [];
+  for (const segment of value.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") segments.pop();
+    else segments.push(segment);
+  }
+  return segments[0] === "tm" ? `/${segments.join("/")}` : null;
+}
+function memoryGlob(pattern, path) {
+  if (typeof pattern !== "string" || !pattern) return null;
+  const full = pattern.startsWith("/") ? pattern : typeof path === "string" && path.startsWith("/") ? `${path.replace(/\/+$/, "")}/${pattern}` : null;
+  if (!full) return null;
+  const segments = full.split("/"), wild = segments.findIndex((segment) => /[*?[\]{}]/.test(segment));
+  const literal = wild < 0 ? full : segments.slice(0, wild).join("/") || "/";
+  const root = memoryPath(literal);
+  return root === null ? null : wild < 0 ? root : [root, ...segments.slice(wild)].join("/");
+}
+
 // plugin/hooks/index.tsx
 var PINNED_VERSION = "2.1.280";
 var screen = "main";
@@ -487,7 +510,71 @@ async function nativeCompaction($, e, next, session) {
     return result;
   }
 }
+async function memoryFiles($, args) {
+  const root = $.plugin.root, session = await $.session.id();
+  const run = await $.process.run(["node", `${root}/dist/cc.cjs`, "fs", "--config", `${root}/cc.config.json`, "--session", session, ...args]);
+  if (run.exitCode !== 0) throw new Error(String(run.stderr || `exit ${run.exitCode}`).replace(/^Trace Memory CC: /, "").trim());
+  return JSON.parse(run.stdout);
+}
+var failure = (error) => ({ deny: error instanceof Error ? error.message : String(error) });
+var listed = (listing) => listing.cut ? [...listing.lines, listing.cut] : listing.lines;
 export const register = (on) => {
+  on("tool.call", { tool: "Read" }, async ($, e, next) => {
+    const path = memoryPath(e.file_path);
+    if (path === null) return next(e);
+    try {
+      const page = await memoryFiles($, ["read", path, String(e.offset ?? 1), ...e.limit === void 0 ? [] : [String(e.limit)]]);
+      const lines = listed(page);
+      return { result: { type: "text", file: {
+        filePath: e.file_path,
+        content: lines.join("\n"),
+        numLines: lines.length,
+        startLine: page.startLine,
+        totalLines: page.totalLines
+      } } };
+    } catch (error) {
+      return failure(error);
+    }
+  });
+  on("tool.call", { tool: "Grep" }, async ($, e, next) => {
+    const path = memoryPath(e.path);
+    if (path === null) return next(e);
+    const mode = e.output_mode === "content" || e.output_mode === "count" ? e.output_mode : "files_with_matches";
+    const context = e["-C"] ?? e.context;
+    try {
+      const listing = await memoryFiles($, [
+        "grep",
+        mode === "content" ? "-n" : mode === "count" ? "-c" : "-l",
+        ...e["-i"] ? ["-i"] : [],
+        ...context !== void 0 ? ["-C", String(context)] : [],
+        ...e["-A"] !== void 0 ? ["-A", String(e["-A"])] : [],
+        ...e["-B"] !== void 0 ? ["-B", String(e["-B"])] : [],
+        ...e.glob ? ["--glob", e.glob] : [],
+        ...e.offset ? ["--offset", String(e.offset)] : [],
+        ...e.head_limit ? ["--limit", String(e.head_limit)] : [],
+        "--",
+        e.pattern,
+        path
+      ]);
+      const lines = listed(listing);
+      return { result: mode === "files_with_matches" ? { mode, numFiles: listing.lines.length, filenames: lines } : { mode, numFiles: 0, filenames: [], content: lines.join("\n"), numLines: lines.length } };
+    } catch (error) {
+      return failure(error);
+    }
+  });
+  on("tool.call", { tool: "Glob" }, async ($, e, next) => {
+    const pattern = memoryGlob(e.pattern, e.path);
+    if (pattern === null) return next(e);
+    try {
+      const listing = await memoryFiles($, ["glob", pattern]);
+      return { result: { durationMs: 0, numFiles: listing.lines.length, filenames: listed(listing), truncated: !!listing.cut } };
+    } catch (error) {
+      return failure(error);
+    }
+  });
+  on("tool.call", { tool: "Edit" }, ($, e, next) => memoryPath(e.file_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
+  on("tool.call", { tool: "Write" }, ($, e, next) => memoryPath(e.file_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
+  on("tool.call", { tool: "NotebookEdit" }, ($, e, next) => memoryPath(e.notebook_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
   on("session.compact", async ($, e, next) => {
     if (e.trigger === "precompute" || e.trigger === "plugin" || e.agentId) return next(e);
     let session;

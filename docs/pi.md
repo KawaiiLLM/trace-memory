@@ -734,6 +734,10 @@ Unavailable states return `available: false` with `reason` and `message`; a host
 this way too, never as native compaction (73: `compact` no longer refuses for capacity). Successful
 results are detached from later changes.
 
+## Memory files under /tm (101)
+
+The extension registers `read` and `grep` of the same names as Pi's own. A path under `/tm/` reads Trace Memory as read-only files for the session's reader: `/tm/<address>` is what `trace(<address>)` shows, `read /tm` shows the layout, and `grep` lists matching files by default (`output_mode: "content"` shows `path:line:text`, `count` counts) and searches Raw entries in full. Every other path goes to Pi's own tool unchanged. `edit` and `write` under `/tm/` are blocked with a pointer to `note` and `memory`; reading records nothing. `pi-subagents` children load the package's extensions and so read `/tm/` too; the injected knowledge names `/tm/S<n>/knowledge`, the knowledge a fresh context of the session receives, so a main agent can point a child at it. Pi keeps the first registration of a tool name: when another extension registered `read` or `grep` first, the session start warns that it cannot read `/tm/`.
+
 ## Compaction and the post-compaction boundary
 
 `session_before_compact` reconciles persisted history and asks core to allocate one frozen selected-path

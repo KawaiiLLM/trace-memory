@@ -10,7 +10,7 @@ import { NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, 
 import type { Fact } from "../../../src/core/model/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
-import { KNOWLEDGE_RECENCY_NOTICE, budgetFacts, budgetKnowledge, charge, finish, renderFact, renderFactGroups, renderKnowledge, renderKnowledgeBlock, wholeKnowledge, xmlBlock } from "../../../src/core/render/index.ts";
+import { KNOWLEDGE_RECENCY_NOTICE, sessionKnowledgeNotice, budgetFacts, budgetKnowledge, charge, finish, renderFact, renderFactGroups, renderKnowledge, renderKnowledgeBlock, wholeKnowledge, xmlBlock } from "../../../src/core/render/index.ts";
 import { budgetMaterial, compactText, rawWindowTokens, injectionText, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -47,7 +47,8 @@ function seeded() {
   expect(seedFact(memory, path, "Package manager decision", [{ entry: user, text: "Use pnpm" }]).id).toBe(1);
   expect(seedKnowledge(memory.store, path, "project", "constraint", [1], "The project uses pnpm",
     { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [] } }).knowledgeId).toBe(1);
-  knowledgeBlock = `<knowledge>\n${KNOWLEDGE_RECENCY_NOTICE}\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] The project uses pnpm\n  change supports: F1\n</knowledge>`;
+  // 101 (ruled): a session's own knowledge header also names the session and its inheritance path.
+  knowledgeBlock = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] The project uses pnpm\n  change supports: F1\n</knowledge>`;
   return { s, t, user, read: (address: string) => tools.find(tool => tool.name === "trace")!.execute({ address, cap: Number.MAX_SAFE_INTEGER }) };
 }
 let knowledgeBlock: string;
@@ -297,7 +298,7 @@ test("21b/92: foreground, compact and N render topics through one renderer, with
   const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: tag(1, 1),
     topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.", text: "The project uses pnpm",
     category: "constraint", scope: "project", supports: ["F1"] }, tag(1, 1)))[0]!;
-  const labelled = `<knowledge>\n${KNOWLEDGE_RECENCY_NOTICE}\n[${tag(1, changed.commit)}] [constraint/project] The project uses pnpm\n  change supports: F1 · topics: ["packaging","storage"]\n</knowledge>`;
+  const labelled = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n[${tag(1, changed.commit)}] [constraint/project] The project uses pnpm\n  change supports: F1 · topics: ["packaging","storage"]\n</knowledge>`;
   expect(memory.inject(s.id)).toBe(labelled);
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(labelled)).toBe(true);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });

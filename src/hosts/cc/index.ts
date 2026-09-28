@@ -17,6 +17,7 @@ import { readCcMenu, readCcRuns } from "./menu.ts";
 import type { CcContextSnapshot } from "./menu-context.ts";
 import { editedCcConfig, saveCcConfig, type CcSettingId } from "./menu-config.ts";
 import { executorSettings, executorSnapshot } from "./control.ts";
+import { runCcFiles } from "./files.ts";
 import { Store } from "../../core/store/index.ts";
 import { parseRunsCount } from "../trace-menu.ts";
 
@@ -169,8 +170,8 @@ async function readStdin(): Promise<string> {
 export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
   if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" &&
-      command !== "hook-compact" && command !== "cli") || configFlag !== "--config" || !configPath)
-    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
+      command !== "hook-compact" && command !== "cli" && command !== "fs") || configFlag !== "--config" || !configPath)
+    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|grep|glob ...");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config); return; }
   if (command === "hook-compact") {
@@ -234,6 +235,8 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
   }
   if (sessionFlag !== "--session" || !nativeSessionId || !verb)
     throw new Error("CLI requires --session <native-id> and a command");
+  // 101: the `/tm` read-only files the function hook answers Read, Grep and Glob from.
+  if (command === "fs") { process.stdout.write(`${JSON.stringify(runCcFiles(config, nativeSessionId, [verb, ...rest]))}\n`); return; }
   if (verb === "menu" || verb === "runs") {
     if (rest[0] !== "--json" || verb === "menu" && !(rest.length === 1 || rest.length === 2 && rest[1] === "--snapshot") || verb === "runs" && rest.length !== 2)
       throw new Error(verb === "runs" ? "runs requires --json <count>" : "menu requires --json [--snapshot]");

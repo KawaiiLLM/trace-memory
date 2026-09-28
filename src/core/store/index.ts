@@ -4176,6 +4176,26 @@ export class Store {
     return this.db.prepare("SELECT * FROM turns WHERE session_id = ? ORDER BY id").all(sessionId).map(toTurn);
   }
 
+  /** 101: every session, for the `/tm` listing. */
+  listSessions(): Session[] {
+    return this.db.prepare("SELECT * FROM sessions ORDER BY id").all().map(toSession);
+  }
+
+  /** 101: every fact's title, or the first line of a legacy untitled body, for the `/tm` listing. */
+  factHeadings(): { id: number; heading: string }[] {
+    return (this.db.prepare("SELECT id, COALESCE(title, substr(text, 1, 200)) AS heading FROM facts ORDER BY id").all() as
+      { id: number; heading: string }[]).map(row => ({ id: Number(row.id), heading: String(row.heading).split("\n")[0]! }));
+  }
+
+  /** 101: a session's current selected head — its most advanced lineage cursor, or its newest Turn
+   * when no host has recorded a cursor. */
+  currentPath(sessionId: number): KnowledgePath {
+    if (!this.getSession(sessionId)) throw new Error(`session S${sessionId} does not exist`);
+    const cursor = this.db.prepare(`SELECT branch, head_turn_id FROM session_lineage_cursors WHERE session_id = ?
+      ORDER BY head_turn_id DESC LIMIT 1`).get(sessionId) as { branch: string; head_turn_id: number } | undefined;
+    return cursor ? { sessionId, branch: cursor.branch, headTurnId: Number(cursor.head_turn_id) } : this.knowledgePath(sessionId);
+  }
+
   findNativeTurn(sessionId: number, nativeLineage: string, nativeId: string): { turnId: number; kind: "turn" | "compaction" } | null {
     const row = this.db.prepare("SELECT turn_id, kind FROM native_turns WHERE session_id = ? AND native_lineage = ? AND native_id = ?")
       .get(sessionId, nativeLineage, nativeId) as { turn_id: number; kind: "turn" | "compaction" } | undefined;

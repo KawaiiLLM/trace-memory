@@ -305,7 +305,7 @@ function notingMaterial(frozen: { sessionId: number; harness: string; headEntryI
     // its own context. It covers the whole frozen range, not only what was supplied.
     sources,
     facts: inheriting ? [] : assembled.facts ?? [],
-    ...(inheriting ? {} : { knowledge: assembled.knowledge }),
+    ...(inheriting ? {} : { knowledge: assembled.knowledge, knowledgeNotice: assembled.knowledgeNotice }),
     receipts,
   };
   // 20a: core owns the block order, the titles and the separators; 29b: there is one layout, and the

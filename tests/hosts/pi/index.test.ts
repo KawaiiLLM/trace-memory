@@ -77,8 +77,9 @@ test("legacy source-only fact without an entry binding fails as damaged data", a
 
 test("smoke: the default extension loads and registers the Pi hooks, tools, and read-only command", async () => {
   const h = host();
-  expect([...h.tools.keys()]).toEqual(["trace", "search", "note", "memory"]);
-  for (const name of ["agent_settled", "session_before_compact", "before_agent_start", "message_update", "message_end", "tool_result", "session_start", "session_before_tree", "session_tree"]) expect(h.hooks.has(name)).toBe(true);
+  // 101: same-name read and grep serve /tm/ and hand every other path to Pi's own tools.
+  expect([...h.tools.keys()]).toEqual(["read", "grep", "trace", "search", "note", "memory"]);
+  for (const name of ["tool_call", "agent_settled", "session_before_compact", "before_agent_start", "message_update", "message_end", "tool_result", "session_start", "session_before_tree", "session_tree"]) expect(h.hooks.has(name)).toBe(true);
   await h.emit("session_start");
   await h.commands.get("trace").handler("", h.ctx);
   expect(h.notices.at(-1)).toContain("Trace Memory · No session · Unassigned");
