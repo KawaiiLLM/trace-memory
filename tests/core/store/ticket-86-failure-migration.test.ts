@@ -13,6 +13,13 @@ const audit = (db: DatabaseSync) => Object.fromEntries([
 ].map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
 const streaks = (db: DatabaseSync) => db.prepare("SELECT * FROM task_failures ORDER BY session_id,phase,head").all();
 
+/** A pre-104 Dreamer execution, keyed by a backlog head and no pool: the current API admits no such row. */
+function legacyExecution(store: Store, sessionId: number, head: number): string {
+  const id = `legacy-d-${head}`;
+  store.db.prepare("INSERT INTO task_executions(id,session_id,phase,head,updated_at) VALUES (?,?,'dreaming',?,'legacy')").run(id, sessionId, head);
+  return id;
+}
+
 function reserve(store: Store, path: TaskTarget, pool: string, executor: string) {
   const claim = store.acquireClaim(path, "dreaming", executor);
   if (!claim) throw new Error("fixture Dreamer claim is unavailable");
@@ -49,14 +56,14 @@ function legacyDatabase() {
     expect(failed.range.id).toBe(second!.commit);
     expect(failed.range.anchor).toBe(first!.commit);
     expect(failed.range.eventIds).toEqual([first!.commit, second!.commit]);
-    const oldExecution = store.beginExecution({ sessionId: session.id, phase: "dreaming", head: failed.range.id });
+    const oldExecution = legacyExecution(store, session.id, failed.range.id);
     const oldRun = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", createdAt: "now",
       executionId: oldExecution, dreamingRangeId: failed.range.id, claim: failed.claim });
     store.completeKnowledgePoolRange(oldRun, "failure");
     store.settleExecution(oldExecution, "failure", store.dreamingRunId(oldRun)!, "legacy failure of first revision");
     store.releaseClaim(failed.claim);
     const processed = reserve(store, path, pool, "legacy-success");
-    const successExecution = store.beginExecution({ sessionId: session.id, phase: "dreaming", head: processed.range.id });
+    const successExecution = legacyExecution(store, session.id, processed.range.id);
     const successRun = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", createdAt: "now",
       executionId: successExecution, dreamingRangeId: processed.range.id, claim: processed.claim });
     // Historical run explicitly skipped only the first frozen item; the second is untouched.
@@ -72,18 +79,19 @@ function legacyDatabase() {
       VALUES ('legacy-c',?,'consolidation',?,'failure',?,'preserved consolidation failure','legacy')`)
       .run(session.id, fact.facts[0]!.id, historical.id);
     store.db.prepare("INSERT INTO execution_runs VALUES (?, 'legacy-c')").run(historical.id);
-    store.db.prepare("INSERT INTO task_failures VALUES (?,'consolidation',?,1,'preserved consolidation failure',?,'legacy')")
+    store.db.prepare(`INSERT INTO task_failures(session_id,phase,head,count,last_reason,last_run_id,updated_at)
+      VALUES (?,'consolidation',?,1,'preserved consolidation failure',?,'legacy')`)
       .run(session.id, fact.facts[0]!.id, historical.id);
     // The pre-86 database had identical execution tables but no application-version marker.
     store.db.exec("PRAGMA user_version = 0");
-    return { file, path, pool, budget, disabledId: disabled.id, nextRevision: second!.commit,
+    return { file, path, pool, budget, disabledId: disabled.id,
       beforeAudit: audit(store.db), beforeStreaks: streaks(store.db) };
   } finally { store.close(); }
 }
 
 function failNextRevision(store: Store, path: TaskTarget, pool: string) {
   const { claim, range } = reserve(store, path, pool, "new-failure");
-  const executionId = store.beginExecution({ sessionId: path.sessionId, phase: "dreaming", head: range.anchor });
+  const executionId = store.beginExecution({ sessionId: path.sessionId, phase: "dreaming", pool: range.pool! });
   const run = store.bindDreamingRun({ kind: "dreaming", sessionId: path.sessionId, branch: path.branch, createdAt: "now",
     executionId, dreamingRangeId: range.id, claim });
   store.completeKnowledgePoolRange(run, "failure");
@@ -92,7 +100,7 @@ function failNextRevision(store: Store, path: TaskTarget, pool: string) {
   return result;
 }
 
-test("86 option A: clear only old D streaks once; a formerly colliding revision starts at one and reopen preserves its count", () => {
+test("86 option A: clear only old D streaks once; 104: the pool's streak then starts at one and reopen preserves its count", () => {
   const fixture = legacyDatabase();
   let store = new Store(fixture.file);
   try {
@@ -103,14 +111,14 @@ test("86 option A: clear only old D streaks once; a formerly colliding revision 
     expect(store.enabled(fixture.disabledId)).toBe(false);
     expect(failNextRevision(store, fixture.path, fixture.pool)).toEqual({});
     expect(store.taskFailures(fixture.path.sessionId).filter(row => row.phase === "dreaming"))
-      .toMatchObject([{ head: fixture.nextRevision, count: 1 }]);
+      .toMatchObject([{ head: null, pool: fixture.pool, count: 1 }]);
     store.close(); store = new Store(fixture.file);
     expect(store.taskFailures(fixture.path.sessionId).filter(row => row.phase === "dreaming"))
-      .toMatchObject([{ head: fixture.nextRevision, count: 1 }]);
+      .toMatchObject([{ head: null, pool: fixture.pool, count: 1 }]);
     expect(failNextRevision(store, fixture.path, fixture.pool)).toEqual({});
     store.close(); store = new Store(fixture.file);
     expect(store.taskFailures(fixture.path.sessionId).filter(row => row.phase === "dreaming"))
-      .toMatchObject([{ head: fixture.nextRevision, count: 2 }]);
+      .toMatchObject([{ head: null, pool: fixture.pool, count: 2 }]);
     expect(failNextRevision(store, fixture.path, fixture.pool).automaticOff).toBeTruthy();
     expect(store.enabled(fixture.path.sessionId)).toBe(false);
     expect(store.enabled(fixture.disabledId)).toBe(false);

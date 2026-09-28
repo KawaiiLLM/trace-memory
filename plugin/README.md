@@ -20,13 +20,14 @@ Core phase bounds use optional top-level keys in the same file:
 | Key | Default | Meaning |
 | --- | ---: | --- |
 | `noting.triggerTokens` | 10,000 | Ordinary Noter trigger; catchup still drains below it |
-| `dreaming.triggerTokens` | 5,000 | Pending-trigger cap; each pool uses `min(cap, pool budget)` |
+| `dreaming.triggerTokens` | 5,000 | Dreamer trigger on the session's pending weight summed across its pools |
 | `dreaming.timeoutMs` | 600,000 | Dreamer wall-clock bound; no tool-round ceiling |
 | `compaction.sharedAllowanceTokens` | 10,000 | Shared allowance Knowledge borrows first, then unprocessed Raw |
 
 The shared material allowance is this configured value, not derived from the N or D triggers.
 Noter publishes facts and knowledge together; facts have no later processing queue. Database pool
-budgets still size pools and cap Dreamer batches.
+budgets still size pools and decide a Dreamer run's success; a session whose knowledge exceeds their
+sum plus the shared allowance is due for a Dreamer run.
 
 Optional `retry: { "maxRetries": 2 }` configures the native request retry count. Omission preserves
 Claude Code's native default; zero disables those retries. Timing, backoff and eligible errors remain

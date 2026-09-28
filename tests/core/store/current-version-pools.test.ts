@@ -51,7 +51,7 @@ function claim(f: Fixture, executor = `executor-${Math.random()}`): TaskClaim {
 function begin(f: Fixture, pool: string, executor?: string) {
   const held = claim(f, executor);
   const range = f.store.retainKnowledgePoolRange(f.target, pool, held);
-  const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", head: range.anchor, origin: range.origin });
+  const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", pool: range.pool!, origin: range.origin });
   const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: f.session.id, branch: f.target.branch,
     dreamingRangeId: range.id, executionId, claim: held, createdAt: "now" });
   return { held, range, run };
@@ -89,7 +89,7 @@ test("85: direct Dreaming claim and range allow below-threshold pending, never a
   expect(() => f.store.freezeKnowledgePool(f.target, held)).toThrow(/No Knowledge pool is due/);
   const range = f.store.retainKnowledgePoolRange(f.target, pool, held);
   expect(range.eventIds).toHaveLength(1);
-  const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", head: range.anchor, origin: range.origin });
+  const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", pool: range.pool!, origin: range.origin });
   const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: f.session.id, branch: "main",
     dreamingRangeId: range.id, executionId, claim: held, createdAt: "now" });
   f.store.completeKnowledgePoolRange(run, "success", range.eventIds);
@@ -300,6 +300,7 @@ test("67: pool reads batch graph, processing history and rendering independently
   const f = setup();
   const graphInput = vi.spyOn(f.store, "commitGraphInput"), graph = vi.spyOn(f.store, "commitGraph");
   const prepare = vi.spyOn(f.store.db, "prepare"), render = vi.spyOn(rendering, "renderKnowledge");
+  const processingReads: number[] = [];
   try {
     for (const count of [3, 60]) {
       for (let i = count === 3 ? 0 : 3; i < count; i++) f.create((["global", "project", "session"] as const)[i % 3]!);
@@ -313,12 +314,13 @@ test("67: pool reads batch graph, processing history and rendering independently
       expect(graph).toHaveBeenCalledTimes(1);
       expect(render).toHaveBeenCalledTimes(count);
       // Ticket 80: the graph memo's own cache check runs `progressSignal`, whose one combined query
-      // also mentions "FROM knowledge_processed" in passing (its `kp` column) — match the exact
-      // processing-history query `knowledgePools` itself issues, not that substring.
-      expect(prepare.mock.calls.filter(([sql]) => sql.includes("SELECT p.pool, p.revision_id FROM knowledge_processed"))).toHaveLength(1);
+      // also mentions "FROM knowledge_processed" in passing (its `kp` column) — count the processing
+      // reads `knowledgePools` itself issues, not that substring. 104: batched per pool, never per identity.
+      processingReads.push(prepare.mock.calls.filter(([sql]) => sql.includes("FROM knowledge_processed WHERE pool = ?")).length);
       expect(prepare.mock.calls.length).toBeLessThanOrEqual(25);
       console.info(JSON.stringify({ fixture: "67 pool projection", count, elapsedMs, prepares: prepare.mock.calls.length }));
     }
+    expect(processingReads[1]).toBe(processingReads[0]);
     graphInput.mockClear();
     f.store.duePools(f.target);
     expect(graphInput).toHaveBeenCalledTimes(1);
@@ -378,7 +380,7 @@ test("85: freeze builds one pool projection; terminal consumption no longer read
     expect(graph).toHaveBeenCalledTimes(1);
     expect(frozen.pool.pool).toBe("global");
     expect(frozen.range.eventIds).toContain(first.commit);
-    const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", head: frozen.range.anchor, origin: frozen.range.origin });
+    const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", pool: frozen.range.pool!, origin: frozen.range.origin });
     const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: f.session.id, branch: "main",
       dreamingRangeId: frozen.range.id, executionId, claim: held, createdAt: "now" });
     const own = update(f, run, first, "maintained body");
@@ -424,7 +426,7 @@ test("67: admission observes intervening knowledge mutation and preserves enroll
   const f = setup(), executor = setup(f.store, "executor");
   f.store.setKnowledgeBudget("global", 100);
   const item = f.create("global", "evidence ".repeat(25));
-  expect(f.store.knowledgePools(f.target, 1).some(pool => pool.due)).toBe(true);
+  expect(f.store.duePools(f.target, 1)).not.toEqual([]);
   f.store.setEnrollment(executor.session.id, false);
   expect(f.store.admitKnowledgePool(f.target, "executor", false, executor.session.id, 1)).toEqual({ outcome: "dropped" });
   expect(f.store.admitKnowledgePool(f.target, "borrowed", true, undefined, 1)).toEqual({ outcome: "dropped" });
@@ -461,4 +463,38 @@ test("64c current versions: same-project relabel is a processing no-op", () => {
   f.store.mergeProject(f.project.id, f.project.id);
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual(before);
   expect(f.store.pendingVersions(`project:${f.project.id}`, f.target).map(v => v.revisionId)).not.toContain(item.commit);
+});
+
+test("104: a run's pool is the largest excess over its own budget, else the most pending weight", () => {
+  const f = setup();
+  f.create("global", "global ".repeat(40));
+  f.create("project", "project ".repeat(80));
+  f.create("session", "session ".repeat(20));
+  const projectPool = `project:${f.project.id}`, sessionPool = `session:${f.session.id}`;
+  const size = (pool: string) => f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
+  const selected = () => f.store.duePools(f.target, 1).map(value => value.pool);
+  expect(selected()).toEqual([projectPool]); // none over budget: the most pending weight
+  f.store.setKnowledgeBudget("global", size("global") - 30);
+  f.store.setKnowledgeBudget("session", size(sessionPool) - 10);
+  expect(selected()).toEqual(["global"]); // over budget beats more pending; the larger excess first
+  f.store.setKnowledgeBudget("global", size("global") - 5);
+  expect(selected()).toEqual([sessionPool]);
+});
+
+test("104: two sessions sharing a pool start one Dreamer run", async () => {
+  let release!: () => void, started = 0;
+  const memory = TraceMemory(":memory:", async () => {
+    started++;
+    await new Promise<void>(resolve => { release = resolve; });
+    return { outcome: "cancelled", output: "fixture", request: {} };
+  }, { dreaming: { triggerTokens: 1 } });
+  const a = setup(memory.store, "shared"), b = setup(memory.store, "shared");
+  a.create("project", "shared rule ".repeat(30));
+  expect([a, b].map(value => memory.taskEligibility("dreaming", value.target).due)).toEqual([true, true]);
+  const first = memory.dream(a.target);
+  await vi.waitFor(() => expect(started).toBe(1));
+  expect(await memory.dream(b.target)).toEqual({ outcome: "dropped" });
+  release();
+  expect((await first).outcome).toBe("cancelled");
+  expect(started).toBe(1);
 });

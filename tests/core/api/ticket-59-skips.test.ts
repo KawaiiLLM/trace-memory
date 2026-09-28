@@ -49,7 +49,7 @@ test("59/68: the memory schema branches on phase and says accepted Dreamer skips
 
 test("64c: a skip is audited but terminal success processes the frozen pair independently of the skip", async () => {
   const f = fixture(async task => {
-    expect(tool(task, "check").execute({})).toContain("Blockers: none");
+    expect(tool(task, "check").execute({})).toContain(`frozen versions not deliberated: K${f.items[0]!.knowledgeId}@v1`); // 104
     const receipt = JSON.parse(tool(task, "memory").execute({ operations: [],
       skipped: [{ knowledge: `K${f.items[0]!.knowledgeId}@v1`, because: "reviewed; no maintenance needed" }] }));
     expect(receipt).toMatchObject({ results: ["ok"], committed: [] });
@@ -66,13 +66,13 @@ test("64c: a skip is audited but terminal success processes the frozen pair inde
     .toEqual([{ pool: f.pool, revision_id: f.items[0]!.commit }]);
 });
 
-test("68: untouched frozen items are not an admission failure and remain pending after terminal success", async () => {
+test("68/104: untouched frozen items are not an admission failure; they fail the run and remain pending", async () => {
   const f = fixture(async task => {
-    expect(tool(task, "check").execute({})).toContain("Blockers: none");
+    expect(tool(task, "check").execute({})).toContain("frozen versions not deliberated");
     return success;
   }, ["first rule", "second rule"]);
   const result = await f.memory.dream(f.target);
-  expect(result.outcome).toBe("success");
+  expect(result.outcome).toBe("failure");
   expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(f.pool)).toEqual([]);
   expect(f.store.pendingVersions(f.pool, f.target).map(item => item.revisionId)).toEqual(f.items.map(item => item.commit));
 });

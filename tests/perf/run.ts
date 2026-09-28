@@ -388,7 +388,7 @@ function dreamingScenarios(size: string): Sample[] {
     const seedClaim = store.acquireClaim(target, "dreaming", "perf-seed");
     if (!seedClaim) throw new Error("seed claim unavailable");
     const seedRange = store.retainKnowledgePoolRange(target, pool, seedClaim);
-    const seedExecution = store.beginExecution({ sessionId: target.sessionId, phase: "dreaming", head: seedRange.anchor, origin: seedRange.origin });
+    const seedExecution = store.beginExecution({ sessionId: target.sessionId, phase: "dreaming", pool: seedRange.pool!, origin: seedRange.origin });
     const seedRun = store.bindDreamingRun({ kind: "dreaming", sessionId: target.sessionId, branch: target.branch,
       dreamingRangeId: seedRange.id, executionId: seedExecution, claim: seedClaim, createdAt: time });
     store.transaction(() => {
@@ -428,7 +428,7 @@ function dreamingScenarios(size: string): Sample[] {
       }, `${note}; current pool selection and full body/fact rendering`),
     ];
     const frozen = freezeDreaming(store, target, memory.config, claim);
-    const executionId = store.beginExecution({ sessionId: target.sessionId, phase: "dreaming", head: frozen.range.anchor, origin: frozen.range.origin });
+    const executionId = store.beginExecution({ sessionId: target.sessionId, phase: "dreaming", pool: frozen.range.pool!, origin: frozen.range.origin });
     const run = store.bindDreamingRun({ kind: "dreaming", sessionId: target.sessionId, branch: target.branch,
       dreamingRangeId: frozen.range.id, executionId, claim, createdAt: time });
     samples.push(measure("Dreaming completion (rollback each sample)", () => {

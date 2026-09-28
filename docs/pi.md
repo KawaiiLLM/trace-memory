@@ -86,13 +86,13 @@ The three bases never lend directly to one another.
 
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
 from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a named load error.
-`dreaming.triggerTokens` is configurable again: its default cap is 5,000, and each pool's effective
-pending trigger is `min(cap, pool budget)` (4,000/5,000/1,000 by default). Consolidator Knowledge and foreground publication may use the Knowledge base plus
+`dreaming.triggerTokens` is configurable again: its default is 5,000, compared with the session's
+pending weight summed across its pools (104). Consolidator Knowledge and foreground publication may use the Knowledge base plus
 the shared allowance. Dreamer uses that same maximum for its Changed-plus-reference input, while a
 single due pool's Changed range is capped by that pool's budget. Database budget edits accept exact
 decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
-connections to that database. Budgets cap the effective pending trigger and a run's Changed range, not writes: an over-budget pool
-is reported but is scheduled only after nonempty pending reaches its threshold. Running Dreamer and Consolidator
+connections to that database. Budgets cap a run's Changed range and decide its success, not writes: an over-budget pool
+is scheduled only when the session overflows its window or its summed pending reaches the trigger (104). Running Dreamer and Consolidator
 requests keep their frozen admitted capacities; later admissions use the current policy. Actual
 provider context capacity remains an independent hard gate.
 
@@ -268,10 +268,12 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   pending with a capacity notification — unless it was a *fork* that could not fit, which 27b
   re-admits once as a subagent instead. Unknown model capacity still leaves work pending.
   Native fork context is additional to the new-material budget and is never compressed.
-- Dreaming is checked **per pool** on every reconciled eligible entry: `global`, this session's
-  project and this session. Pending is each pool's current visible, non-archived revision lacking a
-  `(pool, revision)` processing record, one revision per identity at its full rendered size. A pool is
-  due when nonempty pending reaches `min(dreaming.triggerTokens, pool budget)` (4,000/5,000/1,000 by default). One run handles one due pool; its Changed range is capped at that pool's full budget,
+- Dreaming is checked **per session** on every reconciled eligible entry, over `global`, this session's
+  project and this session together. Pending is each pool's current visible, non-archived revision lacking a
+  `(pool, revision)` processing record, one revision per identity at its full rendered size. A run is
+  due when the pools' total exceeds the Knowledge base plus the shared allowance (30,000 by default), or
+  when their nonempty pending, summed, reaches `dreaming.triggerTokens` (104). One run handles one pool,
+  the one most over its budget, else the one with the most pending weight; its Changed range is capped at that pool's full budget,
   4,000 / 15,000 / 1,000 by default. Changed material and current same-scope references share the
   30,000-token Knowledge-base-plus-shared-allowance window; direct facts have a separate 10,000-token cap.
   There is no automatic Raw block or `note` tool.
@@ -282,8 +284,8 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   parents' union for merge. Exact current bases and the live database-wide Dreamer claim are checked
   atomically. Processing records skipped frozen versions and the run's own commits, including on
   failure or cancellation. Untouched versions remain pending; own outputs do not trigger themselves.
-  Budget excess alone does not make a pool due. A run's range ends once; remaining material may form
-  a later range when its pending weight reaches the trigger.
+  A run succeeds only when its pool ends within its budget with every frozen version deliberated;
+  a successful run is followed at once while the session is still due. A run's range ends once.
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
   the fact line with its relations and the joining separator — the trigger over the whole applicable
@@ -615,10 +617,10 @@ completion. Bars cap at 100%; numbers and percentages do not:
   the effective entry profile and Pi result extractor. Only imported evidence counts.
 - **Consolidation:** applicable unconsolidated facts, including group framing and
   relations, through the same renderer and threshold calculation as eligibility.
-- **Dreaming:** rendered pending current revisions of the selected applicable pool. Each pool has its
-  own pending measurement against `min(dreaming.triggerTokens, pool budget)`; the panel shows one representative
-  pool, not a sum of all pools. The bar
-  does not imply that the database-wide seat or an executable range is available.
+- **Dreaming:** two rows (104): the session's pending weight summed across its applicable pools against
+  `dreaming.triggerTokens`, and its applicable knowledge total against the Knowledge base plus the shared
+  allowance. The bars
+  do not imply that the database-wide seat or an executable range is available.
 
 Thresholds come from the live core configuration. Off retains stored measurements;
 no memory identity and unavailable reads are shown separately from zero. Opening
@@ -1450,11 +1452,12 @@ episode and may downgrade once again.
 
 Three terminal business failures of one **logical task** persistently disable its target's memory.
 The key is target session, phase and stable oldest selected backlog item: a source entry for Noting,
-the first fact in Consolidation order, or the frozen Dreamer pool range's first revision. A new leaf,
+the first fact in Consolidation order, or, since 104, the Dreamer's pool. A new leaf,
 a growing tail, another executor or partial Dreamer edits do not reset it. Cancellation is not a
 business failure. Dreamer ranges end once: processing covers skips and own output, leaving untouched
-material pending. Residual over-budget state alone is not a new logical failure. Ordinary worker
-completion starts no next task; later eligible entries supply new opportunities (compaction no
+material pending. A Dreamer run that times out, ends over its pool's budget or leaves a frozen
+version undeliberated is a failure of its pool. Ordinary worker
+completion starts no next task beyond the Dreamer check after a successful run; later eligible entries supply new opportunities (compaction no
 longer runs recovery tasks: 73). Manual catchup alone rechecks all phases after its own successful
 completions.
 
@@ -1597,8 +1600,8 @@ state and returns refreshed Knowledge immediately.
 
 A declaration relabels the affected sessions and their project-owned Knowledge while preserving
 scope, revisions and pool processing records. Facts follow their owning session's project. Global and
-session pools are unchanged. Dreaming being due does not block the declaration; only the affected
-active-Dreamer guards described above do. Duplicate Knowledge is left for ordinary Dreamer maintenance;
+session pools are unchanged. A reached Noting or Dreamer trigger, knowledge overflow included, refuses
+the declaration, as do the active-Dreamer guards described above. Duplicate Knowledge is left for ordinary Dreamer maintenance;
 the declaration itself neither consolidates nor deletes it.
 
 An empty text content block is not an assistant reply. Nonempty text, thinking,

@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
-import { TraceMemory } from "../../src/core/api/index.ts";
+import { TraceMemory, type DreamingAgentInput } from "../../src/core/api/index.ts";
+import { skipRest, suppliedHandles } from "../dreaming-skips.ts";
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-72.db", stateDir: "/tmp/unused-72",
@@ -245,7 +246,7 @@ test("85: CC scheduler does not launch Dreamer for an over-budget pool with belo
     create("Long durable constraint ".repeat(120));
     const claim = store.acquireClaim(path, "dreaming", "fixture")!;
     const range = store.retainKnowledgePoolRange(path, pool, claim);
-    const executionId = store.beginExecution({ sessionId: session.id, phase: "dreaming", head: range.anchor, origin: range.origin });
+    const executionId = store.beginExecution({ sessionId: session.id, phase: "dreaming", pool: range.pool!, origin: range.origin });
     const run = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", dreamingRangeId: range.id, executionId, claim, createdAt: "now" });
     store.completeKnowledgePoolRange(run, "success", range.eventIds);
     store.releaseClaim(claim);
@@ -324,5 +325,76 @@ test("72: a commit through a second Store connection re-arms D at the next appen
     expect(checks).not.toContain("consolidation");
     scheduler.stop(); await scheduler.settle();
     memory.close(); observer.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("104: successful Dreamer runs follow back to back while the session overflows, and stop once neither condition holds", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trace-memory-104-cc-continuous-"));
+  try {
+    const selected: string[] = [];
+    let store!: ReturnType<typeof TraceMemory>["store"];
+    const large = new Map<string, number>();
+    const memory = TraceMemory(join(dir, "trace.db"), async raw => {
+      const input = raw as DreamingAgentInput;
+      const pool = /frozen pool: (\S+)/.exec(String(input.tools.find(tool => tool.name === "check")!.execute({})))![1]!;
+      selected.push(pool);
+      // Each run retires its pool's large processed item and deliberates its small pending one.
+      const id = large.get(pool)!;
+      expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", kind: "budget",
+        id: `K${id}#${store.versionTag(id, store.currentCommit(id)[0]!.id)}`, supports: [], reason: "Retired to fit the pool budget." }],
+        skipped: [] })).toContain("committed");
+      skipRest(input);
+      return { outcome: "success", output: "pool fits", request: { fixture: "continuous" } };
+    }, { noting: { triggerTokens: 1e9 }, dreaming: { triggerTokens: 1e9 } });
+    store = memory.store;
+    const project = store.createProject({ name: "A", declaredBy: "mark" });
+    const session = store.createSession({ host: "cc", enrollmentChoice: true, projectId: project.id, startedAt: "now", firstReplyAt: "now" });
+    const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
+    const entry = store.appendSourceEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "cc", nativeId: "u", role: "user", text: "rule", raw: "rule", calls: [] });
+    memory.selectEntries(session.id, "main", [entry.id]);
+    const fact = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [
+      { turnId: turn.id, entryIds: [entry.id], category: "decision", actor: "user", text: "rule", source: [`T${turn.id}#E1`], createdAt: "now" }] });
+    if (!fact.ok) throw Error(fact.problems.join());
+    const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+    const create = (scope: "global" | "project", words: number) => {
+      const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" },
+        operations: [{ op: "create", handle: "$rule", author: "test", text: `${scope} rule ${"word ".repeat(words)}`, category: "constraint",
+          scope, supports: [fact.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
+      if (!result.ok) throw Error(result.problems.join());
+      return result.committed[0]!;
+    };
+    const processed = (pool: string) => {
+      const claim = store.acquireClaim(path, "dreaming", "fixture")!;
+      const range = store.retainKnowledgePoolRange(path, pool, claim);
+      const run = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", dreamingRangeId: range.id, claim, createdAt: "now",
+        executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", pool, origin: range.origin }) });
+      store.completeKnowledgePoolRange(run, "success", range.eventIds);
+      store.releaseClaim(claim);
+    };
+    const projectPool = `project:${project.id}`;
+    large.set("global", create("global", 3_000).knowledgeId); processed("global");
+    large.set(projectPool, create("project", 4_000).knowledgeId); processed(projectPool);
+    create("global", 10); create("project", 10);
+    // Each pool fits only without its large item, and the session overflows its window.
+    store.setKnowledgeBudget("global", 100);
+    store.setKnowledgeBudget("project", 100);
+    store.setKnowledgeBudget("session", 0);
+    memory.config.compaction.sharedAllowanceTokens = 500;
+    expect(memory.taskEligibility("dreaming", path).due).toBe(true);
+    const fixtureRuns = store.listRuns(session.id).length;
+    const diagnostics: string[] = [];
+    const scheduler = new CcTaskScheduler(memory, worker, message => diagnostics.push(message));
+    scheduler.reconcile({ state: "ready", coreSessionId: session.id, branch: "main", headTurnId: turn.id,
+      selectedEntryIds: [entry.id], selectedCount: 1, selectedTailId: entry.id,
+      selectedAppendedEntryIds: [entry.id], appendedEntryIds: [entry.id], problems: [], snapshot: {} as any });
+    await vi.waitFor(async () => { await scheduler.settle(); expect(selected, diagnostics.join("\n")).toHaveLength(2); });
+    await scheduler.settle();
+    // The larger excess first, then the other pool, with no new entry between them; no third run
+    // once the session neither overflows nor has pending weight at the trigger.
+    expect(selected).toEqual([projectPool, "global"]);
+    expect(store.listRuns(session.id).slice(fixtureRuns).map(run => [run.kind, run.outcome])).toEqual([["dreaming", "success"], ["dreaming", "success"]]);
+    expect(memory.taskEligibility("dreaming", path).due).toBe(false);
+    scheduler.stop(); await scheduler.settle();
+    memory.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -22,7 +22,7 @@ for (const state of ["active", "reserved", "replaced", "expired", "closed", "unb
       const claim = store.acquireClaim(path, "dreaming", "executor")!;
       const range = state === "unbound" ? undefined : store.retainKnowledgePoolRange(path, `session:${session.id}`, claim);
       const run = range && store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", claim, dreamingRangeId: range.id,
-        executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", head: range.anchor, origin: range.origin }), createdAt: "now" });
+        executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", pool: range.pool!, origin: range.origin }), createdAt: "now" });
       if (state === "reserved") store.db.prepare("UPDATE task_claims SET reserved=1 WHERE phase='dreaming'").run();
       if (state === "replaced") store.db.prepare("UPDATE task_claims SET token='replacement' WHERE phase='dreaming'").run();
       if (state === "expired") store.db.prepare("UPDATE task_claims SET expires_at=? WHERE phase='dreaming'").run(Date.now() - 1);

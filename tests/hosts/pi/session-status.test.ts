@@ -211,7 +211,8 @@ test("repeated Dreaming pool reads show identical pending data without DB writes
   h.memory.setKnowledgeBudget("project", 2468);
   const before = changes(h), entries = structuredClone(h.entries);
   const first = await open(h);
-  expect(first).toContain("/ 2.5k"); expect(first).not.toMatch(/^\s*Consolidation\s/m);
+  // 104: the knowledge row's window is the edited base (4k + 2,468 + 1k) plus the 10k shared allowance.
+  expect(first).toContain("/ 17.5k"); expect(first).not.toMatch(/^\s*Consolidation\s/m);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
   expect(await open(h)).toBe(first);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);

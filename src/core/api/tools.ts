@@ -77,7 +77,7 @@ export function dreamingToolDefinitions(): Omit<ToolDefinition, "execute">[] {
       then: { not: { anyOf: ["text", "category", "scope", "topics"].map(key => ({ required: [key] })) } },
       else: { required: ["category", "scope", "topics"], if: { properties: { op: { const: "merge" } } }, then: {}, else: { required: ["text"] } } } };
   operation.allOf.push({ if: { properties: { op: { const: "split" } } }, then: { required: ["children"] }, else: { not: { required: ["children"] } } });
-  tools.push({ name: "check", description: "Read-only pool check. Returns the frozen pool, frozen and own revision counts, newly pending revisions, current pool sizes and rejected memory operations. Budget excess schedules maintenance but does not reject a terminal attempt. This receipt never grants a complete-body handle or commits knowledge.", parameters: object({}) });
+  tools.push({ name: "check", description: "Read-only pool check. Returns the frozen pool, frozen and own revision counts, newly pending revisions, current pool sizes and blockers: rejected memory operations, the frozen pool over its budget, and frozen versions neither operated on nor skipped. The run succeeds only with no blocker. This receipt never grants a complete-body handle or commits knowledge.", parameters: object({}) });
   return tools;
 }
 

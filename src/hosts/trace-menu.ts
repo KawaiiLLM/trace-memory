@@ -119,26 +119,25 @@ const pendingRow = (label: string, value: PendingInput): PendingRow => {
   return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio), amount };
 };
 
+/** 104: Dreaming's two session conditions — pending weight summed across the applicable pools
+ * against the trigger, and their knowledge total against the injection base plus the shared
+ * allowance (its `trigger` here). */
 export interface PendingSectionInput {
   noting: PendingInput;
-  dreaming: { global: PendingInput; project: PendingInput; session: PendingInput };
+  dreaming: { pending: PendingInput; knowledge: PendingInput };
 }
 export interface PendingSection {
   heading: string;
   noting: PendingRow;
   dreamingHeading: string;
-  dreaming: { global: PendingRow; project: PendingRow; session: PendingRow };
+  dreaming: PendingRow[];
 }
 export function buildPendingSection(input: PendingSectionInput): PendingSection {
   return {
     heading: "Pending / trigger",
     noting: pendingRow("Noting", input.noting),
     dreamingHeading: "Dreaming",
-    dreaming: {
-      global: pendingRow("global", input.dreaming.global),
-      project: pendingRow("project", input.dreaming.project),
-      session: pendingRow("session", input.dreaming.session),
-    },
+    dreaming: [pendingRow("pending", input.dreaming.pending), pendingRow("knowledge", input.dreaming.knowledge)],
   };
 }
 
@@ -281,9 +280,9 @@ export function buildTraceSettings(input: SettingsInput): SettingsModel {
 
 // ---- Fixture: one canonical normalized input, shared by the unit tests and the rendered samples ----
 // Numbers per ticket 82 requirement 3: knowledge pool budgets 4,000 / 15,000 / 1,000 (database policy
-// default, `DEFAULT_KNOWLEDGE_BUDGETS` in core/store/processing.ts), Dreaming triggers
-// min(dreaming.triggerTokens, budget) = 4,000 / 5,000 / 1,000 (`DEFAULT_DREAMING_TRIGGER_TOKENS` is
-// 5,000), Noting trigger 10,000 and Consolidation trigger 5,000 (`DEFAULT_CONFIG` in core/api/index.ts),
+// default, `DEFAULT_KNOWLEDGE_BUDGETS` in core/store/processing.ts), Dreaming trigger 5,000 on the
+// summed pending weight and 30,000 on the knowledge total (104: the 20,000 base plus the shared
+// allowance), Noting trigger 10,000 and Consolidation trigger 5,000 (`DEFAULT_CONFIG` in core/api/index.ts),
 // shared allowance 10,000 (`compaction.sharedAllowanceTokens`). The derived knowledge window is the
 // budgets' sum, 20,000 (`deriveKnowledgeBudgets`) — the ticket's mockup shows "10,000" and shows
 // "Project 5,000"; both disagree with the code default and are corrected here (see the delegation
@@ -309,9 +308,8 @@ export const TRACE_MENU_FIXTURE: TraceMenuInput = {
   pending: {
     noting: { tokens: 3_200, trigger: 10_000 },
     dreaming: {
-      global: { tokens: 0, trigger: 4_000 },
-      project: { tokens: 1_500, trigger: 5_000 },
-      session: { tokens: 319, trigger: 1_000 },
+      pending: { tokens: 1_819, trigger: 5_000 },
+      knowledge: { tokens: 17_300, trigger: 30_000 },
     },
   },
   spend: {

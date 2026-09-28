@@ -11,10 +11,10 @@ import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, mig
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
-import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
+import { EXECUTIONS_SQL, migrateTaskPool104, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
-import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
+import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS, dueKnowledgePool, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
 import { factAddresses, renderKnowledge, renderKnowledgeChange, tokens } from "../render/index.ts";
 import { isKnowledgeCategory, substantiveArchiveStatement } from "../model/index.ts";
 import type {
@@ -1203,6 +1203,8 @@ export class Store {
       });
       migrateDreamingRanges64d(this.db);
       this.db.exec(PROCESSING_SQL);
+      migrateTaskPool104(this, (table, createSql) =>
+        this.rebuildTable(table, [], table === "task_executions" ? ["idx_execution_task"] : [], createSql));
       this.db.exec(EXECUTIONS_SQL);
       this.db.exec(DELIVERIES_SQL);
       // 86, option A: legacy Dreamer streaks used a range ID, not the oldest pending revision.
@@ -1705,8 +1707,9 @@ export class Store {
     return triggerOriginFromRow(row);
   }
   taskFailures(sessionId: number) {
-    return this.db.prepare("SELECT * FROM task_failures WHERE session_id = ? ORDER BY phase, head").all(sessionId).map(row => ({
-      phase: row.phase as HistoricalPhase, head: Number(row.head), count: Number(row.count), lastReason: String(row.last_reason ?? ""),
+    return this.db.prepare("SELECT * FROM task_failures WHERE session_id = ? ORDER BY phase, head, pool").all(sessionId).map(row => ({
+      phase: row.phase as HistoricalPhase, head: row.head === null ? null : Number(row.head), pool: row.pool === null ? null : String(row.pool),
+      count: Number(row.count), lastReason: String(row.last_reason ?? ""),
       lastRunId: row.last_run_id === null ? null : Number(row.last_run_id), updatedAt: String(row.updated_at),
     }));
   }
@@ -1796,9 +1799,12 @@ export class Store {
   }
 
   /** Called only by atomic Store operations. Pending discovery is private and synchronous, so
-   * admission can reuse its own projection without accepting prepared authority from a caller. */
+   * admission can reuse its own projection without accepting prepared authority from a caller.
+   * `leaseMs` defaults to the historical fixed 30 minutes; a dreaming admission overrides it so the
+   * claim outlives the configured wall-clock bound (104 F1: otherwise a timeout's own claim can lapse
+   * before terminal settlement reads it, misfiling the run as cancelled instead of a failure). */
   private acquireAvailableClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed: boolean,
-    hasPending: () => boolean, eligible: () => boolean): TaskClaim | null {
+    hasPending: () => boolean, eligible: () => boolean, leaseMs = 30 * 60_000): TaskClaim | null {
     if (!executorId || !this.enabled(target.sessionId)) return null;
     if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
     const pending = hasPending();
@@ -1815,7 +1821,7 @@ export class Store {
     if (current && current.expiresAt > now && !takeover) return null;
     if (phase === "dreaming" && this.otherSessionOwnsDreamerSeat(target.sessionId, now)) return null;
     const claim: TaskClaim = { sessionId: target.sessionId, phase, executorId,
-      token: takeover ? current.token : randomUUID(), expiresAt: now + 30 * 60_000, borrowed, reserved: false };
+      token: takeover ? current.token : randomUUID(), expiresAt: now + leaseMs, borrowed, reserved: false };
     this.db.prepare(`INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, ?, ?, ?, ?, ?, 0)
       ON CONFLICT (session_id, phase) DO UPDATE SET executor_id = excluded.executor_id, token = excluded.token,
       expires_at = excluded.expires_at, borrowed = excluded.borrowed, reserved = 0`)
@@ -3917,7 +3923,7 @@ export class Store {
    * Undefined when no ancestor has one (shown whole as `New`, as today). BFS gives the nearest one
    * on ties; only called for pending versions, and it walks no further than the first hit. */
   private nearestProcessedAncestor(revisionId: number, pool: string, parents: Map<number, number[]>,
-    processed: ReadonlySet<string>): number | undefined {
+    processed: (pool: string, id: number) => boolean): number | undefined {
     const seen = new Set<number>([revisionId]);
     let frontier = parents.get(revisionId) ?? [];
     while (frontier.length) {
@@ -3925,7 +3931,7 @@ export class Store {
       for (const id of frontier) {
         if (seen.has(id)) continue;
         seen.add(id);
-        if (processed.has(`${pool}:${id}`)) return id;
+        if (processed(pool, id)) return id;
         next.push(...(parents.get(id) ?? []));
       }
       frontier = next;
@@ -3937,34 +3943,45 @@ export class Store {
    * once, and batch processing history. Never retain this value across a mutation or transaction.
    * Read-only — Dreaming eligibility (`duePools`) and the facade's `knowledgePools`/`dreamingPending`
    * all read through here, never a writer's own validation — so ticket 80 opts this into the
-   * per-session graph memo. */
-  knowledgePools(path: KnowledgePath, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
+   * per-session graph memo. 104: it reads only the revisions the projection shows — current versions,
+   * pending archives and their nearest processed ancestors — never the pools' whole processing history,
+   * so Dreaming's due check does not grow with archived history. */
+  knowledgePools(path: KnowledgePath) {
     const projectId = this.getSession(path.sessionId)?.projectId;
     if (projectId === undefined) throw new Error(`Unknown session ${path.sessionId}`);
     const budgets = this.knowledgeBudgets(), input = this.commitGraphInput(undefined, path.sessionId);
     const pools = [["global", budgets.global], [`project:${projectId}`, budgets.project], [`session:${path.sessionId}`, budgets.session]] as const;
-    const versions = new Map<string, KnowledgeWithRevision[]>(pools.map(([pool]) => [pool, []]));
+    const owned = new Map<string, { current: KnowledgeRevision[]; archives: KnowledgeRevision[] }>(
+      pools.map(([pool]) => [pool, { current: [], archives: [] }]));
     // 76: archives are pending too, but never count toward pool size or the injected block — they
     // keep their own list, and D's own archives are excluded up front (own output, never pending).
-    const archivedVersions = new Map<string, KnowledgeWithRevision[]>(pools.map(([pool]) => [pool, []]));
-    const allCurrent = this.commitGraph(path, undefined, undefined, input).current;
-    const current = allCurrent.filter(revision => revision.op !== "archive");
-    const archives = allCurrent.filter(revision => revision.op === "archive" && revision.actorRole !== "dreaming");
+    for (const revision of this.commitGraph(path, undefined, undefined, input).current) {
+      if (revision.op === "archive" && revision.actorRole === "dreaming") continue;
+      const lists = owned.get(placementOwner(this, { revision }, input.metadata));
+      (revision.op === "archive" ? lists?.archives : lists?.current)?.push(revision);
+    }
+    // Only the unprocessed ids come back: an archived identity that was processed costs one index probe.
+    const unprocessedIn = this.db.prepare(`SELECT value FROM json_each(?)
+      WHERE NOT EXISTS (SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = value)`);
+    const processedOne = this.db.prepare("SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?");
+    const unprocessed = new Map([...owned].map(([pool, { current, archives }]) => [pool, new Set(unprocessedIn
+      .all(JSON.stringify([...current, ...archives].map(revision => revision.id)), pool).map(row => Number(row.value)))]));
+    const processed = (pool: string, id: number) => !!processedOne.get(pool, id);
+    const pendingArchives = new Map([...owned].map(([pool, lists]) => [pool, lists.archives.filter(revision => unprocessed.get(pool)!.has(revision.id))]));
+    const shown = [...owned.values()].flatMap(lists => lists.current).concat(...pendingArchives.values());
     const knowledge = new Map(this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))")
-      .all(JSON.stringify([...new Set([...current, ...archives].map(revision => revision.knowledgeId))]))
+      .all(JSON.stringify([...new Set(shown.map(revision => revision.knowledgeId))]))
       .map(row => [Number(row.id), toKnowledge(row)]));
-    for (const revision of current) versions.get(placementOwner(this, { revision }, input.metadata))?.push({ knowledge: knowledge.get(revision.knowledgeId)!, revision });
-    for (const revision of archives) archivedVersions.get(placementOwner(this, { revision }, input.metadata))?.push({ knowledge: knowledge.get(revision.knowledgeId)!, revision });
-    const history = this.db.prepare(`SELECT p.pool, p.revision_id FROM knowledge_processed p
-      WHERE p.pool IN (SELECT value FROM json_each(?))`).all(JSON.stringify(pools.map(([pool]) => pool)));
-    const processed = new Set(history.map(row => `${row.pool}:${row.revision_id}`));
+    const withKnowledge = (revision: KnowledgeRevision): KnowledgeWithRevision => ({ knowledge: knowledge.get(revision.knowledgeId)!, revision });
+    const versions = new Map([...owned].map(([pool, lists]) => [pool, lists.current.map(withKnowledge)]));
+    const archivedVersions = new Map([...pendingArchives].map(([pool, revisions]) => [pool, revisions.map(withKnowledge)]));
     // Resolve only this projection's current, archived-body and processed-baseline addresses.
     // Version metadata is immutable, but this operation-local batch must not become a stale cache.
     const referenced = new Set<number>(), baselines = new Map<number, KnowledgeRevision>();
     for (const [pool] of pools) for (const { revision } of [...versions.get(pool)!, ...archivedVersions.get(pool)!]) {
       referenced.add(revision.id);
       if (revision.op === "archive" && revision.parentId !== null) referenced.add(revision.parentId);
-      if (processed.has(`${pool}:${revision.id}`)) continue;
+      if (!unprocessed.get(pool)!.has(revision.id)) continue;
       const baselineId = this.nearestProcessedAncestor(revision.id, pool, input.parents, processed);
       const baseline = baselineId === undefined ? undefined : input.metadata.revisions!.get(baselineId);
       if (baseline) { baselines.set(revision.id, baseline); referenced.add(baseline.id); }
@@ -3985,7 +4002,7 @@ export class Store {
       const size = tokens(processedBlock(values, value => rendered.get(value.revision.id)!));
       // 76: baseline lookup, segmentation and diff run only for a pending version that has a
       // processed ancestor in this pool; a version with none is shown and weighed whole ("New").
-      const pendingUpdates = values.filter(value => !processed.has(`${pool}:${value.revision.id}`)).map(value => {
+      const pendingUpdates = values.filter(value => unprocessed.get(pool)!.has(value.revision.id)).map(value => {
         const baseline = baselines.get(value.revision.id);
         if (!baseline) {
           const material = `New ${address(value.revision)}:\n${rendered.get(value.revision.id)!}`;
@@ -3999,7 +4016,7 @@ export class Store {
       // text) whole, plus the diff from the baseline to that body when a baseline exists and differs
       // from it (case B: D confirmed A, C changed A to B, then archived B). Weight is always the
       // whole archived body, in case A and case B alike — never the diff.
-      const pendingArchives = (archivedVersions.get(pool) ?? []).filter(value => !processed.has(`${pool}:${value.revision.id}`)).map(value => {
+      const pendingArchives = archivedVersions.get(pool)!.map(value => {
         const parent = value.revision.parentId === null ? undefined : input.metadata.revisions!.get(value.revision.parentId);
         if (!parent) throw new Error(`K${value.revision.knowledgeId}@${value.revision.id}: archive has no archived body`);
         const archivedBody = renderKnowledge({ knowledge: value.knowledge, revision: parent }, tagged(parent));
@@ -4013,9 +4030,7 @@ export class Store {
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(archivedBody), material };
       });
       const pending = [...pendingUpdates, ...pendingArchives].sort((left, right) => left.revisionId - right.revisionId);
-      const pendingTokens = pending.reduce((sum, value) => sum + value.tokens, 0);
-      const due = pending.length > 0 && pendingTokens >= Math.min(dreamingTriggerTokens, budget);
-      return { pool, budget, tokens: size, versions: values, rendered, archived: archivedVersions.get(pool) ?? [], pending, due };
+      return { pool, budget, tokens: size, versions: values, rendered, archived: archivedVersions.get(pool)!, pending };
     });
   }
 
@@ -4041,8 +4056,17 @@ export class Store {
     return this.knowledgePools(path).map(({ pool, budget, tokens }) => ({ pool, budget, tokens }));
   }
 
-  duePools(path: KnowledgePath, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS): DueKnowledgePool[] {
-    return this.knowledgePools(path, dreamingTriggerTokens).flatMap(({ pool, budget, tokens, pending, due }) => due ? [{ pool, budget, tokens, pending }] : []);
+  /** 104: the one pool a due Dreamer run of this session would write, or none. */
+  duePools(path: KnowledgePath, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS,
+    sharedAllowanceTokens = DEFAULT_SHARED_ALLOWANCE_TOKENS): DueKnowledgePool[] {
+    const due = this.dueProjection(path, dreamingTriggerTokens, sharedAllowanceTokens);
+    return due ? [{ pool: due.pool, budget: due.budget, tokens: due.tokens, pending: due.pending }] : [];
+  }
+
+  private dueProjection(path: KnowledgePath, dreamingTriggerTokens: number, sharedAllowanceTokens: number) {
+    const window = this.knowledgeBudgets().injection + sharedAllowanceTokens;
+    if (!Number.isSafeInteger(window)) throw new Error("derived Dreaming overflow window must be a safe integer");
+    return dueKnowledgePool(this.knowledgePools(path), window, dreamingTriggerTokens);
   }
 
   private poolBudget(pool: string): number {
@@ -4051,15 +4075,18 @@ export class Store {
   }
 
   /** One atomic admission snapshot covers discovery, claim availability and the frozen range.
-   * Claim/range bookkeeping does not mutate knowledge, processing records or source cursors. */
+   * Claim/range bookkeeping does not mutate knowledge, processing records or source cursors.
+   * `claimLeaseMs`, when supplied, overrides the claim's lease (104 F1: the caller derives it from
+   * the configured Dreaming wall-clock bound so a timed-out run's own claim cannot lapse first). */
   admitKnowledgePool(target: TaskTarget, executorId: string, borrowed = false, executorSessionId?: number,
-    dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
+    dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS, sharedAllowanceTokens = DEFAULT_SHARED_ALLOWANCE_TOKENS,
+    claimLeaseMs?: number) {
     return this.transaction(() => {
       if (!this.enabled(target.sessionId) || (executorSessionId !== undefined && !this.enabled(executorSessionId)))
         return { outcome: "dropped" as const };
-      const pool = this.knowledgePools(target, dreamingTriggerTokens).find(value => value.due);
+      const pool = this.dueProjection(target, dreamingTriggerTokens, sharedAllowanceTokens);
       if (!pool) return { outcome: "empty" as const };
-      const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true);
+      const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true, claimLeaseMs);
       if (!claim) return { outcome: "dropped" as const };
       const range = this.retainProjectedPoolRange(target, pool, claim);
       return { outcome: "admitted" as const, claim, pool, range };
@@ -4068,9 +4095,10 @@ export class Store {
 
   /** Select and reserve from the same atomic projection. Only range/claim bookkeeping mutates
    * inside this operation; no caller can submit a stale prepared projection as write authority. */
-  freezeKnowledgePool(target: TaskTarget, claim: TaskClaim, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
+  freezeKnowledgePool(target: TaskTarget, claim: TaskClaim, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS,
+    sharedAllowanceTokens = DEFAULT_SHARED_ALLOWANCE_TOKENS) {
     return this.transaction(() => {
-      const pool = this.knowledgePools(target, dreamingTriggerTokens).find(value => value.due);
+      const pool = this.dueProjection(target, dreamingTriggerTokens, sharedAllowanceTokens);
       if (!pool) throw new Error("No Knowledge pool is due");
       return { pool, range: this.retainProjectedPoolRange(target, pool, claim) };
     });
@@ -4081,6 +4109,7 @@ export class Store {
     return this.transaction(() => {
       const projected = this.knowledgePools(target).find(value => value.pool === pool);
       if (!projected) throw new Error(`Pool ${pool} is not applicable to S${target.sessionId}`);
+      if (!projected.pending.length) throw new Error(`Pool ${pool} has no pending versions`);
       return this.retainProjectedPoolRange(target, projected, claim);
     });
   }
@@ -4104,7 +4133,7 @@ export class Store {
           ON c.session_id = r.session_id AND c.phase = 'dreaming' AND c.token = r.claim_token
         WHERE r.pool IS NOT NULL AND r.completed_run IS NULL AND r.closed_at IS NULL AND c.expires_at > ?`)
         .all(now) as { event_id: number }[]).map(row => row.event_id));
-      if (!due.pending.length) throw new Error(`Pool ${pool} has no pending versions`);
+      // 104: a pool chosen for its excess over budget may have no pending versions; its range is empty.
       const selected: PendingKnowledgeVersion[] = [];
       for (const revision of due.pending) {
         if (reserved.has(revision.revisionId)) continue;
@@ -4112,7 +4141,7 @@ export class Store {
         if (tokens(candidate) > 10_000) break;
         selected.push(revision);
       }
-      if (!selected.length) throw new Error("Dreaming capacity: oldest pending Knowledge cannot fit the 10000-token slice; left pending");
+      if (due.pending.length && !selected.length) throw new Error("Dreaming capacity: oldest pending Knowledge cannot fit the 10000-token slice; left pending");
       const ids = selected.map(revision => revision.revisionId);
       const origin = this.triggerOrigin(target, target.triggerEntryId);
       const id = Number(this.db.prepare(`INSERT INTO dreaming_ranges
@@ -4160,7 +4189,7 @@ export class Store {
 
   dreamingRange(id: number): DreamingRange | null {
     const row = this.db.prepare("SELECT * FROM dreaming_ranges WHERE id = ? AND completed_run IS NULL AND closed_at IS NULL").get(id);
-    return row ? { id, sessionId: Number(row.session_id), branch: String(row.branch), headTurnId: Number(row.head_turn_id), anchor: Number(row.anchor),
+    return row ? { id, sessionId: Number(row.session_id), branch: String(row.branch), headTurnId: Number(row.head_turn_id), anchor: row.anchor === null ? null : Number(row.anchor),
       eventIds: this.db.prepare("SELECT event_id FROM dreaming_range_events WHERE range_id = ? ORDER BY event_id").all(id).map(r => Number(r.event_id)),
       origin: triggerOriginFromRow(row), pool: row.pool === null ? null : String(row.pool),
       claimToken: row.claim_token === null ? null : String(row.claim_token), closedAt: row.closed_at === null ? null : String(row.closed_at),

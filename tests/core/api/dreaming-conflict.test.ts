@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
+import { skipRest } from "../../dreaming-skips.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [], dirs: string[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -28,7 +29,7 @@ function fixture() {
   const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const item = created.committed[0]!, pool = `project:${project.id}`;
-  store.setKnowledgeBudget("project", Math.max(1, store.pendingPoolWeight(pool, target) * 2));
+  store.setKnowledgeBudget("project", Math.max(1, store.pendingPoolWeight(pool, target) * 4)); // 104: the pool fits its budget
 
   const other = TraceMemory(db, async () => { throw new Error("occupied seat must prevent provider launch"); },
     { dreaming: { triggerTokens: 1 } }); memories.push(other);
@@ -48,7 +49,7 @@ test("64c another target waits while the database-wide Dreamer seat is occupied"
   expect((await f.other.dream(f.otherPath)).outcome).toBe("dropped");
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
   release.release();
-  expect((await running).outcome).toBe("success");
+  expect((await running).outcome).toBe("failure"); // 104: its frozen item was left undeliberated
   expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all()).toEqual([]);
   expect(f.store.pendingVersions(f.pool, f.target).map(item => item.revisionId)).toEqual([f.item.commit]);
   expect(f.store.openDreamingRange(f.target.sessionId, f.target.branch)).toBeNull();
@@ -56,7 +57,7 @@ test("64c another target waits while the database-wide Dreamer seat is occupied"
 
 test("64c external maintenance is atomically refused by the live seat and succeeds only after release", async () => {
   const f = fixture(), admitted = new Barrier(), release = new Barrier();
-  f.setAgent(async task => { task.acknowledgeRequest(); admitted.release(); await release.wait; return success; });
+  f.setAgent(async task => { task.acknowledgeRequest(); skipRest(task); admitted.release(); await release.wait; return success; });
   const running = f.memory.dream(f.target);
   await admitted.wait;
   const operation = { op: "archive" as const, kind: "budget" as const, knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit,
@@ -68,7 +69,8 @@ test("64c external maintenance is atomically refused by the live seat and succee
   if (!blocked.ok) expect(blocked.problems.join(" ")).toContain("Dreamer");
   expect(f.store.listKnowledgeRevisions()).toHaveLength(before);
   release.release();
-  expect((await running).outcome).toBe("success");
+  const finished = await running;
+  expect(finished.outcome, JSON.stringify(finished)).toBe("success");
   const accepted = f.other.store.commitConsolidationRun({ path: f.otherPath,
     run: { kind: "manual", sessionId: f.otherPath.sessionId, createdAt: "now" }, operations: [operation] });
   expect(accepted.ok).toBe(true);

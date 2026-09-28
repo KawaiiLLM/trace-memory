@@ -71,11 +71,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
       return { tokens: result.tokens, trigger: result.trigger,
         ...(result.state === "known" && result.atLeast ? { atLeast: true, entries: result.entries } : {}) };
     };
-    const pools = memory.dreamingPending(target);
-    const pool = (scope: "global" | "project" | "session") => {
-      const row = pools.pools?.find(value => value.scope === scope);
-      return row ? { tokens: row.tokens, trigger: row.trigger } : { tokens: null, trigger: null };
-    };
+    const dreaming = memory.dreamingPending(target);
     const spend = session ? memory.spend(session.id) : null;
     const budgets = memory.knowledgeBudgets();
     const active = effective ?? config;
@@ -112,7 +108,8 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
         explicit: binding.enrollment.choice !== null },
       context: { model: "Claude Code" },
       pending: { noting: pending("noting"), dreaming: {
-        global: pool("global"), project: pool("project"), session: pool("session") } },
+        pending: dreaming.pending ?? { tokens: null, trigger: null },
+        knowledge: dreaming.knowledge ? { tokens: dreaming.knowledge.tokens, trigger: dreaming.knowledge.window } : { tokens: null, trigger: null } } },
       spend: { session: spend?.cost ?? 0,
         noting: { runs: spend?.runs.noting ?? 0, cost: spend?.costs.noting ?? 0 },
         consolidation: { runs: spend?.runs.consolidation ?? 0, cost: spend?.costs.consolidation ?? 0 },

@@ -26,31 +26,7 @@ function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, tri
 }
 const handles = (task: DreamingAgentInput) => suppliedHandles(task.material.changed);
 
-test.each([
-  ["global", 4000], ["project", 5000], ["session", 1000],
-] as const)("68: %s effective trigger follows its budget and configured cap", (scope, defaultTrigger) => {
-  const f = setup(async () => { throw new Error("measurement must not invoke a model"); }, 5000);
-  const item = f.create("A small complete rule", scope);
-  // Only this scope's pool has pending material; the others stay at zero throughout.
-  const own = () => f.memory.dreamingPending(f.target).pools!.find(value => value.scope === scope)!;
-  expect(f.memory.dreamingPending(f.target)).toMatchObject({ state: "known" });
-  expect(own()).toMatchObject({ trigger: defaultTrigger });
-  const pool = f.store.knowledgePools(f.target, 5000).find(value => value.pending.some(version => version.revisionId === item.commit))!;
-  const weight = pool.pending[0]!.tokens;
-  f.memory.setKnowledgeBudget(scope, weight + 1);
-  // A pool can exceed its budget without making below-trigger pending due.
-  expect(f.store.duePools(f.target, 5000).some(value => value.pool === pool.pool)).toBe(false);
-  expect(own()).toMatchObject({ trigger: weight + 1, tokens: weight });
-  f.memory.setKnowledgeBudget(scope, weight);
-  expect(f.store.duePools(f.target, 5000)).toContainEqual(expect.objectContaining({ pool: pool.pool }));
-  expect(own()).toMatchObject({ trigger: weight, tokens: weight });
-  f.memory.setKnowledgeBudget(scope, weight + 1);
-  f.memory.config.dreaming.triggerTokens = weight - 1;
-  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
-  expect(own()).toMatchObject({ trigger: weight - 1 });
-});
-
-test("92: the pool budget determines due, not the frozen 10k slice; only skipped items are processed", async () => {
+test("92: the frozen range is the pending prefix within the 10k slice, not the pool budget; only skipped items are processed", async () => {
   let seen: string[] = [];
   const f = setup(async task => {
     seen = handles(task);
@@ -61,7 +37,8 @@ test("92: the pool budget determines due, not the frozen 10k slice; only skipped
   const first = f.create("oldest"), second = f.create("later");
   f.memory.setKnowledgeBudget("project", 1);
   const result = await f.memory.dream(f.target);
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  // 104: the pool stays over budget and the later item undeliberated, so the run is not a success.
+  expect(result.outcome, JSON.stringify(result)).toBe("failure");
   expect(seen).toEqual([`K${first.knowledgeId}@v1`, `K${second.knowledgeId}@v1`]);
   expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ?").all(f.pool))
     .toEqual([{ revision_id: first.commit }]);
@@ -95,7 +72,8 @@ test.each(["success", "failure", "cancelled", "timeout"] as const)("68: 86 froze
   const running = f.memory.dream(f.target);
   if (outcome === "timeout") await vi.advanceTimersByTimeAsync(1000);
   const result = await running;
-  expect(result.outcome, JSON.stringify(result)).toBe(outcome === "timeout" ? "failure" : outcome);
+  // 104: the untouched remainder turns a reported success into a failure, as the timeout is one.
+  expect(result.outcome, JSON.stringify(result)).toBe(outcome === "timeout" || outcome === "success" ? "failure" : outcome);
   expect(f.store.pendingVersions(f.pool, f.target).map(value => value.revisionId), JSON.stringify(result)).toEqual(originals.slice(35).map(item => item.commit));
   expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(f.pool).map(row => Number(row.revision_id)))
     .toEqual([originals[34]!.commit, ...outputs].sort((a, b) => a - b));
@@ -120,7 +98,7 @@ test("68: deliberated count measures frozen parents, not output revisions", asyn
   });
   for (const text of ["first", "duplicate", "mixed", "untouched"]) f.create(text);
   const result = await f.memory.dream(f.target);
-  expect(result.outcome).toBe("success");
+  expect(result.outcome).toBe("failure"); // 104: the untouched item is not deliberated
   if (!("runId" in result) || result.runId === undefined) throw new Error("missing run audit");
   expect(JSON.parse(f.store.getRun(result.runId)!.response!)).toMatchObject({ deliberated: 3, frozen: 4 });
   expect(f.store.pendingVersions(f.pool, f.target)).toHaveLength(1);

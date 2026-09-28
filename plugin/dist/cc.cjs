@@ -910,38 +910,52 @@ function migrateDreaming(db, transactionOwned = false) {
 
 // src/core/store/executions.ts
 var import_node_crypto2 = require("node:crypto");
-var EXECUTIONS_SQL = `
-CREATE TABLE IF NOT EXISTS task_executions (
+var TASK_KEY_SQL = `head INTEGER CHECK(head > 0), pool TEXT CHECK(pool IS NULL OR phase = 'dreaming' AND head IS NULL)`;
+var TASK_EXECUTIONS_TABLE = `CREATE TABLE IF NOT EXISTS task_executions (
   id TEXT PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id),
   phase TEXT NOT NULL CHECK(phase IN ('noting','consolidation','dreaming')),
-  head INTEGER NOT NULL CHECK(head > 0),
+  ${TASK_KEY_SQL},
   outcome TEXT CHECK(outcome IN ('success','failure','cancelled','conflict')),
   terminal_run INTEGER REFERENCES runs(id), reason TEXT, updated_at TEXT NOT NULL,
-  origin_session_id INTEGER REFERENCES sessions(id), origin_entry_ids TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_execution_task ON task_executions(session_id,phase,head);
+  origin_session_id INTEGER REFERENCES sessions(id), origin_entry_ids TEXT,
+  CHECK(head IS NOT NULL OR pool IS NOT NULL)
+)`;
+var TASK_FAILURES_TABLE = `CREATE TABLE IF NOT EXISTS task_failures (
+  session_id INTEGER NOT NULL REFERENCES sessions(id), phase TEXT NOT NULL CHECK(phase IN ('noting','consolidation','dreaming')),
+  ${TASK_KEY_SQL}, count INTEGER NOT NULL CHECK(count >= 0),
+  last_reason TEXT, last_run_id INTEGER REFERENCES runs(id), updated_at TEXT NOT NULL,
+  CHECK(head IS NOT NULL OR pool IS NOT NULL)
+)`;
+var EXECUTIONS_SQL = `
+${TASK_EXECUTIONS_TABLE};
+CREATE INDEX IF NOT EXISTS idx_execution_task ON task_executions(session_id,phase,head,pool);
 CREATE TABLE IF NOT EXISTS execution_runs (
   run_id INTEGER PRIMARY KEY REFERENCES runs(id), execution_id TEXT NOT NULL REFERENCES task_executions(id)
 );
-CREATE TABLE IF NOT EXISTS task_failures (
-  session_id INTEGER NOT NULL REFERENCES sessions(id), phase TEXT NOT NULL CHECK(phase IN ('noting','consolidation','dreaming')),
-  head INTEGER NOT NULL CHECK(head > 0), count INTEGER NOT NULL CHECK(count >= 0),
-  last_reason TEXT, last_run_id INTEGER REFERENCES runs(id), updated_at TEXT NOT NULL,
-  PRIMARY KEY(session_id,phase,head)
-);
+${TASK_FAILURES_TABLE};
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_failure_head ON task_failures(session_id,phase,head) WHERE head IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_failure_pool ON task_failures(session_id,phase,pool) WHERE pool IS NOT NULL;
 `;
+function migrateTaskPool104(store, rebuild) {
+  const columns = (table) => store.db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name);
+  const executions = columns("task_executions"), failures = columns("task_failures");
+  if (executions.length && !executions.includes("pool")) rebuild("task_executions", TASK_EXECUTIONS_TABLE);
+  if (failures.length && !failures.includes("pool")) rebuild("task_failures", TASK_FAILURES_TABLE);
+}
 function beginExecution(store, task, previous) {
   store.requireEnabled(task.sessionId);
   if (task.phase !== "noting" && task.phase !== "dreaming") throw new Error(`Unsupported live phase: ${task.phase}`);
-  if (!Number.isSafeInteger(task.head) || task.head <= 0) throw new Error("Logical task requires a stable backlog head");
+  const head = task.phase === "noting" ? task.head ?? null : null, pool = task.phase === "dreaming" ? task.pool ?? null : null;
+  if (task.phase === "noting" ? !Number.isSafeInteger(head) || head <= 0 || task.pool !== void 0 : !pool || task.head !== void 0)
+    throw new Error(task.phase === "noting" ? "Logical task requires a stable backlog head" : "Dreamer logical task requires its pool");
   if (previous !== void 0) {
     const row = store.db.prepare("SELECT * FROM task_executions WHERE id = ?").get(previous);
-    if (!row || row.session_id !== task.sessionId || row.phase !== task.phase || row.head !== task.head || row.outcome !== null)
+    if (!row || row.session_id !== task.sessionId || row.phase !== task.phase || row.head !== head || row.pool !== pool || row.outcome !== null)
       throw new Error("Fallback must continue the same unsettled logical task");
     return previous;
   }
   const id = (0, import_node_crypto2.randomUUID)(), origin = task.origin ?? null;
-  store.db.prepare("INSERT INTO task_executions(id,session_id,phase,head,updated_at,origin_session_id,origin_entry_ids) VALUES (?,?,?,?,?,?,?)").run(id, task.sessionId, task.phase, task.head, (/* @__PURE__ */ new Date()).toISOString(), origin?.sessionId ?? null, origin ? JSON.stringify(origin.entryIds) : null);
+  store.db.prepare("INSERT INTO task_executions(id,session_id,phase,head,pool,updated_at,origin_session_id,origin_entry_ids) VALUES (?,?,?,?,?,?,?,?)").run(id, task.sessionId, task.phase, head, pool, (/* @__PURE__ */ new Date()).toISOString(), origin?.sessionId ?? null, origin ? JSON.stringify(origin.entryIds) : null);
   return id;
 }
 function linkExecutionRun(store, runId, input) {
@@ -967,19 +981,21 @@ function settleExecution(store, id, outcome, runId, reason = "", dreamingAuthori
       throw new Error("Execution success requires established business completion");
     const now = (/* @__PURE__ */ new Date()).toISOString();
     store.db.prepare("UPDATE task_executions SET outcome = ?, terminal_run = ?, reason = ?, updated_at = ? WHERE id = ?").run(outcome, runId, reason, now, id);
-    const key = [row.session_id, row.phase, row.head];
+    const key = [row.session_id, row.phase, row.head ?? null, row.pool ?? null];
+    const task = "session_id = ? AND phase = ? AND head IS ? AND pool IS ?";
     if (outcome === "cancelled" || outcome === "conflict") return {};
-    store.db.prepare(`INSERT INTO task_failures VALUES (?,?,?,?,?,?,?) ON CONFLICT(session_id,phase,head)
-      DO UPDATE SET count = CASE WHEN excluded.count = 0 THEN 0 ELSE task_failures.count + 1 END,
-      last_reason = excluded.last_reason, last_run_id = excluded.last_run_id, updated_at = excluded.updated_at`).run(...key, outcome === "success" ? 0 : 1, reason, runId, now);
-    const count2 = Number(store.db.prepare("SELECT count FROM task_failures WHERE session_id = ? AND phase = ? AND head = ?").get(...key).count);
+    const counted = store.db.prepare(`UPDATE task_failures SET count = CASE WHEN ? THEN 0 ELSE count + 1 END,
+      last_reason = ?, last_run_id = ?, updated_at = ? WHERE ${task}`).run(Number(outcome === "success"), reason, runId, now, ...key);
+    if (!counted.changes) store.db.prepare(`INSERT INTO task_failures(session_id,phase,head,pool,count,last_reason,last_run_id,updated_at)
+      VALUES (?,?,?,?,?,?,?,?)`).run(...key, outcome === "success" ? 0 : 1, reason, runId, now);
+    const count2 = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${task}`).get(...key).count);
     if (count2 !== 3 || !store.enabled(Number(row.session_id))) return {};
     store.setEnrollment(Number(row.session_id), false);
     store.db.prepare(`UPDATE task_claims AS c SET expires_at = 0 WHERE session_id = ?
       AND NOT (phase = 'dreaming' AND reserved = 0 AND expires_at > ? AND EXISTS (
         SELECT 1 FROM dreaming_ranges r WHERE r.session_id = c.session_id AND r.claim_token = c.token
           AND r.pool IS NOT NULL AND r.completed_run IS NULL AND r.closed_at IS NULL))`).run(row.session_id, Date.now());
-    const runs = store.db.prepare(`SELECT terminal_run FROM task_executions WHERE session_id = ? AND phase = ? AND head = ?
+    const runs = store.db.prepare(`SELECT terminal_run FROM task_executions WHERE ${task}
       AND outcome = 'failure' ORDER BY updated_at DESC, rowid DESC LIMIT 3`).all(...key).reverse();
     return { automaticOff: `Trace Memory: S${row.session_id} ${row.phase} off after three failures (${runs.map((r) => `R${r.terminal_run}`).join(", ")}); ${reason || "business completion failed"}. Use /trace on to resume.` };
   });
@@ -1065,6 +1081,18 @@ function dropStale(nodes, turns, root2) {
 // src/core/store/processing.ts
 var DEFAULT_KNOWLEDGE_BUDGETS = { global: 4e3, project: 15e3, session: 1e3 };
 var DEFAULT_DREAMING_TRIGGER_TOKENS = 5e3;
+var DEFAULT_SHARED_ALLOWANCE_TOKENS = 1e4;
+function dueKnowledgePool(pools, window, triggerTokens) {
+  const weight = (pool) => pool.pending.reduce((sum, value) => sum + value.tokens, 0);
+  const excess = (pool) => pool.tokens - pool.budget;
+  const overflow = pools.reduce((sum, pool) => sum + pool.tokens, 0) > window;
+  const pending = pools.some((pool) => pool.pending.length) && pools.reduce((sum, pool) => sum + weight(pool), 0) >= triggerTokens;
+  if (!overflow && !pending) return void 0;
+  const over = pools.filter((pool) => excess(pool) > 0);
+  if (over.length) return over.reduce((best, pool) => excess(pool) > excess(best) ? pool : best);
+  const candidates = pools.filter((pool) => pool.pending.length);
+  return candidates.length ? candidates.reduce((best, pool) => weight(pool) > weight(best) ? pool : best) : void 0;
+}
 function deriveKnowledgeBudgets(values, stored = false) {
   const label = (field) => `${field[0].toUpperCase()}${field.slice(1)} Knowledge budget`;
   for (const field of ["global", "project", "session"]) if (!Number.isSafeInteger(values[field]) || values[field] < 0)
@@ -1802,6 +1830,7 @@ var Store = class {
       });
       migrateDreamingRanges64d(this.db);
       this.db.exec(PROCESSING_SQL);
+      migrateTaskPool104(this, (table, createSql) => this.rebuildTable(table, [], table === "task_executions" ? ["idx_execution_task"] : [], createSql));
       this.db.exec(EXECUTIONS_SQL);
       this.db.exec(DELIVERIES_SQL);
       if (Number(this.db.prepare("PRAGMA user_version").get().user_version) === 0)
@@ -2228,9 +2257,10 @@ var Store = class {
     return triggerOriginFromRow(row);
   }
   taskFailures(sessionId) {
-    return this.db.prepare("SELECT * FROM task_failures WHERE session_id = ? ORDER BY phase, head").all(sessionId).map((row) => ({
+    return this.db.prepare("SELECT * FROM task_failures WHERE session_id = ? ORDER BY phase, head, pool").all(sessionId).map((row) => ({
       phase: row.phase,
-      head: Number(row.head),
+      head: row.head === null ? null : Number(row.head),
+      pool: row.pool === null ? null : String(row.pool),
       count: Number(row.count),
       lastReason: String(row.last_reason ?? ""),
       lastRunId: row.last_run_id === null ? null : Number(row.last_run_id),
@@ -2317,8 +2347,11 @@ var Store = class {
     }, eligible));
   }
   /** Called only by atomic Store operations. Pending discovery is private and synchronous, so
-   * admission can reuse its own projection without accepting prepared authority from a caller. */
-  acquireAvailableClaim(target, phase, executorId, borrowed, hasPending, eligible) {
+   * admission can reuse its own projection without accepting prepared authority from a caller.
+   * `leaseMs` defaults to the historical fixed 30 minutes; a dreaming admission overrides it so the
+   * claim outlives the configured wall-clock bound (104 F1: otherwise a timeout's own claim can lapse
+   * before terminal settlement reads it, misfiling the run as cancelled instead of a failure). */
+  acquireAvailableClaim(target, phase, executorId, borrowed, hasPending, eligible, leaseMs = 30 * 6e4) {
     if (!executorId || !this.enabled(target.sessionId)) return null;
     if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
     const pending = hasPending();
@@ -2338,7 +2371,7 @@ var Store = class {
       phase,
       executorId,
       token: takeover ? current.token : (0, import_node_crypto3.randomUUID)(),
-      expiresAt: now + 30 * 6e4,
+      expiresAt: now + leaseMs,
       borrowed,
       reserved: false
     };
@@ -4383,7 +4416,7 @@ ${annotation}`;
       for (const id of frontier) {
         if (seen.has(id)) continue;
         seen.add(id);
-        if (processed.has(`${pool}:${id}`)) return id;
+        if (processed(pool, id)) return id;
         next.push(...parents.get(id) ?? []);
       }
       frontier = next;
@@ -4394,28 +4427,38 @@ ${annotation}`;
    * once, and batch processing history. Never retain this value across a mutation or transaction.
    * Read-only — Dreaming eligibility (`duePools`) and the facade's `knowledgePools`/`dreamingPending`
    * all read through here, never a writer's own validation — so ticket 80 opts this into the
-   * per-session graph memo. */
-  knowledgePools(path, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
+   * per-session graph memo. 104: it reads only the revisions the projection shows — current versions,
+   * pending archives and their nearest processed ancestors — never the pools' whole processing history,
+   * so Dreaming's due check does not grow with archived history. */
+  knowledgePools(path) {
     const projectId = this.getSession(path.sessionId)?.projectId;
     if (projectId === void 0) throw new Error(`Unknown session ${path.sessionId}`);
     const budgets2 = this.knowledgeBudgets(), input = this.commitGraphInput(void 0, path.sessionId);
     const pools = [["global", budgets2.global], [`project:${projectId}`, budgets2.project], [`session:${path.sessionId}`, budgets2.session]];
-    const versions = new Map(pools.map(([pool]) => [pool, []]));
-    const archivedVersions = new Map(pools.map(([pool]) => [pool, []]));
-    const allCurrent = this.commitGraph(path, void 0, void 0, input).current;
-    const current = allCurrent.filter((revision) => revision.op !== "archive");
-    const archives = allCurrent.filter((revision) => revision.op === "archive" && revision.actorRole !== "dreaming");
-    const knowledge = new Map(this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...new Set([...current, ...archives].map((revision) => revision.knowledgeId))])).map((row) => [Number(row.id), toKnowledge(row)]));
-    for (const revision of current) versions.get(placementOwner(this, { revision }, input.metadata))?.push({ knowledge: knowledge.get(revision.knowledgeId), revision });
-    for (const revision of archives) archivedVersions.get(placementOwner(this, { revision }, input.metadata))?.push({ knowledge: knowledge.get(revision.knowledgeId), revision });
-    const history = this.db.prepare(`SELECT p.pool, p.revision_id FROM knowledge_processed p
-      WHERE p.pool IN (SELECT value FROM json_each(?))`).all(JSON.stringify(pools.map(([pool]) => pool)));
-    const processed = new Set(history.map((row) => `${row.pool}:${row.revision_id}`));
+    const owned = new Map(
+      pools.map(([pool]) => [pool, { current: [], archives: [] }])
+    );
+    for (const revision of this.commitGraph(path, void 0, void 0, input).current) {
+      if (revision.op === "archive" && revision.actorRole === "dreaming") continue;
+      const lists = owned.get(placementOwner(this, { revision }, input.metadata));
+      (revision.op === "archive" ? lists?.archives : lists?.current)?.push(revision);
+    }
+    const unprocessedIn = this.db.prepare(`SELECT value FROM json_each(?)
+      WHERE NOT EXISTS (SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = value)`);
+    const processedOne = this.db.prepare("SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?");
+    const unprocessed = new Map([...owned].map(([pool, { current, archives }]) => [pool, new Set(unprocessedIn.all(JSON.stringify([...current, ...archives].map((revision) => revision.id)), pool).map((row) => Number(row.value)))]));
+    const processed = (pool, id) => !!processedOne.get(pool, id);
+    const pendingArchives = new Map([...owned].map(([pool, lists]) => [pool, lists.archives.filter((revision) => unprocessed.get(pool).has(revision.id))]));
+    const shown = [...owned.values()].flatMap((lists) => lists.current).concat(...pendingArchives.values());
+    const knowledge = new Map(this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...new Set(shown.map((revision) => revision.knowledgeId))])).map((row) => [Number(row.id), toKnowledge(row)]));
+    const withKnowledge = (revision) => ({ knowledge: knowledge.get(revision.knowledgeId), revision });
+    const versions = new Map([...owned].map(([pool, lists]) => [pool, lists.current.map(withKnowledge)]));
+    const archivedVersions = new Map([...pendingArchives].map(([pool, revisions]) => [pool, revisions.map(withKnowledge)]));
     const referenced = /* @__PURE__ */ new Set(), baselines = /* @__PURE__ */ new Map();
     for (const [pool] of pools) for (const { revision } of [...versions.get(pool), ...archivedVersions.get(pool)]) {
       referenced.add(revision.id);
       if (revision.op === "archive" && revision.parentId !== null) referenced.add(revision.parentId);
-      if (processed.has(`${pool}:${revision.id}`)) continue;
+      if (!unprocessed.get(pool).has(revision.id)) continue;
       const baselineId = this.nearestProcessedAncestor(revision.id, pool, input.parents, processed);
       const baseline = baselineId === void 0 ? void 0 : input.metadata.revisions.get(baselineId);
       if (baseline) {
@@ -4436,7 +4479,7 @@ ${annotation}`;
       const values = versions.get(pool);
       const rendered = new Map(values.map((value) => [value.revision.id, renderKnowledge(value, tagged(value.revision))]));
       const size = tokens(processedBlock(values, (value) => rendered.get(value.revision.id)));
-      const pendingUpdates = values.filter((value) => !processed.has(`${pool}:${value.revision.id}`)).map((value) => {
+      const pendingUpdates = values.filter((value) => unprocessed.get(pool).has(value.revision.id)).map((value) => {
         const baseline = baselines.get(value.revision.id);
         if (!baseline) {
           const material2 = `New ${address2(value.revision)}:
@@ -4448,7 +4491,7 @@ ${rendered.get(value.revision.id)}`;
 ${change.text}`;
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: change.addedTokens + change.removedTokens, material };
       });
-      const pendingArchives = (archivedVersions.get(pool) ?? []).filter((value) => !processed.has(`${pool}:${value.revision.id}`)).map((value) => {
+      const pendingArchives2 = archivedVersions.get(pool).map((value) => {
         const parent = value.revision.parentId === null ? void 0 : input.metadata.revisions.get(value.revision.parentId);
         if (!parent) throw new Error(`K${value.revision.knowledgeId}@${value.revision.id}: archive has no archived body`);
         const archivedBody = renderKnowledge({ knowledge: value.knowledge, revision: parent }, tagged(parent));
@@ -4461,10 +4504,8 @@ ${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent, address2(p
 ${archivedBody}${evidenceLine}${diffLine}`;
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(archivedBody), material };
       });
-      const pending = [...pendingUpdates, ...pendingArchives].sort((left, right) => left.revisionId - right.revisionId);
-      const pendingTokens = pending.reduce((sum, value) => sum + value.tokens, 0);
-      const due = pending.length > 0 && pendingTokens >= Math.min(dreamingTriggerTokens, budget);
-      return { pool, budget, tokens: size, versions: values, rendered, archived: archivedVersions.get(pool) ?? [], pending, due };
+      const pending = [...pendingUpdates, ...pendingArchives2].sort((left, right) => left.revisionId - right.revisionId);
+      return { pool, budget, tokens: size, versions: values, rendered, archived: archivedVersions.get(pool), pending };
     });
   }
   pendingPoolWeight(pool, path) {
@@ -4484,22 +4525,31 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   poolSizes(path) {
     return this.knowledgePools(path).map(({ pool, budget, tokens: tokens3 }) => ({ pool, budget, tokens: tokens3 }));
   }
-  duePools(path, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
-    return this.knowledgePools(path, dreamingTriggerTokens).flatMap(({ pool, budget, tokens: tokens3, pending, due }) => due ? [{ pool, budget, tokens: tokens3, pending }] : []);
+  /** 104: the one pool a due Dreamer run of this session would write, or none. */
+  duePools(path, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS, sharedAllowanceTokens = DEFAULT_SHARED_ALLOWANCE_TOKENS) {
+    const due = this.dueProjection(path, dreamingTriggerTokens, sharedAllowanceTokens);
+    return due ? [{ pool: due.pool, budget: due.budget, tokens: due.tokens, pending: due.pending }] : [];
+  }
+  dueProjection(path, dreamingTriggerTokens, sharedAllowanceTokens) {
+    const window = this.knowledgeBudgets().injection + sharedAllowanceTokens;
+    if (!Number.isSafeInteger(window)) throw new Error("derived Dreaming overflow window must be a safe integer");
+    return dueKnowledgePool(this.knowledgePools(path), window, dreamingTriggerTokens);
   }
   poolBudget(pool) {
     const budgets2 = this.knowledgeBudgets();
     return pool === "global" ? budgets2.global : pool.startsWith("project:") ? budgets2.project : budgets2.session;
   }
   /** One atomic admission snapshot covers discovery, claim availability and the frozen range.
-   * Claim/range bookkeeping does not mutate knowledge, processing records or source cursors. */
-  admitKnowledgePool(target, executorId, borrowed = false, executorSessionId, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
+   * Claim/range bookkeeping does not mutate knowledge, processing records or source cursors.
+   * `claimLeaseMs`, when supplied, overrides the claim's lease (104 F1: the caller derives it from
+   * the configured Dreaming wall-clock bound so a timed-out run's own claim cannot lapse first). */
+  admitKnowledgePool(target, executorId, borrowed = false, executorSessionId, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS, sharedAllowanceTokens = DEFAULT_SHARED_ALLOWANCE_TOKENS, claimLeaseMs) {
     return this.transaction(() => {
       if (!this.enabled(target.sessionId) || executorSessionId !== void 0 && !this.enabled(executorSessionId))
         return { outcome: "dropped" };
-      const pool = this.knowledgePools(target, dreamingTriggerTokens).find((value) => value.due);
+      const pool = this.dueProjection(target, dreamingTriggerTokens, sharedAllowanceTokens);
       if (!pool) return { outcome: "empty" };
-      const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true);
+      const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true, claimLeaseMs);
       if (!claim) return { outcome: "dropped" };
       const range = this.retainProjectedPoolRange(target, pool, claim);
       return { outcome: "admitted", claim, pool, range };
@@ -4507,9 +4557,9 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   }
   /** Select and reserve from the same atomic projection. Only range/claim bookkeeping mutates
    * inside this operation; no caller can submit a stale prepared projection as write authority. */
-  freezeKnowledgePool(target, claim, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS) {
+  freezeKnowledgePool(target, claim, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS, sharedAllowanceTokens = DEFAULT_SHARED_ALLOWANCE_TOKENS) {
     return this.transaction(() => {
-      const pool = this.knowledgePools(target, dreamingTriggerTokens).find((value) => value.due);
+      const pool = this.dueProjection(target, dreamingTriggerTokens, sharedAllowanceTokens);
       if (!pool) throw new Error("No Knowledge pool is due");
       return { pool, range: this.retainProjectedPoolRange(target, pool, claim) };
     });
@@ -4519,6 +4569,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     return this.transaction(() => {
       const projected = this.knowledgePools(target).find((value) => value.pool === pool);
       if (!projected) throw new Error(`Pool ${pool} is not applicable to S${target.sessionId}`);
+      if (!projected.pending.length) throw new Error(`Pool ${pool} has no pending versions`);
       return this.retainProjectedPoolRange(target, projected, claim);
     });
   }
@@ -4538,7 +4589,6 @@ ${archivedBody}${evidenceLine}${diffLine}`;
         JOIN dreaming_ranges r ON r.id = e.range_id JOIN task_claims c
           ON c.session_id = r.session_id AND c.phase = 'dreaming' AND c.token = r.claim_token
         WHERE r.pool IS NOT NULL AND r.completed_run IS NULL AND r.closed_at IS NULL AND c.expires_at > ?`).all(now).map((row) => row.event_id));
-      if (!due.pending.length) throw new Error(`Pool ${pool} has no pending versions`);
       const selected = [];
       for (const revision of due.pending) {
         if (reserved2.has(revision.revisionId)) continue;
@@ -4546,7 +4596,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
         if (tokens(candidate) > 1e4) break;
         selected.push(revision);
       }
-      if (!selected.length) throw new Error("Dreaming capacity: oldest pending Knowledge cannot fit the 10000-token slice; left pending");
+      if (due.pending.length && !selected.length) throw new Error("Dreaming capacity: oldest pending Knowledge cannot fit the 10000-token slice; left pending");
       const ids = selected.map((revision) => revision.revisionId);
       const origin = this.triggerOrigin(target, target.triggerEntryId);
       const id = Number(this.db.prepare(`INSERT INTO dreaming_ranges
@@ -4608,7 +4658,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       sessionId: Number(row.session_id),
       branch: String(row.branch),
       headTurnId: Number(row.head_turn_id),
-      anchor: Number(row.anchor),
+      anchor: row.anchor === null ? null : Number(row.anchor),
       eventIds: this.db.prepare("SELECT event_id FROM dreaming_range_events WHERE range_id = ? ORDER BY event_id").all(id).map((r) => Number(r.event_id)),
       origin: triggerOriginFromRow(row),
       pool: row.pool === null ? null : String(row.pool),
@@ -7520,7 +7570,7 @@ ${preview2}`,
         `Session: S${sessionId}`,
         `Enrollment: ${store.enabled(sessionId) ? "Enabled" : "Disabled"} (${store.enrollment(sessionId).choice === null ? "default" : "explicit choice"})`,
         `Project: ${store.getProject(s.projectId).name} (${store.projectDeclaration(sessionId)})`,
-        ...!store.enabled(sessionId) ? store.taskFailures(sessionId).filter((task) => task.count >= 3).map((task) => `Automatic off: ${task.phase}, backlog head ${task.head}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`) : [],
+        ...!store.enabled(sessionId) ? store.taskFailures(sessionId).filter((task) => task.count >= 3).map((task) => `Automatic off: ${task.phase}, ${task.pool ? `pool ${task.pool}` : `backlog head ${task.head}`}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`) : [],
         `Spend: ${totals.runs.noting} noting, ${totals.runs.consolidation} consolidation, ${totals.runs.dreaming} dreaming, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
         // 24a: the footer's own counts, spelled out. They describe imported evidence only: native
         // history of a disabled interval is imported when the session is enabled again, so a zero
@@ -7787,7 +7837,7 @@ function dreamingToolDefinitions() {
     }
   };
   operation.allOf.push({ if: { properties: { op: { const: "split" } } }, then: { required: ["children"] }, else: { not: { required: ["children"] } } });
-  tools.push({ name: "check", description: "Read-only pool check. Returns the frozen pool, frozen and own revision counts, newly pending revisions, current pool sizes and rejected memory operations. Budget excess schedules maintenance but does not reject a terminal attempt. This receipt never grants a complete-body handle or commits knowledge.", parameters: object2({}) });
+  tools.push({ name: "check", description: "Read-only pool check. Returns the frozen pool, frozen and own revision counts, newly pending revisions, current pool sizes and blockers: rejected memory operations, the frozen pool over its budget, and frozen versions neither operated on nor skipped. The run succeeds only with no blocker. This receipt never grants a complete-body handle or commits knowledge.", parameters: object2({}) });
   return tools;
 }
 function validateReadInput(name, raw) {
@@ -8765,6 +8815,7 @@ function renderDreamingCheckReceipt(result, address2 = String) {
 // src/core/dreaming/index.ts
 var prompt2 = loadPrompt("dreaming.md");
 var promptHash2 = (0, import_node_crypto7.createHash)("sha256").update(prompt2).digest("hex");
+var CLAIM_LEASE_MARGIN_MS = 6e4;
 function admitDreaming(store, input, config3, executorId) {
   return store.transaction(() => {
     const path = {
@@ -8777,7 +8828,9 @@ function admitDreaming(store, input, config3, executorId) {
       executorId,
       input.borrowed,
       input.executorSessionId,
-      config3.dreaming.triggerTokens
+      config3.dreaming.triggerTokens,
+      config3.compaction.sharedAllowanceTokens,
+      config3.dreaming.timeoutMs + CLAIM_LEASE_MARGIN_MS
     );
     if (admitted.outcome !== "admitted") return admitted;
     return {
@@ -8795,7 +8848,7 @@ function prepareDreaming(store, input, config3, claim, path, { pool: due, range 
   const remainderValues = due.versions.filter((value) => !pendingRevisionIds.has(value.revision.id));
   const remainder = tokens(processedBlock(remainderValues, (value) => due.rendered.get(value.revision.id)));
   const excludedSize = due.tokens - remainder;
-  const processedExcessOrder = remainder > due.budget ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items occupy ${excludedSize}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under Budget priorities until that remainder fits, then deliberate the pending items below.` : "";
+  const processedExcessOrder = remainder > due.budget ? pending.length ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items occupy ${excludedSize}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under Budget priorities until that remainder fits, then deliberate the pending items below.` : ` This pool is ${due.tokens}/${due.budget} tokens, over budget, and this run has no pending items. Reduce the already-processed knowledge under Budget priorities until the pool fits.` : "";
   const references = due.versions.filter((value) => !frozenIds.has(value.revision.id));
   const budgets2 = store.knowledgeBudgets();
   const knowledgeCapacity = budgets2.injection + config3.compaction.sharedAllowanceTokens;
@@ -8882,20 +8935,33 @@ async function runDreaming(store, frozen, runAgent, bind) {
     createdAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   let binding;
+  const address2 = (commit) => {
+    const revision = store.knowledgeRevision(commit);
+    return `K${revision.knowledgeId}@v${store.versionOrdinal(revision.knowledgeId, commit)}`;
+  };
+  const deliberated = (ownRevisionIds) => new Set([...binding.memory.skippedCommits, ...ownRevisionIds.flatMap((id) => {
+    const revision = store.knowledgeRevision(id);
+    return revision ? store.commitParents(revision).map((parent) => parent.id) : [];
+  })].filter((id) => frozen.frozenIds.includes(id)));
   const check3 = () => {
     const runId2 = store.dreamingRunId(run);
     const ownRevisionIds = runId2 === void 0 ? [] : store.listCommitsByRun(runId2).map((revision) => revision.id);
     const excluded = /* @__PURE__ */ new Set([...frozen.frozenIds, ...ownRevisionIds]);
     const operationFailures = [...binding.toolProblems, ...binding.memory.problems];
-    const pools = store.knowledgePools(path);
+    const pools = store.knowledgePools(path), own = pools.find((value) => value.pool === frozen.pool);
+    const done = deliberated(ownRevisionIds), open2 = frozen.frozenIds.filter((id) => !done.has(id));
+    const acceptance = [
+      ...own.tokens > own.budget ? [`frozen pool ${own.pool} over budget: ${own.tokens}/${own.budget} tokens`] : [],
+      ...open2.length ? [`frozen versions not deliberated: ${open2.map(address2).join(", ")}`] : []
+    ];
     return {
       pool: frozen.pool,
       frozenRevisionIds: frozen.frozenIds,
       ownRevisionIds,
-      pendingRevisionIds: pools.find((value) => value.pool === frozen.pool).pending.map((value) => value.revisionId).filter((id) => !excluded.has(id)),
+      pendingRevisionIds: own.pending.map((value) => value.revisionId).filter((id) => !excluded.has(id)),
       totals: pools.map(({ pool, budget, tokens: tokens3 }) => ({ pool, budget, tokens: tokens3 })),
       operationFailures,
-      problems: operationFailures
+      problems: [...operationFailures, ...acceptance]
     };
   };
   binding = bind(
@@ -8907,10 +8973,7 @@ async function runDreaming(store, frozen, runAgent, bind) {
       range: { from: run.rangeFrom, to: run.rangeTo }
     },
     run,
-    { path, check: () => renderDreamingCheckReceipt(check3(), (commit) => {
-      const revision = store.knowledgeRevision(commit);
-      return `K${revision.knowledgeId}@v${store.versionOrdinal(revision.knowledgeId, commit)}`;
-    }), skippable: (commit) => !frozen.frozenIds.includes(commit) ? "skip must name an exact frozen version from this run" : binding.memory.skippedCommits.includes(commit) || binding.memory.allCommitted.some((item) => store.commitParents(store.knowledgeRevision(item.commit)).some((parent) => parent.id === commit)) ? "version was already consumed by this run" : void 0 }
+    { path, check: () => renderDreamingCheckReceipt(check3(), address2), skippable: (commit) => !frozen.frozenIds.includes(commit) ? "skip must name an exact frozen version from this run" : binding.memory.skippedCommits.includes(commit) || binding.memory.allCommitted.some((item) => store.commitParents(store.knowledgeRevision(item.commit)).some((parent) => parent.id === commit)) ? "version was already consumed by this run" : void 0 }
   );
   let result;
   try {
@@ -8948,12 +9011,7 @@ async function runDreaming(store, frozen, runAgent, bind) {
     ...requestMissing(result) ? ["runAgent must return the exact provider request"] : []
   ];
   const skippedRevisionIds = binding.memory.skippedCommits;
-  const frozenSet = new Set(frozen.frozenIds);
-  const operatedFrozenIds = new Set(checked.ownRevisionIds.flatMap((id) => {
-    const revision = store.knowledgeRevision(id);
-    return revision ? store.commitParents(revision).map((parent) => parent.id) : [];
-  }).filter((id) => frozenSet.has(id)));
-  const deliberatedRevisionIds = [.../* @__PURE__ */ new Set([...skippedRevisionIds, ...operatedFrozenIds])].sort((a, b) => a - b);
+  const deliberatedRevisionIds = [...deliberated(checked.ownRevisionIds)].sort((a, b) => a - b);
   recordAttempt(run, result, "subagent", {
     toolCalls: binding.sequence,
     fetched: binding.fetched,
@@ -9001,7 +9059,7 @@ var DEFAULT_CONFIG = {
   compaction: {
     factsTokens: 1e4,
     rawTokens: 1e4,
-    sharedAllowanceTokens: 1e4
+    sharedAllowanceTokens: DEFAULT_SHARED_ALLOWANCE_TOKENS
   }
 };
 var CONFIG_ALIASES = { "noting.branchModeDefault": "noting.forkModeDefault" };
@@ -9421,26 +9479,31 @@ Knowledge: ${backlinks.join("; ")}` : "");
       return { tokens: null, trigger, state: "unavailable" };
     }
   };
-  const poolScope = (pool) => pool === "global" ? "global" : pool.startsWith("project:") ? "project" : "session";
   const dreamingPending = (target) => {
-    if (!target) return { state: "no session", pools: null };
+    if (!target) return { state: "no session", pending: null, knowledge: null };
     try {
-      if (store.closed || !store.getSession(target.sessionId)) return { state: "unavailable", pools: null };
-      const pools = store.knowledgePools(target, cfg.dreaming.triggerTokens).map((size) => ({
-        scope: poolScope(size.pool),
-        pool: size.pool,
-        tokens: size.pending.reduce((sum, value) => sum + value.tokens, 0),
-        trigger: Math.min(cfg.dreaming.triggerTokens, size.budget)
-      }));
-      return { state: "known", pools };
+      if (store.closed || !store.getSession(target.sessionId)) return { state: "unavailable", pending: null, knowledge: null };
+      const pools = store.knowledgePools(target);
+      return {
+        state: "known",
+        pending: {
+          tokens: pools.reduce((sum, pool) => sum + pool.pending.reduce((total, value) => total + value.tokens, 0), 0),
+          trigger: cfg.dreaming.triggerTokens
+        },
+        knowledge: {
+          tokens: pools.reduce((sum, pool) => sum + pool.tokens, 0),
+          window: store.knowledgeBudgets().injection + cfg.compaction.sharedAllowanceTokens
+        }
+      };
     } catch {
-      return { state: "unavailable", pools: null };
+      return { state: "unavailable", pending: null, knowledge: null };
     }
   };
+  const dreamingDue = (target) => store.duePools(target, cfg.dreaming.triggerTokens, cfg.compaction.sharedAllowanceTokens).length > 0;
   const taskEligibility = (phase, target) => {
     if (phase !== "noting" && phase !== "dreaming") throw new Error(`Unsupported live phase: ${phase}`);
     if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false };
-    return { due: phase === "noting" ? notingDue(target) : store.duePools(target, cfg.dreaming.triggerTokens).length > 0 };
+    return { due: phase === "noting" ? notingDue(target) : dreamingDue(target) };
   };
   const execute = async (phase, input) => {
     if (stopping || store.closed || !store.enabled(input.sessionId)) return { outcome: "dropped" };
@@ -9470,7 +9533,7 @@ Knowledge: ${backlinks.join("; ")}` : "");
           projectId = store.getSession(input.sessionId).projectId;
           const frozen3 = admitted.frozen;
           origin = frozen3.range.origin;
-          executionId = store.beginExecution({ sessionId: target.sessionId, phase, head: frozen3.range.anchor, origin }, input.executionId);
+          executionId = store.beginExecution({ sessionId: target.sessionId, phase, pool: frozen3.pool, origin }, input.executionId);
           return frozen3;
         }
         const pendingNow = store.pendingEntries(target.sessionId, target.branch, target.headTurnId);
@@ -9665,7 +9728,7 @@ Knowledge: ${backlinks.join("; ")}` : "");
     ...read,
     declareProject: (sessionId, name, source = "mark", path) => {
       const selected = path?.branch !== void 0 && path.headTurnId !== null ? { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId } : void 0;
-      const project = store.declareProject(sessionId, name, source, selected && { path: selected, atTrigger: (phase) => phase === "noting" ? notingDue(selected) : store.duePools(selected, cfg.dreaming.triggerTokens).length > 0 });
+      const project = store.declareProject(sessionId, name, source, selected && { path: selected, atTrigger: (phase) => phase === "noting" ? notingDue(selected) : dreamingDue(selected) });
       return `S${sessionId} project: ${project.name} (${store.projectDeclaration(sessionId)})`;
     }
   };
@@ -43621,11 +43684,7 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
         ...result.state === "known" && result.atLeast ? { atLeast: true, entries: result.entries } : {}
       };
     };
-    const pools = memory.dreamingPending(target);
-    const pool = (scope) => {
-      const row = pools.pools?.find((value) => value.scope === scope);
-      return row ? { tokens: row.tokens, trigger: row.trigger } : { tokens: null, trigger: null };
-    };
+    const dreaming = memory.dreamingPending(target);
     const spend = session ? memory.spend(session.id) : null;
     const budgets2 = memory.knowledgeBudgets();
     const active = effective ?? config3;
@@ -43671,9 +43730,8 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
       },
       context: { model: "Claude Code" },
       pending: { noting: pending("noting"), dreaming: {
-        global: pool("global"),
-        project: pool("project"),
-        session: pool("session")
+        pending: dreaming.pending ?? { tokens: null, trigger: null },
+        knowledge: dreaming.knowledge ? { tokens: dreaming.knowledge.tokens, trigger: dreaming.knowledge.window } : { tokens: null, trigger: null }
       } },
       spend: {
         session: spend?.cost ?? 0,
@@ -45202,9 +45260,8 @@ var TRACE_MENU_FIXTURE = {
   pending: {
     noting: { tokens: 3200, trigger: 1e4 },
     dreaming: {
-      global: { tokens: 0, trigger: 4e3 },
-      project: { tokens: 1500, trigger: 5e3 },
-      session: { tokens: 319, trigger: 1e3 }
+      pending: { tokens: 1819, trigger: 5e3 },
+      knowledge: { tokens: 17300, trigger: 3e4 }
     }
   },
   spend: {

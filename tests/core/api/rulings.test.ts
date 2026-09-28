@@ -565,34 +565,30 @@ test("2026-09-28, 101: '1-2. 可以' (2) — the injected knowledge notice names
   expect(memory.inject({ projectId: memory.store.getSession(s.id)!.projectId })).not.toContain("Session S");
 });
 
-test("2026-09-24, 85: '余量只有一点，几乎必然导致每次C都会触发D' — over budget alone never makes Dreaming due", async () => {
+test("2026-09-28, 104: '可以让总量超过20 + 10 就可以触发' — a session is due on knowledge overflow or summed pending, not per pool", () => {
   const { path, create, write } = memoryWriter();
-  const first = write([{ ...create, text: "Durable user constraint ".repeat(150) }]).committed[0] as { knowledgeId: number; version: string };
-  expect(first).toBeTruthy();
-  memory.config.dreaming.triggerTokens = 1;
-  const finished = await admittedScenarios.run(memory, path, input => {
-    input.acknowledgeRequest();
-    const result = input.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
-      skipped: [{ knowledge: first.version, because: "Reviewed unchanged" }] });
-    expect(result).toContain("committed");
-    return ok([]);
-  });
-  expect(finished.outcome).toBe("success");
-  memory.config.dreaming.triggerTokens = 5_000;
-  const projectPool = `project:${memory.store.getSession(path.sessionId)!.projectId}`;
-  const size = memory.store.poolSizes(path).find(pool => pool.pool === projectPool)!.tokens;
-  const second = write([{ ...create, text: "A later small correction" }]).committed[0];
-  expect(second).toBeTruthy();
-  memory.setKnowledgeBudget("project", size - 1);
-  const projected = memory.store.knowledgePools(path, 5_000).find(pool => pool.pool === projectPool)!;
-  expect(projected.tokens).toBeGreaterThan(projected.budget);
-  expect(projected.pending.length).toBe(1);
-  expect(projected.pending[0]!.tokens).toBeLessThan(projected.budget);
-  expect(memory.store.duePools(path, 5_000)).not.toContainEqual(expect.objectContaining({ pool: projectPool }));
-  expect(memory.taskEligibility("dreaming", path)).toEqual({ due: false });
-  expect(memory.store.admitKnowledgePool(path, memory.executorId, false, undefined, 5_000).outcome).toBe("empty");
-  memory.setKnowledgeBudget("project", projected.pending[0]!.tokens);
-  expect(memory.store.duePools(path, 5_000)).toContainEqual(expect.objectContaining({ pool: projectPool }));
+  const body = "Durable user constraint ".repeat(150);
+  expect(write([{ ...create, text: body }, { ...create, scope: "global", text: `Global ${body}` }]).committed).toHaveLength(2);
+  const due = () => memory.taskEligibility("dreaming", path).due;
+  const [global, project] = memory.store.knowledgePools(path);
+  const weight = (pool: typeof global) => pool!.pending.reduce((sum, value) => sum + value.tokens, 0);
+  // Pending: the weight summed across the session's pools reaches the trigger where neither pool alone does.
+  memory.config.dreaming.triggerTokens = weight(global) + weight(project);
+  expect(Math.max(weight(global), weight(project))).toBeLessThan(memory.config.dreaming.triggerTokens);
+  expect(due()).toBe(true);
+  memory.config.dreaming.triggerTokens++;
+  expect(due()).toBe(false);
+  // Overflow: with pending still below the trigger, the knowledge total exceeding the injection base
+  // plus the shared allowance is due; a pool over its own budget within that window is not.
+  memory.setKnowledgeBudget("global", 0);
+  memory.setKnowledgeBudget("project", project!.tokens);
+  memory.setKnowledgeBudget("session", 0);
+  memory.config.compaction.sharedAllowanceTokens = global!.tokens;
+  expect(due()).toBe(false);
+  memory.config.compaction.sharedAllowanceTokens = global!.tokens - 1;
+  expect(due()).toBe(true);
+  expect(memory.store.duePools(path, memory.config.dreaming.triggerTokens, memory.config.compaction.sharedAllowanceTokens))
+    .toEqual([expect.objectContaining({ pool: "global" })]);
 });
 
 test("92 §§6–8: a D range excludes a later version from this run's material and processing", async () => {

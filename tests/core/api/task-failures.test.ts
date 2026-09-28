@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +23,7 @@ function seed(m: TraceMemory) {
   return { sessionId: s.id, branch: "main", headTurnId: t.id };
 }
 const note = (m: TraceMemory, target: ReturnType<typeof seed>, extra = {}) => m.noting({ ...target, mode: "subagent", model: "fake", ...extra });
-const streaks = (m: TraceMemory) => m.store.db.prepare("SELECT * FROM task_failures ORDER BY session_id,phase,head").all();
+const streaks = (m: TraceMemory) => m.store.db.prepare("SELECT * FROM task_failures ORDER BY session_id,phase,head,pool").all();
 const execution = (m: TraceMemory, runId: number) => String(m.store.db.prepare("SELECT execution_id FROM execution_runs WHERE run_id = ?").get(runId)!.execution_id);
 const boundUser = (m: TraceMemory, target: ReturnType<typeof seed>) =>
   hydrate(m.store.listSourceEntries(target.sessionId, target.headTurnId), m.store).find(entry => entry.role === "user")!;
@@ -252,7 +252,7 @@ test("68: Dreamer terminal outcomes consume accepted skips; a later range settle
 
   outcome = "success";
   const second = create("$second");
-  m.store.setKnowledgeBudget("session", m.store.pendingPoolWeight(pool, target) * 2);
+  m.store.setKnowledgeBudget("session", m.store.pendingPoolWeight(pool, target) * 4); // 104: both items fit the budget
   const succeeded = await m.dream(target);
   expect(succeeded.outcome).toBe("success");
   if (!("runId" in succeeded)) throw Error("missing successful run");
@@ -262,17 +262,13 @@ test("68: Dreamer terminal outcomes consume accepted skips; a later range settle
   expect(m.store.settleExecution(execution(m, succeeded.runId), "failure", succeeded.runId, "post-success audit")).toEqual({});
 });
 
-test("86: three Dreamer failures on one unchanged pending revision turn memory off; later oldest starts independently", async () => {
-  let skip = false;
+test("104: a pool is the Dreamer's logical task; three failures turn memory off, success and explicit on reset it", async () => {
+  let mode: "fail" | "skipThenFail" | "skip" = "fail";
   const m = open(":memory:", async raw => {
     const input = raw as DreamingAgentInput;
-    if (skip && input.kind === "dreaming") {
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [
-        { knowledge: suppliedHandles(input.material.changed)[0], because: "Reviewed without a change" },
-      ] });
-      return { outcome: "success", output: "processed", request };
-    }
-    return failed(raw);
+    if (input.kind !== "dreaming" || mode === "fail") return failed(raw);
+    skipRest(input);
+    return mode === "skip" ? { outcome: "success", output: "processed", request } : failed(raw);
   });
   m.config.dreaming.triggerTokens = 1;
   const target = seed(m), pool = `session:${target.sessionId}`;
@@ -286,23 +282,90 @@ test("86: three Dreamer failures on one unchanged pending revision turn memory o
     if (!committed.ok) throw Error(committed.problems.join("; "));
     return committed.committed[0]!;
   };
-  const first = create("first task");
-  for (let i = 1; i <= 3; i++) {
-    const result = await m.dream(target);
-    expect(result.outcome).toBe("failure");
-    expect(streaks(m)).toMatchObject([{ phase: "dreaming", head: first.commit, count: i }]);
-    expect(m.store.pendingVersions(pool, target).map(v => v.revisionId)).toEqual([first.commit]);
-    expect(!!result.automaticOff).toBe(i === 3);
-  }
+  const dreamStreak = () => streaks(m).filter(row => row.phase === "dreaming");
+  create("first task");
+  expect((await m.dream(target)).outcome).toBe("failure");
+  expect(dreamStreak()).toMatchObject([{ head: null, pool, count: 1 }]);
+  mode = "skipThenFail"; // the oldest pending item is processed, yet the run fails
+  expect((await m.dream(target)).outcome).toBe("failure");
+  expect(m.store.pendingVersions(pool, target)).toEqual([]);
+  const second = create("later task");
+  mode = "fail"; // a later oldest item on the same pool continues the same streak
+  const third = await m.dream(target);
+  expect(third.outcome).toBe("failure");
+  expect(dreamStreak()).toMatchObject([{ head: null, pool, count: 3 }]);
+  expect(third.automaticOff).toContain(`S${target.sessionId} dreaming off after three failures`);
   expect(m.store.enabled(target.sessionId)).toBe(false);
   m.store.setEnrollment(target.sessionId, true);
-  skip = true;
-  expect((await m.dream(target)).outcome).toBe("success");
-  expect(m.store.pendingVersions(pool, target)).toEqual([]);
-  const second = create("independent task");
-  skip = false;
+  expect(dreamStreak()).toEqual([]);
   expect((await m.dream(target)).outcome).toBe("failure");
-  expect(streaks(m).filter(row => Number(row.count) > 0)).toMatchObject([{ phase: "dreaming", head: second.commit, count: 1 }]);
+  mode = "skip";
+  expect((await m.dream(target)).outcome).toBe("success");
+  expect(dreamStreak()).toMatchObject([{ head: null, pool, count: 0 }]);
+  expect(m.store.pendingVersions(pool, target).map(value => value.revisionId)).not.toContain(second.commit);
+});
+
+test("104: a timeout, an over-budget end and a run with no pending item each count toward the pool's three failures", async () => {
+  let mode: "hang" | "skip" | "idle" = "hang";
+  const m = open(":memory:", async raw => {
+    const input = raw as DreamingAgentInput;
+    if (input.kind !== "dreaming") return failed(raw);
+    input.acknowledgeRequest();
+    if (mode === "hang") return new Promise<never>(() => {});
+    if (mode === "skip") skipRest(input);
+    return { outcome: "success", output: "the model reports it is done", request };
+  });
+  m.config.dreaming.triggerTokens = 1;
+  m.config.dreaming.timeoutMs = 50;
+  const target = seed(m), pool = `session:${target.sessionId}`;
+  const facts = decision(m, target, "evidence");
+  const made = m.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" },
+    operations: [{ op: "create", handle: "$1", author: "test", text: `Session rule ${"word ".repeat(200)}`, category: "constraint",
+      scope: "session", topics: [], supports: [facts.facts[0]!.id], reason: "evidence", createdAt: "now" }] });
+  if (!made.ok) throw Error(made.problems.join("; "));
+  const size = m.store.poolSizes(target).find(value => value.pool === pool)!.tokens;
+  m.store.setKnowledgeBudget("session", size - 1);
+  const timedOut = await m.dream(target);
+  expect(timedOut).toMatchObject({ outcome: "failure", problems: expect.arrayContaining([expect.stringContaining("wall-clock limit")]) });
+  mode = "skip"; // every frozen item deliberated, but the pool ends over its budget
+  expect(await m.dream(target)).toMatchObject({ outcome: "failure", problems: [`frozen pool ${pool} over budget: ${size}/${size - 1} tokens`] });
+  expect(m.store.pendingVersions(pool, target)).toEqual([]);
+  // Nothing is pending now; the session is due only because its knowledge overflows the window.
+  for (const scope of ["global", "project"] as const) m.store.setKnowledgeBudget(scope, 0);
+  m.config.compaction.sharedAllowanceTokens = 0;
+  mode = "idle";
+  expect(m.taskEligibility("dreaming", target).due).toBe(true);
+  const budgetOnly = await m.dream(target);
+  expect(budgetOnly).toMatchObject({ outcome: "failure", problems: [`frozen pool ${pool} over budget: ${size}/${size - 1} tokens`] });
+  expect(budgetOnly.automaticOff).toContain(`S${target.sessionId} dreaming off after three failures`);
+  expect(streaks(m).filter(row => row.phase === "dreaming")).toMatchObject([{ head: null, pool, count: 3 }]);
+});
+
+test("104 F1: three consecutive timeouts at the default 30-minute bound settle as failure and turn memory off", async () => {
+  vi.useFakeTimers();
+  try {
+    const m = open(":memory:", async raw => {
+      const input = raw as DreamingAgentInput;
+      input.acknowledgeRequest();
+      return new Promise<never>(() => {}); // never resolves; only the wall-clock bound ends the run
+    });
+    m.config.dreaming.triggerTokens = 1;
+    const target = seed(m), pool = `session:${target.sessionId}`;
+    const facts = decision(m, target, "evidence");
+    const made = m.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" },
+      operations: [{ op: "create", handle: "$1", author: "test", text: `Session rule ${"word ".repeat(200)}`, category: "constraint",
+        scope: "session", topics: [], supports: [facts.facts[0]!.id], reason: "evidence", createdAt: "now" }] });
+    if (!made.ok) throw Error(made.problems.join("; "));
+    const dreamStreak = () => streaks(m).filter(row => row.phase === "dreaming");
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const running = m.dream(target);
+      await vi.advanceTimersByTimeAsync(m.config.dreaming.timeoutMs);
+      const settled = await running;
+      expect(settled.outcome, `attempt ${attempt}: ${JSON.stringify(settled)}`).toBe("failure");
+    }
+    expect(dreamStreak()).toMatchObject([{ head: null, pool, count: 3 }]);
+    expect(m.store.enabled(target.sessionId)).toBe(false);
+  } finally { vi.useRealTimers(); }
 });
 
 test("92: successful N publication resets its own task in the terminal transaction", async () => {

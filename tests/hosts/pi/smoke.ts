@@ -77,9 +77,8 @@ try {
         seen.push(...plain); component.handleInput?.("\x1b[6~");
       }
       assert.ok(seen.join(" ").includes("Pending / trigger"));
-      // Each Knowledge pool (global/project/session) triggers Dreaming separately, so each shows its
-      // own bar rather than one merged "Dreaming" line.
-      for (const label of ["global", "project", "session"])
+      // 104: Dreaming shows the session's summed pending weight and its knowledge total, one bar each.
+      for (const label of ["pending", "knowledge"])
         assert.ok(new RegExp(`${label}\\s+░░░░░░░░░░`).test(seen.join(" ")), `missing empty ${label} bar`);
       assert.ok(seen.join(" ").includes("⛶") && !seen.join(" ").includes("not task completion or worker"));
       assert.ok(!seen.join(" ").includes("Memory ~0"));

@@ -39,8 +39,13 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   const path = { sessionId: input.sessionId, branch: input.branch,
     headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
   return prepareDreaming(store, input, config, claim, path,
-    store.freezeKnowledgePool(path, claim, config.dreaming.triggerTokens));
+    store.freezeKnowledgePool(path, claim, config.dreaming.triggerTokens, config.compaction.sharedAllowanceTokens));
 }
+
+/** 104 F1: the claim lease outlives the configured wall-clock bound by this margin, so the terminal
+ * settlement in `core/api/index.ts` still finds the claim current when a run times out — otherwise a
+ * lease equal to the bound races the timeout and can lapse first, misfiling the failure as cancelled. */
+const CLAIM_LEASE_MARGIN_MS = 60_000;
 
 /** Facade admission and material assembly stay in one transaction. No prepared snapshot is accepted
  * from outside: Store discovers, claims and reserves before the private read-only assembler runs. */
@@ -49,7 +54,8 @@ export function admitDreaming(store: Store, input: DreamingInput, config: TraceM
     const path = { sessionId: input.sessionId, branch: input.branch,
       headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
     const admitted = store.admitKnowledgePool(path, executorId, input.borrowed, input.executorSessionId,
-      config.dreaming.triggerTokens);
+      config.dreaming.triggerTokens, config.compaction.sharedAllowanceTokens,
+      config.dreaming.timeoutMs + CLAIM_LEASE_MARGIN_MS);
     if (admitted.outcome !== "admitted") return admitted;
     return { outcome: "admitted" as const, claim: admitted.claim,
       frozen: prepareDreaming(store, input, config, admitted.claim, path, admitted) };
@@ -71,7 +77,9 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const remainder = tokens(processedBlock(remainderValues, value => due.rendered.get(value.revision.id)!));
   const excludedSize = due.tokens - remainder;
   const processedExcessOrder = remainder > due.budget
-    ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items occupy ${excludedSize}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under Budget priorities until that remainder fits, then deliberate the pending items below.`
+    ? pending.length
+      ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items occupy ${excludedSize}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under Budget priorities until that remainder fits, then deliberate the pending items below.`
+      : ` This pool is ${due.tokens}/${due.budget} tokens, over budget, and this run has no pending items. Reduce the already-processed knowledge under Budget priorities until the pool fits.`
     : "";
   const references = due.versions.filter(value => !frozenIds.has(value.revision.id));
   const budgets = store.knowledgeBudgets();
@@ -131,22 +139,34 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   const run: RunInput = { kind: "dreaming", sessionId, branch, dreamingRangeId: range.id, model: frozen.model, mode: "subagent",
     promptHash, rangeFrom: `${frozen.pool}#${range.id}`, rangeTo: `${frozen.pool}#${range.id}`, createdAt: new Date().toISOString() };
   let binding!: ReturnType<typeof bindTools>;
+  const address = (commit: number) => {
+    const revision = store.knowledgeRevision(commit)!;
+    return `K${revision.knowledgeId}@v${store.versionOrdinal(revision.knowledgeId, commit)}`;
+  };
+  // A frozen version is deliberated when this run skipped it or consumed it with its own operation.
+  const deliberated = (ownRevisionIds: readonly number[]) => new Set([...binding.memory.skippedCommits, ...ownRevisionIds.flatMap(id => {
+    const revision = store.knowledgeRevision(id);
+    return revision ? store.commitParents(revision).map(parent => parent.id) : [];
+  })].filter(id => frozen.frozenIds.includes(id)));
+  /** 104: success is the frozen pool within its budget and every frozen version deliberated; what
+   * still prevents it is a blocker, beside rejected operations. */
   const check = (): DreamingCheckResult => {
     const runId = store.dreamingRunId(run);
     const ownRevisionIds = runId === undefined ? [] : store.listCommitsByRun(runId).map(revision => revision.id);
     const excluded = new Set([...frozen.frozenIds, ...ownRevisionIds]);
     const operationFailures = [...binding.toolProblems, ...binding.memory.problems];
-    const pools = store.knowledgePools(path);
+    const pools = store.knowledgePools(path), own = pools.find(value => value.pool === frozen.pool)!;
+    const done = deliberated(ownRevisionIds), open = frozen.frozenIds.filter(id => !done.has(id));
+    const acceptance = [...own.tokens > own.budget ? [`frozen pool ${own.pool} over budget: ${own.tokens}/${own.budget} tokens`] : [],
+      ...open.length ? [`frozen versions not deliberated: ${open.map(address).join(", ")}`] : []];
     return { pool: frozen.pool, frozenRevisionIds: frozen.frozenIds, ownRevisionIds,
-      pendingRevisionIds: pools.find(value => value.pool === frozen.pool)!.pending.map(value => value.revisionId).filter(id => !excluded.has(id)),
-      totals: pools.map(({ pool, budget, tokens }) => ({ pool, budget, tokens })), operationFailures, problems: operationFailures };
+      pendingRevisionIds: own.pending.map(value => value.revisionId).filter(id => !excluded.has(id)),
+      totals: pools.map(({ pool, budget, tokens }) => ({ pool, budget, tokens })), operationFailures,
+      problems: [...operationFailures, ...acceptance] };
   };
   binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
     range: { from: run.rangeFrom!, to: run.rangeTo! } }, run,
-    { path, check: () => renderDreamingCheckReceipt(check(), commit => {
-      const revision = store.knowledgeRevision(commit)!;
-      return `K${revision.knowledgeId}@v${store.versionOrdinal(revision.knowledgeId, commit)}`;
-    }), skippable: commit => !frozen.frozenIds.includes(commit)
+    { path, check: () => renderDreamingCheckReceipt(check(), address), skippable: commit => !frozen.frozenIds.includes(commit)
       ? "skip must name an exact frozen version from this run"
       : binding.memory.skippedCommits.includes(commit) || binding.memory.allCommitted.some(item =>
           store.commitParents(store.knowledgeRevision(item.commit)!).some(parent => parent.id === commit))
@@ -164,12 +184,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   const problems = [...checked.problems, ...(result.outcome === "success" ? [] : [String(result.output ?? result.outcome)]),
     ...(requestMissing(result) ? ["runAgent must return the exact provider request"] : [])];
   const skippedRevisionIds = binding.memory.skippedCommits;
-  const frozenSet = new Set(frozen.frozenIds);
-  const operatedFrozenIds = new Set(checked.ownRevisionIds.flatMap(id => {
-    const revision = store.knowledgeRevision(id);
-    return revision ? store.commitParents(revision).map(parent => parent.id) : [];
-  }).filter(id => frozenSet.has(id)));
-  const deliberatedRevisionIds = [...new Set([...skippedRevisionIds, ...operatedFrozenIds])].sort((a, b) => a - b);
+  const deliberatedRevisionIds = [...deliberated(checked.ownRevisionIds)].sort((a, b) => a - b);
   recordAttempt(run, result, "subagent", { toolCalls: binding.sequence, fetched: binding.fetched, material: frozen.material,
     profile: frozen.profile, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
     committed: binding.memory.allCommitted, skipped: binding.memory.skipped, check: checked, rounds,

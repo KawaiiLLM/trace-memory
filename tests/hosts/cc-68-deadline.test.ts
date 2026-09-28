@@ -109,7 +109,8 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
     await started;
     await vi.advanceTimersByTimeAsync(1000);
     const result = await running;
-    expect(result).toMatchObject({ outcome: "failure", problems: [expect.stringContaining("Dreaming wall-clock limit exceeded (1000 ms)")] });
+    // 104: the timed-out run also left its frozen item undeliberated; the deadline stays among its problems.
+    expect(result).toMatchObject({ outcome: "failure", problems: expect.arrayContaining([expect.stringContaining("Dreaming wall-clock limit exceeded (1000 ms)")]) });
     expect(memory.store.getClaim(session.id, "dreaming")).toBeNull();
     await lateFinished;
     expect(lateRejected).toBe(true);

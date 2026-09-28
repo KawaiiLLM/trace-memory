@@ -44,7 +44,8 @@ function seedKnowledge(db: string, due: boolean) {
           run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: at },
           operations: Array.from({ length: 10 }, (_, i) => ({ op: "create" as const, handle: `$k${i}`, author: "fixture",
             category: "reference" as const, scope: owner === 0 && due ? "global" as const : "session" as const,
-            text: `Rule ${owner}-${i}: ${"synthetic body ".repeat(40)}`, supports: [noted.facts[0]!.id], topics: [],
+            // 104: the due owner's pending weight, summed, reaches the 5k Dreamer trigger.
+            text: `Rule ${owner}-${i}: ${"synthetic body ".repeat(owner === 0 && due ? 250 : 40)}`, supports: [noted.facts[0]!.id], topics: [],
             reason: "synthetic fixture", createdAt: at })) });
         if (!created.ok) throw new Error(created.problems.join("; "));
       }
