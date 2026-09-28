@@ -54,7 +54,9 @@ export async function piSession(options: { extensions: ((pi: ExtensionAPI) => vo
   env?: Record<string, string>;
   /** Runs once the fixture's directories exist and before any extension is built — where a case
    * seeds a file an extension reads at construction. */
-  prepare?: (dirs: { dir: string; agentDir: string }) => void }) {
+  prepare?: (dirs: { dir: string; agentDir: string }) => void;
+  /** The load diagnostics a case expects Pi itself to report, such as two extensions' same-name tools. */
+  extensionErrors?: unknown[] }) {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-baseline-"));
   const agentDir = join(dir, "agent"); mkdirSync(agentDir, { recursive: true });
   const origin = "https://fake-baseline.invalid";
@@ -89,7 +91,7 @@ export async function piSession(options: { extensions: ((pi: ExtensionAPI) => vo
   const { session, extensionsResult } = await createAgentSession({ cwd: dir, agentDir, model, modelRuntime, settingsManager,
     resourceLoader, sessionManager: manager, noTools: "all", tools: options.activeTools ?? tools.map(t => t.name), customTools: tools as never });
   for (const [key, value] of Object.entries(previousEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-  expect(extensionsResult.errors).toEqual([]); // an inline factory that failed to load would silently drop the hooks
+  expect(extensionsResult.errors).toEqual(options.extensionErrors ?? []); // an inline factory that failed to load would silently drop the hooks
   return { dir, agentDir, session, manager, sent, model,
     script: (fn: (body: Record<string, any>, signal?: AbortSignal) => Response | Promise<Response>) => { respond = fn; },
     dispose() {

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, linkSync, unlinkSyn
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext, SessionEntry, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createGrepToolDefinition, createReadToolDefinition, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
 import { contextComposition } from "./context-composition.ts";
 import { statusBody } from "./session-status.ts";
@@ -12,7 +12,7 @@ import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggle
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
+import { TraceMemory, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -952,7 +952,16 @@ export default function (pi: ExtensionAPI) {
     if (context.model) session.capture = { payload: snapshot(event.payload) as Body, model: context.model.id, provider: context.model.provider, branch: state.branch };
     if (state.sourceHead !== previous && state.sourceHead !== undefined) checkQueues();
   });
-  pi.on("session_start", (_event, context) => restore(context));
+  pi.on("session_start", (_event, context) => {
+    restore(context);
+    // 101: Pi keeps the first registration of a tool name; say what that costs when it is not ours.
+    const tools = pi.getAllTools();
+    for (const [name, description] of memoryTools) {
+      const winner = tools.find(tool => tool.name === name);
+      if (winner && winner.description !== description) context.ui.notify(`Trace Memory: ${winner.sourceInfo?.path ?? "another extension"} registered ${name} first; ` +
+        `Pi keeps the first registration, so ${name} cannot read Trace Memory under /tm/ in this session.`, "warning");
+    }
+  });
   // 29d: the injected-once flag is gone, so a tree switch resets nothing here — the selected
   // context's own visible view is what decides the next prompt's knowledge block (29a case 8).
   pi.on("session_tree", (_event, context) => { restore(context, true); });
@@ -1437,6 +1446,41 @@ export default function (pi: ExtensionAPI) {
     }
   });
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
+  // 101: `read` and `grep` of the same names serve /tm/ from Trace Memory, read-only, for this session's
+  // reader, and hand every other path to Pi's own tool unchanged. Edits and writes under /tm/ are refused.
+  const files = () => memoryFiles(memory, state.sessionId ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head ?? null,
+    projectId: state.projectId } : { projectId: state.projectId });
+  const listed = (listing: { lines: string[]; cut?: string }) => listing.lines.length ? [...listing.lines, ...(listing.cut ? [listing.cut] : [])].join("\n") : "No matches found";
+  const builtinRead = createReadToolDefinition(process.cwd()), builtinGrep = createGrepToolDefinition(process.cwd());
+  const memoryTools = new Map([["read", `${builtinRead.description} Paths under /tm/ are Trace Memory, read-only; read /tm for its layout.`],
+    ["grep", `${builtinGrep.description} Under /tm/ (Trace Memory, read-only) it lists matching files by default and searches Raw entries in full.`]]);
+  pi.registerTool({ ...builtinRead, description: memoryTools.get("read")!,
+    async execute(id: string, params: ReadToolInput, signal: AbortSignal | undefined, update: never, context: ExtensionContext) {
+      const path = memoryPath(params.path);
+      if (path === null) return builtinRead.execute(id, params, signal, update, context);
+      ensure(context);
+      const page = files().read(path, params.offset, params.limit);
+      return result([...page.lines, ...(page.cut ? [page.cut] : [])].join("\n"));
+    } } as ToolDefinition);
+  const grepMode = { type: "string", enum: ["files_with_matches", "content", "count"],
+    description: "Only under /tm/: files_with_matches (default) lists matching files; content shows path:line:text; count shows matches per file." };
+  pi.registerTool({ ...builtinGrep,
+    description: memoryTools.get("grep")!,
+    // A plain JSON schema, as the memory tools use: Pi's own schema plus the two /tm/-only fields.
+    parameters: ((schema: { properties: Record<string, unknown> }) => ({ ...schema, properties: { ...schema.properties, output_mode: grepMode,
+      offset: { type: "number", description: "Only under /tm/: output lines to skip, to continue a cut result." } } }))(JSON.parse(JSON.stringify(builtinGrep.parameters))),
+    async execute(id: string, raw: GrepToolInput & { output_mode?: MemoryGrepMode; offset?: number }, signal: AbortSignal | undefined, update: never, context: ExtensionContext) {
+      const { output_mode: mode, offset, ...params } = raw;
+      const path = memoryPath(params.path);
+      if (path === null) return builtinGrep.execute(id, params, signal, update, context);
+      ensure(context);
+      return result(listed(files().grep(params.pattern, path, { mode, ignoreCase: params.ignoreCase, literal: params.literal,
+        before: params.context, after: params.context, glob: params.glob, limit: params.limit, offset })));
+    } } as unknown as ToolDefinition);
+  pi.on("tool_call", event => {
+    if ((event.toolName === "edit" || event.toolName === "write") && memoryPath((event.input as { path?: unknown }).path) !== null)
+      return { block: true, reason: MEMORY_READ_ONLY };
+  });
   // The main agent registers the façade metadata (same name, description, schema the runs send)
   // wrapped with an executor bound to the current session and turn.
   const definitions = toolDefinitions.map(definition => ({ ...definition, label: definition.name,
