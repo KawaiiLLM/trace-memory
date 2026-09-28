@@ -55,6 +55,8 @@ export async function piSession(options: { extensions: ((pi: ExtensionAPI) => vo
   /** Runs once the fixture's directories exist and before any extension is built — where a case
    * seeds a file an extension reads at construction. */
   prepare?: (dirs: { dir: string; agentDir: string }) => void;
+  /** Extra top-level keys merged into the isolated global `settings.json`, such as `{ images: { autoResize: false } }`. */
+  settings?: Record<string, unknown>;
   /** The load diagnostics a case expects Pi itself to report, such as two extensions' same-name tools. */
   extensionErrors?: unknown[] }) {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-baseline-"));
@@ -64,7 +66,7 @@ export async function piSession(options: { extensions: ((pi: ExtensionAPI) => vo
   // keeps a scripted failure one failure.
   options.prepare?.({ dir, agentDir });
   const compaction = { enabled: false, keepRecentTokens: 1, reserveTokens: 1, ...options.compaction };
-  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false }, compaction }));
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false }, compaction, ...options.settings }));
   const contextWindow = options.contextWindow ?? 200_000;
   writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { fake: { name: "Fake", baseUrl: `${origin}/v1`, apiKey: "fake-key",
     api: "openai-completions", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], contextWindow, maxTokens: 8192,

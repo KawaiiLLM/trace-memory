@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, linkSync, unlinkSyn
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { createGrepToolDefinition, createReadToolDefinition, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createGrepToolDefinition, createReadToolDefinition, SettingsManager, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
 import { contextComposition } from "./context-composition.ts";
 import { statusBody } from "./session-status.ts";
@@ -1451,7 +1451,11 @@ export default function (pi: ExtensionAPI) {
   const files = () => memoryFiles(memory, state.sessionId ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head ?? null,
     projectId: state.projectId } : { projectId: state.projectId });
   const listed = (listing: { lines: string[]; cut?: string }) => listing.lines.length ? [...listing.lines, ...(listing.cut ? [listing.cut] : [])].join("\n") : "No matches found";
-  const builtinRead = createReadToolDefinition(process.cwd()), builtinGrep = createGrepToolDefinition(process.cwd());
+  // Same settings source Pi's own agent session builds its read tool from (`_buildRuntime` reads
+  // `settingsManager.getImageAutoResize()`), so a delegated `/tm`-external read resizes images exactly
+  // as Pi's own read would.
+  const autoResizeImages = SettingsManager.create(process.cwd(), agentDir).getImageAutoResize();
+  const builtinRead = createReadToolDefinition(process.cwd(), { autoResizeImages }), builtinGrep = createGrepToolDefinition(process.cwd());
   const memoryTools = new Map([["read", `${builtinRead.description} Paths under /tm/ are Trace Memory, read-only; read /tm for its layout.`],
     ["grep", `${builtinGrep.description} Under /tm/ (Trace Memory, read-only) it lists matching files by default and searches Raw entries in full.`]]);
   pi.registerTool({ ...builtinRead, description: memoryTools.get("read")!,
