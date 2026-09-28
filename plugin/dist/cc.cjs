@@ -8144,6 +8144,17 @@ function globRegex(glob) {
   return new RegExp(`^${source}$`);
 }
 var basename = (path) => path.slice(path.lastIndexOf("/") + 1);
+var revisionBody = (revision, list) => revision.op === "archive" && !revision.text ? list.find((r) => r.id === revision.parentId)?.text ?? "" : revision.text;
+var MATCH_WINDOW = 300;
+function windowedLine(text, regex) {
+  if (text.length <= MATCH_WINDOW * 6) return text;
+  const match = regex.exec(text);
+  if (!match) return text;
+  const start = Math.max(0, match.index - MATCH_WINDOW), end = Math.min(text.length, match.index + match[0].length + MATCH_WINDOW);
+  const before = start > 0 ? `\u2026(${count(start)} characters omitted)\u2026 ` : "";
+  const after = end < text.length ? ` \u2026(${count(text.length - end)} characters omitted)\u2026` : "";
+  return `${before}${text.slice(start, end)}${after}`;
+}
 function capLines(lines, render, cap = MAX_PUBLIC_READ_TOKENS) {
   let used = 0;
   for (let i = 0; i < lines.length; i++) {
@@ -8175,6 +8186,7 @@ function memoryFiles(memory, reader) {
     ...reader.branch === void 0 ? {} : { branch: reader.branch }
   };
   const trace = (address2, extra = {}) => memory.trace(address2, { modelFacing: true, pageBudget: null, ...bound, ...extra });
+  const full = (address2) => memory.trace(address2, { modelFacing: true, pageBudget: null, itemBudget: null, ...bound });
   const resolve4 = (raw) => {
     const path = memoryPath(raw);
     if (!path) throw new Error(`not a Trace Memory path: ${raw}`);
@@ -8218,7 +8230,7 @@ function memoryFiles(memory, reader) {
       const { identities, records, ordinal } = versions();
       return identities.map(([id, list]) => {
         const latest = list.at(-1), record3 = records.get(id);
-        const body = latest.op === "archive" && !latest.text ? list.find((revision) => revision.id === latest.parentId)?.text ?? "" : latest.text;
+        const body = revisionBody(latest, list);
         const owner = latest.scope === "global" ? "" : latest.scope === "session" ? ` S${record3.originSessionId}` : ` ${projectName(record3.projectId)}`;
         const status = latest.op === "archive" ? ` (archived at v${ordinal(latest)}${latest.archiveKind ? `, ${latest.archiveKind}` : ""})` : "";
         return [`${MEMORY_ROOT}/K${id}@v${ordinal(latest)}`, `[${latest.category}/${latest.scope}${owner}]${status} ${preview(body)}`];
@@ -8275,11 +8287,11 @@ function memoryFiles(memory, reader) {
       yield* searched(VISIBLE);
       yield* searched(ALL);
       for (const s of store.listSessions()) yield* searched(`${MEMORY_ROOT}/S${s.id}`);
-      for (const f of store.factHeadings()) yield { path: `${MEMORY_ROOT}/F${f.id}`, text: () => fileText(`${MEMORY_ROOT}/F${f.id}`) };
+      for (const f of store.factHeadings()) yield { path: `${MEMORY_ROOT}/F${f.id}`, text: () => full(`F${f.id}`) };
       return;
     }
     if (path === VISIBLE) {
-      for (const { knowledge } of visible()) yield { path: `${MEMORY_ROOT}/K${knowledge.id}`, text: () => trace(`K${knowledge.id}`) };
+      for (const { knowledge } of visible()) yield { path: `${MEMORY_ROOT}/K${knowledge.id}`, text: () => full(`K${knowledge.id}`) };
       return;
     }
     if (path === ALL) {
@@ -8288,9 +8300,10 @@ function memoryFiles(memory, reader) {
         const latest = list.at(-1), latestStatus = `latest v${ordinal(latest)}${latest.op === "archive" ? ", archived" : ""}`;
         for (const revision of list) {
           const address2 = `K${id}@v${ordinal(revision)}`;
+          const legacyEmpty = revision.op === "archive" && !revision.text;
           yield {
             path: `${MEMORY_ROOT}/${address2}`,
-            text: () => trace(address2),
+            text: () => legacyEmpty ? revisionBody(revision, list) : full(address2),
             mark: revision !== latest ? ` (historical; ${latestStatus})` : latest.op === "archive" ? " (archived)" : void 0
           };
         }
@@ -8313,11 +8326,16 @@ function memoryFiles(memory, reader) {
       yield { path, text: () => whole(store.hydrateSourceEntries([entry.id])[0]) };
       return;
     }
-    yield { path, text: () => fileText(path) };
+    if (INHERITED.test(path) || HISTORY.test(path)) {
+      yield { path, text: () => fileText(path) };
+      return;
+    }
+    yield { path, text: () => full(path.slice(MEMORY_ROOT.length + 1)) };
   }
+  const CUT_RECEIPT_RESERVE = 200;
   const page = (out, more, offset, limit, what, continuation) => {
     const shown = out.slice(offset, offset + limit);
-    const fit2 = capLines(shown, (line) => line);
+    const fit2 = capLines(shown, (line) => line, MAX_PUBLIC_READ_TOKENS - CUT_RECEIPT_RESERVE);
     const next = offset + fit2.kept.length;
     if (!more && next >= out.length) return { lines: fit2.kept };
     const rest = more ? `more ${what} follow` : `${what} ${next + 1}-${out.length} of ${out.length} not shown`;
@@ -8353,7 +8371,7 @@ function memoryFiles(memory, reader) {
       for (const i of hits) for (let j = Math.max(0, i - before); j <= Math.min(text.length - 1, i + after); j++) shown.add(j);
       const hit = new Set(hits);
       for (const i of [...shown].sort((a, b) => a - b)) {
-        const line = `${file2.path}${hit.has(i) ? ":" : "-"}${i + 1}${hit.has(i) ? ":" : "-"}${text[i]}`;
+        const line = `${file2.path}${hit.has(i) ? ":" : "-"}${i + 1}${hit.has(i) ? ":" : "-"}${windowedLine(text[i], regex)}`;
         out.push(line);
         if (out.length > offset && (used += tokens(line)) > MAX_PUBLIC_READ_TOKENS || out.length >= offset + limit + 1) {
           more = true;
