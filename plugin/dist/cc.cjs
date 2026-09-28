@@ -8401,9 +8401,11 @@ function prepareDreaming(store, input, config3, claim, path, { pool: due, range 
   const frozenIds = new Set(range.eventIds);
   const pending = due.pending.filter((value) => frozenIds.has(value.revisionId));
   const changed = ["Pending current knowledge:", ...pending.map((value) => value.material)].join("\n");
-  const pendingWeight = pending.reduce((sum, value) => sum + value.tokens, 0);
-  const remainder = due.tokens - pendingWeight;
-  const processedExcessOrder = remainder > due.budget ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items weigh ${pendingWeight}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under Budget priorities until that remainder fits, then deliberate the pending items below.` : "";
+  const pendingRevisionIds = new Set(pending.map((value) => value.revisionId));
+  const remainderValues = due.versions.filter((value) => !pendingRevisionIds.has(value.revision.id));
+  const remainder = tokens(processedBlock(remainderValues, (value) => due.rendered.get(value.revision.id)));
+  const excludedSize = due.tokens - remainder;
+  const processedExcessOrder = remainder > due.budget ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items occupy ${excludedSize}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under Budget priorities until that remainder fits, then deliberate the pending items below.` : "";
   const references = due.versions.filter((value) => !frozenIds.has(value.revision.id));
   const budgets2 = store.knowledgeBudgets();
   const knowledgeCapacity = budgets2.injection + config3.compaction.sharedAllowanceTokens;

@@ -3,6 +3,7 @@ import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../..
 import { tokens } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { suppliedHandles } from "../../dreaming-skips.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -266,24 +267,97 @@ test("64c frozen material preserves changed and direct-fact capacity guarantees 
   expect(result.outcome).toBe("success");
 });
 
-test("103 order instruction: present when the pool without this run's pending items still exceeds budget, from check's own measure", async () => {
+// 103 review counterexample: a Changed item's scheduling weight is its diff, not the size its
+// current version occupies in the pool. This fixture makes a pool of exactly one processed item,
+// then lands a one-word Noter edit on it outside the Dreamer, so the pending item is "Changed"
+// with a tiny diff weight but a large current body — the two must not be confused.
+async function smallUpdateFixture() {
   const f = fixture();
   f.memory.config.dreaming.triggerTokens = 1;
   const projectPool = `project:${f.project.id}`;
-  const base = f.create("Already-processed project knowledge that stays after this run. ".repeat(30));
+  const base = f.create("Already-processed project knowledge that stays after this run. ".repeat(20) + "marker-original.");
   const firstRun = await f.scenarios.run(f.memory, f.target, task => {
     task.acknowledgeRequest();
     task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
       skipped: [{ knowledge: history(f, base), because: "fixture: mark processed" }] });
     return success;
   });
+  if (firstRun.outcome !== "success") throw new Error(JSON.stringify(firstRun));
+  const poolBeforeEdit = f.store.knowledgePools(f.target).find(pool => pool.pool === projectPool)!.tokens;
+
+  const updated = commitNoterKnowledge(f.store, { run: { sessionId: f.session.id, createdAt: "now" }, operations: [{
+    op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, category: "constraint", scope: "project",
+    supports: [f.fact], topics: [], reason: "one-word correction", createdAt: "now",
+    text: "Already-processed project knowledge that stays after this run. ".repeat(20) + "marker-corrected.",
+  }] });
+  if (!updated.ok) throw new Error(updated.problems.join("; "));
+  return { f, projectPool, poolBeforeEdit, updated: updated.committed[0]! };
+}
+
+test("103 order instruction: absent for a small update — the excluded size is the item's whole current body, not its diff weight", async () => {
+  const { f, poolBeforeEdit, updated } = await smallUpdateFixture();
+  // The pool has one item; excluding its current version entirely empties the pool, so the
+  // correct remainder is 0. A budget comfortably above 0 but well below the pre-edit pool size
+  // is over budget under the old (diff-weight) formula and within budget under the fix.
+  expect(poolBeforeEdit).toBeGreaterThan(100);
+  f.store.setKnowledgeBudget("project", 20);
+
+  let seenBound = "";
+  const secondRun = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest();
+    seenBound = task.material.bound;
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      skipped: [{ knowledge: `K${updated.knowledgeId}@v${f.store.versionOrdinal(updated.knowledgeId, updated.commit)}`, because: "fixture reviewed unchanged" }] });
+    return success;
+  });
+  expect(secondRun.outcome, JSON.stringify(secondRun)).toBe("success");
+  expect(seenBound).toBe(`Run wall-clock bound: ${f.memory.config.dreaming.timeoutMs} ms. Wrap up before this deadline.`);
+});
+
+test("103 order instruction: absent at the boundary where the remainder exactly equals budget", async () => {
+  const { f, updated } = await smallUpdateFixture();
+  f.store.setKnowledgeBudget("project", 0); // the pool's only item is fully excluded: remainder is 0, exactly at budget
+
+  let seenBound = "";
+  const secondRun = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest();
+    seenBound = task.material.bound;
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      skipped: [{ knowledge: `K${updated.knowledgeId}@v${f.store.versionOrdinal(updated.knowledgeId, updated.commit)}`, because: "fixture reviewed unchanged" }] });
+    return success;
+  });
+  expect(secondRun.outcome, JSON.stringify(secondRun)).toBe("success");
+  expect(seenBound).toBe(`Run wall-clock bound: ${f.memory.config.dreaming.timeoutMs} ms. Wrap up before this deadline.`);
+});
+
+// 103 review counterexample: an Archived item's scheduling weight is its removed body, but an
+// archived revision is never part of the current pool (76), so excluding it removes nothing.
+test("103 order instruction: present for an archive — the excluded size is 0, since an archived item never occupies the current pool", async () => {
+  const f = fixture();
+  f.memory.config.dreaming.triggerTokens = 1;
+  const projectPool = `project:${f.project.id}`;
+  const stays = f.create("Project knowledge that remains current after the archive below. ".repeat(20));
+  const victim = f.create("Project knowledge retired by a later Noter archive. ".repeat(10));
+  const firstRun = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest();
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [
+      { knowledge: history(f, stays), because: "fixture: mark processed" },
+      { knowledge: history(f, victim), because: "fixture: mark processed" }] });
+    return success;
+  });
   expect(firstRun.outcome, JSON.stringify(firstRun)).toBe("success");
 
-  const trigger = f.create("A later small pending correction.");
-  const projected = f.store.knowledgePools(f.target).find(pool => pool.pool === projectPool)!;
-  const pendingWeight = projected.pending.reduce((sum, value) => sum + value.tokens, 0);
-  const remainder = projected.tokens - pendingWeight;
-  f.store.setKnowledgeBudget("project", remainder - 1);
+  const archived = commitNoterKnowledge(f.store, { run: { sessionId: f.session.id, createdAt: "now" }, operations: [{
+    op: "archive", knowledgeId: victim.knowledgeId, baseCommit: victim.commit, supports: [f.fact], reason: "superseded", createdAt: "now",
+  }] });
+  if (!archived.ok) throw new Error(archived.problems.join("; "));
+  const archivedItem = archived.committed[0]!;
+
+  // Archiving removed `victim` from the current pool; its removed body was never part of the
+  // pool size, so the pool now equals `stays` alone. Budget one below that: over budget without
+  // any exclusion needed, since the archive excludes nothing.
+  const poolTokens = f.store.knowledgePools(f.target).find(pool => pool.pool === projectPool)!.tokens;
+  f.store.setKnowledgeBudget("project", poolTokens - 1);
 
   let seenBound = "", checkReceipt = "";
   const secondRun = await f.scenarios.run(f.memory, f.target, task => {
@@ -291,48 +365,19 @@ test("103 order instruction: present when the pool without this run's pending it
     seenBound = task.material.bound;
     checkReceipt = String(task.tools.find(tool => tool.name === "check")!.execute({}));
     task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
-      skipped: [{ knowledge: history(f, trigger), because: "fixture reviewed unchanged" }] });
+      skipped: [{ knowledge: `K${archivedItem.knowledgeId}@v${f.store.versionOrdinal(archivedItem.knowledgeId, archivedItem.commit)}`, because: "fixture reviewed unchanged" }] });
     return success;
   });
   expect(secondRun.outcome, JSON.stringify(secondRun)).toBe("success");
 
-  const match = seenBound.match(/This pool is (\d+)\/(\d+) tokens; this run's pending items weigh (\d+); without them it is still (\d+), over budget\./);
+  const match = seenBound.match(/This pool is (\d+)\/(\d+) tokens; this run's pending items occupy (\d+); without them it is still (\d+), over budget\./);
   expect(match, seenBound).toBeTruthy();
-  const poolTokens = Number(match![1]), budget = Number(match![2]), weight = Number(match![3]), shownRemainder = Number(match![4]);
-  expect(poolTokens - weight).toBe(shownRemainder);
+  const shownPoolTokens = Number(match![1]), budget = Number(match![2]), excludedSize = Number(match![3]), shownRemainder = Number(match![4]);
+  expect(shownPoolTokens).toBe(poolTokens);
+  expect(excludedSize).toBe(0); // the archived item excludes nothing
+  expect(shownRemainder).toBe(shownPoolTokens); // remainder equals the unexcluded pool size
   expect(shownRemainder).toBeGreaterThan(budget);
-  expect(checkReceipt).toContain(`${projectPool}: ${poolTokens}/${budget} tokens`);
-});
-
-test("103 order instruction: absent at the boundary where the remainder exactly equals budget", async () => {
-  const f = fixture();
-  f.memory.config.dreaming.triggerTokens = 1;
-  const projectPool = `project:${f.project.id}`;
-  const base = f.create("Already-processed project knowledge that stays after this run. ".repeat(30));
-  const firstRun = await f.scenarios.run(f.memory, f.target, task => {
-    task.acknowledgeRequest();
-    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
-      skipped: [{ knowledge: history(f, base), because: "fixture: mark processed" }] });
-    return success;
-  });
-  expect(firstRun.outcome, JSON.stringify(firstRun)).toBe("success");
-
-  const trigger = f.create("A later small pending correction.");
-  const projected = f.store.knowledgePools(f.target).find(pool => pool.pool === projectPool)!;
-  const pendingWeight = projected.pending.reduce((sum, value) => sum + value.tokens, 0);
-  const remainder = projected.tokens - pendingWeight;
-  f.store.setKnowledgeBudget("project", remainder); // exactly at budget, not over
-
-  let seenBound = "";
-  const secondRun = await f.scenarios.run(f.memory, f.target, task => {
-    task.acknowledgeRequest();
-    seenBound = task.material.bound;
-    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
-      skipped: [{ knowledge: history(f, trigger), because: "fixture reviewed unchanged" }] });
-    return success;
-  });
-  expect(secondRun.outcome, JSON.stringify(secondRun)).toBe("success");
-  expect(seenBound).toBe(`Run wall-clock bound: ${f.memory.config.dreaming.timeoutMs} ms. Wrap up before this deadline.`);
+  expect(checkReceipt).toContain(`${projectPool}: ${shownPoolTokens}/${budget} tokens`);
 });
 
 test("103 order instruction: absent when the pool without this run's pending items is within budget", async () => {

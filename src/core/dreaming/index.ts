@@ -62,12 +62,16 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const frozenIds = new Set(range.eventIds);
   const pending = due.pending.filter(value => frozenIds.has(value.revisionId));
   const changed = ["Pending current knowledge:", ...pending.map(value => value.material)].join("\n");
-  // 103: the same pool-size and pending-weight measures `check`/`Store.poolSizes` report, so the
-  // order instruction below matches what the run will see again at its own `check`.
-  const pendingWeight = pending.reduce((sum, value) => sum + value.tokens, 0);
-  const remainder = due.tokens - pendingWeight;
+  // 103: remainder excludes this run's pending current versions from the pool at the exact size
+  // `check`/`Store.knowledgePools` measures (processedBlock over `due.versions`) — not their
+  // scheduling weight (a Changed item's diff, an Archived item's removed body). An Archived item's
+  // current version is never in `due.versions` (76), so excluding it removes nothing, as required.
+  const pendingRevisionIds = new Set(pending.map(value => value.revisionId));
+  const remainderValues = due.versions.filter(value => !pendingRevisionIds.has(value.revision.id));
+  const remainder = tokens(processedBlock(remainderValues, value => due.rendered.get(value.revision.id)!));
+  const excludedSize = due.tokens - remainder;
   const processedExcessOrder = remainder > due.budget
-    ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items weigh ${pendingWeight}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under Budget priorities until that remainder fits, then deliberate the pending items below.`
+    ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items occupy ${excludedSize}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under Budget priorities until that remainder fits, then deliberate the pending items below.`
     : "";
   const references = due.versions.filter(value => !frozenIds.has(value.revision.id));
   const budgets = store.knowledgeBudgets();
