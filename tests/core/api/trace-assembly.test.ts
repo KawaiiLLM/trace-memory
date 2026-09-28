@@ -5,7 +5,7 @@
 // budgets that shaped them. 23c makes `full` the same assembly through the renderer's unbounded path
 // and the raw extractor: the same labels, nothing cut, every native occurrence its own entry, and
 // `renderTurn` with its `tool=`/`omitted=` vocabulary deleted.
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,6 +52,28 @@ test("23b golden: a call with several native result occurrences shows each occur
   // Results share a call ID, never an entry identity; full changes only compression.
   expect(memory.trace(`T${t.id}`)).toBe(expected);
   expect(memory.trace(`T${t.id}`, { full: true })).toBe(expected);
+});
+
+test("repeated trace reads reuse the committed path view; a rewrite rebuilds once", () => {
+  const t = turn("first", "reply");
+  const entries = memory.store.listSourceEntries(sessionId, t.id).map(entry => entry.id);
+  memory.selectEntries(sessionId, "main", entries);
+  const options = { sessionId, branch: "main", headTurnId: t.id };
+  const sql = vi.spyOn(memory.store.db, "prepare");
+  const fullBuilds = () => sql.mock.calls.filter(([query]) =>
+    typeof query === "string" && query.includes("JOIN source_path_entries j") && query.includes("j.position >= ?")).length;
+  try {
+    for (let i = 0; i < 8; i++) expect(memory.trace(`T${t.id}#E1`, options)).toContain("first");
+    expect(fullBuilds()).toBe(1);
+    for (let i = 0; i < 3; i++) expect(memory.search("first", "raw", options)).toContain("first");
+    expect(fullBuilds()).toBe(1);
+    // A non-append rewrite changes the header and the selected Raw.
+    memory.selectEntries(sessionId, "main", [entries[1]!]);
+    sql.mockClear();
+    for (let i = 0; i < 3; i++) expect(memory.trace(`T${t.id}#E2`, options)).toContain("reply");
+    expect(fullBuilds()).toBe(1);
+    expect(() => memory.trace(`T${t.id}#E1`, options)).toThrow(/does not exist on this path/);
+  } finally { sql.mockRestore(); }
 });
 
 test("23b golden: a sibling branch's entries never appear in this branch's trace", () => {

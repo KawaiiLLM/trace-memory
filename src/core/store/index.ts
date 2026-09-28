@@ -868,6 +868,7 @@ export class Store {
   readonly db: DatabaseSync;
   private readonly pathViews = new Map<string, PathView>();
   private transactionPaths: Map<string, PathView> | null = null;
+  private reading = false;
   private pendingGeneration = 0;
   readonly migration64d: Migration64dReport;
   closed = false;
@@ -1460,6 +1461,7 @@ export class Store {
 
   // Preserve nested transactions with savepoints: project declaration nests a merge.
   transaction<T>(fn: () => T): T {
+    if (this.reading) throw new Error("write transaction inside a read transaction");
     const nested = this.db.isTransaction;
     // Snapshot what a rolled-back savepoint must restore. Taken (and BEGIN/SAVEPOINT attempted)
     // before the memo is touched: a failed BEGIN never installs or mutates it.
@@ -2572,20 +2574,21 @@ export class Store {
     return row?.node_key ?? null;
   }
 
-  /** A read-only snapshot for work that must see one database state: path views built inside it
-   * are discarded with it, as in a write transaction. */
+  /** A read-only database snapshot. Revalidate the committed path view against its header in
+   * this same snapshot; a managed write still uses its disposable transaction view. */
   readSnapshot<T>(fn: () => T): T {
     if (this.db.isTransaction) return fn();
     this.db.exec("BEGIN");
-    this.transactionPaths = new Map();
+    this.reading = true;
     try {
       const result = fn();
       this.db.exec("COMMIT");
       return result;
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      this.pathViews.clear();
       throw error;
-    } finally { this.transactionPaths = null; }
+    } finally { this.reading = false; }
   }
 
   private loadPathTurns(path: KnowledgePath): Set<number> {
@@ -4601,7 +4604,7 @@ export class Store {
     try {
       const state = this.sourcePathState(sessionId, branch);
       const key = JSON.stringify([sessionId, branch]);
-      const cache = outside ? this.pathViews : this.transactionPaths;
+      const cache = outside || this.reading ? this.pathViews : this.transactionPaths;
       const previous = cache?.get(key);
       if (!state) {
         if (outside) this.db.exec("COMMIT");

@@ -299,10 +299,10 @@ test("named multi-address values freeze under the transaction, but rendering and
       return (original as Function)(...args);
     }) as never);
   });
-  const transaction = store.transaction.bind(store);
+  const readSnapshot = store.readSnapshot.bind(store);
   let changed = false;
-  const snapshot = vi.spyOn(store, "transaction").mockImplementation(body => {
-    const value = transaction(body);
+  const snapshot = vi.spyOn(store, "readSnapshot").mockImplementation(body => {
+    const value = readSnapshot(body);
     if (!changed) {
       changed = true;
       store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: "NEW-TURN", startedAt: time });
