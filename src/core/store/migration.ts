@@ -45,6 +45,12 @@ export function migrateFactAndKnowledge92(db: DatabaseSync): void {
     db.exec("ALTER TABLE facts ADD COLUMN source_roles TEXT");
 }
 
+export function migrateArchiveKind99(db: DatabaseSync): void {
+  if (!db.isTransaction) throw new Error("99 migration requires Store's schema transaction");
+  if (!db.prepare("PRAGMA table_info(knowledge_revisions)").all().some(row => row.name === "archive_kind"))
+    db.exec("ALTER TABLE knowledge_revisions ADD COLUMN archive_kind TEXT CHECK (archive_kind IS NULL OR archive_kind IN ('budget','invalid'))");
+}
+
 export function migrateFactSegments93(db: DatabaseSync): void {
   if (!db.isTransaction) throw new Error("93 migration requires Store's schema transaction");
   if (!db.prepare("PRAGMA table_info(facts)").all().some(row => row.name === "title"))

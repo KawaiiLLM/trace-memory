@@ -36,7 +36,7 @@ test("92/03: D skips tagless diffs by history address; mutation diagnostics sepa
     expect((await memory.dream(target)).outcome).toBe("success");
     const changed = commitNoterKnowledge(store, { path: target, run: { sessionId: session.id, createdAt: "now" }, operations: [
       { op: "update", knowledgeId: a!.knowledgeId, baseCommit: a!.commit, ...content, text: "Rule 1 changed" },
-      { op: "archive", knowledgeId: c!.knowledgeId, baseCommit: c!.commit, supports: [fact], reason: "obsolete", createdAt: "now" },
+      { op: "archive", kind: "budget", knowledgeId: c!.knowledgeId, baseCommit: c!.commit, supports: [fact], reason: "obsolete", createdAt: "now" },
     ] });
     if (!changed.ok) throw new Error(changed.problems.join("; "));
     let outsideCommit = "";
@@ -49,8 +49,8 @@ test("92/03: D skips tagless diffs by history address; mutation diagnostics sepa
       const skip = (knowledge: string) => write.execute({ operations: [], skipped: [{ knowledge, because: "Deliberated unchanged" }] });
       expect(skip(`K${b!.knowledgeId}@v1`)).toContain("exact frozen version");
       expect(skip(`K${a!.knowledgeId}@v999`)).toContain("rejected:");
-      expect(write.execute({ operations: [{ op: "archive", id: `K${a!.knowledgeId}@v2`, supports: [], reason: "not a write tag" }], skipped: [] })).toContain("exact K#tag");
-      const stale = write.execute({ operations: [{ op: "archive", id: address(a!.knowledgeId, a!.commit), supports: [], reason: "stale" }], skipped: [] });
+      expect(write.execute({ operations: [{ op: "archive", kind: "budget", id: `K${a!.knowledgeId}@v2`, supports: [], reason: "not a write tag" }], skipped: [] })).toContain("exact K#tag");
+      const stale = write.execute({ operations: [{ op: "archive", kind: "budget", id: address(a!.knowledgeId, a!.commit), supports: [], reason: "stale" }], skipped: [] });
       expect(stale).toContain(`K${a!.knowledgeId}@v2`);
       expect(stale).not.toMatch(/K\d+@\d+/);
       expect(stale).not.toContain(address(a!.knowledgeId, changed.committed[0]!.commit));
@@ -60,7 +60,7 @@ test("92/03: D skips tagless diffs by history address; mutation diagnostics sepa
       const external = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$outside", author: "test", ...content, scope: "global", text: "Other pool" }] });
       if (!external.ok) throw new Error(external.problems.join("; "));
       const out = external.committed[0]!;
-      const poolError = write.execute({ operations: [{ op: "archive", id: address(out.knowledgeId, out.commit), supports: [], reason: "wrong pool" }], skipped: [] });
+      const poolError = write.execute({ operations: [{ op: "archive", kind: "budget", id: address(out.knowledgeId, out.commit), supports: [], reason: "wrong pool" }], skipped: [] });
       expect(poolError).toContain("outside Dreamer pool");
       expect(poolError).not.toMatch(/K\d+@\d+/);
       expect(skip(`K${a!.knowledgeId}@v2`)).not.toContain("rejected:");

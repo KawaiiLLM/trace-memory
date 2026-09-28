@@ -91,9 +91,9 @@ test("92: legacy knowledge is found as understanding in search and exact history
     const tools = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" });
     expect(tools.find(tool => tool.name === "trace")!.execute({ address: `K${knowledgeId}@v1` })).toContain("legacy mechanism needle");
     const archived = JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ operations: [
-      { op: "archive", id: `K${knowledgeId}#${f.memory.store.versionTag(knowledgeId, commit)}`, supports: [`F${factId}`], reason: "Legacy item retired" }], skipped: [] }));
+      { op: "archive", kind: "budget", id: `K${knowledgeId}#${f.memory.store.versionTag(knowledgeId, commit)}`, supports: [`F${factId}`], reason: "Legacy item retired" }], skipped: [] }));
     expect(archived.committed).toHaveLength(1);
-    expect(f.memory.store.getKnowledgeRevision(knowledgeId, f.memory.store.resolveVersionOrdinal(knowledgeId, 2))!.category).toBe("understanding");
+    expect(f.memory.store.getKnowledgeRevision(knowledgeId, f.memory.store.resolveVersionOrdinal(knowledgeId, 2))!.category).toBe("mechanism");
   } finally { f.memory.close(); }
 });
 
@@ -122,7 +122,7 @@ test("92: CC adapter writes against the borrowed target and renders legacy categ
     expect(searched.content[0]!.text).toContain(`[K${knowledgeId}@v1] [understanding/session]`);
     const injected = f.memory.injection({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
     const tag = injected.text.match(new RegExp(`K${knowledgeId}#[a-z]{4,}`))![0];
-    const archived = await adapter.call("memory", { operations: [{ op: "archive", id: tag, supports: [`F${id}`], reason: "retired" }], skipped: [] }, meta);
+    const archived = await adapter.call("memory", { operations: [{ op: "archive", kind: "budget", id: tag, supports: [`F${id}`], reason: "retired" }], skipped: [] }, meta);
     expect(archived.isError).toBeUndefined();
     expect(JSON.parse(archived.content[0]!.text).committed[0].version).toBe(`K${knowledgeId}@v2`);
     const unbound = new CcForegroundTools({ toolProjection: async () => ({ memory: f.memory }) } as unknown as CcCoordinator);

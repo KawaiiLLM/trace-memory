@@ -206,7 +206,7 @@ test("simulation v7m Chinese evidence remains traceable through N knowledge publ
 
 test("N archive and create publish together with Raw progress, leaving historical fact accounting untouched", async () => {
   const withdrawal = fact("The user withdrew the rule"), evidence = fact(), base = knowledge(evidence.id);
-  queue({ operations: [...create(evidence.id).operations, { op: "archive", id: base.tag, supports: [`F${withdrawal.id}`], reason: "Withdrawn" }], skipped: [] });
+  queue({ operations: [...create(evidence.id).operations, { op: "archive", kind: "budget", id: base.tag, supports: [`F${withdrawal.id}`], reason: "Withdrawn" }], skipped: [] });
   expect((await run()).outcome).toBe("success");
   expect(memory.store.currentCommit(base.knowledgeId)[0]!.op).toBe("archive");
   expect(memory.store.getKnowledge(base.knowledgeId + 1)).not.toBeNull();

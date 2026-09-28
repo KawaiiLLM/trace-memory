@@ -348,7 +348,7 @@ test("103 order instruction: present for an archive — the excluded size is 0, 
   expect(firstRun.outcome, JSON.stringify(firstRun)).toBe("success");
 
   const archived = commitNoterKnowledge(f.store, { run: { sessionId: f.session.id, createdAt: "now" }, operations: [{
-    op: "archive", knowledgeId: victim.knowledgeId, baseCommit: victim.commit, supports: [f.fact], reason: "superseded", createdAt: "now",
+    op: "archive", kind: "budget", knowledgeId: victim.knowledgeId, baseCommit: victim.commit, supports: [f.fact], reason: "superseded", createdAt: "now",
   }] });
   if (!archived.ok) throw new Error(archived.problems.join("; "));
   const archivedItem = archived.committed[0]!;

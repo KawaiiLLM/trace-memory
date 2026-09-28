@@ -60,7 +60,7 @@ test("92/03: branch history owns stable ordinals, membership/status follows the 
     expect(all).not.toMatch(/K\d+@\d+/);
     expect(read(paths[2]!, `K${id}`)).toContain(`[K${id}@v3]`);
     expect(store.versionOrdinal(id, first.commit)).toBe(2);
-    const archive = write(paths[2]!, [{ op: "archive", knowledgeId: id, baseCommit: second.commit, supports: [facts[2]!], reason: "retired", createdAt: "now" }]);
+    const archive = write(paths[2]!, [{ op: "archive", kind: "budget", knowledgeId: id, baseCommit: second.commit, supports: [facts[2]!], reason: "retired", createdAt: "now" }]);
     expect(read(paths[2]!, `K${id}`, "history")).toContain("archived");
     expect(store.versionOrdinal(id, archive.commit)).toBe(4);
 
@@ -70,7 +70,7 @@ test("92/03: branch history owns stable ordinals, membership/status follows the 
     const tools = memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: foreignTurn.id });
     const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Outside evidence", sources: [{ address: `T${foreignTurn.id}#E1`, text: "Outside evidence" }] }] })).factIds[0];
     expect(tools.find(t => t.name === "trace")!.execute({ address: `K${id}@v2` })).toContain("Left body");
-    const rejected = tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "archive", id: `K${id}#${store.versionTag(id, first.commit)}`, supports: [`F${fact}`], reason: "outside" }], skipped: [] });
+    const rejected = tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "archive", kind: "budget", id: `K${id}#${store.versionTag(id, first.commit)}`, supports: [`F${fact}`], reason: "outside" }], skipped: [] });
     expect(rejected).toContain("rejected:");
     expect(rejected).not.toMatch(/K\d+@\d+/);
     expect(rejected).not.toContain(`K${id}@v4`);

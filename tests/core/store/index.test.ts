@@ -283,7 +283,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
       const revisionsBefore = memory.store.listKnowledgeRevisions();
       const linksBefore = memory.store.listKnowledgeLinks(second.committed[0]!.knowledgeId);
       const rejected = memory.store.commitConsolidationRun({ path, run: admittedRun, operations: [
-        { op: "archive", knowledgeId: second.committed[0]!.knowledgeId, baseCommit: second.committed[0]!.commit,
+        { op: "archive", kind: "budget", knowledgeId: second.committed[0]!.knowledgeId, baseCommit: second.committed[0]!.commit,
           supports: [factId], reason: "Retire the independent fixture item.", createdAt: "2026-01-01T00:02:00Z" },
         { op: "update", knowledgeId, baseCommit: created.committed[0]!.commit, topics: [],
           reason: "Substantive correction of the recorded conclusion.", text: "A conflicting edit.", category: "constraint",
@@ -299,7 +299,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
       expect(memory.store.currentCommit(knowledgeId).map(revision => revision.id)).toEqual([updatedCommit]);
       trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null });
       trace.execute({ address: tag(second.committed[0]!.knowledgeId, second.committed[0]!.commit), itemBudget: null });
-      const corrected = write.execute({ operations: [{ op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
+      const corrected = write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
         skipped: [{ knowledge: history(second.committed[0]!.knowledgeId, second.committed[0]!.commit), because: "The rejected archive rolled back." }] });
       expect(corrected).toContain('"committed"');
       return { outcome: "success", output: "atomicity checked", request };
@@ -486,7 +486,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
         const receipt = write.execute({ operations: [
           { op: "update", id: tag(id, made.committed[0]!.commit), topics: [], reason: "Substantive correction of the recorded conclusion.",
             text: "private term", category: "understanding", scope: "session", supports: [`F${peerFact}`] },
-          { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${peerFact}`], reason: "Retire the explicit fixture trigger." },
+          { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${peerFact}`], reason: "Retire the explicit fixture trigger." },
         ], skipped: [] });
         expect(receipt).toContain('"committed"');
         return { outcome: "success", output: "updated", request };
@@ -520,7 +520,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
         const receipt = write.execute({ operations: [
           { op: "update", id: tag(id, made.committed[0]!.commit), topics: [], reason: "Substantive correction of the recorded conclusion.",
             text: "Use pnpm here.", category: "constraint", scope: "project", supports: [`F${factId}`] },
-          { op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." },
+          { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." },
         ], skipped: [] });
         expect(receipt).toContain('"committed"');
         return { outcome: "success", output: "scope moved", request };
@@ -565,7 +565,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       expect(duplicate.ok).toBe(false);
       if (!duplicate.ok) expect(duplicate.problems.join(" ")).toContain("absorb as exactly one distinct other parent");
       trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null });
-      write.execute({ operations: [{ op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
+      write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
         skipped: [] }); // The first call already recorded the untouched bases as skipped.
       return { outcome: "success", output: "cardinality checked", request };
     });
@@ -603,7 +603,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       const revisionsBefore = memory.store.listKnowledgeRevisions();
       const linksBefore = memory.store.listKnowledgeLinks(older2.knowledgeId);
       const rejected = memory.store.commitConsolidationRun({ path, run: admittedRun, operations: [
-        { op: "archive", knowledgeId: independent.knowledgeId, baseCommit: independent.commit, supports: [factId],
+        { op: "archive", kind: "budget", knowledgeId: independent.knowledgeId, baseCommit: independent.commit, supports: [factId],
           reason: "independent batch item must roll back", createdAt: consolidationAt },
         { op: "merge", intoKnowledgeId: newer2.knowledgeId, intoBaseCommit: newer2.commit,
           absorb: [{ knowledgeId: older2.knowledgeId, baseCommit: older2.commit }], text: "wrong survivor", category: "understanding",
@@ -622,7 +622,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       trace.execute({ address: tag(older2.knowledgeId, older2.commit), itemBudget: null });
       trace.execute({ address: tag(newer2.knowledgeId, newer2.commit), itemBudget: null });
       trace.execute({ address: tag(independent.knowledgeId, independent.commit), itemBudget: null });
-      const corrected = write.execute({ operations: [{ op: "archive", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
+      const corrected = write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
         skipped: [
           { knowledge: history(older2.knowledgeId, older2.commit), because: "The reverse merge rolled back." },
           { knowledge: history(newer2.knowledgeId, newer2.commit), because: "The reverse merge rolled back." },
@@ -651,7 +651,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       topics: [], createdAt: consolidationAt }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     const item = created.committed[0]!;
-    const archive = { op: "archive" as const, knowledgeId: item.knowledgeId, baseCommit: item.commit,
+    const archive = { op: "archive" as const, kind: "budget" as const, knowledgeId: item.knowledgeId, baseCommit: item.commit,
       supports: [factId], reason: "retire rule", createdAt: consolidationAt };
     // N owns create and archive; terminal publication commits both atomically.
     const accepted = commitNoterKnowledge(store, { run: { sessionId: s.id, createdAt: consolidationAt },
@@ -660,7 +660,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) return;
     expect(accepted.committed.map(op => op.op)).toEqual(["create", "archive"]);
-    expect(store.currentCommit(item.knowledgeId)[0]).toMatchObject({ op: "archive", actorRole: "noting" });
+    expect(store.currentCommit(item.knowledgeId)[0]).toMatchObject({ op: "archive", archiveKind: "budget", actorRole: "noting" });
 
     // A batch mixing a legal op with one forbidden to N (merge) rolls back whole.
     const before = store.listKnowledgeRevisions();
@@ -734,7 +734,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const id = r.committed[0]!.knowledgeId;
     const archive = store.commitConsolidationRun({
       run: { kind: "manual", sessionId: s.id, createdAt: consolidationAt },
-      operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: id, baseCommit: 1, supports: [999998], createdAt: consolidationAt }],
+      operations: [{ op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: id, baseCommit: 1, supports: [999998], createdAt: consolidationAt }],
     });
     expect(archive.ok).toBe(false);
     expect(store.currentCommit(id)[0]?.op).toBe("create");

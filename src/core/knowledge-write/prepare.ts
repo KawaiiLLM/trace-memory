@@ -1,4 +1,4 @@
-import { isKnowledgeCategory, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
+import { isKnowledgeCategory, substantiveArchiveStatement, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
 import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
 
@@ -60,7 +60,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
         : "invalid op");
     const structural = op === "split";
     const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []),
-      ...(structural ? ["children"] : op !== "archive" ? ["text", "category", "scope", "topics"] : [])];
+      ...(structural ? ["children"] : op === "archive" ? ["kind", ...(value.kind === "invalid" ? ["text"] : [])] : ["text", "category", "scope", "topics"])];
     // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
     // model still writing the old shape is told which two fields replace it.
     for (const key of Object.keys(value)) if (key === "because") errors.push('because: removed field; supply "reason" (a string) and "supports" (the commit\'s evidence)');
@@ -92,6 +92,11 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (!isKnowledgeCategory(child.category)) errors.push(`child ${childIndex + 1}: invalid category`);
       return { text: child.text!, category: child.category!, topics: labels(child.topics, errors) };
     }) : op === "split" ? (errors.push("split requires exactly two complete children"), []) : [];
+    if (op === "archive") {
+      if (value.kind !== "budget" && value.kind !== "invalid") errors.push("archive kind must be budget or invalid");
+      if (value.kind === "invalid" && (!substantiveArchiveStatement(value.text) || /\b[FK]\d+\b/.test(value.text)))
+        errors.push("invalid archive requires a substantive statement of grounds and evidence without fact or knowledge ids");
+    }
     if (op !== "archive" && op !== "split") {
       if (!(op === "merge" && value.text === undefined)
           && (typeof value.text !== "string" || !value.text.length || /\b[FK]\d+\b/.test(value.text)))
@@ -109,7 +114,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     if (!errors.length) operations.push(op === "create" ? { op: "create", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
       : op === "merge" ? { op: "merge", intoKnowledgeId: dest!.knowledgeId, intoBaseCommit: dest!.baseCommit, absorb, ...content }
       : op === "split" ? { op: "split", ...dest!, children, supports: content.supports, reason: content.reason, createdAt: run.createdAt }
-      : op === "archive" ? { op: "archive", ...dest!, supports: content.supports, reason: content.reason, createdAt: run.createdAt }
+      : op === "archive" ? { op: "archive", ...dest!, kind: value.kind!, ...(value.kind === "invalid" ? { text: value.text } : {}), supports: content.supports, reason: content.reason, createdAt: run.createdAt }
       : { op: "update", ...dest!, ...content });
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });
@@ -141,7 +146,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
   }
   const diagnostics: ConsolidationDiagnostic[] = [];
   for (const op of operations) {
-    if (op.op === "archive") continue;
+    if (op.op === "archive" && op.kind === "budget") continue;
     const label = op.op === "create" ? op.handle : `K${op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId}`;
     const grounding = new Set(op.supports);
     const cited = new Set([...grounding].flatMap(id => {

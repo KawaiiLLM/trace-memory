@@ -55,7 +55,7 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
         expect(tools.find(tool => tool.name === "note")!.execute({ facts: [] })).toContain("Disabled");
         abortChecked = true;
         // Deliberately return a late write after abort; native cancellation must not dispatch it.
-        resolve(memoryCall({ operations: [{ op: "archive", id: `K${untouched!.knowledgeId}#${store.versionTag(untouched!.knowledgeId, untouched!.commit)}`,
+        resolve(memoryCall({ operations: [{ op: "archive", kind: "budget", id: `K${untouched!.knowledgeId}#${store.versionTag(untouched!.knowledgeId, untouched!.commit)}`,
           supports: [], reason: "late forbidden write" }], skipped: [] }));
       }, { once: true }));
     }, { autoStop: false, ignoreAbort: true });

@@ -71,7 +71,7 @@ async function maintain(path: { sessionId: number; branch: string; headTurnId: n
     supplied.delete(`K${operatedId}@v${memory.store.versionOrdinal(operatedId, operatedCommit)}`);
     supplied.delete(`K${trigger.knowledgeId}@v${memory.store.versionOrdinal(trigger.knowledgeId, trigger.commit)}`);
     const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [operation,
-      { op: "archive", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit material trigger." }],
+      { op: "archive", kind: "budget", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit material trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied material item." })) }));
     expect(receipt.committed).toBeDefined();
     committed = receipt.committed.filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
@@ -602,7 +602,7 @@ test("29b/92: foreground Knowledge is an exact-version delta with stale state no
   expect(unchanged.text).toBe("");
   expect(unchanged.knowledgeCommitIds).toEqual([]);
   tools[0]!.execute({ address: tag(1, current) });
-  await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "archive", id: tag(1, current),
+  await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "archive", kind: "budget", id: tag(1, current),
     reason: "Withdrawn by the user.", supports: ["F1"] }, tag(1, current));
   setKnowledgeCapacity(memory, 5_000);
   const squeezed = delivery([current]);

@@ -17,7 +17,7 @@ test("92/41b: reasons belong to explicit history, not exact/current/collection b
     const content = { op: "create", text: "The durable rule", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "REASON_INITIAL" };
     expect(tools[3]!.execute({ operations: [content, { ...content, text: "Another identity", reason: "OTHER_REASON" }], skipped: [] })).toContain("committed");
     const tag = `K1#${memory.store.versionTag(1, 1)}`;
-    expect(tools[3]!.execute({ operations: [{ op: "archive", id: tag, supports: ["F1"], reason: "REASON_ARCHIVE" }], skipped: [] })).toContain("committed");
+    expect(tools[3]!.execute({ operations: [{ op: "archive", kind: "budget", id: tag, supports: ["F1"], reason: "REASON_ARCHIVE" }], skipped: [] })).toContain("committed");
     const trace = (address: string, options: Record<string, unknown> = {}) => tools[0]!.execute({ address, ...options });
     for (const address of [tag, "K1@v1", "K1@v2", "K2", "read-reasons"]) {
       for (const fields of [["supports", "reason"], ["text", "reason"]]) {

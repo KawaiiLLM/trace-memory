@@ -114,7 +114,7 @@ test("32d native host: pass ends after all intermediate tool turns; first memory
     let requests = 0;
     h.provider(async () => {
       requests++;
-      if (requests === 1) return call("archive", "memory", { operations: [{ op: "archive", id: item.tagged, supports: [], reason: "Retire redundant active rule; history preserved" }], skipped: [] });
+      if (requests === 1) return call("archive", "memory", { operations: [{ op: "archive", kind: "budget", id: item.tagged, supports: [], reason: "Retire redundant active rule; history preserved" }], skipped: [] });
       expect(store.currentKnowledge(store.knowledgePath(1))).toEqual([]);
       expect(processedIn(store, pool, store.listKnowledgeRevisions().at(-1)!.id)).toBe(false);
       if (requests === 2) return call("read", "trace", { address: `K${item.knowledgeId}` });
@@ -233,7 +233,7 @@ test("64c native host: provider overflow keeps the archive and consumes the fail
   try {
     let requests = 0;
     h.provider(async () => ++requests === 1
-      ? call("archive", "memory", { operations: [{ op: "archive", id: item.tagged, supports: [], reason: "Deliberate budget retirement" }], skipped: [] })
+      ? call("archive", "memory", { operations: [{ op: "archive", kind: "budget", id: item.tagged, supports: [], reason: "Deliberate budget retirement" }], skipped: [] })
       : { ...reply(""), stopReason: "error", errorMessage: "maximum context length exceeded" }, { autoStop: false });
     await h.turn(); const run = await terminal(h);
     expect(run.outcome).toBe("failure"); expect(requests).toBe(2);

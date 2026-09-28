@@ -183,7 +183,7 @@ test("reads return every knowledge item while injection still applies the scope 
   // Injection keeps the scope rule: another session's session knowledge and another project's project knowledge stay out.
   for (const id of [6, 8, 9]) expect(memory.inject(1)).not.toContain(`[K${id}@`);
   memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "later" }, operations: [
-    { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 3, baseCommit: 3, supports: [1], createdAt: "later" },
+    { op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 3, baseCommit: 3, supports: [1], createdAt: "later" },
   ] });
   expect(trace!.execute({ address: "K3@v1" })).toContain("owner 1 scope session");
   expect(trace!.execute({ address: "K3", versions: "history" })).toContain("archive");

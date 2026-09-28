@@ -118,7 +118,7 @@ test("64b stateless graph: genuine alternative split operations keep only the op
       const receipt = JSON.parse(write.execute({ operations: [
         { op: "split", id: tag(store, base), supports: [`F${support}`], reason: "Alternative atomic split.",
           children: labels.map(text => ({ text, category: "constraint", topics: [] })) },
-        { op: "archive", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
+        { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
       ], skipped: [] }));
       children = receipt.committed.filter((item: { op: string }) => item.op === "split").map((item: { knowledgeId: number; version: string }) => publishedCommit(store, item));
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
@@ -173,7 +173,7 @@ test("64b stateless graph: admitted deep branch defeats a restored sibling from 
       const receipt = JSON.parse(write.execute({ operations: [
         { op: "update", id: tag(store, prior), text, category: "constraint", scope: "global",
           supports: [`F${support}`], reason: "Advance the selected branch.", topics: [] },
-        { op: "archive", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
+        { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
       ], skipped: [] }));
       const published = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === prior.knowledgeId);
       result = { knowledgeId: prior.knowledgeId, commit: publishedCommit(store, published) };
@@ -250,7 +250,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
         category: "constraint", scope: "global", supports: [`F${cFact.id}`], reason: "Create competing merge sibling.", topics: [] },
       { op: "update", id: tag(store, splitParent), text: "restorable split-source sibling",
         category: "constraint", scope: "global", supports: [`F${cFact.id}`], reason: "Create competing split sibling.", topics: [] },
-      { op: "archive", id: tag(store, siblingTrigger), supports: [`F${aFact.id}`], reason: "Retire first trigger." },
+      { op: "archive", kind: "budget", id: tag(store, siblingTrigger), supports: [`F${aFact.id}`], reason: "Retire first trigger." },
     ], skipped: unchangedSupplied.map(knowledge => ({ knowledge, because: "Not part of the sibling construction." })) }));
     absorbedSibling = { commit: publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === absorbed.knowledgeId)) };
     splitSibling = { commit: publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === splitParent.knowledgeId)) };
@@ -271,7 +271,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     const receipt = JSON.parse(write.execute({ operations: [
       { op: "update", id: tag(store, scopedParent), text: "global child with B support",
         category: "constraint", scope: "global", supports: [`F${bFact.id}`], reason: "Direct child evidence changes scope.", topics: [] },
-      { op: "archive", id: tag(store, sessionTrigger), supports: [`F${aFact.id}`], reason: "Retire session trigger." },
+      { op: "archive", kind: "budget", id: tag(store, sessionTrigger), supports: [`F${aFact.id}`], reason: "Retire session trigger." },
     ], skipped: [] }));
     scopedChild = publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === scopedParent.knowledgeId));
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
@@ -293,18 +293,18 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
         reason: "Merge distinct identities.", topics: [] },
       { op: "split", id: tag(store, splitParent), supports: [`F${bFact.id}`], reason: "Split into atomic results.",
         children: [{ text: "split result one", category: "constraint", topics: [] }, { text: "split result two", category: "constraint", topics: [] }] },
-      { op: "archive", id: tag(store, trigger), supports: [`F${aFact.id}`], reason: "Retire trigger." },
+      { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${aFact.id}`], reason: "Retire trigger." },
     ], skipped: [] }));
     mergeCommit = publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === survivor.knowledgeId));
     splitChildren = receipt.committed.filter((item: { op: string }) => item.op === "split").map((item: { knowledgeId: number; version: string }) => publishedCommit(store, item));
 
     const admittedRun = commit.mock.calls.at(-1)![0].run;
     store.setCurrentPath(c.id, "main", c1.turn.id, "test-lineage");
-    const stale = store.commitConsolidationRun({ path: aPath, run: admittedRun, operations: [{ op: "archive",
+    const stale = store.commitConsolidationRun({ path: aPath, run: admittedRun, operations: [{ op: "archive", kind: "budget",
       knowledgeId: absorbed.knowledgeId, baseCommit: absorbedSibling.commit, supports: [bFact.id], reason: "Stale restored merge sibling.", createdAt: at }] });
     expect(stale.ok).toBe(false);
     if (!stale.ok) expect(stale.problems.join(" ")).toContain(`current: K${survivor.knowledgeId}@${mergeCommit}`);
-    const staleSplit = store.commitConsolidationRun({ path: aPath, run: admittedRun, operations: [{ op: "archive",
+    const staleSplit = store.commitConsolidationRun({ path: aPath, run: admittedRun, operations: [{ op: "archive", kind: "budget",
       knowledgeId: splitParent.knowledgeId, baseCommit: splitSibling.commit, supports: [bFact.id], reason: "Stale restored split sibling.", createdAt: at }] });
     expect(staleSplit.ok).toBe(false);
     if (!staleSplit.ok) for (const child of splitChildren) expect(staleSplit.problems.join(" ")).toContain(`@${child}`);

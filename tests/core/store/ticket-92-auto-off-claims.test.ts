@@ -36,7 +36,7 @@ for (const state of ["active", "reserved", "replaced", "expired", "closed", "unb
       if (state === "active") {
         expect(store.getClaim(session.id, "dreaming")).toEqual(claim);
         const revision = written.committed[0]!;
-        const late = store.commitConsolidationRun({ path, run: run!, operations: [{ op: "archive", knowledgeId: revision.knowledgeId,
+        const late = store.commitConsolidationRun({ path, run: run!, operations: [{ op: "archive", kind: "budget", knowledgeId: revision.knowledgeId,
           baseCommit: revision.commit, supports: [], reason: "late write", createdAt: "now" }] });
         expect(late.ok).toBe(false);
         store.completeKnowledgePoolRange(run!, "cancelled", [revision.commit]);

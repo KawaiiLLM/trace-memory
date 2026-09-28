@@ -22,7 +22,7 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
       absorb: [`K${returned.knowledgeId}#${store.versionTag(returned.knowledgeId, returned.commit)}`], text: "Returned widget state",
       category: "constraint", scope: "project", supports: [], topics: ["widget"], reason: "Revive the returning widget identity" };
     // 92 tags identify exact bases without a read ledger; archive revival authority remains.
-    const result = writer.execute({ operations: [operation, { op: "archive", id: `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`,
+    const result = writer.execute({ operations: [operation, { op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`,
       supports: [], reason: "Retire the explicit revival trigger." }], skipped: [] });
     expect(result).toContain('"committed"');
     expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
@@ -50,7 +50,7 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
 
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
   manual.find(tool => tool.name === "trace")!.execute({ address: `K${old.knowledgeId}@v1`, itemBudget: null });
-  const archived = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive",
+  const archived = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", kind: "budget",
     id: `K${old.knowledgeId}#${store.versionTag(old.knowledgeId, old.commit)}`, supports: [`F${fact}`], reason: "Widget retired" }], skipped: [] }));
   expect(archived.committed[0]!.version).toBe(`K${old.knowledgeId}@v2`);
   archiveCommit = store.resolveVersionOrdinal(old.knowledgeId, 2);

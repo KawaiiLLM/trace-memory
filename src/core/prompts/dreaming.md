@@ -59,7 +59,7 @@ When over budget, first reduce granularity within topics suitable for merging. I
 - **Direct supporting facts**: a separate block of at most 10,000 rendered tokens. Other path facts remain reachable by `trace`, and the wider pool by `search`; neither enlarges the writable set.
 - **Budgets**: `check` reports each pool's size against its budget. Reduce an over-budget pool under Budget priorities. When the pool without this run's pending items is already over budget, the task material states so and names the order (Procedure).
 - A `Changed` item is an update, shown as one diff against the version you last confirmed (word-level, plus any change of category, scope, topics or supports). Judge the change itself against the Principles. A change that holds is confirmed by a skip. A change that violates a principle is corrected by an update, merge or archive of the current version — never by reverting to the old text, which the diff already shows you.
-- An `Archived` item is an archive: the body it removed, shown whole. Confirm it with a skip. To revoke or adjust it, `update` the named archived version — the identity becomes visible again with your new text.
+- An `Archived` item is an archive: the parent's removed body, shown whole (not the archive revision's body). Confirm it with a skip. To revoke or adjust it, `update` the named archived version — the identity becomes visible again with your new text.
 
 ## Procedure
 
@@ -112,7 +112,8 @@ Fact relations are optional: judge corrections and withdrawals from the facts' c
 - Every mutation names an explicit `K#tag` whose complete body you received, and has a non-empty `reason` stating the archive ground or the change. A base that is not the latest effective applicable revision on this path is rejected naming the current revision; read it and decide again.
 - `update` and `merge` submit the complete resulting text, category, scope and topics. A merge has exactly two distinct exact parents and one result; its survivor may be an applicable archived identity, which the merge admits back into the writable set. A merge may omit `text`: the later parent's body then becomes the survivor's next version verbatim.
 - `split` has one exact parent and creates exactly two identities atomically; each child submits complete text, category and topics; both inherit the parent's scope and share the operation's supports and reason.
-- `archive` accepts only op, id, supports and reason. There is no `create`: a new identity comes only from `split`.
+- `archive` requires an explicit kind. Budget retains the complete parent body. Invalid requires a substantive body stating why the item no longer holds or merits keeping, the evidence and replacement if any. Both carry op, id, supports and reason and inherit category, scope and topics.
+- There is no `create`: a new identity comes only from `split`.
 - `supports`: the facts of this change. Submit the exact evidence for an evidence-driven change. For maintenance with no new evidence, submit an empty list; Store materializes the exact parent's supports (`update`/`archive`/both `split` outputs) or both exact parents' union (`merge`) at commit. Never copy or fabricate inherited supports yourself, and never cite a role name.
 - `skipped` names an exact frozen `K@vN` version, not a mutation base. A reasoned skip of a supplied diff or archive notice requires no additional full-body read. An unknown, out-of-range or already-consumed version is rejected. A skip grants no mutation authority.
 - `topics` are part of the charged result; a change to them is an ordinary update.

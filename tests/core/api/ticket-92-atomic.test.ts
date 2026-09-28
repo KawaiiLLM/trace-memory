@@ -226,7 +226,7 @@ function seedKnowledge(f: ReturnType<typeof fixture>, scope: "session" | "projec
     const other = new Store(f.file);
     try {
       const result = commitNoterKnowledge(other, { path: f.path, run: { sessionId: f.session.id, createdAt: "later" },
-        operations: [archive ? { op: "archive", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fid], reason: "retired", createdAt: "later" }
+        operations: [archive ? { op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fid], reason: "retired", createdAt: "later" }
           : { op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content, text: "Concurrent rule" }] });
       if (!result.ok) throw new Error(result.problems.join("; "));
     } finally { other.close(); }
@@ -234,13 +234,38 @@ function seedKnowledge(f: ReturnType<typeof fixture>, scope: "session" | "projec
   return { fid, base, tag, advance };
 }
 
+test("99: N stages an invalidation privately and publishes its statement with the fact atomically", async () => {
+  const f = fixture(task => {
+    expect(call(task, "note", { facts: [fact("User withdrew the rule")] })).toContain("held: $1");
+    expect(call(task, "memory", { operations: [{ op: "archive", kind: "invalid", id: seed.tag,
+      text: "The rule no longer holds because the user withdrew it; no replacement was stated.",
+      supports: ["$1"], reason: "Record withdrawal" }], skipped: [] })).toContain("held: M1");
+    const other = new Store(f.file);
+    try {
+      expect(other.currentCommit(seed.base.knowledgeId, f.path)[0]!.id).toBe(seed.base.commit);
+      expect(other.listSessionFacts(f.session.id)).toHaveLength(1); // seed fact only
+    } finally { other.close(); }
+  });
+  const seed = seedKnowledge(f);
+  expect(await f.run()).toMatchObject({ outcome: "success" });
+  const archived = f.memory.store.currentCommit(seed.base.knowledgeId, f.path)[0]!;
+  const facts = f.memory.store.listSessionFacts(f.session.id);
+  expect(facts).toHaveLength(2);
+  expect(archived).toMatchObject({ op: "archive", archiveKind: "invalid", supports: [facts.find(item => item.id !== seed.fid)!.id] });
+  expect(archived.text).toContain("no longer holds");
+  expect(f.memory.store.currentKnowledge(f.path)).toEqual([]);
+  const pending = f.memory.store.pendingVersions(`session:${f.session.id}`, f.path).find(item => item.revisionId === archived.id)!;
+  expect(pending.material).toContain("Old rule");
+  expect(pending.material).not.toContain("no longer holds");
+});
+
 for (const when of ["before staging", "before publication"]) for (const op of ["update", "archive"] as const)
   test(`04: concurrent ${op} ${when} preserves original intent and audits conversion`, async () => {
     const f = fixture(task => {
       call(task, "note", { facts: [fact("User changed the rule")] });
       if (when === "before staging") seed.advance();
       const operation = op === "update" ? { ...knowledge([`F${seed.fid}`, "$1"]), op, id: seed.tag, text: "Requested rule" }
-        : { op, id: seed.tag, supports: [`F${seed.fid}`, "$1"], reason: "remove rule" };
+        : { op, kind: "budget", id: seed.tag, supports: [`F${seed.fid}`, "$1"], reason: "remove rule" };
       expect(call(task, "memory", { operations: [operation], skipped: [] })).toContain("held: M1");
       if (when === "before publication") seed.advance();
     });
@@ -284,7 +309,7 @@ for (const when of ["stage", "terminal"] as const) test(`04: final conflict anno
 test("04: stale archive still validates local sources after replacement", async () => {
   const f = fixture(task => {
     call(task, "note", { facts: [fact()] }); seed.advance();
-    expect(call(task, "memory", { operations: [{ op: "archive", id: seed.tag, supports: ["$1"], reason: "remove" }], skipped: [] })).toContain("held: M1");
+    expect(call(task, "memory", { operations: [{ op: "archive", kind: "budget", id: seed.tag, supports: ["$1"], reason: "remove" }], skipped: [] })).toContain("held: M1");
     expect(call(task, "note", { facts: [{ slot: "$1", ...fact("invalid", "T1#E99") }] })).toContain("rejected:");
     emptyMemory(task);
   });
@@ -298,7 +323,7 @@ test("04: stale archive no-op revalidates mapped evidence scope after another ow
   const f = fixture(task => {
     call(task, "note", { facts: [fact("Archive evidence")] });
     seed.advance();
-    expect(call(task, "memory", { operations: [{ op: "archive", id: seed.tag, supports: ["$1", `F${foreignFact}`], reason: "remove" }], skipped: [] })).toContain("held: M1");
+    expect(call(task, "memory", { operations: [{ op: "archive", kind: "budget", id: seed.tag, supports: ["$1", `F${foreignFact}`], reason: "remove" }], skipped: [] })).toContain("held: M1");
     const other = f.memory.store.createProject({ name: "moved", declaredBy: "mark" });
     f.memory.store.db.prepare("UPDATE sessions SET project_id=? WHERE id=?").run(other.id, foreign.id);
   });

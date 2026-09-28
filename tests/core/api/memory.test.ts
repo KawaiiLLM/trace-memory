@@ -147,7 +147,7 @@ test("manual memory accepts create and archive but rejects Dreamer maintenance o
     { ...create, op: "merge", id: read(1), absorb: [read(2)] },
     { op: "split", id: read(1), supports: ["F1"], reason: "split", children: [] },
   ]) expect(write.execute({ operations: [operation], skipped: [] })).toContain("belongs to the Dreamer");
-  expect(JSON.parse(write.execute({ operations: [{ op: "archive", reason: "Retired by the user.", id: read(1), supports: ["F1"] }], skipped: [] })).committed).toHaveLength(1);
+  expect(JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", reason: "Retired by the user.", id: read(1), supports: ["F1"] }], skipped: [] })).committed).toHaveLength(1);
 });
 
 test("N terminal success-audit failure rolls back facts, knowledge and Raw progress", async () => {
@@ -210,12 +210,12 @@ test("21a 2026-09-08: create, update, merge and archive all carry nonempty suppo
     const merge = JSON.parse(dream.execute({ operations: [{ op: "merge", id: read(1), absorb: [read(2)], text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Two readings of one packaging rule." }], skipped: [] }));
     expect(merge.committed).toHaveLength(1);
     const merged = merge.committed[0]; expect(merged.version).toBe("K1@v2");
-    expect(JSON.parse(dream.execute({ operations: [{ op: "archive", id: read(1, 2), supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] })).committed).toHaveLength(1);
+    expect(JSON.parse(dream.execute({ operations: [{ op: "archive", kind: "budget", id: read(1, 2), supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] })).committed).toHaveLength(1);
     return { outcome: "success", output: "maintained", request };
   });
   expect(result.outcome).toBe("success");
   // The archive keeps its own evidence and inherits category and scope from the parent revision.
-  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", text: "", supports: [1],
+  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", archiveKind: "budget", text: "Use pnpm", supports: [1],
     reason: "The user withdrew the rule.", category: "constraint", scope: "project" });
 });
 
@@ -249,7 +249,7 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D 
 test("21a 2026-09-08: an omitted, wrongly typed or empty reason or supports rejects the whole batch", () => {
   const write = setup(async () => success());
   expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
-  const archive = { op: "archive", id: read(1), supports: ["F1"], reason: "The user withdrew the rule." };
+  const archive = { op: "archive", kind: "budget", id: read(1), supports: ["F1"], reason: "The user withdrew the rule." };
   const drop = (operation: Record<string, unknown>, key: string) => { const copy = { ...operation }; delete copy[key]; return copy; };
   for (const bad of [drop(create, "reason"), drop(create, "supports"), { ...create, reason: "" }, { ...create, reason: "  \n " },
     { ...create, reason: 7 }, { ...create, reason: ["F1"] }, { ...create, supports: [] }, { ...create, supports: "F1" },
@@ -265,7 +265,7 @@ test("21a 2026-09-08: a commit-level because is rejected by name, also beside a 
   setup(async input => {
     const write = input.tools[3]!;
     for (const bad of [{ ...create, because: ["F1"] }, { ...create, because: [] }, { ...create, because: "prompted by the user" },
-      { op: "archive", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", because: ["F1"] }]) {
+      { op: "archive", kind: "budget", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", because: ["F1"] }]) {
       const result = JSON.parse(write.execute({ operations: [bad], skipped: [] }));
       expect(result.results[0]).toContain("because: removed field");
       expect(result.results[0]).toContain('supply "reason"');
@@ -351,13 +351,13 @@ test("21b 2026-09-08: labels are trimmed, deduplicated and code-point ordered, a
   const drop = (operation: Record<string, unknown>, key: string) => { const copy = { ...operation }; delete copy[key]; return copy; };
   for (const bad of [drop(create, "topics"), { ...create, topics: "auth" }, { ...create, topics: null }, { ...create, topics: {} },
     { ...create, topics: ["auth", 7] }, { ...create, topics: [""] }, { ...create, topics: ["auth", "   "] }, { ...create, topics: [["auth"]] },
-    { op: "archive", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", topics: ["auth"] }]) {
+    { op: "archive", kind: "budget", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", topics: ["auth"] }]) {
     const result = JSON.parse(write.execute({ operations: [{ ...create, text: "A second rule" }, bad], skipped: [] }));
     expect(result.results[0]).toBe("ok"); expect(result.results[1]).toContain("rejected:");
     expect(memory.store.getKnowledge(2)).toBeNull();
     expect(memory.store.currentCommit(1)[0]?.op).toBe("create");
   }
-  expect(JSON.parse(write.execute({ operations: [{ op: "archive", id: "K1", supports: ["F1"], reason: "Retired.", topics: ["auth"] }], skipped: [] })).results[0])
+  expect(JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: "K1", supports: ["F1"], reason: "Retired.", topics: ["auth"] }], skipped: [] })).results[0])
     .toContain("topics: inapplicable field");
 });
 
@@ -393,7 +393,7 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
     const merged = JSON.parse(dream.execute({ operations: [{ op: "merge", id: read(1, 3), absorb: [read(2)], topics: ["packaging"], text: "Use pnpm and commit the lockfile", category: "constraint", scope: "project", supports: ["F1"], reason: "Two readings of one packaging rule." }], skipped: [] }));
     expect(merged.committed[0].version).toBe("K1@v4");
     mergedCommit = memory.store.resolveVersionOrdinal(1, 4);
-    dream.execute({ operations: [{ op: "archive", id: read(1, 4), supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] });
+    dream.execute({ operations: [{ op: "archive", kind: "budget", id: read(1, 4), supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] });
     return { outcome: "success", output: "maintained", request };
   });
   expect(result.outcome).toBe("success");
@@ -406,7 +406,7 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   expect(memory.store.currentCommit(1)[0]!.topics).toEqual(["packaging"]);
   expect(memory.store.getKnowledgeRevision(2, 2)!.topics).toEqual(["lockfile"]); // the absorbed parent keeps its own
   // Archive accepts no labels of its own and inherits the selected parent's array.
-  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", topics: ["packaging"] });
+  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", archiveKind: "budget", topics: ["packaging"] });
   const archivedCommit = memory.store.currentCommit(1)[0]!.id;
   expect(archivedCommit).toBeGreaterThan(mergedCommit);
 });

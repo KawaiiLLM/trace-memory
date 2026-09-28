@@ -159,7 +159,7 @@ test.each([
     expect(f.store.acquireClaim(f.target, "dreaming", "other-executor")).toBeNull();
     const before = f.store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions").get();
     const late = task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
-      op: "archive", id: `K${item.knowledgeId}#${f.store.versionTag(item.knowledgeId, output || item.commit)}`, supports: [], reason: "late forbidden write",
+      op: "archive", kind: "budget", id: `K${item.knowledgeId}#${f.store.versionTag(item.knowledgeId, output || item.commit)}`, supports: [], reason: "late forbidden write",
     }], skipped: [] });
     expect(late).toBe("rejected: run has finished");
     expect(f.store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions").get()).toEqual(before);

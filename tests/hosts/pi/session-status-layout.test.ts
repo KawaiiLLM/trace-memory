@@ -330,7 +330,7 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     h.provider(async conversation => {
       expect(conversation.systemPrompt).toMatch(/^# Dreamer/);
       return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: {
-        operations: [{ op: "archive", id: `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`, supports: [], reason: "Retire active memory; preserve history" }], skipped: [],
+        operations: [{ op: "archive", kind: "budget", id: `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`, supports: [], reason: "Retire active memory; preserve history" }], skipped: [],
       } }] };
     });
     h.ctx.mode = "tui"; h.ctx.hasUI = true;

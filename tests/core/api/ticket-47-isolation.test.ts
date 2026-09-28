@@ -142,9 +142,9 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
     const change = { category: "open", scope: "project", topics: [] as string[], supports: [`F${siblingFact.id}`], reason: "sibling-only mutation" };
     maintenanceReceipt = JSON.parse(write.execute({ operations: [
       { op: "update", id: addressed[0], ...change, text: "sibling-only update" },
-      { op: "archive", id: addressed[1], supports: [`F${siblingFact.id}`], reason: "sibling-only archive" },
+      { op: "archive", kind: "budget", id: addressed[1], supports: [`F${siblingFact.id}`], reason: "sibling-only archive" },
       { op: "merge", id: addressed[2], absorb: [addressed[3]], ...change, text: "sibling-only merge" },
-      { op: "archive", id: addressed[4], supports: [`F${siblingFact.id}`], reason: "retire the explicit sibling trigger" },
+      { op: "archive", kind: "budget", id: addressed[4], supports: [`F${siblingFact.id}`], reason: "retire the explicit sibling trigger" },
     ], skipped: [{ knowledge: `K${siblingOnly.knowledgeId}@v1`,
       because: "The new sibling-only identity is left unchanged; its visibility is asserted separately." }] }));
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
