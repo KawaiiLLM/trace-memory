@@ -757,10 +757,13 @@ export const expandList = (addresses: string[]): string => addresses.length <= E
   : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 
 export const KNOWLEDGE_RECENCY_NOTICE = "Items are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.";
+/** How a session's reader learns the /tm files exist. Ruled 2026-09-29: keep `trace` and only add
+ * this hint; the agent picks whichever access is more convenient. */
+export const MEMORY_FILES_NOTICE = "Memory is also readable as files with your read and grep tools: /tm/<address> shows what trace(<address>) shows (e.g. /tm/K12, /tm/F123, /tm/T45#E2); grep over /tm searches full text beyond compressed views; /tm lists the layout.";
 /** 101 (ruled): a session's own knowledge header also names the session and the path a subagent
  * inherits its knowledge from, so a main agent can pass one line to a subagent. */
 export const sessionKnowledgeNotice = (sessionId: number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): string =>
-  `${recencyNotice}\nSession S${sessionId}: a subagent inherits this session's knowledge by reading /tm/S${sessionId}/knowledge.`;
+  `${recencyNotice}\nSession S${sessionId}: a subagent inherits this session's knowledge by reading /tm/S${sessionId}/knowledge.\n${MEMORY_FILES_NOTICE}`;
 
 export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision[]): string[] =>
   KNOWLEDGE_CATEGORIES.flatMap(category => {

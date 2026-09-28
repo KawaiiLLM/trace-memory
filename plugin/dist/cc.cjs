@@ -6145,8 +6145,10 @@ var charge = (parts) => parts.reduce((total, part) => total + tokens(part) + 1, 
 var EXPAND_LIMIT = 8;
 var expandList = (addresses) => addresses.length <= EXPAND_LIMIT ? addresses.join(", ") : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 var KNOWLEDGE_RECENCY_NOTICE = "Items are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.";
+var MEMORY_FILES_NOTICE = "Memory is also readable as files with your read and grep tools: /tm/<address> shows what trace(<address>) shows (e.g. /tm/K12, /tm/F123, /tm/T45#E2); grep over /tm searches full text beyond compressed views; /tm lists the layout.";
 var sessionKnowledgeNotice = (sessionId, recencyNotice = KNOWLEDGE_RECENCY_NOTICE) => `${recencyNotice}
-Session S${sessionId}: a subagent inherits this session's knowledge by reading /tm/S${sessionId}/knowledge.`;
+Session S${sessionId}: a subagent inherits this session's knowledge by reading /tm/S${sessionId}/knowledge.
+${MEMORY_FILES_NOTICE}`;
 var renderKnowledgeOmissions = (omitted) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
   const members = omitted.filter((value) => knowledgeCategoryGroup(value.revision.category) === category);
   return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map((value) => `K${value.knowledge.id}`))}`] : [];

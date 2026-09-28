@@ -29,7 +29,7 @@ import { Store } from "../../../src/core/store/index.ts";
 import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyArchive, legacyFacts, session as seedSession } from "../../support/seed.ts";
 import { ccCompaction, ccDeltaInjection, databaseIdentity, decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../../src/hosts/cc/slices.ts";
-import { KNOWLEDGE_RECENCY_NOTICE } from "../../../src/core/render/index.ts";
+import { KNOWLEDGE_RECENCY_NOTICE, MEMORY_FILES_NOTICE } from "../../../src/core/render/index.ts";
 import { CC_AUTO_CONTINUE_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccStripAutoContinue } from "../../../src/hosts/cc/transcript.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import type { DirectoryOptions } from "../../../src/core/project/directory.ts";
@@ -553,15 +553,15 @@ test("2026-09-28, 101: '1-2. 可以' (1) — an archive written before 99 lists 
   expect(files.read(`/tm/K${base.knowledgeId}@v2`).lines.join("\n")).not.toContain("okapi");
 });
 
-test("2026-09-28, 101: '1-2. 可以' (2) — the injected knowledge notice names the session and /tm/S<n>/knowledge", () => {
+test("2026-09-28, 101: '1-2. 可以' (2); 2026-09-29: '只加虚拟地址相关提示，不撤，由模型判断哪个方便用哪个' — the injected knowledge notice names the session, /tm/S<n>/knowledge and the /tm files", () => {
   const { s, t } = session();
   seededKnowledge(s.id, t.id);
   const line = `Session S${s.id}: a subagent inherits this session's knowledge by reading /tm/S${s.id}/knowledge.`;
-  expect(memory.inject(s.id).split("\n").slice(0, 3)).toEqual(["<knowledge>", KNOWLEDGE_RECENCY_NOTICE, line]);
-  expect(compacted(memory.compact(s.id, "main", t.id))).toContain(`${KNOWLEDGE_RECENCY_NOTICE}\n${line}\n`);
+  expect(memory.inject(s.id).split("\n").slice(0, 4)).toEqual(["<knowledge>", KNOWLEDGE_RECENCY_NOTICE, line, MEMORY_FILES_NOTICE]);
+  expect(compacted(memory.compact(s.id, "main", t.id))).toContain(`${KNOWLEDGE_RECENCY_NOTICE}\n${line}\n${MEMORY_FILES_NOTICE}\n`);
   const cc = sliceCcInjection({ db: "db", nativeSession: "native", coreSession: s.id }, memory.injection(s.id, undefined, true).transportItems!)
     .filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext).join("\n");
-  expect(cc).toContain(line);
+  expect(cc).toContain(`${line}\n${MEMORY_FILES_NOTICE}`);
   expect(memory.inject({ projectId: memory.store.getSession(s.id)!.projectId })).not.toContain("Session S");
 });
 
