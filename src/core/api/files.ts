@@ -55,6 +55,28 @@ function globRegex(glob: string): RegExp {
 }
 const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
+/** A revision's body for listing and search alike (101 ruled): its own text, or — for a legacy
+ * archive written before 99 (empty body, no kind) — its parent's, found in the same identity's
+ * version list. */
+const revisionBody = (revision: KnowledgeRevision, list: readonly KnowledgeRevision[]): string =>
+  revision.op === "archive" && !revision.text ? list.find(r => r.id === revision.parentId)?.text ?? "" : revision.text;
+
+/** Content-mode line text above this length is windowed around its first match rather than shown
+ * whole: otherwise a single oversized line (a long Raw line, or a full-body Grep hit on a manual
+ * fact/knowledge that legally exceeds the ordinary per-item cap) could itself exceed the page's token
+ * cap, and the generic cap-fit (capLines, below) would crop it from the front — losing a match near
+ * the end and leaving the printed continuation offset nothing further to reach. */
+const MATCH_WINDOW = 300;
+function windowedLine(text: string, regex: RegExp): string {
+  if (text.length <= MATCH_WINDOW * 6) return text;
+  const match = regex.exec(text);
+  if (!match) return text;
+  const start = Math.max(0, match.index - MATCH_WINDOW), end = Math.min(text.length, match.index + match[0].length + MATCH_WINDOW);
+  const before = start > 0 ? `…(${count(start)} characters omitted)… ` : "";
+  const after = end < text.length ? ` …(${count(text.length - end)} characters omitted)…` : "";
+  return `${before}${text.slice(start, end)}${after}`;
+}
+
 /** The longest prefix of `lines` whose rendering fits the cap, and the price of what it leaves. A
  * first line alone over the cap is cut by characters (ponytail: its rest is unreachable by offset;
  * trace's views keep lines far below the cap). */
@@ -82,6 +104,12 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
     ...(reader.branch === undefined ? {} : { branch: reader.branch }) };
   const trace = (address: string, extra: { versions?: "history" } = {}) =>
     memory.trace(address, { modelFacing: true, pageBudget: null, ...bound, ...extra });
+  /** Grep's search source for a fact or knowledge address: the same rendering `trace` gives a plain
+   * read, with its per-item body compression removed. A manual fact or knowledge body may legally
+   * exceed that compression's cap, and a needle in its middle must still be found; what Grep displays
+   * of a match stays bounded regardless (windowedLine, below). Read keeps its own trace-equivalence
+   * (fileText), unchanged. */
+  const full = (address: string) => memory.trace(address, { modelFacing: true, pageBudget: null, itemBudget: null, ...bound });
   const resolve = (raw: string) => {
     const path = memoryPath(raw);
     if (!path) throw new Error(`not a Trace Memory path: ${raw}`);
@@ -129,8 +157,7 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
       const { identities, records, ordinal } = versions();
       return identities.map(([id, list]) => {
         const latest = list.at(-1)!, record = records.get(id)!;
-        // 101 (ruled): an archive written before 99 has an empty body; listing and search read its parent's.
-        const body = latest.op === "archive" && !latest.text ? list.find(revision => revision.id === latest.parentId)?.text ?? "" : latest.text;
+        const body = revisionBody(latest, list);
         const owner = latest.scope === "global" ? "" : latest.scope === "session" ? ` S${record.originSessionId}` : ` ${projectName(record.projectId)}`;
         const status = latest.op === "archive" ? ` (archived at v${ordinal(latest)}${latest.archiveKind ? `, ${latest.archiveKind}` : ""})` : "";
         return [`${MEMORY_ROOT}/K${id}@v${ordinal(latest)}`, `[${latest.category}/${latest.scope}${owner}]${status} ${preview(body)}`];
@@ -178,7 +205,8 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
       cut: `[${capNotice(fit.cutTokens)}${partial}lines ${next}-${all.length} of ${all.length} not shown; continue with offset=${next}]` };
   };
 
-  /** The files a search of `path` covers, each with its searched text. An entry is searched in full. */
+  /** The files a search of `path` covers, each with its searched text: a Raw entry, a fact and a
+   * knowledge body all in full, never their bounded rendering. */
   type Searched = { path: string; text: () => string; mark?: string };
   const whole = (entry: SourceEntry) => renderEntryWhole(entry, memory.resultText, undefined, undefined, true).content;
   function* turnFiles(sessionId: number, turnId: number): Generator<Searched> {
@@ -191,11 +219,11 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
     if (path === MEMORY_ROOT) {
       yield* searched(VISIBLE); yield* searched(ALL);
       for (const s of store.listSessions()) yield* searched(`${MEMORY_ROOT}/S${s.id}`);
-      for (const f of store.factHeadings()) yield { path: `${MEMORY_ROOT}/F${f.id}`, text: () => fileText(`${MEMORY_ROOT}/F${f.id}`) };
+      for (const f of store.factHeadings()) yield { path: `${MEMORY_ROOT}/F${f.id}`, text: () => full(`F${f.id}`) };
       return;
     }
     if (path === VISIBLE) {
-      for (const { knowledge } of visible()) yield { path: `${MEMORY_ROOT}/K${knowledge.id}`, text: () => trace(`K${knowledge.id}`) };
+      for (const { knowledge } of visible()) yield { path: `${MEMORY_ROOT}/K${knowledge.id}`, text: () => full(`K${knowledge.id}`) };
       return;
     }
     if (path === ALL) {
@@ -205,7 +233,9 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
         const latest = list.at(-1)!, latestStatus = `latest v${ordinal(latest)}${latest.op === "archive" ? ", archived" : ""}`;
         for (const revision of list) {
           const address = `K${id}@v${ordinal(revision)}`;
-          yield { path: `${MEMORY_ROOT}/${address}`, text: () => trace(address),
+          // 101 (ruled): a legacy empty archive is searched by its parent's body, same as its listing.
+          const legacyEmpty = revision.op === "archive" && !revision.text;
+          yield { path: `${MEMORY_ROOT}/${address}`, text: () => legacyEmpty ? revisionBody(revision, list) : full(address),
             mark: revision !== latest ? ` (historical; ${latestStatus})` : latest.op === "archive" ? " (archived)" : undefined };
         }
       }
@@ -224,13 +254,21 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
       yield { path, text: () => whole(store.hydrateSourceEntries([entry.id])[0]!) };
       return;
     }
-    yield { path, text: () => fileText(path) };
+    // A lone address: a fact, a knowledge identity (bare/tagged/ordinal) or a project name search
+    // its full body (`full`), same as VISIBLE/ALL above; the inheritance view and a version history
+    // walk are not per-item bounded the same way, so they keep Read's own rendering (`fileText`).
+    if (INHERITED.test(path) || HISTORY.test(path)) { yield { path, text: () => fileText(path) }; return; }
+    yield { path, text: () => full(path.slice(MEMORY_ROOT.length + 1)) };
   }
 
+  // Headroom `page` reserves out of the token cap for its own cut/receipt line below, so the page it
+  // returns plus that receipt never together exceed the cap. The receipt's own rendered cost (a
+  // handful of short fixed phrases and formatted integers) stays far under this fixed reservation.
+  const CUT_RECEIPT_RESERVE = 200;
   /** Output lines after `offset`, at most `limit`, within the token cap, and what follows them. */
   const page = (out: string[], more: boolean, offset: number, limit: number, what: string, continuation?: string): MemoryListing => {
     const shown = out.slice(offset, offset + limit);
-    const fit = capLines(shown, line => line);
+    const fit = capLines(shown, line => line, MAX_PUBLIC_READ_TOKENS - CUT_RECEIPT_RESERVE);
     const next = offset + fit.kept.length;
     if (!more && next >= out.length) return { lines: fit.kept };
     const rest = more ? `more ${what} follow` : `${what} ${next + 1}-${out.length} of ${out.length} not shown`;
@@ -258,7 +296,7 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
       for (const i of hits) for (let j = Math.max(0, i - before); j <= Math.min(text.length - 1, i + after); j++) shown.add(j);
       const hit = new Set(hits);
       for (const i of [...shown].sort((a, b) => a - b)) {
-        const line = `${file.path}${hit.has(i) ? ":" : "-"}${i + 1}${hit.has(i) ? ":" : "-"}${text[i]}`;
+        const line = `${file.path}${hit.has(i) ? ":" : "-"}${i + 1}${hit.has(i) ? ":" : "-"}${windowedLine(text[i]!, regex)}`;
         out.push(line);
         // Content can be the whole Raw of a session: stop once the page is certainly full.
         if (out.length > offset && (used += tokens(line)) > MAX_PUBLIC_READ_TOKENS || out.length >= offset + limit + 1) { more = true; break; }

@@ -547,7 +547,8 @@ test("2026-09-28, 101: '1-2. 可以' (1) — an archive written before 99 lists 
   const files = api.memoryFiles(memory, path);
   expect(files.read("/tm/knowledge-all").lines.find(line => line.startsWith(`/tm/K${base.knowledgeId}@`)))
     .toBe(`/tm/K${base.knowledgeId}@v2  [constraint/project p] (archived at v2) Legacy okapi guidance`);
-  expect(files.grep("okapi", "/tm/knowledge-all").lines).toEqual([`/tm/K${base.knowledgeId}@v1 (historical; latest v2, archived)`]);
+  expect(files.grep("okapi", "/tm/knowledge-all").lines).toEqual([`/tm/K${base.knowledgeId}@v1 (historical; latest v2, archived)`,
+    `/tm/K${base.knowledgeId}@v2 (archived)`]);
   expect(memory.store.getKnowledgeRevision(base.knowledgeId, commit)!.text).toBe("");
   expect(files.read(`/tm/K${base.knowledgeId}@v2`).lines.join("\n")).not.toContain("okapi");
 });

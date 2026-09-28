@@ -130,11 +130,49 @@ test("grep pages its output under the same cap and says where to continue", () =
 
 test("grep over every knowledge version marks the versions that are not their identity's latest", () => {
   const f = fixture();
+  // K4/f.k[3]'s v2 is a legacy archive from before 99 (empty body, no kind): the ruling that its
+  // listing shows its parent's body ("Okapi rule from before 99.") applies to search too, so v2
+  // matches here exactly as v1 (its parent) does.
   expect(f.files.grep("zebra|Zebra|Giraffe|Okapi|bloom", "/tm/knowledge-all").lines).toEqual([
     `/tm/K${f.k[1]}@v1 (historical; latest v2, archived)`, `/tm/K${f.k[1]}@v2 (archived)`,
     `/tm/K${f.k[2]}@v1 (historical; latest v2, archived)`, `/tm/K${f.k[2]}@v2 (archived)`,
-    `/tm/K${f.k[3]}@v1 (historical; latest v2, archived)`, `/tm/K${f.k[4]}@v1`]);
+    `/tm/K${f.k[3]}@v1 (historical; latest v2, archived)`, `/tm/K${f.k[3]}@v2 (archived)`, `/tm/K${f.k[4]}@v1`]);
   expect(f.files.grep("Zebra|bloom", "/tm/knowledge").lines).toEqual([]);
+});
+
+test("grep of a long Raw line shows the match and a continuation that actually continues, within the cap", () => {
+  const f = fixture(), S = `/tm/S${f.other.id}`;
+  const long = f.store.appendTurn({ sessionId: f.other.id, kind: "turn", startedAt: at, parentTurnId: f.t3.id });
+  const bigLine = `${"ordinary ".repeat(9000)}MATCH_AT_END`;
+  const raw = entry(f.store, f.other.id, long.id, "long-line", "user", bigLine);
+  f.memory.selectEntries(f.other.id, "main", [...f.store.sourcePath(f.other.id, "main", f.t3.id).map(e => e.id), raw.id]);
+  const entryPath = `${S}/T${long.id}/E${raw.entryOrdinal}`;
+  // files-mode already finds it (unaffected by content-mode's own line length).
+  expect(f.files.grep("MATCH_AT_END", entryPath).lines).toEqual([entryPath]);
+  const first = f.files.grep("MATCH_AT_END", entryPath, { mode: "content" });
+  expect(first.lines.some(line => line.includes("MATCH_AT_END"))).toBe(true);
+  expect(tokens([...first.lines, first.cut].filter((line): line is string => line !== undefined).join("\n"))).toBeLessThanOrEqual(8_000);
+  // A one-hit file fits whole (the window keeps it far under the cap): no continuation is printed,
+  // so there is nothing stranded past an unreachable offset.
+  expect(first.cut).toBeUndefined();
+});
+
+test("grep searches complete fact segments and knowledge bodies, not their bounded per-item rendering", () => {
+  const f = fixture();
+  const turn = f.store.appendTurn({ sessionId: f.other.id, kind: "turn", startedAt: at, parentTurnId: f.t3.id });
+  const source = entry(f.store, f.other.id, turn.id, "long-source", "user", "A detailed design discussion.");
+  f.memory.selectEntries(f.other.id, "main", [...f.store.sourcePath(f.other.id, "main", f.t3.id).map(e => e.id), source.id]);
+  const path = { sessionId: f.other.id, branch: "main", headTurnId: turn.id };
+  const longFact = fact(f.memory, path, "Long design fact",
+    [{ entry: source, text: `${"before ".repeat(1500)}FACT_MIDDLE_NEEDLE ${"after ".repeat(1500)}` }]);
+  const longKnowledge = knowledge(f.store, path, "project", "understanding", [longFact.id],
+    `${"before ".repeat(1500)}KNOWLEDGE_MIDDLE_NEEDLE ${"after ".repeat(1500)}`, { run: { kind: "manual", createdAt: at } });
+  // Both bodies exceed the ordinary per-item render cap (2,000 tokens); trace() alone would truncate
+  // each around its head and never reach the middle needle.
+  expect(f.files.grep("FACT_MIDDLE_NEEDLE", `/tm/F${longFact.id}`).lines).toEqual([`/tm/F${longFact.id}`]);
+  expect(f.files.grep("KNOWLEDGE_MIDDLE_NEEDLE", "/tm/knowledge-all").lines).toEqual([`/tm/K${longKnowledge.knowledgeId}@v1`]);
+  // A plain Read keeps trace's own (bounded) rendering: unaffected by Grep's fuller search material.
+  expect(f.text(`/tm/F${longFact.id}`)).toBe(f.trace(`F${longFact.id}`));
 });
 
 test("a directory search never renders an inheritance view", () => {
