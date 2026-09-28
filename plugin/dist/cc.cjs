@@ -3196,7 +3196,7 @@ var Store = class {
           ownerRevisions.set(owner, revisions);
         }
       }
-      const join10 = (id, parent) => {
+      const join11 = (id, parent) => {
         const left = componentOf.get(id), right = componentOf.get(parent);
         if (right === void 0) throw Error(`knowledge lineage references missing commit ${parent}`);
         if (left === right) return;
@@ -3206,7 +3206,7 @@ var Store = class {
         }
         components.delete(right);
       };
-      for (const revision of input2.revisions) for (const parent of input2.parents.get(revision.id) ?? []) join10(revision.id, parent);
+      for (const revision of input2.revisions) for (const parent of input2.parents.get(revision.id) ?? []) join11(revision.id, parent);
       const results = new Map([...components].map(([id, revisions]) => [id, this.graphComponent(input2, revisions)]));
       const liveness = /* @__PURE__ */ new Map();
       for (const ids of owners2.values()) for (const id of ids) {
@@ -10001,6 +10001,12 @@ var nodeOf = (record3, writtenBefore) => {
     };
   }
 };
+var byFirstImport = (left, right) => (left.entryId ?? Infinity) - (right.entryId ?? Infinity) || 0;
+var join4 = (members, batch, node) => {
+  const list = members.get(batch);
+  if (list) list.push(node);
+  else members.set(batch, [node]);
+};
 var CcTranscriptScan = class {
   nodes;
   snapshot;
@@ -10016,6 +10022,8 @@ var CcTranscriptScan = class {
   selectedLeafOffset;
   problems;
   newProblems;
+  /** 108: the native ids this scan read, in visit order: the appended suffix, or every record after a reset. */
+  readIds;
   constructor(input) {
     this.nodes = input.nodes;
     this.callCarriers = input.callCarriers;
@@ -10029,6 +10037,7 @@ var CcTranscriptScan = class {
     this.selectedLeafOffset = input.selectedLeafOffset;
     this.problems = input.problems ?? [];
     this.newProblems = input.newProblems ?? /* @__PURE__ */ new Set();
+    this.readIds = input.readIds ?? [];
   }
   node(uuid5) {
     return this.nodes.get(uuid5);
@@ -10045,70 +10054,90 @@ var CcTranscriptScan = class {
     this.newProblems.add(problem);
     if (!this.problems.includes(problem)) this.problems.push(problem);
   }
-  childrenIndex;
-  /** 108: Claude Code parents each parallel call under the previous call (one shared native API
-   * message id, `messageKey`'s own doc comment on splitting one message across rows), but parents
-   * each call's result under that call directly, never under another result. So a call node has two
-   * possible children — the next call, and its own result — and a plain single-parent ancestry walk
-   * from whichever result happened to be written last follows only one branch at each step, silently
-   * dropping every other call in the batch along with its result. Neither is an alternate future:
-   * every one of them reached the model in the same turn. Walking forward from the batch's earliest
-   * call (found by `walkAncestry` below) through the "next call" edge at each step, collecting each
-   * call's own result along the way, recovers exactly the members a plain walk misses. Members already
-   * on the path (the leaf's own ancestor chain) are filtered by the caller, not here. */
-  parallelBatchMembers(firstCallUuid) {
-    if (!this.childrenIndex) {
-      const children = /* @__PURE__ */ new Map();
-      for (const node of this.nodes.values()) if (node.parentUuid !== null) {
-        const list = children.get(node.parentUuid);
-        if (list) list.push(node);
-        else children.set(node.parentUuid, [node]);
-      }
-      this.childrenIndex = children;
+  /** 108: the first row of the native message `node` belongs to (for a tool result, the message of the
+   * call it answers), or the node itself. Claude Code 2.1.280 writes one assistant message as one row per
+   * content block, each under the previous and sharing the message id, and writes each parallel call's
+   * result under that call, never under another result. So a batch's rows all hang off its first row, and
+   * a single-parent walk from the leaf passes through only some of them; every one reached the model in
+   * the same turn. Walks parent links while the message id holds: one message's rows, never the history. */
+  batchOf(node) {
+    let current = node.sourceKind === "toolResult" && node.parentUuid !== null ? this.node(node.parentUuid) ?? node : node;
+    if (current.apiMessageId === void 0) return node.uuid;
+    for (const seen = /* @__PURE__ */ new Set([current.uuid]); ; ) {
+      const parent = current.parentUuid === null ? void 0 : this.node(current.parentUuid);
+      if (!parent || parent.apiMessageId !== current.apiMessageId || seen.has(parent.uuid)) return current.uuid;
+      seen.add(parent.uuid);
+      current = parent;
     }
-    const members = [];
-    let call = this.node(firstCallUuid);
-    while (call) {
-      const children = this.childrenIndex.get(call.uuid) ?? [];
-      for (const child of children) if (child.sourceKind === "toolResult") members.push(child);
-      const next = children.find((child) => child.apiMessageId === call.apiMessageId);
-      if (next) members.push(next);
-      call = next;
-    }
-    return members;
   }
-  /** The single shared backward walk both `selectedPath` (root-bound) and the importer's incremental
-   * "continuous" extension (bound at its prior leaf) use, so the two never disagree about membership.
-   * `stopAtUuid`, when given, ends the walk there (exclusive, not itself validated or included) and
-   * `reachedStop` reports whether it was found before the root or a lineage problem. */
-  walkAncestry(leafUuid, stopAtUuid) {
-    const reverse = [], seen = /* @__PURE__ */ new Set();
+  /** `chain` in order, each batch's rows on it joined by its `members` elsewhere and ordered by first
+   * import (entry id): the order an incremental extension appends them in. A node without an entry
+   * (a copy) holds no path position; it stays in its batch, last. */
+  layout(chain, members) {
+    const nodes = [];
+    for (let index = 0; index < chain.length; ) {
+      const first = chain[index], joined = members.get(first.uuid);
+      if (!joined) {
+        nodes.push(first);
+        index++;
+        continue;
+      }
+      const batch = [...joined];
+      while (index < chain.length && this.batchOf(chain[index]) === first.uuid) batch.push(chain[index++]);
+      nodes.push(...batch.sort(byFirstImport));
+    }
+    return nodes;
+  }
+  /** The leaf's native ancestry and every other row of each parallel batch on it (108). */
+  selectedPath() {
+    const leafUuid = this.selectedLeafUuid;
+    if (!leafUuid) return { leafUuid: null, nodes: [] };
+    const reverse = [], chain = /* @__PURE__ */ new Set();
     let current = this.node(leafUuid);
     while (current) {
-      if (stopAtUuid !== void 0 && current.uuid === stopAtUuid) return { nodes: reverse.reverse(), reachedStop: true };
-      if (seen.has(current.uuid)) return { nodes: [], problem: `native lineage cycle at ${current.uuid}`, reachedStop: false };
-      if (current.lineageProblem) return { nodes: [], problem: current.lineageProblem, reachedStop: false };
-      if (current.importProblem) return { nodes: [], problem: current.importProblem, reachedStop: false };
-      seen.add(current.uuid);
-      const enteringBatch = current.apiMessageId !== void 0 && (current.parentUuid === null || this.node(current.parentUuid)?.apiMessageId !== current.apiMessageId);
-      if (enteringBatch) {
-        const members = this.parallelBatchMembers(current.uuid).filter((member) => !seen.has(member.uuid));
-        for (const member of members.reverse()) {
-          seen.add(member.uuid);
-          reverse.push(member);
-        }
-      }
+      if (chain.has(current.uuid)) return { leafUuid, nodes: [], problem: `native lineage cycle at ${current.uuid}` };
+      if (current.lineageProblem) return { leafUuid, nodes: [], problem: current.lineageProblem };
+      if (current.importProblem) return { leafUuid, nodes: [], problem: current.importProblem };
+      chain.add(current.uuid);
       reverse.push(current);
       if (current.parentUuid === null) break;
       current = this.node(current.parentUuid);
-      if (!current) return { nodes: [], problem: `native lineage parent ${reverse.at(-1).parentUuid} is missing`, reachedStop: false };
+      if (!current) return { leafUuid, nodes: [], problem: `native lineage parent ${reverse.at(-1).parentUuid} is missing` };
     }
-    return { nodes: reverse.reverse(), reachedStop: false };
+    const members = /* @__PURE__ */ new Map();
+    for (const node of this.nodes.values()) if (!chain.has(node.uuid)) {
+      const batch = this.batchOf(node);
+      if (batch !== node.uuid && chain.has(batch)) join4(members, batch, node);
+    }
+    return { leafUuid, nodes: this.layout(reverse.reverse(), members) };
   }
-  selectedPath() {
-    if (!this.selectedLeafUuid) return { leafUuid: null, nodes: [] };
-    const walk = this.walkAncestry(this.selectedLeafUuid);
-    return { leafUuid: this.selectedLeafUuid, nodes: walk.nodes, ...walk.problem !== void 0 ? { problem: walk.problem } : {} };
+  /** 108: what this scan appends to the path that ended at `priorLeafUuid`, in `selectedPath`'s order,
+   * or null when the new path is not that path extended (the caller then rebuilds). The new leaf's
+   * ancestry is walked back to the prior leaf or any row of its batch. A row this scan read joins the path
+   * when it is on that walk or belongs to a batch on it or to the prior leaf's batch. The cost follows
+   * this scan's rows, not the history. An older source row on the walk, or a new row of an older batch,
+   * is left to the full rebuild. */
+  pathExtension(priorLeafUuid) {
+    const prior = this.node(priorLeafUuid), leafUuid = this.selectedLeafUuid;
+    if (!prior || !leafUuid) return null;
+    const anchor = this.batchOf(prior), read = new Set(this.readIds), walked = /* @__PURE__ */ new Set(), reverse = [];
+    let current = this.node(leafUuid);
+    while (current && current.uuid !== priorLeafUuid && this.batchOf(current) !== anchor) {
+      if (walked.has(current.uuid) || current.lineageProblem || current.importProblem || current.sourceKind && !read.has(current.uuid)) return null;
+      walked.add(current.uuid);
+      reverse.push(current);
+      current = current.parentUuid === null ? void 0 : this.node(current.parentUuid);
+    }
+    if (!current) return null;
+    const batches = /* @__PURE__ */ new Set([anchor, ...reverse.map((node) => this.batchOf(node))]), members = /* @__PURE__ */ new Map();
+    for (const uuid5 of this.readIds) if (!walked.has(uuid5)) {
+      const node = this.node(uuid5), batch = this.batchOf(node);
+      if (batch === uuid5) continue;
+      if (batches.has(batch)) join4(members, batch, node);
+      else if (!read.has(batch)) return null;
+    }
+    const joined = (members.get(anchor) ?? []).sort(byFirstImport);
+    return [...joined, ...this.layout(reverse.reverse(), members)];
   }
 };
 var CcTranscriptScanFailure = class extends Error {
@@ -10351,7 +10380,8 @@ var CcTranscriptCursor = class {
           selectedLeafUuid,
           selectedLeafOffset,
           problems,
-          newProblems
+          newProblems,
+          readIds: ordered.flatMap((value) => value.node ? [value.node.uuid] : [])
         });
       };
       return { scan, ordered, finish: finish2 };
@@ -40726,9 +40756,9 @@ var CcProjection = class {
           let extension = [];
           let continuous = false;
           if (!scan.reset && priorLeaf && scan.selectedLeafUuid && this.lastResult) {
-            const walk = scan.walkAncestry(scan.selectedLeafUuid, priorLeaf);
-            continuous = walk.reachedStop;
-            if (continuous) extension = walk.nodes;
+            const appended = scan.pathExtension(priorLeaf);
+            continuous = appended !== null;
+            if (appended) extension = appended;
           }
           let selectedNodes;
           if (continuous) {

@@ -261,6 +261,57 @@ test("a tool result appended after its call is imported incrementally into the o
   } finally { importer.close(); }
 });
 
+// Claude Code 2.1.280 writes a parallel batch as one row per call, all sharing the API message id, then
+// each result under its own call in completion order, and the next reply under the last result
+// (102 Part 2 evidence). Real assistant rows carry a message id.
+const parallelTurn = (completion: number[]): CcNativeRecord[] => {
+  const reply = (uuid: string, parentUuid: string, id: string, second: number): CcNativeRecord => ({ uuid, parentUuid, type: "assistant",
+    timestamp: at(second), message: { id, role: "assistant", content: [{ type: "text", text: uuid }] } });
+  const call = (index: number): CcNativeRecord => ({ uuid: `c${index}`, parentUuid: index ? `c${index - 1}` : "u1", type: "assistant",
+    timestamp: at(4 + index), message: { id: "msg-batch", role: "assistant", content: [{ type: "tool_use", id: `toolu-${index}`, name: "Read", input: {} }] } });
+  const result = (index: number, second: number): CcNativeRecord => ({ uuid: `r${index}`, parentUuid: `c${index}`, type: "user",
+    timestamp: at(second), message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu-${index}`, content: `r${index}` }] } });
+  return [
+    { uuid: "u0", parentUuid: null, type: "user", timestamp: at(1), ...sdkPrompt("p0"), message: { role: "user", content: "first" } },
+    reply("a0", "u0", "msg-0", 2),
+    { uuid: "u1", parentUuid: "a0", type: "user", timestamp: at(3), ...sdkPrompt("p1"), message: { role: "user", content: "read four" } },
+    ...[0, 1, 2, 3].map(call), ...completion.map((index, order) => result(index, 8 + order)),
+    reply("a2", `r${completion.at(-1)}`, "msg-2", 12),
+  ];
+};
+const arrivals = [
+  { arrival: "in one scan", split: [12] },
+  { arrival: "calls first, then the results together", split: [2, 5, 4, 1] },
+  { arrival: "one result with its calls, the rest later", split: [2, 6, 4] },
+  { arrival: "one record per scan", split: [2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] },
+];
+
+test.each(arrivals.flatMap(value => [[3, 2, 0, 1], [0, 1, 2, 3]].map(completion => ({ ...value, completion }))))(
+  "every result of a parallel batch is on the selected path in import order (results $completion, arriving $arrival), and a restart rebuilds the same path",
+  async ({ completion, split }) => {
+  const f = fixture(), records = parallelTurn(completion);
+  let written = 0;
+  const write = (count: number) => { appendFileSync(f.transcriptPath, records.slice(written, written += count).map(line).join("")); };
+  write(split[0]!);
+  let importer = new CcImporter(f.config, await recordSessionStart(f.config, { hook_event_name: "SessionStart",
+    session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, at(1)));
+  const path = (result: { selectedEntryIds: number[] }) => result.selectedEntryIds.map(id => importer.memory.store.getSourceEntry(id)!.nativeId);
+  try {
+    let imported = await importer.reconcile();
+    for (const count of split.slice(1)) { write(count); imported = await importer.reconcile(); }
+    const expected = records.map(record => record.uuid);
+    expect.soft(path(imported), "incremental").toEqual(expected);
+    const state = importer.memory.store.sourcePathState(imported.coreSessionId!, imported.branch);
+    importer.close();
+    importer = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
+    const rebuilt = await importer.reconcile();
+    expect(rebuilt.snapshot.reset).toBe(true);
+    expect.soft(path(rebuilt), "full rebuild").toEqual(expected);
+    // The restart republishes the incremental path unchanged: not a membership rewrite.
+    expect(importer.memory.store.sourcePathState(rebuilt.coreSessionId!, rebuilt.branch), "path state").toEqual(state);
+  } finally { importer.close(); }
+});
+
 test("a persisted rewind creates a new core branch without deleting its sibling or moving the frozen source path", async () => {
   const f = fixture();
   const replacementStart = f.records.findIndex(record => record.uuid === "local-meta");

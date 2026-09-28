@@ -434,17 +434,14 @@ export class CcProjection {
           let extension: NonNullable<ReturnType<CcTranscriptScan["node"]>>[] = [];
           let continuous = false;
           if (!scan.reset && priorLeaf && scan.selectedLeafUuid && this.lastResult) {
-            // 108: the same shared walk `selectedPath` uses, so a 4-day-old open session's incremental
-            // "continuous" import and a fresh "reset" rebuild never disagree about a parallel batch's
-            // membership. A `problem` here (cycle/missing parent) is simply not continuous, as an
-            // exhausted walk with no match already was; the full rebuild below surfaces it properly.
-            const walk = scan.walkAncestry(scan.selectedLeafUuid, priorLeaf);
-            continuous = walk.reachedStop;
-            if (continuous) extension = walk.nodes;
+            // 108: null when this scan does not simply extend the prior path; the full rebuild below
+            // decides (and surfaces any lineage problem).
+            const appended = scan.pathExtension(priorLeaf);
+            continuous = appended !== null;
+            if (appended) extension = appended;
           }
           let selectedNodes: typeof extension;
           if (continuous) {
-            // `extension` is already oldest-first: `walkAncestry` returns forward order.
             selectedNodes = extension;
             for (const node of selectedNodes) if (ownsEntry(node)) {
               if (node.entryId === undefined) {
