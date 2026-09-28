@@ -211,6 +211,8 @@ test("retarget writes under the new native session id and removes the old file",
     await handleCcHook(f.config, { hook_event_name: "SessionStart", source: "clear", session_id: childId, transcript_path: childTranscript });
     expect(await coordinator.retargetTo(childId)).toBe(true);
     expect(readCcStatus(f.stateDir, parentId)).toBeNull(); // the old file is gone
+    // 102: the executor attaches to the new session as at startup, and publishes there.
+    await vi.waitFor(() => expect(readCcStatus(f.stateDir, childId)).not.toBeNull());
     const moved = readCcStatus(f.stateDir, childId)!;
     expect(moved.nativeSessionId).toBe(childId);
     expect(moved.token).toBe(readBinding(f.config, childId)!.executor!.token);

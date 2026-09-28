@@ -1,10 +1,10 @@
-import { TraceMemory } from "../../core/api/index.ts";
+import { TraceMemory, knowledgeStateKey } from "../../core/api/index.ts";
 import { Store } from "../../core/store/index.ts";
 import type { SettingsInput, TraceMenuInput } from "../trace-menu.ts";
 
 import type { ResolvedCcHostConfig } from "./config.ts";
 import type { CcCatchupStatus } from "./scheduler.ts";
-import { assertOperatorBinding, readBinding, sessionEnabled, validateNativeSessionId } from "./binding.ts";
+import { assertOperatorBinding, coreHostOf, readBinding, sessionEnabled, validateNativeSessionId } from "./binding.ts";
 const localMidnight = () => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(); };
 import { ccContextEvidence, type CcContextSnapshot } from "./menu-context.ts";
 
@@ -121,7 +121,11 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
       notices,
       actions: { enabled, retryForkAvailable: false },
     };
-    const context = ccContextEvidence(binding, config.dbPath, current);
+    // 102: a compaction's carrier, framed (Trace Memory's compaction) or bare (the supplement), is attributed by its compaction's recorded delivery (97).
+    const recorded = store.db.prepare(`SELECT 1 FROM knowledge_deliveries WHERE owner = ? AND follows IS NOT NULL
+      AND commits = ? AND states = ? AND knowledge_tokens = ? LIMIT 1`);
+    const context = ccContextEvidence(binding, config.dbPath, current, header => recorded.get(coreHostOf(binding),
+      JSON.stringify(header.commits), JSON.stringify(header.states.map(knowledgeStateKey)), header.knowledgeTokens ?? 0) !== undefined);
     return { menu: data, settings, context, runs };
   } finally { memory.store.close(); }
 }

@@ -8,11 +8,10 @@ import { assertOperatorBinding, readBinding, recordSessionStart, updateBinding, 
 import { readTranscriptCreatedAt } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
-import { ccDeltaInjection, ccPrepareSessionStartInjection, ccPreparedSessionStartInjection, ccSessionStartInjection, databaseIdentity, recordCcBaseline, type CcHookOutput } from "./injection.ts";
+import { ccCompaction, ccDeltaInjection, ccPrepareSessionStartInjection, ccPreparedSessionStartInjection, ccSessionStartInjection, type CcHookOutput } from "./injection.ts";
 import { sliceCcInjection } from "./slices.ts";
 import { declareCcProject, operateCcSession } from "./operator.ts";
 import { followNativeSession, processAncestors, publishNativeSession, type CcNativeSessionFollower } from "./native-session.ts";
-import { ccHandleClear, readPreparedClear } from "./clear.ts";
 import { installCcNativeRejectionGuard } from "./native-rejection.ts";
 import { readCcMenu, readCcRuns } from "./menu.ts";
 import type { CcContextSnapshot } from "./menu-context.ts";
@@ -33,30 +32,18 @@ export * from "./scheduler.ts";
 export * from "./injection.ts";
 export * from "./operator.ts";
 export * from "./native-session.ts";
-export * from "./clear.ts";
 
 export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostConfig, input: CcHookInput,
   prepareOnly = false): Promise<CcHookOutput | null> {
   const config = resolveCcHostConfig(configInput);
   validateNativeSessionId(input.session_id);
   if (input.hook_event_name === "SessionStart") {
-    // 65: tell this Claude Code process's executor which session it serves; never fails the Hook.
-    const publish = () => { try { if (!publishNativeSession(config, input)) console.error("Trace Memory CC: CLAUDE_PID is not set; the executor keeps its own session id"); }
-      catch (error) { console.error(`Trace Memory CC: native session publish failed: ${error instanceof Error ? error.message : String(error)}`); } };
-    // 63: `/clear` binds the new session to the same core session as the one it was cleared from,
-    // when this process served a bound parent. Otherwise it falls through to the ordinary path below.
-    if (input.source === "clear") {
-      const cleared = await ccHandleClear(config, input);
-      if (cleared.handled) {
-        publish();
-        // 97: the unsliced carrier is the clear's whole supplement, recorded at its compaction node.
-        if (!prepareOnly) recordCcBaseline(config, readBinding(config, input.session_id)!, [cleared.output]);
-        return cleared.output;
-      }
-    }
-    // Creation time matters only to a new binding; a bound session's transcript is not read.
+    // 102: `/clear` starts an ordinary new session, like startup. Creation time matters only to a new
+    // binding; a bound session's transcript is not read.
     await recordSessionStart(config, input, readBinding(config, input.session_id) ? null : readTranscriptCreatedAt(input.transcript_path));
-    publish();
+    // 65: tell this Claude Code process's executor which session it serves; never fails the Hook.
+    try { if (!publishNativeSession(config, input)) console.error("Trace Memory CC: CLAUDE_PID is not set; the executor keeps its own session id"); }
+    catch (error) { console.error(`Trace Memory CC: native session publish failed: ${error instanceof Error ? error.message : String(error)}`); }
     if (prepareOnly) { await ccPrepareSessionStartInjection(config, input); return null; }
     return ccSessionStartInjection(config, input);
   }
@@ -85,21 +72,16 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
   }, undefined, runtimeEvent);
   const foreground = new CcForegroundTools(coordinator);
   // 65: the Hook's id is authoritative. Until the coordinator attaches, an assignment for this
-  // process's ancestors re-targets it; afterwards a differing assignment is only journaled.
-  let follower: CcNativeSessionFollower | null = null, journaledChange: string | null = null;
+  // process's ancestors re-targets it; afterwards (102) the executor leaves the attached session as an
+  // exit does and attaches to the assigned one as at startup.
+  let follower: CcNativeSessionFollower | null = null;
   try {
     const ancestors = processAncestors();
     runtimeEvent("native-ancestors", { ancestors });
     follower = followNativeSession(config, ancestors, record => {
       if (coordinator.adoptNativeSessionId(record.nativeSessionId)) return;
-      // 63: after attach, a `clearedFrom` assignment on the same core session re-targets the live
-      // facade instead of being merely journaled; any other differing assignment stays journaled.
-      void coordinator.retargetTo(record.nativeSessionId).then(retargeted => {
-        if (retargeted) { runtimeEvent("session-id-retargeted", { to: record.nativeSessionId }); return; }
-        if (journaledChange === record.nativeSessionId) return;
-        journaledChange = record.nativeSessionId;
-        runtimeEvent("session-id-changed-after-attach", { attached: coordinator.nativeSessionId, hook: record.nativeSessionId, source: record.source });
-      });
+      void coordinator.retargetTo(record.nativeSessionId).then(retargeted =>
+        runtimeEvent(retargeted ? "session-id-retargeted" : "session-id-retarget-failed", { to: record.nativeSessionId, source: record.source }));
     }, message => runtimeEvent("native-session-follow", { message }));
   } catch (error) { runtimeEvent("native-session-follow-unavailable", { error: error instanceof Error ? error.message : String(error) }); }
   const pendingCalls = new Map<string, AbortController>();
@@ -186,10 +168,21 @@ async function readStdin(): Promise<string> {
 
 export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "cli") || configFlag !== "--config" || !configPath)
+  if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" &&
+      command !== "hook-compact" && command !== "cli") || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config); return; }
+  if (command === "hook-compact") {
+    // 102: the `session.compact` function hook's compaction; `passThrough` keeps native compaction.
+    // `auto` (requirement 14) is the caller's own event trigger, manual or auto, not the handle below.
+    const input = JSON.parse(await readStdin()) as { session_id: string; trigger: unknown; auto?: unknown };
+    validateNativeSessionId(input.session_id);
+    if (typeof input.trigger !== "string" || !input.trigger) throw new Error("CC compaction requires the handle of its newest message");
+    const built = await ccCompaction(config, { session_id: input.session_id, trigger: input.trigger, auto: input.auto === true });
+    process.stdout.write(`${JSON.stringify(built ?? { passThrough: true })}\n`);
+    return;
+  }
   if (command === "hook-delta") {
     const input = JSON.parse(await readStdin()) as { session_id: string; transcript_path?: string; prompt_id?: unknown;
       messages?: unknown; hook_event_name?: string };
@@ -223,26 +216,19 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
         throw new Error("CC SessionStart has no structured transport material");
       return sliceCcInjection(visible, output?.transportItems ?? [], output?.systemMessage, output?.transportKnowledgeAllowance);
     };
-    const clearing = input.source === "clear" ? readBinding(config, input.session_id) : null;
-    let output: CcHookOutput | null, slices: (CcHookOutput | null)[], snapshot: object | null = null;
-    if (clearing?.clearedFrom) {
-      output = readPreparedClear(config, input);
-      slices = sliced(output, { db: databaseIdentity(config.dbPath), nativeSession: input.session_id, coreSession: clearing.coreSessionId });
-      recordCcBaseline(config, clearing, slices);
-    } else ({ output, slices, snapshot } = await ccPreparedSessionStartInjection(config, input, sliced));
+    const { output, slices, snapshot } = await ccPreparedSessionStartInjection(config, input, sliced);
     const bound = readBinding(config, input.session_id);
     if (!bound) throw new Error("CC SessionStart has no binding after preparation");
-    if (input.source !== "clear" && bound.lastCompactionNotice || input.source === "clear" && bound.clearedFrom &&
-      slices[0]?.systemMessage !== bound.lastCompactionNotice) {
+    // A clean SessionStart clears the last compaction warning a binding may still carry.
+    if (bound.lastCompactionNotice) {
       await updateBinding(config, input.session_id, current => {
         if (!current || current.dbPath !== config.dbPath || current.transcriptPath !== input.transcript_path)
           throw new Error("CC binding changed before transport warning was recorded");
-        return { ...current, lastCompactionNotice: input.source === "clear" ? slices[0]?.systemMessage ?? null : null };
+        return { ...current, lastCompactionNotice: null };
       });
     }
     const selection = createHash("sha256").update(JSON.stringify({ material: output?.transportItems ?? [],
-      warning: output?.systemMessage ?? null, knowledgeAllowance: output?.transportKnowledgeAllowance ?? null, frozenClear: input.source === "clear" && bound.clearedFrom
-        ? bound.clearedFrom.compactionTurnId : null })).digest("hex");
+      warning: output?.systemMessage ?? null, knowledgeAllowance: output?.transportKnowledgeAllowance ?? null })).digest("hex");
     process.stdout.write(`${JSON.stringify({ selection, snapshot, slices })}\n`);
     return;
   }

@@ -1,16 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { TraceMemory, deliveredView, knowledgeStateKey, noVisibility, type DeliveryNode, type DeliveryPart, type DeliveryTarget,
-  type Injection, type KnowledgeStateReceipt, type PendingNode, type VisibleView } from "../../core/api/index.ts";
+  type Injection, type KnowledgeStateReceipt, type PendingNode, type TruncationReceipt, type VisibleView } from "../../core/api/index.ts";
 import type { TransportItem } from "../../core/render/material.ts";
-import type { KnowledgePath } from "../../core/store/index.ts";
+import type { KnowledgePath, Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
-import { ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
+import { CC_AUTO_CONTINUE_SUFFIX, CC_INJECTION_BEGIN, CC_INJECTION_HEADER, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
+import { CcProjection } from "./importer.ts";
+import { executorLiveness } from "./control.ts";
 
-export const CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
+export { CC_INJECTION_BEGIN, CC_INJECTION_HEADER };
 const BEGIN = CC_INJECTION_BEGIN;
-export const CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
 const END = "TRACE MEMORY KNOWLEDGE END";
 const digest = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 // Unlike Pi's path identity, dev:inode invalidates old envelopes after any file replacement,
@@ -40,7 +41,7 @@ export interface CcHookOutput { hookSpecificOutput: { hookEventName: "SessionSta
   transportKnowledgeAllowance?: number;
   /** 73 "Truncation is announced in the foreground": Claude Code 2.1.280's hook runner turns this
    * top-level field into a user-visible `hook_system_message`, capped at 4,000 characters. Present
-   * only when `/clear`'s compaction omitted unprocessed material. */
+   * only when a slice's transport omitted pending material. */
   systemMessage?: string }
 
 type InjectionMembership = Omit<CcInjectionPayload, "text">;
@@ -188,7 +189,7 @@ export function ccDeliveryHead(binding: CcSessionBinding, memory: Memory): { own
     throw new Error("bound Claude Code core session or project disagrees with the database");
   const turnOf = (uuid: string) => store.findSourceEntry(core, binding.nativeSessionId, uuid)?.turnId
     ?? store.findNativeTurn(core, binding.nativeSessionId, uuid)?.turnId;
-  // 63: a cleared native session's root continues from the compaction its clear appended.
+  // 63: a native session linked by a clear before 102 continues from the compaction it appended.
   const root = binding.clearedFrom?.compactionTurnId ?? null;
   let headTurnId: number | null = root;
   if (binding.selectedLeafUuid !== null) {
@@ -265,17 +266,6 @@ async function deliver<T>(config: ResolvedCcHostConfig, input: Pick<CcHookInput,
   }
 }
 
-/** Record an already-rendered publication (a frozen `/clear` compaction) at its compaction node. */
-export function recordCcBaseline(config: ResolvedCcHostConfig, binding: CcSessionBinding, outputs: readonly (CcHookOutput | null)[]): void {
-  const turnId = binding.clearedFrom?.compactionTurnId;
-  if (turnId == null || binding.coreSessionId === null) return;
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC clear Hook cannot run model work"); }, config.coreConfig);
-  try {
-    const visible = { db: databaseIdentity(config.dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
-    memory.store.recordKnowledgeDelivery({ owner: coreHostOf(binding), turnId }, outputs.flatMap(value => partOf(value, visible)));
-  } finally { memory.store.close(); }
-}
-
 /** SessionStart's only preparation: enrollment and the provisional project. */
 export async function ccPrepareSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<void> {
   const initial = readBinding(config, input.session_id);
@@ -344,6 +334,111 @@ export async function ccPreparedSessionStartInjection(config: ResolvedCcHostConf
   if (!delivered) return { output: null, slices: slice(null, { db: "", nativeSession: input.session_id, coreSession: null }), snapshot: null };
   if (!snapshot) throw new Error("prepared SessionStart did not capture its input snapshot");
   return { ...delivered, snapshot };
+}
+
+/** 73 "Truncation is announced in the foreground": the warning for a compaction that omitted
+ * unprocessed material, Pi's notice in Claude Code. 79 item 4 (ruled): Raw is an exact count only. */
+export function ccTruncationWarning(omitted: TruncationReceipt | undefined): string | undefined {
+  return omitted ? `Trace Memory: compaction omitted ${[
+    ...(omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : []),
+    ...(omitted.facts ? [`${omitted.facts.count} ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []),
+  ].join(" and ")}${omitted.raw ? "; omitted Raw remains pending for Noting." : "."}` : undefined;
+}
+
+/** 97: the tail after the stored leaf holds no source record: the import has reached the end. */
+const importedToEnd = (binding: CcSessionBinding): boolean => {
+  if (binding.coreSessionId === null || binding.selectedLeafUuid === null || binding.transcriptOffset === undefined) return false;
+  const tail = readTranscriptTail(binding.transcriptPath, binding.transcriptOffset);
+  return tail !== null && tailNodes(tail).leaf === null;
+};
+
+/** The transcript holds the row `uuid`: imported already (one row of a reply Claude Code split may
+ * precede the stored leaf), or after the stored leaf (97's tail read). */
+const written = (binding: CcSessionBinding, uuid: string, store: Store): boolean => binding.coreSessionId !== null &&
+  !!(store.findKnownSourceEntry(binding.coreSessionId, binding.nativeSessionId, uuid) ?? store.findNativeTurn(binding.coreSessionId, binding.nativeSessionId, uuid)) ||
+  !!readTranscriptTail(binding.transcriptPath, binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset ?? 0)?.some(record => record.uuid === uuid);
+
+// ponytail: a fixed bound on Claude Code's transcript flush and the executor's import that follows it,
+// not configuration; past it the build imports itself or, with no trigger written, keeps native compaction.
+const TRIGGER_WAIT_MS = 10_000;
+
+/** 102: Trace Memory's compaction of the main conversation, returned by the `session.compact` hook in
+ * place of Claude Code's summary; as Pi's replacement, it keeps no original message. `trigger` is the
+ * newest message the hook was handed (its handle is that row's uuid): the prompt just submitted, a tool
+ * call's result, or the last reply before `/compact`. Claude Code holds it in memory but may not have
+ * written it yet (natively, an automatic compaction's rows land tens of milliseconds after the hook
+ * starts), so the build waits for the row and for the live executor to import it, reading only the
+ * tail after the stored leaf (97); without a live executor the importer runs here. The block's
+ * Knowledge is recorded as the delivery of the compaction the import will append after that leaf,
+ * before the text is returned. Null: an unbound or disabled session, which keeps native compaction.
+ * `auto` (requirement 14, ruled): the caller's own `manual`/`auto` event trigger, distinct from the
+ * handle above; only `auto` gets the trailing continue sentence. */
+export async function ccCompaction(config: ResolvedCcHostConfig,
+  input: Pick<CcHookInput, "session_id"> & { trigger: string; auto?: boolean }):
+  Promise<{ text: string; warning?: string } | null> {
+  const initial = readBinding(config, input.session_id);
+  if (!initial) return null;
+  if (initial.dbPath !== config.dbPath) throw new Error("CC binding uses another database");
+  const lineage = initial.nativeSessionId;
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC compaction cannot run model work"); },
+    config.coreConfig, undefined, entry => entry.nativeLineage === lineage ? ccSourceBlocks(entry) : undefined);
+  try {
+    // Enrollment is settled once a core session exists or the import has read the creation time.
+    const disabled = (binding: CcSessionBinding) => (binding.coreSessionId !== null || binding.nativeCreatedAt !== null) && !enabled(binding, memory);
+    const importing = (binding: CcSessionBinding) => binding.executor !== null && executorLiveness(binding.executor) !== "dead";
+    let binding = initial;
+    for (const deadline = Date.now() + TRIGGER_WAIT_MS; ;) {
+      if (disabled(binding)) return null;
+      const present = written(binding, input.trigger, memory.store);
+      if (present && (importedToEnd(binding) || !importing(binding))) break;
+      if (Date.now() >= deadline) {
+        if (!present) throw new Error(`the compaction's trigger ${input.trigger} was not written to the transcript`);
+        break;
+      }
+      await new Promise(wake => setTimeout(wake, 20));
+      const current = readBinding(config, input.session_id);
+      if (current?.dbPath !== config.dbPath || current.transcriptPath !== initial.transcriptPath) throw new Error("CC binding changed during compaction");
+      binding = current;
+    }
+    if (!importedToEnd(binding)) {
+      // The import also settles enrollment, which a provisional binding may not know yet.
+      const projection = new CcProjection(config, binding, memory);
+      const imported = await projection.synchronize();
+      if (imported.state === "disabled") return null;
+      if (imported.state !== "ready") throw new Error(imported.problems.join("; ") || `the transcript import is ${imported.state}`);
+      binding = projection.currentBinding();
+      if (!importedToEnd(binding)) throw new Error("the transcript grew while it was imported");
+    }
+    const offset = binding.transcriptOffset;
+    const core = binding.coreSessionId!, leaf = binding.selectedLeafUuid!, branch = binding.branch, owner = coreHostOf(binding);
+    const headTurnId = memory.store.findSourceEntry(core, lineage, leaf)?.turnId ?? memory.store.findNativeTurn(core, lineage, leaf)?.turnId;
+    if (headTurnId === undefined) throw new Error("the selected native source has no persisted core Turn");
+    const { compacted, watermark } = memory.store.readSnapshot(() => ({
+      compacted: memory.compact(core, branch, headTurnId, [], false), watermark: memory.store.deliveryWatermark(owner) }));
+    if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation: ${compacted.reason}`);
+    // 102 (ruled): the one place the carrier is framed as Pi frames a compaction summary; the delivery
+    // below is recorded from the same supplied material, and the framing is outside its Knowledge cost.
+    // Requirement 14 (ruled): an automatic compaction's block also ends with Claude Code's own native
+    // continue sentence, after the framing; a manual `/compact` gets none.
+    const text = COMPACTION_SUMMARY_PREFIX + encodeCcInjection({ db: databaseIdentity(config.dbPath), nativeSession: lineage, coreSession: core }, {
+      text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
+      knowledgeStates: compacted.supplied.knowledgeStates, factIds: compacted.supplied.factIds, entryIds: compacted.supplied.entries.map(entry => entry.id) }) +
+      COMPACTION_SUMMARY_SUFFIX + (input.auto ? CC_AUTO_CONTINUE_SUFFIX : "");
+    memory.store.transaction(() => {
+      const current = readBinding(config, input.session_id);
+      if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch ||
+          current.selectedLeafUuid !== leaf || current.transcriptOffset !== offset || !importedToEnd(current))
+        throw new Error("the session or its selected path changed while the compaction was built");
+      memory.store.recordKnowledgeDelivery({ owner, nodeKey: randomUUID(), follows: leaf }, [{
+        knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
+        knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0 }]);
+    });
+    const warning = ccTruncationWarning(compacted.truncated);
+    return { text, ...(warning ? { warning } : {}) };
+  } finally {
+    // As an injection: this process owns no executor or claim, so its Store closes directly.
+    memory.store.close();
+  }
 }
 
 /** 97: the UserPromptSubmit delta and the `session.compact` supplement. A prompt's parts belong

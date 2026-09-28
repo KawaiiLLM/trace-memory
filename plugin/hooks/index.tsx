@@ -54,32 +54,59 @@ async function load($: any) {
   return { session, data: JSON.parse(decode(result, "Trace Memory menu")) as Reply, breakdown: currentBreakdown };
 }
 
+// 92/08: native compaction, then the knowledge it lacks, recorded as that compaction's baseline (97).
+async function nativeCompaction($: any, e: any, next: any, session: string) {
+  const result = await next(e);
+  if (result.skip || next.signal.aborted) return result;
+  try {
+    if (session !== await $.session.id()) throw new Error("native session changed during compact");
+    const process = await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-delta", "--config", `${$.plugin.root}/cc.config.json`],
+      // 97: the supplement is recorded as this compaction's baseline; the retained messages are not read.
+      { stdin: JSON.stringify({ hook_event_name: "session.compact", session_id: session, messages: [] }) });
+    const slices = JSON.parse(decode(process, "Trace Memory compact delta")).slices;
+    if (!Array.isArray(slices) || slices.length !== 24) throw new Error("compact delta returned invalid slices");
+    const added = slices.filter(Boolean).map((slice: any) => slice.hookSpecificOutput?.additionalContext);
+    if (added.some((text: unknown) => typeof text !== "string" || !text)) throw new Error("compact delta has invalid carrier");
+    if (session !== await $.session.id() || next.signal.aborted) return result;
+    return added.length ? { ...result, messages: [...result.messages,
+      ...added.map((text: string) => ({ role: "user", text, toolUses: [] }))] } : result;
+  } catch (error) {
+    console.error(`Trace Memory compact delta: ${String(error)}`);
+    return result;
+  }
+}
+
 export const register = (on: any) => {
   on("session.compact", async ($: any, e: any, next: any) => {
+    // A plugin's or a precomputed compaction, and a subagent's or fork's own, stay Claude Code's.
+    if (e.trigger === "precompute" || e.trigger === "plugin" || e.agentId) return next(e);
     let session: string;
     try { session = await $.session.id(); }
     catch (error) {
       console.error(`Trace Memory compact identity: ${String(error)}`);
       return next(e);
     }
-    const result = await next(e);
-    if (result.skip || e.trigger === "precompute" || e.trigger === "plugin" || e.agentId || next.signal.aborted) return result;
+    // 102: Trace Memory's compaction replaces Claude Code's summary, with no model call. Like Pi's, it
+    // keeps no original message: the trigger is the newest Raw in the block. An unbound or disabled
+    // session, or a build that fails for any reason, keeps native compaction and its supplement.
     try {
-      if (session !== await $.session.id()) throw new Error("native session changed during compact");
-      const process = await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-delta", "--config", `${$.plugin.root}/cc.config.json`],
-        // 97: the supplement is recorded as this compaction's baseline; the retained messages are not read.
-        { stdin: JSON.stringify({ hook_event_name: "session.compact", session_id: session, messages: [] }) });
-      const slices = JSON.parse(decode(process, "Trace Memory compact delta")).slices;
-      if (!Array.isArray(slices) || slices.length !== 24) throw new Error("compact delta returned invalid slices");
-      const added = slices.filter(Boolean).map((slice: any) => slice.hookSpecificOutput?.additionalContext);
-      if (added.some((text: unknown) => typeof text !== "string" || !text)) throw new Error("compact delta has invalid carrier");
-      if (session !== await $.session.id() || next.signal.aborted) return result;
-      return added.length ? { ...result, messages: [...result.messages,
-        ...added.map((text: string) => ({ role: "user", text, toolUses: [] }))] } : result;
+      const built = JSON.parse(decode(await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-compact", "--config", `${$.plugin.root}/cc.config.json`],
+        // The newest message's handle is its transcript row's uuid: the trigger the build waits for.
+        // `auto` (requirement 14, ruled) tells the build whether to end the block with Claude Code's
+        // own native continue sentence, after its framing; a manual `/compact` gets none.
+        { stdin: JSON.stringify({ session_id: session, trigger: e.messages.at(-1)?.handle, auto: e.trigger === "auto" }) }), "Trace Memory compaction"));
+      if (!built.passThrough) {
+        if (typeof built.text !== "string" || !built.text) throw new Error("compaction returned no block");
+        if (session !== await $.session.id()) throw new Error("native session changed during compaction");
+        // 73: omitted unprocessed material is announced in the foreground, never sent to the model.
+        if (typeof built.warning === "string") try { $.ui.log(built.warning); }
+        catch (error) { console.error(`Trace Memory compaction warning: ${String(error)}`); }
+        return { messages: [{ role: "user", text: built.text, toolUses: [] }] };
+      }
     } catch (error) {
-      console.error(`Trace Memory compact delta: ${String(error)}`);
-      return result;
+      console.error(`Trace Memory compaction: ${String(error)}`);
     }
+    return nativeCompaction($, e, next, session);
   });
 
   on("session.start", async ($: any, e: any, next: any) => {

@@ -40,9 +40,6 @@ export interface CcControlHandlers {
 export interface CcControlServer {
   executor: CcExecutorBinding;
   close(preserveExecutor?: boolean): Promise<void>;
-  /** 63: serve another native session of the same core session — the executor record moves from the
-   * current binding to `next`, and control requests are checked against `next` from then on. */
-  retarget(next: CcSessionBinding): Promise<void>;
 }
 
 const socketPath = (config: ResolvedCcHostConfig, token: string): string => {
@@ -52,7 +49,7 @@ const socketPath = (config: ResolvedCcHostConfig, token: string): string => {
   if (Buffer.byteLength(value) > 100) throw new Error("CC control socket path exceeds the supported Unix-domain path length; configure a shorter stateDir");
   return value;
 };
-const executorLiveness = (executor: CcExecutorBinding): "alive" | "dead" | "unknown" => {
+export const executorLiveness = (executor: CcExecutorBinding): "alive" | "dead" | "unknown" => {
   try { process.kill(executor.pid, 0); return "alive"; }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") return "dead";
@@ -95,9 +92,8 @@ const closeServer = (server: ReturnType<typeof createServer>): Promise<void> => 
   server.close(() => resolve());
 });
 
-export async function startControlServer(config: ResolvedCcHostConfig, initial: CcSessionBinding, memory: TraceMemory,
+export async function startControlServer(config: ResolvedCcHostConfig, binding: CcSessionBinding, memory: TraceMemory,
   bindingTimeoutMs?: number, signal?: AbortSignal, handlers?: CcControlHandlers): Promise<CcControlServer> {
-  let binding = initial; // 63: re-pointed by `retarget`
   const token = randomUUID(), path = socketPath(config, token);
   const executor: CcExecutorBinding = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: new Date().toISOString() };
   mkdirSync(dirname(path), { recursive: true });
@@ -193,32 +189,14 @@ export async function startControlServer(config: ResolvedCcHostConfig, initial: 
     catch (cleanup) { console.error(`Trace Memory CC: failed attach socket removal: ${String(cleanup)}`); }
     throw error;
   }
-  const attachTo = (target: CcSessionBinding) => updateBinding(config, target.nativeSessionId, current => {
-    if (!current) throw new Error("CC binding disappeared before executor attach");
-    if (current.transcriptPath !== target.transcriptPath) throw new Error("CC binding changed before executor attach");
-    if (current.executor && current.executor.token !== token) {
-      const liveness = executorLiveness(current.executor);
-      if (liveness === "alive") throw new Error(`CC session already has a live executor process ${current.executor.pid}`);
-      if (liveness === "unknown") throw new Error(`cannot establish liveness of CC executor process ${current.executor.pid}`);
-    }
-    return { ...current, executor };
-  }, bindingTimeoutMs);
-  const release = (target: CcSessionBinding) => updateBinding(config, target.nativeSessionId,
+  const release = () => updateBinding(config, binding.nativeSessionId,
     current => !current || current.executor?.token !== token ? current! : { ...current, executor: null });
   return { executor, close: async (preserveExecutor = false) => {
     try { await closeServer(server); }
     finally {
       try { rmSync(path, { force: true }); }
-      finally { if (!preserveExecutor) await release(binding); }
+      finally { if (!preserveExecutor) await release(); }
     }
-  }, retarget: async next => {
-    // The binding captured at attach may predate enrollment (a provisional parent turned on later);
-    // compare against what the Hook persisted since, not the stale in-memory copy.
-    const current = readBinding(config, binding.nativeSessionId) ?? binding;
-    if (next.coreSessionId === null || next.coreSessionId !== current.coreSessionId) throw new Error("CC control retarget must stay on the same core session");
-    await attachTo(next);
-    const previous = binding; binding = next;
-    await release(previous);
   } };
 }
 

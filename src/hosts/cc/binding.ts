@@ -59,7 +59,8 @@ export interface CcSessionBinding {
    * bindings written before 62 or by a hook without cwd: such a session keeps its own project. */
   cwd?: string;
   /** 63: the core session's `host` when it is not `cc:<this native id>` — a native session cleared
-   * into from another keeps the root's host. `coreHostOf` reads it with the default. */
+   * into from another keeps the root's host. `coreHostOf` reads it with the default. The link fields
+   * below are no longer written (102: `/clear` is a new session); linked bindings keep reading them. */
   coreHost?: string;
   /** 63: this native session continues the core session of the one it was cleared from. */
   clearedFrom?: CcClearedFrom;

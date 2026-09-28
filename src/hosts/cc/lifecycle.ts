@@ -9,7 +9,7 @@ import type { CcWorkerJournal } from "./worker.ts";
 import { startControlServer, type CcControlServer } from "./control.ts";
 import { assignedNativeSession, currentNativeProcess, nativeSessionRecords, processStartedAt } from "./native-session.ts";
 import { CcTaskScheduler, type CcCatchupStatus } from "./scheduler.ts";
-import { removeCcStatus, writeCcStatus, type CcStatusFile } from "./status.ts";
+import { readCcStatus, removeCcStatus, writeCcStatus, type CcStatusFile } from "./status.ts";
 
 export interface CcCloseResult {
   confirmed: boolean;
@@ -67,7 +67,7 @@ function hasLiveSibling(config: ResolvedCcHostConfig, coreSessionId: number, exc
     if (startedAt !== native.startedAt) continue; // PID reused after the bound native process ended.
     const assigned = assignedNativeSession(config, [{ pid: native.pid, startedAt }]);
     if (!assigned) throw new Error(`CC sibling ${nativeSessionId} has no native session assignment`);
-    // /clear moves the same native process to its child; the cleared-away parent is not live.
+    // The process has moved on to another native session (/clear, /resume): this one is not live.
     if (assigned.nativeSessionId !== nativeSessionId) continue;
     if (assigned.transcriptPath !== sibling.transcriptPath)
       throw new Error(`CC sibling ${nativeSessionId} disagrees with its native session assignment`);
@@ -76,7 +76,8 @@ function hasLiveSibling(config: ResolvedCcHostConfig, coreSessionId: number, exc
   return false;
 }
 
-/** A native SessionEnd closes its bound lineage; it never imports or waits for the executor. */
+/** A native SessionEnd closes its bound lineage, whatever its reason: `/clear` ends the session like
+ * an exit (102). It never imports or waits for the executor. */
 export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: CcHookInput): Promise<CcSessionEndResult> {
   if (input.hook_event_name !== "SessionEnd") throw new Error("expected a SessionEnd Hook input");
   const nativeSessionId = validateNativeSessionId(input.session_id), binding = readBinding(config, nativeSessionId);
@@ -84,7 +85,6 @@ export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: Cc
   if (!binding) return { confirmed: false, reason, diagnostic: "trusted binding is missing" };
   if (binding.dbPath !== config.dbPath || binding.transcriptPath !== input.transcript_path)
     throw new Error("SessionEnd disagrees with the trusted binding");
-  if (input.reason === "clear") return { confirmed: false, reason, diagnostic: "clear continues the core session" };
   const nativeProcess = currentNativeProcess();
   if (!nativeProcess || !binding.nativeProcess)
     return { confirmed: false, reason, diagnostic: "SessionEnd native process identity is unavailable; a matching SessionStart is required" };
@@ -153,6 +153,8 @@ export class CcCoordinator {
   /** Ticket 75: the last published (path, state) key, so a no-op stat-wake-up reconcile writes
    * nothing — publishing is a lifecycle event, never a timer. */
   private lastStatusKey: string | null = null;
+  /** 102: the retargets in order, each after the last; shutdown waits for the one in flight. */
+  private following: Promise<boolean> = Promise.resolve(true);
 
   constructor(config: ResolvedCcHostConfig, nativeSessionId: string,
     diagnostic: CcDiagnostic = message => console.error(`Trace Memory CC: ${message}`), importTuning?: CcImportInstrumentation,
@@ -340,7 +342,7 @@ export class CcCoordinator {
   }
 
   /** 65: follow the SessionStart Hook's session id while no binding has been attached. Returns false
-   * once attached — re-targeting a live facade is the handoff of ticket 63, not a rename. */
+   * once attached: `retargetTo` follows it from then on. */
   adoptNativeSessionId(nativeSessionId: string): boolean {
     validateNativeSessionId(nativeSessionId);
     if (nativeSessionId === this.nativeSessionId) return true;
@@ -352,42 +354,35 @@ export class CcCoordinator {
     return true;
   }
 
-  /** 63: serve the native session this one was cleared into — same facade, same core session, new
-   * lineage. Runs on the reconcile queue so no import is in flight while the projection is swapped.
-   * Returns false when the target is not a clear-child of the current session. */
+  /** 102: this Claude Code process now serves another native session (`/clear`, or `/resume` inside
+   * the process). Leave the attached one as an exit does, then attach to the new one as at startup:
+   * its own binding, core session, project (62) and enrollment. One at a time; false once closing. */
   retargetTo(nativeSessionId: string): Promise<boolean> {
     validateNativeSessionId(nativeSessionId);
-    // 70: hold imports before waiting on the reconcile queue behind the running scan — otherwise a
-    // reconcile already queued there would start the instant it settles and run a full, unaborted
-    // import before this retarget ever runs. Released once this retarget's own work is done.
-    const release = this.holdImport();
-    const done = this.queue.then(async () => {
-      try {
-        if (this.closed || this.closing || !this.importer || !this.control) return false;
-        const current = this.importer.currentBinding(), next = readBinding(this.config, nativeSessionId);
-        if (!next || next.clearedFrom?.nativeSessionId !== current.nativeSessionId || next.coreSessionId !== current.coreSessionId) return false;
-        this.observe("retarget-start", { from: current.nativeSessionId, to: nativeSessionId });
-        this.transcriptWatcher?.close(); this.transcriptWatcher = null;
-        await this.control.retarget(next);
-        this.importer.retarget(next);
-        const previousNativeSessionId = this.nativeSessionId;
-        this.nativeSessionId = nativeSessionId;
-        this.watchTranscript(next);
-        // Ticket 75: the executor's status now belongs under the new native session id; removing the old
-        // file here, on the queue and after the handoff, keeps a later callback from recreating it.
-        this.publish("retarget");
-        removeCcStatus(this.config.stateDir, previousNativeSessionId);
-        this.observe("retarget-complete", { to: nativeSessionId });
-        return true;
-      } finally { release(); }
-    }).then(result => result, error => {
+    return this.following = this.following.then(() => this.follow(nativeSessionId)).catch(error => {
       this.diagnostic(`retarget to ${nativeSessionId} failed: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     });
-    this.queue = done.then(() => null);
-    const result = done;
-    void result.then(retargeted => { if (retargeted) void this.requestReconcile("retarget"); });
-    return result;
+  }
+
+  private async follow(nativeSessionId: string): Promise<boolean> {
+    if (this.closing || this.closed) return false;
+    if (this.adoptNativeSessionId(nativeSessionId)) return true;
+    // 70: hold imports before waiting on the queue behind the running scan, as shutdown does.
+    const release = this.holdImport(), previous = this.nativeSessionId, token = this.control?.executor.token;
+    try {
+      this.observe("retarget-start", { from: previous, to: nativeSessionId });
+      await this.leave();
+      // Switch before the attachment is dropped: a wake-up in between attaches the new session, never the old.
+      this.nativeSessionId = nativeSessionId;
+      this.lastReconcile = null; this.lastStatusKey = null;
+      await this.discardAttachment();
+      // Ticket 75: the old session's status file, while it is still this executor's.
+      if (token !== undefined && readCcStatus(this.config.stateDir, previous)?.token === token) removeCcStatus(this.config.stateDir, previous);
+      this.observe("retarget-complete", { from: previous, to: nativeSessionId });
+    } finally { release(); }
+    void this.requestReconcile("retarget");
+    return true;
   }
 
   requestReconcile(reason: string, final = false, deadline?: number): Promise<CcReconcileResult | null> {
@@ -496,6 +491,23 @@ export class CcCoordinator {
     this.transcriptWatcher?.close(); this.transcriptWatcher = null;
   }
 
+  /** What an exit does to the attached session (shutdown and 102's retarget): its work stops, a final
+   * sync bounded by its deadline imports the transcript's tail, and its tasks are cancelled and settled
+   * and their claims released. The caller holds imports. */
+  private async leave(): Promise<CcCloseResult> {
+    this.scheduler?.stop();
+    this.transcriptWatcher?.close(); this.transcriptWatcher = null;
+    await this.queue;
+    this.importer?.memory.cancelTasks(true);
+    const result = await this.finalReconcile();
+    if (this.importer) {
+      this.importer.memory.forceTasks();
+      await this.scheduler?.settle();
+      this.importer.memory.store.releaseExecutor(this.importer.memory.executorId);
+    }
+    return result;
+  }
+
   private async finalReconcile(): Promise<CcCloseResult> {
     const deadline = Date.now() + this.config.finalSyncTimeoutMs;
     let stable = 0, signature: string | null = null, latest: CcReconcileResult | null = null;
@@ -526,20 +538,15 @@ export class CcCoordinator {
     if (this.closed) return { confirmed: false, reason: "coordinator already closed", diagnostic: "duplicate shutdown" };
     if (this.closing) return { confirmed: false, reason: "coordinator shutdown already in progress" };
     this.closing = true; this.scheduler?.stop(); this.stopWakeups(); this.startup.abort(new DOMException("Lifecycle shutdown", "AbortError"));
-    // 70: hold imports before waiting on the queue behind the running scan, for the same reason
-    // retargetTo does. Never released: `closing` already blocks every future non-final reconcile.
+    // 70: hold imports before waiting on the queue behind the running scan: otherwise a reconcile
+    // already queued there would start the instant it settles and run a full, unaborted import first.
+    // Never released: `closing` already blocks every future non-final reconcile.
     this.holdImport();
     this.observe("shutdown-begin", { reason });
     let result: CcCloseResult = { confirmed: false, reason: "no bound importer", diagnostic: "binding was never established" };
     try {
-      await this.queue;
-      this.importer?.memory.cancelTasks(true);
-      result = await this.finalReconcile();
-      if (this.importer) {
-        this.importer.memory.forceTasks();
-        await this.scheduler?.settle();
-        this.importer.memory.store.releaseExecutor(this.importer.memory.executorId);
-      }
+      await this.following; // a retarget in flight finishes its handoff first
+      result = await this.leave();
       // MCP teardown is never close authority. Preserve its executor binding unless SessionEnd
       // already cleared it, so another attach cannot mistake an unfinished teardown for no owner.
       const owner = this.control?.executor.token;

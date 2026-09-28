@@ -104,7 +104,7 @@ while (!staged) {
           throw new Error(`SessionStart ${command} failed: ${result.error?.message ?? result.stderr}`);
         return result;
       };
-      // Lifecycle is never retried. Clear's frozen material remains owned by its preparation.
+      // Lifecycle is never retried.
       if (!promptDelta) invoke('hook-prepare');
       const before = identity();
       // The renderer records every part it returns as delivered before this stage is published (97).

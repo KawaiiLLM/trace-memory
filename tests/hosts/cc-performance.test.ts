@@ -21,7 +21,7 @@ test("a 30k transcript has sub-millisecond unchanged wakes and suffix-proportion
     records.push({ uuid: user, parentUuid: parent, type: "user", timestamp: new Date(Date.UTC(2026, 0, 1) + index * 2).toISOString(),
       promptId: `p-${index}`, promptSource: "sdk", userType: "external", message: { role: "user", content: `q ${index}` } });
     records.push({ uuid: assistant, parentUuid: user, type: "assistant", timestamp: new Date(Date.UTC(2026, 0, 1) + index * 2 + 1).toISOString(),
-      message: { role: "assistant", content: [{ type: "text", text: `a ${index}` }] } });
+      message: { id: `msg-${index}`, role: "assistant", content: [{ type: "text", text: `a ${index}` }] } });
     parent = assistant;
   }
   writeFileSync(transcriptPath, records.map(line).join(""));
@@ -51,7 +51,7 @@ test("a 30k transcript has sub-millisecond unchanged wakes and suffix-proportion
       const nextUser = { uuid: "u-final", parentUuid: parent, type: "user", timestamp: "2026-01-02T00:00:00.000Z",
         promptId: "p-final", promptSource: "sdk", userType: "external", message: { role: "user", content: "final" } };
       const nextAssistant = { uuid: "a-final", parentUuid: "u-final", type: "assistant", timestamp: "2026-01-02T00:00:01.000Z",
-        message: { role: "assistant", content: [{ type: "text", text: "final" }] } };
+        message: { id: "msg-final", role: "assistant", content: [{ type: "text", text: "final" }] } };
       appendFileSync(transcriptPath, line(nextUser) + line(nextAssistant));
       const appended = await importer.reconcile();
       expect(appended.appendedEntryIds).toHaveLength(2);
@@ -59,6 +59,21 @@ test("a 30k transcript has sub-millisecond unchanged wakes and suffix-proportion
       expect(historicalNodeVisits).toBe(0);
       expect(prepares).toBeLessThan(80);
       expect(parses).toBeLessThan(30);
+      // A parallel batch whose results arrive after its calls extends the path the same way (108).
+      const call = (index: number) => ({ uuid: `c-${index}`, parentUuid: index ? `c-${index - 1}` : "u-batch", type: "assistant",
+        timestamp: `2026-01-02T00:00:0${3 + index}.000Z`, message: { id: "msg-batch", role: "assistant",
+          content: [{ type: "tool_use", id: `toolu-${index}`, name: "Read", input: {} }] } });
+      const result = (index: number) => ({ uuid: `r-${index}`, parentUuid: `c-${index}`, type: "user", timestamp: `2026-01-02T00:00:0${6 + index}.000Z`,
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu-${index}`, content: "read" }] } });
+      appendFileSync(transcriptPath, line({ uuid: "u-batch", parentUuid: "a-final", type: "user", timestamp: "2026-01-02T00:00:02.000Z",
+        promptId: "p-batch", promptSource: "sdk", userType: "external", message: { role: "user", content: "read two" } }) + line(call(0)) + line(call(1)));
+      await importer.reconcile();
+      appendFileSync(transcriptPath, line(result(0)) + line(result(1)));
+      const batch = await importer.reconcile();
+      expect(batch.snapshot.reset).toBe(false);
+      expect(batch.selectedEntryIds.slice(-5).map(id => importer.memory.store.getSourceEntry(id)!.nativeId))
+        .toEqual(["u-batch", "c-0", "c-1", "r-0", "r-1"]);
+      expect(historicalNodeVisits).toBe(0);
     } finally { JSON.parse = parse; }
   } finally { importer.close(); rmSync(dir, { recursive: true, force: true }); }
 }, 120_000);

@@ -34,9 +34,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/hosts/cc/index.ts
-var import_node_fs14 = require("node:fs");
+var import_node_fs13 = require("node:fs");
 var import_node_crypto17 = require("node:crypto");
-var import_node_path12 = require("node:path");
+var import_node_path11 = require("node:path");
 var import_node_url = require("node:url");
 
 // src/hosts/cc/config.ts
@@ -9929,6 +9929,20 @@ var humanCommandPrompt = (content) => {
   const args = values.get("command-args")?.trim();
   return args ? `${name} ${args}` : name;
 };
+var CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
+var CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
+var COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+
+<summary>
+`;
+var COMPACTION_SUMMARY_SUFFIX = `
+</summary>`;
+var CARRIER_START = `${CC_INJECTION_BEGIN}
+${CC_INJECTION_HEADER}`;
+var ccCarrierStart = (text) => text.startsWith(CARRIER_START) ? 0 : text.startsWith(COMPACTION_SUMMARY_PREFIX + CARRIER_START) ? COMPACTION_SUMMARY_PREFIX.length : -1;
+var CC_AUTO_CONTINUE_SUFFIX = `
+Continue the conversation from where it left off without asking the user any further questions. Resume directly \u2014 do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.`;
+var ccStripAutoContinue = (text) => text.endsWith(CC_AUTO_CONTINUE_SUFFIX) ? text.slice(0, -CC_AUTO_CONTINUE_SUFFIX.length) : text;
 var CcNativeLineageError = class extends Error {
 };
 function nativeParentId(record3, writtenBefore) {
@@ -10004,6 +10018,7 @@ function classifySourceRecord(record3) {
     return { kind: "toolResult", record: record3, nativeId: id, timestamp: timestamp(record3), text: "", calls };
   }
   if (!(typeof content === "string" || Array.isArray(content))) return null;
+  if (ccCarrierStart(textBlocks(content)[0] ?? "") >= 0) return null;
   const nativePrompt = ["typed", "queued", "sdk", "system"].includes(String(record3.promptSource));
   const humanPrompt = record3.isMeta !== true && record3.origin?.kind === "human";
   if (!nativePrompt && !humanPrompt) return null;
@@ -10015,6 +10030,7 @@ var messageKey = (source) => {
   const identity = source?.kind === "toolResult" ? [message.content] : source?.kind === "assistant" && typeof message?.id === "string" ? [message.id, message.content] : void 0;
   return identity && (0, import_node_crypto12.hash)("sha256", JSON.stringify(identity), "base64");
 };
+var apiMessageId = (source) => source?.kind === "assistant" && typeof source.record.message?.id === "string" ? source.record.message.id : void 0;
 var nodeOf = (record3, writtenBefore) => {
   const uuid5 = nativeId(record3);
   if (!uuid5) return null;
@@ -10026,7 +10042,8 @@ var nodeOf = (record3, writtenBefore) => {
       sourceKind: source?.kind ?? null,
       calls: source?.kind === "assistant" ? source.calls.map((call) => ({ id: call.callId, name: call.name })) : [],
       timestamp: source?.timestamp ?? timestamp(record3),
-      messageKey: messageKey(source)
+      messageKey: messageKey(source),
+      apiMessageId: apiMessageId(source)
     };
   } catch (error3) {
     if (!(error3 instanceof CcNativeLineageError)) throw error3;
@@ -10039,6 +10056,12 @@ var nodeOf = (record3, writtenBefore) => {
       lineageProblem: error3.message
     };
   }
+};
+var byFirstImport = (left, right) => (left.entryId ?? Infinity) - (right.entryId ?? Infinity) || 0;
+var join4 = (members, batch, node) => {
+  const list = members.get(batch);
+  if (list) list.push(node);
+  else members.set(batch, [node]);
 };
 var CcTranscriptScan = class {
   nodes;
@@ -10055,6 +10078,8 @@ var CcTranscriptScan = class {
   selectedLeafOffset;
   problems;
   newProblems;
+  /** 108: the native ids this scan read, in visit order: the appended suffix, or every record after a reset. */
+  readIds;
   constructor(input) {
     this.nodes = input.nodes;
     this.callCarriers = input.callCarriers;
@@ -10068,6 +10093,7 @@ var CcTranscriptScan = class {
     this.selectedLeafOffset = input.selectedLeafOffset;
     this.problems = input.problems ?? [];
     this.newProblems = input.newProblems ?? /* @__PURE__ */ new Set();
+    this.readIds = input.readIds ?? [];
   }
   node(uuid5) {
     return this.nodes.get(uuid5);
@@ -10084,21 +10110,90 @@ var CcTranscriptScan = class {
     this.newProblems.add(problem);
     if (!this.problems.includes(problem)) this.problems.push(problem);
   }
+  /** 108: the first row of the native message `node` belongs to (for a tool result, the message of the
+   * call it answers), or the node itself. Claude Code 2.1.280 writes one assistant message as one row per
+   * content block, each under the previous and sharing the message id, and writes each parallel call's
+   * result under that call, never under another result. So a batch's rows all hang off its first row, and
+   * a single-parent walk from the leaf passes through only some of them; every one reached the model in
+   * the same turn. Walks parent links while the message id holds: one message's rows, never the history. */
+  batchOf(node) {
+    let current = node.sourceKind === "toolResult" && node.parentUuid !== null ? this.node(node.parentUuid) ?? node : node;
+    if (current.apiMessageId === void 0) return node.uuid;
+    for (const seen = /* @__PURE__ */ new Set([current.uuid]); ; ) {
+      const parent = current.parentUuid === null ? void 0 : this.node(current.parentUuid);
+      if (!parent || parent.apiMessageId !== current.apiMessageId || seen.has(parent.uuid)) return current.uuid;
+      seen.add(parent.uuid);
+      current = parent;
+    }
+  }
+  /** `chain` in order, each batch's rows on it joined by its `members` elsewhere and ordered by first
+   * import (entry id): the order an incremental extension appends them in. A node without an entry
+   * (a copy) holds no path position; it stays in its batch, last. */
+  layout(chain, members) {
+    const nodes = [];
+    for (let index = 0; index < chain.length; ) {
+      const first = chain[index], joined = members.get(first.uuid);
+      if (!joined) {
+        nodes.push(first);
+        index++;
+        continue;
+      }
+      const batch = [...joined];
+      while (index < chain.length && this.batchOf(chain[index]) === first.uuid) batch.push(chain[index++]);
+      nodes.push(...batch.sort(byFirstImport));
+    }
+    return nodes;
+  }
+  /** The leaf's native ancestry and every other row of each parallel batch on it (108). */
   selectedPath() {
-    if (!this.selectedLeafUuid) return { leafUuid: null, nodes: [] };
-    const reverse = [], seen = /* @__PURE__ */ new Set();
-    let current = this.node(this.selectedLeafUuid);
+    const leafUuid = this.selectedLeafUuid;
+    if (!leafUuid) return { leafUuid: null, nodes: [] };
+    const reverse = [], chain = /* @__PURE__ */ new Set();
+    let current = this.node(leafUuid);
     while (current) {
-      if (seen.has(current.uuid)) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: `native lineage cycle at ${current.uuid}` };
-      if (current.lineageProblem) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: current.lineageProblem };
-      if (current.importProblem) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: current.importProblem };
-      seen.add(current.uuid);
+      if (chain.has(current.uuid)) return { leafUuid, nodes: [], problem: `native lineage cycle at ${current.uuid}` };
+      if (current.lineageProblem) return { leafUuid, nodes: [], problem: current.lineageProblem };
+      if (current.importProblem) return { leafUuid, nodes: [], problem: current.importProblem };
+      chain.add(current.uuid);
       reverse.push(current);
       if (current.parentUuid === null) break;
       current = this.node(current.parentUuid);
-      if (!current) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: `native lineage parent ${reverse.at(-1).parentUuid} is missing` };
+      if (!current) return { leafUuid, nodes: [], problem: `native lineage parent ${reverse.at(-1).parentUuid} is missing` };
     }
-    return { leafUuid: this.selectedLeafUuid, nodes: reverse.reverse() };
+    const members = /* @__PURE__ */ new Map();
+    for (const node of this.nodes.values()) if (!chain.has(node.uuid)) {
+      const batch = this.batchOf(node);
+      if (batch !== node.uuid && chain.has(batch)) join4(members, batch, node);
+    }
+    return { leafUuid, nodes: this.layout(reverse.reverse(), members) };
+  }
+  /** 108: what this scan appends to the path that ended at `priorLeafUuid`, in `selectedPath`'s order,
+   * or null when the new path is not that path extended (the caller then rebuilds). The new leaf's
+   * ancestry is walked back to the prior leaf or any row of its batch. A row this scan read joins the path
+   * when it is on that walk or belongs to a batch on it or to the prior leaf's batch. The cost follows
+   * this scan's rows, not the history. An older source row on the walk, or a new row of an older batch,
+   * is left to the full rebuild. */
+  pathExtension(priorLeafUuid) {
+    const prior = this.node(priorLeafUuid), leafUuid = this.selectedLeafUuid;
+    if (!prior || !leafUuid) return null;
+    const anchor = this.batchOf(prior), read = new Set(this.readIds), walked = /* @__PURE__ */ new Set(), reverse = [];
+    let current = this.node(leafUuid);
+    while (current && current.uuid !== priorLeafUuid && this.batchOf(current) !== anchor) {
+      if (walked.has(current.uuid) || current.selected || current.lineageProblem || current.importProblem || current.sourceKind && !read.has(current.uuid)) return null;
+      walked.add(current.uuid);
+      reverse.push(current);
+      current = current.parentUuid === null ? void 0 : this.node(current.parentUuid);
+    }
+    if (!current) return null;
+    const batches = /* @__PURE__ */ new Set([anchor, ...reverse.map((node) => this.batchOf(node))]), members = /* @__PURE__ */ new Map();
+    for (const uuid5 of this.readIds) if (!walked.has(uuid5)) {
+      const node = this.node(uuid5), batch = this.batchOf(node);
+      if (batch === uuid5 || node.selected) continue;
+      if (batches.has(batch)) join4(members, batch, node);
+      else if (!read.has(batch)) return null;
+    }
+    const joined = (members.get(anchor) ?? []).sort(byFirstImport);
+    return [...joined, ...this.layout(reverse.reverse(), members)];
   }
 };
 var CcTranscriptScanFailure = class extends Error {
@@ -10341,7 +10436,8 @@ var CcTranscriptCursor = class {
           selectedLeafUuid,
           selectedLeafOffset,
           problems,
-          newProblems
+          newProblems,
+          readIds: ordered.flatMap((value) => value.node ? [value.node.uuid] : [])
         });
       };
       return { scan, ordered, finish: finish2 };
@@ -10394,7 +10490,10 @@ var CcTranscriptCursor = class {
     onIngestGap?.(import_node_perf_hooks.performance.now() - sliceStart);
     return finish2();
   }
-  commit(scan, problem) {
+  /** `confirmed`: the rows the caller just published as (part of) the selected path, marked so a later
+   * scan's `pathExtension` never proposes them again, however their UUID resurfaces (98). Empty when the
+   * caller published nothing (a rejected or not-ready scan). */
+  commit(scan, problem, confirmed = []) {
     if (scan.reset) this.unresolvedProblems.clear();
     for (const value of scan.newProblems) this.unresolvedProblems.add(value);
     if (scan.reset) {
@@ -10402,6 +10501,7 @@ var CcTranscriptCursor = class {
       this.callCarriers = scan.callCarriers;
       this.messageKeys = scan.messageKeys;
     }
+    for (const node of confirmed) node.selected = true;
     this.stamp = scan.stamp;
     this.completeOffset = scan.completeOffset;
     this.lineCount = scan.lineCount;
@@ -18120,8 +18220,8 @@ var ProcessTransport = class {
     }
     logForSdkDebugging(`[ProcessTransport] Writing to stdin: ${data.substring(0, 100)}`);
     try {
-      const written = this.processStdin.write(data);
-      if (!written) {
+      const written2 = this.processStdin.write(data);
+      if (!written2) {
         logForSdkDebugging("[ProcessTransport] Write buffer full, data queued");
       }
     } catch (error3) {
@@ -40695,6 +40795,7 @@ var CcProjection = class {
     };
     let scan;
     let branch = this.binding.branch, selectedEntryIds = null, selectedDelta = [], headTurnId = null, projectionReady = true;
+    let confirmedNodes = [];
     try {
       scan = await this.transcript.scanCooperative(
         this.binding.transcriptPath,
@@ -40712,25 +40813,17 @@ var CcProjection = class {
         if (!scan.reset && scan.selectedLeafUuid === this.binding.selectedLeafUuid && this.lastResult) {
           headTurnId = this.lastResult.headTurnId;
         } else {
-          const priorLeaf = this.binding.selectedLeafUuid, extension = [];
+          const priorLeaf = this.binding.selectedLeafUuid;
+          let extension = [];
           let continuous = false;
           if (!scan.reset && priorLeaf && scan.selectedLeafUuid && this.lastResult) {
-            let cursor = scan.node(scan.selectedLeafUuid);
-            const seen = /* @__PURE__ */ new Set();
-            while (cursor && !seen.has(cursor.uuid)) {
-              if (cursor.uuid === priorLeaf) {
-                continuous = true;
-                break;
-              }
-              seen.add(cursor.uuid);
-              extension.push(cursor);
-              cursor = cursor.parentUuid ? scan.node(cursor.parentUuid) : void 0;
-            }
+            const appended = scan.pathExtension(priorLeaf);
+            continuous = appended !== null;
+            if (appended) extension = appended;
           }
-          let selectedNodes;
           if (continuous) {
-            selectedNodes = extension.reverse();
-            for (const node of selectedNodes) if (ownsEntry(node)) {
+            confirmedNodes = extension;
+            for (const node of confirmedNodes) if (ownsEntry(node)) {
               if (node.entryId === void 0) {
                 if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                 projectionReady = false;
@@ -40743,11 +40836,10 @@ var CcProjection = class {
             if (selected.problem) {
               addProblem(selected.problem);
               projectionReady = false;
-              selectedNodes = [];
             } else {
-              selectedNodes = selected.nodes;
+              confirmedNodes = selected.nodes;
               selectedEntryIds = [];
-              for (const node of selectedNodes) if (ownsEntry(node)) {
+              for (const node of confirmedNodes) if (ownsEntry(node)) {
                 if (node.entryId === void 0) {
                   if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                   projectionReady = false;
@@ -40760,7 +40852,7 @@ var CcProjection = class {
             }
           }
           if (projectionReady) {
-            headTurnId = [...selectedNodes].reverse().find((node) => node.turnId !== void 0)?.turnId ?? this.lastResult?.headTurnId ?? this.binding.clearedFrom?.compactionTurnId ?? null;
+            headTurnId = [...confirmedNodes].reverse().find((node) => node.turnId !== void 0)?.turnId ?? this.lastResult?.headTurnId ?? this.binding.clearedFrom?.compactionTurnId ?? null;
             const selectedState = continuous ? this.expectedPath : null;
             if (continuous && headTurnId !== null && selectedState) {
               try {
@@ -40779,6 +40871,7 @@ var CcProjection = class {
                   addProblem(rebuilt.problem);
                   projectionReady = false;
                 } else {
+                  confirmedNodes = rebuilt.nodes;
                   selectedEntryIds = [];
                   for (const node of rebuilt.nodes) if (ownsEntry(node)) {
                     if (node.entryId === void 0) {
@@ -40839,7 +40932,7 @@ var CcProjection = class {
       this.expectedPath = null;
       throw error3;
     }
-    this.transcript.commit(completed, problems[0]);
+    this.transcript.commit(completed, problems[0], projectionReady ? confirmedNodes : []);
     const state = problems.length ? "not-ready" : "ready";
     const selectedMembership = selectedEntryIds === null ? null : new Set(selectedEntryIds);
     const newlyImported = selectedEntryIds === null && appendedEntryIds.length ? new Set(appendedEntryIds) : null;
@@ -40868,11 +40961,8 @@ var CcProjection = class {
 var CcImporter = class {
   memory;
   projection;
-  config;
   runAgent;
   workerDependencies;
-  /** 63: every native lineage this facade has served; the source normalizer renders them all. */
-  lineages = /* @__PURE__ */ new Set();
   reopened = false;
   constructor(config3, binding, workerDependencies = {}) {
     let memory;
@@ -40882,16 +40972,14 @@ var CcImporter = class {
       workerDependencies,
       (kind) => memory.config[kind].maxToolRounds
     ) : void 0;
-    this.lineages.add(binding.nativeSessionId);
     memory = TraceMemory(
       config3.dbPath,
       (input) => this.runAgent ? this.runAgent(input) : unavailableRunner(),
       config3.coreConfig,
       void 0,
-      (entry) => this.lineages.has(entry.nativeLineage) ? ccSourceBlocks(entry) : void 0
+      (entry) => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : void 0
     );
     this.memory = memory;
-    this.config = config3;
     this.projection = new CcProjection(config3, binding, memory);
   }
   currentBinding() {
@@ -40905,13 +40993,6 @@ var CcImporter = class {
       this.workerDependencies,
       (kind) => this.memory.config[kind].maxToolRounds
     ) : void 0;
-  }
-  /** 63: project another native lineage of the same core session on the same facade. */
-  retarget(binding) {
-    const current = this.projection.currentBinding();
-    if (binding.coreSessionId !== current.coreSessionId) throw new Error("CC importer retarget must stay on the same core session");
-    this.lineages.add(binding.nativeSessionId);
-    this.projection = new CcProjection(this.config, binding, this.memory);
   }
   persistedCall(toolUseId, toolName) {
     return this.projection.persistedCall(toolUseId, toolName);
@@ -40979,8 +41060,7 @@ var closeServer = (server) => new Promise((resolve4) => {
   }
   server.close(() => resolve4());
 });
-async function startControlServer(config3, initial, memory, bindingTimeoutMs, signal, handlers) {
-  let binding = initial;
+async function startControlServer(config3, binding, memory, bindingTimeoutMs, signal, handlers) {
   const token = (0, import_node_crypto13.randomUUID)(), path = socketPath(config3, token);
   const executor = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: (/* @__PURE__ */ new Date()).toISOString() };
   (0, import_node_fs7.mkdirSync)((0, import_node_path6.dirname)(path), { recursive: true });
@@ -41092,19 +41172,9 @@ async function startControlServer(config3, initial, memory, bindingTimeoutMs, si
     }
     throw error3;
   }
-  const attachTo = (target) => updateBinding(config3, target.nativeSessionId, (current) => {
-    if (!current) throw new Error("CC binding disappeared before executor attach");
-    if (current.transcriptPath !== target.transcriptPath) throw new Error("CC binding changed before executor attach");
-    if (current.executor && current.executor.token !== token) {
-      const liveness = executorLiveness(current.executor);
-      if (liveness === "alive") throw new Error(`CC session already has a live executor process ${current.executor.pid}`);
-      if (liveness === "unknown") throw new Error(`cannot establish liveness of CC executor process ${current.executor.pid}`);
-    }
-    return { ...current, executor };
-  }, bindingTimeoutMs);
-  const release = (target) => updateBinding(
+  const release = () => updateBinding(
     config3,
-    target.nativeSessionId,
+    binding.nativeSessionId,
     (current) => !current || current.executor?.token !== token ? current : { ...current, executor: null }
   );
   return { executor, close: async (preserveExecutor = false) => {
@@ -41114,16 +41184,9 @@ async function startControlServer(config3, initial, memory, bindingTimeoutMs, si
       try {
         (0, import_node_fs7.rmSync)(path, { force: true });
       } finally {
-        if (!preserveExecutor) await release(binding);
+        if (!preserveExecutor) await release();
       }
     }
-  }, retarget: async (next) => {
-    const current = readBinding(config3, binding.nativeSessionId) ?? binding;
-    if (next.coreSessionId === null || next.coreSessionId !== current.coreSessionId) throw new Error("CC control retarget must stay on the same core session");
-    await attachTo(next);
-    const previous = binding;
-    binding = next;
-    await release(previous);
   } };
 }
 function request(executor, verb, timeoutMs, detail = {}) {
@@ -41708,6 +41771,14 @@ function writeCcStatus(stateDir, status) {
 function removeCcStatus(stateDir, nativeSessionId) {
   (0, import_node_fs8.rmSync)(statusPath(stateDir, nativeSessionId), { force: true });
 }
+function readCcStatus(stateDir, nativeSessionId) {
+  try {
+    return JSON.parse((0, import_node_fs8.readFileSync)(statusPath(stateDir, nativeSessionId), "utf8"));
+  } catch (error3) {
+    if (error3.code === "ENOENT") return null;
+    throw error3;
+  }
+}
 
 // src/hosts/cc/lifecycle.ts
 var wait2 = (milliseconds) => new Promise((resolve4) => setTimeout(resolve4, milliseconds));
@@ -41764,7 +41835,6 @@ async function recordCcSessionEnd(config3, input) {
   if (!binding) return { confirmed: false, reason, diagnostic: "trusted binding is missing" };
   if (binding.dbPath !== config3.dbPath || binding.transcriptPath !== input.transcript_path)
     throw new Error("SessionEnd disagrees with the trusted binding");
-  if (input.reason === "clear") return { confirmed: false, reason, diagnostic: "clear continues the core session" };
   const nativeProcess = currentNativeProcess();
   if (!nativeProcess || !binding.nativeProcess)
     return { confirmed: false, reason, diagnostic: "SessionEnd native process identity is unavailable; a matching SessionStart is required" };
@@ -41831,6 +41901,8 @@ var CcCoordinator = class {
   /** Ticket 75: the last published (path, state) key, so a no-op stat-wake-up reconcile writes
    * nothing — publishing is a lifecycle event, never a timer. */
   lastStatusKey = null;
+  /** 102: the retargets in order, each after the last; shutdown waits for the one in flight. */
+  following = Promise.resolve(true);
   constructor(config3, nativeSessionId, diagnostic = (message) => console.error(`Trace Memory CC: ${message}`), importTuning, journal = () => {
   }) {
     validateNativeSessionId(nativeSessionId);
@@ -42062,7 +42134,7 @@ var CcCoordinator = class {
     await this.requestReconcile("startup");
   }
   /** 65: follow the SessionStart Hook's session id while no binding has been attached. Returns false
-   * once attached — re-targeting a live facade is the handoff of ticket 63, not a rename. */
+   * once attached: `retargetTo` follows it from then on. */
   adoptNativeSessionId(nativeSessionId) {
     validateNativeSessionId(nativeSessionId);
     if (nativeSessionId === this.nativeSessionId) return true;
@@ -42073,42 +42145,34 @@ var CcCoordinator = class {
     if (this.poll) void this.requestReconcile("session adoption");
     return true;
   }
-  /** 63: serve the native session this one was cleared into — same facade, same core session, new
-   * lineage. Runs on the reconcile queue so no import is in flight while the projection is swapped.
-   * Returns false when the target is not a clear-child of the current session. */
+  /** 102: this Claude Code process now serves another native session (`/clear`, or `/resume` inside
+   * the process). Leave the attached one as an exit does, then attach to the new one as at startup:
+   * its own binding, core session, project (62) and enrollment. One at a time; false once closing. */
   retargetTo(nativeSessionId) {
     validateNativeSessionId(nativeSessionId);
-    const release = this.holdImport();
-    const done = this.queue.then(async () => {
-      try {
-        if (this.closed || this.closing || !this.importer || !this.control) return false;
-        const current = this.importer.currentBinding(), next = readBinding(this.config, nativeSessionId);
-        if (!next || next.clearedFrom?.nativeSessionId !== current.nativeSessionId || next.coreSessionId !== current.coreSessionId) return false;
-        this.observe("retarget-start", { from: current.nativeSessionId, to: nativeSessionId });
-        this.transcriptWatcher?.close();
-        this.transcriptWatcher = null;
-        await this.control.retarget(next);
-        this.importer.retarget(next);
-        const previousNativeSessionId = this.nativeSessionId;
-        this.nativeSessionId = nativeSessionId;
-        this.watchTranscript(next);
-        this.publish("retarget");
-        removeCcStatus(this.config.stateDir, previousNativeSessionId);
-        this.observe("retarget-complete", { to: nativeSessionId });
-        return true;
-      } finally {
-        release();
-      }
-    }).then((result2) => result2, (error3) => {
+    return this.following = this.following.then(() => this.follow(nativeSessionId)).catch((error3) => {
       this.diagnostic(`retarget to ${nativeSessionId} failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
       return false;
     });
-    this.queue = done.then(() => null);
-    const result = done;
-    void result.then((retargeted) => {
-      if (retargeted) void this.requestReconcile("retarget");
-    });
-    return result;
+  }
+  async follow(nativeSessionId) {
+    if (this.closing || this.closed) return false;
+    if (this.adoptNativeSessionId(nativeSessionId)) return true;
+    const release = this.holdImport(), previous = this.nativeSessionId, token = this.control?.executor.token;
+    try {
+      this.observe("retarget-start", { from: previous, to: nativeSessionId });
+      await this.leave();
+      this.nativeSessionId = nativeSessionId;
+      this.lastReconcile = null;
+      this.lastStatusKey = null;
+      await this.discardAttachment();
+      if (token !== void 0 && readCcStatus(this.config.stateDir, previous)?.token === token) removeCcStatus(this.config.stateDir, previous);
+      this.observe("retarget-complete", { from: previous, to: nativeSessionId });
+    } finally {
+      release();
+    }
+    void this.requestReconcile("retarget");
+    return true;
   }
   requestReconcile(reason, final = false, deadline) {
     if (!final && this.wakeQueued) return this.queue;
@@ -42198,6 +42262,23 @@ var CcCoordinator = class {
     this.transcriptWatcher?.close();
     this.transcriptWatcher = null;
   }
+  /** What an exit does to the attached session (shutdown and 102's retarget): its work stops, a final
+   * sync bounded by its deadline imports the transcript's tail, and its tasks are cancelled and settled
+   * and their claims released. The caller holds imports. */
+  async leave() {
+    this.scheduler?.stop();
+    this.transcriptWatcher?.close();
+    this.transcriptWatcher = null;
+    await this.queue;
+    this.importer?.memory.cancelTasks(true);
+    const result = await this.finalReconcile();
+    if (this.importer) {
+      this.importer.memory.forceTasks();
+      await this.scheduler?.settle();
+      this.importer.memory.store.releaseExecutor(this.importer.memory.executorId);
+    }
+    return result;
+  }
   async finalReconcile() {
     const deadline = Date.now() + this.config.finalSyncTimeoutMs;
     let stable = 0, signature = null, latest = null;
@@ -42246,14 +42327,8 @@ var CcCoordinator = class {
     this.observe("shutdown-begin", { reason });
     let result = { confirmed: false, reason: "no bound importer", diagnostic: "binding was never established" };
     try {
-      await this.queue;
-      this.importer?.memory.cancelTasks(true);
-      result = await this.finalReconcile();
-      if (this.importer) {
-        this.importer.memory.forceTasks();
-        await this.scheduler?.settle();
-        this.importer.memory.store.releaseExecutor(this.importer.memory.executorId);
-      }
+      await this.following;
+      result = await this.leave();
       const owner = this.control?.executor.token;
       if (this.control) await this.control.close(true);
       try {
@@ -42290,9 +42365,7 @@ var CcCoordinator = class {
 // src/hosts/cc/injection.ts
 var import_node_crypto15 = require("node:crypto");
 var import_node_fs10 = require("node:fs");
-var CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
 var BEGIN = CC_INJECTION_BEGIN;
-var CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
 var END = "TRACE MEMORY KNOWLEDGE END";
 var digest = (text) => (0, import_node_crypto15.createHash)("sha256").update(text, "utf8").digest("hex");
 var databaseIdentity = (path) => {
@@ -42506,19 +42579,6 @@ async function deliver(config3, input, event, emit, options = {}) {
     memory.store.close();
   }
 }
-function recordCcBaseline(config3, binding, outputs) {
-  const turnId = binding.clearedFrom?.compactionTurnId;
-  if (turnId == null || binding.coreSessionId === null) return;
-  const memory = TraceMemory(config3.dbPath, async () => {
-    throw new Error("CC clear Hook cannot run model work");
-  }, config3.coreConfig);
-  try {
-    const visible = { db: databaseIdentity(config3.dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
-    memory.store.recordKnowledgeDelivery({ owner: coreHostOf(binding), turnId }, outputs.flatMap((value) => partOf(value, visible)));
-  } finally {
-    memory.store.close();
-  }
-}
 async function ccPrepareSessionStartInjection(config3, input) {
   const initial = readBinding(config3, input.session_id);
   if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
@@ -42594,6 +42654,91 @@ async function ccPreparedSessionStartInjection(config3, input, slice) {
   if (!delivered) return { output: null, slices: slice(null, { db: "", nativeSession: input.session_id, coreSession: null }), snapshot: null };
   if (!snapshot2) throw new Error("prepared SessionStart did not capture its input snapshot");
   return { ...delivered, snapshot: snapshot2 };
+}
+function ccTruncationWarning(omitted) {
+  return omitted ? `Trace Memory: compaction omitted ${[
+    ...omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : [],
+    ...omitted.facts ? [`${omitted.facts.count} ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []
+  ].join(" and ")}${omitted.raw ? "; omitted Raw remains pending for Noting." : "."}` : void 0;
+}
+var importedToEnd = (binding) => {
+  if (binding.coreSessionId === null || binding.selectedLeafUuid === null || binding.transcriptOffset === void 0) return false;
+  const tail = readTranscriptTail(binding.transcriptPath, binding.transcriptOffset);
+  return tail !== null && tailNodes(tail).leaf === null;
+};
+var written = (binding, uuid5, store) => binding.coreSessionId !== null && !!(store.findKnownSourceEntry(binding.coreSessionId, binding.nativeSessionId, uuid5) ?? store.findNativeTurn(binding.coreSessionId, binding.nativeSessionId, uuid5)) || !!readTranscriptTail(binding.transcriptPath, binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset ?? 0)?.some((record3) => record3.uuid === uuid5);
+var TRIGGER_WAIT_MS = 1e4;
+async function ccCompaction(config3, input) {
+  const initial = readBinding(config3, input.session_id);
+  if (!initial) return null;
+  if (initial.dbPath !== config3.dbPath) throw new Error("CC binding uses another database");
+  const lineage = initial.nativeSessionId;
+  const memory = TraceMemory(
+    config3.dbPath,
+    async () => {
+      throw new Error("CC compaction cannot run model work");
+    },
+    config3.coreConfig,
+    void 0,
+    (entry) => entry.nativeLineage === lineage ? ccSourceBlocks(entry) : void 0
+  );
+  try {
+    const disabled = (binding2) => (binding2.coreSessionId !== null || binding2.nativeCreatedAt !== null) && !enabled(binding2, memory);
+    const importing = (binding2) => binding2.executor !== null && executorLiveness(binding2.executor) !== "dead";
+    let binding = initial;
+    for (const deadline = Date.now() + TRIGGER_WAIT_MS; ; ) {
+      if (disabled(binding)) return null;
+      const present = written(binding, input.trigger, memory.store);
+      if (present && (importedToEnd(binding) || !importing(binding))) break;
+      if (Date.now() >= deadline) {
+        if (!present) throw new Error(`the compaction's trigger ${input.trigger} was not written to the transcript`);
+        break;
+      }
+      await new Promise((wake) => setTimeout(wake, 20));
+      const current = readBinding(config3, input.session_id);
+      if (current?.dbPath !== config3.dbPath || current.transcriptPath !== initial.transcriptPath) throw new Error("CC binding changed during compaction");
+      binding = current;
+    }
+    if (!importedToEnd(binding)) {
+      const projection = new CcProjection(config3, binding, memory);
+      const imported = await projection.synchronize();
+      if (imported.state === "disabled") return null;
+      if (imported.state !== "ready") throw new Error(imported.problems.join("; ") || `the transcript import is ${imported.state}`);
+      binding = projection.currentBinding();
+      if (!importedToEnd(binding)) throw new Error("the transcript grew while it was imported");
+    }
+    const offset = binding.transcriptOffset;
+    const core = binding.coreSessionId, leaf = binding.selectedLeafUuid, branch = binding.branch, owner = coreHostOf(binding);
+    const headTurnId = memory.store.findSourceEntry(core, lineage, leaf)?.turnId ?? memory.store.findNativeTurn(core, lineage, leaf)?.turnId;
+    if (headTurnId === void 0) throw new Error("the selected native source has no persisted core Turn");
+    const { compacted, watermark } = memory.store.readSnapshot(() => ({
+      compacted: memory.compact(core, branch, headTurnId, [], false),
+      watermark: memory.store.deliveryWatermark(owner)
+    }));
+    if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation: ${compacted.reason}`);
+    const text = COMPACTION_SUMMARY_PREFIX + encodeCcInjection({ db: databaseIdentity(config3.dbPath), nativeSession: lineage, coreSession: core }, {
+      text: compacted.text,
+      knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
+      knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
+      knowledgeStates: compacted.supplied.knowledgeStates,
+      factIds: compacted.supplied.factIds,
+      entryIds: compacted.supplied.entries.map((entry) => entry.id)
+    }) + COMPACTION_SUMMARY_SUFFIX + (input.auto ? CC_AUTO_CONTINUE_SUFFIX : "");
+    memory.store.transaction(() => {
+      const current = readBinding(config3, input.session_id);
+      if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch || current.selectedLeafUuid !== leaf || current.transcriptOffset !== offset || !importedToEnd(current))
+        throw new Error("the session or its selected path changed while the compaction was built");
+      memory.store.recordKnowledgeDelivery({ owner, nodeKey: (0, import_node_crypto15.randomUUID)(), follows: leaf }, [{
+        knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
+        knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
+        knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0
+      }]);
+    });
+    const warning = ccTruncationWarning(compacted.truncated);
+    return { text, ...warning ? { warning } : {} };
+  } finally {
+    memory.store.close();
+  }
 }
 async function ccDeltaInjection(config3, input, event, slice) {
   const slices = await deliver(config3, input, event, (output, visible) => {
@@ -42811,171 +42956,9 @@ async function declareCcProject(config3, nativeSessionId, name) {
   }
 }
 
-// src/hosts/cc/clear.ts
+// src/hosts/cc/menu-context.ts
 var import_node_fs11 = require("node:fs");
 var import_node_path9 = require("node:path");
-async function ccHandleClear(config3, input) {
-  const pid = parsePid(process.env.CLAUDE_PID);
-  if (pid === null) return { handled: false };
-  const record3 = assignedNativeSession(config3, [{ pid, startedAt: processStartedAt(pid) }]);
-  if (!record3) return { handled: false };
-  const parentBinding = readBinding(config3, record3.nativeSessionId);
-  if (!parentBinding) return { handled: false };
-  const childId = validateNativeSessionId(input.session_id);
-  const nativeProcess = currentNativeProcess();
-  const createdAt = readTranscriptCreatedAt(input.transcript_path);
-  if (parentBinding.coreSessionId === null) {
-    await recordSessionStart(config3, input, createdAt);
-    await updateBinding(config3, childId, (current) => current && current.coreSessionId === null ? { ...current, projectId: parentBinding.projectId, enrollment: parentBinding.enrollment } : current);
-    return { handled: true, output: await ccSessionStartInjection(config3, input) };
-  }
-  return withCcBindingLock(config3, childId, (locked) => prepareBoundClear(
-    config3,
-    input,
-    parentBinding,
-    childId,
-    createdAt,
-    nativeProcess,
-    locked
-  ), 55e3);
-}
-async function prepareBoundClear(config3, input, parentBinding, childId, createdAt, nativeProcess, locked) {
-  const existing = locked.read();
-  const staged = (0, import_node_path9.join)(config3.stateDir, "session-start", `${childId}.clear.json`);
-  if (existing?.clearedFrom) {
-    let output;
-    try {
-      output = JSON.parse((0, import_node_fs11.readFileSync)(staged, "utf8"));
-    } catch {
-      throw new Error(`clear child ${childId} has no frozen compaction carrier`);
-    }
-    if (existing.dbPath !== config3.dbPath || existing.transcriptPath !== input.transcript_path)
-      throw new Error("clear child binding disagrees with configured database or transcript");
-    locked.update((current) => renewNativeBinding(current, nativeProcess));
-    return { handled: true, output };
-  }
-  if (existing) throw new Error(`clear child ${childId} is already bound without a frozen compaction`);
-  const memory = TraceMemory(
-    config3.dbPath,
-    async () => {
-      throw new Error("CC clear Hook cannot run model work");
-    },
-    config3.coreConfig,
-    void 0,
-    (entry) => entry.nativeLineage === parentBinding.nativeSessionId ? ccSourceBlocks(entry) : void 0
-  );
-  try {
-    const projection = new CcProjection(config3, parentBinding, memory);
-    const projected = await projection.synchronize();
-    const synced = projection.currentBinding();
-    if (projected.state === "not-ready")
-      throw new Error(projected.problems.join("; ") || "parent native source projection is not ready");
-    if (synced.coreSessionId === null) return { handled: false };
-    const core = synced.coreSessionId;
-    const at = (/* @__PURE__ */ new Date()).toISOString();
-    const linkChild = async (clearedFrom, lastCompactionNotice) => {
-      locked.update((current) => {
-        if (current) {
-          if (current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
-            throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
-          return { ...renewNativeBinding(current, nativeProcess), lastCompactionNotice };
-        }
-        return {
-          version: 1,
-          nativeSessionId: childId,
-          transcriptPath: input.transcript_path,
-          dbPath: config3.dbPath,
-          nativeCreatedAt: createdAt,
-          enrollment: synced.enrollment,
-          coreSessionId: core,
-          projectId: synced.projectId,
-          // 64b: each native lineage owns an independent persisted source path. Reusing the
-          // parent's branch would let the child overwrite the parent's retained foreground.
-          branch: `cc:${childId}`,
-          selectedLeafUuid: null,
-          executor: null,
-          lastClose: null,
-          ...nativeProcess ? { nativeProcess } : {},
-          ...synced.cwd !== void 0 ? { cwd: synced.cwd } : {},
-          coreHost: coreHostOf(synced),
-          clearedFrom,
-          lastCompactionNotice
-        };
-      });
-      await updateBinding(config3, synced.nativeSessionId, (current) => current && current.transcriptPath === synced.transcriptPath ? { ...current, clearedInto: { nativeSessionId: childId, at } } : current);
-    };
-    if (!memory.store.enabled(core)) {
-      const inheritedEntryIds2 = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
-      publishFrozenClear(staged, null);
-      await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: null, inheritedEntryIds: inheritedEntryIds2 }, null);
-      return { handled: true, output: null };
-    }
-    if (!synced.selectedLeafUuid) throw new Error("parent Claude Code session has no selected native source to compact from");
-    const entry = memory.store.findSourceEntry(core, synced.nativeSessionId, synced.selectedLeafUuid);
-    const nativeTurn = memory.store.findNativeTurn(core, synced.nativeSessionId, synced.selectedLeafUuid);
-    const headTurnId = entry?.turnId ?? nativeTurn?.turnId;
-    if (!headTurnId) throw new Error("parent Claude Code selected native source has no persisted core Turn");
-    const compacted = memory.compact(core, synced.branch, headTurnId, [], true);
-    if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation unexpectedly: ${compacted.reason}`);
-    const injection = {
-      text: compacted.text,
-      knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
-      knowledgeTokens: compacted.supplied.knowledgeTokens,
-      knowledgeStates: compacted.supplied.knowledgeStates,
-      factIds: compacted.supplied.factIds,
-      entryIds: compacted.supplied.entries.map((entry2) => entry2.id),
-      composition: compacted.composition
-    };
-    const omitted = compacted.truncated;
-    const systemMessage = omitted ? `Trace Memory: compaction omitted ${[
-      ...omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : [],
-      ...omitted.facts ? [`${omitted.facts.count} ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []
-    ].join(" and ")}${omitted.raw ? "; omitted Raw remains pending for Noting." : "."}` : void 0;
-    const visibleBinding = { db: databaseIdentity(config3.dbPath), nativeSession: childId, coreSession: core };
-    const output = injection.text ? {
-      hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) },
-      transportItems: compacted.transportItems,
-      transportKnowledgeAllowance: compacted.knowledgeAllowance,
-      ...systemMessage ? { systemMessage } : {}
-    } : systemMessage ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }, systemMessage } : null;
-    publishFrozenClear(staged, output);
-    const turn = memory.store.appendTurn({
-      sessionId: core,
-      parentTurnId: headTurnId,
-      kind: "compaction",
-      assistantText: injection.text,
-      startedAt: at,
-      endedAt: at
-    });
-    const inheritedEntryIds = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
-    await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: turn.id, inheritedEntryIds }, systemMessage ?? null);
-    return { handled: true, output };
-  } finally {
-    memory.store.close();
-  }
-}
-function readPreparedClear(config3, input) {
-  const binding = readBinding(config3, validateNativeSessionId(input.session_id));
-  if (!binding?.clearedFrom || binding.dbPath !== config3.dbPath || binding.transcriptPath !== input.transcript_path)
-    throw new Error("prepared clear binding is unavailable or changed");
-  const staged = (0, import_node_path9.join)(config3.stateDir, "session-start", `${input.session_id}.clear.json`);
-  try {
-    return JSON.parse((0, import_node_fs11.readFileSync)(staged, "utf8"));
-  } catch {
-    throw new Error(`clear child ${input.session_id} has no frozen compaction carrier`);
-  }
-}
-function publishFrozenClear(path, output) {
-  if ((0, import_node_fs11.existsSync)(path)) throw new Error(`frozen clear carrier already exists at ${path}; refusing to repeat compaction`);
-  (0, import_node_fs11.mkdirSync)((0, import_node_path9.dirname)(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.tmp`;
-  (0, import_node_fs11.writeFileSync)(temporary, JSON.stringify(output), { flag: "wx", mode: 384 });
-  (0, import_node_fs11.renameSync)(temporary, path);
-}
-
-// src/hosts/cc/menu-context.ts
-var import_node_fs12 = require("node:fs");
-var import_node_path10 = require("node:path");
 
 // node_modules/@earendil-works/pi-tui/dist/terminal-image.js
 function getPngDimensions(base64Data) {
@@ -43162,12 +43145,12 @@ function carrier(text, identity) {
     return { retained: payload, offset: HOOK_CONTEXT.length };
   }
   const preview = /^<persisted-output>\n[^\n]*Full output saved to: ([^\n]+)\n\nPreview \(first 2KB\):\n([\s\S]+)\n\.\.\.\n<\/persisted-output>$/.exec(payload);
-  if (!preview || !(0, import_node_path10.isAbsolute)(preview[1])) throw new Error("malformed native memory preview");
+  if (!preview || !(0, import_node_path9.isAbsolute)(preview[1])) throw new Error("malformed native memory preview");
   const retained = preview[2], header = decodeCcInjectionHeader(retained, identity);
   if (!header) throw new Error("memory preview failed identity verification");
   let full;
   try {
-    full = (0, import_node_fs12.readFileSync)(preview[1], "utf8");
+    full = (0, import_node_fs11.readFileSync)(preview[1], "utf8");
   } catch (error3) {
     if (error3.code !== "ENOENT") throw error3;
   }
@@ -43196,7 +43179,7 @@ function estimateBlock(block2, model) {
   }
   return null;
 }
-function ccContextEvidence(binding, dbPath, snapshot2) {
+function ccContextEvidence(binding, dbPath, snapshot2, recorded) {
   if (!snapshot2) return unavailable("current Messages snapshot unavailable");
   if (snapshot2.session !== binding.nativeSessionId) return unavailable("native session changed");
   if (!Array.isArray(snapshot2.messages) || snapshot2.messages.length >= 4096) return unavailable("Messages snapshot incomplete");
@@ -43211,9 +43194,15 @@ function ccContextEvidence(binding, dbPath, snapshot2) {
       const amount = estimateBlock(block2, snapshot2.model);
       if (amount === null) return unavailable("unsupported Messages content or image dimensions/model");
       estimatedMessagesTokens += amount;
-      if (message.role === "user" && block2.type === "text" && typeof block2.text === "string" && block2.text.startsWith(`${CC_INJECTION_BEGIN}
-${CC_INJECTION_HEADER}`))
-        return unavailable("native function carrier provenance unavailable in Messages snapshot");
+      if (message.role === "user" && block2.type === "text" && typeof block2.text === "string" && ccCarrierStart(block2.text) >= 0) {
+        const start = ccCarrierStart(block2.text), text = ccStripAutoContinue(block2.text.endsWith("\n") ? block2.text.slice(0, -1) : block2.text);
+        const original = start === 0 ? text : text.endsWith(COMPACTION_SUMMARY_SUFFIX) ? text.slice(start, -COMPACTION_SUMMARY_SUFFIX.length) : "";
+        const header = decodeCcInjection(original, identity);
+        if (!header || !recorded?.(header)) return unavailable("native function carrier provenance unavailable in Messages snapshot");
+        const parts2 = measureRetainedMemoryText(block2.text, original, start, original.length);
+        for (const key of memoryKeys) memory[key] += parts2[key];
+        continue;
+      }
       if (message.role !== "user" || block2.type !== "text" || typeof block2.text !== "string" || !block2.text.startsWith(HOOK_CONTEXT) || !block2.text.includes(CC_INJECTION_HEADER)) continue;
       let current;
       try {
@@ -43355,7 +43344,14 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
       notices,
       actions: { enabled: enabled2, retryForkAvailable: false }
     };
-    const context = ccContextEvidence(binding, config3.dbPath, current);
+    const recorded = store.db.prepare(`SELECT 1 FROM knowledge_deliveries WHERE owner = ? AND follows IS NOT NULL
+      AND commits = ? AND states = ? AND knowledge_tokens = ? LIMIT 1`);
+    const context = ccContextEvidence(binding, config3.dbPath, current, (header) => recorded.get(
+      coreHostOf(binding),
+      JSON.stringify(header.commits),
+      JSON.stringify(header.states.map(knowledgeStateKey)),
+      header.knowledgeTokens ?? 0
+    ) !== void 0);
     return { menu: data, settings, context, runs };
   } finally {
     memory.store.close();
@@ -43363,8 +43359,8 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
 }
 
 // src/hosts/cc/menu-config.ts
-var import_node_fs13 = require("node:fs");
-var import_node_path11 = require("node:path");
+var import_node_fs12 = require("node:fs");
+var import_node_path10 = require("node:path");
 var import_node_crypto16 = require("node:crypto");
 
 // node_modules/jsonc-parser/lib/esm/impl/scanner.js
@@ -44740,25 +44736,25 @@ function editedCcConfig(text, id, value, capacity) {
 }
 function saveCcConfig(path, original, updated) {
   const next = resolveCcHostConfig(JSON.parse(updated));
-  if ((0, import_node_fs13.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
+  if ((0, import_node_fs12.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
   const temporary = `${path}.${process.pid}.${(0, import_node_crypto16.randomUUID)()}`;
   let fd;
   try {
-    fd = (0, import_node_fs13.openSync)(temporary, "wx", 384);
-    (0, import_node_fs13.writeFileSync)(fd, updated);
-    (0, import_node_fs13.fsyncSync)(fd);
-    (0, import_node_fs13.closeSync)(fd);
+    fd = (0, import_node_fs12.openSync)(temporary, "wx", 384);
+    (0, import_node_fs12.writeFileSync)(fd, updated);
+    (0, import_node_fs12.fsyncSync)(fd);
+    (0, import_node_fs12.closeSync)(fd);
     fd = void 0;
-    (0, import_node_fs13.renameSync)(temporary, path);
-    const dir = (0, import_node_fs13.openSync)((0, import_node_path11.dirname)(path), "r");
+    (0, import_node_fs12.renameSync)(temporary, path);
+    const dir = (0, import_node_fs12.openSync)((0, import_node_path10.dirname)(path), "r");
     try {
-      (0, import_node_fs13.fsyncSync)(dir);
+      (0, import_node_fs12.fsyncSync)(dir);
     } finally {
-      (0, import_node_fs13.closeSync)(dir);
+      (0, import_node_fs12.closeSync)(dir);
     }
   } catch (error3) {
-    if (fd !== void 0) (0, import_node_fs13.closeSync)(fd);
-    (0, import_node_fs13.rmSync)(temporary, { force: true });
+    if (fd !== void 0) (0, import_node_fs12.closeSync)(fd);
+    (0, import_node_fs12.rmSync)(temporary, { force: true });
     throw error3;
   }
   return next;
@@ -44832,23 +44828,12 @@ async function handleCcHook(configInput, input, prepareOnly = false) {
   const config3 = resolveCcHostConfig(configInput);
   validateNativeSessionId(input.session_id);
   if (input.hook_event_name === "SessionStart") {
-    const publish = () => {
-      try {
-        if (!publishNativeSession(config3, input)) console.error("Trace Memory CC: CLAUDE_PID is not set; the executor keeps its own session id");
-      } catch (error3) {
-        console.error(`Trace Memory CC: native session publish failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
-      }
-    };
-    if (input.source === "clear") {
-      const cleared = await ccHandleClear(config3, input);
-      if (cleared.handled) {
-        publish();
-        if (!prepareOnly) recordCcBaseline(config3, readBinding(config3, input.session_id), [cleared.output]);
-        return cleared.output;
-      }
-    }
     await recordSessionStart(config3, input, readBinding(config3, input.session_id) ? null : readTranscriptCreatedAt(input.transcript_path));
-    publish();
+    try {
+      if (!publishNativeSession(config3, input)) console.error("Trace Memory CC: CLAUDE_PID is not set; the executor keeps its own session id");
+    } catch (error3) {
+      console.error(`Trace Memory CC: native session publish failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+    }
     if (prepareOnly) {
       await ccPrepareSessionStartInjection(config3, input);
       return null;
@@ -44862,13 +44847,13 @@ async function handleCcHook(configInput, input, prepareOnly = false) {
 }
 async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID) {
   const config3 = resolveCcHostConfig(configInput), sessionId = validateNativeSessionId(nativeSessionId);
-  const runtimeDirectory = (0, import_node_path12.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path12.join)(runtimeDirectory, `${sessionId}.jsonl`);
-  (0, import_node_fs14.mkdirSync)(runtimeDirectory, { recursive: true });
+  const runtimeDirectory = (0, import_node_path11.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path11.join)(runtimeDirectory, `${sessionId}.jsonl`);
+  (0, import_node_fs13.mkdirSync)(runtimeDirectory, { recursive: true });
   const runtimeEvent = (event, details = {}) => {
     const value = { event, at: Date.now(), pid: process.pid, ...details };
     console.error(`Trace Memory CC: lifecycle ${JSON.stringify(value)}`);
     try {
-      (0, import_node_fs14.appendFileSync)(runtimePath, `${JSON.stringify(value)}
+      (0, import_node_fs13.appendFileSync)(runtimePath, `${JSON.stringify(value)}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -44878,28 +44863,20 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
   const coordinator = new CcCoordinator(config3, sessionId, (message) => {
     console.error(`Trace Memory CC: ${message}`);
     try {
-      (0, import_node_fs14.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
+      (0, import_node_fs13.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
     }
   }, void 0, runtimeEvent);
   const foreground = new CcForegroundTools(coordinator);
-  let follower = null, journaledChange = null;
+  let follower = null;
   try {
     const ancestors = processAncestors();
     runtimeEvent("native-ancestors", { ancestors });
     follower = followNativeSession(config3, ancestors, (record3) => {
       if (coordinator.adoptNativeSessionId(record3.nativeSessionId)) return;
-      void coordinator.retargetTo(record3.nativeSessionId).then((retargeted) => {
-        if (retargeted) {
-          runtimeEvent("session-id-retargeted", { to: record3.nativeSessionId });
-          return;
-        }
-        if (journaledChange === record3.nativeSessionId) return;
-        journaledChange = record3.nativeSessionId;
-        runtimeEvent("session-id-changed-after-attach", { attached: coordinator.nativeSessionId, hook: record3.nativeSessionId, source: record3.source });
-      });
+      void coordinator.retargetTo(record3.nativeSessionId).then((retargeted) => runtimeEvent(retargeted ? "session-id-retargeted" : "session-id-retarget-failed", { to: record3.nativeSessionId, source: record3.source }));
     }, (message) => runtimeEvent("native-session-follow", { message }));
   } catch (error3) {
     runtimeEvent("native-session-follow-unavailable", { error: error3 instanceof Error ? error3.message : String(error3) });
@@ -44997,7 +44974,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
 function readConfig(path) {
   if (!path.startsWith("/")) throw new Error("CC configuration path must be absolute");
   upgradeSettingsFile(path, void 0, (values) => resolveCcHostConfig(values), (message) => console.warn(message));
-  return resolveCcHostConfig(JSON.parse((0, import_node_fs14.readFileSync)(path, "utf8")));
+  return resolveCcHostConfig(JSON.parse((0, import_node_fs13.readFileSync)(path, "utf8")));
 }
 async function readStdin() {
   let input = "";
@@ -45007,11 +44984,20 @@ async function readStdin() {
 }
 async function runCcCommand(argv = process.argv.slice(2)) {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "cli" || configFlag !== "--config" || !configPath)
+  if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "hook-compact" && command !== "cli" || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
   const config3 = readConfig(configPath);
   if (command === "mcp") {
     await runCcStdioMcp(config3);
+    return;
+  }
+  if (command === "hook-compact") {
+    const input = JSON.parse(await readStdin());
+    validateNativeSessionId(input.session_id);
+    if (typeof input.trigger !== "string" || !input.trigger) throw new Error("CC compaction requires the handle of its newest message");
+    const built = await ccCompaction(config3, { session_id: input.session_id, trigger: input.trigger, auto: input.auto === true });
+    process.stdout.write(`${JSON.stringify(built ?? { passThrough: true })}
+`);
     return;
   }
   if (command === "hook-delta") {
@@ -45053,27 +45039,20 @@ async function runCcCommand(argv = process.argv.slice(2)) {
         throw new Error("CC SessionStart has no structured transport material");
       return sliceCcInjection(visible, output2?.transportItems ?? [], output2?.systemMessage, output2?.transportKnowledgeAllowance);
     };
-    const clearing = input.source === "clear" ? readBinding(config3, input.session_id) : null;
-    let output, slices, snapshot2 = null;
-    if (clearing?.clearedFrom) {
-      output = readPreparedClear(config3, input);
-      slices = sliced(output, { db: databaseIdentity(config3.dbPath), nativeSession: input.session_id, coreSession: clearing.coreSessionId });
-      recordCcBaseline(config3, clearing, slices);
-    } else ({ output, slices, snapshot: snapshot2 } = await ccPreparedSessionStartInjection(config3, input, sliced));
+    const { output, slices, snapshot: snapshot2 } = await ccPreparedSessionStartInjection(config3, input, sliced);
     const bound = readBinding(config3, input.session_id);
     if (!bound) throw new Error("CC SessionStart has no binding after preparation");
-    if (input.source !== "clear" && bound.lastCompactionNotice || input.source === "clear" && bound.clearedFrom && slices[0]?.systemMessage !== bound.lastCompactionNotice) {
+    if (bound.lastCompactionNotice) {
       await updateBinding(config3, input.session_id, (current) => {
         if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
           throw new Error("CC binding changed before transport warning was recorded");
-        return { ...current, lastCompactionNotice: input.source === "clear" ? slices[0]?.systemMessage ?? null : null };
+        return { ...current, lastCompactionNotice: null };
       });
     }
     const selection = (0, import_node_crypto17.createHash)("sha256").update(JSON.stringify({
       material: output?.transportItems ?? [],
       warning: output?.systemMessage ?? null,
-      knowledgeAllowance: output?.transportKnowledgeAllowance ?? null,
-      frozenClear: input.source === "clear" && bound.clearedFrom ? bound.clearedFrom.compactionTurnId : null
+      knowledgeAllowance: output?.transportKnowledgeAllowance ?? null
     })).digest("hex");
     process.stdout.write(`${JSON.stringify({ selection, snapshot: snapshot2, slices })}
 `);
@@ -45130,7 +45109,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
     } finally {
       store.close();
     }
-    const original = (0, import_node_fs14.readFileSync)(configPath, "utf8");
+    const original = (0, import_node_fs13.readFileSync)(configPath, "utf8");
     const updated = editedCcConfig(original, id, value, capacity);
     const prepared = resolveCcHostConfig(JSON.parse(updated));
     if (prepared.dbPath !== config3.dbPath || prepared.stateDir !== config3.stateDir) throw new Error("setting cannot change database or state directory");
@@ -45156,7 +45135,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify(result)}
 `);
 }
-var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path12.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
+var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path11.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
 if (direct) void runCcCommand().catch((error3) => {
   console.error(`Trace Memory CC: ${error3 instanceof Error ? error3.message : String(error3)}`);
   process.exitCode = 1;

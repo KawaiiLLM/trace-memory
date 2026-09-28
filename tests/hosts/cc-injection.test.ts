@@ -216,8 +216,8 @@ test("43d startup without a transcript stays disabled unless explicitly enrolled
   expect(await handleCcHook(config, { hook_event_name: "SessionStart", source: "startup", session_id: nativeSession, transcript_path: transcriptPath })).toBeNull();
   expect(readBinding(config, nativeSession)).toMatchObject({ coreSessionId: null, projectId: expect.any(Number), executor: null });
   const cleared = "provisional-clear";
-  // 63: this clear has no bound parent to link, on purpose; force that regardless of the ambient
-  // CLAUDE_PID this process happens to run under (the prior startup Hooks above already published one).
+  // A clear is an ordinary new session (102); keep the ambient CLAUDE_PID this process happens to run
+  // under out of it (the prior startup Hooks above already published one).
   vi.stubEnv("CLAUDE_PID", "");
   expect(await handleCcHook(config, { hook_event_name: "SessionStart", source: "clear", session_id: cleared,
     transcript_path: join(dir, "clear-missing.jsonl") })).toBeNull();

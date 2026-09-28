@@ -261,7 +261,7 @@ export class CcProjection {
       }
       return null;
     };
-    // 63: a native session cleared into from another continues that core session; its root
+    // 63: a native session linked by a `/clear` before 102 continues that core session; its root
     // records descend from the compaction Turn the clear appended under the parent's head.
     const rootTurn = () => this.binding.clearedFrom?.compactionTurnId ?? null;
     const parentOf = (record: CcNativeRecord, scan: CcTranscriptScan): string | null => {
@@ -421,6 +421,10 @@ export class CcProjection {
     let scan: CcTranscriptScan | CcTranscriptSnapshot;
     let branch = this.binding.branch, selectedEntryIds: number[] | null = null, selectedDelta: number[] = [],
       headTurnId: number | null = null, projectionReady = true;
+    // The rows this reconcile is about to publish as (part of) the selected path, so a successful
+    // commit can mark them (98): never proposed again by a later scan's `pathExtension`, however their
+    // UUID resurfaces.
+    let confirmedNodes: CcNativeNode[] = [];
     try {
       scan = await this.transcript.scanCooperative(this.binding.transcriptPath, visit,
         { signal, onIngestGap: instrumentation.onIngestGap, onPhase: instrumentation.onPhase,
@@ -430,20 +434,19 @@ export class CcProjection {
         if (!scan.reset && scan.selectedLeafUuid === this.binding.selectedLeafUuid && this.lastResult) {
           headTurnId = this.lastResult.headTurnId;
         } else {
-          const priorLeaf = this.binding.selectedLeafUuid, extension = [] as NonNullable<ReturnType<CcTranscriptScan["node"]>>[];
+          const priorLeaf = this.binding.selectedLeafUuid;
+          let extension: NonNullable<ReturnType<CcTranscriptScan["node"]>>[] = [];
           let continuous = false;
           if (!scan.reset && priorLeaf && scan.selectedLeafUuid && this.lastResult) {
-            let cursor = scan.node(scan.selectedLeafUuid); const seen = new Set<string>();
-            while (cursor && !seen.has(cursor.uuid)) {
-              if (cursor.uuid === priorLeaf) { continuous = true; break; }
-              seen.add(cursor.uuid); extension.push(cursor);
-              cursor = cursor.parentUuid ? scan.node(cursor.parentUuid) : undefined;
-            }
+            // 108: null when this scan does not simply extend the prior path; the full rebuild below
+            // decides (and surfaces any lineage problem).
+            const appended = scan.pathExtension(priorLeaf);
+            continuous = appended !== null;
+            if (appended) extension = appended;
           }
-          let selectedNodes: typeof extension;
           if (continuous) {
-            selectedNodes = extension.reverse();
-            for (const node of selectedNodes) if (ownsEntry(node)) {
+            confirmedNodes = extension;
+            for (const node of confirmedNodes) if (ownsEntry(node)) {
               if (node.entryId === undefined) {
                 if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                 projectionReady = false; break;
@@ -453,11 +456,11 @@ export class CcProjection {
           } else {
             const selected = scan.selectedPath();
             if (selected.problem) {
-              addProblem(selected.problem); projectionReady = false; selectedNodes = [];
+              addProblem(selected.problem); projectionReady = false;
             } else {
-              selectedNodes = selected.nodes;
+              confirmedNodes = selected.nodes;
               selectedEntryIds = [];
-              for (const node of selectedNodes) if (ownsEntry(node)) {
+              for (const node of confirmedNodes) if (ownsEntry(node)) {
                 if (node.entryId === undefined) {
                   if (!failedNativeIds.has(node.uuid)) addProblem(`native source ${node.uuid} is not persisted`);
                   projectionReady = false; break;
@@ -469,7 +472,7 @@ export class CcProjection {
             }
           }
           if (projectionReady) {
-            headTurnId = [...selectedNodes].reverse().find(node => node.turnId !== undefined)?.turnId ?? this.lastResult?.headTurnId
+            headTurnId = [...confirmedNodes].reverse().find(node => node.turnId !== undefined)?.turnId ?? this.lastResult?.headTurnId
               ?? this.binding.clearedFrom?.compactionTurnId ?? null;
             const selectedState = continuous ? this.expectedPath : null;
             if (continuous && headTurnId !== null && selectedState) {
@@ -483,6 +486,7 @@ export class CcProjection {
                 const rebuilt = scan.selectedPath();
                 if (rebuilt.problem) { addProblem(rebuilt.problem); projectionReady = false; }
                 else {
+                  confirmedNodes = rebuilt.nodes;
                   selectedEntryIds = [];
                   for (const node of rebuilt.nodes) if (ownsEntry(node)) {
                     if (node.entryId === undefined) { addProblem(`native source ${node.uuid} is not persisted`); projectionReady = false; break; }
@@ -492,7 +496,7 @@ export class CcProjection {
               }
             } else if (continuous) selectedEntryIds = [...(this.memory.store.selectedSourceEntryIds(sessionId, branch) ?? []), ...selectedDelta];
             if (projectionReady && selectedEntryIds) {
-              // 63: a cleared child's path begins with its parent's persisted ancestry.
+              // 63: a linked child's path begins with its parent's persisted ancestry (kept by 102).
               const inherited = this.binding.clearedFrom?.inheritedEntryIds ?? [];
               if (inherited.length && !inherited.every((id, index) => selectedEntryIds![index] === id))
                 selectedEntryIds = [...inherited, ...selectedEntryIds];
@@ -540,7 +544,7 @@ export class CcProjection {
       this.expectedPath = null;
       throw error;
     }
-    this.transcript.commit(completed, problems[0]);
+    this.transcript.commit(completed, problems[0], projectionReady ? confirmedNodes : []);
     const state = problems.length ? "not-ready" : "ready";
     const selectedMembership = selectedEntryIds === null ? null : new Set(selectedEntryIds);
     const newlyImported = selectedEntryIds === null && appendedEntryIds.length ? new Set(appendedEntryIds) : null;
@@ -563,12 +567,9 @@ export class CcProjection {
 
 export class CcImporter {
   readonly memory: TraceMemoryFacade;
-  private projection: CcProjection;
-  private readonly config: ResolvedCcHostConfig;
+  private readonly projection: CcProjection;
   private runAgent: ReturnType<typeof createCcRunAgent> | undefined;
   private readonly workerDependencies: CcWorkerDependencies;
-  /** 63: every native lineage this facade has served; the source normalizer renders them all. */
-  private readonly lineages = new Set<string>();
   private reopened = false;
 
   constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, workerDependencies: CcWorkerDependencies = {}) {
@@ -576,12 +577,10 @@ export class CcImporter {
     this.workerDependencies = workerDependencies;
     this.runAgent = config.worker ? createCcRunAgent(config, workerDependencies,
       kind => memory.config[kind].maxToolRounds) : undefined;
-    this.lineages.add(binding.nativeSessionId);
     memory = TraceMemory(config.dbPath, input => this.runAgent ? this.runAgent(input) : unavailableRunner(),
       config.coreConfig, undefined,
-      entry => this.lineages.has(entry.nativeLineage) ? ccSourceBlocks(entry) : undefined);
+      entry => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : undefined);
     this.memory = memory;
-    this.config = config;
     this.projection = new CcProjection(config, binding, memory);
   }
 
@@ -591,13 +590,6 @@ export class CcImporter {
   applyWorker(config: ResolvedCcHostConfig): void {
     this.runAgent = config.worker ? createCcRunAgent(config, this.workerDependencies,
       kind => this.memory.config[kind].maxToolRounds) : undefined;
-  }
-  /** 63: project another native lineage of the same core session on the same facade. */
-  retarget(binding: CcSessionBinding): void {
-    const current = this.projection.currentBinding();
-    if (binding.coreSessionId !== current.coreSessionId) throw new Error("CC importer retarget must stay on the same core session");
-    this.lineages.add(binding.nativeSessionId);
-    this.projection = new CcProjection(this.config, binding, this.memory);
   }
   persistedCall(toolUseId: string, toolName: "note" | "memory"): CcPersistedCall | null {
     return this.projection.persistedCall(toolUseId, toolName);

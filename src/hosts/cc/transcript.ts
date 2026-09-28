@@ -80,6 +80,13 @@ export interface CcNativeNode {
   copyOf?: string;
   /** The parent a tool result names, when the scan continues it from that parent's later copy. */
   namedParent?: string;
+  /** 108: an assistant row's native API message id, shared (unlike `messageKey`) by every row Claude
+   * Code splits one message into. It groups a parallel batch for path selection, never source identity. */
+  apiMessageId?: string;
+  /** Set once this row is confirmed on the persisted selected path (`CcTranscriptCursor.commit`'s
+   * `confirmed` list). A row a later scan rereads verbatim (same UUID) is never proposed again by
+   * `pathExtension`: membership is this one flag, not a walk of the path or the history. */
+  selected?: true;
 }
 
 interface FileStamp { size: number; modifiedMs: number; changedMs: number; device: number; inode: number }
@@ -122,6 +129,39 @@ const humanCommandPrompt = (content: string): string | null => {
   const args = values.get("command-args")?.trim();
   return args ? `${name} ${args}` : name;
 };
+
+/** The first two lines of every Trace Memory carrier (encoded in injection.ts). A user row that
+ * begins with them, bare or inside the compaction framing below, is Trace Memory's own material,
+ * never Raw: the compaction a `session.compact` hook returns (102) is an ordinary user row after the
+ * boundary, with no summary flag. */
+export const CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
+export const CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
+/** 102 (ruled): the compaction a `session.compact` hook returns is its carrier framed as Pi frames a
+ * compaction summary for the model, so both hosts show the model the same thing. Copied verbatim from
+ * pi-coding-agent 0.87.1, dist/core/messages.js, COMPACTION_SUMMARY_PREFIX and COMPACTION_SUMMARY_SUFFIX. */
+export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+
+<summary>
+`;
+export const COMPACTION_SUMMARY_SUFFIX = `
+</summary>`;
+const CARRIER_START = `${CC_INJECTION_BEGIN}\n${CC_INJECTION_HEADER}`;
+/** Where a user text's carrier starts: at once, or after the compaction framing; -1 when it opens with neither. */
+export const ccCarrierStart = (text: string): number => text.startsWith(CARRIER_START) ? 0
+  : text.startsWith(COMPACTION_SUMMARY_PREFIX + CARRIER_START) ? COMPACTION_SUMMARY_PREFIX.length : -1;
+/** 102 (ruled): after an automatic compaction only, the message the `session.compact` hook returns
+ * ends, after Pi's framed block, with Claude Code's own native instruction to continue the pending
+ * task without asking the user. Copied verbatim from the installed Claude Code 2.1.280
+ * (@anthropic-ai/claude-code 2.1.280), bin/claude.exe: the sentence its own reactive (automatic)
+ * compaction path appends to its summary message when `suppressFollowUpQuestions` is set, which only
+ * that path sets. A manual `/compact` never sets it and gets no such sentence. */
+export const CC_AUTO_CONTINUE_SUFFIX = "\nContinue the conversation from where it left off without asking the user any further questions. " +
+  "Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. " +
+  "Pick up the last task as if the break never happened.";
+/** The carrier recognition and `/trace` estimate (menu-context.ts) read up to Pi's own suffix; this
+ * strips an optional trailing auto-continue sentence first so that check is unchanged either way. */
+export const ccStripAutoContinue = (text: string): string =>
+  text.endsWith(CC_AUTO_CONTINUE_SUFFIX) ? text.slice(0, -CC_AUTO_CONTINUE_SUFFIX.length) : text;
 
 export class CcNativeLineageError extends Error {}
 
@@ -185,6 +225,7 @@ export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | n
     return { kind: "toolResult", record, nativeId: id, timestamp: timestamp(record), text: "", calls };
   }
   if (!(typeof content === "string" || Array.isArray(content))) return null;
+  if (ccCarrierStart(textBlocks(content)[0] ?? "") >= 0) return null;
   const nativePrompt = ["typed", "queued", "sdk", "system"].includes(String(record.promptSource));
   const humanPrompt = record.isMeta !== true && record.origin?.kind === "human";
   if (!nativePrompt && !humanPrompt) return null;
@@ -204,6 +245,9 @@ const messageKey = (source: CcSourceRecord | null): string | undefined => {
   return identity && hash("sha256", JSON.stringify(identity), "base64");
 };
 
+const apiMessageId = (source: CcSourceRecord | null): string | undefined =>
+  source?.kind === "assistant" && typeof source.record.message?.id === "string" ? source.record.message.id : undefined;
+
 const nodeOf = (record: CcNativeRecord, writtenBefore: (uuid: string) => boolean): CcNativeNode | null => {
   const uuid = nativeId(record);
   if (!uuid) return null;
@@ -211,12 +255,20 @@ const nodeOf = (record: CcNativeRecord, writtenBefore: (uuid: string) => boolean
   try {
     return { uuid, parentUuid: nativeParentId(record, writtenBefore), sourceKind: source?.kind ?? null,
       calls: source?.kind === "assistant" ? source.calls.map(call => ({ id: call.callId, name: call.name })) : [], timestamp: source?.timestamp ?? timestamp(record),
-      messageKey: messageKey(source) };
+      messageKey: messageKey(source), apiMessageId: apiMessageId(source) };
   } catch (error) {
     if (!(error instanceof CcNativeLineageError)) throw error;
     return { uuid, parentUuid: null, sourceKind: source?.kind ?? null,
       calls: source?.kind === "assistant" ? source.calls.map(call => ({ id: call.callId, name: call.name })) : [], timestamp: source?.timestamp ?? timestamp(record), lineageProblem: error.message };
   }
+};
+
+/** Entry id order is import order; a node without an entry sorts last. */
+const byFirstImport = (left: CcNativeNode, right: CcNativeNode): number =>
+  (left.entryId ?? Infinity) - (right.entryId ?? Infinity) || 0;
+const join = (members: Map<string, CcNativeNode[]>, batch: string, node: CcNativeNode): void => {
+  const list = members.get(batch);
+  if (list) list.push(node); else members.set(batch, [node]);
 };
 
 export class CcTranscriptScan {
@@ -234,16 +286,19 @@ export class CcTranscriptScan {
   readonly selectedLeafOffset: number | null;
   readonly problems: string[];
   readonly newProblems: Set<string>;
+  /** 108: the native ids this scan read, in visit order: the appended suffix, or every record after a reset. */
+  readonly readIds: readonly string[];
 
   constructor(input: { nodes: Map<string, CcNativeNode>; callCarriers: Map<string, Set<string>>; messageKeys: Map<string, string>;
     snapshot: CcTranscriptSnapshot; stamp: FileStamp; reset: boolean; completeOffset: number; lineCount: number; selectedLeafUuid: string | null;
-    selectedLeafOffset: number | null; problems?: string[]; newProblems?: Set<string> }) {
+    selectedLeafOffset: number | null; problems?: string[]; newProblems?: Set<string>; readIds?: readonly string[] }) {
     this.nodes = input.nodes; this.callCarriers = input.callCarriers; this.messageKeys = input.messageKeys;
     this.snapshot = input.snapshot; this.stamp = input.stamp; this.reset = input.reset;
     this.completeOffset = input.completeOffset; this.lineCount = input.lineCount; this.selectedLeafUuid = input.selectedLeafUuid;
     this.selectedLeafOffset = input.selectedLeafOffset;
     this.problems = input.problems ?? [];
     this.newProblems = input.newProblems ?? new Set();
+    this.readIds = input.readIds ?? [];
   }
 
   node(uuid: string): CcNativeNode | undefined { return this.nodes.get(uuid); }
@@ -262,20 +317,87 @@ export class CcTranscriptScan {
     if (!this.problems.includes(problem)) this.problems.push(problem);
   }
 
+  /** 108: the first row of the native message `node` belongs to (for a tool result, the message of the
+   * call it answers), or the node itself. Claude Code 2.1.280 writes one assistant message as one row per
+   * content block, each under the previous and sharing the message id, and writes each parallel call's
+   * result under that call, never under another result. So a batch's rows all hang off its first row, and
+   * a single-parent walk from the leaf passes through only some of them; every one reached the model in
+   * the same turn. Walks parent links while the message id holds: one message's rows, never the history. */
+  private batchOf(node: CcNativeNode): string {
+    let current = node.sourceKind === "toolResult" && node.parentUuid !== null ? this.node(node.parentUuid) ?? node : node;
+    if (current.apiMessageId === undefined) return node.uuid;
+    for (const seen = new Set([current.uuid]);;) {
+      const parent = current.parentUuid === null ? undefined : this.node(current.parentUuid);
+      if (!parent || parent.apiMessageId !== current.apiMessageId || seen.has(parent.uuid)) return current.uuid;
+      seen.add(parent.uuid); current = parent;
+    }
+  }
+
+  /** `chain` in order, each batch's rows on it joined by its `members` elsewhere and ordered by first
+   * import (entry id): the order an incremental extension appends them in. A node without an entry
+   * (a copy) holds no path position; it stays in its batch, last. */
+  private layout(chain: CcNativeNode[], members: Map<string, CcNativeNode[]>): CcNativeNode[] {
+    const nodes: CcNativeNode[] = [];
+    for (let index = 0; index < chain.length;) {
+      const first = chain[index]!, joined = members.get(first.uuid);
+      if (!joined) { nodes.push(first); index++; continue; }
+      const batch = [...joined];
+      while (index < chain.length && this.batchOf(chain[index]!) === first.uuid) batch.push(chain[index++]!);
+      nodes.push(...batch.sort(byFirstImport));
+    }
+    return nodes;
+  }
+
+  /** The leaf's native ancestry and every other row of each parallel batch on it (108). */
   selectedPath(): { leafUuid: string | null; nodes: CcNativeNode[]; problem?: string } {
-    if (!this.selectedLeafUuid) return { leafUuid: null, nodes: [] };
-    const reverse: CcNativeNode[] = [], seen = new Set<string>();
-    let current = this.node(this.selectedLeafUuid);
+    const leafUuid = this.selectedLeafUuid;
+    if (!leafUuid) return { leafUuid: null, nodes: [] };
+    const reverse: CcNativeNode[] = [], chain = new Set<string>();
+    let current = this.node(leafUuid);
     while (current) {
-      if (seen.has(current.uuid)) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: `native lineage cycle at ${current.uuid}` };
-      if (current.lineageProblem) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: current.lineageProblem };
-      if (current.importProblem) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: current.importProblem };
-      seen.add(current.uuid); reverse.push(current);
+      if (chain.has(current.uuid)) return { leafUuid, nodes: [], problem: `native lineage cycle at ${current.uuid}` };
+      if (current.lineageProblem) return { leafUuid, nodes: [], problem: current.lineageProblem };
+      if (current.importProblem) return { leafUuid, nodes: [], problem: current.importProblem };
+      chain.add(current.uuid); reverse.push(current);
       if (current.parentUuid === null) break;
       current = this.node(current.parentUuid);
-      if (!current) return { leafUuid: this.selectedLeafUuid, nodes: [], problem: `native lineage parent ${reverse.at(-1)!.parentUuid} is missing` };
+      if (!current) return { leafUuid, nodes: [], problem: `native lineage parent ${reverse.at(-1)!.parentUuid} is missing` };
     }
-    return { leafUuid: this.selectedLeafUuid, nodes: reverse.reverse() };
+    // A full rebuild already walks the whole chain; one more pass finds the batch rows off it.
+    const members = new Map<string, CcNativeNode[]>();
+    for (const node of this.nodes.values()) if (!chain.has(node.uuid)) {
+      const batch = this.batchOf(node);
+      if (batch !== node.uuid && chain.has(batch)) join(members, batch, node);
+    }
+    return { leafUuid, nodes: this.layout(reverse.reverse(), members) };
+  }
+
+  /** 108: what this scan appends to the path that ended at `priorLeafUuid`, in `selectedPath`'s order,
+   * or null when the new path is not that path extended (the caller then rebuilds). The new leaf's
+   * ancestry is walked back to the prior leaf or any row of its batch. A row this scan read joins the path
+   * when it is on that walk or belongs to a batch on it or to the prior leaf's batch. The cost follows
+   * this scan's rows, not the history. An older source row on the walk, or a new row of an older batch,
+   * is left to the full rebuild. */
+  pathExtension(priorLeafUuid: string): CcNativeNode[] | null {
+    const prior = this.node(priorLeafUuid), leafUuid = this.selectedLeafUuid;
+    if (!prior || !leafUuid) return null;
+    const anchor = this.batchOf(prior), read = new Set(this.readIds), walked = new Set<string>(), reverse: CcNativeNode[] = [];
+    let current = this.node(leafUuid);
+    while (current && current.uuid !== priorLeafUuid && this.batchOf(current) !== anchor) {
+      if (walked.has(current.uuid) || current.selected || current.lineageProblem || current.importProblem || current.sourceKind && !read.has(current.uuid)) return null;
+      walked.add(current.uuid); reverse.push(current);
+      current = current.parentUuid === null ? undefined : this.node(current.parentUuid);
+    }
+    if (!current) return null;
+    const batches = new Set([anchor, ...reverse.map(node => this.batchOf(node))]), members = new Map<string, CcNativeNode[]>();
+    for (const uuid of this.readIds) if (!walked.has(uuid)) {
+      const node = this.node(uuid)!, batch = this.batchOf(node);
+      if (batch === uuid || node.selected) continue;
+      if (batches.has(batch)) join(members, batch, node);
+      else if (!read.has(batch)) return null;
+    }
+    const joined = (members.get(anchor) ?? []).sort(byFirstImport);
+    return [...joined, ...this.layout(reverse.reverse(), members)];
   }
 
 }
@@ -474,7 +596,8 @@ export class CcTranscriptCursor {
         const resultSnapshot = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords, records,
           incompleteBytes: stamp.size - completeOffset, changed: true, reset });
         return new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, messageKeys: scanKeys, snapshot: resultSnapshot, stamp, reset,
-          completeOffset, lineCount: lines, selectedLeafUuid, selectedLeafOffset, problems, newProblems });
+          completeOffset, lineCount: lines, selectedLeafUuid, selectedLeafOffset, problems, newProblems,
+          readIds: ordered.flatMap(value => value.node ? [value.node.uuid] : []) });
       };
       return { scan, ordered, finish };
     } finally { closeSync(descriptor); }
@@ -525,10 +648,14 @@ export class CcTranscriptCursor {
     return finish();
   }
 
-  commit(scan: CcTranscriptScan, problem?: string): void {
+  /** `confirmed`: the rows the caller just published as (part of) the selected path, marked so a later
+   * scan's `pathExtension` never proposes them again, however their UUID resurfaces (98). Empty when the
+   * caller published nothing (a rejected or not-ready scan). */
+  commit(scan: CcTranscriptScan, problem?: string, confirmed: readonly CcNativeNode[] = []): void {
     if (scan.reset) this.unresolvedProblems.clear();
     for (const value of scan.newProblems) this.unresolvedProblems.add(value);
     if (scan.reset) { this.nodes = scan.nodes; this.callCarriers = scan.callCarriers; this.messageKeys = scan.messageKeys; }
+    for (const node of confirmed) node.selected = true;
     this.stamp = scan.stamp; this.completeOffset = scan.completeOffset;
     this.lineCount = scan.lineCount; this.recordCount = scan.snapshot.recordCount; this.selectedLeafUuid = scan.selectedLeafUuid;
     this.selectedLeafOffset = scan.selectedLeafOffset;
