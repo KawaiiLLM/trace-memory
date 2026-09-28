@@ -124,10 +124,24 @@ const humanCommandPrompt = (content: string): string | null => {
 };
 
 /** The first two lines of every Trace Memory carrier (encoded in injection.ts). A user row that
- * begins with them is Trace Memory's own material, never Raw: the compaction a `session.compact`
- * hook returns (102) is an ordinary user row after the boundary, with no summary flag. */
+ * begins with them, bare or inside the compaction framing below, is Trace Memory's own material,
+ * never Raw: the compaction a `session.compact` hook returns (102) is an ordinary user row after the
+ * boundary, with no summary flag. */
 export const CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
 export const CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
+/** 102 (ruled): the compaction a `session.compact` hook returns is its carrier framed as Pi frames a
+ * compaction summary for the model, so both hosts show the model the same thing. Copied verbatim from
+ * pi-coding-agent 0.87.1, dist/core/messages.js, COMPACTION_SUMMARY_PREFIX and COMPACTION_SUMMARY_SUFFIX. */
+export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+
+<summary>
+`;
+export const COMPACTION_SUMMARY_SUFFIX = `
+</summary>`;
+const CARRIER_START = `${CC_INJECTION_BEGIN}\n${CC_INJECTION_HEADER}`;
+/** Where a user text's carrier starts: at once, or after the compaction framing; -1 when it opens with neither. */
+export const ccCarrierStart = (text: string): number => text.startsWith(CARRIER_START) ? 0
+  : text.startsWith(COMPACTION_SUMMARY_PREFIX + CARRIER_START) ? COMPACTION_SUMMARY_PREFIX.length : -1;
 
 export class CcNativeLineageError extends Error {}
 
@@ -191,7 +205,7 @@ export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | n
     return { kind: "toolResult", record, nativeId: id, timestamp: timestamp(record), text: "", calls };
   }
   if (!(typeof content === "string" || Array.isArray(content))) return null;
-  if (textBlocks(content)[0]?.startsWith(`${CC_INJECTION_BEGIN}\n${CC_INJECTION_HEADER}`)) return null;
+  if (ccCarrierStart(textBlocks(content)[0] ?? "") >= 0) return null;
   const nativePrompt = ["typed", "queued", "sdk", "system"].includes(String(record.promptSource));
   const humanPrompt = record.isMeta !== true && record.origin?.kind === "human";
   if (!nativePrompt && !humanPrompt) return null;

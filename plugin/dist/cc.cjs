@@ -9875,6 +9875,15 @@ var humanCommandPrompt = (content) => {
 };
 var CC_INJECTION_BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
 var CC_INJECTION_HEADER = "TRACE-MEMORY-CC/1 ";
+var COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+
+<summary>
+`;
+var COMPACTION_SUMMARY_SUFFIX = `
+</summary>`;
+var CARRIER_START = `${CC_INJECTION_BEGIN}
+${CC_INJECTION_HEADER}`;
+var ccCarrierStart = (text) => text.startsWith(CARRIER_START) ? 0 : text.startsWith(COMPACTION_SUMMARY_PREFIX + CARRIER_START) ? COMPACTION_SUMMARY_PREFIX.length : -1;
 var CcNativeLineageError = class extends Error {
 };
 function nativeParentId(record3, writtenBefore) {
@@ -9950,8 +9959,7 @@ function classifySourceRecord(record3) {
     return { kind: "toolResult", record: record3, nativeId: id, timestamp: timestamp(record3), text: "", calls };
   }
   if (!(typeof content === "string" || Array.isArray(content))) return null;
-  if (textBlocks(content)[0]?.startsWith(`${CC_INJECTION_BEGIN}
-${CC_INJECTION_HEADER}`)) return null;
+  if (ccCarrierStart(textBlocks(content)[0] ?? "") >= 0) return null;
   const nativePrompt = ["typed", "queued", "sdk", "system"].includes(String(record3.promptSource));
   const humanPrompt = record3.isMeta !== true && record3.origin?.kind === "human";
   if (!nativePrompt && !humanPrompt) return null;
@@ -42571,14 +42579,14 @@ async function ccCompaction(config3, input) {
       watermark: memory.store.deliveryWatermark(owner)
     }));
     if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation: ${compacted.reason}`);
-    const text = encodeCcInjection({ db: databaseIdentity(config3.dbPath), nativeSession: lineage, coreSession: core }, {
+    const text = COMPACTION_SUMMARY_PREFIX + encodeCcInjection({ db: databaseIdentity(config3.dbPath), nativeSession: lineage, coreSession: core }, {
       text: compacted.text,
       knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
       knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
       knowledgeStates: compacted.supplied.knowledgeStates,
       factIds: compacted.supplied.factIds,
       entryIds: compacted.supplied.entries.map((entry) => entry.id)
-    });
+    }) + COMPACTION_SUMMARY_SUFFIX;
     memory.store.transaction(() => {
       const current = readBinding(config3, input.session_id);
       if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch || current.selectedLeafUuid !== leaf || current.transcriptOffset !== offset || !importedToEnd(current))
@@ -43049,12 +43057,12 @@ function ccContextEvidence(binding, dbPath, snapshot2, recorded) {
       const amount = estimateBlock(block2, snapshot2.model);
       if (amount === null) return unavailable("unsupported Messages content or image dimensions/model");
       estimatedMessagesTokens += amount;
-      if (message.role === "user" && block2.type === "text" && typeof block2.text === "string" && block2.text.startsWith(`${CC_INJECTION_BEGIN}
-${CC_INJECTION_HEADER}`)) {
-        const original = block2.text.endsWith("\n") ? block2.text.slice(0, -1) : block2.text;
+      if (message.role === "user" && block2.type === "text" && typeof block2.text === "string" && ccCarrierStart(block2.text) >= 0) {
+        const start = ccCarrierStart(block2.text), text = block2.text.endsWith("\n") ? block2.text.slice(0, -1) : block2.text;
+        const original = start === 0 ? text : text.endsWith(COMPACTION_SUMMARY_SUFFIX) ? text.slice(start, -COMPACTION_SUMMARY_SUFFIX.length) : "";
         const header = decodeCcInjection(original, identity);
         if (!header || !recorded?.(header)) return unavailable("native function carrier provenance unavailable in Messages snapshot");
-        const parts2 = measureRetainedMemoryText(block2.text, original, 0, original.length);
+        const parts2 = measureRetainedMemoryText(block2.text, original, start, original.length);
         for (const key of memoryKeys) memory[key] += parts2[key];
         continue;
       }

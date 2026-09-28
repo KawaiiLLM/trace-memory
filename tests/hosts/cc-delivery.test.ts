@@ -10,7 +10,7 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { ccCompaction, ccDeltaInjection, ccSessionStartInjection, databaseIdentity, decodeCcInjection, encodeCcInjection } from "../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../src/hosts/cc/slices.ts";
-import { classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 import { readCcMenu } from "../../src/hosts/cc/menu.ts";
 
 const dirs: string[] = [];
@@ -285,6 +285,12 @@ const installedBlock = (uuid: string, logicalParentUuid: string, text: string, p
   { uuid, parentUuid: null, logicalParentUuid, type: "system", subtype: "compact_boundary", timestamp: time(++clock),
     compactMetadata: { trigger: "auto", preTokens: 1000 } } as CcNativeRecord,
   { uuid: `${uuid}-block`, parentUuid: uuid, type: "user", promptId, timestamp: time(++clock), message: { role: "user", content: text } } as CcNativeRecord];
+/** 102 (ruled): the returned compaction is its carrier in Pi's compaction framing; the carrier inside. */
+const carrierIn = (text: string): string => {
+  expect(text.startsWith(COMPACTION_SUMMARY_PREFIX)).toBe(true);
+  expect(text.endsWith(COMPACTION_SUMMARY_SUFFIX)).toBe(true);
+  return text.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
+};
 
 test("102 a Trace Memory compaction's node holds exactly what its block emitted; the hooks add nothing after it", async () => {
   const f = await fixture(["Use pnpm.", "Run vitest."]);
@@ -298,7 +304,7 @@ test("102 a Trace Memory compaction's node holds exactly what its block emitted;
     expect(f.decode(await f.prompt("p3")).flatMap(header => header.states)).toEqual([{ fromCommit: first, toCommits: [archived.committed[0]!.commit] }]);
     await f.append(user("u3", "a2", "p3")); // an automatic compaction at this prompt; the executor has imported it
     const built = await f.build("u3");
-    const header = decodeCcInjection(built!.text, f.visible())!;
+    const header = decodeCcInjection(carrierIn(built!.text), f.visible())!;
     expect(header.commits).toEqual([kept]);
     expect(header.states).toEqual([]); // the compaction starts from nothing delivered: no notice for what it never saw
     expect(built!.warning).toBeUndefined();
@@ -327,12 +333,13 @@ test("102 the build waits for its trigger to be written, imports it, and ends th
     await new Promise(resolveLater => setTimeout(resolveLater, 100));
     f.write(call, result);
     const built = (await building)!;
+    expect(decodeCcInjection(carrierIn(built.text), f.visible())).not.toBeNull();
     const raw = built.text.split("\n").filter(line => /^\[T\d+#E\d+@/.test(line));
     expect(raw.slice(-2).map(line => /@(\w+)\]/.exec(line)![1])).toEqual(["assistant", "observation"]);
     expect(raw.at(-2)).toContain("Bash(");
     expect(raw.at(-1)).toContain("listing");
     const [row] = installedBlock("cb", "result", built.text, "p2").slice(1);
-    // Recognised by its envelope, even if Claude Code were to stamp the row as a prompt.
+    // Recognised by its framed envelope, even if Claude Code were to stamp the row as a prompt.
     expect(classifySourceRecord({ ...row!, promptSource: "typed" })).toBeNull();
     await f.append(...installedBlock("cb", "result", built.text, "p2"), assistant("a3", "cb-block"));
     expect(f.store.findSourceEntry(f.sessionId, f.nativeSession, "cb-block")).toBeNull();
@@ -364,7 +371,7 @@ test("102 /trace splits a compaction carrier by its compaction's recorded delive
   try {
     await f.append(user("u2", "a1", "p2"));
     const built = (await f.build("u2"))!;
-    // Claude Code hands the returned block to the model as a bare user message ending in a newline.
+    // Claude Code hands the returned block, in its framing, to the model as a user message ending in a newline.
     const context = (text: string) => readCcMenu(f.config, f.nativeSession, undefined, 10, null,
       { session: f.nativeSession, messages: [{ role: "user", content: [{ type: "text", text: `${text}\n` }] }] }).context;
     const split = context(built.text);

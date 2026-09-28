@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { tokens } from "../../core/render/tokens.ts";
 import { measureRetainedMemoryText } from "../../core/render/material.ts";
-import { CC_INJECTION_BEGIN, CC_INJECTION_HEADER, databaseIdentity, decodeCcInjection, decodeCcInjectionHeader, type CcVisibleBinding } from "./injection.ts";
+import { CC_INJECTION_HEADER, databaseIdentity, decodeCcInjection, decodeCcInjectionHeader, type CcVisibleBinding } from "./injection.ts";
+import { COMPACTION_SUMMARY_SUFFIX, ccCarrierStart } from "./transcript.ts";
 import { estimateCcImageTokens } from "./image-tokens.ts";
 import type { CcSessionBinding } from "./binding.ts";
 
@@ -98,13 +99,14 @@ export function ccContextEvidence(binding: Pick<CcSessionBinding, "nativeSession
       // A function-added user message has no provenance in the API snapshot. A user can paste
       // the same valid envelope; role/content alone cannot authorize Knowledge classification.
       // 102: a compaction delivery recorded with exactly this carrier's Knowledge and cost is taken as
-      // its source, an estimate; a carrier without such a record stays unavailable.
-      if (message.role === "user" && block.type === "text" && typeof block.text === "string" &&
-          block.text.startsWith(`${CC_INJECTION_BEGIN}\n${CC_INJECTION_HEADER}`)) {
-        const original = block.text.endsWith("\n") ? block.text.slice(0, -1) : block.text;
+      // its source, an estimate; a carrier without such a record stays unavailable. Trace Memory's
+      // compaction arrives in Pi's compaction framing, which is measured as host framing.
+      if (message.role === "user" && block.type === "text" && typeof block.text === "string" && ccCarrierStart(block.text) >= 0) {
+        const start = ccCarrierStart(block.text), text = block.text.endsWith("\n") ? block.text.slice(0, -1) : block.text;
+        const original = start === 0 ? text : text.endsWith(COMPACTION_SUMMARY_SUFFIX) ? text.slice(start, -COMPACTION_SUMMARY_SUFFIX.length) : "";
         const header = decodeCcInjection(original, identity);
         if (!header || !recorded?.(header)) return unavailable("native function carrier provenance unavailable in Messages snapshot");
-        const parts = measureRetainedMemoryText(block.text, original, 0, original.length);
+        const parts = measureRetainedMemoryText(block.text, original, start, original.length);
         for (const key of memoryKeys) memory[key] += parts[key];
         continue;
       }

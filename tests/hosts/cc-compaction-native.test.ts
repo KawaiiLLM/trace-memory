@@ -15,7 +15,8 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { readBinding } from "../../src/hosts/cc/binding.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { ccNativeTranscriptPath } from "../../src/hosts/cc/worker.ts";
-import { CC_INJECTION_BEGIN, CC_INJECTION_HEADER, databaseIdentity, decodeCcInjection } from "../../src/hosts/cc/injection.ts";
+import { CC_INJECTION_HEADER, databaseIdentity, decodeCcInjection } from "../../src/hosts/cc/injection.ts";
+import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccCarrierStart } from "../../src/hosts/cc/transcript.ts";
 import { entry, knowledge, legacyFacts, session } from "../support/seed.ts";
 import { createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
 
@@ -52,10 +53,18 @@ const texts = (content: unknown): string[] => typeof content === "string" ? [con
 const lastUserText = (body: Body) => texts([...body.messages ?? []].reverse().find(message => message.role === "user")?.content).join("\n");
 /** Claude Code's own summarisation request. */
 const summarises = (body: Body) => JSON.stringify(body.messages).includes("CRITICAL: Respond with TEXT ONLY");
-/** A Trace Memory block that opens the conversation; Claude Code ends each merged text with a newline. */
-const blockOf = (body: Body) => texts(body.messages?.[0]?.content).find(isCarrier)?.replace(/\n$/, "");
+/** Trace Memory's compaction opening the conversation: a carrier in Pi's compaction framing (102).
+ * Claude Code ends each merged text with a newline. */
+const blockOf = (body: Body) => texts(body.messages?.[0]?.content)
+  .find(text => text.startsWith(COMPACTION_SUMMARY_PREFIX) && isCarrier(text))?.replace(/\n$/, "");
+/** The carrier inside that framing, which closes with Pi's suffix. */
+const carrierOf = (block: string) => {
+  expect(block.endsWith(COMPACTION_SUMMARY_SUFFIX)).toBe(true);
+  return block.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
+};
 const carriers = (body: Body) => JSON.stringify(body.messages).split(CC_INJECTION_HEADER).length - 1;
-const isCarrier = (text: string) => text.startsWith(`${CC_INJECTION_BEGIN}\n${CC_INJECTION_HEADER}`);
+/** A Trace Memory carrier, bare (a supplement) or framed (a compaction). */
+const isCarrier = (text: string) => ccCarrierStart(text) >= 0;
 /** The prompt a request answers: the last text of its last user message that is neither a reminder
  * nor a Trace Memory carrier; empty when a compaction is what it answers. */
 const promptOf = (body: Body) => texts([...body.messages ?? []].reverse().find(message => message.role === "user")?.content)
@@ -165,7 +174,7 @@ async function run(scenario: Scenario) {
   const visible = { db: databaseIdentity(dbPath), nativeSession: sid, coreSession: binding.coreSessionId };
   const transcript = readFileSync(transcriptPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
   return { requests, resumed, rule: rule!, dbPath, binding, visible, transcript, debug,
-    header: (body: Body) => decodeCcInjection(blockOf(body)!, visible)! };
+    header: (body: Body) => decodeCcInjection(carrierOf(blockOf(body)!), visible)! };
 }
 
 /** The compaction's Turn and its recorded delivery, and no Raw entry carrying a Trace Memory block. */
@@ -192,7 +201,7 @@ function installed(result: Awaited<ReturnType<typeof run>>) {
   // After it, the hooks add no knowledge on top: the block is the only carrier in every request.
   for (const body of result.requests.slice(at)) expect(carriers(body)).toBe(1);
   const persisted = stored(result);
-  expect(persisted.carriersInRaw).toBe(0); // the block is never imported as Raw
+  expect(persisted.carriersInRaw).toBe(0); // the framed block is never imported as Raw
   expect(persisted.turns).toHaveLength(1);
   // The compaction node's delivered state is exactly what the block emitted (97's records).
   expect(persisted.delivered[0]).toEqual({ knowledgeCommitIds: new Set(header.commits),

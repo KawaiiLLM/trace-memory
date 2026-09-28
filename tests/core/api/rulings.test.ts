@@ -29,6 +29,8 @@ import { Store } from "../../../src/core/store/index.ts";
 import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts, session as seedSession } from "../../support/seed.ts";
 import { ccCompaction, ccDeltaInjection, databaseIdentity, decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../../src/hosts/cc/slices.ts";
+import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../../../src/hosts/cc/transcript.ts";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import type { DirectoryOptions } from "../../../src/core/project/directory.ts";
 
 // 62 excludes temporary directories, where every fixture lives. As in directory-projects.test.ts, the
@@ -188,7 +190,7 @@ test("2026-09-28, 102: 'A /clear 像退出一样正常关闭旧会话，执行�
   }
 });
 
-test("2026-09-28, 102: '需要保留当前这一轮的情况' and '会话钩子只用来补投递' — the block ends with the trigger, and the hooks add nothing after it", async () => {
+test("2026-09-28, 102: '需要保留当前这一轮的情况', '会话钩子只用来补投递' and, on Pi's framing, '可以' — the block, framed as Pi frames a compaction summary, ends with the trigger, and the hooks add nothing after it", async () => {
   const config = resolveCcHostConfig({ dbPath: join(directory, "cc102.sqlite"), stateDir: join(directory, "cc102-state"), baseline: "2025-01-01T00:00:00.000Z" });
   const transcript = join(directory, "cc102.jsonl"), nativeId = "ruled-compaction";
   const row = (value: Record<string, unknown>) => `${JSON.stringify({ timestamp: time, ...value })}\n`;
@@ -207,7 +209,12 @@ test("2026-09-28, 102: '需要保留当前这一轮的情况' and '会话钩子�
     const rule = seedKnowledge(store, { sessionId: seed.id, headTurnId: turn.id }, "global", "constraint", [fact.id], "Use pnpm.").commit;
     const built = (await ccCompaction(config, { session_id: nativeId, trigger: "t" }))!;
     const visible = { db: databaseIdentity(config.dbPath), nativeSession: nativeId, coreSession: core };
-    expect(decodeCcInjection(built.text, visible)!.commits).toEqual([rule]);
+    // Pi's own framing of a compaction summary around the carrier, which still decodes.
+    expect(convertToLlm([{ role: "compactionSummary", summary: "S", tokensBefore: 0, timestamp: 0 }])[0]!.content)
+      .toEqual([{ type: "text", text: `${COMPACTION_SUMMARY_PREFIX}S${COMPACTION_SUMMARY_SUFFIX}` }]);
+    expect(built.text.startsWith(COMPACTION_SUMMARY_PREFIX)).toBe(true);
+    expect(built.text.endsWith(COMPACTION_SUMMARY_SUFFIX)).toBe(true);
+    expect(decodeCcInjection(built.text.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length), visible)!.commits).toEqual([rule]);
     // No original message is kept: the pending prompt is the block's newest Raw.
     expect(built.text.split("\n").filter(line => /^\[T\d+#E\d+@/.test(line)).at(-1)).toMatch(/@user\] user: the pending task$/);
     appendFileSync(transcript, row({ uuid: "b", parentUuid: null, logicalParentUuid: "t", type: "system", subtype: "compact_boundary" }) +

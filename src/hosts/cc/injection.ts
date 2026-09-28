@@ -6,7 +6,7 @@ import type { TransportItem } from "../../core/render/material.ts";
 import type { KnowledgePath, Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
-import { CC_INJECTION_BEGIN, CC_INJECTION_HEADER, ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
+import { CC_INJECTION_BEGIN, CC_INJECTION_HEADER, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
 import { CcProjection } from "./importer.ts";
 import { executorLiveness } from "./control.ts";
 
@@ -413,9 +413,11 @@ export async function ccCompaction(config: ResolvedCcHostConfig, input: Pick<CcH
     const { compacted, watermark } = memory.store.readSnapshot(() => ({
       compacted: memory.compact(core, branch, headTurnId, [], false), watermark: memory.store.deliveryWatermark(owner) }));
     if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation: ${compacted.reason}`);
-    const text = encodeCcInjection({ db: databaseIdentity(config.dbPath), nativeSession: lineage, coreSession: core }, {
+    // 102 (ruled): the one place the carrier is framed as Pi frames a compaction summary; the delivery
+    // below is recorded from the same supplied material, and the framing is outside its Knowledge cost.
+    const text = COMPACTION_SUMMARY_PREFIX + encodeCcInjection({ db: databaseIdentity(config.dbPath), nativeSession: lineage, coreSession: core }, {
       text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
-      knowledgeStates: compacted.supplied.knowledgeStates, factIds: compacted.supplied.factIds, entryIds: compacted.supplied.entries.map(entry => entry.id) });
+      knowledgeStates: compacted.supplied.knowledgeStates, factIds: compacted.supplied.factIds, entryIds: compacted.supplied.entries.map(entry => entry.id) }) + COMPACTION_SUMMARY_SUFFIX;
     memory.store.transaction(() => {
       const current = readBinding(config, input.session_id);
       if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch ||

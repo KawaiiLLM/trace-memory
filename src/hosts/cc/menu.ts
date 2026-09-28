@@ -121,7 +121,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
       notices,
       actions: { enabled, retryForkAvailable: false },
     };
-    // 102: a bare compaction carrier is attributed by its compaction's recorded delivery (97).
+    // 102: a compaction's carrier, framed (Trace Memory's compaction) or bare (the supplement), is attributed by its compaction's recorded delivery (97).
     const recorded = store.db.prepare(`SELECT 1 FROM knowledge_deliveries WHERE owner = ? AND follows IS NOT NULL
       AND commits = ? AND states = ? AND knowledge_tokens = ? LIMIT 1`);
     const context = ccContextEvidence(binding, config.dbPath, current, header => recorded.get(coreHostOf(binding),
