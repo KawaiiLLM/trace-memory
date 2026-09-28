@@ -311,7 +311,7 @@ test("102 a Trace Memory compaction's node holds exactly what its block emitted;
     expect(f.commits(await f.prompt("p2"))).toEqual([first, kept]);
     await f.append(user("u2", "a1", "p2"), assistant("a2", "u2"));
     const archived = f.store.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.path.sessionId, createdAt: time(0) },
-      operations: [{ op: "archive", knowledgeId: f.versions[0]!.knowledgeId, baseCommit: first, supports: [f.fact.id], reason: "withdrawn", createdAt: time(0) }] });
+      operations: [{ op: "archive", knowledgeId: f.versions[0]!.knowledgeId, baseCommit: first, kind: "budget", supports: [f.fact.id], reason: "withdrawn", createdAt: time(0) }] });
     if (!archived.ok) throw new Error(archived.problems.join());
     expect(f.decode(await f.prompt("p3")).flatMap(header => header.states)).toEqual([{ fromCommit: first, toCommits: [archived.committed[0]!.commit] }]);
     await f.append(user("u3", "a2", "p3")); // an automatic compaction at this prompt; the executor has imported it
