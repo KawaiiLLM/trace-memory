@@ -603,12 +603,14 @@ test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes
   release(notingFact(h.conversations[0]!)); await h.drain();
   expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   h.provider(async c => notingFact(c));
-  await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(4); // each worker sends both tools in one message, then ends; no NEAR round
+  await h.emit("agent_settled"); await h.drain();
+  expect(h.requests).toHaveLength(2); // completion does not chain; the busy second turn was skipped
   expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(false);
-  await h.answer(); await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(6); // three terminal batches, two requests each; no NEAR or foreground receipt
-  expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: "S1/T3", rangeTo: "S1/T3" });
+  await h.answer(); await h.drain();
+  expect(h.requests).toHaveLength(4); // the later turn admits one batch
+  await h.prompt("fourth"); await h.answer("tick"); await h.drain();
+  expect(h.requests).toHaveLength(4); // a below-threshold turn creates no extra worker
+  expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: "S1/T2", rangeTo: "S1/T3" });
 });
 
 test("spec overflow policy: a subagent noting fetches cut evidence through the trace tool; the run records the fetch and the last request", async () => {
@@ -617,7 +619,7 @@ test("spec overflow policy: a subagent noting fetches cut evidence through the t
   await h.emit("tool_result", { toolName: "Bash", input: { command: "pnpm test" }, content: [{ type: "text", text: "x".repeat(5000) + "\n1 passed" }], isError: false });
   const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1#E1..E5", full: true } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
-  await h.answer("word ".repeat(1000)); await h.emit("agent_settled"); await h.drain();
+  await h.prompt("next main turn"); await h.answer("word ".repeat(1000)); await h.drain();
   expect(h.conversations).toHaveLength(3);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };

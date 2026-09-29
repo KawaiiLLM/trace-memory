@@ -72,6 +72,8 @@ export interface CcNativeNode {
   importProblem?: string;
   turnId?: number;
   entryId?: number;
+  /** Original JSONL bytes, indexed during the existing scan; no Raw body is retained. */
+  byteRange?: { start: number; end: number };
   /** An assistant row's message id and content, or a tool result's content, hashed: what a copy shares
    * with the row it repeats. */
   messageKey?: string;
@@ -493,6 +495,43 @@ export class CcTranscriptCursor {
     return values;
   }
   node(uuid: string): CcNativeNode | undefined { return this.nodes.get(uuid); }
+
+  /** Read only selected, committed original records from the same native file this cursor scanned.
+   * A changed or reset file gives no coverage; the next reconciliation rebuilds its index. */
+  selectedRecords(path: string, ids: readonly string[]): CcNativeRecord[] | null {
+    if (!this.stamp || !this.lastSnapshot || this.lastSnapshot.problem) return null;
+    const records: CcNativeRecord[] = [];
+    let descriptor: number;
+    try { descriptor = openSync(path, "r"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    try {
+      const before = fstatSync(descriptor);
+      const stamp: FileStamp = { size: before.size, modifiedMs: before.mtimeMs, changedMs: before.ctimeMs, device: before.dev, inode: before.ino };
+      if (!sameStamp(this.stamp, stamp)) return null;
+      for (const id of ids) {
+        const node = this.nodes.get(id), range = node?.byteRange;
+        if (!node?.committed || !node.selected || !range || range.start < 0 || range.end > this.completeOffset || range.end <= range.start) return null;
+        const bytes = Buffer.alloc(range.end - range.start);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const amount = readSync(descriptor, bytes, offset, bytes.length - offset, range.start + offset);
+          if (!amount) return null;
+          offset += amount;
+        }
+        if (bytes.at(-1) !== 0x0a) return null;
+        const parsed = JSON.parse(bytes.subarray(0, -1).toString("utf8"));
+        if (!object(parsed) || parsed.uuid !== id) return null;
+        records.push(parsed);
+      }
+      const after = fstatSync(descriptor);
+      if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs || after.dev !== before.dev || after.ino !== before.ino) return null;
+      return records;
+    } finally { closeSync(descriptor); }
+  }
+
   callPath(toolUseId: string, expectedNames: readonly string[]): CcNativeNode[] | null {
     const carrierIds = this.callCarriers.get(toolUseId);
     if (!carrierIds?.size) return null;
@@ -582,6 +621,7 @@ export class CcTranscriptCursor {
         completeOffset, lineCount: lines, selectedLeafUuid, terminalUuid, selectedLeafOffset, problems, newProblems });
       let beginning = 0;
       while (beginning < completeLength) {
+        const lineStart = start + beginning;
         const ending = bytes.indexOf(0x0a, beginning);
         const raw = bytes.subarray(beginning, ending).toString("utf8");
         beginning = ending + 1; lines += 1;
@@ -603,6 +643,7 @@ export class CcTranscriptCursor {
           } else {
             if (!prior?.committed) newIds.add(node.uuid);
             if (!prior) {
+              node.byteRange = { start: lineStart, end: start + beginning };
               // After a compaction in the middle of a reply, the model's context continues from the copy
               // of the in-flight message, but Claude Code names the call's original row as its result's parent.
               // ponytail: a result truly resumed from the original after its copy (an SDK resume at a

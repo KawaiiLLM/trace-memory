@@ -1,98 +1,85 @@
-// 78 review: a network fence for the probes in cc-native-probe.test.ts, the only file that spawns
-// the real, pinned `claude` executable. ANTHROPIC_BASE_URL pointing at the loopback server in
-// cc-native-loopback.ts stops the *model* traffic, but nothing stops the CLI (or a child process it
-// spawns) from reaching the real internet for telemetry, update checks or feature flags. This module
-// wraps the executable in an OS-level sandbox (macOS Seatbelt, via /usr/bin/sandbox-exec) that denies
-// every network operation except loopback, so a probe fails loudly instead of quietly phoning home.
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { createServer } from "node:net";
+// A test-only fence: exactly the live mock ports and this scenario's private socket tree.
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { createServer as createTcpServer } from "node:net";
+import { createServer as createUnixServer } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-
 export const SANDBOX_EXEC_PATH = "/usr/bin/sandbox-exec";
-
-// Seatbelt operations are `network-outbound` / `network-inbound` / `network-bind`; `network*` is the
-// wildcard over all three. `(allow default)` keeps every non-network operation (file read/write,
-// process exec, mach lookups) working — the CLI needs those for its config dir, its cwd and its own
-// child processes — then `(deny network*)` removes all networking, and the two `(allow ... "localhost:*")`
-// rules and the unix-socket rules hand loopback TCP and local sockets back, which is what the loopback
-// server (cc-native-loopback.ts) and the SDK's stdio-based control protocol need.
-const NETWORK_FENCE_PROFILE = `(version 1)
-(allow default)
-(deny network*)
-(allow network-outbound (remote ip "localhost:*"))
-(allow network-outbound (remote unix-socket))
-(allow network-bind (local ip "localhost:*"))
-(allow network-inbound (local ip "localhost:*"))
-(allow network-bind (local unix-socket))
-(allow network-inbound (local unix-socket))
-`;
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
+export function fenceToolsAvailable(executable: string): boolean {
+  return existsSync(executable) && existsSync(SANDBOX_EXEC_PATH);
 }
-
-/** Portability gate: both the pinned executable and the sandboxing tool must exist. Absent either,
- * the probes in cc-native-probe.test.ts skip (never silently run unfenced). */
-export function fenceToolsAvailable(claudeExecutable: string): boolean {
-  return existsSync(claudeExecutable) && existsSync(SANDBOX_EXEC_PATH);
-}
-
-/** Writes the fence profile and a wrapper executable into `dir`, and returns the wrapper's absolute
- * path — pass it as `claudeExecutable` / `pathToClaudeCodeExecutable` everywhere the probes launch
- * the real CLI, so every invocation (including the worker's own `--version` check) is fenced. */
-export function createFencedClaudeExecutable(dir: string, realExecutable: string): { wrapperPath: string; profilePath: string } {
+const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+const regex = (path: string) => `^${resolve(path).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/.*$`;
+/** Create only after the mock is listening; an unlisted port is never allowed. */
+export function createFencedClaudeExecutable(dir: string, executable: string, ports: readonly number[], socketRoot: string) {
+  if (!socketRoot || !ports.every(port => Number.isInteger(port) && port > 0 && port < 65536))
+    throw new Error("native fence needs an exact private socket root and live mock ports");
+  if (process.env.TM_NATIVE_PREPARED_PORT) {
+    if (!resolve(socketRoot).startsWith(`${resolve(process.env.TM_NATIVE_SOCKET_ROOT ?? "/nonexistent")}/`) ||
+        ports.some(port => port !== Number(process.env.TM_NATIVE_PREPARED_PORT)))
+      throw new Error("native inherited fence does not match the test mock/root");
+    // The outer driver fences Vitest, SDK and Claude together. Never nest sandbox-exec.
+    return { profilePath: "inherited", wrapperPath: executable };
+  }
   mkdirSync(dir, { recursive: true });
-  const profilePath = join(dir, "network.sb");
-  writeFileSync(profilePath, NETWORK_FENCE_PROFILE);
-  const wrapperPath = join(dir, "claude-fenced.sh");
-  writeFileSync(wrapperPath, `#!/bin/sh\nexec ${SANDBOX_EXEC_PATH} -f ${shellQuote(profilePath)} ${shellQuote(realExecutable)} "$@"\n`);
+  const profilePath = join(dir, "network.sb"), wrapperPath = join(dir, "claude-fenced.sh");
+  const pattern = JSON.stringify(regex(socketRoot));
+  writeFileSync(profilePath, `(version 1)\n(allow default)\n(deny network*)\n${ports.map(port => `(allow network-outbound (remote ip "localhost:${port}"))`).join("\n")}\n(allow network-outbound (remote unix-socket (path-regex ${pattern})))\n(allow network-bind (local unix-socket (path-regex ${pattern})))\n(allow network-inbound (local unix-socket (path-regex ${pattern})))\n`);
+  writeFileSync(wrapperPath, `#!/bin/sh\nexec ${SANDBOX_EXEC_PATH} -f ${quote(profilePath)} ${quote(executable)} "$@"\n`);
   chmodSync(wrapperPath, 0o755);
   return { wrapperPath, profilePath };
 }
-
-// A raw TCP connect, run as its own sandboxed process. Deliberately not curl or node's `http`
-// module: on this kind of machine an ambient HTTP_PROXY/NODE_USE_ENV_PROXY setup makes those
-// transparently tunnel an "external" request back out through an *allowed* loopback proxy port,
-// which would make the profile look like it denies nothing when it actually does — a raw socket
-// never consults a proxy, so it reports the sandbox's own decision. The spawned env carries only
-// PATH/HOME, so no proxy variable can reach it regardless.
-// Only the sandbox's own refusal (EPERM) counts as denied: an unreachable route or a refused port
-// would otherwise pass the preflight on a machine that is merely offline.
-function sandboxedConnect(profilePath: string, host: string, port: number): Promise<string> {
-  const script = `const net=require("node:net");const s=net.createConnection({host:${JSON.stringify(host)},port:${port}});` +
-    `const t=setTimeout(()=>{console.log("timeout");process.exit(2)},2000);` +
-    `s.once("connect",()=>{clearTimeout(t);s.destroy();console.log("connected");process.exit(0)});` +
-    `s.once("error",e=>{clearTimeout(t);console.log(e.code==="EPERM"?"denied":"error:"+e.code);process.exit(1)});`;
-  const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
-  return execFileAsync(SANDBOX_EXEC_PATH, ["-f", profilePath, process.execPath, "-e", script], { timeout: 5_000, env })
-    .then(({ stdout }) => stdout.trim())
-    .catch((error: { stdout?: string }) => {
-      const stdout = error.stdout?.trim();
-      if (stdout) return stdout;
-      throw error;
-    });
+async function listen(server: ReturnType<typeof createTcpServer>, pathOrPort: string | number) {
+  await new Promise<void>((done, fail) => { server.once("error", fail); if (typeof pathOrPort === "number") server.listen(pathOrPort, "127.0.0.1", done); else server.listen(pathOrPort, done); });
 }
-
-/** Proves the fence bites before any probe spawns the real CLI: a loopback connect succeeds and a
- * non-loopback connect is denied, both through the same profile the probes use. Throws (never
- * skips) if either control fails — the probes must fail loudly, not run unfenced. */
-export async function preflightNetworkFence(profilePath: string): Promise<void> {
-  const server = createServer(socket => socket.destroy());
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-  const address = server.address();
+async function check(profile: string, target: { host?: string; port?: number; path?: string }, expected: "CONNECTED" | "EPERM") {
+  const code = `const n=require('node:net');const s=n.connect(${JSON.stringify(target)});const t=setTimeout(()=>process.exit(3),2000);s.on('connect',()=>{clearTimeout(t);s.destroy();console.log('CONNECTED')});s.on('error',e=>{clearTimeout(t);console.log(e.code)})`;
+  const { stdout } = await execFileAsync(profile === "inherited" ? process.execPath : SANDBOX_EXEC_PATH,
+    profile === "inherited" ? ["-e", code] : ["-f", profile, process.execPath, "-e", code],
+    { timeout: 5_000, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } });
+  if (stdout.trim() !== expected) throw new Error(`native fence ${JSON.stringify(target)}: expected ${expected}, got ${stdout.trim()}`);
+}
+/** The same fenced executable used by SDK calls must report the pinned runtime. */
+export async function assertPinnedClaudeVersion(wrapperPath: string, socketRoot: string) {
+  const { stdout } = await execFileAsync(wrapperPath, ["--version"], { timeout: 10_000,
+    env: { PATH: process.env.PATH ?? "", HOME: socketRoot, TMPDIR: socketRoot, CLAUDE_CODE_TMPDIR: socketRoot,
+      DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1" } });
+  if (stdout.trim() !== "2.1.280 (Claude Code)") throw new Error(`native acceptance requires Claude Code 2.1.280, got ${stdout.trim()}`);
+}
+/** Check permitted mock/private socket and rejected live other-local, other socket and external 22/443. */
+export async function preflightNetworkFence(profile: string, ports: readonly number[], socketRoot: string) {
+  if (profile === "inherited") {
+    const otherPort = Number(process.env.TM_NATIVE_GUARD_PORT);
+    const otherSocket = process.env.TM_NATIVE_GUARD_SOCKET;
+    if (!Number.isInteger(otherPort) || !otherSocket) throw new Error("native inherited fence missing live negative controls");
+    for (const port of ports) await check(profile, { host: "127.0.0.1", port }, "CONNECTED");
+    await check(profile, { host: "127.0.0.1", port: otherPort }, "EPERM");
+    await check(profile, { path: otherSocket }, "EPERM");
+    for (const port of [22, 443]) await check(profile, { host: "1.1.1.1", port }, "EPERM");
+    return;
+  }
+  const other = createTcpServer(socket => socket.destroy());
+  const own = createUnixServer(socket => socket.destroy());
+  const outside = createUnixServer(socket => socket.destroy());
+  const probeDir = mkdtempSync(join(tmpdir(), "fence-other-"));
+  const ownPath = join(socketRoot, `allowed-${process.pid}.sock`), outsidePath = join(probeDir, "denied.sock");
+  mkdirSync(dirname(ownPath), { recursive: true });
   try {
-    if (!address || typeof address === "string") throw new Error("network fence preflight: loopback listener did not bind a TCP port");
-    const loopback = await sandboxedConnect(profilePath, "127.0.0.1", address.port);
-    if (loopback !== "connected")
-      throw new Error(`network fence preflight: expected the sandbox to allow a loopback connection, got "${loopback}"`);
-    const external = await sandboxedConnect(profilePath, "1.1.1.1", 443);
-    if (external !== "denied")
-      throw new Error(`network fence preflight: expected the sandbox to deny an outbound connection to 1.1.1.1:443, got "${external}"`);
+    await listen(other, 0); await listen(own, ownPath); await listen(outside, outsidePath);
+    const otherAddress = other.address();
+    if (!otherAddress || typeof otherAddress === "string") throw new Error("native fence other listener unavailable");
+    for (const port of ports) await check(profile, { host: "127.0.0.1", port }, "CONNECTED");
+    await check(profile, { path: ownPath }, "CONNECTED");
+    await check(profile, { host: "127.0.0.1", port: otherAddress.port }, "EPERM");
+    await check(profile, { path: outsidePath }, "EPERM");
+    for (const port of [22, 443]) await check(profile, { host: "1.1.1.1", port }, "EPERM");
   } finally {
-    await new Promise<void>(resolve => server.close(() => resolve()));
+    await Promise.all([other, own, outside].map(server => new Promise<void>(done => server.close(() => done()))));
+    rmSync(probeDir, { recursive: true, force: true });
   }
 }

@@ -100,7 +100,7 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
       { title: "Consolidation B", sources: [{ address: "T1#E1", text: "Needs consolidation B" }] },
     ] });
     const release = hold(h);
-    h.persist(reply("word ".repeat(15000))); await h.emit("agent_end"); await h.drain();
+    await h.prompt("new main turn"); await h.answer("word ".repeat(15000)); await h.drain();
     expect(h.requests).toHaveLength(1); // the ordinary automatic Noting run occupies this executor's one Noting slot
     await command(h, "catchup");
     expect(h.notices.at(-1)).toContain("Catchup: waiting for noting");
@@ -185,7 +185,7 @@ test("18b 2026-09-08: stop while waiting for an occupied slot prevents the froze
   try {
     await h.turn();
     const release = hold(h);
-    h.persist(reply("word ".repeat(15000))); await h.emit("agent_end"); await h.drain();
+    await h.prompt("new main turn"); await h.answer("word ".repeat(15000)); await h.drain();
     expect(h.requests).toHaveLength(1);
     await command(h, "catchup");
     expect(h.notices.at(-1)).toContain("Catchup: waiting for noting");
@@ -285,7 +285,7 @@ test("18b 2026-09-08: an ordinary worker's completion does not chain a follow-up
       // immediately rather than racing a real commit; the abort listener still lets dispose() proceed.
       return new Promise<Reply>(resolve => signal!.addEventListener("abort", () => resolve({ ...reply(""), stopReason: "aborted" }), { once: true }));
     });
-    h.persist(reply("eligible completion")); await h.emit("agent_end"); await h.drain();
+    await h.prompt("eligible main turn"); await h.answer("eligible completion"); await h.drain();
     expect(h.requests).toHaveLength(1); // exactly one bounded batch; no manual catchup is active
     await h.drain(); await h.drain();
     expect(h.requests).toHaveLength(1); // its own completion alone starts nothing further

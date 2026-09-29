@@ -92,9 +92,10 @@ test("production worker serves original schemas and raw arguments, publishes the
     return stream;
   }) as any;
   const acknowledgeRequest = vi.fn();
-  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [definition], acknowledgeRequest } as unknown as CcAgentTask;
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [definition], acknowledgeRequest,
+    fallbackReason: "original source is no longer in parent context" } as unknown as CcAgentTask;
   const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 2);
-  expect(result.outcome).toBe("success");
+  expect(result).toMatchObject({ outcome: "success", mode: "subagent", fallbackReason: task.fallbackReason });
   expect(result.usage).toEqual({ input: 11, output: 7, cacheRead: 5, cacheWrite: 3, cost: { total: 0.125 } });
   expect(seen).toEqual([{ cursor: "opaque-K" }]);
   expect(acknowledgeRequest).toHaveBeenCalledTimes(1);

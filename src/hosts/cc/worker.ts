@@ -388,7 +388,7 @@ export class CcAgentWorker {
       return tail ? { ...settled, input: settled.input + tail.input, output: settled.output + tail.output,
         cacheRead: settled.cacheRead + tail.cacheRead, cacheWrite: settled.cacheWrite + tail.cacheWrite } : settled;
     };
-    const progress = () => { const usage = observedUsage(); task.reportProgress?.({ retries: [...retries], ...(usage ? { usage } : {}) }); };
+    const progress = () => { const usage = observedUsage(); task.reportProgress?.({ retries: [...retries], ...(usage ? { usage } : {}), ...(task.fallbackReason ? { fallbackReason: task.fallbackReason } : {}) }); };
     let dreamState: "first" | "repair-authorized" | "complete" = "first";
     const toolsAllowed = () => task.kind !== "dreaming" || dreamState !== "complete";
     return runWithCcNativeAbortOwner(controller.signal, error =>
@@ -488,6 +488,7 @@ export class CcAgentWorker {
       origins.requireDispatchedWrites();
       const usage = observedUsage();
       return { outcome, output, ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent",
+        ...(task.fallbackReason ? { fallbackReason: task.fallbackReason } : {}),
         ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
         audit: { available: false, reason: AUDIT_UNAVAILABLE },
         thinking: { requested: settings.thinking, effective: settings.thinking } };
@@ -499,6 +500,7 @@ export class CcAgentWorker {
       const specific = nativeFailureOutput ?? (cause instanceof Error ? cause.message : String(cause));
       return { outcome: cancelled ? "cancelled" : "failure", output: specific,
         ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent",
+        ...(task.fallbackReason ? { fallbackReason: task.fallbackReason } : {}),
         ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
         audit: { available: false, reason: AUDIT_UNAVAILABLE },
         thinking: { requested: settings.thinking, effective: settings.thinking } };

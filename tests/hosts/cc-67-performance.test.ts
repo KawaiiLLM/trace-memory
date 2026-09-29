@@ -71,7 +71,7 @@ async function fullChain(entries: number, due: boolean) {
   writeFileSync(transcriptPath, records(entries / 2).map(line).join(""));
   await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: nativeSessionId, transcript_path: transcriptPath }, at);
   const diagnostics: string[] = [], coordinator = new CcCoordinator(config, nativeSessionId, message => diagnostics.push(message));
-  let importer!: CcImporter, eligibility = 0, prepares = 0, inputs = 0, admissionAt = 0;
+  let importer!: CcImporter, scheduler!: CcTaskScheduler, eligibility = 0, prepares = 0, inputs = 0, admissionAt = 0;
   let schedulerMs = 0, scheduledAt = 0, scheduleFinishedAt = 0;
   const phases: string[] = [], origins: number[] = [], checks: Array<[string, number | undefined]> = [];
   const phaseWork: Record<string, { calls: number; prepares: number }> = {};
@@ -110,26 +110,8 @@ async function fullChain(entries: number, due: boolean) {
   });
   const originalSchedule = CcTaskScheduler.prototype.reconcile;
   const scheduleSpy = vi.spyOn(CcTaskScheduler.prototype, "reconcile").mockImplementation(function (this: CcTaskScheduler, ...args) {
-    const memory = importer.memory, store = memory.store;
-    const real = memory.taskEligibility;
-    const countEligibility = vi.spyOn(memory, "taskEligibility").mockImplementation((...params) => {
-      eligibility++; origins.push(params[1].triggerEntryId!);
-      checks.push([params[0], params[1].triggerEntryId]);
-      const before = prepares, counted = phaseWork[params[0]] ??= { calls: 0, prepares: 0 }; counted.calls++;
-      try { return real(...params); } finally { counted.prepares += prepares - before; }
-    });
-    const prepare = store.db.prepare.bind(store.db);
-    const sql = vi.spyOn(store.db, "prepare").mockImplementation((query: string) => { prepares++; return prepare(query); });
-    const originalInput = (store as any).commitGraphInput.bind(store);
-    const graph = vi.spyOn(store as any, "commitGraphInput").mockImplementation((...params) => { inputs++; return originalInput(...params); });
-    const before = performance.now();
-    scheduledAt ||= before;
-    try { originalSchedule.apply(this, args); }
-    finally {
-      scheduleFinishedAt ||= performance.now();
-      schedulerMs += performance.now() - before;
-      countEligibility.mockRestore(); sql.mockRestore(); graph.mockRestore();
-    }
+    scheduler = this;
+    originalSchedule.apply(this, args);
   });
   const workerSpy = vi.spyOn(CcAgentWorker.prototype, "run").mockImplementation(async task => {
     phases.push(task.kind); admissionAt ||= performance.now();
@@ -159,6 +141,27 @@ async function fullChain(entries: number, due: boolean) {
     expect(result?.selectedEntryIds).toHaveLength(entries);
     expect(result?.appendedEntryIds).toHaveLength(entries);
     expect(result?.bootstrap).toBe(true);
+    // Bootstrap/import alone is not an automatic opportunity; the persisted final reply is.
+    const memory = importer.memory, store = memory.store, real = memory.taskEligibility;
+    const countEligibility = vi.spyOn(memory, "taskEligibility").mockImplementation((...params) => {
+      eligibility++; origins.push(params[1].triggerEntryId!);
+      checks.push([params[0], params[1].triggerEntryId]);
+      const before = prepares, counted = phaseWork[params[0]] ??= { calls: 0, prepares: 0 }; counted.calls++;
+      try { return real(...params); } finally { counted.prepares += prepares - before; }
+    });
+    const prepare = store.db.prepare.bind(store.db);
+    const sql = vi.spyOn(store.db, "prepare").mockImplementation((query: string) => { prepares++; return prepare(query); });
+    const originalInput = (store as any).commitGraphInput.bind(store);
+    const graph = vi.spyOn(store as any, "commitGraphInput").mockImplementation((...params) => { inputs++; return originalInput(...params); });
+    try {
+      scheduledAt = performance.now();
+      scheduler.turnEnd(result!, scheduler.catchupTicket());
+      scheduleFinishedAt = performance.now();
+      schedulerMs = scheduleFinishedAt - scheduledAt;
+    } finally { countEligibility.mockRestore(); sql.mockRestore(); graph.mockRestore(); }
+    // The original graph-read bound covers synchronous scheduling, not deferred task execution.
+    expect(inputs).toBe(1);
+    await scheduler.settle();
     await new Promise<void>(resolve => setTimeout(resolve, 10));
     clearInterval(heartbeat); heartbeat = undefined;
     expect(heartbeatSamples).toBeGreaterThan(0);
@@ -238,10 +241,10 @@ test("Hook-first bootstrap and fresh resume validate known records without per-r
     expect(live.bootstrap).toBe(false);
     expect(live.appendedEntryIds).toHaveLength(2);
     scheduler.reconcile(live);
-    // Attach starts D armed; the first entry disarms its empty pool, then only N checks entry two.
-    expect(eligibility).toHaveBeenCalledTimes(3);
+    expect(eligibility).not.toHaveBeenCalled(); // Entry ingestion is not a checkpoint.
+    scheduler.turnEnd(live, scheduler.catchupTicket());
     expect(eligibility.mock.calls.map(([phase, target]) => [phase, target.triggerEntryId])).toEqual([
-      ["noting", live.appendedEntryIds[0]], ["dreaming", live.appendedEntryIds[0]], ["noting", live.appendedEntryIds[1]],
+      ["noting", live.appendedEntryIds[1]], ["dreaming", live.appendedEntryIds[1]],
     ]);
   } finally { scheduler.stop(); eligibility.mockRestore(); transaction.mockRestore(); importer.close(); rmSync(dir, { recursive: true, force: true }); }
 });

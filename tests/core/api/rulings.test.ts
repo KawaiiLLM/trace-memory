@@ -149,7 +149,7 @@ test("2026-09-24, 86: 'catchup 选A' and '任务失败后不检查' — retry th
 
 test("2026-09-28, 102: 'A /clear 像退出一样正常关闭旧会话，执行器跟到本进程的新会话，和启动时一样。现在用cwd做自动归属，所以新会话应该是同一个project' — supersedes 86's '除了 clear，任何 SessionEnd 都算正常关闭'", async () => {
   // Control sockets live under stateDir: keep it short enough for a Unix-domain path.
-  const stateDir = mkdtempSync("/tmp/tm102r-"), cwd = join(directory, "repository");
+  const stateDir = mkdtempSync(join(tmpdir(), "tm102r-")), cwd = join(directory, "repository");
   mkdirSync(cwd);
   directoryExclusions.excluded = { home: join(directory, "home"), temporary: [] }; // the fixture's cwd counts as a directory
   const config = resolveCcHostConfig({ dbPath: join(directory, "cc.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",

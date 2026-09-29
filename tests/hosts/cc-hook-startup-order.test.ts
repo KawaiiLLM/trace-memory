@@ -126,16 +126,95 @@ test("failed main turn-end RPC is logged in the foreground without a second chec
   const f = await fixture();
   const failure = vi.spyOn(console, "error").mockImplementation(() => undefined);
   try {
-    f.run.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "binding mismatch" });
+    f.run.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "source observation unavailable" })
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "binding mismatch" });
     const next = vi.fn(async () => "native completion");
     expect(await f.handlers.get("turn.complete")!(f.host, { turnId: "t1", reason: "aborted" }, next)).toBe("native completion");
-    expect(f.log).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("this turn memory check failed: Error: binding mismatch"));
+    expect(f.log).toHaveBeenCalledWith(expect.stringContaining("CC fork source read failed"));
+    expect(f.log).toHaveBeenCalledWith(expect.stringContaining("this turn memory check failed: Error: Trace Memory turn-end check: binding mismatch"));
     expect(failure).toHaveBeenCalledWith(expect.stringContaining("binding mismatch"));
-    expect(f.run).toHaveBeenCalledTimes(1);
-    expect(f.run.mock.calls[0]![0]).toContain("hook-turn");
-    expect(JSON.parse(f.run.mock.calls[0]![1]!.stdin)).toEqual({ session_id: "first", turnId: "t1", reason: "aborted" });
+    expect(f.run).toHaveBeenCalledTimes(2);
+    expect(f.run.mock.calls[0]![0]).toContain("hook-sources");
+    expect(f.run.mock.calls[1]![0]).toContain("hook-turn");
+    expect(JSON.parse(f.run.mock.calls[1]![1]!.stdin)).toEqual({ session_id: "first", turnId: "t1", reason: "aborted",
+      observation: { failed: "CC fork source read failed: Error: source observation unavailable" } });
     expect(next).toHaveBeenCalledOnce();
   } finally { failure.mockRestore(); }
+});
+
+test("source read failure differs from absent Raw, unavailable usage and changed native session", async () => {
+  for (const scenario of ["corrupt", "absent", "usage", "changed"] as const) {
+    const f = await fixture();
+    const seen: any[] = [];
+    const source = { sessionId: 1, branch: "main", headTurnId: 1, tailId: 1,
+      selected: [{ nativeId: "original", kind: "user", afterBoundary: true,
+        record: { message: { content: "original text" } } }] };
+    Object.assign(f.host.session, { messages: async () => [], usage: async () => ({ context: { breakdown:
+      scenario === "usage" ? null : { model: "opus", maxTokens: 200000, totalTokens: 100 } } }) });
+    f.run.mockImplementation(async (argv: string[], options?: { stdin: string }) => {
+      if (argv.includes("hook-sources")) return scenario === "corrupt"
+        ? { exitCode: 1, stdout: "", stderr: "indexed JSON is invalid" }
+        : { exitCode: 0, stdout: JSON.stringify(source), stderr: "" };
+      const request = JSON.parse(options!.stdin); seen.push(request.observation);
+      return { exitCode: 0, stdout: "null", stderr: "" };
+    });
+    if (scenario === "changed") {
+      const session = f.host.session as typeof f.host.session & { messages: () => Promise<unknown> };
+      const original = session.messages;
+      session.messages = async () => { f.setSession("after-clear"); return original(); };
+    }
+    await f.handlers.get("turn.complete")!(f.host, { turnId: "t", reason: "answer" }, async () => undefined);
+    expect(seen).toHaveLength(1);
+    if (scenario === "corrupt") expect(seen[0].failed).toContain("indexed JSON is invalid");
+    else if (scenario === "absent") { expect(seen[0].raw).toEqual([]); expect(seen[0].failed).toBeUndefined(); }
+    else expect(seen[0].refused).toContain(scenario === "usage" ? "usage is unavailable" : "native session changed");
+  }
+});
+
+test("fork listener spawn failure fences the exact registered agent before an unconfirmed physical stop", async () => {
+  const f = await fixture();
+  const callbacks: (() => Promise<void>)[] = [], verbs: string[] = [];
+  Object.assign(f.host, { clock: { after: (_ms: number, callback: () => Promise<void>) => callbacks.push(callback) },
+    agent: { spawn: async () => ({ agentId: "native-agent" }), list: async () => [{ id: "native-agent", type: "fork", status: "running" }] },
+    tool: { call: async () => ({ result: { task_id: "native-agent", message: "stop failed" } }) } });
+  (f.host.process as any).spawn = () => { throw new Error("helper launch failed"); };
+  f.run.mockImplementation(async (argv: string[], options?: { stdin: string }) => {
+    if (argv.includes("hook-sources")) return { exitCode: 0, stdout: "null", stderr: "" };
+    if (argv.includes("hook-turn")) return { exitCode: 0, stdout: JSON.stringify({ turnId: "t", prompt: "run" }), stderr: "" };
+    const input = JSON.parse(options!.stdin); verbs.push(input.verb);
+    return { exitCode: 0, stdout: JSON.stringify({ allowed: true }), stderr: "" };
+  });
+  const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  try {
+    await f.handlers.get("turn.complete")!(f.host, { turnId: "t", reason: "answer" }, async () => undefined);
+    expect(callbacks).toHaveLength(1);
+    await callbacks[0]!();
+    expect(verbs).toEqual(["fork-register", "fork-disconnect"]);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("physical stop unknown"));
+  } finally { stderr.mockRestore(); }
+});
+
+test("native plugin MCP name routes only registered fork note and memory calls", async () => {
+  const f = await fixture();
+  const next = vi.fn(async () => "native dispatch");
+  f.run.mockImplementation(async (argv: string[], options?: { stdin: string }) => {
+    expect(argv).toContain("hook-fork");
+    const input = JSON.parse(options!.stdin);
+    expect(input.session_id).toBe("first");
+    return { exitCode: 0, stdout: JSON.stringify({ allowed: input.callId === "registered" }), stderr: "" };
+  });
+  const call = f.handlers.get("tool.call")!;
+  const check = f.handlers.get("tool.check")!;
+  for (const suffix of ["note", "memory"]) {
+    const tool = `mcp__plugin_trace-memory_traceMemory__${suffix}`;
+    expect(await call(f.host, { tool, agentId: "agent", tool_use_id: "registered" }, next)).toBe("native dispatch");
+    expect(await check(f.host, { tool, tool_use_id: "registered" }, next)).toEqual({ decision: "allow" });
+    expect(await call(f.host, { tool, agentId: "agent", tool_use_id: "unknown" }, next))
+      .toEqual({ deny: "CC Noter fork identity is not registered for this call" });
+    expect(await check(f.host, { tool, tool_use_id: "unknown" }, next)).toBe("native dispatch");
+    expect(await call(f.host, { tool, tool_use_id: "manual" }, next)).toBe("native dispatch");
+  }
+  expect(f.run).toHaveBeenCalledTimes(8);
 });
 
 test("consumer cancellation closes the delegated model stream", async () => {

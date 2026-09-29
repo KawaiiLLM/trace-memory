@@ -51,11 +51,16 @@ export class CcForegroundTools {
     try {
       if (typeof name !== "string" || !FOREGROUND.has(name as ToolDefinition["name"])) throw new Error(`unknown foreground tool ${String(name)}`);
       signal?.throwIfAborted();
-      const projection = writeTool(name)
-        ? await this.coordinator.waitForToolCall(this.toolUseId(meta), name, signal)
+      const callId = writeTool(name) ? this.toolUseId(meta) : null;
+      const fork = callId === null ? null : this.coordinator.forkToolCall(callId, name as "note" | "memory");
+      if (fork === "retired") throw new Error("CC Noter fork call has expired or already been dispatched");
+      const projection = fork ? null : writeTool(name)
+        ? await this.coordinator.waitForToolCall(callId!, name, signal)
         : await this.coordinator.toolProjection();
       signal?.throwIfAborted();
-      const text = writeTool(name) ? this.boundTools(projection as CcToolProjection).find(candidate => candidate.name === name)!.execute(input)
+      fork?.signal?.throwIfAborted();
+      const text = fork ? fork.tools.find(candidate => candidate.name === name)!.execute(input)
+        : writeTool(name) ? this.boundTools(projection as CcToolProjection).find(candidate => candidate.name === name)!.execute(input)
         : this.read(projection as CcReadProjection, name as "trace" | "search", input);
       return { content: [{ type: "text", text }], ...(toolRejected(name, text) ? { isError: true as const } : {}) };
     } catch (error) {

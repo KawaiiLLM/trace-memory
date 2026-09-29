@@ -213,7 +213,7 @@ var TRACE_SETTINGS_FIXTURE = {
 var TRACE_SETTINGS_FIXTURE_CC = {
   ...TRACE_SETTINGS_FIXTURE,
   workers: [
-    { phase: "Noter", model: "claude-sonnet-5", thinking: "medium" },
+    { phase: "Noter", mode: "subagent", model: "claude-sonnet-5", thinking: "medium" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" }
   ]
 };
@@ -420,6 +420,70 @@ function memoryGlob(pattern, path) {
   return root === null ? null : wild < 0 ? root : [root, ...segments.slice(wild)].join("/");
 }
 
+// src/hosts/cc/coverage-original.ts
+function sameJson(a, b) {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((value, index) => sameJson(value, b[index]));
+  if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) || Array.isArray(b)) return false;
+  const left = a, right = b;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => Object.hasOwn(right, key) && sameJson(left[key], right[key]));
+}
+var object = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+var blocks = (value) => Array.isArray(value) ? value.map(object).filter((v) => v !== null) : [];
+function completeResult(original, visible) {
+  const before = typeof original === "string" ? [{ type: "text", text: original }] : blocks(original);
+  const after = blocks(visible);
+  if (Array.isArray(original) && before.length !== original.length || Array.isArray(visible) && after.length !== visible.length || !before.length || after.length < before.length || before.some((block) => block.type !== "text" || typeof block.text !== "string")) return false;
+  return before.every((block, index) => {
+    const actual = after[index];
+    return actual?.type === "text" && typeof actual.text === "string" && (actual.text === block.text || actual.text === `${block.text}
+`);
+  });
+}
+function matches(part, row, role) {
+  if (row.role !== role || part.type !== row.block.type) return false;
+  if (part.type === "text") return part.text === row.block.text && typeof part.text === "string";
+  if (part.type === "tool_use") return typeof part.id === "string" && part.id === row.block.id && part.name === row.block.name && sameJson(part.input, row.block.input);
+  if (part.type === "tool_result") return typeof part.tool_use_id === "string" && part.tool_use_id === row.block.tool_use_id && part.is_error === true === (row.block.is_error === true) && completeResult(part.content, row.block.content);
+  return false;
+}
+function ccOriginalRaw(selected, api) {
+  const inherited = /* @__PURE__ */ new Map();
+  if (!Array.isArray(api)) return inherited;
+  const messages = api.map(object);
+  if (messages.some((message) => !message || !Array.isArray(message.content))) return inherited;
+  const content = messages.flatMap((message) => blocks(message.content).map((block) => ({ block, role: message.role, at: 0 })));
+  content.forEach((row, at) => {
+    row.at = at;
+  });
+  const eligible = selected.filter((entry) => entry.afterBoundary);
+  const parts = eligible.map((entry) => {
+    const original = entry.record.message?.content;
+    if (entry.kind === "compaction") return null;
+    if (entry.kind === "user" && typeof original === "string") return [{ type: "text", text: original }];
+    const values = blocks(original);
+    if (!Array.isArray(original) || values.length !== original.length || !values.length || values.some((part) => entry.kind === "assistant" ? part.type !== "text" && part.type !== "tool_use" : entry.kind === "user" ? part.type !== "text" : part.type !== "tool_result")) return null;
+    return values;
+  });
+  const used = /* @__PURE__ */ new Set();
+  let last = -1;
+  eligible.forEach((entry, index) => {
+    const values = parts[index];
+    if (!values) return;
+    const role = entry.kind === "assistant" ? "assistant" : "user";
+    const rows = values.map((part) => content.filter((row) => matches(part, row, role)));
+    if (rows.some((group, partIndex) => group.length !== 1 || parts.some((other, otherIndex) => otherIndex !== index && other?.some((candidate) => matches(candidate, group[0], role) && sameJson(candidate, values[partIndex]))))) return;
+    const positions = rows.map((group) => group[0].at);
+    const ordered = entry.kind === "toolResult" || positions.every((at, i) => at > (i ? positions[i - 1] : last));
+    if (!ordered || positions.some((at) => used.has(at))) return;
+    for (const at of positions) used.add(at);
+    if (entry.kind !== "toolResult") last = positions.at(-1);
+    inherited.set(entry.nativeId, "source");
+  });
+  return inherited;
+}
+
 // plugin/hooks/index.tsx
 var PINNED_VERSION = "2.1.280";
 var screen = "main";
@@ -511,6 +575,68 @@ async function memoryFiles($, args) {
 }
 var failure = (error) => ({ deny: error instanceof Error ? error.message : String(error) });
 var listed = (listing) => listing.cut ? [...listing.lines, listing.cut] : listing.lines;
+async function forkEvent($, session, verb, detail) {
+  const result = await $.process.run(
+    ["node", `${$.plugin.root}/dist/cc.cjs`, "hook-fork", "--config", `${$.plugin.root}/cc.config.json`],
+    { stdin: JSON.stringify({ session_id: session, verb, ...detail }) }
+  );
+  return JSON.parse(decode(result, `Trace Memory ${verb}`)).allowed === true;
+}
+async function stopNativeFork($, session, agent) {
+  if (await $.session.id() !== session) throw new Error("native session changed before fork stop");
+  const live = (await $.agent.list()).find((item) => item.id === agent && item.type === "fork" && item.status === "running");
+  if (!live) throw new Error(`exact native fork ${agent} is not proven live`);
+  const stopped = await $.tool.call({ tool: "TaskStop", task_id: agent });
+  if (stopped?.result?.task_id !== agent || !String(stopped.result.message).startsWith("Successfully stopped task:"))
+    throw new Error(`TaskStop did not confirm exact native fork ${agent}: ${JSON.stringify(stopped)}`);
+}
+function watchNativeFork($, session, agent) {
+  $.clock.after(0, async () => {
+    try {
+      const stream = $.process.spawn({ argv: [
+        "node",
+        `${$.plugin.root}/dist/cc.cjs`,
+        "hook-fork-watch",
+        "--config",
+        `${$.plugin.root}/cc.config.json`,
+        "--session",
+        session,
+        agent
+      ] });
+      let output = "", stderr = "", code;
+      const iterator = stream[Symbol.asyncIterator]();
+      while (true) {
+        const step = await iterator.next();
+        if (step.done) {
+          code = step.value?.code;
+          break;
+        }
+        if (step.value.stream === "stdout") output += step.value.text;
+        if (step.value.stream === "stderr") stderr += step.value.text;
+      }
+      if (code !== 0) throw new Error(`fork stop helper exited ${code}: ${stderr}`);
+      const instruction = JSON.parse(output.trim());
+      if (instruction.agent !== agent || instruction.session !== session || !["done", "stop"].includes(instruction.kind))
+        throw new Error("fork stop instruction has wrong native identity");
+      if (instruction.kind === "stop") {
+        await stopNativeFork($, session, agent);
+        console.error(`Trace Memory native fork ${agent} physically stopped by TaskStop`);
+      }
+    } catch (error) {
+      try {
+        await forkEvent($, session, "fork-disconnect", { agentId: agent });
+      } catch (fenceError) {
+        console.error(`Trace Memory fork write fence failed (${agent}): ${String(fenceError)}`);
+      }
+      try {
+        await stopNativeFork($, session, agent);
+      } catch (stopError) {
+        console.error(`Trace Memory fork physical stop unknown (${agent}): ${String(error)}; ${String(stopError)}`);
+      }
+      console.error(`Trace Memory fork stop listener failed (${agent}): ${String(error)}`);
+    }
+  });
+}
 export const register = (on) => {
   on("tool.call", { tool: "Read" }, async ($, e, next) => {
     const path = memoryPath(e.file_path);
@@ -616,6 +742,142 @@ export const register = (on) => {
         await $.command.register({ name: "trace", description: "Open the local Trace Memory menu" });
       } catch (error) {
         await $.ui.status(`Trace Memory: /trace registration failed: ${String(error)}`);
+      }
+    }
+    return next(e);
+  });
+  on("turn.step", async function* ($, e, next) {
+    if (e.agentId || versionError) return yield* next(e);
+    const session = await $.session.id();
+    const root = $.plugin.root;
+    if (!root) throw new Error("Trace Memory: Claude Code plugin root is unavailable");
+    const result = await $.process.run(
+      ["node", `${root}/dist/cc.cjs`, "hook-capable", "--config", `${root}/cc.config.json`],
+      { stdin: JSON.stringify({ session_id: session }) }
+    );
+    if (result.exitCode !== 0) throw new Error(`Trace Memory function hook registration: ${String(result.stderr || `exit ${result.exitCode}`)}`);
+    if (session !== await $.session.id()) throw new Error("Trace Memory: native session changed during function hook registration");
+    return yield* next(e);
+  });
+  on("tool.call", async ($, e, next) => {
+    const name = String(e.tool).match(/^mcp__(?:traceMemory|plugin_trace-memory_traceMemory)__(note|memory)$/)?.[1];
+    if (!name || !e.agentId || versionError) return next(e);
+    const allowed = await forkEvent($, await $.session.id(), "fork-call", { agentId: e.agentId, callId: e.tool_use_id, name });
+    return allowed ? next(e) : { deny: "CC Noter fork identity is not registered for this call" };
+  });
+  on("tool.check", async ($, e, next) => {
+    const name = String(e.tool).match(/^mcp__(?:traceMemory|plugin_trace-memory_traceMemory)__(note|memory)$/)?.[1];
+    if (!name || versionError) return next(e);
+    const allowed = await forkEvent($, await $.session.id(), "fork-check", { callId: e.tool_use_id, name });
+    return allowed ? { decision: "allow" } : next(e);
+  });
+  on("turn.complete", async ($, e, next) => {
+    if (e.agentId && !versionError) {
+      try {
+        await forkEvent($, await $.session.id(), "fork-terminal", { agentId: e.agentId, reason: e.reason, answer: e.answer ?? "" });
+      } catch (error) {
+        console.error(`Trace Memory fork terminal: ${String(error)}`);
+      }
+    }
+    if (!e.agentId && !versionError) {
+      try {
+        const session = await $.session.id();
+        let observation = { refused: "CC fork source coverage or native capacity is unavailable" };
+        let sources;
+        try {
+          const view = await $.process.run(
+            ["node", `${$.plugin.root}/dist/cc.cjs`, "hook-sources", "--config", `${$.plugin.root}/cc.config.json`],
+            { stdin: JSON.stringify({ session_id: session, turnId: e.turnId }) }
+          );
+          if (view.exitCode !== 0) throw new Error(String(view.stderr || `exit ${view.exitCode}`));
+          sources = JSON.parse(view.stdout);
+        } catch (error) {
+          observation = { failed: `CC fork source read failed: ${String(error)}` };
+        }
+        if (sources && !observation.failed) {
+          observation = {};
+          let api, usage;
+          try {
+            [api, usage] = await Promise.all([$.session.messages({ as: "api" }), $.session.usage({ breakdown: "summary" })]);
+          } catch (error) {
+            observation = { refused: `CC native parent view unavailable: ${String(error)}` };
+          }
+          if (!observation.refused) {
+            if (session !== await $.session.id()) observation = { refused: "native session changed during fork source check" };
+            else {
+              try {
+                const raw = ccOriginalRaw(sources.selected, api);
+                const measure = usage?.context?.breakdown;
+                if (typeof measure?.model !== "string" || !Number.isSafeInteger(measure.maxTokens) || !Number.isSafeInteger(measure.totalTokens) || measure.maxTokens <= 0 || measure.totalTokens < 0)
+                  observation = { refused: "native parent model, window or prefix usage is unavailable" };
+                else {
+                  observation = {
+                    checkpoint: {
+                      sessionId: sources.sessionId,
+                      branch: sources.branch,
+                      headTurnId: sources.headTurnId,
+                      tailId: sources.tailId
+                    },
+                    batch: sources.selected.map((source) => source.nativeId),
+                    raw: [...raw.keys()],
+                    model: measure.model,
+                    window: measure.maxTokens,
+                    prefix: measure.totalTokens
+                  };
+                  if (new TextEncoder().encode(JSON.stringify(observation)).length > 12e3)
+                    observation = { refused: "CC fork source identities exceed the control request bound" };
+                }
+              } catch (error) {
+                observation = { failed: `CC fork source matching failed: ${String(error)}` };
+              }
+            }
+          }
+        }
+        if (observation.failed) $.ui.log(`Trace Memory: ${observation.failed}; Noting was not started`);
+        const result = await $.process.run(
+          ["node", `${$.plugin.root}/dist/cc.cjs`, "hook-turn", "--config", `${$.plugin.root}/cc.config.json`],
+          { stdin: JSON.stringify({ session_id: session, turnId: e.turnId, reason: e.reason, observation }) }
+        );
+        const directive = JSON.parse(decode(result, "Trace Memory turn-end check"));
+        if (directive && typeof directive.prompt === "string" && directive.turnId === e.turnId) {
+          let spawnedId;
+          try {
+            const spawn = await $.agent.spawn({ subagentType: "fork", prompt: directive.prompt, description: "Trace Memory Noter" });
+            if (typeof spawn?.agentId === "string" && spawn.agentId) {
+              spawnedId = spawn.agentId;
+              if (!await forkEvent($, session, "fork-register", { turnId: e.turnId, agentId: spawn.agentId }))
+                throw new Error("CC fork registration was not acknowledged");
+              watchNativeFork($, session, spawn.agentId);
+            } else if (spawn?.deny) {
+              await forkEvent($, session, "fork-no-start", { turnId: e.turnId, reason: String(spawn.deny), confirmed: true });
+            } else throw new Error("CC fork spawn did not return a registered native agent identity");
+          } catch (error) {
+            const reason = String(error);
+            const confirmed = reason.includes("Agent type 'fork' not found");
+            if (spawnedId) {
+              try {
+                await stopNativeFork($, session, spawnedId);
+              } catch (stopError) {
+                console.error(`Trace Memory fork physical stop unknown: ${String(stopError)}`);
+              }
+            }
+            try {
+              if (spawnedId) await forkEvent($, session, "fork-terminal", { agentId: spawnedId, reason: "error", answer: reason });
+              else await forkEvent($, session, "fork-no-start", { turnId: e.turnId, reason, confirmed });
+            } catch (settlement) {
+              console.error(`Trace Memory fork launch settlement failed: ${String(settlement)}`);
+            }
+            if (!confirmed) throw error;
+          }
+        }
+      } catch (error) {
+        const message = `Trace Memory: this turn memory check failed: ${String(error)}`;
+        console.error(message);
+        try {
+          $.ui.log(message);
+        } catch (logError) {
+          console.error(`Trace Memory turn-end notification failed: ${String(logError)}`);
+        }
       }
     }
     return next(e);
@@ -800,6 +1062,33 @@ export const register = (on) => {
     const row = selectedSetting;
     if (!row) throw new Error("Trace Memory: no setting selected");
     const label = buildSettingsChoices(reply.settings).find((choice) => choice.id === row)?.label ?? row;
+    if (row === "noting.mode") return <Box flexDirection="column"><Text>{label}</Text>
+      <Select
+      key="noting-mode"
+      label="Noter mode"
+      autoFocus
+      options={["subagent", "fork"].map((value) => ({ value, label: value }))}
+      onSelect={(value) => {
+        void (async () => {
+          try {
+            const result = JSON.parse(await run("setting", [row, value]));
+            notice = `Setting ${result.saved ? "saved" : "not saved"}; ${result.applied ? "applied" : "not applied"}${result.diagnostic ? `: ${result.diagnostic}` : ""}`;
+            if (result.saved && result.applied) await reload();
+            else $.ui.invalidate("ui.render");
+          } catch (error) {
+            notice = String(error);
+            $.ui.invalidate("ui.render");
+          }
+          screen = "settings";
+          $.ui.invalidate("ui.render");
+        })();
+      }}
+    />
+      <Select key="mode-back" label="Action" options={[back]} onSelect={() => {
+      screen = "settings";
+      $.ui.invalidate("ui.render");
+    }} />
+    </Box>;
     if (row === "closedSessionScope") return <Box flexDirection="column"><Text>{label}</Text>
       <Select
       key="scope-choice"

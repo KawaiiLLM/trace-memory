@@ -21,7 +21,7 @@ function fixture(label: string) {
   const dir = mkdtempSync(join(tmpdir(), `tm-cc-native-${label}-`)); dirs.push(dir);
   const transcriptPath = join(dir, "native.jsonl");
   // Control sockets live under stateDir: keep it short enough for a Unix-domain path.
-  const stateDir = mkdtempSync("/tmp/tmcc-n-"); dirs.push(stateDir);
+  const stateDir = mkdtempSync(join(tmpdir(), "tmcc-n-")); dirs.push(stateDir);
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
     pollIntervalMs: 10, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2 });
   const records: CcNativeRecord[] = [

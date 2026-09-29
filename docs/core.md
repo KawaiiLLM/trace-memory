@@ -52,16 +52,25 @@ declaration still gets the "runAgent must return the exact provider request" pro
 record's response also carries `requestedMode` beside the run's actual `mode`, so a fallback is
 visible as requested-versus-actual.
 
+## Automatic scheduling (105)
+
+Both hosts check Noting and Dreaming once at each main turn end, admitting at most one run per phase under the existing seats and claims. Entry ingestion and ordinary run completion start no automatic check. A busy phase is skipped; turns that pass while it runs accumulate no owed runs.
+
+Three consequences are **derived interpretations** of 105, not additional maintainer quotations: both due phases may start under the existing rules without a new ordering rule; a failed automatic task may retry at a later turn end; explicit manual catchup retains its existing drain and completion checkpoints. Three consecutive business failures still disable memory. Thresholds, batch limits, pool selection, project-declaration checks and closed-session borrowing are unchanged.
+
+Fork eligibility is evaluated at that checkpoint, without an earlier reserved seat or a wait for a future hook. Core checks the inherited input plus its increment against the reported capacity. Missing inherited sources or an explicit pre-start refusal use the existing fresh runner and record the reason; a started or ambiguous fork failure is not a fresh fallback. CC accepts originals only in a compaction carrier as a fresh case; no persistent Raw/carrier association is added. Pi's existing coverage rules remain unchanged.
+
 ## Dreamer execution
 
 Dreaming maintains one due Knowledge pool in a fresh subagent. The three pool identities are
-`global`, `project:<id>` and `session:<id>`. After every ingested entry, the host checks the pools
-visible at that node independently. Pending membership is the current visible, non-archived revision
-of each identity for which that pool has no `(pool, revision)` processing record. Intermediate
-revisions do not accumulate weight. A run is due for the session (104) when its pools' total size
+`global`, `project:<id>` and `session:<id>`. At the automatic checkpoint above, the host checks the
+session's visible pools together. Pending membership includes the current visible revision of each
+identity without a `(pool, revision)` processing record, including archives; archives remain excluded
+from pool size. Intermediate revisions do not accumulate weight. A run is due for the session (104) when its pools' total size
 exceeds the Knowledge base plus the shared allowance, or when their nonempty pending weight, summed,
 reaches `dreaming.triggerTokens`. It takes the pool most over its own budget, else the pool with the
-most pending weight. After a successful run the completion checkpoint checks again at once.
+most pending weight. Ordinary completion starts no further run; the next main turn end checks afresh.
+Explicit manual catchup retains its own completion checkpoints.
 
 Each run freezes one due pool and an oldest eligible prefix under that pool's soft batch budget.
 The first item is included even when its complete framing exceeds the batch budget; later items wait.

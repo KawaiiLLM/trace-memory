@@ -1,9 +1,10 @@
-import type { DreamingResult, NotingResult, TraceMemory, TaskBoundary, TaskTarget } from "../../core/api/index.ts";
+import { NOTING_CAPACITY, type DreamingResult, type NotingResult, type TraceMemory, type TaskBoundary, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
 import type { CcReconcileResult } from "./importer.ts";
 import type { ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
 export type CcWorkerPhase = "noting" | "dreaming";
+export type CcForkChoice = { model: string; capacity: { inputTokens: number; prefixTokens: number }; visible: VisibleView } | { refused: string };
 type CcTaskResult = NotingResult | DreamingResult;
 export type CcCatchupState = "starting" | "running" | "waiting" | "completed" | "stopped" | "failed";
 export interface CcCatchupStatus {
@@ -145,32 +146,41 @@ export class CcTaskScheduler {
   }
 
   /** One ordinary phase evaluation at the main-turn checkpoint. */
-  private startAutomatic(phase: CcWorkerPhase, own: TaskTarget): void {
-    if (this.slots.has(phase) || this.stopped) return;
+  private startAutomatic(phase: CcWorkerPhase, own: TaskTarget, fork?: CcForkChoice,
+    noLaunch?: () => void): void {
+    if (this.slots.has(phase) || this.stopped) { noLaunch?.(); return; }
     let due = false;
     try { due = this.memory.taskEligibility(phase, own).due; }
-    catch (error) { this.diagnostic(`${phase} eligibility failed: ${error instanceof Error ? error.message : String(error)}`); return; }
+    catch (error) { this.diagnostic(`${phase} eligibility failed: ${error instanceof Error ? error.message : String(error)}`); noLaunch?.(); return; }
     const candidates = due ? [{ ...own, borrowed: false }] : [];
     if (phase !== "dreaming") {
       try { candidates.push(...this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope)
         .map(target => ({ ...target, borrowed: true }))); }
       catch (error) { this.diagnostic(`${phase} closed-session scan failed: ${error instanceof Error ? error.message : String(error)}`); }
     }
-    if (!candidates.length) return;
+    if (!candidates.length) { noLaunch?.(); return; }
     if (!this.worker) {
       this.diagnostic(`${phase} admission failed: CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured`);
-      return;
+      noLaunch?.(); return;
     }
     const cancellationEpoch = this.cancellationEpoch;
-    this.reserve(phase, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch));
+    this.reserve(phase, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch, fork, noLaunch));
   }
 
-  turnEnd(reconcile: Pick<CcReconcileResult, "state" | "coreSessionId" | "headTurnId" | "selectedTailId" | "branch">, epoch: number): void {
+  turnEnd(reconcile: Pick<CcReconcileResult, "state" | "coreSessionId" | "headTurnId" | "selectedTailId" | "branch">, epoch: number,
+    fork?: CcForkChoice, noLaunch?: () => void, notingFailure?: string): void {
     if (epoch !== this.cancellationEpoch || this.stopped || reconcile.state !== "ready" ||
-      reconcile.coreSessionId === null || reconcile.headTurnId === null || reconcile.selectedTailId === null) return;
+      reconcile.coreSessionId === null || reconcile.headTurnId === null || reconcile.selectedTailId === null) { noLaunch?.(); return; }
     const target: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
       headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedTailId };
-    for (const phase of ["noting", "dreaming"] as const) this.startAutomatic(phase, target);
+    for (const phase of ["noting", "dreaming"] as const) {
+      if (phase === "noting" && notingFailure) {
+        this.diagnostic(`noting source observation failed: ${notingFailure}`);
+        noLaunch?.();
+        continue;
+      }
+      this.startAutomatic(phase, target, phase === "noting" ? fork : undefined, phase === "noting" ? noLaunch : undefined);
+    }
   }
 
   /** Ordinary completion never triggers automatic work; a running manual drain still owns its checks. */
@@ -203,25 +213,52 @@ export class CcTaskScheduler {
   }
 
   private async runCandidates(phase: CcWorkerPhase, executorSessionId: number,
-    candidates: (TaskTarget & { borrowed: boolean })[], cancellationEpoch: number): Promise<CcTaskResult | undefined> {
-    for (const { borrowed, ...target } of candidates) {
+    candidates: (TaskTarget & { borrowed: boolean })[], cancellationEpoch: number,
+    fork?: CcForkChoice, noLaunch?: () => void): Promise<CcTaskResult | undefined> {
+    try { for (const { borrowed, ...target } of candidates) {
       try {
-        const result = await this.runCandidate(phase, executorSessionId, target, borrowed, cancellationEpoch);
+        const result = await this.runCandidate(phase, executorSessionId, target, borrowed, cancellationEpoch,
+          !borrowed && phase === "noting" ? fork : undefined, noLaunch);
         if (!result || result.outcome !== "dropped" && result.outcome !== "empty") return result;
       } catch (error) {
         this.diagnostic(`${phase} admission failed for S${target.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
         if (!(error instanceof Error && error.cause === "task admission")) return;
       }
     }
+    } finally { noLaunch?.(); }
   }
 
   /** One ordinary admission path; callers own continuation and error handling, not claim policy. */
   private async runCandidate(phase: CcWorkerPhase, executorSessionId: number, target: TaskTarget,
-    borrowed: boolean, epoch: number): Promise<CcTaskResult | undefined> {
-    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) return;
+    borrowed: boolean, epoch: number, fork?: CcForkChoice, noLaunch?: () => void): Promise<CcTaskResult | undefined> {
+    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) { noLaunch?.(); return; }
     const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
-    const result = phase === "noting" ? await this.memory.noting(options)
-      : await this.memory.dream(options);
+    let result: CcTaskResult;
+    if (phase === "noting" && fork) {
+      const fresh = (reason: string) => this.memory.noting({ ...options, mode: "fork", effectiveMode: "subagent",
+        fallbackReason: reason });
+      if ("refused" in fork) { noLaunch?.(); result = await fresh(fork.refused); }
+      else {
+        try {
+          const frozenIds = this.memory.notingBatch(target).map(entry => entry.id);
+          result = await this.memory.noting({ ...options, mode: "fork", effectiveMode: "fork",
+            model: fork.model, capacity: fork.capacity, visible: fork.visible });
+          if (result.outcome === "dropped" && "refused" in result && result.refused && !this.stopped && this.cancellationEpoch === epoch) {
+            const refusal = result.refused as { reason?: string };
+            noLaunch?.();
+            result = await this.memory.noting({ ...options, mode: "fork", effectiveMode: "subagent",
+              fallbackReason: refusal.reason ?? "CC native fork did not start", executionId: "executionId" in result ? result.executionId : undefined,
+              boundary: { exactEntryIds: frozenIds } });
+          }
+        } catch (error) {
+          if (!(error instanceof Error && error.cause === "task admission" && error.message.startsWith(NOTING_CAPACITY))) throw error;
+          noLaunch?.(); result = await fresh(error.message);
+        }
+      }
+    } else {
+      noLaunch?.();
+      result = phase === "noting" ? await this.memory.noting(options) : await this.memory.dream(options);
+    }
     this.report(phase, target, result);
     return result;
   }

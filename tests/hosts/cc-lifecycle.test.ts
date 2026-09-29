@@ -9,8 +9,10 @@ import { TraceMemory } from "../../src/core/api/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { activeFunctionHook, bindingMutexPath, bindingPath, markCcFunctionHook, readBinding, recordSessionStart, updateBinding, withCcBindingLock, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
-import { controlSession, signalCcTurnEnd, startControlServer } from "../../src/hosts/cc/control.ts";
+import { controlSession, requestCcForkSources, signalCcTurnEnd, startControlServer } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
+import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
+import { CcForkAuthority } from "../../src/hosts/cc/fork-authority.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { processStartedAt, publishNativeSession } from "../../src/hosts/cc/native-session.ts";
 import { CcTranscriptCursor, CcTranscriptScan, classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
@@ -73,6 +75,72 @@ const childExit = (child: ChildProcess, timeoutMs = 3_000): Promise<void> => {
     child.once("exit", () => { clearTimeout(timer); resolveExit(); });
   });
 };
+
+test("public turn-end admission releases fork checkpoint on N eligibility failure and still checks D", async () => {
+  const phases: string[] = [], errors: string[] = [];
+  const memory = { taskEligibility: (phase: string) => {
+    phases.push(phase);
+    if (phase === "noting") throw new Error("source store unavailable");
+    return { due: false };
+  } } as unknown as TraceMemory;
+  const scheduler = new CcTaskScheduler(memory, undefined, error => errors.push(error));
+  let released = 0;
+  scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" },
+    scheduler.catchupTicket(), { model: "parent", capacity: { inputTokens: 100, prefixTokens: 0 }, visible: {} as any }, () => released++);
+  expect(released).toBe(1);
+  expect(phases).toEqual(["noting", "dreaming"]);
+  expect(errors).toEqual([expect.stringContaining("source store unavailable")]);
+  phases.length = 0; errors.length = 0;
+  scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" },
+    scheduler.catchupTicket(), undefined, () => released++, "indexed JSON is invalid");
+  expect(released).toBe(2);
+  expect(phases).toEqual(["dreaming"]);
+  expect(errors).toEqual([expect.stringContaining("indexed JSON is invalid")]);
+});
+
+test("public turn-end admission exception releases a prepared fork checkpoint", async () => {
+  const errors: string[] = [];
+  const memory = { taskEligibility: (phase: string) => ({ due: phase === "noting" }),
+    store: { closedTasks: () => [], enabled: () => true },
+    config: { closedSessionScope: "off" },
+    notingBatch: () => { throw Object.assign(new Error("admission store failed"), { cause: "task admission" }); },
+  } as unknown as TraceMemory;
+  const worker = { phases: { noting: { model: "fresh", thinking: "medium", capacity: { inputTokens: 100, prefixTokens: 0 } },
+    dreaming: { model: "fresh", thinking: "medium", capacity: { inputTokens: 100, prefixTokens: 0 } } } } as any;
+  const scheduler = new CcTaskScheduler(memory, worker, message => errors.push(message));
+  let released = 0;
+  scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" },
+    scheduler.catchupTicket(), { model: "parent", capacity: { inputTokens: 100, prefixTokens: 0 }, visible: {} as any }, () => released++);
+  await vi.waitFor(() => expect(released).toBeGreaterThan(0));
+  expect(errors).toEqual([expect.stringContaining("admission store failed")]);
+  await scheduler.settle();
+});
+
+test("a prelaunch fork refusal releases the main checkpoint before its fresh replacement finishes", async () => {
+  let finish!: (result: any) => void;
+  const fresh = new Promise<any>(resolve => { finish = resolve; });
+  const noting = vi.fn().mockResolvedValueOnce({ outcome: "dropped", executionId: "refused-launch",
+    refused: { reason: "fork suppressed before launch" } }).mockImplementationOnce(() => fresh);
+  const memory = { taskEligibility: (phase: string) => ({ due: phase === "noting" }),
+    store: { closedTasks: () => [], enabled: () => true }, config: { closedSessionScope: "off" },
+    notingBatch: () => [{ id: 1 }], noting,
+  } as unknown as TraceMemory;
+  const worker = { phases: { noting: { model: "fresh", thinking: "medium", capacity: { inputTokens: 100, prefixTokens: 0 } },
+    dreaming: { model: "fresh", thinking: "medium", capacity: { inputTokens: 100, prefixTokens: 0 } } } } as any;
+  const scheduler = new CcTaskScheduler(memory, worker, () => {});
+  let released = 0;
+  try {
+    scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" },
+      scheduler.catchupTicket(), { model: "parent", capacity: { inputTokens: 100, prefixTokens: 0 }, visible: {} as any }, () => released++);
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(2));
+    expect(noting.mock.calls[1]![0]).toMatchObject({ effectiveMode: "subagent", executionId: "refused-launch",
+      boundary: { exactEntryIds: [1] } });
+    expect(released).toBeGreaterThan(0);
+  } finally {
+    finish({ outcome: "success", facts: [] });
+    await scheduler.settle();
+  }
+});
 
 test("function-hook child requires the exact live SessionStart assignment and owner", async () => {
   const f = fixture("hook-identity"); f.write();
@@ -159,6 +227,144 @@ test("live function-hook turns check once across both import orders and do not r
   } finally { await coordinator.shutdown("test"); }
 });
 
+test("fork source observation returns committed originals without scheduling a turn", async () => {
+  const f = fixture("fs"); enableSyntheticWorker(f); f.write();
+  f.config.coreConfig.noting.triggerTokens = 1;
+  f.config.coreConfig.noting.forkModeDefault = true;
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const diagnostics: string[] = [];
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostics.push(message));
+  try {
+    await coordinator.start();
+    expect((coordinator as any).importer, diagnostics.join("; ")).not.toBeNull();
+    await markCcFunctionHook(f.config, f.nativeSessionId);
+    const sources = await requestCcForkSources(f.config, f.nativeSessionId, "first-turn");
+    expect(sources?.turnId).toBe("first-turn");
+    expect(sources?.selected.map(row => row.nativeId)).toContain("u1");
+    expect(sources?.selected.find(row => row.nativeId === "u1")?.record.message?.content).toBe("question");
+    expect((coordinator as any).scheduler.running()).toEqual([]);
+  } finally { await coordinator.shutdown("test"); }
+});
+
+test("suppressed CC fork uses shared selector and fresh Noter with explicit reason", async () => {
+  const f = fixture("sf"); enableSyntheticWorker(f); f.write();
+  f.config.coreConfig.noting.triggerTokens = 1;
+  f.config.coreConfig.noting.forkModeDefault = true;
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const diagnostic: string[] = [];
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostic.push(message));
+  try {
+    await coordinator.start();
+    expect((coordinator as any).importer, diagnostic.join("; ")).not.toBeNull();
+    await markCcFunctionHook(f.config, f.nativeSessionId);
+    const memory = (coordinator as any).importer.memory;
+    vi.spyOn(memory.store, "forkSuppression").mockReturnValue({ at: now, runId: null });
+    const noting = vi.spyOn(memory, "noting").mockResolvedValue({ outcome: "success", facts: [] });
+    const sources = await requestCcForkSources(f.config, f.nativeSessionId, "suppressed");
+    expect(sources?.selected.length).toBeGreaterThan(0);
+    const observation = { checkpoint: { sessionId: sources!.sessionId, branch: sources!.branch,
+      headTurnId: sources!.headTurnId, tailId: sources!.tailId },
+      batch: sources!.selected.map(row => row.nativeId), raw: sources!.selected.map(row => row.nativeId),
+      model: "synthetic", window: 200000, prefix: 100 };
+    expect(await signalCcTurnEnd(f.config, f.nativeSessionId, "suppressed", "answer", observation)).toBeNull();
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledOnce());
+    expect(noting.mock.calls[0]![0]).toMatchObject({ mode: "fork", effectiveMode: "subagent",
+      fallbackReason: expect.stringContaining("cache miss latch") });
+  } finally { await coordinator.shutdown("test"); }
+});
+
+test.each(["hook", "transcript"] as const)("accepted CC scan race preserves turn-end dedup and published Raw (%s; imposed order)", async mode => {
+  const f = fixture(`queued-user-${mode}`); enableSyntheticWorker(f);
+  (f.records[1]!.message as Record<string, unknown>).stop_reason = "tool_use";
+  f.config.coreConfig.noting.triggerTokens = 1;
+  f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const diagnostics: string[] = [];
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostics.push(message));
+  try {
+    await coordinator.start();
+    const importer = (coordinator as any).importer;
+    const memory = importer.memory;
+    const sessionId = readBinding(f.config, f.nativeSessionId)!.coreSessionId!;
+    // Keep the real Core Noting publication path. Only the model transport is deterministic.
+    const batches: number[][] = [];
+    let releaseFirst!: () => void;
+    let firstEntered!: () => void;
+    const firstHeld = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const firstRunning = new Promise<void>(resolve => { firstEntered = resolve; });
+    importer.runAgent = async (input: any) => {
+      expect(input.kind).toBe("noting");
+      batches.push(input.entryIds);
+      input.reportRequest({ fixture: "CC scan race" });
+      expect(input.tools.find((tool: any) => tool.name === "note").execute({ facts: [] })).toContain("held");
+      expect(input.tools.find((tool: any) => tool.name === "memory").execute({ operations: [], skipped: [] })).toContain("held");
+      if (mode === "hook" && batches.length === 1) { firstEntered(); await firstHeld; }
+      return { outcome: "success", output: "done", request: { fixture: "CC scan race" } };
+    };
+    const dream = vi.fn(async () => ({ outcome: "success", revisions: [] }));
+    memory.dream = dream;
+    const eligibility = vi.fn((phase: string) => ({ due: phase === "dreaming" || memory.store.pendingEntryIds(sessionId, "main", memory.store.knowledgePath(sessionId, "main").headTurnId!).length > 0 }));
+    memory.taskEligibility = eligibility;
+    if (mode === "hook") await markCcFunctionHook(f.config, f.nativeSessionId);
+    f.records.splice(-1, 1,
+      { uuid: "a1-end", parentUuid: "a1", type: "assistant", timestamp: "2026-01-01T00:00:01.500Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "answer finished" }] } },
+      { uuid: "u2", parentUuid: "a1-end", type: "user", timestamp: "2026-01-01T00:00:02.000Z", ...sdkPrompt("p2"), message: { role: "user", content: "second" } },
+      { type: "last-prompt", leafUuid: "u2" });
+    f.write();
+    if (mode === "hook") await signalCcTurnEnd(f.config, f.nativeSessionId, "native-event-A", "answer");
+    else await coordinator.requestReconcile("A terminal and B user in one scan");
+    if (mode === "hook") await firstRunning;
+    const selected = memory.store.selectedSourceEntryIds(sessionId, "main")!;
+    const bQuestion = selected.at(-1)!;
+    expect(selected).toHaveLength(4);
+    const appendBAnswer = () => {
+      f.records.splice(-1, 1,
+        { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "second answer" }] } },
+        { type: "last-prompt", leafUuid: "a2" });
+      f.write();
+    };
+    let answer: number | undefined;
+    if (mode === "hook") {
+      appendBAnswer();
+      await coordinator.requestReconcile("B answer imported while A Noting is held");
+      answer = memory.store.selectedSourceEntryIds(sessionId, "main")!.at(-1)!;
+      expect(batches[0]).not.toContain(answer);
+      expect(memory.store.entryNoted(answer)).toBe(false);
+      releaseFirst();
+    }
+    await (coordinator as any).scheduler.settle();
+    if (mode === "hook") expect(memory.store.entryNoted(answer!)).toBe(false);
+    expect(batches, JSON.stringify({ diagnostics, eligibility: eligibility.mock.calls, pending: memory.store.pendingEntryIds(sessionId, "main", memory.store.knowledgePath(sessionId, "main").headTurnId!) })).toHaveLength(mode === "hook" ? 1 : 0);
+    expect(dream).toHaveBeenCalledTimes(mode === "hook" ? 1 : 0);
+    expect(eligibility).toHaveBeenCalledTimes(mode === "hook" ? 2 : 0);
+    expect(memory.store.entryNoted(bQuestion)).toBe(mode === "hook");
+    if (mode === "hook") expect(batches[0]).toEqual(selected);
+    else expect(selected.every((id: number) => !memory.store.entryNoted(id))).toBe(true);
+    if (mode === "hook") await signalCcTurnEnd(f.config, f.nativeSessionId, "native-event-A", "answer");
+    await coordinator.requestReconcile("duplicate A observation after settlement");
+    await (coordinator as any).scheduler.settle();
+    expect(batches).toHaveLength(mode === "hook" ? 1 : 0);
+    expect(dream).toHaveBeenCalledTimes(mode === "hook" ? 1 : 0);
+    if (mode === "transcript") appendBAnswer();
+    if (mode === "hook") await signalCcTurnEnd(f.config, f.nativeSessionId, "native-event-B", "answer");
+    else await coordinator.requestReconcile("B ended");
+    await (coordinator as any).scheduler.settle();
+    answer = memory.store.selectedSourceEntryIds(sessionId, "main")!.at(-1)!;
+    expect(batches, JSON.stringify({ diagnostics, eligibility: eligibility.mock.calls })).toHaveLength(mode === "hook" ? 2 : 1);
+    expect(dream).toHaveBeenCalledTimes(mode === "hook" ? 2 : 1);
+    expect(memory.store.entryNoted(answer!), diagnostics.join("; ")).toBe(true);
+    expect(batches.at(-1)).toContain(answer);
+    expect(batches.slice(0, -1).every(batch => !batch.includes(answer!))).toBe(true);
+    expect(memory.store.entryNoted(bQuestion)).toBe(true);
+    if (mode === "hook") await signalCcTurnEnd(f.config, f.nativeSessionId, "native-event-B", "answer");
+    await coordinator.requestReconcile("duplicate B observation after settlement");
+    await (coordinator as any).scheduler.settle();
+    expect(batches).toHaveLength(mode === "hook" ? 2 : 1);
+    expect(dream).toHaveBeenCalledTimes(mode === "hook" ? 2 : 1);
+    expect(eligibility).toHaveBeenCalledTimes(mode === "hook" ? 4 : 2);
+  } finally { await coordinator.shutdown("test"); }
+});
+
 test("without function hooks, only proven native ends check once", async () => {
   const f = fixture("turn-raw"); enableSyntheticWorker(f);
   (f.records[1]!.message as Record<string, unknown>).stop_reason = "end_turn"; f.write();
@@ -241,6 +447,33 @@ test("no-hook native interruption after previously imported tool Raw checks once
       expect(replay.selectedAppendedEntryIds).toEqual([]);
     } finally { restarted.close(); }
   } finally { await coordinator.shutdown("test"); }
+});
+
+test("selected native records use indexed JSONL byte ranges and reject stale snapshots", () => {
+  const f = fixture("native-record-offset"); f.write();
+  const cursor = new CcTranscriptCursor();
+  const scanned = cursor.scan(f.transcriptPath, () => {});
+  expect(scanned).toBeInstanceOf(CcTranscriptScan);
+  if (!(scanned instanceof CcTranscriptScan)) throw Error("expected native scan");
+  const selected = scanned.selectedPath().nodes.filter(node => node.sourceKind && node.sourceKind !== "compaction");
+  cursor.commit(scanned, undefined, selected);
+  expect(cursor.selectedRecords(f.transcriptPath, ["u1", "a1"])?.map(row => row.uuid)).toEqual(["u1", "a1"]);
+  expect(cursor.selectedRecords(f.transcriptPath, ["unknown"])).toBeNull();
+  appendFileSync(f.transcriptPath, `${JSON.stringify({ uuid: "u2", parentUuid: "a1", type: "user", timestamp: now,
+    ...sdkPrompt("p2"), message: { role: "user", content: "later" } })}\n`);
+  appendFileSync(f.transcriptPath, `${JSON.stringify({ type: "last-prompt", leafUuid: "u2" })}\n`);
+  expect(cursor.selectedRecords(f.transcriptPath, ["u1"])).toBeNull();
+  const appended = cursor.scan(f.transcriptPath, () => {});
+  expect(appended).toBeInstanceOf(CcTranscriptScan);
+  if (!(appended instanceof CcTranscriptScan)) throw Error("expected append scan");
+  expect(appended.selectedPath().nodes.map(node => node.uuid)).toContain("u2");
+  cursor.commit(appended, undefined, appended.selectedPath().nodes);
+  expect(cursor.node("u2")).toMatchObject({ selected: true, committed: true });
+  expect(cursor.selectedRecords(f.transcriptPath, ["u1"])?.map(row => row.uuid)).toEqual(["u1"]);
+  expect(cursor.selectedRecords(f.transcriptPath, ["u2"])?.map(row => row.uuid)).toEqual(["u2"]);
+  writeFileSync(f.transcriptPath, `${JSON.stringify({ uuid: "replacement", parentUuid: null, type: "user", timestamp: now,
+    message: { role: "user", content: "new" } })}\n`);
+  expect(cursor.selectedRecords(f.transcriptPath, ["u1"])).toBeNull();
 });
 
 test("interruption marker requires the selected tool lineage and interrupted API message id", () => {
@@ -483,6 +716,115 @@ test("owner-token stop uses the facade's owned task path and leaves another exec
     expect(otherAborted).toBe(false); expect(other.store.getClaim(b.session.id, "noting")?.executorId).toBe(other.executorId);
     releaseOther(); await otherRun;
   } finally { await server.close(); owner.close(); other.close(); }
+});
+
+test("registered fork watcher receives done on terminal and stop on external stop/off", async () => {
+  const f = fixture("fork-stop-channel"); f.write();
+  f.config.stateDir = mkdtempSync("/tmp/tmcc-fork-stop-"); dirs.push(f.config.stateDir);
+  const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "must not run" }));
+  const events: string[] = [];
+  const server = await startControlServer(f.config, binding, memory, undefined, undefined, {
+    catchup: async () => ({ state: "completed", entriesDone: 0, entriesTotal: 0 }),
+    beforeCancel: () => events.push("fenced"), holdImport: () => () => {},
+    forkRegister: (_turn, id) => events.push(`registered:${id}`),
+    forkTerminal: async id => { events.push(`terminal:${id}`); return true; },
+    forkDisconnected: id => events.push(`disconnected:${id}`),
+  });
+  const call = (verb: string, agentId: string) => new Promise<any>((resolveReply, reject) => {
+    const socket = createConnection(server.executor.socketPath); let output = "";
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(`${JSON.stringify({ token: server.executor.token, verb, agentId,
+      ...(verb === "fork-register" ? { turnId: "turn" } : {}),
+      ...(verb === "fork-terminal" ? { reason: "answer", answer: "done" } : {}) })}\n`));
+    socket.on("data", chunk => output += chunk);
+    socket.on("end", () => { try { resolveReply(JSON.parse(output)); } catch (error) { reject(error); } });
+    socket.on("error", reject);
+  });
+  try {
+    await markCcFunctionHook(f.config, f.nativeSessionId);
+    expect(await call("fork-register", "agent-done")).toMatchObject({ ok: true, allowed: true });
+    const done = call("fork-watch", "agent-done");
+    expect(await call("fork-terminal", "agent-done")).toMatchObject({ ok: true, allowed: true });
+    expect(await done).toEqual({ kind: "done", session: f.nativeSessionId, agent: "agent-done" });
+    expect(await call("fork-register", "agent-early")).toMatchObject({ ok: true });
+    expect(await call("fork-terminal", "agent-early")).toMatchObject({ ok: true });
+    expect(await call("fork-watch", "agent-early")).toEqual({ kind: "done", session: f.nativeSessionId, agent: "agent-early" });
+    expect(await call("fork-register", "agent-stop")).toMatchObject({ ok: true, allowed: true });
+    const stop = call("fork-watch", "agent-stop");
+    expect((await controlSession(f.config, f.nativeSessionId, "stop")).state).toBe("acknowledged");
+    expect(await stop).toEqual({ kind: "stop", session: f.nativeSessionId, agent: "agent-stop" });
+    expect(events).toContain("fenced");
+    expect(events).not.toContain("disconnected:agent-stop");
+    expect(await call("fork-register", "agent-late")).toMatchObject({ ok: true });
+    expect((await controlSession(f.config, f.nativeSessionId, "stop")).state).toBe("acknowledged");
+    expect(await call("fork-watch", "agent-late")).toEqual({ kind: "stop", session: f.nativeSessionId, agent: "agent-late" });
+    expect(await call("fork-watch", "unknown")).toMatchObject({ ok: false });
+    expect(await call("fork-register", "agent-no-listener")).toMatchObject({ ok: true });
+    expect(await call("fork-disconnect", "agent-no-listener")).toMatchObject({ ok: true, allowed: true });
+    expect(events).toContain("disconnected:agent-no-listener");
+    expect(await call("fork-watch", "agent-no-listener")).toMatchObject({ ok: false });
+    expect(await call("fork-register", "agent-disconnect")).toMatchObject({ ok: true });
+    const broken = createConnection(server.executor.socketPath);
+    await new Promise<void>((resolveReady, reject) => {
+      broken.on("error", reject);
+      broken.on("connect", () => broken.write(`${JSON.stringify({ token: server.executor.token,
+        verb: "fork-watch", agentId: "agent-disconnect" })}\n`, () => resolveReady()));
+    });
+    broken.destroy();
+    await vi.waitFor(() => expect(events).toContain("disconnected:agent-disconnect"));
+    expect(await call("fork-register", "agent-off")).toMatchObject({ ok: true, allowed: true });
+    const off = call("fork-watch", "agent-off");
+    expect((await controlSession(f.config, f.nativeSessionId, "off")).state).toBe("acknowledged");
+    expect(await off).toEqual({ kind: "stop", session: f.nativeSessionId, agent: "agent-off" });
+  } finally { await server.close(); memory.close(); }
+});
+
+test("native terminal arriving through control before spawn registration waits for exact identity", async () => {
+  const f = fixture("early"); f.write();
+  const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "unused" }));
+  const authority = new CcForkAuthority();
+  const terminal = authority.begin({} as any);
+  let sawEarly!: () => void;
+  const earlyReceived = new Promise<void>(resolve => { sawEarly = resolve; });
+  const server = await startControlServer(f.config, binding, memory, undefined, undefined, {
+    catchup: async () => ({ state: "completed", entriesDone: 0, entriesTotal: 0 }),
+    beforeCancel: () => authority.cancel(), holdImport: () => () => {},
+    forkRegister: (_turn, agent) => authority.register(agent),
+    forkDisconnected: agent => { authority.cancelAgent(agent); },
+    forkCall: (agent, callId, name) => authority.call(agent, callId, name),
+    forkTerminal: (agent, reason, answer) => { sawEarly(); return authority.complete(agent,
+      { outcome: reason === "answer" ? "success" : "failure", output: answer }); },
+  });
+  const send = (verb: string, agentId: string) => new Promise<any>((resolveReply, reject) => {
+    const socket = createConnection(server.executor.socketPath); let body = "";
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(`${JSON.stringify({ verb, token: server.executor.token,
+      agentId, ...(verb === "fork-register" ? { turnId: "main" } : verb === "fork-call"
+        ? { callId: "late-write", name: "note" } : { reason: "answer", answer: "done" }) })}\n`));
+    socket.on("data", chunk => body += chunk);
+    socket.on("end", () => { try { resolveReply(JSON.parse(body)); } catch (error) { reject(error); } });
+    socket.on("error", reject);
+  });
+  try {
+    await markCcFunctionHook(f.config, f.nativeSessionId);
+    const early = send("fork-terminal", "real");
+    // The terminal has reached the real control handler before registration is sent.
+    await earlyReceived;
+    const registration = await send("fork-register", "real");
+    expect(registration).toMatchObject({ ok: true, allowed: true });
+    expect(await early).toMatchObject({ ok: true, allowed: true });
+    expect(await terminal).toMatchObject({ outcome: "success", output: "done" });
+    expect(await send("fork-terminal", "unknown")).toMatchObject({ ok: true, allowed: false });
+    const cancelled = authority.begin({} as any);
+    expect(await send("fork-register", "second")).toMatchObject({ ok: true, allowed: true });
+    expect(await send("fork-disconnect", "second")).toMatchObject({ ok: true, allowed: true });
+    expect((await cancelled).outcome).toBe("cancelled");
+    expect(await send("fork-call", "second")).toMatchObject({ ok: true, allowed: false });
+  } finally { await server.close(); memory.close(); }
 });
 
 test("control socket routes catchup to the live executor and never creates an operator worker", async () => {

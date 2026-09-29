@@ -53,9 +53,7 @@ test("19c 2026-09-08: while the latch is set a requested fork is admitted as a s
     const at = f.h.memory.store.forkSuppression(1)!.at;
     expect(downgrades(f.h)).toEqual([DOWNGRADE]);
     // A later task of the same session, with the capture and the checkpoint both still valid.
-    f.manager().appendMessage({ role: "user", content: long, timestamp: 1 } as never);
-    f.manager().appendMessage({ ...reply("second answer"), timestamp: 1 } as never);
-    await f.h.emit("message_start", { message: reply("") });
+    await f.turn(long);
     const second = await vi.waitFor(() => { const runs = notingRuns(f.h); expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
     expect(second.mode).toBe("subagent");
     const response = JSON.parse(second.response!);
@@ -208,9 +206,10 @@ test("review 2026-09-08: a downgraded session's next task is admitted as a subag
     // New entries make the backlog due again, and the subagent the latch selected runs it.
     // 30: one entry view is capped at `render.entryTokens` (2,000), so it takes more entries to make
     // the backlog due again at the ordinary 10,000-token trigger.
+    f.manager().appendMessage({ role: "user", content: "new main turn", timestamp: 1 } as never);
     for (const label of ["A", "B", "C", "D", "E", "F"]) f.manager().appendMessage(reply(`new source ${label} ` + "word ".repeat(6000)) as never);
-    await f.h.emit("agent_end"); await f.h.drain();
-    const target = { sessionId: 1, branch: "main", headTurnId: 1 };
+    await f.h.emit("agent_settled"); await f.h.drain();
+    const target = { sessionId: 1, branch: "main", headTurnId: 2 };
     expect(f.h.memory.taskEligibility("noting", target).due).toBe(true); // 29d: due is the whole answer; no mode pauses it
     const second = await vi.waitFor(() => { const runs = notingRuns(f.h); expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
     expect(second.mode).toBe("subagent");

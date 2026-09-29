@@ -25,8 +25,8 @@ test.each(cases)("native Noter with saved $key=$value preserves user settings an
     expect(f.h.dialogs.at(-1)!.options).toContain(`${label} mode: ${expected}`);
     f.h.ctx.hasUI = false;
     f.script(body => worker(body) ? submitted(body) ? say("Done.") : noteAndMemory("n", noteBatch) : say("好的。"));
-    // Test configured execution against a stable parent, not a competing settled event.
-    await f.turn(undefined, { settled: expected !== "fork" });
+    // Both execution modes are admitted only after the main turn settles.
+    await f.turn();
     const run = await settled(f, "noting"), audit = JSON.parse(run.response!);
     expect(run.outcome, run.response ?? "").toBe("success");
     expect(run.mode).toBe(expected);

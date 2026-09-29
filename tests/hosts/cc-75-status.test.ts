@@ -69,6 +69,8 @@ test("scheduler notifies admission and settlement, and a failing notify never bl
   const calls: string[] = [];
   const scheduler = new CcTaskScheduler(memory as any, worker, () => {}, reason => { calls.push(reason); });
   scheduler.reconcile(projection);
+  expect(calls).toEqual([]); // import alone is not a turn-end opportunity
+  scheduler.turnEnd(projection, scheduler.catchupTicket());
   await tick();
   expect(calls).toEqual(["noting admitted"]); // admission fires synchronously, before the run settles
   release(undefined);
@@ -85,6 +87,7 @@ test("a throwing notify never prevents admission or settlement (fault isolation)
     noting: vi.fn(async () => ({ outcome: "success", facts: [] })), dream: vi.fn() };
   const scheduler = new CcTaskScheduler(memory as any, worker, () => {}, () => { throw new Error("publish exploded"); });
   scheduler.reconcile(projection);
+  scheduler.turnEnd(projection, scheduler.catchupTicket());
   await tick(); await tick();
   expect(memory.noting).toHaveBeenCalledTimes(1); // admission proceeded despite the throwing hook
 });
@@ -128,8 +131,10 @@ test("attach and the first reconcile publish; admission and settlement publish t
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
   const calls = trackPublish(coordinator);
   try {
-    await coordinator.start(); // attach + first reconcile; noting is due (triggerTokens: 1) and gets admitted
+    await coordinator.start(); // attach and first reconcile publish, but do not admit work
     expect(calls).toContain("startup");
+    expect(calls).not.toContain("noting admitted");
+    await coordinator.turnEnd("fixture-main-turn", "answer", new AbortController().signal);
     expect(calls).toContain("noting admitted");
     const executor = readBinding(f.config, f.nativeSessionId)!.executor!;
     let status = readCcStatus(f.stateDir, f.nativeSessionId)!;

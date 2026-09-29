@@ -33,10 +33,10 @@ for (const moved of [false, true]) {
           expect(f.session.getAllTools().map(tool => tool.name)).toEqual(expect.arrayContaining(["trace", "search", "note", "memory"]));
           return call("parent-evidence", "evidence", {});
         }
-        await vi.waitFor(() => expect(observer.store.listRuns(1).filter(run => run.kind === "noting").length).toBeGreaterThan(0), { timeout: 5000 });
         return say("parent finished");
       });
       await f.session.prompt("Keep this original evidence. ".repeat(20));
+      await vi.waitFor(() => expect(observer.store.listRuns(1).filter(run => run.kind === "noting").length).toBeGreaterThan(0), { timeout: 5000 });
       const runs = observer.store.listRuns(1).filter(run => run.kind === "noting");
       expect(runs).toHaveLength(1);
       const first = runs[0]!;
@@ -44,7 +44,6 @@ for (const moved of [false, true]) {
       expect(first.mode, first.response ?? "missing audit").toBe(moved ? "subagent" : "fork");
       if (moved) expect(JSON.parse(first.response!).fallbackReason).toContain("Fork parent changed");
       expect(f.sent.filter(body => worker(body))).toHaveLength(3);
-      console.info(JSON.stringify({ realSdkParentMoved: moved, runs: runs.map(run => ({ mode: run.mode, outcome: run.outcome, response: run.response })) }));
     } finally { reload.mockRestore(); f.dispose(); observer.close(); rmSync(dir, { recursive: true, force: true }); }
   }, 30_000);
 }
@@ -114,6 +113,7 @@ for (const change of ["leaf", "knowledge", "cancel"] as const) {
         }
       });
       await f.h.emit("before_provider_request", { payload: f.sent[sentBefore] });
+      await f.h.emit("agent_settled");
       await f.h.drain();
       expect(reload).toHaveBeenCalled();
       // Refused native preparation adds no failed-attempt run; only one fresh worker is sent.

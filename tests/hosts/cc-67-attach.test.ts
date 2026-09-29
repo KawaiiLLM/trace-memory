@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { readBinding, recordSessionStart, updateBinding, withCcBindingLock } from "../../src/hosts/cc/binding.ts";
 import { CcCoordinator } from "../../src/hosts/cc/lifecycle.ts";
@@ -9,7 +10,7 @@ import { CcImporter } from "../../src/hosts/cc/importer.ts";
 const dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 async function fixture() {
-  const dir = mkdtempSync("/tmp/tm67-attach-"); dirs.push(dir);
+  const dir = mkdtempSync(join(tmpdir(), "tm67-attach-")); dirs.push(dir);
   const nativeSessionId = "attach", transcriptPath = join(dir, "native.jsonl");
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "s"),
     baseline: "2025-01-01T00:00:00Z", pollIntervalMs: 60_000, finalSyncTimeoutMs: 100, finalSyncStablePolls: 2 });

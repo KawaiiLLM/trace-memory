@@ -2,7 +2,7 @@
 // Claude Code 2.1.280 with this plugin, behind the network fence (cc-native-fence.ts), against a
 // loopback provider that records every request; no request leaves the machine. Run at the outer
 // level, like cc-92-native.test.ts: the fence cannot nest.
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, expect, test } from "vitest";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
@@ -18,19 +18,11 @@ import { ccNativeTranscriptPath } from "../../src/hosts/cc/worker.ts";
 import { CC_INJECTION_HEADER, databaseIdentity, decodeCcInjection } from "../../src/hosts/cc/injection.ts";
 import { CC_AUTO_CONTINUE_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccCarrierStart, ccStripAutoContinue } from "../../src/hosts/cc/transcript.ts";
 import { entry, knowledge, legacyFacts, session } from "../support/seed.ts";
-import { createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
+import { assertPinnedClaudeVersion, createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
 
-const executable = "/opt/homebrew/bin/claude";
+const executable = process.env.TM_NATIVE_CLAUDE_EXECUTABLE ?? "/opt/homebrew/bin/claude";
 let fenced: string;
 const dirs: string[] = [];
-beforeAll(async () => {
-  // Acceptance evidence, not a portable skip: missing prerequisites are unverified.
-  if (!fenceToolsAvailable(executable)) throw new Error("native CC acceptance requires pinned CLI and sandbox-exec");
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "tm102-fence-"))); dirs.push(dir);
-  const fence = createFencedClaudeExecutable(dir, executable);
-  await preflightNetworkFence(fence.profilePath); // abort before any CLI invocation if either control fails
-  fenced = fence.wrapperPath;
-});
 afterAll(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 type Body = { system?: unknown; messages?: { role: string; content: unknown }[] };
@@ -47,7 +39,7 @@ interface Scenario {
   resume?: boolean;
 }
 const OPT_OUTS = { DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1" };
 const texts = (content: unknown): string[] => typeof content === "string" ? [content]
   : Array.isArray(content) ? content.flatMap(block => block?.type === "text" ? [String(block.text)] : []) : [];
 const lastUserText = (body: Body) => texts([...body.messages ?? []].reverse().find(message => message.role === "user")?.content).join("\n");
@@ -131,9 +123,14 @@ async function run(scenario: Scenario) {
       res.end();
     });
   });
-  await new Promise<void>(resolveListen => server.listen(0, "127.0.0.1", resolveListen));
+  await new Promise<void>((resolveListen, reject) => { server.once("error", reject); server.listen(Number(process.env.TM_NATIVE_PREPARED_PORT || 0), "127.0.0.1", resolveListen); });
   const address = server.address() as { port: number };
-  const env = { PATH: process.env.PATH, HOME: join(root, "home"), TMPDIR: root, CLAUDE_CONFIG_DIR: join(root, "config"),
+  if (!fenceToolsAvailable(executable)) throw new Error("native CC acceptance requires pinned CLI and sandbox-exec");
+  const fence = createFencedClaudeExecutable(join(root, "fence"), executable, [address.port], root);
+  await preflightNetworkFence(fence.profilePath, [address.port], root);
+  await assertPinnedClaudeVersion(fence.wrapperPath, root);
+  fenced = fence.wrapperPath;
+  const env = { PATH: process.env.PATH, HOME: join(root, "home"), TMPDIR: root, CLAUDE_CODE_TMPDIR: root, CLAUDE_CONFIG_DIR: join(root, "config"),
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`, ANTHROPIC_API_KEY: "sk-ant-local-only", CLAUDE_CODE_MAX_RETRIES: "0",
     CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: "1", ...OPT_OUTS };
   const sid = randomUUID(), cwd = join(root, "cwd"), pending = [...scenario.prompts], transcriptPath = ccNativeTranscriptPath(env, cwd, sid);

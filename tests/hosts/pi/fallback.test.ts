@@ -80,8 +80,8 @@ test("27b 2026-09-10: a fork prefix the freeze cannot fit is re-admitted once as
     expect(h.notices.filter(n => n.includes("and the inherited context 40000"))).toHaveLength(1);
     // Fresh material, and only the evidence the second freeze selected is committed.
     expect(h.conversations[0]!.systemPrompt).toContain("Noting (facts and knowledge)");
-    expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId)).toEqual(["e1"]);
-    expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.nativeId)).toEqual(["e2"]);
+    expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId)).toEqual(["e1", "e2"]);
+    expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]); // 105 freezes after the final reply
     // No latch, no configuration change.
     expect(h.memory.store.forkSuppression(1)).toBeNull();
     // Settings belongs to the executor; `h.memory` is only an independent database observer.
@@ -466,7 +466,7 @@ test("27c 2026-09-10: the reported live case — an entry the compaction did not
     f.manager().appendMessage({ role: "user", content: "用 bun，不要 node " + "word ".repeat(400), timestamp: 1 } as never);
     f.manager().appendMessage({ ...reply("an answer " + "word ".repeat(400)), timestamp: 1 } as never);
     f.manager().appendCompaction("native summary", f.manager().getLeafId()!, 100);
-    await f.h.emit("message_start", { message: reply("") });
+    await f.h.emit("agent_settled");
     const second = await vi.waitFor(() => {
       const runs = f.h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.response);
       expect(runs).toHaveLength(2); return runs.sort((a, b) => a.id - b.id)[1]!;
@@ -687,15 +687,11 @@ test.each([
     const frozen = (response.entryAudit.entries as { id: number }[]).map(e => e.id);
     expect(frozen).toEqual(expect.arrayContaining(older.map(e => e.id)));
     if (!expected) {
-      // The head reply — the one entry a fork's captured request stops before, which 29b's increment
-      // therefore always restates — is not a member of this target at all: Noting's target ends before
-      // the head Turn's own reply. So the rule never has to special-case it, and a target that does
-      // contain it (a later task, once the head has moved on) holds it as an ordinary retained source,
-      // because `buildContextEntries()` carries it. A target whose only non-inherited entry is the head
-      // reply forks, and this row is that case.
+      // 105 freezes at the final reply, including it. The persisted head is in the
+      // inherited view, even though the captured pre-reply provider request lacks it.
       const headReply = hydrate(h.memory.store.listSourceEntries(1), h.memory.store).at(-1)!;
       expect(headReply.role).toBe("assistant");
-      expect(frozen).not.toContain(headReply.id);
+      expect(frozen).toContain(headReply.id);
       expect(String(response.fallbackReason)).not.toContain("Raw availability");
       // Admitted as a fork: what stops it here is the fake host's missing capture, at the launch.
       expect(String(response.fallbackReason)).toContain("No current-branch provider payload captured");

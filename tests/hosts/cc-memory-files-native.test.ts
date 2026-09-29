@@ -3,7 +3,7 @@
 // permission prompt, while a real file still reaches the real Read and an Edit under /tm is refused.
 // Behind the network fence (cc-native-fence.ts), against a loopback provider; run at the outer level
 // like cc-compaction-native.test.ts, since the fence cannot nest.
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, expect, test } from "vitest";
 import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -13,25 +13,17 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { TraceMemory } from "../../src/core/api/index.ts";
 import { MEMORY_READ_ONLY } from "../../src/core/model/address.ts";
 import { entry, fact, knowledge, session } from "../support/seed.ts";
-import { createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
+import { assertPinnedClaudeVersion, createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
 
-const executable = "/opt/homebrew/bin/claude";
+const executable = process.env.TM_NATIVE_CLAUDE_EXECUTABLE ?? "/opt/homebrew/bin/claude";
 let fenced: string;
 const dirs: string[] = [];
-beforeAll(async () => {
-  // Acceptance evidence, not a portable skip: missing prerequisites are unverified.
-  if (!fenceToolsAvailable(executable)) throw new Error("native CC acceptance requires pinned CLI and sandbox-exec");
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "tm101-fence-"))); dirs.push(dir);
-  const fence = createFencedClaudeExecutable(dir, executable);
-  await preflightNetworkFence(fence.profilePath);
-  fenced = fence.wrapperPath;
-});
 afterAll(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 type Body = { messages?: { role: string; content: unknown }[]; tools?: { name: string }[] };
 type Block = { type: "text"; text: string } | { type: "tool_use"; id: string; name: string; input: unknown };
 const OPT_OUTS = { DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1" };
 const texts = (content: unknown): string => typeof content === "string" ? content : Array.isArray(content)
   ? content.map(block => block?.type === "text" ? String(block.text) : block?.type === "tool_result" ? texts(block.content) : "").join("\n") : "";
 const opening = (body: Body) => texts(body.messages?.[0]?.content);
@@ -102,8 +94,14 @@ test("the main thread and its general-purpose and Explore subagents read /tm wit
       res.end();
     });
   });
-  await new Promise<void>(listening => server.listen(0, "127.0.0.1", listening));
-  const env = { PATH: process.env.PATH, HOME: join(root, "home"), TMPDIR: root, CLAUDE_CONFIG_DIR: join(root, "config"),
+  await new Promise<void>((listening, reject) => { server.once("error", reject); server.listen(Number(process.env.TM_NATIVE_PREPARED_PORT || 0), "127.0.0.1", listening); });
+  if (!fenceToolsAvailable(executable)) throw new Error("native CC acceptance requires pinned CLI and sandbox-exec");
+  const port = (server.address() as { port: number }).port;
+  const fence = createFencedClaudeExecutable(join(root, "fence"), executable, [port], root);
+  await preflightNetworkFence(fence.profilePath, [port], root);
+  await assertPinnedClaudeVersion(fence.wrapperPath, root);
+  fenced = fence.wrapperPath;
+  const env = { PATH: process.env.PATH, HOME: join(root, "home"), TMPDIR: root, CLAUDE_CODE_TMPDIR: root, CLAUDE_CONFIG_DIR: join(root, "config"),
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`, ANTHROPIC_API_KEY: "sk-ant-local-only",
     CLAUDE_CODE_MAX_RETRIES: "0", CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: "1", ...OPT_OUTS };
   const prompts: { toolName: string; input: unknown }[] = [], logs: string[] = [];

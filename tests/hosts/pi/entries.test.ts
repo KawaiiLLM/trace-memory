@@ -161,7 +161,7 @@ test("17a 2026-09-08: Noting, fallback, compaction and carry supply identical bo
     runner.entries.push(...h.entries.filter(e => e.type === "message"));
     runner.allEntries.push(...runner.entries);
     await runner.emit("session_start");
-    runner.persist(reply("tick")); await runner.emit("agent_end"); await runner.drain();
+    runner.persist(reply("tick")); await runner.emit("agent_end"); await runner.emit("agent_settled"); await runner.drain();
     const sent = runner.conversations[0]!.messages[0]!.content as string;
     expect(rawOf(sent)).toContain(rawOf(subagent));
     expect(runner.memory.store.listRuns(1).at(-1)!.mode).toBe("subagent");

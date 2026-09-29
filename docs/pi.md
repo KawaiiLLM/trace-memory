@@ -4,10 +4,11 @@ The current [entry-address and budget contract](unified-entry.md) supersedes old
 
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `src/core/api/index.ts`, including
-its exposed store. Both Noting and Consolidation use subagents by default and may be configured
-to use verified fork mode. Dreamer is always a fresh subagent. Each reconciled eligible entry
-completion checks all three phase queues. Shutdown, tree navigation and compaction launch no phase
-(73 deleted compaction's bounded Noting/Consolidation/Dreamer recovery from tickets 28, 28b and 32f).
+its exposed store. Noting uses a fresh subagent by default and may request verified fork mode;
+Dreamer is always a fresh subagent. Live Consolidation is retired. Automatic N/D checks occur once
+at each main turn end (105), not at entry ingestion or ordinary task completion. Shutdown, tree
+navigation and compaction launch no phase. The current scheduling and publication contracts
+supersede per-entry triggers, chained runs and live C settings in the historical numbered sections below.
 
 **One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
 (`native.ts`): fork mode in a child forked from the parent session file at its persisted
@@ -33,6 +34,12 @@ fabricate records. Revision ids, parents, links, Raw and run audit remain intact
 migration contract, not a claim that a production copy has passed acceptance. Stop older executors
 before opening the upgraded database; mixed-runtime writes are unsupported. Preserve backups and
 logs. See the [installation guide](../README.md#install) before loading the package.
+
+## Automatic checkpoints (105)
+
+Pi uses the final `agent_settled` signal for its main-turn checkpoint. It reconciles persisted sources, deduplicates the selected session/branch/head, and checks N and D once each. A busy phase is skipped without retained work. Ordinary task success or failure starts no new check; another main turn end is required. Stop and path changes fence subsequent borrowed-candidate launches as well as current-session work.
+
+The three derived interpretations are shared with the [Core scheduling contract](core.md#automatic-scheduling-105): both due phases use the existing admission rules without a new ordering rule, automatic failure retries wait for a later turn, and manual catchup remains an explicit independent drain. Three consecutive failures still disable memory. A compaction during a long turn can remove unnoted originals from the parent while leaving them pending in the database; the existing coverage and capacity checks decide whether the later Noter can fork or needs fresh context.
 
 ## Configuration
 
@@ -247,8 +254,8 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   is assembled from that Turn's selected source entries under the configured entry view
   (ticket 23b), so a branch's own occurrences are what a bound read shows; pagination
   retains its existing protocol.
-- Every eligible persisted entry completion checks the active branch's queues at
-  reconciliation; the unchanged native leaf-id guard keeps streaming updates O(1).
+- The final main-turn checkpoint checks the active branch's N/D queues once (105).
+  Entry reconciliation alone starts no run; the unchanged native leaf-id guard keeps streaming updates O(1).
   `noting.triggerTokens` defaults to **10,000 compressed-view tokens** measured
   with `renderEntry` over `pendingEntries`, including separators. Original Raw size,
   entry count and answered Turns do not trigger runs. Excluded sources contribute nothing.
@@ -258,7 +265,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 - `noting.batchTokens` defaults to **10,000** (ticket 20; it was 50,000 through 17b): the oldest
   contiguous whole-entry prefix, without Turn boundaries. An entry is never skipped so that smaller
   later entries can fill the remaining space, and a partly filled batch is valid. Excess waits for
-  another eligible completion.
+  a later main-turn checkpoint or an explicit catchup batch.
   It bounds this phase only: since 28a compact measures its pending views against its own Raw window
   (`compaction.rawTokens`) inside the three-window envelope, so changing this key — or
   `render.episodicBlockTokens`, which stayed the Noter's — does not change what compaction keeps.
@@ -268,7 +275,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   pending with a capacity notification — unless it was a *fork* that could not fit, which 27b
   re-admits once as a subagent instead. Unknown model capacity still leaves work pending.
   Native fork context is additional to the new-material budget and is never compressed.
-- Dreaming is checked **per session** on every reconciled eligible entry, over `global`, this session's
+- Dreaming is checked **per session** once at each main turn end, over `global`, this session's
   project and this session together. Pending is each pool's current visible, non-archived revision lacking a
   `(pool, revision)` processing record, one revision per identity at its full rendered size. A run is
   due when the pools' total exceeds the Knowledge base plus the shared allowance (30,000 by default), or
@@ -285,7 +292,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   atomically. Processing records skipped frozen versions and the run's own commits, including on
   failure or cancellation. Untouched versions remain pending; own outputs do not trigger themselves.
   A run succeeds only when its pool ends within its budget with every frozen version deliberated;
-  a successful run is followed at once while the session is still due. A run's range ends once.
+  ordinary completion starts no next run, even while the session remains due. A run's range ends once.
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
   the fact line with its relations and the joining separator — the trigger over the whole applicable
@@ -486,7 +493,7 @@ creation timestamp cannot override it.
 
 Enabling reconciles available current-path history, including the paused interval,
 through the same identity-based importer as ordinary entries. It makes no provider
-call and does not synthesize a completion. The next eligible completion checks
+call and does not synthesize a completion. The next main turn end checks
 normal queue thresholds. Repeating enable does not duplicate imported sources.
 
 Disabled sessions ingest nothing, inject nothing and start no new worker. Manual `note` and

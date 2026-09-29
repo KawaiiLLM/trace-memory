@@ -8,7 +8,7 @@
 // slower than the mocked-transport suite (cc-worker.test.ts) and are kept to the minimum needed to
 // prove the path rule and the native-file/isolation/daily-cost acceptance items against reality, not
 // a stand-in for it.
-import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
+import { afterEach, expect, test } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -17,9 +17,9 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, ccNativeTranscriptPath, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
 import { startLoopbackAnthropic } from "./cc-native-loopback.ts";
-import { createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
+import { assertPinnedClaudeVersion, createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
 
-const CLAUDE_EXECUTABLE = "/opt/homebrew/bin/claude";
+const CLAUDE_EXECUTABLE = process.env.TM_NATIVE_CLAUDE_EXECUTABLE ?? "/opt/homebrew/bin/claude";
 const CLAUDE_VERSION = "2.1.280";
 // These probes need the pinned executable and the sandboxing tool that fences it. Elsewhere they are
 // skipped, never failed: the suite stays portable. The daily-cost check additionally needs the
@@ -28,20 +28,14 @@ const FENCE_TOOLS_AVAILABLE = fenceToolsAvailable(CLAUDE_EXECUTABLE);
 const probe = test.skipIf(!FENCE_TOOLS_AVAILABLE);
 const POWERLINE = join(homedir(), "Projects/claude-powerline/src/utils/claude.ts");
 
-// The fenced executable and its preflight are shared across every probe in this file: one wrapper,
-// verified once before any probe spawns it. `fencedClaude` is assigned before any test body runs
-// (vitest always finishes `beforeAll` first) — see FENCE_TOOLS_AVAILABLE above for why this can be
-// undefined when every probe is skipped anyway.
 let fencedClaude: string;
-let fenceDir: string;
-beforeAll(async () => {
-  if (!FENCE_TOOLS_AVAILABLE) return;
-  fenceDir = mkdtempSync(join(tmpdir(), "tm78-fence-"));
-  const { wrapperPath, profilePath } = createFencedClaudeExecutable(fenceDir, CLAUDE_EXECUTABLE);
-  await preflightNetworkFence(profilePath);
+async function fence(root: string, ports: number[]) {
+  const { wrapperPath, profilePath } = createFencedClaudeExecutable(join(root, "fence"), CLAUDE_EXECUTABLE, ports, root);
+  await preflightNetworkFence(profilePath, ports, root);
+  await assertPinnedClaudeVersion(wrapperPath, root);
   fencedClaude = wrapperPath;
-});
-afterAll(() => { if (fenceDir) rmSync(fenceDir, { recursive: true, force: true }); });
+}
+
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -58,10 +52,12 @@ function tempDir(prefix: string): string {
 // calls `query(...)` directly, bypassing that, so it sets them here itself).
 const CLI_OPT_OUTS = { DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1",
-  CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" } as const;
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1" } as const;
 
 function loopbackEnvironment(configDir: string, baseUrl: string): NodeJS.ProcessEnv {
-  return { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: configDir,
+  const socketRoot = dirname(dirname(fencedClaude));
+  return { PATH: process.env.PATH, HOME: configDir, CLAUDE_CONFIG_DIR: configDir,
+    TMPDIR: socketRoot, CLAUDE_CODE_TMPDIR: socketRoot,
     ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: "sk-ant-fake-probe-key", CLAUDE_CODE_MAX_RETRIES: "0", ...CLI_OPT_OUTS };
 }
 
@@ -79,6 +75,7 @@ probe("native file: a real CC worker run writes its transcript under <config dir
     ? { blocks: [{ type: "tool_use", id: "toolu_1", name: "mcp__trace_memory__trace", input: {} }], stopReason: "tool_use" }
     : { blocks: [{ type: "text", text: "done" }], stopReason: "end_turn" });
   try {
+    await fence(cwd, [Number(new URL(loopback.url).port)]);
     const environment = loopbackEnvironment(configDir, loopback.url);
     const task = { kind: "noting", text: "material", prompt: "instructions",
       tools: [{ name: "trace", description: "read", parameters: { type: "object", properties: {} },
@@ -137,6 +134,7 @@ probe("isolation: a SessionStart Hook configured for the config directory never 
     { hooks: [{ type: "command", command: `/usr/bin/touch ${JSON.stringify(marker)}` }] } ] } }));
   const loopback = await startLoopbackAnthropic(() => ({ blocks: [{ type: "text", text: "done" }], stopReason: "end_turn" }));
   try {
+    await fence(cwd, [Number(new URL(loopback.url).port)]);
     const environment = loopbackEnvironment(configDir, loopback.url);
     const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: () => {} } as unknown as CcAgentTask;
     const result = await new CcAgentWorker(workerConfig(cwd), { environment }).run(task, 0);
@@ -151,11 +149,13 @@ probe("isolation: a SessionStart Hook configured for the config directory never 
 
 probe("path rule: a custom CLAUDE_CONFIG_DIR and worker cwds with dots, spaces and non-ASCII characters each give the path this code records", async () => {
   const configDir = tempDir("tm78-path-config-");
+  await fence(configDir, []); // This case reads init and aborts without a live provider.
   for (const leaf of ["plain", "dot.dir", "spaced dir", "unicode-café-日本語", "under_score", "paren(1)"]) {
     const base = tempDir("tm78-path-cwd-");
     const cwd = join(base, leaf);
     mkdirSync(cwd, { recursive: true });
-    const environment = { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: configDir,
+    const environment = { PATH: process.env.PATH, HOME: configDir, CLAUDE_CONFIG_DIR: configDir,
+      TMPDIR: configDir, CLAUDE_CODE_TMPDIR: configDir,
       ANTHROPIC_BASE_URL: "http://127.0.0.1:9", ANTHROPIC_API_KEY: "sk-ant-fake-probe-key", ...CLI_OPT_OUTS };
     const controller = new AbortController();
     const execution = query({ prompt: "hello", options: {

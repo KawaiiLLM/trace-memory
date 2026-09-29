@@ -102,7 +102,7 @@ test("92: CC adapter writes against the borrowed target and renders legacy categ
   try {
     const projection = { memory: f.memory, coreSessionId: f.session.id, branch: "main", headTurnId: f.turn.id,
       triggerEntryId: f.entries.at(-1)!.id, entryIds: f.entries.map(entry => entry.id) };
-    const adapter = new CcForegroundTools({ waitForToolCall: async () => projection,
+    const adapter = new CcForegroundTools({ forkToolCall: () => null, waitForToolCall: async () => projection,
       toolProjection: async () => ({ memory: f.memory, binding: projection }) } as unknown as CcCoordinator);
     const meta = { "claudecode/toolUseId": "borrowed-call" };
     expect((await adapter.call("note", { facts: [{ ...slice("wrong", [f.source[1]!]), actor: "agent" }] }, meta)).isError).toBe(true);

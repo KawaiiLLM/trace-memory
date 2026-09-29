@@ -185,8 +185,8 @@ test("89: Pi reports a real invalid cursor while its own due N/D both reach thei
     await h.emit("session_tree");
     const before = h.conversations.length;
     h.provider(async () => new Promise<Reply>(() => {}));
-    h.persist(reply("one ordinary scheduling opportunity"));
-    await h.emit("agent_end");
+    await h.prompt("next main turn");
+    await h.answer("one ordinary scheduling opportunity");
     await vi.waitFor(() => expect(h.conversations.length - before).toBe(2));
     expect(h.notices.some(value => value.includes("noting closed-session scan failed"))).toBe(true);
     expect(h.notices.some(value => value.includes("consolidation closed-session scan failed"))).toBe(false);

@@ -20,7 +20,7 @@ test.each(["automatic", "catchup"] as const)("%s releases a rejected slot once a
     runtime.setKnowledgeBudget("session", 0);
     runtime.config.noting.triggerTokens = 0;
     const start = async () => {
-      if (mode === "automatic") { h.persist(reply("next eligible entry")); return h.emit("agent_end"); }
+      if (mode === "automatic") { await h.prompt("next eligible turn"); return h.answer("next eligible entry"); }
       if (mode === "catchup") return h.commands.get("trace").handler("catchup", h.ctx);
       return h.emit("session_before_compact", { preparation: { tokensBefore: 100000 } });
     };

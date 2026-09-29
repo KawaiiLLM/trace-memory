@@ -83,7 +83,7 @@ test("Dreamer pre-request capacity failure names its own phase and retains its w
   } finally { measure.mockRestore(); await h.dispose(); }
 });
 
-test("32d native host: entry completion starts a fresh Dreamer and records its frozen pool range", async () => {
+test("32d native host: turn settlement starts a fresh Dreamer and records its frozen pool range", async () => {
   const { h, store, item, pool } = await seeded({ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high", compaction: { enabled: true } });
   try {
     let requests = 0;
@@ -97,9 +97,7 @@ test("32d native host: entry completion starts a fresh Dreamer and records its f
     expect(run.origin!.sessionId).toBe(1);
     const exactTrigger = run.origin!.entryIds.at(-1)!;
     const laterHead = store.sourceHeadEntryId(1, "main", store.knowledgePath(1).headTurnId!)!;
-    expect(exactTrigger).toBeLessThan(laterHead);
-    expect(store.getSourceEntry(exactTrigger)!.turnId).toBe(store.getSourceEntry(laterHead)!.turnId);
-    expect(run.origin!.entryIds).not.toContain(laterHead);
+    expect(exactTrigger).toBe(laterHead); // 105: the entire main turn is persisted before admission
     const execution = store.db.prepare("SELECT e.origin_session_id, e.origin_entry_ids FROM task_executions e JOIN execution_runs x ON x.execution_id = e.id WHERE x.run_id = ?").get(run.id)!;
     expect({ sessionId: execution.origin_session_id, entryIds: JSON.parse(String(execution.origin_entry_ids)) }).toEqual(run.origin);
     expect(processedIn(store, pool, item.commit)).toBe(true);

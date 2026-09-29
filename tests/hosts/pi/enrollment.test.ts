@@ -304,7 +304,7 @@ test.each([true, false])("92: disable during D rejects late %s mutation and pres
   const original = h.memory.store.listKnowledgeRevisions()[0]!;
   let release!: (value: ReturnType<typeof reply>) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
-  await h.answer("D opportunity"); await h.drain(); expect(h.requests).toHaveLength(1);
+  await h.prompt("next main turn"); await h.answer("D opportunity"); await h.drain(); expect(h.requests).toHaveLength(1);
   await command(h, "off"); h.provider(async () => reply("Stopped"));
   release(submit ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
     operations: [{ op: "archive", kind: "budget", id: `K${original.knowledgeId}#${h.memory.store.versionTag(original.knowledgeId, original.id)}`, supports: [], reason: "Late mutation" }], skipped: [],

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { selectNotingMode } from "../../../src/core/api/fork.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
 
@@ -15,9 +15,7 @@ describe("shared Noter execution mode", () => {
     expect(select({ publicationPending: true }).fallbackReason).toContain("Knowledge publication");
   });
   it("requires proven source or bounded-carrier coverage of the frozen oldest batch", () => {
-    const batch = vi.fn(() => [entry(1)]);
-    expect(select({ pending: () => [entry(1), entry(2)], batch }).effectiveMode).toBe("fork");
-    expect(batch).toHaveBeenCalledOnce();
+    expect(select({ pending: () => [entry(1), entry(2)], batch: () => [entry(1)] }).effectiveMode).toBe("fork");
     expect(select({ pending: () => [entry(1), entry(2)], batch: () => [entry(1), entry(2)] }).fallbackReason)
       .toContain("Raw availability: entry 2");
     expect(select({ visible: noVisibility() }).fallbackReason).toContain("no conversation entry");

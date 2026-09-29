@@ -25,7 +25,7 @@ function target(memory: Memory, options: { closed?: boolean; enabled?: boolean; 
   if (options.enabled === false) memory.store.setEnrollment(session.id, false);
   return { ...path, projectId: project.id, entryId: entry.id };
 }
-const tick = async (h: ReturnType<typeof host>) => { h.persist(reply("eligible completion")); await h.emit("agent_end"); await h.drain(); };
+const tick = async (h: ReturnType<typeof host>) => { await h.prompt("next main turn"); await h.answer("eligible completion"); await h.drain(); };
 function hold(h: ReturnType<typeof host>) {
   const releases: ((reply: Reply) => void)[] = [];
   h.provider(async () => new Promise(resolve => releases.push(resolve)));
@@ -38,7 +38,7 @@ test("own pending N precedes closed tails; busy N does not fan out or chain on c
     await h.turn();
     const tails = Array.from({ length: 4 }, () => target(h.memory));
     const release = hold(h);
-    h.persist(reply("word ".repeat(15_000))); await h.emit("agent_end"); await h.drain();
+    await h.prompt("word ".repeat(15_000)); await h.answer(); await h.drain();
     expect(h.requests).toHaveLength(1);
     expect(h.memory.store.getClaim(1, "noting")?.borrowed).toBe(false);
     for (const tail of tails) expect(h.memory.store.getClaim(tail.sessionId, "noting")).toBeNull();
@@ -357,7 +357,7 @@ test("resume takes crashed claims immediately; tree navigation keeps owned N run
     expect(claim.token).not.toBe(old.token); expect(claim.reserved).toBe(true);
     expect(h.memory.store.getSession(1)!.closedAt).toBeNull();
     const release = hold(h);
-    h.persist(reply("word ".repeat(15_000))); await h.emit("agent_end"); await h.drain();
+    await h.prompt("next main turn"); await h.answer("word ".repeat(15_000)); await h.drain();
     expect(h.requests).toHaveLength(1);
     const running = h.memory.store.getClaim(1, "noting")!;
     expect(running.reserved).toBe(false);
