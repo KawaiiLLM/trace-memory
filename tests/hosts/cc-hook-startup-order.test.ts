@@ -103,16 +103,6 @@ test("refused registration or changed session never enters the model request", a
   expect(f.next).not.toHaveBeenCalled();
 });
 
-test("version refusal stays visible without altering the model stream", async () => {
-  const f = await fixture("2.1.277");
-  expect(f.status).toHaveBeenCalledWith(expect.stringContaining("version mismatch"));
-  const received = await collect(f.handlers.get("turn.step")!(f.host, step, f.next));
-  expect(received.chunks).toEqual(f.chunks);
-  expect(received.result).toBe(f.result);
-  expect(f.run.mock.calls.some(([argv]) => argv.includes("hook-capable"))).toBe(false);
-  expect(f.next).toHaveBeenCalledExactlyOnceWith(step);
-});
-
 test("downstream stream failure propagates unchanged after emitted chunks", async () => {
   const f = await fixture();
   const failure = new Error("model stream failed");

@@ -743,7 +743,7 @@ export const register = (on) => {
     return next(e);
   });
   on("turn.step", async function* ($, e, next) {
-    if (e.agentId || versionError) return yield* next(e);
+    if (e.agentId || unavailable) return yield* next(e);
     const session = await $.session.id();
     const root = $.plugin.root;
     if (!root) throw new Error("Trace Memory: Claude Code plugin root is unavailable");
@@ -757,25 +757,25 @@ export const register = (on) => {
   });
   on("tool.call", async ($, e, next) => {
     const name = String(e.tool).match(/^mcp__(?:traceMemory|plugin_trace-memory_traceMemory)__(note|memory)$/)?.[1];
-    if (!name || !e.agentId || versionError) return next(e);
+    if (!name || !e.agentId || unavailable) return next(e);
     const allowed = await forkEvent($, await $.session.id(), "fork-call", { agentId: e.agentId, callId: e.tool_use_id, name });
     return allowed ? next(e) : { deny: "CC Noter fork identity is not registered for this call" };
   });
   on("tool.check", async ($, e, next) => {
     const name = String(e.tool).match(/^mcp__(?:traceMemory|plugin_trace-memory_traceMemory)__(note|memory)$/)?.[1];
-    if (!name || versionError) return next(e);
+    if (!name || unavailable) return next(e);
     const allowed = await forkEvent($, await $.session.id(), "fork-check", { callId: e.tool_use_id, name });
     return allowed ? { decision: "allow" } : next(e);
   });
   on("turn.complete", async ($, e, next) => {
-    if (e.agentId && !versionError) {
+    if (e.agentId && !unavailable) {
       try {
         await forkEvent($, await $.session.id(), "fork-terminal", { agentId: e.agentId, reason: e.reason, answer: e.answer ?? "" });
       } catch (error) {
         console.error(`Trace Memory fork terminal: ${String(error)}`);
       }
     }
-    if (!e.agentId && !versionError) {
+    if (!e.agentId && !unavailable) {
       try {
         const session = await $.session.id();
         let observation = { refused: "CC fork source coverage or native capacity is unavailable" };

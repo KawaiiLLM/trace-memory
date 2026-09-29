@@ -275,6 +275,7 @@ test("suppressed CC fork uses shared selector and fresh Noter with explicit reas
 
 test.each(["hook", "transcript"] as const)("accepted CC scan race preserves turn-end dedup and published Raw (%s; imposed order)", async mode => {
   const f = fixture(`queued-user-${mode}`); enableSyntheticWorker(f);
+  f.config.stateDir = mkdtempSync("/tmp/tmcc-scan-race-"); dirs.push(f.config.stateDir);
   (f.records[1]!.message as Record<string, unknown>).stop_reason = "tool_use";
   f.config.coreConfig.noting.triggerTokens = 1;
   f.write();
