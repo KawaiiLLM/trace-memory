@@ -30,7 +30,7 @@ const opts = { DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_R
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
 function config(cwd: string) { return resolveCcHostConfig({ dbPath: join(cwd, "memory.sqlite"), stateDir: join(cwd, "state"),
   notingModel: "sonnet", notingThinking: "medium", "dreaming.model": "sonnet", "dreaming.thinking": "medium",
-  worker: { claudeExecutable: fenced, claudeVersion: "2.1.280", contextWindows: { sonnet: 200_000 }, cwd } }); }
+  worker: { claudeExecutable: fenced, contextWindows: { sonnet: 200_000 }, cwd } }); }
 const fact = (text: string, source = "T2#E1") => ({ title: text, sources: [{ address: source, text }] });
 const empty = { operations: [], skipped: [] };
 const tool = (id: number, name: "note" | "memory", input: unknown): LoopbackTurn => ({

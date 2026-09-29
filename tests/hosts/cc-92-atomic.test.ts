@@ -7,6 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { sourceSeededMemory } from "../source-fixture.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
+import { TEST_CC_VERSION } from "../support/cc-version.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -19,7 +20,7 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
     writeFileSync(executable, "#!/bin/sh\nprintf '2.1.280 (Claude Code)\\n'\n"); chmodSync(executable, 0o700);
     const config = resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
       notingModel: "test", notingThinking: "medium",
-      "dreaming.model": "test", "dreaming.thinking": "medium", worker: { claudeExecutable: executable, claudeVersion: "2.1.280",
+      "dreaming.model": "test", "dreaming.thinking": "medium", worker: { claudeExecutable: executable,
         contextWindows: { test: 200_000 }, cwd: directory } });
     const replies: string[] = [];
     let target!: { session: { id: number }; path: { sessionId: number; branch: string; headTurnId: number } };
@@ -29,7 +30,7 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
         await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
         const client = new Client({ name: "atomic-test", version: "1" }); await client.connect(clientTransport);
         try {
-          yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
+          yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
             tools: ["mcp__trace_memory__note", "mcp__trace_memory__memory", "mcp__trace_memory__trace", "mcp__trace_memory__search"],
             plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
           for (const [name, args] of [

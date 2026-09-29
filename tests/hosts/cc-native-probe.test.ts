@@ -1,4 +1,4 @@
-// 78: native probes against the pinned, real Claude Code executable (2.1.280) — the only file in
+// 78: native probes against the installed, real Claude Code executable (any version; 106 records it) — the only file in
 // this suite that spawns it for real. No real model call ever leaves the machine: every provider
 // request goes to the loopback Anthropic-shaped server in cc-native-loopback.ts. Every spawn of the
 // real CLI (the worker run, the path-rule probe's direct `query(...)`, and the `--version` check the
@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { basename, dirname, join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, ccNativeTranscriptPath, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
@@ -20,8 +21,7 @@ import { startLoopbackAnthropic } from "./cc-native-loopback.ts";
 import { createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
 
 const CLAUDE_EXECUTABLE = "/opt/homebrew/bin/claude";
-const CLAUDE_VERSION = "2.1.280";
-// These probes need the pinned executable and the sandboxing tool that fences it. Elsewhere they are
+// These probes need the installed executable and the sandboxing tool that fences it. Elsewhere they are
 // skipped, never failed: the suite stays portable. The daily-cost check additionally needs the
 // maintainer's local claude-powerline checkout, guarded separately below (still skipped, not failed).
 const FENCE_TOOLS_AVAILABLE = fenceToolsAvailable(CLAUDE_EXECUTABLE);
@@ -69,7 +69,7 @@ function workerConfig(cwd: string, executable = fencedClaude) {
   return resolveCcHostConfig({ dbPath: join(cwd, "memory.sqlite"), stateDir: join(cwd, "state"),
     notingModel: "sonnet", notingThinking: "medium",
     "dreaming.model": "sonnet", "dreaming.thinking": "medium",
-    worker: { claudeExecutable: executable, claudeVersion: CLAUDE_VERSION, contextWindows: { "sonnet": 200_000 }, cwd } });
+    worker: { claudeExecutable: executable, contextWindows: { "sonnet": 200_000 }, cwd } });
 }
 
 probe("native file: a real CC worker run writes its transcript under <config dir>/projects/<dir for cwd>/<session id>.jsonl, holding the worker's assistant messages, tool calls and results; claude-powerline counts it once", async () => {
@@ -83,8 +83,13 @@ probe("native file: a real CC worker run writes its transcript under <config dir
     const task = { kind: "noting", text: "material", prompt: "instructions",
       tools: [{ name: "trace", description: "read", parameters: { type: "object", properties: {} },
         execute: () => "tool result text" }], acknowledgeRequest: () => {} } as unknown as CcAgentTask;
-    const result = await new CcAgentWorker(workerConfig(cwd), { environment }).run(task, 0);
+    const journal: { event: string; details?: Record<string, unknown> }[] = [];
+    const result = await new CcAgentWorker(workerConfig(cwd), { environment, journal: (event, details) => journal.push({ event, details }) }).run(task, 0);
     expect(result.outcome).toBe("success");
+    // 106: the version the worker records is the installed executable's own, not a constant.
+    const installed = execFileSync(fencedClaude, ["--version"], { encoding: "utf8" }).match(/\d+\.\d+\.\d+/)?.[0];
+    expect(installed).toBeTruthy();
+    expect(journal.find(entry => entry.event === "worker-run-started")?.details?.claudeVersion).toBe(installed);
     expect(result.nativeLog).toBeTruthy();
     const nativeLog = result.nativeLog!;
     expect(existsSync(nativeLog)).toBe(true);

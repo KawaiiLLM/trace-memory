@@ -11,6 +11,7 @@ import { installCcNativeRejectionGuard } from "../../src/hosts/cc/native-rejecti
 import { CC_MAX_RESULT_CHARS } from "../../src/hosts/cc/tools.ts";
 import { CcTaskScheduler as CoreCcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import type { CcReconcileResult } from "../../src/hosts/cc/importer.ts";
+import { TEST_CC_VERSION } from "../support/cc-version.ts";
 
 type FixtureProjection = Omit<CcReconcileResult, "selectedCount" | "selectedTailId" | "selectedAppendedEntryIds">;
 // Scheduler-only fixtures vary source selection independently. Supply the importer-owned header
@@ -36,7 +37,7 @@ function workerConfig(directory: string, claudeExecutable = "/opt/homebrew/bin/c
   return resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "claude-sonnet-4-5", notingThinking: "medium",
     "dreaming.model": "claude-sonnet-4-5", "dreaming.thinking": "medium",
-    worker: { claudeExecutable, claudeVersion: "2.1.280", contextWindows: { "claude-sonnet-4-5": 200_000 },
+    worker: { claudeExecutable, contextWindows: { "claude-sonnet-4-5": 200_000 },
       cwd: directory, responseOriginTimeoutMs: 20 } });
 }
 
@@ -49,8 +50,7 @@ function loopbackEnvironment(configDir: string) {
 function phaseWorkerConfig(directory: string) {
   return resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "sonnet", notingThinking: "low",
-    "dreaming.model": "opus-d", "dreaming.thinking": "max", worker: { claudeExecutable: "/opt/homebrew/bin/claude",
-      claudeVersion: "2.1.280", contextWindows: { sonnet: 120_000, "opus-c": 220_000, "opus-d": 320_000 }, cwd: directory } });
+    "dreaming.model": "opus-d", "dreaming.thinking": "max", worker: { claudeExecutable: "/opt/homebrew/bin/claude", contextWindows: { sonnet: 120_000, "opus-c": 220_000, "opus-d": 320_000 }, cwd: directory } });
 }
 
 function assistant(id: string, toolIds: string[]) {
@@ -78,7 +78,7 @@ test("production worker serves original schemas and raw arguments, publishes the
       await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
       const client = new Client({ name: "worker-test", version: "1" }); await client.connect(clientTransport);
       listed.push(await client.listTools());
-      yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: ["mcp__trace_memory__trace"], plugins: [], skills: [], slash_commands: [],
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield assistant("response-raw", ["call-raw"]);
@@ -110,13 +110,13 @@ test("worker passes only native retry count, records native events, and preserve
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const base = workerConfig(directory, executable);
   const config = resolveCcHostConfig({ ...base, retry: { maxRetries: 3 }, worker: {
-    claudeExecutable: executable, claudeVersion: "2.1.280", contextWindows: { "claude-sonnet-4-5": 200_000 }, cwd: directory,
+    claudeExecutable: executable, contextWindows: { "claude-sonnet-4-5": 200_000 }, cwd: directory,
   } } as any);
   let environment: NodeJS.ProcessEnv | undefined;
   const fakeQuery = ((request: { options: Record<string, any> }) => {
     environment = request.options.env;
     const stream = (async function* () {
-      yield { type: "system", subtype: "init", session_id: "retry-child", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", session_id: "retry-child", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 250, error: "server_error" };
       yield { type: "assistant", isApiError: true, session_id: "retry-child", message: { id: "api-error",
@@ -140,13 +140,36 @@ test("worker passes only native retry count, records native events, and preserve
   expect(reportProgress).toHaveBeenCalledWith(expect.objectContaining({ retries: [{ attempt: 1, error: "server_error" }] }));
 });
 
+test("106: a run on any Claude Code version succeeds and journals the version it started", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-version-")); dirs.push(directory);
+  const config = resolveCcHostConfig({ ...workerConfig(directory), worker: { claudeExecutable: "/missing/claude",
+    claudeVersion: "0.0.1-retired", contextWindows: { "claude-sonnet-4-5": 200_000 }, cwd: directory } } as any);
+  const fakeQuery = (() => {
+    const stream = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "version-child", claude_code_version: TEST_CC_VERSION, cwd: directory,
+        tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "result", subtype: "success", session_id: "version-child", is_error: false, result: "ok", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const journal: { event: string; details?: Record<string, unknown> }[] = [];
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
+  const result = await new CcAgentWorker(config, { query: fakeQuery, journal: (event, details) => journal.push({ event, details }) }).run(task, 0);
+  expect(result.outcome).toBe("success");
+  expect(journal).toContainEqual({ event: "worker-run-started",
+    details: { taskKind: "noting", nativeSessionId: "version-child", claudeVersion: TEST_CC_VERSION } });
+  expect(config.worker).not.toHaveProperty("claudeVersion");
+});
+
 test("worker preserves assistant usage when an API error exits before an SDK result", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-api-error-")); dirs.push(directory);
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const fakeQuery = (() => {
     const stream = (async function* () {
-      yield { type: "system", subtype: "init", session_id: "api-child", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", session_id: "api-child", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "assistant", is_api_error_message: true, session_id: "api-child", message: { id: "api-error",
         content: [{ type: "text", text: "API Error: upstream disconnected" }],
@@ -169,7 +192,7 @@ test.each(["throw", "end"] as const)("flagged assistant API error outranks a lat
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const fakeQuery = (() => {
     const stream = (async function* () {
-      yield { type: "system", subtype: "init", session_id: "api-child", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", session_id: "api-child", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "assistant", isApiError: true, session_id: "api-child", message: { id: "specific-api-error",
         content: [{ type: "text", text: "API Error: upstream response body closed" }],
@@ -195,7 +218,7 @@ test("no-result stream exit keeps the latest complete usage for a repeated assis
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const fakeQuery = (() => {
     const stream = (async function* () {
-      yield { type: "system", subtype: "init", session_id: "usage-child", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", session_id: "usage-child", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       for (const output_tokens of [2, 5]) yield { type: "assistant", session_id: "usage-child", message: { id: "same-response",
         content: [{ type: "text", text: "partial" }], usage: { input_tokens: 20, output_tokens,
@@ -219,7 +242,7 @@ test("Dreamer retains assistant usage received after the last completed result w
     const stream = (async function* () {
       const input = request.prompt[Symbol.asyncIterator](); await input.next();
       yield { type: "system", subtype: "init", session_id: "usage-child", messaging_socket_path: "/tmp/usage.sock",
-        claude_code_version: "2.1.280", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", session_id: "usage-child", is_error: false, result: "first", errors: [],
         usage: { input_tokens: 10, output_tokens: 4, cache_read_input_tokens: 2, cache_creation_input_tokens: 1 }, total_cost_usd: 0.1 };
@@ -250,7 +273,7 @@ test("CC worker dispatches fifty-one read calls through simulated MCP with unlim
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
       const client = new Client({ name: "round-worker-test", version: "1" }); await client.connect(clientTransport);
-      yield { type: "system", subtype: "init", session_id: "long-child", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", session_id: "long-child", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: ["mcp__trace_memory__trace"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       for (let round = 1; round <= 51; round++) {
         yield { type: "assistant", session_id: "long-child", message: { id: `response-${round}`,
@@ -285,8 +308,7 @@ test("simultaneous phase workers keep model and thinking selection isolated", as
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const config = resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "sonnet", notingThinking: "low",
-    "dreaming.model": "opus-d", "dreaming.thinking": "max", worker: { claudeExecutable: executable,
-      claudeVersion: "2.1.280", contextWindows: { sonnet: 120_000, "opus-c": 220_000, "opus-d": 320_000 }, cwd: directory } });
+    "dreaming.model": "opus-d", "dreaming.thinking": "max", worker: { claudeExecutable: executable, contextWindows: { sonnet: 120_000, "opus-c": 220_000, "opus-d": 320_000 }, cwd: directory } });
   const observed: { model: string; effort: string }[] = [];
   let arrivals = 0, release!: () => void; const barrier = new Promise<void>(resolve => { release = resolve; });
   const fakeQuery = ((request: { options: Record<string, any> }) => {
@@ -294,7 +316,7 @@ test("simultaneous phase workers keep model and thinking selection isolated", as
     observed.push({ model, effort }); if (++arrivals === 2) release();
     const stream = (async function* () {
       await barrier;
-      yield { type: "system", subtype: "init", session_id: model, claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", session_id: model, claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", session_id: model, is_error: false, result: "done", errors: [],
         usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
@@ -322,7 +344,7 @@ test("worker rejects runtime metadata that does not support the selected phase t
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const fakeQuery = (() => {
     const stream = (async function* () {
-      yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
     })() as any;
     stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["low"] }];
@@ -344,7 +366,7 @@ test("Dreamer uses one streaming child for one repair, accepts stable repeated i
       const input = request.prompt[Symbol.asyncIterator]();
       prompts.push((await input.next()).value);
       const init = { type: "system", subtype: "init", session_id: "native-child", messaging_socket_path: "/tmp/one.sock",
-        claude_code_version: "2.1.280", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield init;
       yield { type: "result", subtype: "success", session_id: "native-child", is_error: false, result: "first", errors: [], num_turns: 1,
@@ -378,7 +400,7 @@ test("Dreamer rejects an unsolicited second pass and does not call passEnd twice
     const stream = (async function* () {
       await request.prompt[Symbol.asyncIterator]().next();
       yield { type: "system", subtype: "init", session_id: "one", messaging_socket_path: "/tmp/one.sock",
-        claude_code_version: "2.1.280", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       for (const result of ["first", "unsolicited"]) yield { type: "result", subtype: "success", session_id: "one",
         is_error: false, result, errors: [], usage: { input_tokens: 1, output_tokens: 1,
@@ -402,7 +424,7 @@ test("Dreamer fails when a requested repair pass never completes", async () => {
     const stream = (async function* () {
       await request.prompt[Symbol.asyncIterator]().next();
       yield { type: "system", subtype: "init", session_id: "one", messaging_socket_path: "/tmp/one.sock",
-        claude_code_version: "2.1.280", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", session_id: "one", is_error: false, result: "first", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0.1 };
@@ -426,7 +448,7 @@ test("Dreamer does not issue a repair after a failed native pass", async () => {
     const stream = (async function* () {
       const input = request.prompt[Symbol.asyncIterator](); await input.next();
       yield { type: "system", subtype: "init", session_id: "one", messaging_socket_path: "/tmp/one.sock",
-        claude_code_version: "2.1.280", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "error_during_execution", session_id: "one", is_error: true, errors: ["provider failed"],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0.1 };
@@ -449,7 +471,7 @@ test("Dreamer rejects a repeated init from a different native child", async () =
     const stream = (async function* () {
       const input = request.prompt[Symbol.asyncIterator](); await input.next();
       const init = { type: "system", subtype: "init", session_id: "one", messaging_socket_path: "/tmp/one.sock",
-        claude_code_version: "2.1.280", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield init;
       yield { type: "result", subtype: "success", session_id: "one", is_error: false, result: "first", errors: [],
@@ -484,7 +506,7 @@ test("production worker forwards only the isolated operational and session envir
   const fakeQuery = ((request: { options: Record<string, any> }) => {
     environment = request.options.env;
     const stream = (async function* () {
-      yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: 0,
         usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
@@ -513,7 +535,7 @@ test.each(invalidUsageCases)("production worker preserves unknown usage for %s",
   if (value === undefined) delete usage[invalid]; else usage[invalid] = value;
   const fakeQuery = (() => {
     const stream = (async function* () {
-      yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: 0,
         usage, modelUsage: {}, total_cost_usd: 0.5 };
@@ -533,7 +555,7 @@ test("production worker preserves legitimate all-zero usage", async () => {
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const fakeQuery = (() => {
     const stream = (async function* () {
-      yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: 0,
         usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
@@ -560,7 +582,7 @@ test("production MCP preserves non-default trace and search cursors through real
       const client = new Client({ name: "core-worker-test", version: "1" }); await client.connect(clientTransport);
       schemas.push(await client.listTools());
       const names = (schemas[0] as any).tools.map((value: { name: string }) => `mcp__trace_memory__${value.name}`);
-      yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: names, plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       const call = async (response: string, id: string, name: string, input: Record<string, unknown>) => {
         rawInputs.push(structuredClone(input));
@@ -635,7 +657,7 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
       expect(memorySchema.properties.op.enum).toEqual(["create", "update", "archive"]);
       expect(listed.tools.find(tool => tool.name === "memory")!.inputSchema)
         .toEqual(toolDefinitions.find(tool => tool.name === "memory")!.parameters);
-      yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: listed.tools.map(tool => `mcp__trace_memory__${tool.name}`), plugins: [], skills: [], slash_commands: [],
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       let ordinal = 0;
@@ -683,14 +705,9 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
 test("production worker reports launch failure and cancellation without invoking the provider transport", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-stop-")); dirs.push(directory);
   const executable = join(directory, "claude");
-  writeFileSync(executable, "#!/bin/sh\necho '2.1.256 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const runQuery = vi.fn() as any;
   const base = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
-  const failed = await new CcAgentWorker(workerConfig(directory, executable), { query: runQuery }).run(base, 0);
-  expect(failed).toMatchObject({ outcome: "failure", output: expect.stringContaining("expected Claude Code 2.1.280") });
-  expect(runQuery).not.toHaveBeenCalled();
-
-  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n");
   const controller = new AbortController(); controller.abort(new DOMException("test stop", "AbortError"));
   const cancelled = await new CcAgentWorker(workerConfig(directory, executable), { query: runQuery })
     .run({ ...base, signal: controller.signal } as CcAgentTask, 0);
@@ -710,7 +727,7 @@ test("production protocol aborts remain failures while external cancellation sta
     const stream = (async function* () {
       let client: Client | undefined;
       try {
-        yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
+        yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
           tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [],
           mcp_servers: [{ name: "trace_memory", status: "connected" }] };
         if (mode === "cancel") {
@@ -770,7 +787,7 @@ test("production worker propagates mid-run cancellation and finalizes its transp
     nativeSignal = request.options.abortController.signal;
     const stream = (async function* () {
       try {
-        yield { type: "system", subtype: "init", claude_code_version: "2.1.280", cwd: directory,
+        yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
           tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
         releaseStarted();
         await new Promise<void>((_resolve, reject) => nativeSignal!.addEventListener("abort", () => reject(nativeSignal!.reason), { once: true }));
@@ -796,7 +813,7 @@ test("no custom worker log directory is ever created", async () => {
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const fakeQuery = (() => {
     const stream = (async function* () {
-      yield { type: "system", subtype: "init", session_id: "no-log-child", claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", session_id: "no-log-child", claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", session_id: "no-log-child", is_error: false, result: "done", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
@@ -820,7 +837,7 @@ test("nativeLog is the native session file Claude Code itself writes, verified a
   const sessionId = "native-log-child";
   const fakeQuery = (() => {
     const stream = (async function* () {
-      yield { type: "system", subtype: "init", session_id: sessionId, claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", session_id: sessionId, claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", session_id: sessionId, is_error: false, result: "done", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
@@ -863,7 +880,7 @@ test("a missing native session file leaves nativeLog absent with an audit note, 
   const sessionId = "missing-log-child";
   const fakeQuery = (() => {
     const stream = (async function* () {
-      yield { type: "system", subtype: "init", session_id: sessionId, claude_code_version: "2.1.280", cwd: directory,
+      yield { type: "system", subtype: "init", session_id: sessionId, claude_code_version: TEST_CC_VERSION, cwd: directory,
         tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", session_id: sessionId, is_error: false, result: "done", errors: [],
         usage: { input_tokens: 3, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
@@ -891,7 +908,7 @@ test("a Dreamer repair pass records one native path, and that file holds both pa
       const input = request.prompt[Symbol.asyncIterator]();
       await input.next();
       const init = { type: "system", subtype: "init", session_id: sessionId, messaging_socket_path: "/tmp/dreamer-repair.sock",
-        claude_code_version: "2.1.280", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield init;
       yield { type: "result", subtype: "success", session_id: sessionId, is_error: false, result: "first", errors: [],
@@ -937,7 +954,7 @@ test("a contained SDK control abort is journaled with the task kind and native s
     const sessionId = `contained-${timing}`;
     const fakeQuery = ((request: { options: Record<string, any> }) => {
       const stream = (async function* () {
-        yield { type: "system", subtype: "init", session_id: sessionId, claude_code_version: "2.1.280", cwd: directory,
+        yield { type: "system", subtype: "init", session_id: sessionId, claude_code_version: TEST_CC_VERSION, cwd: directory,
           tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
         request.options.abortController.abort(new Error("native transport aborted"));
         if (timing === "before") { setTimeout(() => void Promise.reject(bundleAbort()), 0); await turn(20); }
@@ -954,7 +971,7 @@ test("a contained SDK control abort is journaled with the task kind and native s
     // what the same native failure produces without it (Pi review).
     expect(result.outcome).toBe("failure");
     await turn(60);
-    expect(journal).toEqual([{ event: "contained-sdk-control-abort",
+    expect(journal.filter(entry => entry.event === "contained-sdk-control-abort")).toEqual([{ event: "contained-sdk-control-abort",
       details: { taskKind: "noting", nativeSessionId: sessionId, error: "Operation aborted" } }]);
     dispose();
   }
@@ -968,7 +985,7 @@ test("CC worker config requires explicit finite capacity and resolves no guessed
   expect(config.worker?.phases.dreaming.capacity.inputTokens).toBe(190_000);
   expect(() => resolveCcHostConfig({ dbPath: join(directory, "a"), stateDir: join(directory, "b"), notingModel: "m", notingThinking: "medium",
     "dreaming.model": "m", "dreaming.thinking": "medium", worker: {
-    claudeExecutable: "/opt/homebrew/bin/claude", claudeVersion: "2.1.280",
+    claudeExecutable: "/opt/homebrew/bin/claude",
     contextWindows: { m: CC_CONTEXT_HEADROOM }, cwd: directory } })).toThrow("must exceed");
 });
 

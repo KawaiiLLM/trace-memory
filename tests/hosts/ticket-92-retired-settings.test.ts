@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RETIRED_CONSOLIDATION_KEYS, retireConsolidationSettings, upgradeSettingsFile } from "../../src/hosts/retired-settings.ts";
 import { configuration, parseLayer, type FlatConfig } from "../../src/hosts/pi/settings.ts";
-import { CC_NATIVE_VERSION, resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
+import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 
 const faults = vi.hoisted(() => ({ rename: false }));
 vi.mock("node:fs", async importOriginal => {
@@ -60,7 +60,7 @@ test("92/07: validation and rename failures preserve original bytes and never re
 test("92/07: CC uses the same canonical upgrade and preserves frozen phase snapshots", () => {
   const path = join(fixture(), "cc.json");
   const input = { ...retired, notingModel: "sonnet", notingThinking: "high", "dreaming.model": "opus", "dreaming.thinking": "high",
-    stateDir: "/tmp/fixture", worker: { claudeExecutable: "/tmp/unused-claude", claudeVersion: CC_NATIVE_VERSION,
+    stateDir: "/tmp/fixture", worker: { claudeExecutable: "/tmp/unused-claude",
       cwd: "/tmp/worker", contextWindows: { sonnet: 200000, opus: 200000 } }, custom: { untouched: true } };
   fs.writeFileSync(path, JSON.stringify(input)); const report = vi.fn();
   const before = resolveCcHostConfig(input);

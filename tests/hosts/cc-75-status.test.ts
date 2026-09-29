@@ -12,6 +12,7 @@ import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { handleCcHook } from "../../src/hosts/cc/index.ts";
 import { readCcStatus, removeCcStatus, statusPath, writeCcStatus, type CcStatusFile } from "../../src/hosts/cc/status.ts";
 import { runCcStatusCommand } from "../../src/hosts/cc/status-entry.ts";
+import { CC_VERIFIED_VERSION } from "../../src/hosts/cc/verified-version.ts";
 
 const dirs: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -52,7 +53,7 @@ test("readCcStatus returns null for a missing file and removeCcStatus is idempot
 const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-75.db", stateDir: "/tmp/unused-75",
   notingModel: "synthetic", notingThinking: "medium",
   "dreaming.model": "synthetic", "dreaming.thinking": "medium",
-  worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } }).worker;
+  worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 } } }).worker;
 const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
   selectedEntryIds: [1, 2], selectedCount: 2, selectedTailId: 2,
   selectedAppendedEntryIds: [1, 2], appendedEntryIds: [1, 2], problems: [], snapshot: {} as any, bootstrap: true };
@@ -100,7 +101,7 @@ function fixture(label: string, overrides: Record<string, unknown> = {}) {
     pollIntervalMs: 20, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2,
     notingModel: "synthetic", notingThinking: "medium",
     "dreaming.model": "synthetic", "dreaming.thinking": "medium", "noting.triggerTokens": 1,
-    worker: { claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 }, cwd: dir,
+    worker: { claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 }, cwd: dir,
       responseOriginTimeoutMs: 20 },
     ...overrides });
   const records = [
@@ -378,6 +379,16 @@ test("bound and alive: the formatted line, painted with the shared formatter's r
   writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: process.pid, running: { noting: true, dreaming: false } });
   const out = await runCommand(f.configPath, { session_id: "s1" });
   expect(out).toBe("🧠 \x1b[36m●\x1b[0m \x1b[2mnotes: 24->102 memory: 252/306 cost: $0.12\x1b[0m\n");
+});
+
+test("106: the unverified marker shows exactly when the running Claude Code version differs from the verified one", async () => {
+  const f = statusFixture("version");
+  seedBinding(f.stateDir, "sv", { token: "tok" });
+  writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "sv", token: "tok", pid: process.pid });
+  const line = (version: unknown) => runCommand(f.configPath, { session_id: "sv", ...(version === undefined ? {} : { version }) });
+  expect(await line(CC_VERIFIED_VERSION)).not.toContain("unverified");
+  expect(await line(undefined)).not.toContain("unverified");
+  expect(await line("2.1.999")).toContain("unverified CC 2.1.999");
 });
 
 test("off: the compact line", async () => {

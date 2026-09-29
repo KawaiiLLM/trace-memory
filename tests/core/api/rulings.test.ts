@@ -134,7 +134,7 @@ test("2026-09-24, 86: 'catchup 选A' and '任务失败后不检查' — retry th
   const worker = resolveCcHostConfig({ dbPath: join(directory, "unused.sqlite"), stateDir: directory,
     notingModel: "synthetic", notingThinking: "medium",
     "dreaming.model": "synthetic", "dreaming.thinking": "medium",
-    worker: { cwd: directory, claudeExecutable: "/missing/claude", claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } }).worker;
+    worker: { cwd: directory, claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 } } }).worker;
   const scheduler = new CcTaskScheduler(retryMemory, worker, () => {});
   try {
     scheduler.startCatchup({ state: "ready", coreSessionId: session.id, branch: "main", headTurnId: turn.id,

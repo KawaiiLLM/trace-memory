@@ -40,7 +40,7 @@ test("CLI apply leaves held provider on old settings and next admission takes ne
     finalSyncStablePolls: 1, "noting.triggerTokens": 1, "consolidation.triggerTokens": 50_000,
     notingModel: "claude-sonnet-5", notingThinking: "high", consolidationModel: "claude-sonnet-5",
     consolidationThinking: "high", "dreaming.model": "claude-sonnet-5", "dreaming.thinking": "high",
-    worker: { claudeExecutable: "/usr/bin/false", claudeVersion: "2.1.280", cwd: dir,
+    worker: { claudeExecutable: "/usr/bin/false", cwd: dir,
       contextWindows: { "claude-sonnet-5": 200_000 } } };
   writeFileSync(path, `${JSON.stringify(base, null, 2)}\n`);
   const config = resolveCcHostConfig(base);

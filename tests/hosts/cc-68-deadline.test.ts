@@ -7,6 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { TraceMemory, type DreamingAgentInput, type NotingAgentInput } from "../../src/core/api/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
+import { TEST_CC_VERSION } from "../support/cc-version.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -38,7 +39,7 @@ function seed(memory: ReturnType<typeof TraceMemory>) {
 
 function init(directory: string, tools: string[], sessionId: string) {
   return { type: "system", subtype: "init", session_id: sessionId, messaging_socket_path: `/tmp/${sessionId}.sock`,
-    claude_code_version: "2.1.280", cwd: directory, tools, plugins: [], skills: [], slash_commands: [],
+    claude_code_version: TEST_CC_VERSION, cwd: directory, tools, plugins: [], skills: [], slash_commands: [],
     mcp_servers: [{ name: "trace_memory", status: "connected" }] };
 }
 
@@ -49,7 +50,7 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
   const config = resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "sonnet", notingThinking: "medium",
     "dreaming.model": "sonnet", "dreaming.thinking": "medium", "dreaming.triggerTokens": 1, "dreaming.timeoutMs": 1_000,
-    worker: { claudeExecutable: executable, claudeVersion: "2.1.280", contextWindows: { sonnet: 200_000 }, cwd: directory } });
+    worker: { claudeExecutable: executable, contextWindows: { sonnet: 200_000 }, cwd: directory } });
 
   let calls = 0, deadlineRun = true, releaseStarted!: () => void, releaseLate!: () => void, releaseFirst!: () => void;
   const started = new Promise<void>(resolve => { releaseStarted = resolve; });

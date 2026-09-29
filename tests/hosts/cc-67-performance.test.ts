@@ -61,8 +61,7 @@ async function fullChain(entries: number, due: boolean) {
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "s"),
     baseline: "2025-01-01T00:00:00Z", pollIntervalMs: 60_000, finalSyncTimeoutMs: 100, finalSyncStablePolls: 2,
     notingModel: "synthetic", notingThinking: "medium",
-    "dreaming.model": "synthetic", "dreaming.thinking": "medium", worker: { cwd: dir, claudeExecutable: "/missing/claude",
-      claudeVersion: "2.1.280", contextWindows: { synthetic: 200_000 } } });
+    "dreaming.model": "synthetic", "dreaming.thinking": "medium", worker: { cwd: dir, claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 } } });
   seedKnowledge(config.dbPath, due);
   // New installations must receive WAL from Store, without an operator step in the fixture.
   const inspection = new DatabaseSync(config.dbPath);

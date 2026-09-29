@@ -78,7 +78,7 @@ test.each([null, "", "relative.sqlite"])("an explicit invalid database path %j d
 function executableConfig(home: string): CcHostConfig {
   return { stateDir: join(home, "state"), notingModel: "sonnet", notingThinking: "high",
     "dreaming.model": "opus", "dreaming.thinking": "xhigh",
-    worker: { claudeExecutable: join(home, "claude"), claudeVersion: "2.1.280", cwd: home,
+    worker: { claudeExecutable: join(home, "claude"), cwd: home,
       contextWindows: { sonnet: 200_000, opus: 300_000 } } };
 }
 
@@ -90,6 +90,15 @@ test("CC resolves one immutable execution setting per phase from the four flat P
   });
   expect(config).toMatchObject({ notingModel: "sonnet", notingThinking: "high",
     "dreaming.model": "opus", "dreaming.thinking": "xhigh" });
+});
+
+test("106: a retired worker.claudeVersion in an installed file is accepted and ignored, whatever its value", () => {
+  const f = fixture(), base = executableConfig(f.home);
+  for (const claudeVersion of ["2.1.280", "0.0.1", 7, null]) {
+    const config = resolveCcHostConfig({ ...base, worker: { ...base.worker!, claudeVersion } });
+    expect(config.worker).not.toHaveProperty("claudeVersion");
+    expect(config.worker?.phases.noting.model).toBe("sonnet");
+  }
 });
 
 test("CC retry configuration is a native count only and preserves omission", () => {

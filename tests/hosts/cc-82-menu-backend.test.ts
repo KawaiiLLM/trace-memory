@@ -19,7 +19,7 @@ afterEach(() => { for (const directory of dirs.splice(0)) rmSync(directory, { re
 const setup = () => {
   const dir = mkdtempSync(join(tmpdir(), "cc82-backend-")); dirs.push(dir);
   const path = join(dir, "cc.config.json"), session = "cc82-current";
-  const worker = { claudeExecutable: "/usr/bin/false", claudeVersion: "2.1.280", cwd: dir,
+  const worker = { claudeExecutable: "/usr/bin/false", cwd: dir,
     contextWindows: { "claude-sonnet-5": 200_000, "claude-opus-5-5": 250_000 } };
   const input = { dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), worker,
     notingModel: "claude-sonnet-5", notingThinking: "high", consolidationModel: "claude-sonnet-5",
