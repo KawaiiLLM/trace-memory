@@ -35,7 +35,9 @@ export async function startLoopbackAnthropic(respond: (assistantTurns: number, b
       res.end();
     });
   });
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const port = process.env.TM_NATIVE_PREPARED_PORT ? Number(process.env.TM_NATIVE_PREPARED_PORT) : 0;
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolve); });
+  if (port && (server.address() as { port: number }).port !== port) throw new Error("native mock failed to bind prepared port");
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("loopback server did not bind a TCP port");
   return { url: `http://127.0.0.1:${address.port}`, close: () => new Promise((resolve, reject) =>

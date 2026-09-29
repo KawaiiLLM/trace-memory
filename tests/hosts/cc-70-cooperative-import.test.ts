@@ -49,7 +49,7 @@ const TUNING = { sliceMs: 0, pauseMs: 10 };
 
 function fixture(label: string) {
   const dir = mkdtempSync(join(tmpdir(), `tm-cc-70-${label}-`)); dirs.push(dir);
-  const stateDir = mkdtempSync("/tmp/tmcc-70-"); dirs.push(stateDir);
+  const stateDir = mkdtempSync(join(tmpdir(), "tmcc-70-")); dirs.push(stateDir);
   const transcriptPath = join(dir, "native.jsonl"), nativeSessionId = `native-${label}`;
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
     pollIntervalMs: 100_000, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2 });
@@ -195,7 +195,7 @@ test("shutdown's final sync stops at its deadline instead of importing the whole
 
 test("a retarget aborts a scan running across a real pause instead of waiting behind it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-cc-70-retarget-")); dirs.push(dir);
-  const stateDir = mkdtempSync("/tmp/tmcc-70-retarget-"); dirs.push(stateDir);
+  const stateDir = mkdtempSync(join(tmpdir(), "tmcc-70-retarget-")); dirs.push(stateDir);
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
     pollIntervalMs: 100_000, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2 });
   const parentId = "retarget-parent", childId = "retarget-child";
@@ -270,7 +270,7 @@ test("off does not wait behind a reconcile already queued ahead of it", async ()
 
 test("retarget does not wait behind a reconcile already queued ahead of it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-cc-70-retarget-queued-")); dirs.push(dir);
-  const stateDir = mkdtempSync("/tmp/tmcc-70-retarget-queued-"); dirs.push(stateDir);
+  const stateDir = mkdtempSync(join(tmpdir(), "tmcc-70-retarget-queued-")); dirs.push(stateDir);
   // 102: a retarget leaves the session as an exit does, with a final sync bounded by this deadline.
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
     pollIntervalMs: 100_000, finalSyncTimeoutMs: 100, finalSyncStablePolls: 2 });

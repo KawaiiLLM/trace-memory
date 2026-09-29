@@ -92,7 +92,7 @@ test("26b: a worker model that does not support the level runs at Pi's clamped l
 });
 
 test("26b/92: every N launch path freezes the same level — automatic work, a fork fallback, borrowed work and manual catchup", async () => {
-  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 30 });
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 1_000 });
   try {
     h.setThinkingLevel("high");
     await h.turn(); // allocates the session; this case explicitly configures fork mode
@@ -100,7 +100,8 @@ test("26b/92: every N launch path freezes the same level — automatic work, a f
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
       { category: "observation", actor: "user", text: "Own claim", source: ["T1#user"] }] });
     h.provider(async c => notingFact(c));
-    h.persist(reply("eligible completion")); await h.emit("agent_end"); await settle(h);
+    await h.prompt("eligible main turn"); await h.answer("word ".repeat(3000)); await settle(h);
+    await h.turn(); await settle(h); // a small own backlog lets this turn borrow the closed tail
     const beforeCatchup = h.memory.store.listRuns(1).length;
     h.persist(reply("more evidence " + "word ".repeat(30)));
     await command(h, "catchup");
@@ -142,13 +143,13 @@ test("26b: a level that makes the inherited request differ is refused by the exi
 });
 
 test("26b: borrowed work inherits the executor's level, not the level any historical session ran at", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, notingModel: "fake/test-thinking" });
+  const h = host({ "noting.triggerTokens": 1_000, "noting.forkModeDefault": false, notingModel: "fake/test-thinking" });
   try {
     await h.turn();
     const tail = closedTail(h.memory);
     h.setThinkingLevel("high");
     h.provider(async conversation => notingFact(conversation));
-    h.persist(reply("eligible completion")); await h.emit("agent_end"); await settle(h);
+    await h.prompt("eligible main turn"); await h.answer("eligible completion"); await settle(h);
     const run = await vi.waitFor(() => {
       const found = h.memory.store.listRuns(tail.sessionId).find(r => r.kind === "noting" && r.response);
       expect(found).toBeTruthy(); return found!;
@@ -200,7 +201,7 @@ test("26d: the same fork task, refused by the gate, runs its fresh child at the 
 });
 
 test("26d/92: every N subagent path takes its configured level — explicit subagent mode, borrowed work and manual catchup", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, notingThinking: "high" });
+  const h = host({ "noting.triggerTokens": 1_000, "noting.forkModeDefault": false, notingThinking: "high" });
   try {
     h.setThinkingLevel("off"); // the foreground level, which `inherit` would have used
     await h.turn();
@@ -208,7 +209,8 @@ test("26d/92: every N subagent path takes its configured level — explicit suba
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
       { category: "observation", actor: "user", text: "Own claim", source: ["T1#user"] }] });
     h.provider(async c => notingFact(c));
-    h.persist(reply("eligible completion")); await h.emit("agent_end"); await settle(h);
+    await h.prompt("eligible main turn"); await h.answer("word ".repeat(3000)); await settle(h);
+    await h.turn(); await settle(h); // a small own backlog lets this turn borrow the closed tail
     const beforeCatchup = h.memory.store.listRuns(1).length;
     h.persist(reply("more evidence " + "word ".repeat(30)));
     await command(h, "catchup");

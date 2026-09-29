@@ -23,18 +23,30 @@ function fixture() {
 }
 const settle = async (f: ReturnType<typeof fixture>) => { for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick(); };
 
-test("bootstrap collapses new selected history only; known resumes and Hook-first do not trigger", () => {
+test("entry imports and bootstrap do not check automatic work; one turn end checks both phases", () => {
   const f = fixture(); f.memory.taskEligibility.mockImplementation(() => ({ due: false }));
-  f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [] });
-  f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [99] });
+  f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [1, 2], selectedAppendedEntryIds: [1, 2] });
+  f.scheduler.reconcile({ ...projection, bootstrap: false, appendedEntryIds: [1, 2], selectedAppendedEntryIds: [1, 2] });
   expect(f.memory.taskEligibility).not.toHaveBeenCalled();
-  f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [1], selectedAppendedEntryIds: [1] });
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket());
   expect(f.memory.taskEligibility.mock.calls.map(([phase]) => phase)).toEqual(["noting", "dreaming"]);
   for (const [, target] of f.memory.taskEligibility.mock.calls) expect(target).toMatchObject({ triggerEntryId: 2, headTurnId: 1 });
-  f.memory.taskEligibility.mockClear();
-  f.scheduler.reconcile({ ...projection, bootstrap: false }); expect(f.memory.taskEligibility).not.toHaveBeenCalled();
-  f.scheduler.reconcile({ ...projection, bootstrap: false, appendedEntryIds: [1, 2], selectedAppendedEntryIds: [1, 2] });
-  expect(f.memory.taskEligibility.mock.calls.map(([phase, target]) => [phase, target.triggerEntryId])).toEqual([["noting", 1], ["noting", 2]]);
+});
+
+test("one turn checks both phases; settlement and new entries do not queue another run", async () => {
+  const f = fixture(); let releaseN!: () => void, releaseD!: () => void;
+  f.memory.noting.mockImplementation(async () => { await new Promise<void>(resolve => { releaseN = resolve; }); return { outcome: "success" }; });
+  f.memory.dream.mockImplementation(async () => { await new Promise<void>(resolve => { releaseD = resolve; }); return { outcome: "failure" }; });
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
+  expect(f.memory.noting).toHaveBeenCalledTimes(1); expect(f.memory.dream).toHaveBeenCalledTimes(1);
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1, 2], selectedAppendedEntryIds: [1, 2] });
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
+  expect(f.memory.noting).toHaveBeenCalledTimes(1); expect(f.memory.dream).toHaveBeenCalledTimes(1);
+  releaseN(); releaseD(); await tick(); await tick();
+  expect(f.memory.noting).toHaveBeenCalledTimes(1); expect(f.memory.dream).toHaveBeenCalledTimes(1);
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
+  expect(f.memory.noting).toHaveBeenCalledTimes(2); expect(f.memory.dream).toHaveBeenCalledTimes(2);
+  f.scheduler.stop(); releaseN(); releaseD(); await f.scheduler.settle();
 });
 
 test("known restart grants no automatic opportunity but explicit catchup drains frozen Raw", async () => {
@@ -72,7 +84,7 @@ test.each([1, 2])("ordinary N consuming %s entries retains ownership while catch
   f.memory.noting.mockImplementationOnce(async () => { await new Promise<void>(resolve => { release = resolve; });
     f.pending.splice(0, consumed); ordinaryFinished = true; return { outcome: "success" }; });
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "noting" || phase === "dreaming" && ordinaryFinished && f.memory.dream.mock.calls.length === 0 }));
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [2], selectedAppendedEntryIds: [2] }); await tick();
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
   expect(f.memory.noting).toHaveBeenCalledTimes(1); expect(f.scheduler.startCatchup(projection).state).toBe("waiting");
   release(); await settle(f);
   expect(f.memory.noting).toHaveBeenCalledTimes(consumed === 2 ? 1 : 2);
@@ -83,7 +95,7 @@ test("ordinary D is not adopted; its successful checkpoint admits a separate cat
   const f = fixture(), releases: Array<() => void> = [];
   f.memory.dream.mockImplementation(async () => { await new Promise<void>(resolve => { releases.push(resolve); }); return { outcome: "success" }; });
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" && f.memory.dream.mock.calls.length < 2 }));
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [2], selectedAppendedEntryIds: [2] }); await tick();
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
   f.scheduler.startCatchup(projection); await settle(f);
   expect(f.memory.noting).toHaveBeenCalledTimes(2); expect(f.memory.dream).toHaveBeenCalledTimes(1);
   expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase: "dreaming" });

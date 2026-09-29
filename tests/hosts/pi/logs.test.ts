@@ -183,7 +183,9 @@ test.skipIf(!reader)("24c: the external daily reader charges every new worker re
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", { facts: [] }));
     await f.turn();                        // the parent's own reply, then a fork noting run
     await settled(f);
-    await f.turn("tick", { capture: false });  // a second parent reply, too small to trigger anything
+    await f.h.emit("before_agent_start", { prompt: "tick" });
+    await f.parent.prompt("tick");
+    await f.h.emit("agent_end"); // parent has not settled, so no automatic N opportunity
     await f.h.commands.get("trace").handler("catchup", f.h.ctx); // drains it as an independent subagent
     await vi.waitFor(() => expect(f.h.memory.store.listRuns(1).filter(run => run.response)).toHaveLength(2), { timeout: 8000 });
     expect(f.h.memory.store.listRuns(1).map(run => run.mode)).toEqual(["fork", "subagent"]);

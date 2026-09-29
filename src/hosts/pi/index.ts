@@ -4,15 +4,15 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { createGrepToolDefinition, createReadToolDefinition, SettingsManager, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
+import { checkpointReadiness } from "./native.ts";
 import { contextComposition } from "./context-composition.ts";
 import { statusBody } from "./session-status.ts";
 import { showSessionPanel } from "./session-panel.ts";
 import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
 import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
-import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
+import { TraceMemory, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -119,6 +119,14 @@ export default function (pi: ExtensionAPI) {
    * at the moment it launches, and handed to the worker as a value: either the parent state to fork
    * at or the reason it was refused. Every condition is rechecked here for every task, so a task
    * queued before a transition cannot bypass one. */
+  const rawUnavailable = (entries: readonly { id: number; turnId: number; nativeId: string }[]): string | undefined =>
+    selectNotingMode({ requested: "fork", publicationPending: false, visible: visible(binding()), pending: () => entries,
+      batch: () => entries }).fallbackReason;
+  const unpublishedKnowledge = (target: TaskTarget): string | undefined => {
+    const delta = memory.injection(target, delivered(target));
+    return delta.knowledgeCommitIds.length || delta.knowledgeStates?.length
+      ? "Knowledge publication: ordinary deliverable material has not landed in the exact parent context" : undefined;
+  };
   const forkLaunch = (context: ExtensionContext, input: NotingAgentInput,
       model: { id: string; provider: string }, piId: string): ForkLaunch | { refused: string } => {
     // 19c cache-miss latch: the requested mode stays fork; admission resolves it to subagent
@@ -341,46 +349,30 @@ export default function (pi: ExtensionAPI) {
    * A view with no Raw at all is unknown coverage, not proven absence, and is refused for the same
    * reason 27a refuses an unknown context measure: nothing about the inherited context is
    * established, so there is no fork base to check a target against. */
-  const rawUnavailable = (entries: readonly { id: number; turnId: number; nativeId: string }[]): string | undefined => {
-    const view = visible(binding());
-    if (!view.raw.size) return "Raw availability: the selected context holds no conversation entry of ours, so nothing establishes that this task's evidence is inherited";
-    const missing = entries.find(entry => !view.raw.has(entry.nativeId));
-    return missing ? `Raw availability: entry ${missing.id} (T${missing.turnId}, native ${missing.nativeId}) of this batch is not in the inherited context:`
-      + " Pi retained no source for it and no compaction carrier supplied its bounded view" : undefined;
-  };
   /** Why a requested fork will not run with inherited context for this task, decided against this
    * host's live state at admission — before anything is frozen, so the refused task is admitted once
    * more as a subagent with fresh material (27c): the cache-miss latch is set, or 29c's Raw
    * availability rule refuses the batch. Undefined means it may fork. Neither refusal is a latch:
    * both are re-decided for every task, and 27c records the reason rather than only its verdict,
    * because the reason is what the run audit and the one warning say. */
-  const unpublishedKnowledge = (target: TaskTarget): string | undefined => {
-    const delta = memory.injection(target, delivered(target));
-    return delta.knowledgeCommitIds.length || delta.knowledgeStates?.length
-      ? "Knowledge publication: ordinary deliverable material has not landed in the exact parent context" : undefined;
-  };
   const forkRefused = (requested: "fork" | "subagent", task?: ForkTask): string | undefined => {
     if (requested !== "fork") return;
     const suppression = suppressed();
     if (suppression) return latchReason(suppression);
-    // Only Noting can fork and therefore requires inherited Raw coverage.
     if (task?.kind !== "noting") return;
-    const unpublished = unpublishedKnowledge(task.target);
-    if (unpublished) return unpublished;
+    const parentFile = ctx.sessionManager.getSessionFile?.();
+    const checkpoint = ctx.sessionManager.getLeafId();
+    if (parentFile && checkpoint) {
+      const refusal = checkpointReadiness(parentFile, checkpoint);
+      if (refusal) return refusal;
+    }
     const view = visible(binding());
-    if (!view.raw.size) return rawUnavailable([]);
-    // 29c: the target is the batch a freeze of this task would select — the pending set this task's
-    // boundary admits, cut to the oldest prefix that fits `noting.batchTokens`. Asking core for it
-    // renders those entries, which is what a freeze costs, so it is asked only once the whole pending
-    // set (a superset of that batch) is known to be missing something at all.
-    const pending = memory.pendingEntries(task.target.sessionId, task.target.branch, task.target.headTurnId);
-    if (!pending.some(entry => !view.raw.has(entry.nativeId))) return;
-    return rawUnavailable(memory.notingBatch(task.target, task.boundary));
+    const delta = memory.injection(task.target, delivered(task.target));
+    return selectNotingMode({ requested,
+      publicationPending: !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length), visible: view,
+      pending: () => memory.pendingEntries(task.target.sessionId, task.target.branch, task.target.headTurnId),
+      batch: () => memory.notingBatch(task.target, task.boundary) }).fallbackReason;
   };
-  /** The mode a task of this session will actually run in, for the readiness wait and the budget;
-   * the requested mode is still what the run record keeps. */
-  const effectiveMode = (requested: "fork" | "subagent", task?: ForkTask) =>
-    forkRefused(requested, task) ? "subagent" as const : requested;
   const modelName = (kind: WorkerPhase) => {
     const configured = flat[PHASE_SETTING_KEYS[kind].model];
     return String(configured && configured !== "session" ? configured : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
@@ -399,38 +391,6 @@ export default function (pi: ExtensionAPI) {
   // background runs never enter Pi's session totals, which only count entries of the session file.
   const activity = { running: new Map<WorkerPhase, number>() };
   const runningKind = (kind: WorkerPhase) => (activity.running.get(kind) ?? 0) > 0;
-  /** Ticket 69: Dreaming is only worth re-evaluating per ingested entry while
-   * something that can change its answer may have happened since it was last checked.
-   * Noting has no entry here — it is always re-evaluated per entry, exactly as before. A phase disarms
-   * itself the moment its own evaluation comes back not-due (nothing changed it, so nothing will,
-   * until an arming event below happens); it never disarms merely by being launched, so a launch that
-   * ends up dropped, fork-waiting or bounced off a busy slot leaves it exactly as armed as it was —
-   * the next opportunity retries it, as today. `noting: true` is never read; it exists only so `kind:
-   * WorkerPhase` can index this object without narrowing. Executor start (this initializer) is itself
-   * an arming event. */
-  const armed: Record<WorkerPhase, boolean> = { noting: true, dreaming: true };
-  /** Recheck Dreaming after a commit, restore, enrollment or knowledge-budget change.
-   * Arming does not itself launch work; admission still uses ordinary due and claim checks. */
-  const armDreaming = () => { armed.dreaming = true; };
-  /** The signal-based re-arm below closes what would otherwise be this mechanism's blind spot: a
-   * commit made through a DIFFERENT connection to this same database file — another executor, or (in
-   * this codebase's own tests) the observer connection used to seed fixtures — touches none of the
-   * named events above, so the flag alone would leave it unnoticed until this executor's own next
-   * arming event. `lastArmSignal` compares `Store.progressSignal` (the same cheap composite the
-   * footer cache in `core/api/read.ts` uses: indexed `MAX(id)`/`MAX(rowid)` lookups over the tables a
-   * commit that changes `duePools` writes to, plus this session's own project)
-   * against its last-seen value at every opportunity. A change re-arms Dreaming for that same call,
-   * so the very next entry after an out-of-band commit re-checks it — one indexed query, not the
-   * taskEligibility computation this ticket removes from the per-entry path, and never triggered by
-   * ingesting Raw alone, since Store.progressSignal deliberately excludes the source/entry tables. */
-  let lastArmSignal: string | undefined;
-  /** Ticket 72: fences the completion checkpoint below the same way CC's `cancellationEpoch` fences
-   * its own — a task admitted before a stop or a branch switch must not use a late completion to
-   * launch D. Bumped by `stopCatchup` (every call, not only while a catchup is active) and by a
-   * restore (session start or branch switch, beside `armDreaming()` there). "Off" needs no bump: `toggle`
-   * runs fully synchronously, so `enabled()` — already checked at `checkQueues`' own top — is correct
-   * by the time any later completion callback (always a later microtask) can run. */
-  let cancellationEpoch = 0;
   /** Ticket 24 "Footer counts and cost" and "Indicator semantics" (24a), scope and colours revised by
    * ticket 51. One status item, one line:
    *
@@ -706,9 +666,7 @@ export default function (pi: ExtensionAPI) {
     }
     current = undefined;
     reconciledLeaf = undefined; reconciled = undefined; // 22b: a restored session reconciles its ancestry from the start
-    armDreaming(); // Restore re-arms D on the selected path at the next opportunity.
-    cancellationEpoch++; // ticket 72: fences a completion admitted against the path this restore left behind
-    reconcile(false);
+    reconcile();
     showSpend(ctx);
     if (state.sessionId) {
       state.projectId = memory.store.getSession(state.sessionId)!.projectId;
@@ -737,22 +695,17 @@ export default function (pi: ExtensionAPI) {
   let reconciled: { ids: string[]; lineage: string; turnId?: number; head?: number; selected: number[]; seen: Set<string>;
     path: ReturnType<TraceMemory["store"]["sourcePathState"]>;
     toolCalls: Map<string, { ordinal: number; name: string; callId: string }> } | undefined;
-  const reconcile = (check = true) => {
+  const reconcile = () => {
     if (!enabled()) return;
     const leaf = ctx.sessionManager.getLeafId();
     if (state.sessionId && leaf === reconciledLeaf) return;
-    let opportunities: TaskTarget[];
-    try { opportunities = walk(); }
+    try { walk(); }
     catch (error) { reconciled = undefined; reconciledLeaf = undefined; throw error; }
     // A walk before the memory session exists creates no Turn; the first walk after allocation must run.
     reconciledLeaf = state.sessionId ? leaf : undefined;
-    // Scheduling is downstream of the committed ancestry transaction. Each newly ingested native
-    // entry keeps its own persisted id and owning head instead of collapsing a long tool turn into
-    // one agent-end opportunity. A restore/enrollment replay calls reconcile(false) and starts none.
-    if (check) for (const target of opportunities) checkQueues(target);
+    // Reconciliation imports evidence only; the settled main turn checks work once.
   };
-  const walk = (): TaskTarget[] => memory.store.transaction(() => {
-    const opportunities: TaskTarget[] = [];
+  const walk = () => memory.store.transaction(() => {
     let resume: typeof reconciled;
     let ancestry: SessionEntry[] = [];
     if (reconciled && state.sessionId) {
@@ -775,7 +728,7 @@ export default function (pi: ExtensionAPI) {
     ancestry = resume ? ancestry.reverse() : ctx.sessionManager.getBranch();
     if (!state.sessionId && ancestry.some(e => e.type === "message" && e.message.role === "assistant" &&
       (text(e.message) || e.message.content.some(c => c.type === "toolCall" || c.type === "thinking")))) allocate(ancestry[0]?.timestamp ?? now());
-    if (!state.sessionId) return opportunities;
+    if (!state.sessionId) return;
     reconciled = undefined; // a walk that throws leaves nothing to resume from
     let lineage = resume ? resume.lineage : state.originPiId ?? state.piId;
     let turnId = resume?.turnId;
@@ -860,7 +813,6 @@ export default function (pi: ExtensionAPI) {
       const stored = memory.appendEntry({ sessionId: state.sessionId, nativeLineage: lineage, nativeId: entry.id, turnId,
         role: message.role, text: natural, raw: JSON.stringify(message), calls: fragments });
       selected.push(stored.id);
-      opportunities.push({ sessionId: state.sessionId, branch: state.branch, headTurnId: turnId, triggerEntryId: stored.id });
       if (message.role === "assistant") {
         offer(turnId, fragments);
         const value = memory.store.getTurn(turnId)!;
@@ -883,7 +835,6 @@ export default function (pi: ExtensionAPI) {
       if (current) current.id = turnId;
     }
     reconciled = { ids, lineage, turnId, head, selected, seen, toolCalls, path };
-    return opportunities;
   });
 
   const unavailable = (reason: Extract<CurrentContextSnapshotResult, { available: false }>["reason"], message: string): CurrentContextSnapshotResult =>
@@ -935,7 +886,7 @@ export default function (pi: ExtensionAPI) {
 
   const persistState = () => { reconcile(); if (state.sessionId && state.sourceHead !== savedSourceHead) save(); };
   const flush = (ended = false) => {
-    reconcile(false);
+    reconcile();
     if (enabled() && ended && current?.id && state.sessionId && state.head) memory.store.transaction(() => {
       memory.store.updateTurn(current!.id!, { endedAt: now() });
       // Reconcile already published this path and cursor atomically; ending a Turn
@@ -945,12 +896,10 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_provider_request", (event, context) => {
     ensure(context);
     if (!enabled()) { showSpend(context); return; }
-    const previous = state.sourceHead;
-    reconcile(false);
+    reconcile();
     // The capture is the fork gate's comparand and nothing else: the request-copy runner that also
     // read the ancestry behind it was deleted in 19c, so only the body is kept (review 2026-09-08).
     if (context.model) session.capture = { payload: snapshot(event.payload) as Body, model: context.model.id, provider: context.model.provider, branch: state.branch };
-    if (state.sourceHead !== previous && state.sourceHead !== undefined) checkQueues();
   });
   pi.on("session_start", (_event, context) => {
     restore(context);
@@ -1018,15 +967,14 @@ export default function (pi: ExtensionAPI) {
   };
   pi.on("message_update", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
   pi.on("message_end", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
-  // Pi persists the assistant after message_end and synchronizes the session manager before tool
-  // execution. This is the first authoritative boundary for that assistant entry, so ingest and
-  // schedule it here; the snapshot API itself remains read-only and observes the reconciled node.
+  // Persisted assistant/tool entries are imported here; no work is scheduled mid-turn.
   pi.on("tool_execution_start", (_event, context) => { ensure(context); reconcile(); });
   // 24a: a tool result, the end of an agent run and the settle are the existing boundaries at which
   // this turn's evidence became importable, so they are where the footer's counts are re-read. A
   // streaming update is not one of them: `message_update` fires per delta and refreshes nothing.
   pi.on("tool_result", (_event, context) => { ensure(context); persistState(); showSpend(context); });
   pi.on("agent_end", (_event, context) => { ensure(context); persistState(); showSpend(context); });
+  let checkedTurn: string | undefined;
   pi.on("agent_settled", (_event, context) => {
     ensure(context); persistState();
     try {
@@ -1036,19 +984,13 @@ export default function (pi: ExtensionAPI) {
       // injected-once flag to set.
       if (!state.sessionId || !state.head) return;
       if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
+      else reconcile();
+      const key = `${state.sessionId}/${state.branch}/${state.head}`;
+      if (checkedTurn === key) return;
+      checkedTurn = key;
+      checkQueues();
     } finally { showSpend(context); } // one refresh at the settle, whichever path this turn took
   });
-  // The reason a due fork-mode task must wait for a later boundary, or undefined when it may launch
-  // now. Only the inherited-context path has a checkpoint to be ready: a fresh-context run and a
-  // session already downgraded by the cache-miss latch have none.
-  const forkWait = (context: ExtensionContext, mode: "fork" | "subagent"): string | undefined => {
-    if (mode !== "fork" || suppressed()) return;
-    const parentFile = context.sessionManager.getSessionFile?.();
-    if (!parentFile) return; // no native file at all: the documented subagent fallback applies, not a wait
-    const checkpoint = context.sessionManager.getLeafId();
-    if (!checkpoint) return "the parent session has no persisted leaf entry";
-    return checkpointReadiness(parentFile, checkpoint);
-  };
   /** Track cleanup, not admission or result policy. Callers reserve the slot before starting work
    * and choose whether `slot.result` exposes the raw attempt, a swallowed rejection or this settled
    * promise. Shutdown waits for cleanup; only an explicit catchup may chain on release. */
@@ -1063,46 +1005,18 @@ export default function (pi: ExtensionAPI) {
     void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
     return settled;
   };
-  const checkQueues = (opportunity?: TaskTarget, phases: readonly WorkerPhase[] = ["noting", "dreaming"], includeBorrowed = true) => {
+  const checkQueues = () => {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
-    const own = opportunity ?? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
-    const signal = memory.store.progressSignal(own.sessionId);
-    const epoch = cancellationEpoch; // ticket 72: every phase launched by this call shares this opportunity's admission epoch
-    if (signal !== lastArmSignal) { lastArmSignal = signal; armDreaming(); }
-    for (const kind of phases) {
+    const own = { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
+    const generation = memory.cancellation;
+    for (const kind of ["noting", "dreaming"] as const) {
       if (slots.has(kind)) continue;
-      const selected = launch(kind);
-      // The readiness wait follows the mode that will actually run: a session the cache-miss latch has
-      // downgraded runs fresh-context work, which reads nothing from the conversation and forks
-      // nothing. The requested mode stays what it is, for the audit (review 2026-09-08). 29d removed
-      // the delivery pause that used to read this too.
-      const effective = effectiveMode(selected.mode, { kind, target: own });
-      // Ticket 69: Noting is always evaluated (own and borrowed, exactly as before).
-      // Dreaming is evaluated only while armed — ingestion alone creates no knowledge revision,
-      // so a disarmed phase costs nothing
-      // here until something that can change it happens. The borrowed closed-session scan below is
-      // untouched by this gate and keeps running every opportunity, as before.
       let due = false;
-      const evaluate = kind === "noting" || armed[kind];
-      if (evaluate) {
-        try { ({ due } = memory.taskEligibility(kind, own)); }
-        catch (error) { context.ui.notify(String(error), "error"); }
-        if (kind !== "noting") armed[kind] = due; // not-due disarms; due leaves it armed until launch settles
-      }
-      // 19c "Trigger versus launch": the threshold above decides that this task is due; the checkpoint
-      // decides when it may launch. A due fork-mode task whose native checkpoint is not yet persisted,
-      // reopenable and free of an open tool-call group waits for the next safe boundary — no timer, no
-      // duplicate task, no progress, and starting later is not a new extraction trigger. Borrowed
-      // closed-session work is fresh-context and is never held back by this.
-      const waiting = due ? forkWait(context, effective) : undefined;
-      // Ticket 69's completion checkpoint (below) is a NEW kind of opportunity the borrowed scan's
-      // "existing per-opportunity scan unchanged" promise never anticipated: it exists only to re-check
-      // OWN D urgency immediately after a commit, not to give idle-time borrowed work an extra,
-      // earlier chance to fan out. `includeBorrowed=false` there keeps the scan's timing exactly what
-      // it was — the next ordinary per-entry opportunity — while still admitting due OWN work now.
-      const candidates = due && !waiting ? [{ ...own, borrowed: false }] : [];
-      if (kind !== "dreaming" && includeBorrowed) {
+      try { ({ due } = memory.taskEligibility(kind, own)); }
+      catch (error) { context.ui.notify(String(error), "error"); }
+      const candidates: ({ borrowed: boolean } & TaskTarget)[] = due ? [{ ...own, borrowed: false }] : [];
+      if (kind !== "dreaming") {
         try { candidates.push(...memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope)
           .map(target => ({ ...target, borrowed: true }))); }
         catch (error) { context.ui.notify(`${kind} closed-session scan failed: ${String(error)}`, "error"); }
@@ -1112,7 +1026,8 @@ export default function (pi: ExtensionAPI) {
       slots.set(kind, slot); // Reserve before any asynchronous admission or model work.
       const work = async () => {
         for (const { borrowed, ...target } of candidates) {
-          if (closed || !enabled()) return;
+          if (closed || !enabled() || memory.cancellation !== generation || state.sessionId !== own.sessionId
+              || state.branch !== own.branch || state.head !== own.headTurnId) return;
           try {
             const selected = borrowed ? { mode: "subagent" as const, model: modelName(kind) } : launch(kind);
             const result = await attemptPhase(context, kind, target, selected, { borrowed, automatic: true });
@@ -1135,24 +1050,11 @@ export default function (pi: ExtensionAPI) {
         context.ui.notify(String(error), "error");
       }), context, () => {
         showSpend(context);
-        // Ticket 86: only successful completion may check D, and only after the progress signal
-        // changed since this task's admission. A failed D can retain partial writes but starts no check.
-        // Ticket 72: a `cancelled` outcome (stop, off, or a branch switch aborted this task mid-flight)
-        // must not launch D on the strength of its late completion, and neither may a task admitted
-        // before a stop or a branch switch that happened to settle afterward with some other outcome —
-        // `epoch` fences both. `checkQueues` re-checks `closed`/`enabled()` at its own top, which is
-        // sufficient for "off": `toggle` runs fully synchronously, so by the time this later microtask
-        // runs, `enabled()` already reflects it.
-        // Only D can fail after partial writes. A failed N must not relay an unrelated empty N's
-        // processing-signal change into an immediate retry of work that committed nothing.
-        if (settled?.outcome === "success" && epoch === cancellationEpoch &&
-          memory.store.progressSignal(own.sessionId) !== signal) { armDreaming(); checkQueues(undefined, ["dreaming"], false); }
-        // R4: a successful ordinary completion while a drain is active is a full checkpoint; any other
-        // outcome (failure, cancelled, empty, dropped, bounced) stays N-only, matching the per-poll drive.
+        // Only an explicit catchup may chain on an ordinary worker's release.
         if (catchup && settled?.outcome !== "failure" && settled?.outcome !== "cancelled") driveCatchup(settled?.outcome === "success");
       });
     }
-    if (catchup) driveCatchup(false); // Ordinary completion may free N's drain slot, but is not an R4 checkpoint.
+    if (catchup) driveCatchup(false); // A manual drain retains its independent checkpoint.
   };
   // Ticket 68: one explicit checkpoint starts the drain and follows every successful
   // catchup-owned completion. It checks all phases; only N ignores its ordinary threshold.
@@ -1244,7 +1146,6 @@ export default function (pi: ExtensionAPI) {
       }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); });
       trackSlot(phase, slot, handled, context, () => {
         c.active.delete(phase); showSpend(context);
-        if (completed) armDreaming();
         if (catchup !== c) return; // A late completion owns no checkpoint in a replacement drain.
         if (retry) driveCatchup(false, phase); // Slot released; retry only the failed phase under the frozen boundary.
         else if (checkpoint) driveCatchup();
@@ -1265,7 +1166,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(catchupLine()!, "info"); return;
     }
     if (!state.sessionId || !state.head) { ctx.ui.notify("Trace Memory: no assistant reply yet; nothing to catch up.", "info"); return; }
-    reconcile(false);
+    reconcile();
     showSpend(ctx);
     const { sessionId, branch } = state, headTurnId = state.head;
     const pendingNow = memory.store.pendingEntryIds(sessionId, branch, headTurnId);
@@ -1280,7 +1181,6 @@ export default function (pi: ExtensionAPI) {
   };
   const stopCatchup = () => {
     const active = hasBackgroundWork();
-    cancellationEpoch++; // ticket 72: fences the completion checkpoint of any task admitted before this stop
     if (catchup && !catchup.outcome) { catchup.stopped = true; if (!catchup.active.size) catchup.outcome = "stopped"; }
     memory.cancelTasks(); // Not the `stopping` form: future ordinary/explicit admission for this executor remains possible.
     showSpend(ctx);
@@ -1502,11 +1402,6 @@ export default function (pi: ExtensionAPI) {
       if (!state.sessionId || !current?.id) throw new Error("A tool call requires an assistant reply and current turn");
       const content = bound!.find(t => t.name === definition.name)!.execute(raw);
       if (toolRejected(definition.name, content)) throw new Error(content);
-      // Ticket 69: a manual `note`/`memory` commit is a real commit in this executor, made outside any
-      // automatic run's own completion checkpoint, so it arms D itself. Not gated on whether this
-      // particular call actually wrote a fact or a revision (an empty batch or an all-skip review costs
-      // one extra due:false re-check, not a wrong answer).
-      armDreaming();
       return result(content);
     } }) as unknown as ToolDefinition);
   for (const definition of definitions) pi.registerTool(definition);
@@ -1519,7 +1414,7 @@ export default function (pi: ExtensionAPI) {
     // carriers; enabling creates no generation or one-shot intent.
     save();
     reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
-    if (value) { armDreaming(); reconcile(false); save(); } // Enabling re-checks D at the next opportunity.
+    if (value) { reconcile(); save(); }
     showSpend(ctx);
     const { lines, recovery, cost, composition, shared } = sessionSummary();
     const notice = statusBody([...recovery, ...lines, cost, ...composition, ...shared], Math.max(1, (process.stdout.columns ?? 100) - 2));
@@ -1676,7 +1571,6 @@ export default function (pi: ExtensionAPI) {
       try {
         const value = parseKnowledgeBudgetInput(input, budget.name);
         const saved = memory.setKnowledgeBudget(budget.field, value);
-        if (saved.changed) armDreaming(); // ticket 69: a knowledge-budget change may make a pool due; re-check at the next opportunity
         const base = saved.policy.global + saved.policy.project + saved.policy.session;
         const shared = memory.config.compaction.sharedAllowanceTokens;
         ctx.ui.notify(saved.changed

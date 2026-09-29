@@ -4,17 +4,18 @@ import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createFencedClaudeExecutable, preflightNetworkFence } from './cc-native-fence.ts';
 import { startLoopbackAnthropic } from './cc-native-loopback.ts';
 
-const root = '/private/tmp/tm-66-implementation.lyQREJ/native-stat';
+const root = process.env.TM_PROBE_DIR;
+if (!root) throw new Error('TM_PROBE_DIR must name this run’s private evidence directory');
 mkdirSync(root, { recursive: true });
 const run = mkdtempSync(join(root, 'run-'));
 const configDir = join(run, 'config'), cwd = join(run, 'cwd'), fenceDir = join(run, 'fence');
 for (const dir of [configDir, cwd, fenceDir]) mkdirSync(dir);
 const log = join(run, 'starts.jsonl');
 const executable = '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe';
-const { wrapperPath, profilePath } = createFencedClaudeExecutable(fenceDir, executable);
-// Verify the network fence BEFORE any Claude subprocess starts.
-await preflightNetworkFence(profilePath);
 const api = await startLoopbackAnthropic(() => ({ blocks: [{ type: 'text', text: 'done' }], stopReason: 'end_turn' }));
+const port = Number(new URL(api.url).port);
+const { wrapperPath, profilePath } = createFencedClaudeExecutable(fenceDir, executable, [port], run);
+await preflightNetworkFence(profilePath, [port], run);
 class Turns implements AsyncIterable<SDKUserMessage> {
   private queue: SDKUserMessage[] = [];
   private waiters: ((value: IteratorResult<SDKUserMessage>) => void)[] = [];

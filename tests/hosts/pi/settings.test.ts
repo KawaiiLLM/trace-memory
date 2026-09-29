@@ -224,7 +224,7 @@ test("closed-session scope is saved globally and changes subsequent queue admiss
   const t = h.memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "closed evidence", startedAt: "t" });
   const e = h.memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeId: "closed", nativeLineage: "closed", role: "user", text: "closed evidence", raw: "closed evidence", calls: [] });
   h.memory.selectEntries(s.id, "main", [e.id]); h.memory.store.closeSession(s.id);
-  const tick = async () => { h.persist(reply("small new completion")); await h.emit("agent_end"); await h.drain(); };
+  const tick = async () => { await h.prompt("another main turn"); await h.answer("small new completion"); await h.drain(); };
   await tick(); expect(h.requests).toEqual([]); // default project: foreign tail is invisible
   await edit(h, "Closed-session scope: project (Default)", "off");
   expect(globalFile(h)["trace-memory"].closedSessionScope).toBe("off");

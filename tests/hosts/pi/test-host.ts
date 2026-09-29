@@ -360,8 +360,9 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     if (result?.message) await emit("message_end", { message: { role: "custom", ...result.message, content: result.message.content ?? [], timestamp: 1 } });
     return result;
   };
-  const answer = async (value = "好的。") => { await emit("message_end", { message: reply(value) }); await emit("agent_end"); };
-  const turn = async () => { await prompt(); await answer(); await emit("agent_settled"); await drain(); };
+  // A final answer completes Pi's agent loop; unlike intermediate agent_end, the host now settles.
+  const answer = async (value = "好的。") => { await emit("message_end", { message: reply(value) }); await emit("agent_end"); await emit("agent_settled"); };
+  const turn = async () => { await prompt(); await answer(); await drain(); };
   // Cleanup this fixture owns runs whether or not the shutdown hook succeeded: a host that failed to
   // shut down must still give the process-wide agent directory back.
   const dispose = async () => {

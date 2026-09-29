@@ -109,10 +109,14 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
     const sibling = abandonedSibling(memory, target);
     const diagnostics: string[] = [];
     const scheduler = new CcTaskScheduler(memory, worker, message => diagnostics.push(message));
-    const opportunity = (appended: number[]) => scheduler.reconcile({ state: "ready", coreSessionId: own.id, branch: "main", headTurnId: turn.id,
-      selectedEntryIds: [...ownEntries], selectedCount: ownEntries.length, selectedTailId: ownEntries.at(-1)!,
-      selectedAppendedEntryIds: appended, appendedEntryIds: appended, problems: [], snapshot: {} as never });
-    opportunity([first]); await scheduler.settle();
+    const opportunity = (appended: number[], ended = false) => {
+      const projection = { state: "ready" as const, coreSessionId: own.id, branch: "main", headTurnId: turn.id,
+        selectedEntryIds: [...ownEntries], selectedCount: ownEntries.length, selectedTailId: ownEntries.at(-1)!,
+        selectedAppendedEntryIds: appended, appendedEntryIds: appended, problems: [], snapshot: {} as never };
+      scheduler.reconcile(projection);
+      if (ended) scheduler.turnEnd(projection, scheduler.catchupTicket());
+    };
+    opportunity([first], true); await scheduler.settle();
     expect(inputs).toHaveLength(1);
     expect(inputs[0]!.kind).toBe("noting");
     expect(inputs.every(input => input.sessionId === target.sessionId && input.branch === "active")).toBe(true);
@@ -123,7 +127,7 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
     store.setCurrentPath(target.sessionId, "abandoned", sibling.turn.id, "closed");
     opportunity([]); await scheduler.settle();
     expect(inputs).toHaveLength(1);
-    opportunity([append()]); await scheduler.settle();
+    opportunity([append()], true); await scheduler.settle();
     expect(inputs).toHaveLength(2);
     expect(inputs.slice(1).every(input => input.sessionId === target.sessionId && input.branch === "abandoned")).toBe(true);
     expectConsumedOnlySibling(memory, target.sessionId, sibling);
@@ -150,9 +154,11 @@ test("89: CC reports a real invalid cursor, discards the whole borrowed scan, an
     vi.spyOn(memory, "noting").mockImplementation(record("noting"));
     vi.spyOn(memory, "dream").mockImplementation(record("dreaming"));
     const scheduler = new CcTaskScheduler(memory, worker, value => diagnostics.push(value));
-    scheduler.reconcile({ state: "ready", coreSessionId: own.id, branch: "main", headTurnId: turn.id,
+    const projection = { state: "ready" as const, coreSessionId: own.id, branch: "main", headTurnId: turn.id,
       selectedEntryIds: [entry.id], selectedCount: 1, selectedTailId: entry.id,
-      selectedAppendedEntryIds: [entry.id], appendedEntryIds: [entry.id], problems: [], snapshot: {} as never });
+      selectedAppendedEntryIds: [entry.id], appendedEntryIds: [entry.id], problems: [], snapshot: {} as never };
+    scheduler.reconcile(projection);
+    scheduler.turnEnd(projection, scheduler.catchupTicket());
     await scheduler.settle();
     expect(diagnostics.filter(value => value.includes("closed-session scan failed"))).toHaveLength(1);
     expect(starts.map(value => value.phase)).toEqual(["noting", "dreaming"]);
@@ -179,8 +185,8 @@ test("89: Pi reports a real invalid cursor while its own due N/D both reach thei
     await h.emit("session_tree");
     const before = h.conversations.length;
     h.provider(async () => new Promise<Reply>(() => {}));
-    h.persist(reply("one ordinary scheduling opportunity"));
-    await h.emit("agent_end");
+    await h.prompt("next main turn");
+    await h.answer("one ordinary scheduling opportunity");
     await vi.waitFor(() => expect(h.conversations.length - before).toBe(2));
     expect(h.notices.some(value => value.includes("noting closed-session scan failed"))).toBe(true);
     expect(h.notices.some(value => value.includes("consolidation closed-session scan failed"))).toBe(false);

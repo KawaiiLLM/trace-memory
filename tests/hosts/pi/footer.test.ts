@@ -337,7 +337,7 @@ test("24a/51: concurrent N and D indicator prefers N; off and no-theme fallback"
   await h.prompt("second"); await h.answer(); await h.emit("agent_settled"); await h.drain();
   await vi.waitFor(() => expect(h.requests).toHaveLength(priorRequests + 1));
   expect(footer(h)).toMatchObject({ glyph: "●", role: "customMessageLabel" });
-  h.persist(reply("word ".repeat(15_000))); await refresh(h); await h.drain();
+  await h.prompt("word ".repeat(15_000)); await h.answer("long answer"); await h.drain();
   await vi.waitFor(() => expect(h.requests).toHaveLength(priorRequests + 2));
   expect(h.memory.store.getClaim(1, "dreaming")).not.toBeNull();
   expect(h.memory.store.getClaim(1, "noting")).not.toBeNull();

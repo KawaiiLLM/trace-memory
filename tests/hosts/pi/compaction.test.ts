@@ -22,7 +22,7 @@ const response = (h: ReturnType<typeof host>) => JSON.parse(lastRun(h).response!
 /** A Noter that always fails leaves its entries pending, which is the state compact escalates over
  * and the state the post-compaction admission rule is about. */
 const failing = (h: ReturnType<typeof host>) => h.provider(async () => ({ ...reply(""), stopReason: "error" as const, errorMessage: "leave pending" }));
-const work = async (h: ReturnType<typeof host>, text: string) => { h.persist(reply(text)); await h.emit("agent_end"); await h.drain(); };
+const work = async (h: ReturnType<typeof host>, text: string) => { await h.prompt("next main turn"); await h.answer(text); await h.drain(); };
 
 test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary under one Raw title and names it in its own diagnostics", async () => {
   const h = host(quiet);
@@ -213,7 +213,7 @@ test("20c 2026-09-08 scenario 13/14 (native): a real persisted compaction downgr
     f.manager().appendMessage({ role: "user", content: "word ".repeat(400), timestamp: 1 } as never);
     f.manager().appendMessage({ ...reply("an answer " + "word ".repeat(400)), timestamp: 1 } as never);
     f.manager().appendCompaction("second native summary", f.manager().getLeafId()!, 100);
-    await f.h.emit("message_start", { message: reply("") });
+    await f.h.emit("agent_settled");
     const second = await vi.waitFor(() => { const runs = f.h.memory.store.listRuns(1).filter(r => r.kind === "noting");
       expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
     expect(second.mode).toBe("subagent");

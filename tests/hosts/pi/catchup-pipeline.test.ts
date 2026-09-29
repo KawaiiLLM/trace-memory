@@ -90,7 +90,7 @@ test("92: catchup waits for ordinary N; its successful joint publication checkpo
   try {
     await h.turn();
     h.provider(async c => { if (dreaming(c)) return retain(c); await held; return extract(c); });
-    h.persist(reply("word ".repeat(3000))); await h.emit("agent_end"); await h.drain();
+    await h.prompt("another main turn"); await h.answer("word ".repeat(3000)); await h.drain();
     expect(h.memory.store.getClaim(1, "noting")).not.toBeNull();
     await command(h, "catchup"); expect(h.notices.at(-1)).toContain("waiting for noting");
     release(); await settle(h);

@@ -34,6 +34,10 @@ const setup = () => {
   const f = setup();
   const thinking = editedCcConfig(f.text, "noting.thinking", "medium");
   expect(thinking).toBe(f.text.replace('"notingThinking": "high"', '"notingThinking": "medium"'));
+  const mode = editedCcConfig(f.text, "noting.mode", "fork");
+  expect(resolveCcHostConfig(JSON.parse(mode)).coreConfig.noting.forkModeDefault).toBe(true);
+  expect(resolveCcHostConfig(JSON.parse(editedCcConfig(mode, "noting.mode", "subagent"))).coreConfig.noting.forkModeDefault).toBe(false);
+  expect(() => editedCcConfig(f.text, "noting.mode", "inherit")).toThrow("must be fork or subagent");
   const added = editedCcConfig(f.text, "dreaming.model", "claude-new", "180000");
   expect(added).toContain('"custom": { "unrelated": [1, 2] }');
   expect(added).toContain('"claude-opus-5-5": 250000');
@@ -56,7 +60,8 @@ test("menu is navigable without an executor but does not label saved worker file
   const menu = readCcMenu(f.config, f.session);
   expect(menu.menu.actions.enabled).toBe(false);
   expect(menu.menu.pending.noting.tokens).toBeNull();
-  expect(menu.settings.workers[0]).toMatchObject({ model: "unavailable", sources: { model: "effective configuration unavailable" } });
+  expect(menu.settings.workers[0]).toMatchObject({ mode: "subagent", model: "unavailable",
+    sources: { mode: "effective configuration unavailable", model: "effective configuration unavailable" } });
   expect(menu.menu.notices).toContain("Running executor configuration unavailable");
   expect(menu.context.presence).toBe("unavailable");
   expect(readBinding(f.config, f.session)).toEqual(before);

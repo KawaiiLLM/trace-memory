@@ -13,7 +13,7 @@ const command = (h: Host, args: string) => h.commands.get("trace").handler(args,
 const notingRuns = (h: Host) => h.memory.store.listRuns(1).filter(r => r.kind === "noting");
 const disabled = (h: Host) => h.notices.filter(n => n.includes("off after three failures"));
 const tick = async (h: Host, text = "eligible completion " + "word ".repeat(40)) => {
-  h.persist(reply(text)); await h.emit("agent_end"); await h.drain();
+  await h.prompt(text); await h.answer(); await h.drain();
 };
 const silent = (h: Host) => h.provider(async () => reply("Nothing to note."));
 const cancelled = async (h: Host) => {

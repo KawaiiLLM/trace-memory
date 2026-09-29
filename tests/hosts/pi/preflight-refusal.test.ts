@@ -10,11 +10,11 @@ async function pending() {
   h.setThinkingLevel("high");
   h.ctx.model = { ...h.ctx.model!, contextWindow: 50_000 };
   await h.prompt("word ".repeat(200));
-  const start = (shuttingDown = () => false) => {
-    const captured = h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: "hi" }] } });
-    if (shuttingDown()) return Promise.all([captured]);
+  const start = async () => {
+    await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: "hi" }] } });
     h.persist(reply("word ".repeat(200)));
-    return Promise.all([captured, h.emit("agent_end")]);
+    await h.emit("agent_end");
+    await h.emit("agent_settled");
   };
   return { h, start };
 }
@@ -50,12 +50,10 @@ test.each(cases.flatMap(value => (["stop", "off", "shutdown"] as const).map(canc
         cancelled = cancel === "shutdown" ? h.emit("session_shutdown") : h.commands.get("trace")!.handler(cancel, h.ctx);
       };
       h.ctx.getContextUsage = () => {
-        if (route === "unknown") cancelNow();
+        cancelNow(); // during frozen admission's capacity preflight, before fallback begins
         return { tokens: route === "unknown" ? null : 40_000, contextWindow: 50_000, percent: null };
       };
-      const ending = start(() => cancel === "shutdown" && cancelled !== undefined);
-      if (route === "capacity") cancelNow(); // after freeze rejection, before its catch/reroute microtask
-      await ending; await cancelled; await h.drain();
+      await start(); await cancelled; await h.drain();
       expect(cancelled).toBeDefined();
       expect(h.requests).toHaveLength(0);
       expect(h.notices.filter(notice => notice.includes("fell back to subagent mode"))).toEqual([]);

@@ -121,9 +121,9 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
   let manager: SessionManager | undefined;
   // `fetch: false`: this fixture stubs the wire itself (above), for both the real parent session and
   // the child the adapter builds.
-  // Exact E labels price the default user alone above 20; 30 keeps this fixture's trigger
-  // after the complete prompt/reply pair. Production's 10k threshold is unchanged.
-  const h = host({ "noting.triggerTokens": 30, ...config }, { native: () => manager as never, fetch: false, inflight: () => inflight });
+  // The short scripted main turn must reach N's trigger at its final settlement.
+  // Production's 10k threshold is unchanged.
+  const h = host({ "noting.triggerTokens": 1, ...config }, { native: () => manager as never, fetch: false, inflight: () => inflight });
   // 24c: the parent lives where real Pi puts a foreground session — one directory level under the
   // agent's own sessions root — so the worker logs the host writes are its siblings, exactly as they
   // are in production, and an external reader of that root sees the same tree a user would have.
@@ -137,6 +137,10 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
   const resourceLoader = new DefaultResourceLoader({ cwd: h.dir, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
   await resourceLoader.reload();
   manager = SessionManager.create(h.dir, sessionsDir);
+  // This fixture tests enrolled work, not installation-age defaults: native headers can precede
+  // the temporary baseline on a replayed clock. Opt this native session in explicitly.
+  await h.emit("session_start");
+  await h.commands.get("trace")!.handler("on", h.ctx);
   // The parent registers its own foreground tool plus the four memory tools, as the real
   // foreground does: the child must reproduce all five definitions but may execute only the memory ones.
   const tools = [{ name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
@@ -188,14 +192,8 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
 export const forkFixture = (config: Record<string, unknown> = {}, provider = "fake", parent: { model?: string; thinkingLevel?: ThinkingLevel } = {}) =>
   fixture({ "noting.forkModeDefault": true, ...config }, provider, parent);
 
-/** Explicit stable-parent condition for fork gate/cache/material unit scenarios. This omits the
- * synthetic settled boundary rather than moving it until after worker completion. Full real-SDK
- * event ordering and preparation-time leaf changes are covered in ticket92material.test.ts. */
-export const stableForkFixture = async (...args: Parameters<typeof forkFixture>) => {
-  const f = await forkFixture(...args);
-  // With capture omitted, settled remains the only scheduling boundary and no fork can start.
-  return { ...f, turn: (prompt?: string, options: { capture?: boolean } = {}) => f.turn(prompt, { ...options, settled: options.capture === false }) };
-};
+/** Fork scenarios use the same terminal main-turn boundary as every native host test. */
+export const stableForkFixture = forkFixture;
 
 export const settled = async (f: Awaited<ReturnType<typeof fixture>>, kind: "noting" | "consolidation" = "noting") =>
   await vi.waitFor(() => { const run = f.h.memory.store.listRuns(1).find(r => r.kind === kind); expect(run?.response).toBeTruthy(); return run!; }, { timeout: 5000 });

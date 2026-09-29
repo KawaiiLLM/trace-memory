@@ -13,7 +13,7 @@ import { hydrate } from "../../source-fixture.ts";
 const long = "word ".repeat(400);
 const notingRuns = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).filter(r => r.kind === "noting");
 
-test("19c 2026-09-08: a message completion before persistence launches nothing; the next safe boundary launches once with a real entry id", async () => {
+test("19c 2026-09-08: a message completion before persistence launches nothing; settlement imports a real entry id", async () => {
   // Runner-independent: Pi's message-completion callback precedes persistence, and 17a reconciles
   // persisted entries only, so no runner ever sees an entry that is not in the session file yet.
   const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
@@ -25,12 +25,10 @@ test("19c 2026-09-08: a message completion before persistence launches nothing; 
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.role)).toEqual(["user"]);
     expect(notingRuns(h)).toEqual([]);
     expect(h.conversations).toEqual([]); // and nothing was sent to any model
-    // Persistence, then the next safe boundary. No provider request was ever captured for this
-    // session (`before_provider_request` is never emitted in this test) and none is needed.
+    // Persistence alone is not a scheduling opportunity; the final settle imports it.
     const persisted = h.persist(completed);
     expect(notingRuns(h)).toEqual([]);
-    await h.emit("message_start", { message: reply("") });
-    await h.drain();
+    await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
     const runs = notingRuns(h);
     expect(runs).toHaveLength(1);
     const audited = JSON.parse(runs[0]!.response!).entryAudit.entries as { nativeId: string }[];
@@ -41,7 +39,7 @@ test("19c 2026-09-08: a message completion before persistence launches nothing; 
   } finally { await h.dispose(); }
 });
 
-test("64c: persisted assistant and tool-result entries each grant one mid-turn scheduling opportunity", async () => {
+test("105: persisted tool-call groups launch once at the final main-turn settlement", async () => {
   const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 10_000,
     "render.toolResultTokens": 1_000 });
   try {
@@ -58,17 +56,17 @@ test("64c: persisted assistant and tool-result entries each grant one mid-turn s
     await h.emit("tool_execution_start", { toolCallId: calls[0]!.id, toolName: "bash", args: calls[0]!.arguments });
     expect(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).map(entry => entry.role)).toEqual(["user", "assistant"]);
 
-    // Each result is persisted by Pi's final message lifecycle and reconciled before the next model
-    // turn. Twelve bounded result views cross the real 10k Noter threshold before agent_end.
+    // Each result is persisted and imported, but no mid-turn check runs.
     for (const call of calls) await h.emit("tool_result", { toolCallId: call.id, toolName: "bash", input: call.arguments,
       content: [{ type: "text", text: `${call.id} ${"word ".repeat(6_000)}` }], details: {}, isError: false });
-    const run = await vi.waitFor(() => { const values = notingRuns(h); expect(values).toHaveLength(1); return values[0]!; }, { timeout: 5000 });
-    expect(run.origin?.entryIds.at(-1)).toBeLessThanOrEqual(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).at(-1)!.id);
-    expect(h.memory.store.listRuns(1).filter(value => value.kind === "noting")).toHaveLength(1);
-    await h.emit("message_start", { message: reply("") });
-    await h.emit("agent_end");
-    await h.drain();
-    expect(notingRuns(h)).toHaveLength(1); // duplicate lifecycle hooks and worker completion do not drain
+    expect(notingRuns(h)).toEqual([]);
+    await h.emit("message_end", { message: reply("Final answer") });
+    await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
+    const run = notingRuns(h)[0]!;
+    expect(run.origin?.entryIds.at(-1)).toBe(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).at(-1)!.id);
+    expect(notingRuns(h)).toHaveLength(1);
+    await h.emit("agent_settled"); await h.drain();
+    expect(notingRuns(h)).toHaveLength(1); // duplicate settle and worker completion do not drain
   } finally { await h.dispose(); }
 });
 
@@ -112,8 +110,8 @@ test("19c 2026-09-08: a fork launches from the persisted checkpoint on the exist
     await f.h.emit("before_agent_start", { prompt: "用 pnpm，不要 npm" });
     await f.parent.prompt("用 pnpm，不要 npm");
     await f.h.emit("before_provider_request", { payload: f.sent[0] }); // the parent's one capture
-    // A boundary inside the same foreground Turn: no agent_settled, no second parent request.
-    await f.h.emit("message_start", { message: { role: "user", content: "next", timestamp: 1 } });
+    // No second parent request; the persisted final answer is this turn's checkpoint.
+    await f.h.emit("agent_settled");
     const run = await vi.waitFor(() => { const r = f.h.memory.store.listRuns(1)[0]; expect(r?.response).toBeTruthy(); return r!; }, { timeout: 5000 });
     expect(run.mode).toBe("fork");
     expect(JSON.parse(run.response!).verification.passed).toBe(true);
@@ -149,7 +147,8 @@ test("19c 2026-09-08: a checkpoint with an unanswered tool call defers the launc
     f.manager().appendMessage({ role: "toolResult", toolCallId: "tc9", toolName: "read", isError: false,
       content: [{ type: "text", text: "ok" }], details: {}, timestamp: 1 } as never);
     expect(checkpointReadiness(f.original.file, f.manager().getLeafId()!)).toBeUndefined();
-    await f.h.emit("message_start", { message: reply("") });
+    f.manager().appendMessage(reply("final answer") as never);
+    await f.h.emit("agent_settled");
     const second = await vi.waitFor(() => { const runs = notingRuns(f.h); expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
     expect(second.mode).toBe("fork"); // the deferral did not cost the task its inherited context
     expect(JSON.parse(second.response!).fallbackReason).toBeUndefined();
@@ -200,7 +199,7 @@ test("19c controlled boundaries: a tree switch never retargets a waiting task af
     // Work continues on the new position. Its own entries are its own task.
     f.manager().appendMessage({ role: "user", content: long + " elsewhere", timestamp: 1 } as never);
     f.manager().appendMessage({ ...reply("a different answer"), timestamp: 1 } as never);
-    await f.h.emit("message_start", { message: reply("") });
+    await f.h.emit("agent_settled");
     const second = await vi.waitFor(() => { const runs = notingRuns(f.h); expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
     expect(store.db.prepare("SELECT id FROM sessions WHERE host = ?").all(`pi:${f.manager().getSessionId()}`)).toEqual([{ id: 1 }]);
     expect(store.getRun(first.id)!.outcome).toBe("failure");

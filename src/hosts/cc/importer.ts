@@ -34,6 +34,9 @@ export interface CcReconcileResult {
   appendedEntryIds: number[];
   /** First successful scan of this native projection, not a replay of live entry events. */
   bootstrap?: boolean;
+  /** Selected native assistant terminator, when the transcript itself proves one. */
+  terminal?: { uuid: string; stopReason?: string; isApiErrorMessage?: boolean; interruptedMessageId?: string;
+    entryId: number; /** A newly appended terminal on the live cursor, even when its Raw anchor was already imported. */ fresh?: boolean };
   problems: string[];
 }
 
@@ -89,6 +92,12 @@ export class CcProjection {
   }
 
   currentBinding(): CcSessionBinding { return this.binding; }
+
+  /** Only already-selected original records, read at their existing cursor offsets. No second
+   * ancestry reconstruction and no body cache survives reconciliation. */
+  nativeRecords(nativeIds: readonly string[]): CcNativeRecord[] | null {
+    return this.transcript.selectedRecords(this.binding.transcriptPath, nativeIds);
+  }
 
   /** Resolve one native tool call from the incremental structural index. The transcript supplies
    * identity; source_paths only names the already-published branch that owns that ancestry. */
@@ -551,6 +560,16 @@ export class CcProjection {
     const ready = this.result(state, problems.length ? { ...completed.snapshot, problem: problems[0] } : completed.snapshot, problems,
       { coreSessionId: sessionId, branch: projectionReady ? branch : this.binding.branch,
         headTurnId: projectionReady ? headTurnId : this.lastResult?.headTurnId ?? null,
+        ...(projectionReady && completed.selectedLeafUuid && (() => {
+          const terminal = completed.selectedTerminal();
+          const leaf = completed.node(completed.selectedLeafUuid);
+          // The error row is not Raw. Its selected source leaf supplies the persisted entry
+          // anchor; the separately checked native UUID supplies terminal identity.
+          return terminal && leaf?.entryId
+            ? { terminal: { uuid: terminal.uuid, stopReason: terminal.stopReason,
+              isApiErrorMessage: terminal.isApiErrorMessage, interruptedMessageId: terminal.interruptedMessageId,
+              entryId: leaf.entryId, fresh: !completed.reset && completed.newIds.has(terminal.uuid) } } : {};
+        })()),
         selectedAppendedEntryIds: projectionReady ? selectedEntryIds === null
           ? selectedDelta.filter(id => newlyImported?.has(id))
           : appendedEntryIds.filter(id => selectedMembership!.has(id)) : [],
@@ -569,6 +588,7 @@ export class CcImporter {
   readonly memory: TraceMemoryFacade;
   private readonly projection: CcProjection;
   private runAgent: ReturnType<typeof createCcRunAgent> | undefined;
+  private forkRunner?: (task: import("../../core/api/index.ts").NotingAgentInput) => Promise<import("../../core/api/index.ts").RunAgentResult>;
   private readonly workerDependencies: CcWorkerDependencies;
   private reopened = false;
 
@@ -577,7 +597,11 @@ export class CcImporter {
     this.workerDependencies = workerDependencies;
     this.runAgent = config.worker ? createCcRunAgent(config, workerDependencies,
       kind => memory.config[kind].maxToolRounds) : undefined;
-    memory = TraceMemory(config.dbPath, input => this.runAgent ? this.runAgent(input) : unavailableRunner(),
+    memory = TraceMemory(config.dbPath, input => {
+      const task = input as import("../../core/api/index.ts").NotingAgentInput;
+      return task.kind === "noting" && task.mode === "fork" && !task.fallbackReason && this.forkRunner
+        ? this.forkRunner(task) : this.runAgent ? this.runAgent(input) : unavailableRunner();
+    },
       config.coreConfig, ccResultText,
       entry => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : undefined);
     this.memory = memory;
@@ -585,6 +609,10 @@ export class CcImporter {
   }
 
   currentBinding(): CcSessionBinding { return this.projection.currentBinding(); }
+  setForkRunner(run: (task: import("../../core/api/index.ts").NotingAgentInput) => Promise<import("../../core/api/index.ts").RunAgentResult>): void {
+    this.forkRunner = run;
+  }
+  nativeRecords(nativeIds: readonly string[]): CcNativeRecord[] | null { return this.projection.nativeRecords(nativeIds); }
   /** Core invokes the runner synchronously before yielding to the provider. An in-flight task
    * holds its invoked worker Promise; only a later task reads this replacement. */
   applyWorker(config: ResolvedCcHostConfig): void {

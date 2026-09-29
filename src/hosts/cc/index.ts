@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
 import { upgradeSettingsFile } from "../retired-settings.ts";
-import { assertOperatorBinding, readBinding, recordSessionStart, updateBinding, validateNativeSessionId, type CcHookInput } from "./binding.ts";
+import { assertOperatorBinding, markCcFunctionHook, readBinding, recordSessionStart, updateBinding, validateNativeSessionId, type CcHookInput } from "./binding.ts";
 import { readTranscriptCreatedAt } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
@@ -16,7 +16,7 @@ import { installCcNativeRejectionGuard } from "./native-rejection.ts";
 import { readCcMenu, readCcRuns } from "./menu.ts";
 import type { CcContextSnapshot } from "./menu-context.ts";
 import { editedCcConfig, saveCcConfig, type CcSettingId } from "./menu-config.ts";
-import { executorSettings, executorSnapshot } from "./control.ts";
+import { executorSettings, executorSnapshot, requestCcForkSources, signalCcForkEvent, signalCcTurnEnd, waitCcForkCommand } from "./control.ts";
 import { runCcFiles } from "./files.ts";
 import { Store } from "../../core/store/index.ts";
 import { parseRunsCount } from "../trace-menu.ts";
@@ -36,7 +36,7 @@ export * from "./native-session.ts";
 
 export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostConfig, input: CcHookInput,
   prepareOnly = false): Promise<CcHookOutput | null> {
-  const config = resolveCcHostConfig(configInput);
+  const config = "coreConfig" in configInput ? configInput : resolveCcHostConfig(configInput);
   validateNativeSessionId(input.session_id);
   if (input.hook_event_name === "SessionStart") {
     // 102: `/clear` starts an ordinary new session, like startup. Creation time matters only to a new
@@ -56,7 +56,8 @@ export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostCon
 
 export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostConfig,
   nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID): Promise<void> {
-  const config = resolveCcHostConfig(configInput), sessionId = validateNativeSessionId(nativeSessionId);
+  const config = "coreConfig" in configInput ? configInput : resolveCcHostConfig(configInput);
+  const sessionId = validateNativeSessionId(nativeSessionId);
   const runtimeDirectory = join(config.stateDir, "runtime"), runtimePath = join(runtimeDirectory, `${sessionId}.jsonl`);
   mkdirSync(runtimeDirectory, { recursive: true });
   const runtimeEvent = (event: string, details: Record<string, unknown> = {}) => {
@@ -170,10 +171,42 @@ async function readStdin(): Promise<string> {
 export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
   if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" &&
-      command !== "hook-compact" && command !== "cli" && command !== "fs") || configFlag !== "--config" || !configPath)
+      command !== "hook-compact" && command !== "hook-capable" && command !== "hook-turn" && command !== "hook-sources" && command !== "hook-fork" && command !== "hook-fork-watch" && command !== "cli" && command !== "fs") || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|grep|glob ...");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config); return; }
+  if (command === "hook-capable" || command === "hook-turn" || command === "hook-sources") {
+    const input = JSON.parse(await readStdin()) as { session_id?: unknown; turnId?: unknown; reason?: unknown;
+      observation?: import("./control.ts").CcForkObservation };
+    const session = validateNativeSessionId(input.session_id);
+    if (command === "hook-capable") await markCcFunctionHook(config, session);
+    else if (command === "hook-sources") {
+      if (typeof input.turnId !== "string" || !input.turnId) throw new Error("CC fork source read requires native turnId");
+      process.stdout.write(`${JSON.stringify(await requestCcForkSources(config, session, input.turnId))}\n`);
+    } else {
+      if (typeof input.turnId !== "string" || !input.turnId || typeof input.reason !== "string")
+        throw new Error("CC turn-end hook requires native turnId and reason");
+      process.stdout.write(`${JSON.stringify(await signalCcTurnEnd(config, session, input.turnId, input.reason, input.observation))}\n`);
+    }
+    return;
+  }
+  if (command === "hook-fork-watch") {
+    if (sessionFlag !== "--session" || typeof nativeSessionId !== "string" || !nativeSessionId || typeof verb !== "string" || !verb)
+      throw new Error("CC fork stop listener requires native session and agent ID");
+    validateNativeSessionId(nativeSessionId);
+    process.stdout.write(`${JSON.stringify(await waitCcForkCommand(config, nativeSessionId, verb))}\n`);
+    return;
+  }
+  if (command === "hook-fork") {
+    const input = JSON.parse(await readStdin()) as { session_id: string; verb: "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-no-start" | "fork-disconnect";
+      turnId?: string; agentId?: string; callId?: string; name?: string; reason?: string; answer?: string; confirmed?: boolean };
+    validateNativeSessionId(input.session_id);
+    if (!["fork-register", "fork-call", "fork-check", "fork-terminal", "fork-no-start", "fork-disconnect"].includes(input.verb))
+      throw new Error("invalid CC native fork event");
+    const { session_id: _session, verb: _verb, ...detail } = input;
+    process.stdout.write(`${JSON.stringify({ allowed: await signalCcForkEvent(config, input.session_id, input.verb, detail) })}\n`);
+    return;
+  }
   if (command === "hook-compact") {
     // 102: the `session.compact` function hook's compaction; `passThrough` keeps native compaction.
     // `auto` (requirement 14) is the caller's own event trigger, manual or auto, not the handle below.

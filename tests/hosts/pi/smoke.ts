@@ -108,7 +108,7 @@ try {
   await h.dispose();
 }
 
-// 64c: an ingested entry starts a real pool Dreamer. Compaction remains separate from processing.
+// 105: a subsequent completed main turn starts a due pool Dreamer. Compaction remains separate from processing.
 const dreamer = host({ "noting.triggerTokens": 1_000_000 }, { extension });
 try {
   await dreamer.emit("session_start"); await dreamer.turn();
@@ -208,9 +208,10 @@ try {
   large.long.persist({ role: "assistant", content: [{ type: "text", text: "a short answer" }], timestamp: large.turns + 1 });
   const startedBoundary = performance.now();
   await large.long.emit("agent_end");
+  await large.long.emit("agent_settled");
   const boundaryMs = performance.now() - startedBoundary;
   assert.equal(store.listSourceEntries(1).length, large.turns * 3 + 2);
-  assert.ok(boundaryMs < 1_000, `an ordinary boundary after ${large.turns * 3} entries took ${boundaryMs.toFixed(0)} ms`);
+  assert.ok(boundaryMs < 1_000, `an ordinary settled turn after ${large.turns * 3} entries took ${boundaryMs.toFixed(0)} ms`);
   assert.deepEqual(large.long.requests, []);
   console.log(`Long-history regression passed: ${small.turns * 3} entries imported in ${small.ms.toFixed(0)} ms, ${large.turns * 3} in ${large.ms.toFixed(0)} ms, ordinary boundary ${boundaryMs.toFixed(0)} ms.`);
 } finally {

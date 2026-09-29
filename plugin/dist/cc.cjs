@@ -8449,6 +8449,19 @@ function memoryFiles(memory, reader) {
   return { read, grep, glob };
 }
 
+// src/core/api/fork.ts
+function selectNotingMode(input) {
+  if (input.requested !== "fork") return { effectiveMode: "subagent" };
+  const fallback = (reason) => ({ effectiveMode: "subagent", fallbackReason: reason });
+  if (input.suppression) return fallback(input.suppression);
+  if (input.publicationPending) return fallback("Knowledge publication: ordinary deliverable material has not landed in the exact parent context");
+  if (!input.visible.raw.size)
+    return fallback("Raw availability: the selected context holds no conversation entry of ours, so nothing establishes that this task's evidence is inherited");
+  if (!input.pending().some((entry) => !input.visible.raw.has(entry.nativeId))) return { effectiveMode: "fork" };
+  const missing = input.batch().find((entry) => !input.visible.raw.has(entry.nativeId));
+  return missing ? fallback(`Raw availability: entry ${missing.id} (T${missing.turnId}, native ${missing.nativeId}) of this batch is not in the inherited context: no original source or bounded carrier is retained`) : { effectiveMode: "fork" };
+}
+
 // src/core/api/index.ts
 var import_node_crypto8 = require("node:crypto");
 
@@ -9853,7 +9866,10 @@ function resolveCcHostConfig(input) {
   const phaseValues = Object.fromEntries(Object.values(PHASE_SETTING_KEYS).flatMap((keys) => [keys.model, keys.thinking].flatMap((key) => input[key] === void 0 ? [] : [[key, input[key]]])));
   const coreConfig = validateConfig({
     closedSessionScope,
-    ...input["noting.triggerTokens"] === void 0 ? {} : { noting: { triggerTokens: input["noting.triggerTokens"] } },
+    ...input["noting.triggerTokens"] === void 0 && input["noting.forkModeDefault"] === void 0 ? {} : { noting: {
+      ...input["noting.triggerTokens"] === void 0 ? {} : { triggerTokens: input["noting.triggerTokens"] },
+      ...input["noting.forkModeDefault"] === void 0 ? {} : { forkModeDefault: input["noting.forkModeDefault"] }
+    } },
     ...input["dreaming.triggerTokens"] === void 0 && input["dreaming.timeoutMs"] === void 0 ? {} : { dreaming: {
       ...input["dreaming.triggerTokens"] === void 0 ? {} : { triggerTokens: input["dreaming.triggerTokens"] },
       ...input["dreaming.timeoutMs"] === void 0 ? {} : { timeoutMs: input["dreaming.timeoutMs"] }
@@ -9956,6 +9972,15 @@ function currentNativeProcess() {
   if (pid === null) return null;
   const startedAt = processStartedAt(pid);
   return startedAt === null ? null : { pid, startedAt };
+}
+function functionHookNativeProcess(config3, nativeSessionId, transcriptPath, owner) {
+  const explicit = process.env.CLAUDE_PID !== void 0;
+  const ancestors = explicit ? [] : processAncestors();
+  const assigned = explicit ? null : assignedNativeSession(config3, ancestors);
+  const native = explicit ? currentNativeProcess() : assigned && ancestors.find((ancestor) => ancestor.pid === assigned.pid);
+  if (!native || !native.startedAt || !owner || native.pid !== owner.pid || native.startedAt !== owner.startedAt || !explicit && (assigned?.startedAt !== native.startedAt || assigned.nativeSessionId !== nativeSessionId || assigned.transcriptPath !== transcriptPath))
+    throw new Error("CC function hook does not match the current SessionStart process and transcript");
+  return native;
 }
 function readNativeSession(config3, pid) {
   let record3;
@@ -10079,9 +10104,21 @@ var validClearedFrom = (value) => {
 };
 function parseBinding(value) {
   const binding = value;
-  if (!binding || binding.version !== 1 || validateNativeSessionId(binding.nativeSessionId) !== binding.nativeSessionId || typeof binding.transcriptPath !== "string" || !binding.transcriptPath || typeof binding.dbPath !== "string" || binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId < 1) || binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId < 1) || typeof binding.branch !== "string" || !binding.branch || binding.nativeProcess !== void 0 && (!Number.isSafeInteger(binding.nativeProcess?.pid) || binding.nativeProcess.pid <= 0 || typeof binding.nativeProcess.startedAt !== "string" || !binding.nativeProcess.startedAt) || binding.lastCompactionNotice !== void 0 && binding.lastCompactionNotice !== null && typeof binding.lastCompactionNotice !== "string" || binding.cwd !== void 0 && (typeof binding.cwd !== "string" || !(0, import_node_path4.isAbsolute)(binding.cwd)) || binding.coreHost !== void 0 && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:")) || binding.clearedFrom !== void 0 && !validClearedFrom(binding.clearedFrom) || binding.clearedInto !== void 0 && (typeof binding.clearedInto?.nativeSessionId !== "string" || typeof binding.clearedInto.at !== "string") || binding.transcriptOffset !== void 0 && (!Number.isSafeInteger(binding.transcriptOffset) || binding.transcriptOffset < 0) || binding.selectedHeadTurnId !== void 0 && (!Number.isSafeInteger(binding.selectedHeadTurnId) || binding.selectedHeadTurnId < 1) || binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid))
+  if (!binding || binding.version !== 1 || validateNativeSessionId(binding.nativeSessionId) !== binding.nativeSessionId || typeof binding.transcriptPath !== "string" || !binding.transcriptPath || typeof binding.dbPath !== "string" || binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId < 1) || binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId < 1) || typeof binding.branch !== "string" || !binding.branch || binding.nativeProcess !== void 0 && (!Number.isSafeInteger(binding.nativeProcess?.pid) || binding.nativeProcess.pid <= 0 || typeof binding.nativeProcess.startedAt !== "string" || !binding.nativeProcess.startedAt) || binding.functionHookProcess !== void 0 && (!Number.isSafeInteger(binding.functionHookProcess.pid) || binding.functionHookProcess.pid <= 0 || typeof binding.functionHookProcess.startedAt !== "string" || !binding.functionHookProcess.startedAt) || binding.lastCompactionNotice !== void 0 && binding.lastCompactionNotice !== null && typeof binding.lastCompactionNotice !== "string" || binding.cwd !== void 0 && (typeof binding.cwd !== "string" || !(0, import_node_path4.isAbsolute)(binding.cwd)) || binding.coreHost !== void 0 && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:")) || binding.clearedFrom !== void 0 && !validClearedFrom(binding.clearedFrom) || binding.clearedInto !== void 0 && (typeof binding.clearedInto?.nativeSessionId !== "string" || typeof binding.clearedInto.at !== "string") || binding.transcriptOffset !== void 0 && (!Number.isSafeInteger(binding.transcriptOffset) || binding.transcriptOffset < 0) || binding.selectedHeadTurnId !== void 0 && (!Number.isSafeInteger(binding.selectedHeadTurnId) || binding.selectedHeadTurnId < 1) || binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid))
     throw new Error("invalid Claude Code binding record");
   return binding;
+}
+function activeFunctionHook(binding) {
+  const hook = binding.functionHookProcess, owner = binding.nativeProcess;
+  return !!hook && !!owner && hook.pid === owner.pid && hook.startedAt === owner.startedAt && !binding.lastClose;
+}
+async function markCcFunctionHook(config3, nativeSessionId) {
+  await updateBinding(config3, nativeSessionId, (binding) => {
+    if (!binding || binding.lastClose || binding.dbPath !== config3.dbPath)
+      throw new Error("CC function hook does not match the current SessionStart binding");
+    const native = functionHookNativeProcess(config3, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
+    return { ...binding, functionHookProcess: native };
+  });
 }
 function readBinding(config3, nativeSessionId) {
   try {
@@ -10235,7 +10272,7 @@ async function updateBindingInStoreTransaction(config3, nativeSessionId, store, 
 function renewNativeBinding(current, nativeProcess) {
   const sameOwner = nativeProcess ? current.nativeProcess?.pid === nativeProcess.pid && current.nativeProcess.startedAt === nativeProcess.startedAt : current.nativeProcess === void 0;
   if (!current.lastClose && sameOwner) return current;
-  const { nativeProcess: previous, ...rest } = current;
+  const { nativeProcess: previous, functionHookProcess: _hook, ...rest } = current;
   return { ...rest, ...nativeProcess ? { nativeProcess } : {}, lastClose: null };
 }
 async function recordSessionStart(config3, input, nativeCreatedAt2) {
@@ -10309,6 +10346,7 @@ var textBlocks = (content) => typeof content === "string" ? [content] : blocks(c
 var resultTexts = (content) => typeof content === "string" ? [content] : blocks(content).filter((block2) => block2.type === "text" && typeof block2.text === "string").map((block2) => block2.text);
 var timestamp = (record3) => typeof record3.timestamp === "string" && Number.isFinite(Date.parse(record3.timestamp)) ? record3.timestamp : null;
 var nativeId = (record3) => typeof record3.uuid === "string" && record3.uuid ? record3.uuid : null;
+var mainRecord = (record3) => record3.isSidechain !== true && record3.isCompactSummary !== true && record3.isVisibleInTranscriptOnly !== true;
 var nativeIdentity = (record3) => {
   const { slug: _slug, ...identity } = record3;
   return JSON.stringify(identity);
@@ -10377,10 +10415,11 @@ var snapshot = (path, stamp, values = {}) => ({
 });
 function classifySourceRecord(record3) {
   const id = nativeId(record3);
-  if (!id || record3.isSidechain === true || record3.isCompactSummary === true || record3.isVisibleInTranscriptOnly === true) return null;
+  if (!id || !mainRecord(record3)) return null;
   if (record3.type === "system" && record3.subtype === "compact_boundary" && record3.isMeta !== true)
     return { kind: "compaction", record: record3, nativeId: id, timestamp: timestamp(record3) };
   if (record3.type !== "user" && record3.type !== "assistant") return null;
+  if (record3.type === "user" && record3.interruptedMessageId !== void 0) return null;
   const message = object3(record3.message);
   if (!message || record3.message?.isCompactSummary === true || message.role !== record3.type) return null;
   if (record3.type === "assistant" && (record3.isMeta === true || message.model === "<synthetic>")) return null;
@@ -10436,6 +10475,7 @@ var nodeOf = (record3, writtenBefore) => {
   const uuid5 = nativeId(record3);
   if (!uuid5) return null;
   const source = classifySourceRecord(record3);
+  const main = mainRecord(record3);
   try {
     return {
       uuid: uuid5,
@@ -10444,7 +10484,10 @@ var nodeOf = (record3, writtenBefore) => {
       calls: source?.kind === "assistant" ? source.calls.map((call) => ({ id: call.callId, name: call.name })) : [],
       timestamp: source?.timestamp ?? timestamp(record3),
       messageKey: messageKey(source),
-      apiMessageId: apiMessageId(source)
+      apiMessageId: apiMessageId(source),
+      ...record3.type === "assistant" && typeof record3.message?.stop_reason === "string" ? { stopReason: record3.message.stop_reason } : {},
+      ...main && record3.type === "assistant" && record3.isApiErrorMessage === true ? { isApiErrorMessage: true } : {},
+      ...main && record3.type === "user" && typeof record3.interruptedMessageId === "string" && record3.interruptedMessageId ? { interruptedMessageId: record3.interruptedMessageId } : {}
     };
   } catch (error3) {
     if (!(error3 instanceof CcNativeLineageError)) throw error3;
@@ -10475,12 +10518,16 @@ var CcTranscriptScan = class {
   completeOffset;
   lineCount;
   selectedLeafUuid;
+  /** Latest native turn terminator, independent of whether that row is a Raw source. */
+  terminalUuid;
   /** 97: the byte offset just after the selected leaf's line; everything later is its tail. */
   selectedLeafOffset;
   problems;
   newProblems;
   /** 108: the native ids this scan read, in visit order: the appended suffix, or every record after a reset. */
   readIds;
+  /** Native UUIDs first indexed by this scan; an appended duplicate UUID is not a new terminal. */
+  newIds;
   constructor(input) {
     this.nodes = input.nodes;
     this.callCarriers = input.callCarriers;
@@ -10491,13 +10538,39 @@ var CcTranscriptScan = class {
     this.completeOffset = input.completeOffset;
     this.lineCount = input.lineCount;
     this.selectedLeafUuid = input.selectedLeafUuid;
+    this.terminalUuid = input.terminalUuid;
     this.selectedLeafOffset = input.selectedLeafOffset;
     this.problems = input.problems ?? [];
     this.newProblems = input.newProblems ?? /* @__PURE__ */ new Set();
     this.readIds = input.readIds ?? [];
+    this.newIds = input.newIds ?? /* @__PURE__ */ new Set();
   }
   node(uuid5) {
     return this.nodes.get(uuid5);
+  }
+  /** A synthetic error may follow the selected Raw leaf without becoming Raw itself. Never
+   * accept an error on a sibling branch or across another source message. */
+  selectedTerminal() {
+    const leaf = this.selectedLeafUuid, candidate = this.terminalUuid && this.node(this.terminalUuid);
+    if (!leaf || !candidate) return null;
+    if (candidate.uuid === leaf) return candidate.sourceKind === "assistant" && candidate.stopReason === "end_turn" || candidate.isApiErrorMessage ? candidate : null;
+    if (candidate.sourceKind !== null || !candidate.isApiErrorMessage && !candidate.interruptedMessageId) return null;
+    const seen = /* @__PURE__ */ new Set();
+    let current = candidate;
+    while (current && current.uuid !== leaf) {
+      if (seen.has(current.uuid) || current.lineageProblem || current.importProblem || current !== candidate && current.sourceKind !== null) return null;
+      seen.add(current.uuid);
+      current = current.parentUuid === null ? void 0 : this.node(current.parentUuid);
+    }
+    if (current?.uuid !== leaf || !candidate.interruptedMessageId) return current?.uuid === leaf ? candidate : null;
+    seen.clear();
+    while (current && !seen.has(current.uuid)) {
+      if (current.lineageProblem || current.importProblem || current.sourceKind === "compaction" || current.sourceKind === "user") return null;
+      if (current.sourceKind === "assistant" && current.apiMessageId === candidate.interruptedMessageId) return candidate;
+      seen.add(current.uuid);
+      current = current.parentUuid === null ? void 0 : this.node(current.parentUuid);
+    }
+    return null;
   }
   associate(uuid5, association) {
     const current = this.node(uuid5);
@@ -10612,6 +10685,7 @@ var CcTranscriptCursor = class {
   lineCount = 0;
   recordCount = 0;
   selectedLeafUuid = null;
+  terminalUuid = null;
   selectedLeafOffset = null;
   nodes = /* @__PURE__ */ new Map();
   callCarriers = /* @__PURE__ */ new Map();
@@ -10644,6 +10718,44 @@ var CcTranscriptCursor = class {
   }
   node(uuid5) {
     return this.nodes.get(uuid5);
+  }
+  /** Read only selected, committed original records from the same native file this cursor scanned.
+   * A changed or reset file gives no coverage; the next reconciliation rebuilds its index. */
+  selectedRecords(path, ids) {
+    if (!this.stamp || !this.lastSnapshot || this.lastSnapshot.problem) return null;
+    const records = [];
+    let descriptor;
+    try {
+      descriptor = (0, import_node_fs5.openSync)(path, "r");
+    } catch (error3) {
+      if (error3.code === "ENOENT") return null;
+      throw error3;
+    }
+    try {
+      const before = (0, import_node_fs5.fstatSync)(descriptor);
+      const stamp = { size: before.size, modifiedMs: before.mtimeMs, changedMs: before.ctimeMs, device: before.dev, inode: before.ino };
+      if (!sameStamp(this.stamp, stamp)) return null;
+      for (const id of ids) {
+        const node = this.nodes.get(id), range = node?.byteRange;
+        if (!node?.committed || !node.selected || !range || range.start < 0 || range.end > this.completeOffset || range.end <= range.start) return null;
+        const bytes = Buffer.alloc(range.end - range.start);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const amount = (0, import_node_fs5.readSync)(descriptor, bytes, offset, bytes.length - offset, range.start + offset);
+          if (!amount) return null;
+          offset += amount;
+        }
+        if (bytes.at(-1) !== 10) return null;
+        const parsed2 = JSON.parse(bytes.subarray(0, -1).toString("utf8"));
+        if (!object3(parsed2) || parsed2.uuid !== id) return null;
+        records.push(parsed2);
+      }
+      const after = (0, import_node_fs5.fstatSync)(descriptor);
+      if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs || after.dev !== before.dev || after.ino !== before.ino) return null;
+      return records;
+    } finally {
+      (0, import_node_fs5.closeSync)(descriptor);
+    }
   }
   callPath(toolUseId, expectedNames) {
     const carrierIds = this.callCarriers.get(toolUseId);
@@ -10713,8 +10825,10 @@ var CcTranscriptCursor = class {
       const scanNodes = reset ? /* @__PURE__ */ new Map() : this.nodes;
       const scanCalls = reset ? /* @__PURE__ */ new Map() : this.callCarriers;
       const scanKeys = reset ? /* @__PURE__ */ new Map() : this.messageKeys;
+      const newIds = /* @__PURE__ */ new Set();
       const problems = reset ? [] : [...this.unresolvedProblems], newProblems = /* @__PURE__ */ new Set();
       let selectedLeafUuid = reset ? null : this.selectedLeafUuid;
+      let terminalUuid = reset ? null : this.terminalUuid;
       let selectedLeafOffset = reset ? null : this.selectedLeafOffset;
       let physicalRecords = reset ? 0 : this.recordCount;
       let lines = reset ? 0 : this.lineCount;
@@ -10735,12 +10849,14 @@ var CcTranscriptCursor = class {
         completeOffset,
         lineCount: lines,
         selectedLeafUuid,
+        terminalUuid,
         selectedLeafOffset,
         problems,
         newProblems
       });
       let beginning = 0;
       while (beginning < completeLength) {
+        const lineStart = start + beginning;
         const ending = bytes.indexOf(10, beginning);
         const raw = bytes.subarray(beginning, ending).toString("utf8");
         beginning = ending + 1;
@@ -10764,7 +10880,9 @@ var CcTranscriptCursor = class {
             source = null;
             node = null;
           } else {
+            if (!prior?.committed) newIds.add(node.uuid);
             if (!prior) {
+              node.byteRange = { start: lineStart, end: start + beginning };
               const named = node.parentUuid, parentKey = named === null ? void 0 : scanNodes.get(named)?.messageKey;
               const latest = source?.kind === "toolResult" && parentKey !== void 0 ? scanKeys.get(parentKey) : void 0;
               if (latest !== void 0 && latest !== named) {
@@ -10788,6 +10906,8 @@ var CcTranscriptCursor = class {
               selectedLeafUuid = node.uuid;
               selectedLeafOffset = start + beginning;
             }
+            if (source?.kind === "user" || mainRecord(record3) && record3.type === "assistant" || node.interruptedMessageId)
+              terminalUuid = record3.type === "assistant" && (node.sourceKind === "assistant" && node.stopReason === "end_turn" || node.isApiErrorMessage) || !!node.interruptedMessageId ? node.uuid : null;
           }
         }
         if (collect) records.push(record3);
@@ -10835,10 +10955,12 @@ var CcTranscriptCursor = class {
           completeOffset,
           lineCount: lines,
           selectedLeafUuid,
+          terminalUuid,
           selectedLeafOffset,
           problems,
           newProblems,
-          readIds: ordered.flatMap((value) => value.node ? [value.node.uuid] : [])
+          readIds: ordered.flatMap((value) => value.node ? [value.node.uuid] : []),
+          newIds
         });
       };
       return { scan, ordered, finish: finish2 };
@@ -10903,11 +11025,13 @@ var CcTranscriptCursor = class {
       this.messageKeys = scan.messageKeys;
     }
     for (const node of confirmed) node.selected = true;
+    for (const id of scan.readIds) scan.node(id).committed = true;
     this.stamp = scan.stamp;
     this.completeOffset = scan.completeOffset;
     this.lineCount = scan.lineCount;
     this.recordCount = scan.snapshot.recordCount;
     this.selectedLeafUuid = scan.selectedLeafUuid;
+    this.terminalUuid = scan.terminalUuid;
     this.selectedLeafOffset = scan.selectedLeafOffset;
     this.rejected = null;
     this.lastSnapshot = problem ? { ...scan.snapshot, problem } : scan.snapshot;
@@ -11114,7 +11238,7 @@ function readTranscriptCreatedAt(path) {
 }
 
 // src/hosts/cc/lifecycle.ts
-var import_node_fs9 = require("node:fs");
+var import_node_fs10 = require("node:fs");
 var import_node_path8 = require("node:path");
 
 // src/hosts/cc/worker.ts
@@ -40283,9 +40407,13 @@ var CcForegroundTools = class {
     try {
       if (typeof name !== "string" || !FOREGROUND.has(name)) throw new Error(`unknown foreground tool ${String(name)}`);
       signal?.throwIfAborted();
-      const projection = writeTool(name) ? await this.coordinator.waitForToolCall(this.toolUseId(meta3), name, signal) : await this.coordinator.toolProjection();
+      const callId = writeTool(name) ? this.toolUseId(meta3) : null;
+      const fork = callId === null ? null : this.coordinator.forkToolCall(callId, name);
+      if (fork === "retired") throw new Error("CC Noter fork call has expired or already been dispatched");
+      const projection = fork ? null : writeTool(name) ? await this.coordinator.waitForToolCall(callId, name, signal) : await this.coordinator.toolProjection();
       signal?.throwIfAborted();
-      const text = writeTool(name) ? this.boundTools(projection).find((candidate) => candidate.name === name).execute(input) : this.read(projection, name, input);
+      fork?.signal?.throwIfAborted();
+      const text = fork ? fork.tools.find((candidate) => candidate.name === name).execute(input) : writeTool(name) ? this.boundTools(projection).find((candidate) => candidate.name === name).execute(input) : this.read(projection, name, input);
       return { content: [{ type: "text", text }], ...toolRejected(name, text) ? { isError: true } : {} };
     } catch (error3) {
       const message = error3.name === "AbortError" ? "tool call cancelled" : error3 instanceof Error ? error3.message : String(error3);
@@ -40653,7 +40781,7 @@ var CcAgentWorker = class {
     };
     const progress = () => {
       const usage2 = observedUsage();
-      task.reportProgress?.({ retries: [...retries], ...usage2 ? { usage: usage2 } : {} });
+      task.reportProgress?.({ retries: [...retries], ...usage2 ? { usage: usage2 } : {}, ...task.fallbackReason ? { fallbackReason: task.fallbackReason } : {} });
     };
     let dreamState = "first";
     const toolsAllowed = () => task.kind !== "dreaming" || dreamState !== "complete";
@@ -40771,6 +40899,7 @@ var CcAgentWorker = class {
             ...usage2 ? { usage: usage2 } : {},
             ...retries.length ? { retries } : {},
             mode: "subagent",
+            ...task.fallbackReason ? { fallbackReason: task.fallbackReason } : {},
             ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
             audit: { available: false, reason: AUDIT_UNAVAILABLE },
             thinking: { requested: settings.thinking, effective: settings.thinking }
@@ -40787,6 +40916,7 @@ var CcAgentWorker = class {
             ...usage2 ? { usage: usage2 } : {},
             ...retries.length ? { retries } : {},
             mode: "subagent",
+            ...task.fallbackReason ? { fallbackReason: task.fallbackReason } : {},
             ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
             audit: { available: false, reason: AUDIT_UNAVAILABLE },
             thinking: { requested: settings.thinking, effective: settings.thinking }
@@ -40849,6 +40979,11 @@ var CcProjection = class {
   }
   currentBinding() {
     return this.binding;
+  }
+  /** Only already-selected original records, read at their existing cursor offsets. No second
+   * ancestry reconstruction and no body cache survives reconciliation. */
+  nativeRecords(nativeIds) {
+    return this.transcript.selectedRecords(this.binding.transcriptPath, nativeIds);
   }
   /** Resolve one native tool call from the incremental structural index. The transcript supplies
    * identity; source_paths only names the already-published branch that owns that ancestry. */
@@ -41338,6 +41473,18 @@ var CcProjection = class {
         coreSessionId: sessionId,
         branch: projectionReady ? branch : this.binding.branch,
         headTurnId: projectionReady ? headTurnId : this.lastResult?.headTurnId ?? null,
+        ...projectionReady && completed.selectedLeafUuid && (() => {
+          const terminal = completed.selectedTerminal();
+          const leaf = completed.node(completed.selectedLeafUuid);
+          return terminal && leaf?.entryId ? { terminal: {
+            uuid: terminal.uuid,
+            stopReason: terminal.stopReason,
+            isApiErrorMessage: terminal.isApiErrorMessage,
+            interruptedMessageId: terminal.interruptedMessageId,
+            entryId: leaf.entryId,
+            fresh: !completed.reset && completed.newIds.has(terminal.uuid)
+          } } : {};
+        })(),
         selectedAppendedEntryIds: projectionReady ? selectedEntryIds === null ? selectedDelta.filter((id) => newlyImported?.has(id)) : appendedEntryIds.filter((id) => selectedMembership.has(id)) : [],
         appendedEntryIds,
         bootstrap: !this.synchronized
@@ -41356,6 +41503,7 @@ var CcImporter = class {
   memory;
   projection;
   runAgent;
+  forkRunner;
   workerDependencies;
   reopened = false;
   constructor(config3, binding, workerDependencies = {}) {
@@ -41368,7 +41516,10 @@ var CcImporter = class {
     ) : void 0;
     memory = TraceMemory(
       config3.dbPath,
-      (input) => this.runAgent ? this.runAgent(input) : unavailableRunner(),
+      (input) => {
+        const task = input;
+        return task.kind === "noting" && task.mode === "fork" && !task.fallbackReason && this.forkRunner ? this.forkRunner(task) : this.runAgent ? this.runAgent(input) : unavailableRunner();
+      },
       config3.coreConfig,
       ccResultText,
       (entry) => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : void 0
@@ -41378,6 +41529,12 @@ var CcImporter = class {
   }
   currentBinding() {
     return this.projection.currentBinding();
+  }
+  setForkRunner(run) {
+    this.forkRunner = run;
+  }
+  nativeRecords(nativeIds) {
+    return this.projection.nativeRecords(nativeIds);
   }
   /** Core invokes the runner synchronously before yielding to the provider. An in-flight task
    * holds its invoked worker Promise; only a later task reads this replacement. */
@@ -41458,8 +41615,24 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
   const token = (0, import_node_crypto13.randomUUID)(), path = socketPath(config3, token);
   const executor = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: (/* @__PURE__ */ new Date()).toISOString() };
   (0, import_node_fs7.mkdirSync)((0, import_node_path6.dirname)(path), { recursive: true });
+  const watches = /* @__PURE__ */ new Map();
+  const commandWatch = (agentId, command) => {
+    const watch3 = watches.get(agentId);
+    if (!watch3 || watch3.command) return;
+    watch3.command = command;
+    if (watch3.connection) {
+      watches.delete(agentId);
+      watch3.connection.end(`${JSON.stringify({ kind: command, agent: agentId, session: binding.nativeSessionId })}
+`);
+    }
+  };
+  const stopWatches = () => {
+    for (const agentId of watches.keys()) commandWatch(agentId, "stop");
+  };
   const server = (0, import_node_net.createServer)((connection) => {
     let input = "", handled = false;
+    const disconnected = new AbortController();
+    connection.on("close", () => disconnected.abort());
     connection.setEncoding("utf8");
     connection.on("error", (error3) => console.error(`Trace Memory CC: control connection failed: ${String(error3)}`));
     connection.on("data", (chunk) => {
@@ -41476,7 +41649,7 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
       void (async () => {
         try {
           const request2 = JSON.parse(input.slice(0, newline));
-          if (request2.token !== token || typeof request2.verb !== "string" || request2.verb !== "stop" && request2.verb !== "off" && request2.verb !== "catchup" && request2.verb !== "settings" && request2.verb !== "apply")
+          if (request2.token !== token || typeof request2.verb !== "string" || request2.verb !== "stop" && request2.verb !== "off" && request2.verb !== "catchup" && request2.verb !== "settings" && request2.verb !== "apply" && request2.verb !== "turn-end" && request2.verb !== "fork-sources" && request2.verb !== "fork-register" && request2.verb !== "fork-call" && request2.verb !== "fork-check" && request2.verb !== "fork-terminal" && request2.verb !== "fork-no-start" && request2.verb !== "fork-watch" && request2.verb !== "fork-disconnect")
             throw new Error("invalid CC control request");
           const current = readBinding(config3, binding.nativeSessionId);
           if (!current) throw new Error("CC binding disappeared before control");
@@ -41484,6 +41657,76 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
           if (binding.coreSessionId !== null && current.coreSessionId !== binding.coreSessionId || current.executor?.token !== token)
             throw new Error("CC core or executor identity changed before control");
           const verb = request2.verb;
+          if (verb.startsWith("fork-") && verb !== "fork-sources") {
+            if (!activeFunctionHook(current)) throw new Error("CC function hook registration is not current");
+            if (typeof request2.agentId !== "string" && verb !== "fork-check" && verb !== "fork-no-start" || typeof request2.callId !== "string" && (verb === "fork-call" || verb === "fork-check") || typeof request2.name !== "string" && (verb === "fork-call" || verb === "fork-check") || (verb === "fork-call" || verb === "fork-check") && request2.name !== "note" && request2.name !== "memory")
+              throw new Error("invalid CC native fork identity");
+            let allowed;
+            if (verb === "fork-no-start") {
+              if (typeof request2.turnId !== "string" || typeof request2.reason !== "string" || typeof request2.confirmed !== "boolean" || !handlers?.forkNoStart) throw new Error("invalid CC fork no-start report");
+              handlers.forkNoStart(request2.turnId, request2.reason, request2.confirmed);
+              allowed = true;
+            } else if (verb === "fork-register") {
+              if (typeof request2.turnId !== "string" || !handlers?.forkRegister) throw new Error("invalid CC fork registration");
+              if (watches.has(request2.agentId)) throw new Error("CC fork stop channel already owns this native agent");
+              handlers.forkRegister(request2.turnId, request2.agentId);
+              watches.set(request2.agentId, {});
+              allowed = true;
+            } else if (verb === "fork-watch") {
+              const agentId = request2.agentId, watch3 = watches.get(agentId);
+              if (!watch3 || watch3.connection) throw new Error("CC fork stop listener is not registered");
+              watch3.connection = connection;
+              connection.on("close", () => {
+                if (watches.get(agentId) !== watch3 || watch3.connection !== connection) return;
+                watches.delete(agentId);
+                handlers?.forkDisconnected?.(agentId);
+              });
+              if (watch3.command) {
+                watches.delete(agentId);
+                connection.end(`${JSON.stringify({ kind: watch3.command, agent: agentId, session: binding.nativeSessionId })}
+`);
+              }
+              return;
+            } else if (verb === "fork-disconnect") {
+              const agentId = request2.agentId;
+              allowed = watches.has(agentId);
+              if (allowed) {
+                watches.delete(agentId);
+                handlers?.forkDisconnected?.(agentId);
+              }
+            } else if (verb === "fork-call") {
+              if (!handlers?.forkCall) throw new Error("CC fork call routing is unavailable");
+              allowed = await handlers.forkCall(request2.agentId, request2.callId, request2.name);
+            } else if (verb === "fork-check") {
+              if (!handlers?.forkCheck) throw new Error("CC fork permission routing is unavailable");
+              allowed = handlers.forkCheck(request2.callId, request2.name);
+            } else {
+              if (typeof request2.reason !== "string" || typeof request2.answer !== "string" || !handlers?.forkTerminal)
+                throw new Error("invalid CC fork terminal");
+              allowed = await handlers.forkTerminal(request2.agentId, request2.reason, request2.answer);
+              if (allowed) commandWatch(request2.agentId, "done");
+            }
+            connection.end(`${JSON.stringify({ ok: true, verb, allowed })}
+`);
+            return;
+          }
+          if (verb === "fork-sources") {
+            if (!handlers?.forkSources || typeof request2.turnId !== "string" || !request2.turnId)
+              throw new Error("invalid CC fork source request");
+            if (!activeFunctionHook(current)) throw new Error("CC function hook registration is not current");
+            connection.end(`${JSON.stringify({ ok: true, verb, sources: await handlers.forkSources(request2.turnId, disconnected.signal) })}
+`);
+            return;
+          }
+          if (verb === "turn-end") {
+            if (!handlers?.turnEnd || typeof request2.turnId !== "string" || !request2.turnId || typeof request2.reason !== "string")
+              throw new Error("invalid CC turn-end request");
+            if (!activeFunctionHook(current)) throw new Error("CC function hook registration is not current");
+            const directive = await handlers.turnEnd(request2.turnId, request2.reason, disconnected.signal, request2.observation);
+            connection.end(`${JSON.stringify({ ok: true, verb, directive })}
+`);
+            return;
+          }
           if (verb === "settings") {
             if (!handlers?.effectiveConfig) throw new Error("effective settings are unavailable on this executor");
             connection.end(`${JSON.stringify({
@@ -41515,13 +41758,16 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
 `);
             return;
           }
+          if (verb !== "stop" && verb !== "off") throw new Error("invalid CC cancellation verb");
           handlers?.beforeCancel();
+          stopWatches();
           const aborted3 = memory.cancelTasks(false);
           if (verb === "off") {
             const releaseImportHold = handlers?.holdImport();
             try {
               await disableEnrollment(config3, binding.nativeSessionId, memory.store, token);
               handlers?.beforeCancel();
+              stopWatches();
               for (const task of memory.cancelTasks(false))
                 if (!aborted3.some((previous) => previous.executionId === task.executionId)) aborted3.push(task);
             } finally {
@@ -41571,7 +41817,8 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
     binding.nativeSessionId,
     (current) => !current || current.executor?.token !== token ? current : { ...current, executor: null }
   );
-  return { executor, close: async (preserveExecutor = false) => {
+  return { executor, stopForks: stopWatches, stopFork: (agentId) => commandWatch(agentId, "stop"), close: async (preserveExecutor = false) => {
+    stopWatches();
     try {
       await closeServer(server);
     } finally {
@@ -41594,7 +41841,7 @@ function request(executor, verb, timeoutMs, detail = {}) {
       connection.destroy();
       error3 ? reject(error3) : void 0;
     };
-    const timer = setTimeout(() => finish2(new Error(`CC executor did not acknowledge ${verb} within ${timeoutMs} ms`)), timeoutMs);
+    const timer = timeoutMs === void 0 ? void 0 : setTimeout(() => finish2(new Error(`CC executor did not acknowledge ${verb} within ${timeoutMs} ms`)), timeoutMs);
     connection.setEncoding("utf8");
     connection.on("connect", () => connection.write(`${JSON.stringify({ verb, token: executor.token, ...detail })}
 `));
@@ -41612,6 +41859,67 @@ function request(executor, verb, timeoutMs, detail = {}) {
     });
     connection.on("error", (error3) => finish2(error3));
   });
+}
+async function signalCcTurnEnd(config3, nativeSessionId, turnId, reason, observation) {
+  const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
+  if (!binding?.executor || !activeFunctionHook(binding))
+    throw new Error("CC turn-end has no matching live function hook and executor binding");
+  functionHookNativeProcess(config3, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
+  const reply = await request(binding.executor, "turn-end", void 0, {
+    turnId,
+    reason,
+    ...observation ? { observation } : {}
+  });
+  if (reply.verb !== "turn-end") throw new Error("invalid CC turn-end response");
+  return reply.directive;
+}
+async function signalCcForkEvent(config3, nativeSessionId, verb, detail) {
+  const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
+  if (!binding?.executor || !activeFunctionHook(binding)) throw new Error("CC fork event has no live function hook and executor");
+  functionHookNativeProcess(config3, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
+  const reply = await request(binding.executor, verb, void 0, detail);
+  if (reply.verb !== verb) throw new Error("CC fork event response disagrees with request");
+  return reply.allowed;
+}
+async function waitCcForkCommand(config3, nativeSessionId, agentId) {
+  const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
+  if (!binding?.executor || !activeFunctionHook(binding)) throw new Error("CC fork stop listener has no live executor");
+  functionHookNativeProcess(config3, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
+  return new Promise((resolve4, reject) => {
+    const socket = (0, import_node_net.createConnection)(binding.executor.socketPath);
+    let output = "", ended = false;
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(`${JSON.stringify({ verb: "fork-watch", token: binding.executor.token, agentId })}
+`));
+    socket.on("data", (chunk) => {
+      output += chunk;
+      if (output.length > 16384) socket.destroy(new Error("CC fork stop instruction exceeds control bound"));
+    });
+    socket.on("end", () => {
+      ended = true;
+      try {
+        const instruction = JSON.parse(output);
+        if (instruction.kind !== "done" && instruction.kind !== "stop" || instruction.agent !== agentId || instruction.session !== nativeSessionId)
+          throw new Error(instruction.error ?? "CC fork stop instruction has wrong identity");
+        resolve4(instruction);
+      } catch (error3) {
+        reject(error3);
+      }
+    });
+    socket.on("error", reject);
+    socket.on("close", () => {
+      if (!ended) reject(new Error("CC fork stop listener disconnected without terminal instruction"));
+    });
+  });
+}
+async function requestCcForkSources(config3, nativeSessionId, turnId) {
+  const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
+  if (!binding?.executor || !activeFunctionHook(binding))
+    throw new Error("CC fork source read has no matching live function hook and executor binding");
+  functionHookNativeProcess(config3, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
+  const reply = await request(binding.executor, "fork-sources", void 0, { turnId });
+  if (reply.verb !== "fork-sources") throw new Error("invalid CC fork source response");
+  return reply.sources;
 }
 async function executorSnapshot(config3, nativeSessionId) {
   const reply = await executorSettingsRequest(config3, nativeSessionId, "settings");
@@ -41685,1084 +41993,14 @@ async function controlSession(config3, nativeSessionId, verb, timeoutMs = 2e3) {
   }
 }
 
-// src/hosts/cc/scheduler.ts
-var CcTaskScheduler = class {
-  memory;
-  worker;
-  diagnostic;
-  /** Ticket 75: a status-publish hook, fired when a phase is admitted and when it settles (slot
-   * cleared). Best-effort, synchronous and never awaited; wrapped in `safeNotify` below so a fault in
-   * the publisher — the wired implementation is already fully self-contained, but this boundary must
-   * hold regardless — can never reach admission or settlement. */
-  notify;
-  slots = /* @__PURE__ */ new Map();
-  stopped = false;
-  catchup;
-  cancellationEpoch = 0;
-  /** Ticket 72: ports 69's per-entry rule to CC. Noting has no entry here — every appended entry
-   * evaluates it, own and borrowed, exactly as before. Dreaming is evaluated only
-   * while armed; a phase disarms itself the moment its own evaluation comes back not-due, and a due
-   * phase that did not launch (busy slot, foreign claim, dropped) stays armed for the next opportunity.
-   * `noting: true` is never read; it exists only so `phase: CcWorkerPhase` can index this object
-   * without narrowing. Constructing this scheduler (attach) is itself an arming event. */
-  armed = { noting: true, dreaming: true };
-  armDreaming() {
-    this.armed.dreaming = true;
-  }
-  /** The last-seen `Store.progressSignal` for this session: a change re-arms D, closing what the
-   * flags above miss on their own — a commit made through a different connection to the same database
-   * file (another executor, a Pi session, an operator CLI). Compared at every per-entry opportunity. */
-  lastArmSignal;
-  /** Was the last reconcile "ready" (a bound, enabled session with a persisted selected path and
-   * head), and on which branch. A transition into ready (attach, or memory re-enabled) and a branch
-   * switch (a selected-path change or a retarget) both arm D, mirroring 69's "restore" event on
-   * Pi. A transition OUT of ready, or a branch change, also fences in-flight completions the same way
-   * `stopCatchup` already does for stop/off: a task admitted against the old path must not use a late
-   * completion to launch D there (`checkpointDreaming` always re-evaluates the current path instead). */
-  lastReady = false;
-  lastBranch;
-  /** The freshest known effective path: what the completion checkpoint evaluates, never the settled
-   * task's own (possibly stale) target. Set at every ready reconcile, whether or not it appended entries. */
-  currentTarget;
-  constructor(memory, worker, diagnostic, notify = () => {
-  }) {
-    this.memory = memory;
-    this.worker = worker;
-    this.diagnostic = diagnostic;
-    this.notify = notify;
-  }
-  running() {
-    return [...this.slots.keys()];
-  }
-  /** A future admission reads this snapshot; already reserved slots retain their captured phase config. */
-  applyWorker(worker) {
-    this.worker = worker;
-  }
-  safeNotify(reason) {
-    try {
-      this.notify(reason);
-    } catch (error3) {
-      this.diagnostic(`status notify failed (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
-    }
-  }
-  /** Observe every authoritative projection. Polls can resume a waiting drain after claim expiry. */
-  reconcile(reconcile, admitAutomatic = true, opportunityEpoch = this.cancellationEpoch) {
-    const entryEpoch = this.cancellationEpoch;
-    const drain = this.catchup;
-    if (drain && (drain.state === "running" || drain.state === "waiting")) {
-      const pathChanged = reconcile.coreSessionId !== null && (reconcile.coreSessionId !== drain.target.sessionId || reconcile.branch !== drain.target.branch);
-      if (pathChanged || reconcile.state === "disabled") {
-        this.stopCatchup(pathChanged ? "selected branch changed" : "Trace Memory was disabled");
-        this.memory.cancelTasks();
-      }
-    }
-    const ready = reconcile.state === "ready" && reconcile.coreSessionId !== null && reconcile.headTurnId !== null && reconcile.selectedCount > 0;
-    if (this.lastReady && (!ready || reconcile.branch !== this.lastBranch)) this.cancellationEpoch++;
-    if (ready) {
-      if (!this.lastReady || reconcile.branch !== this.lastBranch) this.armDreaming();
-      this.lastBranch = reconcile.branch;
-      this.currentTarget = {
-        sessionId: reconcile.coreSessionId,
-        branch: reconcile.branch,
-        headTurnId: reconcile.headTurnId,
-        triggerEntryId: reconcile.selectedTailId
-      };
-    }
-    this.lastReady = ready;
-    if (!ready) return;
-    if (admitAutomatic && opportunityEpoch === entryEpoch && reconcile.appendedEntryIds.length) {
-      const appended = reconcile.selectedAppendedEntryIds;
-      const opportunities = reconcile.bootstrap && appended.length ? [reconcile.selectedTailId] : appended;
-      for (const entryId of opportunities) {
-        const entry = this.memory.store.getSourceEntry(entryId);
-        if (!entry) throw new Error(`CC appended entry ${entryId} disappeared before scheduling`);
-        const own = {
-          sessionId: reconcile.coreSessionId,
-          branch: reconcile.branch,
-          headTurnId: reconcile.bootstrap ? reconcile.headTurnId : entry.turnId,
-          triggerEntryId: entry.id
-        };
-        const signal = this.memory.store.progressSignal(own.sessionId);
-        if (signal !== this.lastArmSignal) {
-          this.lastArmSignal = signal;
-          this.armDreaming();
-        }
-        for (const phase of ["noting", "dreaming"]) this.startAutomatic(phase, own);
-      }
-    }
-    this.driveCatchup(false);
-  }
-  catchupTicket() {
-    return this.cancellationEpoch;
-  }
-  startCatchup(reconcile, ticket = this.cancellationEpoch) {
-    if (ticket !== this.cancellationEpoch) return this.failedStatus("catchup was cancelled before admission");
-    if (this.catchup && (this.catchup.state === "running" || this.catchup.state === "waiting")) {
-      if (this.catchup.state === "waiting" && !this.catchup.active.size) this.driveCatchup(true);
-      return this.catchupStatus();
-    }
-    if (this.stopped) return this.failedStatus("CC executor is shutting down");
-    if (!this.worker)
-      return this.failedStatus("CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured");
-    if (reconcile.state === "disabled") return this.failedStatus("Trace Memory is disabled for this session");
-    if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedCount)
-      return this.failedStatus(reconcile.problems.join("; ") || "persisted selected source path is not ready");
-    if (!this.memory.store.enabled(reconcile.coreSessionId)) return this.failedStatus("Trace Memory is disabled for this session");
-    const target = {
-      sessionId: reconcile.coreSessionId,
-      branch: reconcile.branch,
-      headTurnId: reconcile.headTurnId,
-      triggerEntryId: reconcile.selectedTailId
-    };
-    const entries = this.pendingEntryIds(target);
-    this.catchup = {
-      target,
-      maxEntryId: entries.length ? Math.max(...entries) : void 0,
-      entryTotal: entries.length,
-      state: "running",
-      active: /* @__PURE__ */ new Set()
-    };
-    this.driveCatchup();
-    return this.catchupStatus();
-  }
-  /** Read the existing drain only. A menu read is not a catchup checkpoint or admission. */
-  catchupSnapshot() {
-    return this.startStatus ?? (this.catchup ? this.catchupStatus() : null);
-  }
-  /** A manual catchup is acknowledged at once, because its transcript sync can outlast the operator's
-   * 2-second wait; the sync and `startCatchup` then follow in the executor. A repeated command while
-   * starting or draining is only reported (and a stalled waiting drain re-driven, as `startCatchup`). */
-  activeCatchup() {
-    if (this.startStatus?.state === "starting") return this.startStatus;
-    if (!this.catchup || this.catchup.state !== "running" && this.catchup.state !== "waiting") return null;
-    if (this.catchup.state === "waiting" && !this.catchup.active.size) this.driveCatchup(true);
-    return this.catchupStatus();
-  }
-  beginCatchup() {
-    return this.startStatus = {
-      state: "starting",
-      entriesDone: 0,
-      entriesTotal: 0,
-      diagnostic: "syncing the transcript"
-    };
-  }
-  /** A failed start stays visible until the next one; a started drain reports itself. */
-  endCatchup(result) {
-    this.startStatus = result.state === "failed" ? result : null;
-  }
-  catchupStatus() {
-    if (!this.catchup) return this.failedStatus("no catchup has been started");
-    const drain = this.catchup;
-    const remainingEntries = drain.maxEntryId === void 0 ? 0 : this.pendingEntryIds(drain.target).filter((id) => id <= drain.maxEntryId).length;
-    return {
-      state: drain.state,
-      ...drain.phase ? { phase: drain.phase } : {},
-      entriesDone: drain.entryTotal - remainingEntries,
-      entriesTotal: drain.entryTotal,
-      ...drain.diagnostic ? { diagnostic: drain.diagnostic } : {}
-    };
-  }
-  /** Mark first, then the caller fences core tasks. This prevents completion chaining in the race. */
-  stopCatchup(diagnostic = "stop requested") {
-    this.cancellationEpoch++;
-    if (!this.catchup || this.catchup.state === "completed" || this.catchup.state === "failed" || this.catchup.state === "stopped") return;
-    this.catchup.state = "stopped";
-    this.catchup.phase = void 0;
-    this.catchup.diagnostic = diagnostic;
-  }
-  startStatus = null;
-  failedStatus(diagnostic) {
-    return { state: "failed", entriesDone: 0, entriesTotal: 0, diagnostic };
-  }
-  /** Ticket 72: Noting always evaluates (own and borrowed, exactly as before). Dreaming
-   * evaluates its candidate only while armed — an appended entry alone cannot change
-   * that answer (67/69: Raw ingestion alone creates no knowledge revision) — but the borrowed
-   * closed-session scan keeps its per-opportunity timing unchanged, running regardless of `armed`, so
-   * `includeBorrowed=false` is only ever passed by the completion checkpoint below. */
-  startAutomatic(phase, own, includeBorrowed = true) {
-    if (this.slots.has(phase) || this.stopped) return;
-    const evaluate = phase === "noting" || this.armed[phase];
-    let due = false;
-    if (evaluate) {
-      try {
-        due = this.memory.taskEligibility(phase, own).due;
-      } catch (error3) {
-        this.diagnostic(`${phase} eligibility failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
-        return;
-      }
-      if (phase !== "noting") this.armed[phase] = due;
-    }
-    const candidates = due ? [{ ...own, borrowed: false }] : [];
-    if (phase !== "dreaming" && includeBorrowed) {
-      try {
-        candidates.push(...this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope).map((target) => ({ ...target, borrowed: true })));
-      } catch (error3) {
-        this.diagnostic(`${phase} closed-session scan failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
-      }
-    }
-    if (!candidates.length) return;
-    if (!this.worker) {
-      this.diagnostic(`${phase} admission failed: CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured`);
-      return;
-    }
-    const cancellationEpoch = this.cancellationEpoch;
-    this.reserve(phase, own.sessionId, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch));
-  }
-  /**
-   * R4: a successful ordinary completion while a drain is active is a full checkpoint (both N/D
-   * checked). Failure and cancellation start no checks; empty/dropped/bounced retain the N-only drive.
-   */
-  reserve(phase, sessionId, run, shouldDrive = (result) => {
-    const drain = this.catchup;
-    const drainActive = !!drain && (drain.state === "running" || drain.state === "waiting");
-    if (result?.outcome !== "failure" && result?.outcome !== "cancelled")
-      this.driveCatchup(drainActive && result?.outcome === "success");
-    return false;
-  }) {
-    const epoch = this.cancellationEpoch;
-    const admissionSignal = this.memory.store.progressSignal(sessionId);
-    let settled;
-    const work = Promise.resolve().then(run).then((result) => {
-      settled = result;
-      return result;
-    });
-    this.slots.set(phase, work);
-    this.safeNotify(`${phase} admitted`);
-    void work.catch((error3) => this.diagnostic(`${phase} worker failed: ${error3 instanceof Error ? error3.message : String(error3)}`)).finally(() => {
-      this.slots.delete(phase);
-      this.safeNotify(`${phase} settled`);
-      if (settled?.outcome === "success" && this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointDreaming(sessionId, epoch);
-      if (shouldDrive(settled)) this.driveCatchup();
-    });
-  }
-  /** Ticket 72 item 3: fenced by the same admission an ordinary opportunity passes — the task's own
-   * cancellation epoch (a stop, an off, or a selected-path change/retarget since admission bumps it,
-   * per `reconcile` above), the executor not stopped, and memory still enabled — and it evaluates the
-   * CURRENT effective path (`currentTarget`), never the finished task's own (possibly stale) target.
-   * It checks only own D, scanning no borrowed candidates, so it composes with 68's catchup
-   * checkpoint through the same slot reservation: whichever `reserve`s a phase first wins that slot;
-   * the other's `startAutomatic` call becomes a no-op. */
-  checkpointDreaming(sessionId, epoch) {
-    if (this.stopped || this.cancellationEpoch !== epoch) return;
-    const target = this.currentTarget;
-    if (!target || target.sessionId !== sessionId || !this.memory.store.enabled(sessionId)) return;
-    this.armDreaming();
-    this.startAutomatic("dreaming", target, false);
-  }
-  common(phase, target, borrowed, automatic, boundary) {
-    const execution = this.worker.phases[phase];
-    return {
-      ...target,
-      borrowed,
-      automatic,
-      executorSessionId: target.sessionId,
-      mode: "subagent",
-      effectiveMode: "subagent",
-      model: execution.model,
-      capacity: execution.capacity,
-      maxReadChars: CC_MAX_RESULT_CHARS,
-      thinkingLevel: execution.thinking,
-      subagentThinkingLevel: execution.thinking,
-      ...boundary ? { boundary } : {}
-    };
-  }
-  async runCandidates(phase, executorSessionId, candidates, cancellationEpoch) {
-    for (const { borrowed, ...target } of candidates) {
-      try {
-        const result = await this.runCandidate(phase, executorSessionId, target, borrowed, cancellationEpoch);
-        if (!result || result.outcome !== "dropped" && result.outcome !== "empty") return result;
-      } catch (error3) {
-        this.diagnostic(`${phase} admission failed for S${target.sessionId}: ${error3 instanceof Error ? error3.message : String(error3)}`);
-        if (!(error3 instanceof Error && error3.cause === "task admission")) return;
-      }
-    }
-  }
-  /** One ordinary admission path; callers own continuation and error handling, not claim policy. */
-  async runCandidate(phase, executorSessionId, target, borrowed, epoch) {
-    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) return;
-    const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
-    const result = phase === "noting" ? await this.memory.noting(options) : await this.memory.dream(options);
-    this.report(phase, target, result);
-    return result;
-  }
-  report(phase, target, result) {
-    if (result.automaticOff) this.diagnostic(result.automaticOff);
-    const problems = "problems" in result ? result.problems ?? [] : [];
-    if (result.outcome === "failure" || result.outcome === "bounced" || result.outcome === "cancelled" || problems.length)
-      this.diagnostic(`${phase} worker ${result.outcome} for S${target.sessionId}${"runId" in result ? ` R${result.runId}` : ""}: ${problems.join("; ") || result.outcome}`);
-  }
-  /** ID-only progress keeps control acknowledgement independent of Raw payload size. */
-  pendingEntryIds(target) {
-    return this.memory.store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId);
-  }
-  /**
-   * One catchup checkpoint (R4). Start, every successful completion (catchup-owned or ordinary) while
-   * a drain is active, and a repeated `catchup` command on an idle waiting drain enter here with
-   * checkAll and independently check N and D. The per-poll/per-entry drive stays N-only (checkAll
-   * false). Busy ordinary slots are observed once and never adopted or queued.
-   */
-  driveCatchup(checkAll = true, retryPhase) {
-    const drain = this.catchup;
-    if (!drain || this.stopped || drain.state !== "running" && drain.state !== "waiting") return;
-    if (!this.memory.store.enabled(drain.target.sessionId)) {
-      this.stopCatchup("Trace Memory was disabled");
-      return;
-    }
-    const epoch = this.cancellationEpoch;
-    const owned = () => !this.stopped && this.catchup === drain && this.cancellationEpoch === epoch && (drain.state === "running" || drain.state === "waiting");
-    const remaining = drain.maxEntryId === void 0 ? [] : this.pendingEntryIds(drain.target).filter((id) => id <= drain.maxEntryId);
-    if (!checkAll && !retryPhase && !remaining.length && drain.phase && drain.phase !== "noting") {
-      this.finishWithoutCheckpoint(drain);
-      return;
-    }
-    if (checkAll) drain.phase = void 0;
-    let blockedNoting = false;
-    let launched = false;
-    const phases = retryPhase ? [retryPhase] : checkAll ? ["noting", "dreaming"] : ["noting"];
-    for (const phase of phases) {
-      let due = retryPhase === phase || phase === "noting" && remaining.length > 0;
-      if (phase !== "noting" && !retryPhase) {
-        try {
-          due = this.memory.taskEligibility(phase, drain.target).due;
-        } catch (error3) {
-          drain.state = "failed";
-          drain.phase = void 0;
-          drain.diagnostic = error3 instanceof Error ? error3.message : String(error3);
-          this.diagnostic(`${phase} catchup failed: ${drain.diagnostic}`);
-          return;
-        }
-      }
-      if (!due || this.slots.has(phase)) {
-        if (phase === "noting" && due) blockedNoting = true;
-        continue;
-      }
-      if (phase === "noting") {
-        const claim = this.memory.store.getClaim(drain.target.sessionId, phase);
-        if (claim && claim.expiresAt > Date.now() && claim.executorId !== this.memory.executorId) {
-          blockedNoting = true;
-          continue;
-        }
-      }
-      launched = true;
-      drain.active.add(phase);
-      drain.state = "running";
-      if (phase !== "dreaming") drain.phase = phase;
-      let checkpoint = false, retry2 = false;
-      this.reserve(phase, drain.target.sessionId, async () => {
-        if (!owned()) return;
-        try {
-          const result = phase === "noting" ? await this.memory.noting(this.common(
-            phase,
-            drain.target,
-            false,
-            false,
-            { maxEntryId: drain.maxEntryId }
-          )) : await this.runCandidate(phase, drain.target.sessionId, drain.target, false, epoch);
-          if (!result) return;
-          if (phase === "noting") this.report(phase, drain.target, result);
-          if (!owned()) return result;
-          checkpoint = result.outcome === "success";
-          if (result.outcome === "dropped") {
-            if (phase === "noting") {
-              drain.state = "waiting";
-              drain.phase = "noting";
-            }
-          } else if (result.outcome === "failure" || result.outcome === "bounced") {
-            drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : void 0) || result.outcome;
-            if (result.automaticOff) {
-              drain.state = "stopped";
-              drain.phase = void 0;
-            } else retry2 = true;
-          } else if (result.outcome !== "success" && result.outcome !== "empty") {
-            drain.state = result.outcome === "cancelled" ? "stopped" : "failed";
-            drain.phase = void 0;
-            drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : void 0) || result.outcome;
-          }
-          return result;
-        } catch (error3) {
-          if (owned()) {
-            drain.state = "failed";
-            drain.phase = void 0;
-            drain.diagnostic = error3 instanceof Error ? error3.message : String(error3);
-          }
-        }
-      }, () => {
-        drain.active.delete(phase);
-        if (this.catchup !== drain) return false;
-        if (retry2) this.driveCatchup(false, phase);
-        else if (!checkpoint) this.finishWithoutCheckpoint(drain, blockedNoting);
-        return checkpoint;
-      });
-    }
-    if (launched || drain.active.size) return;
-    if (remaining.length && blockedNoting) {
-      drain.state = "waiting";
-      drain.phase = "noting";
-      return;
-    }
-    this.finishWithoutCheckpoint(drain, blockedNoting);
-  }
-  /** Empty/dropped are terminal for their opportunity: settle, but do not create another checkpoint. */
-  finishWithoutCheckpoint(drain, blockedNoting = false) {
-    if (this.catchup !== drain || drain.active.size || drain.state === "failed" || drain.state === "stopped") return;
-    const remaining = drain.maxEntryId === void 0 ? 0 : this.pendingEntryIds(drain.target).filter((id) => id <= drain.maxEntryId).length;
-    if (remaining || blockedNoting) {
-      drain.state = "waiting";
-      drain.phase = "noting";
-      return;
-    }
-    for (const phase of ["dreaming"]) {
-      try {
-        if (this.memory.taskEligibility(phase, drain.target).due) {
-          drain.state = "waiting";
-          drain.phase = phase;
-          return;
-        }
-      } catch (error3) {
-        drain.state = "failed";
-        drain.phase = void 0;
-        drain.diagnostic = error3 instanceof Error ? error3.message : String(error3);
-        return;
-      }
-    }
-    drain.state = "completed";
-    drain.phase = void 0;
-  }
-  stop() {
-    this.stopCatchup("executor shutdown");
-    this.stopped = true;
-  }
-  async settle() {
-    await Promise.allSettled([...this.slots.values()]);
-  }
-};
-
-// src/hosts/cc/status.ts
-var import_node_fs8 = require("node:fs");
-var import_node_path7 = require("node:path");
-var import_node_crypto14 = require("node:crypto");
-function statusPath(stateDir, nativeSessionId) {
-  return (0, import_node_path7.join)(stateDir, "status", `${nativeSessionId}.json`);
-}
-function writeCcStatus(stateDir, status) {
-  const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto14.randomUUID)()}.tmp`;
-  (0, import_node_fs8.mkdirSync)((0, import_node_path7.dirname)(target), { recursive: true });
-  let descriptor;
-  try {
-    descriptor = (0, import_node_fs8.openSync)(temporary, "w", 384);
-    (0, import_node_fs8.writeFileSync)(descriptor, `${JSON.stringify(status)}
-`);
-    (0, import_node_fs8.fsyncSync)(descriptor);
-    (0, import_node_fs8.closeSync)(descriptor);
-    descriptor = void 0;
-    (0, import_node_fs8.renameSync)(temporary, target);
-  } catch (error3) {
-    if (descriptor !== void 0) (0, import_node_fs8.closeSync)(descriptor);
-    (0, import_node_fs8.rmSync)(temporary, { force: true });
-    throw error3;
-  }
-}
-function removeCcStatus(stateDir, nativeSessionId) {
-  (0, import_node_fs8.rmSync)(statusPath(stateDir, nativeSessionId), { force: true });
-}
-function readCcStatus(stateDir, nativeSessionId) {
-  try {
-    return JSON.parse((0, import_node_fs8.readFileSync)(statusPath(stateDir, nativeSessionId), "utf8"));
-  } catch (error3) {
-    if (error3.code === "ENOENT") return null;
-    throw error3;
-  }
-}
-
-// src/hosts/cc/lifecycle.ts
-var wait2 = (milliseconds) => new Promise((resolve4) => setTimeout(resolve4, milliseconds));
-var localMidnight = (now = /* @__PURE__ */ new Date()) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-var processLiveness = (identity) => {
-  try {
-    process.kill(identity.pid, 0);
-    return "alive";
-  } catch (error3) {
-    if (error3.code === "ESRCH") return "dead";
-    return "unknown";
-  }
-};
-function hasLiveSibling(config3, coreSessionId, excludeNativeSessionId) {
-  for (const file2 of (0, import_node_fs9.readdirSync)((0, import_node_path8.dirname)(bindingPath(config3, excludeNativeSessionId)))) {
-    if (!file2.endsWith(".json")) continue;
-    const nativeSessionId = file2.slice(0, -".json".length);
-    if (nativeSessionId === excludeNativeSessionId) continue;
-    const sibling = readBinding(config3, nativeSessionId);
-    if (!sibling || sibling.coreSessionId !== coreSessionId || sibling.lastClose?.confirmed) continue;
-    const native = sibling.nativeProcess;
-    if (!native) {
-      for (const record3 of nativeSessionRecords(config3)) {
-        if (record3.nativeSessionId !== nativeSessionId) continue;
-        const liveness2 = processLiveness(record3);
-        if (liveness2 === "dead") continue;
-        if (liveness2 === "unknown") throw new Error(`CC sibling ${nativeSessionId} native process liveness is unknown`);
-        const startedAt2 = processStartedAt(record3.pid);
-        if (record3.startedAt === null || startedAt2 === null)
-          throw new Error(`CC sibling ${nativeSessionId} native process identity is unavailable`);
-        if (startedAt2 === record3.startedAt) return true;
-      }
-      continue;
-    }
-    const liveness = processLiveness(native);
-    if (liveness === "dead") continue;
-    if (liveness === "unknown") throw new Error(`CC sibling ${nativeSessionId} native process liveness is unknown`);
-    const startedAt = processStartedAt(native.pid);
-    if (startedAt === null) throw new Error(`CC sibling ${nativeSessionId} native process identity is unavailable`);
-    if (startedAt !== native.startedAt) continue;
-    const assigned = assignedNativeSession(config3, [{ pid: native.pid, startedAt }]);
-    if (!assigned) throw new Error(`CC sibling ${nativeSessionId} has no native session assignment`);
-    if (assigned.nativeSessionId !== nativeSessionId) continue;
-    if (assigned.transcriptPath !== sibling.transcriptPath)
-      throw new Error(`CC sibling ${nativeSessionId} disagrees with its native session assignment`);
-    return true;
-  }
-  return false;
-}
-async function recordCcSessionEnd(config3, input) {
-  if (input.hook_event_name !== "SessionEnd") throw new Error("expected a SessionEnd Hook input");
-  const nativeSessionId = validateNativeSessionId(input.session_id), binding = readBinding(config3, nativeSessionId);
-  const reason = `SessionEnd ${input.reason ?? "unknown"}`;
-  if (!binding) return { confirmed: false, reason, diagnostic: "trusted binding is missing" };
-  if (binding.dbPath !== config3.dbPath || binding.transcriptPath !== input.transcript_path)
-    throw new Error("SessionEnd disagrees with the trusted binding");
-  const nativeProcess = currentNativeProcess();
-  if (!nativeProcess || !binding.nativeProcess)
-    return { confirmed: false, reason, diagnostic: "SessionEnd native process identity is unavailable; a matching SessionStart is required" };
-  const matchesNative = (current) => current.nativeProcess?.pid === nativeProcess.pid && current.nativeProcess.startedAt === nativeProcess.startedAt;
-  if (!matchesNative(binding)) return { confirmed: false, reason, diagnostic: "SessionEnd belongs to an earlier native process" };
-  const store = binding.coreSessionId === null ? null : new Store(config3.dbPath);
-  try {
-    const close = (current) => {
-      if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path || current.coreSessionId !== binding.coreSessionId || !matchesNative(current))
-        throw new Error("CC binding changed during SessionEnd close");
-      if (store && current.coreSessionId !== null) {
-        const session = store.getSession(current.coreSessionId);
-        if (!session || session.host !== coreHostOf(current)) throw new Error("bound core session identity changed during SessionEnd close");
-        const liveSibling = hasLiveSibling(config3, current.coreSessionId, nativeSessionId);
-        if (current.executor) store.releaseExecutor(current.executor.executorId);
-        if (session.closedAt === null && !liveSibling) store.closeSession(current.coreSessionId);
-      }
-      return { ...current, executor: null, lastClose: { at: (/* @__PURE__ */ new Date()).toISOString(), reason, confirmed: true } };
-    };
-    if (store) await updateBindingInStoreTransaction(config3, nativeSessionId, store, close, config3.finalSyncTimeoutMs);
-    else await updateBinding(config3, nativeSessionId, close, config3.finalSyncTimeoutMs);
-    return { confirmed: true, reason };
-  } catch (error3) {
-    return { confirmed: false, reason, diagnostic: error3 instanceof Error ? error3.message : String(error3) };
-  } finally {
-    store?.close();
-  }
-}
-var CcCoordinator = class {
-  importer = null;
-  scheduler = null;
-  control = null;
-  poll = null;
-  transcriptWatcher = null;
-  bindingWatcher = null;
-  queue = Promise.resolve(null);
-  wakeQueued = false;
-  closing = false;
-  closed = false;
-  startupComplete = false;
-  startup = new AbortController();
-  /** 70: the reconcile currently running under the binding lock, if any. `off`, a selected-path
-   * retarget and executor shutdown abort it before they wait for the lock themselves (off through
-   * `disableEnrollment`, retarget and shutdown through this queue); `stop` never touches it. */
-  currentImportAbort = null;
-  /** 70: outstanding preemption holds. While positive, a non-final reconcile that starts (including
-   * one already queued behind the one `abortCurrentImport` just aborted) returns without scanning,
-   * instead of racing the preempting operation for the binding lock. `final` reconciles (shutdown's
-   * own `finalReconcile`) are exempt — a hold never blocks the operation that is holding it. */
-  importHolds = 0;
-  config;
-  appliedConfig;
-  /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
-  nativeSessionId;
-  diagnostic;
-  /** Test-only override of the cooperative-scan slice/pause constants; unset in production. */
-  importTuning;
-  /** 78: the executor's runtime journal, handed to every worker this coordinator creates, for the
-   * one worker event with no home in the run record (a contained SDK control abort). */
-  journal;
-  /** Ticket 75: the most recent reconciled projection, read by `publish` for the counts' target path.
-   * `null` before any successful reconcile — counts render as `?`, never as `0`. */
-  lastReconcile = null;
-  /** Ticket 75: the last published (path, state) key, so a no-op stat-wake-up reconcile writes
-   * nothing — publishing is a lifecycle event, never a timer. */
-  lastStatusKey = null;
-  /** 102: the retargets in order, each after the last; shutdown waits for the one in flight. */
-  following = Promise.resolve(true);
-  constructor(config3, nativeSessionId, diagnostic = (message) => console.error(`Trace Memory CC: ${message}`), importTuning, journal = () => {
-  }) {
-    validateNativeSessionId(nativeSessionId);
-    this.config = config3;
-    this.appliedConfig = config3;
-    this.nativeSessionId = nativeSessionId;
-    this.diagnostic = diagnostic;
-    this.importTuning = importTuning;
-    this.journal = journal;
-  }
-  observe(event, details = {}) {
-    this.diagnostic(`lifecycle ${JSON.stringify({ event, at: Date.now(), ...details })}`);
-  }
-  /** The scan observes this at its next cooperative resume: it stops with stamp and offset
-   * unadvanced and releases the binding lock; the aborting operation then persists and acknowledges
-   * as today. A no-op when no reconcile is currently running. */
-  abortCurrentImport() {
-    this.currentImportAbort?.abort(new DOMException("CC import aborted for a higher-priority control operation", "AbortError"));
-  }
-  /** 70: begin a preemption hold and abort whatever is currently running. Until the returned release
-   * is called, no non-final reconcile scans — including one already queued behind the aborted run,
-   * which would otherwise start the instant it settles and win the lock before this operation does.
-   * Safe to call release more than once. */
-  holdImport() {
-    this.importHolds++;
-    this.abortCurrentImport();
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.importHolds = Math.max(0, this.importHolds - 1);
-    };
-  }
-  /** Ticket 75: publish this executor's status file, or do nothing. Every failure mode — a stale
-   * binding, a `progress`/`spendSince` read that throws, a write that throws — is caught here and
-   * turned into a diagnostic at worst; publishing never affects memory work, never delays a control
-   * acknowledgement and never interrupts shutdown cleanup (Pi review). Ownership is re-checked against
-   * the binding on every call, not cached: a late call from a superseded executor sees a binding that
-   * no longer names it and writes nothing. */
-  publish(reason) {
-    if (this.closed) return;
-    try {
-      const binding = readBinding(this.config, this.nativeSessionId);
-      if (!binding?.executor || !this.control || binding.executor.token !== this.control.executor.token) return;
-      if (binding.coreSessionId !== null && !this.importer) return;
-      const enabled2 = sessionEnabled(binding, this.importer?.memory.store ?? { enabled: () => false });
-      const running = new Set(this.scheduler?.running() ?? []);
-      let counts, cost;
-      const reconcile = this.lastReconcile;
-      if (enabled2 && this.importer && reconcile && reconcile.coreSessionId !== null) {
-        try {
-          counts = this.importer.memory.progress(reconcile.coreSessionId, reconcile.branch, reconcile.headTurnId ?? null);
-        } catch (error3) {
-          this.diagnostic(`status counts unavailable (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
-        }
-      }
-      if (enabled2 && this.importer) {
-        try {
-          cost = this.importer.memory.spendSince(localMidnight());
-        } catch (error3) {
-          this.diagnostic(`status cost unavailable (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
-        }
-      }
-      const status = {
-        version: 1,
-        nativeSessionId: this.nativeSessionId,
-        executorId: binding.executor.executorId,
-        pid: binding.executor.pid,
-        token: binding.executor.token,
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        enabled: enabled2,
-        running: { noting: running.has("noting"), dreaming: running.has("dreaming") },
-        ...counts ? { counts } : {},
-        ...cost !== void 0 ? { cost } : {}
-      };
-      writeCcStatus(this.config.stateDir, status);
-    } catch (error3) {
-      this.diagnostic(`status publish failed (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
-    }
-  }
-  async attach(final, deadline) {
-    if (this.importer || this.closed || this.closing && !final) return;
-    const binding = readBinding(this.config, this.nativeSessionId);
-    if (!binding || binding.lastClose?.confirmed) return;
-    this.observe("attach-start", { final });
-    try {
-      this.importer = new CcImporter(this.appliedConfig, binding, { journal: this.journal });
-      this.scheduler = new CcTaskScheduler(this.importer.memory, this.appliedConfig.worker, this.diagnostic, (reason) => this.publish(reason));
-      const timeout = deadline === void 0 ? void 0 : Math.max(1, deadline - Date.now());
-      await startControlServer(this.config, binding, this.importer.memory, timeout, final ? void 0 : this.startup.signal, {
-        catchup: async () => {
-          const scheduler = this.scheduler;
-          if (!scheduler) return {
-            state: "failed",
-            entriesDone: 0,
-            entriesTotal: 0,
-            factsDone: 0,
-            factsTotal: 0,
-            diagnostic: "CC executor scheduler is unavailable"
-          };
-          const active = scheduler.activeCatchup();
-          if (active) return active;
-          const ticket = scheduler.catchupTicket(), starting = scheduler.beginCatchup();
-          void (async () => {
-            let result;
-            try {
-              const projection = await this.requestReconcile("manual catchup");
-              result = projection ? scheduler.startCatchup(projection, ticket) : {
-                state: "failed",
-                entriesDone: 0,
-                entriesTotal: 0,
-                diagnostic: "authoritative transcript reconciliation is unavailable"
-              };
-            } catch (error3) {
-              result = {
-                state: "failed",
-                entriesDone: 0,
-                entriesTotal: 0,
-                diagnostic: error3 instanceof Error ? error3.message : String(error3)
-              };
-            }
-            scheduler.endCatchup(result);
-          })();
-          return starting;
-        },
-        beforeCancel: () => this.scheduler?.stopCatchup(),
-        holdImport: () => this.holdImport(),
-        effectiveConfig: () => this.appliedConfig,
-        catchupSnapshot: () => this.scheduler?.catchupSnapshot() ?? null,
-        applyConfig: (next) => {
-          if (!this.importer || !this.scheduler) throw new Error("CC executor is not attached for settings apply");
-          const prior = this.appliedConfig;
-          const nonLive = (value) => {
-            const fields2 = {
-              dbPath: value.dbPath,
-              stateDir: value.stateDir,
-              baseline: value.baseline,
-              retry: value.retry,
-              pollIntervalMs: value.pollIntervalMs,
-              finalSyncTimeoutMs: value.finalSyncTimeoutMs,
-              finalSyncStablePolls: value.finalSyncStablePolls,
-              writeSourceTimeoutMs: value.writeSourceTimeoutMs,
-              "worker.claudeExecutable": value.worker?.claudeExecutable,
-              "worker.cwd": value.worker?.cwd,
-              "worker.responseOriginTimeoutMs": value.worker?.responseOriginTimeoutMs
-            };
-            for (const [section, settings] of Object.entries(value.coreConfig)) {
-              if (section === "closedSessionScope") continue;
-              if (settings && typeof settings === "object") for (const [field, current] of Object.entries(settings))
-                fields2[`${section}.${field}`] = current;
-              else fields2[section] = settings;
-            }
-            return fields2;
-          };
-          const existingFields = nonLive(prior), nextFields = nonLive(next);
-          for (const key of Object.keys(existingFields))
-            if (JSON.stringify(existingFields[key]) !== JSON.stringify(nextFields[key]))
-              throw new Error(`CC executor cannot hot-apply ${key}; saved file is not applied`);
-          for (const [model, capacity] of Object.entries(prior.worker?.contextWindows ?? {}))
-            if (next.worker?.contextWindows[model] !== capacity)
-              throw new Error(`CC executor cannot hot-apply a changed capacity for ${model}`);
-          if (next.closedSessionScope !== this.appliedConfig.closedSessionScope)
-            this.importer.memory.configure({ closedSessionScope: next.closedSessionScope });
-          this.importer.applyWorker(next);
-          this.scheduler.applyWorker(next.worker);
-          this.appliedConfig = next;
-        }
-      }).then((control) => {
-        this.control = control;
-      });
-      this.watchTranscript(binding);
-      if (final) this.importer.memory.cancelTasks(true);
-      this.observe("attach-complete", { final });
-    } catch (error3) {
-      await this.discardAttachment();
-      throw error3;
-    }
-  }
-  /** Detach references before disposal: facade close may close its Store and then throw. */
-  async discardAttachment() {
-    const importer = this.importer, scheduler = this.scheduler, control = this.control;
-    this.importer = null;
-    this.scheduler = null;
-    this.control = null;
-    this.transcriptWatcher?.close();
-    this.transcriptWatcher = null;
-    scheduler?.stop();
-    try {
-      if (control) await control.close();
-    } catch (error3) {
-      this.diagnostic(`attachment control cleanup failed: ${String(error3)}`);
-    }
-    try {
-      importer?.close();
-    } catch (error3) {
-      this.diagnostic(`attachment facade cleanup failed: ${String(error3)}`);
-    }
-  }
-  watchTranscript(binding) {
-    if (this.transcriptWatcher || !(0, import_node_fs9.existsSync)((0, import_node_path8.dirname)(binding.transcriptPath))) return;
-    const transcriptName = (0, import_node_path8.basename)(binding.transcriptPath);
-    this.transcriptWatcher = (0, import_node_fs9.watch)((0, import_node_path8.dirname)(binding.transcriptPath), (_event, filename) => {
-      if (String(filename) === transcriptName) void this.requestReconcile("transcript watch");
-    });
-    this.transcriptWatcher.on("error", (error3) => {
-      this.diagnostic(`transcript watch failed: ${String(error3)}; stat wake-up remains active`);
-      this.transcriptWatcher?.close();
-      this.transcriptWatcher = null;
-    });
-  }
-  async start() {
-    if (this.poll || this.closed || this.closing) return;
-    this.observe("startup-begin");
-    const bindingDirectory = (0, import_node_path8.dirname)(bindingPath(this.config, this.nativeSessionId));
-    if ((0, import_node_fs9.existsSync)(bindingDirectory)) {
-      this.bindingWatcher = (0, import_node_fs9.watch)(bindingDirectory, (_event, filename) => {
-        if (String(filename) === (0, import_node_path8.basename)(bindingPath(this.config, this.nativeSessionId))) void this.requestReconcile("binding watch");
-      });
-      this.bindingWatcher.on("error", (error3) => {
-        this.diagnostic(`binding watch failed: ${String(error3)}; stat wake-up remains active`);
-        this.bindingWatcher?.close();
-        this.bindingWatcher = null;
-      });
-    }
-    this.poll = setInterval(() => {
-      void this.requestReconcile("stat wake-up");
-    }, this.config.pollIntervalMs);
-    await this.requestReconcile("startup");
-  }
-  /** 65: follow the SessionStart Hook's session id while no binding has been attached. Returns false
-   * once attached: `retargetTo` follows it from then on. */
-  adoptNativeSessionId(nativeSessionId) {
-    validateNativeSessionId(nativeSessionId);
-    if (nativeSessionId === this.nativeSessionId) return true;
-    if (this.importer || this.closing || this.closed) return false;
-    const previous = this.nativeSessionId;
-    this.nativeSessionId = nativeSessionId;
-    this.observe("session-id-adopted", { from: previous, to: nativeSessionId });
-    if (this.poll) void this.requestReconcile("session adoption");
-    return true;
-  }
-  /** 102: this Claude Code process now serves another native session (`/clear`, or `/resume` inside
-   * the process). Leave the attached one as an exit does, then attach to the new one as at startup:
-   * its own binding, core session, project (62) and enrollment. One at a time; false once closing. */
-  retargetTo(nativeSessionId) {
-    validateNativeSessionId(nativeSessionId);
-    return this.following = this.following.then(() => this.follow(nativeSessionId)).catch((error3) => {
-      this.diagnostic(`retarget to ${nativeSessionId} failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
-      return false;
-    });
-  }
-  async follow(nativeSessionId) {
-    if (this.closing || this.closed) return false;
-    if (this.adoptNativeSessionId(nativeSessionId)) return true;
-    const release = this.holdImport(), previous = this.nativeSessionId, token = this.control?.executor.token;
-    try {
-      this.observe("retarget-start", { from: previous, to: nativeSessionId });
-      await this.leave();
-      this.nativeSessionId = nativeSessionId;
-      this.lastReconcile = null;
-      this.lastStatusKey = null;
-      await this.discardAttachment();
-      if (token !== void 0 && readCcStatus(this.config.stateDir, previous)?.token === token) removeCcStatus(this.config.stateDir, previous);
-      this.observe("retarget-complete", { from: previous, to: nativeSessionId });
-    } finally {
-      release();
-    }
-    void this.requestReconcile("retarget");
-    return true;
-  }
-  requestReconcile(reason, final = false, deadline) {
-    if (!final && this.wakeQueued) return this.queue;
-    if (!final) this.wakeQueued = true;
-    const opportunityEpoch = this.scheduler?.catchupTicket();
-    this.queue = this.queue.then(async () => {
-      if (!final) this.wakeQueued = false;
-      if (this.closed || this.closing && !final) return null;
-      const wasAttached = this.importer !== null;
-      const importAbort = new AbortController();
-      this.currentImportAbort = importAbort;
-      const expiry = deadline === void 0 ? void 0 : setTimeout(() => importAbort.abort(new DOMException("CC final sync reached its deadline", "AbortError")), Math.max(0, deadline - Date.now()));
-      try {
-        const attaching = this.attach(final, deadline);
-        const epoch = opportunityEpoch ?? this.scheduler?.catchupTicket();
-        await attaching;
-        if (!final && readBinding(this.config, this.nativeSessionId)?.lastClose?.confirmed) {
-          this.scheduler?.stop();
-          this.importer?.memory.cancelTasks(true);
-          return null;
-        }
-        const result = !final && this.importHolds > 0 ? null : await this.importer?.reconcile(importAbort.signal, this.importTuning) ?? null;
-        if (this.importer) this.watchTranscript(this.importer.currentBinding());
-        if (!final && result) this.scheduler?.reconcile(result, reason !== "manual catchup", epoch);
-        if (!final && result) {
-          this.lastReconcile = result;
-          const pathKey = `${result.coreSessionId}|${result.branch}|${result.headTurnId}|${result.state}`;
-          if (result.appendedEntryIds.length > 0 || pathKey !== this.lastStatusKey) {
-            this.lastStatusKey = pathKey;
-            this.publish(reason);
-          }
-        }
-        if (this.importer && result && !this.startupComplete && !final) {
-          this.startupComplete = true;
-          this.observe("startup-complete");
-        }
-        if (reason !== "stat wake-up") this.observe("reconcile", {
-          reason,
-          final,
-          state: result?.state ?? "unbound",
-          coreSessionId: result?.coreSessionId ?? null,
-          appended: result?.appendedEntryIds.length ?? 0
-        });
-        if (result?.problems.length && reason !== "stat wake-up") this.diagnostic(`${reason}: ${result.problems.join("; ")}`);
-        return result;
-      } catch (error3) {
-        if (!wasAttached) await this.discardAttachment();
-        if (error3.name === "AbortError") this.observe("startup-cancelled", { reason });
-        else this.diagnostic(`${reason} reconciliation failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
-        return null;
-      } finally {
-        if (expiry !== void 0) clearTimeout(expiry);
-        if (this.currentImportAbort === importAbort) this.currentImportAbort = null;
-      }
-    });
-    return this.queue;
-  }
-  /** One non-waiting persisted projection for read tools. */
-  async toolProjection() {
-    const result = await this.requestReconcile("foreground read");
-    if (!this.importer) throw new Error("binding-not-ready: Claude Code session binding is unavailable");
-    const triggerEntryId = result?.selectedEntryIds.at(-1);
-    const binding = result?.coreSessionId && result.headTurnId && triggerEntryId ? { coreSessionId: result.coreSessionId, branch: result.branch, headTurnId: result.headTurnId, triggerEntryId, entryIds: result.selectedEntryIds } : void 0;
-    return { memory: this.importer.memory, ...binding ? { binding } : {} };
-  }
-  /** Write tools alone wait for the exact host-authenticated native call. */
-  async waitForToolCall(toolUseId, toolName, signal) {
-    const deadline = Date.now() + this.config.writeSourceTimeoutMs;
-    while (Date.now() < deadline) {
-      signal?.throwIfAborted();
-      if (this.closing || this.closed) throw new Error("source-not-ready: Claude Code executor is shutting down");
-      const result = await this.requestReconcile("foreground write binding");
-      if (result?.state === "disabled" && result.coreSessionId !== null)
-        throw new Error("Trace Memory is Disabled; use the operator command to enable memory");
-      const call = this.importer?.persistedCall(toolUseId, toolName);
-      if (call) return { memory: this.importer.memory, ...call };
-      await wait2(Math.min(20, this.config.pollIntervalMs, Math.max(1, deadline - Date.now())));
-    }
-    signal?.throwIfAborted();
-    throw new Error(`source-not-ready: exact current call ${toolUseId} was not persisted within ${this.config.writeSourceTimeoutMs} ms; retry this write`);
-  }
-  stopWakeups() {
-    if (this.poll) clearInterval(this.poll);
-    this.poll = null;
-    this.bindingWatcher?.close();
-    this.bindingWatcher = null;
-    this.transcriptWatcher?.close();
-    this.transcriptWatcher = null;
-  }
-  /** What an exit does to the attached session (shutdown and 102's retarget): its work stops, a final
-   * sync bounded by its deadline imports the transcript's tail, and its tasks are cancelled and settled
-   * and their claims released. The caller holds imports. */
-  async leave() {
-    this.scheduler?.stop();
-    this.transcriptWatcher?.close();
-    this.transcriptWatcher = null;
-    await this.queue;
-    this.importer?.memory.cancelTasks(true);
-    const result = await this.finalReconcile();
-    if (this.importer) {
-      this.importer.memory.forceTasks();
-      await this.scheduler?.settle();
-      this.importer.memory.store.releaseExecutor(this.importer.memory.executorId);
-    }
-    return result;
-  }
-  async finalReconcile() {
-    const deadline = Date.now() + this.config.finalSyncTimeoutMs;
-    let stable = 0, signature = null, latest = null;
-    while (Date.now() < deadline) {
-      latest = await this.requestReconcile("final sync", true, deadline);
-      if (latest?.state === "disabled") return {
-        confirmed: false,
-        reason: "source reconciliation completed without normal producer termination",
-        diagnostic: "transport or process shutdown is not proof of a normal native session close",
-        reconcile: latest
-      };
-      let next = null;
-      if (latest?.state === "ready" && latest.snapshot.exists && latest.snapshot.incompleteBytes === 0 && !latest.snapshot.problem)
-        next = JSON.stringify([
-          latest.snapshot.device,
-          latest.snapshot.inode,
-          latest.snapshot.size,
-          latest.snapshot.modifiedMs,
-          latest.snapshot.completeBytes,
-          latest.snapshot.recordCount,
-          latest.selectedEntryIds,
-          latest.branch,
-          latest.headTurnId
-        ]);
-      stable = next !== null && next === signature ? stable + 1 : next === null ? 0 : 1;
-      signature = next;
-      if (stable >= this.config.finalSyncStablePolls && latest) return {
-        confirmed: false,
-        reason: "source reconciliation completed without normal producer termination",
-        diagnostic: "a stable snapshot after transport or process shutdown does not prove a normal native session close",
-        reconcile: latest
-      };
-      await wait2(Math.min(100, this.config.pollIntervalMs, Math.max(1, deadline - Date.now())));
-    }
-    const diagnostic = !latest || latest.state === "unavailable" ? "binding or transcript remained unavailable" : latest.snapshot.incompleteBytes ? `transcript retained ${latest.snapshot.incompleteBytes} incomplete trailing bytes` : latest.problems.length ? latest.problems.join("; ") : "completed projection did not remain stable before the configured deadline";
-    return { confirmed: false, reason: "final reconciliation unconfirmed", diagnostic, ...latest ? { reconcile: latest } : {} };
-  }
-  async shutdown(reason) {
-    if (this.closed) return { confirmed: false, reason: "coordinator already closed", diagnostic: "duplicate shutdown" };
-    if (this.closing) return { confirmed: false, reason: "coordinator shutdown already in progress" };
-    this.closing = true;
-    this.scheduler?.stop();
-    this.stopWakeups();
-    this.startup.abort(new DOMException("Lifecycle shutdown", "AbortError"));
-    this.holdImport();
-    this.observe("shutdown-begin", { reason });
-    let result = { confirmed: false, reason: "no bound importer", diagnostic: "binding was never established" };
-    try {
-      await this.following;
-      result = await this.leave();
-      const owner = this.control?.executor.token;
-      if (this.control) await this.control.close(true);
-      try {
-        if (owner !== void 0 && readBinding(this.config, this.nativeSessionId)?.executor?.token === owner)
-          removeCcStatus(this.config.stateDir, this.nativeSessionId);
-      } catch (error3) {
-        this.diagnostic(`status removal failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
-      }
-      if (readBinding(this.config, this.nativeSessionId)) await updateBinding(this.config, this.nativeSessionId, (binding) => {
-        if (!binding) throw new Error("CC binding disappeared during shutdown");
-        if (binding.lastClose?.confirmed || owner !== void 0 && binding.executor?.token !== owner) return binding;
-        return { ...binding, lastClose: {
-          at: (/* @__PURE__ */ new Date()).toISOString(),
-          reason,
-          confirmed: result.confirmed,
-          ...result.diagnostic ? { diagnostic: result.diagnostic } : {}
-        } };
-      });
-      if (!result.confirmed) this.diagnostic(`close not confirmed: ${result.diagnostic ?? result.reason}`);
-      this.observe("shutdown-complete", { reason, confirmed: result.confirmed });
-      return result;
-    } finally {
-      this.stopWakeups();
-      this.closed = true;
-      this.closing = false;
-      this.importer?.close();
-      this.importer = null;
-      this.scheduler = null;
-      this.control = null;
-    }
-  }
-};
-
 // src/hosts/cc/injection.ts
-var import_node_crypto15 = require("node:crypto");
-var import_node_fs10 = require("node:fs");
+var import_node_crypto14 = require("node:crypto");
+var import_node_fs8 = require("node:fs");
 var BEGIN = CC_INJECTION_BEGIN;
 var END = "TRACE MEMORY KNOWLEDGE END";
-var digest = (text) => (0, import_node_crypto15.createHash)("sha256").update(text, "utf8").digest("hex");
+var digest = (text) => (0, import_node_crypto14.createHash)("sha256").update(text, "utf8").digest("hex");
 var databaseIdentity = (path) => {
-  const stat = (0, import_node_fs10.statSync)(path);
+  const stat = (0, import_node_fs8.statSync)(path);
   return `${stat.dev}:${stat.ino}`;
 };
 var positiveId = (value) => Number.isSafeInteger(value) && Number(value) > 0;
@@ -42879,8 +42117,8 @@ function ccDeliveryHead(binding, memory) {
     return {
       owner,
       node: { owner, sessionId: core, ...core === null ? {} : { branch: binding.branch }, headTurnId: headTurnId2, pending },
-      at: () => !last ? headTurnId2 === null ? {} : { turnId: headTurnId2 } : "prompt" in last ? { nodeKey: last.prompt } : { nodeKey: pending.at(-1).key ?? (0, import_node_crypto15.randomUUID)(), follows: last.follows ?? unanchored() },
-      following: () => ({ nodeKey: (0, import_node_crypto15.randomUUID)(), follows: leaf ?? unanchored() }),
+      at: () => !last ? headTurnId2 === null ? {} : { turnId: headTurnId2 } : "prompt" in last ? { nodeKey: last.prompt } : { nodeKey: pending.at(-1).key ?? (0, import_node_crypto14.randomUUID)(), follows: last.follows ?? unanchored() },
+      following: () => ({ nodeKey: (0, import_node_crypto14.randomUUID)(), follows: leaf ?? unanchored() }),
       target
     };
   };
@@ -43121,7 +42359,7 @@ async function ccCompaction(config3, input) {
       const current = readBinding(config3, input.session_id);
       if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch || current.selectedLeafUuid !== leaf || current.transcriptOffset !== offset || !importedToEnd(current))
         throw new Error("the session or its selected path changed while the compaction was built");
-      memory.store.recordKnowledgeDelivery({ owner, nodeKey: (0, import_node_crypto15.randomUUID)(), follows: leaf }, [{
+      memory.store.recordKnowledgeDelivery({ owner, nodeKey: (0, import_node_crypto14.randomUUID)(), follows: leaf }, [{
         knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
         knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
         knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0
@@ -43140,6 +42378,1391 @@ async function ccDeltaInjection(config3, input, event, slice) {
   });
   return slices ?? slice(null, { db: "", nativeSession: input.session_id, coreSession: null });
 }
+
+// src/hosts/cc/scheduler.ts
+var CcTaskScheduler = class {
+  memory;
+  worker;
+  diagnostic;
+  /** Ticket 75: a status-publish hook, fired when a phase is admitted and when it settles (slot
+   * cleared). Best-effort, synchronous and never awaited; wrapped in `safeNotify` below so a fault in
+   * the publisher — the wired implementation is already fully self-contained, but this boundary must
+   * hold regardless — can never reach admission or settlement. */
+  notify;
+  slots = /* @__PURE__ */ new Map();
+  stopped = false;
+  catchup;
+  cancellationEpoch = 0;
+  /** A selected-path or enrollment transition fences in-flight admission and the manual drain. */
+  lastReady = false;
+  lastBranch;
+  constructor(memory, worker, diagnostic, notify = () => {
+  }) {
+    this.memory = memory;
+    this.worker = worker;
+    this.diagnostic = diagnostic;
+    this.notify = notify;
+  }
+  running() {
+    return [...this.slots.keys()];
+  }
+  /** A future admission reads this snapshot; already reserved slots retain their captured phase config. */
+  applyWorker(worker) {
+    this.worker = worker;
+  }
+  safeNotify(reason) {
+    try {
+      this.notify(reason);
+    } catch (error3) {
+      this.diagnostic(`status notify failed (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
+    }
+  }
+  /** Observe every authoritative projection. Polls can resume a waiting drain after claim expiry. */
+  reconcile(reconcile, _legacyAdmission, _legacyEpoch) {
+    const drain = this.catchup;
+    if (drain && (drain.state === "running" || drain.state === "waiting")) {
+      const pathChanged = reconcile.coreSessionId !== null && (reconcile.coreSessionId !== drain.target.sessionId || reconcile.branch !== drain.target.branch);
+      if (pathChanged || reconcile.state === "disabled") {
+        this.stopCatchup(pathChanged ? "selected branch changed" : "Trace Memory was disabled");
+        this.memory.cancelTasks();
+      }
+    }
+    const ready = reconcile.state === "ready" && reconcile.coreSessionId !== null && reconcile.headTurnId !== null && reconcile.selectedCount > 0;
+    if (this.lastReady && (!ready || reconcile.branch !== this.lastBranch)) this.cancellationEpoch++;
+    if (ready) this.lastBranch = reconcile.branch;
+    this.lastReady = ready;
+    if (ready) this.driveCatchup(false);
+  }
+  catchupTicket() {
+    return this.cancellationEpoch;
+  }
+  startCatchup(reconcile, ticket = this.cancellationEpoch) {
+    if (ticket !== this.cancellationEpoch) return this.failedStatus("catchup was cancelled before admission");
+    if (this.catchup && (this.catchup.state === "running" || this.catchup.state === "waiting")) {
+      if (this.catchup.state === "waiting" && !this.catchup.active.size) this.driveCatchup(true);
+      return this.catchupStatus();
+    }
+    if (this.stopped) return this.failedStatus("CC executor is shutting down");
+    if (!this.worker)
+      return this.failedStatus("CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured");
+    if (reconcile.state === "disabled") return this.failedStatus("Trace Memory is disabled for this session");
+    if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedCount)
+      return this.failedStatus(reconcile.problems.join("; ") || "persisted selected source path is not ready");
+    if (!this.memory.store.enabled(reconcile.coreSessionId)) return this.failedStatus("Trace Memory is disabled for this session");
+    const target = {
+      sessionId: reconcile.coreSessionId,
+      branch: reconcile.branch,
+      headTurnId: reconcile.headTurnId,
+      triggerEntryId: reconcile.selectedTailId
+    };
+    const entries = this.pendingEntryIds(target);
+    this.catchup = {
+      target,
+      maxEntryId: entries.length ? Math.max(...entries) : void 0,
+      entryTotal: entries.length,
+      state: "running",
+      active: /* @__PURE__ */ new Set()
+    };
+    this.driveCatchup();
+    return this.catchupStatus();
+  }
+  /** Read the existing drain only. A menu read is not a catchup checkpoint or admission. */
+  catchupSnapshot() {
+    return this.startStatus ?? (this.catchup ? this.catchupStatus() : null);
+  }
+  /** A manual catchup is acknowledged at once, because its transcript sync can outlast the operator's
+   * 2-second wait; the sync and `startCatchup` then follow in the executor. A repeated command while
+   * starting or draining is only reported (and a stalled waiting drain re-driven, as `startCatchup`). */
+  activeCatchup() {
+    if (this.startStatus?.state === "starting") return this.startStatus;
+    if (!this.catchup || this.catchup.state !== "running" && this.catchup.state !== "waiting") return null;
+    if (this.catchup.state === "waiting" && !this.catchup.active.size) this.driveCatchup(true);
+    return this.catchupStatus();
+  }
+  beginCatchup() {
+    return this.startStatus = {
+      state: "starting",
+      entriesDone: 0,
+      entriesTotal: 0,
+      diagnostic: "syncing the transcript"
+    };
+  }
+  /** A failed start stays visible until the next one; a started drain reports itself. */
+  endCatchup(result) {
+    this.startStatus = result.state === "failed" ? result : null;
+  }
+  catchupStatus() {
+    if (!this.catchup) return this.failedStatus("no catchup has been started");
+    const drain = this.catchup;
+    const remainingEntries = drain.maxEntryId === void 0 ? 0 : this.pendingEntryIds(drain.target).filter((id) => id <= drain.maxEntryId).length;
+    return {
+      state: drain.state,
+      ...drain.phase ? { phase: drain.phase } : {},
+      entriesDone: drain.entryTotal - remainingEntries,
+      entriesTotal: drain.entryTotal,
+      ...drain.diagnostic ? { diagnostic: drain.diagnostic } : {}
+    };
+  }
+  /** Mark first, then the caller fences core tasks and the explicit manual drain. */
+  stopCatchup(diagnostic = "stop requested") {
+    this.cancellationEpoch++;
+    if (!this.catchup || this.catchup.state === "completed" || this.catchup.state === "failed" || this.catchup.state === "stopped") return;
+    this.catchup.state = "stopped";
+    this.catchup.phase = void 0;
+    this.catchup.diagnostic = diagnostic;
+  }
+  startStatus = null;
+  failedStatus(diagnostic) {
+    return { state: "failed", entriesDone: 0, entriesTotal: 0, diagnostic };
+  }
+  /** One ordinary phase evaluation at the main-turn checkpoint. */
+  startAutomatic(phase, own, fork, noLaunch) {
+    if (this.slots.has(phase) || this.stopped) {
+      noLaunch?.();
+      return;
+    }
+    let due = false;
+    try {
+      due = this.memory.taskEligibility(phase, own).due;
+    } catch (error3) {
+      this.diagnostic(`${phase} eligibility failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+      noLaunch?.();
+      return;
+    }
+    const candidates = due ? [{ ...own, borrowed: false }] : [];
+    if (phase !== "dreaming") {
+      try {
+        candidates.push(...this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope).map((target) => ({ ...target, borrowed: true })));
+      } catch (error3) {
+        this.diagnostic(`${phase} closed-session scan failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+      }
+    }
+    if (!candidates.length) {
+      noLaunch?.();
+      return;
+    }
+    if (!this.worker) {
+      this.diagnostic(`${phase} admission failed: CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured`);
+      noLaunch?.();
+      return;
+    }
+    const cancellationEpoch = this.cancellationEpoch;
+    this.reserve(phase, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch, fork, noLaunch));
+  }
+  turnEnd(reconcile, epoch, fork, noLaunch, notingFailure) {
+    if (epoch !== this.cancellationEpoch || this.stopped || reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || reconcile.selectedTailId === null) {
+      noLaunch?.();
+      return;
+    }
+    const target = {
+      sessionId: reconcile.coreSessionId,
+      branch: reconcile.branch,
+      headTurnId: reconcile.headTurnId,
+      triggerEntryId: reconcile.selectedTailId
+    };
+    for (const phase of ["noting", "dreaming"]) {
+      if (phase === "noting" && notingFailure) {
+        this.diagnostic(`noting source observation failed: ${notingFailure}`);
+        noLaunch?.();
+        continue;
+      }
+      this.startAutomatic(phase, target, phase === "noting" ? fork : void 0, phase === "noting" ? noLaunch : void 0);
+    }
+  }
+  /** Ordinary completion never triggers automatic work; a running manual drain still owns its checks. */
+  reserve(phase, run, shouldDrive = (result) => {
+    const drain = this.catchup;
+    const drainActive = !!drain && (drain.state === "running" || drain.state === "waiting");
+    if (result?.outcome !== "failure" && result?.outcome !== "cancelled")
+      this.driveCatchup(drainActive && result?.outcome === "success");
+    return false;
+  }) {
+    const epoch = this.cancellationEpoch;
+    let settled;
+    const work = Promise.resolve().then(run).then((result) => {
+      settled = result;
+      return result;
+    });
+    this.slots.set(phase, work);
+    this.safeNotify(`${phase} admitted`);
+    void work.catch((error3) => this.diagnostic(`${phase} worker failed: ${error3 instanceof Error ? error3.message : String(error3)}`)).finally(() => {
+      this.slots.delete(phase);
+      this.safeNotify(`${phase} settled`);
+      if (shouldDrive(settled)) this.driveCatchup();
+    });
+  }
+  common(phase, target, borrowed, automatic, boundary) {
+    const execution = this.worker.phases[phase];
+    return {
+      ...target,
+      borrowed,
+      automatic,
+      executorSessionId: target.sessionId,
+      mode: "subagent",
+      effectiveMode: "subagent",
+      model: execution.model,
+      capacity: execution.capacity,
+      maxReadChars: CC_MAX_RESULT_CHARS,
+      thinkingLevel: execution.thinking,
+      subagentThinkingLevel: execution.thinking,
+      ...boundary ? { boundary } : {}
+    };
+  }
+  async runCandidates(phase, executorSessionId, candidates, cancellationEpoch, fork, noLaunch) {
+    try {
+      for (const { borrowed, ...target } of candidates) {
+        try {
+          const result = await this.runCandidate(
+            phase,
+            executorSessionId,
+            target,
+            borrowed,
+            cancellationEpoch,
+            !borrowed && phase === "noting" ? fork : void 0,
+            noLaunch
+          );
+          if (!result || result.outcome !== "dropped" && result.outcome !== "empty") return result;
+        } catch (error3) {
+          this.diagnostic(`${phase} admission failed for S${target.sessionId}: ${error3 instanceof Error ? error3.message : String(error3)}`);
+          if (!(error3 instanceof Error && error3.cause === "task admission")) return;
+        }
+      }
+    } finally {
+      noLaunch?.();
+    }
+  }
+  /** One ordinary admission path; callers own continuation and error handling, not claim policy. */
+  async runCandidate(phase, executorSessionId, target, borrowed, epoch, fork, noLaunch) {
+    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) {
+      noLaunch?.();
+      return;
+    }
+    const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
+    let result;
+    if (phase === "noting" && fork) {
+      const fresh = (reason) => this.memory.noting({
+        ...options,
+        mode: "fork",
+        effectiveMode: "subagent",
+        fallbackReason: reason
+      });
+      if ("refused" in fork) {
+        noLaunch?.();
+        result = await fresh(fork.refused);
+      } else {
+        try {
+          const frozenIds = this.memory.notingBatch(target).map((entry) => entry.id);
+          result = await this.memory.noting({
+            ...options,
+            mode: "fork",
+            effectiveMode: "fork",
+            model: fork.model,
+            capacity: fork.capacity,
+            visible: fork.visible
+          });
+          if (result.outcome === "dropped" && "refused" in result && result.refused && !this.stopped && this.cancellationEpoch === epoch) {
+            const refusal = result.refused;
+            noLaunch?.();
+            result = await this.memory.noting({
+              ...options,
+              mode: "fork",
+              effectiveMode: "subagent",
+              fallbackReason: refusal.reason ?? "CC native fork did not start",
+              executionId: "executionId" in result ? result.executionId : void 0,
+              boundary: { exactEntryIds: frozenIds }
+            });
+          }
+        } catch (error3) {
+          if (!(error3 instanceof Error && error3.cause === "task admission" && error3.message.startsWith(NOTING_CAPACITY))) throw error3;
+          noLaunch?.();
+          result = await fresh(error3.message);
+        }
+      }
+    } else {
+      noLaunch?.();
+      result = phase === "noting" ? await this.memory.noting(options) : await this.memory.dream(options);
+    }
+    this.report(phase, target, result);
+    return result;
+  }
+  report(phase, target, result) {
+    if (result.automaticOff) this.diagnostic(result.automaticOff);
+    const problems = "problems" in result ? result.problems ?? [] : [];
+    if (result.outcome === "failure" || result.outcome === "bounced" || result.outcome === "cancelled" || problems.length)
+      this.diagnostic(`${phase} worker ${result.outcome} for S${target.sessionId}${"runId" in result ? ` R${result.runId}` : ""}: ${problems.join("; ") || result.outcome}`);
+  }
+  /** ID-only progress keeps control acknowledgement independent of Raw payload size. */
+  pendingEntryIds(target) {
+    return this.memory.store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId);
+  }
+  /**
+   * One catchup checkpoint (R4). Start, every successful completion (catchup-owned or ordinary) while
+   * a drain is active, and a repeated `catchup` command on an idle waiting drain enter here with
+   * checkAll and independently check N and D. The per-poll/per-entry drive stays N-only (checkAll
+   * false). Busy ordinary slots are observed once and never adopted or queued.
+   */
+  driveCatchup(checkAll = true, retryPhase) {
+    const drain = this.catchup;
+    if (!drain || this.stopped || drain.state !== "running" && drain.state !== "waiting") return;
+    if (!this.memory.store.enabled(drain.target.sessionId)) {
+      this.stopCatchup("Trace Memory was disabled");
+      return;
+    }
+    const epoch = this.cancellationEpoch;
+    const owned = () => !this.stopped && this.catchup === drain && this.cancellationEpoch === epoch && (drain.state === "running" || drain.state === "waiting");
+    const remaining = drain.maxEntryId === void 0 ? [] : this.pendingEntryIds(drain.target).filter((id) => id <= drain.maxEntryId);
+    if (!checkAll && !retryPhase && !remaining.length && drain.phase && drain.phase !== "noting") {
+      this.finishWithoutCheckpoint(drain);
+      return;
+    }
+    if (checkAll) drain.phase = void 0;
+    let blockedNoting = false;
+    let launched = false;
+    const phases = retryPhase ? [retryPhase] : checkAll ? ["noting", "dreaming"] : ["noting"];
+    for (const phase of phases) {
+      let due = retryPhase === phase || phase === "noting" && remaining.length > 0;
+      if (phase !== "noting" && !retryPhase) {
+        try {
+          due = this.memory.taskEligibility(phase, drain.target).due;
+        } catch (error3) {
+          drain.state = "failed";
+          drain.phase = void 0;
+          drain.diagnostic = error3 instanceof Error ? error3.message : String(error3);
+          this.diagnostic(`${phase} catchup failed: ${drain.diagnostic}`);
+          return;
+        }
+      }
+      if (!due || this.slots.has(phase)) {
+        if (phase === "noting" && due) blockedNoting = true;
+        continue;
+      }
+      if (phase === "noting") {
+        const claim = this.memory.store.getClaim(drain.target.sessionId, phase);
+        if (claim && claim.expiresAt > Date.now() && claim.executorId !== this.memory.executorId) {
+          blockedNoting = true;
+          continue;
+        }
+      }
+      launched = true;
+      drain.active.add(phase);
+      drain.state = "running";
+      if (phase !== "dreaming") drain.phase = phase;
+      let checkpoint = false, retry2 = false;
+      this.reserve(phase, async () => {
+        if (!owned()) return;
+        try {
+          const result = phase === "noting" ? await this.memory.noting(this.common(
+            phase,
+            drain.target,
+            false,
+            false,
+            { maxEntryId: drain.maxEntryId }
+          )) : await this.runCandidate(phase, drain.target.sessionId, drain.target, false, epoch);
+          if (!result) return;
+          if (phase === "noting") this.report(phase, drain.target, result);
+          if (!owned()) return result;
+          checkpoint = result.outcome === "success";
+          if (result.outcome === "dropped") {
+            if (phase === "noting") {
+              drain.state = "waiting";
+              drain.phase = "noting";
+            }
+          } else if (result.outcome === "failure" || result.outcome === "bounced") {
+            drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : void 0) || result.outcome;
+            if (result.automaticOff) {
+              drain.state = "stopped";
+              drain.phase = void 0;
+            } else retry2 = true;
+          } else if (result.outcome !== "success" && result.outcome !== "empty") {
+            drain.state = result.outcome === "cancelled" ? "stopped" : "failed";
+            drain.phase = void 0;
+            drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : void 0) || result.outcome;
+          }
+          return result;
+        } catch (error3) {
+          if (owned()) {
+            drain.state = "failed";
+            drain.phase = void 0;
+            drain.diagnostic = error3 instanceof Error ? error3.message : String(error3);
+          }
+        }
+      }, () => {
+        drain.active.delete(phase);
+        if (this.catchup !== drain) return false;
+        if (retry2) this.driveCatchup(false, phase);
+        else if (!checkpoint) this.finishWithoutCheckpoint(drain, blockedNoting);
+        return checkpoint;
+      });
+    }
+    if (launched || drain.active.size) return;
+    if (remaining.length && blockedNoting) {
+      drain.state = "waiting";
+      drain.phase = "noting";
+      return;
+    }
+    this.finishWithoutCheckpoint(drain, blockedNoting);
+  }
+  /** Empty/dropped are terminal for their opportunity: settle, but do not create another checkpoint. */
+  finishWithoutCheckpoint(drain, blockedNoting = false) {
+    if (this.catchup !== drain || drain.active.size || drain.state === "failed" || drain.state === "stopped") return;
+    const remaining = drain.maxEntryId === void 0 ? 0 : this.pendingEntryIds(drain.target).filter((id) => id <= drain.maxEntryId).length;
+    if (remaining || blockedNoting) {
+      drain.state = "waiting";
+      drain.phase = "noting";
+      return;
+    }
+    for (const phase of ["dreaming"]) {
+      try {
+        if (this.memory.taskEligibility(phase, drain.target).due) {
+          drain.state = "waiting";
+          drain.phase = phase;
+          return;
+        }
+      } catch (error3) {
+        drain.state = "failed";
+        drain.phase = void 0;
+        drain.diagnostic = error3 instanceof Error ? error3.message : String(error3);
+        return;
+      }
+    }
+    drain.state = "completed";
+    drain.phase = void 0;
+  }
+  stop() {
+    this.stopCatchup("executor shutdown");
+    this.stopped = true;
+  }
+  async settle() {
+    await Promise.allSettled([...this.slots.values()]);
+  }
+};
+
+// src/hosts/cc/fork-authority.ts
+var CcForkAuthority = class {
+  onCancel;
+  constructor(onCancel) {
+    this.onCancel = onCancel;
+  }
+  attempt;
+  retired = /* @__PURE__ */ new Set();
+  begin(task) {
+    if (this.attempt) throw new Error("a CC Noter fork is already active");
+    let finish2, release;
+    const result = new Promise((resolve4) => {
+      finish2 = resolve4;
+    });
+    const ready = new Promise((resolve4) => {
+      release = resolve4;
+    });
+    const attempt = {
+      task,
+      agentId: null,
+      calls: /* @__PURE__ */ new Map(),
+      result,
+      finish: finish2,
+      ready,
+      release,
+      onAbort: () => this.retire(attempt, "cancelled")
+    };
+    this.attempt = attempt;
+    task.signal?.addEventListener("abort", attempt.onAbort, { once: true });
+    if (task.signal?.aborted) this.retire(attempt, "cancelled");
+    return result;
+  }
+  /** A spawn response is ambiguous until it contains the actual native agentId. A missing response
+   * cannot be classified as pre-start refusal by this module. */
+  register(agentId) {
+    const attempt = this.attempt;
+    if (!attempt || !agentId || attempt.agentId !== null) throw new Error("CC fork registration has no unique live launch");
+    attempt.agentId = agentId;
+    attempt.release();
+  }
+  /** First tool.call waits for the already initiated launch's registration, not a future hook.
+   * A different agent or a repeated native call identity never gains N authority. */
+  async call(agentId, callId, name) {
+    const attempt = this.attempt;
+    if (!attempt || !agentId || !callId || this.retired.has(callId)) return false;
+    await attempt.ready;
+    if (this.attempt !== attempt || attempt.agentId !== agentId || attempt.calls.has(callId)) return false;
+    attempt.calls.set(callId, name);
+    return true;
+  }
+  /** Permission checks cannot create authority: only tool.call from the registered agent can. */
+  allows(callId, name) {
+    return !this.retired.has(callId) && this.attempt?.task.signal?.aborted !== true && this.attempt?.calls.get(callId) === name;
+  }
+  /** MCP dispatch consumes the native call grant exactly once; a retired call must never
+   * fall through to immediate manual writes if its ID reappears. */
+  take(callId, name) {
+    if (this.retired.has(callId)) return "retired";
+    const attempt = this.attempt;
+    if (!attempt || attempt.task.signal?.aborted) return null;
+    if (attempt.calls.has(callId) && attempt.calls.get(callId) !== name) return "retired";
+    if (attempt.calls.get(callId) !== name) return null;
+    attempt.calls.delete(callId);
+    this.retired.add(callId);
+    return attempt.task;
+  }
+  /** Only the actual agent's terminal settles this task. The caller validates the native event kind. */
+  async complete(agentId, result) {
+    const attempt = this.attempt;
+    if (!attempt || !agentId) return false;
+    await attempt.ready;
+    if (this.attempt !== attempt || attempt.agentId !== agentId) return false;
+    this.retire(attempt, result.outcome, result);
+    return true;
+  }
+  /** Only an explicit native no-start result is a Core refusal; an ambiguous launch error fails
+   * this attempt rather than silently retrying fresh after a possibly started fork. */
+  noStart(refused, confirmed) {
+    const attempt = this.attempt;
+    if (!attempt || attempt.agentId !== null) throw new Error("CC fork no-start result is not before registration");
+    this.retire(attempt, "failure", {
+      outcome: "failure",
+      output: refused,
+      ...confirmed ? { refused: { reason: refused } } : {}
+    });
+  }
+  cancelAgent(agentId) {
+    if (this.attempt?.agentId !== agentId) return false;
+    this.retire(this.attempt, "cancelled");
+    return true;
+  }
+  cancel() {
+    if (this.attempt) this.retire(this.attempt, "cancelled");
+  }
+  retire(attempt, outcome, result) {
+    if (this.attempt !== attempt) return;
+    this.attempt = void 0;
+    attempt.task.signal?.removeEventListener("abort", attempt.onAbort);
+    attempt.release();
+    for (const id of attempt.calls.keys()) this.retired.add(id);
+    attempt.calls.clear();
+    if (outcome === "cancelled" && attempt.agentId) this.onCancel?.(attempt.agentId);
+    attempt.finish(result ?? { outcome, output: "CC Noter fork authority retired before native completion" });
+  }
+};
+
+// src/hosts/cc/status.ts
+var import_node_fs9 = require("node:fs");
+var import_node_path7 = require("node:path");
+var import_node_crypto15 = require("node:crypto");
+function statusPath(stateDir, nativeSessionId) {
+  return (0, import_node_path7.join)(stateDir, "status", `${nativeSessionId}.json`);
+}
+function writeCcStatus(stateDir, status) {
+  const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto15.randomUUID)()}.tmp`;
+  (0, import_node_fs9.mkdirSync)((0, import_node_path7.dirname)(target), { recursive: true });
+  let descriptor;
+  try {
+    descriptor = (0, import_node_fs9.openSync)(temporary, "w", 384);
+    (0, import_node_fs9.writeFileSync)(descriptor, `${JSON.stringify(status)}
+`);
+    (0, import_node_fs9.fsyncSync)(descriptor);
+    (0, import_node_fs9.closeSync)(descriptor);
+    descriptor = void 0;
+    (0, import_node_fs9.renameSync)(temporary, target);
+  } catch (error3) {
+    if (descriptor !== void 0) (0, import_node_fs9.closeSync)(descriptor);
+    (0, import_node_fs9.rmSync)(temporary, { force: true });
+    throw error3;
+  }
+}
+function removeCcStatus(stateDir, nativeSessionId) {
+  (0, import_node_fs9.rmSync)(statusPath(stateDir, nativeSessionId), { force: true });
+}
+function readCcStatus(stateDir, nativeSessionId) {
+  try {
+    return JSON.parse((0, import_node_fs9.readFileSync)(statusPath(stateDir, nativeSessionId), "utf8"));
+  } catch (error3) {
+    if (error3.code === "ENOENT") return null;
+    throw error3;
+  }
+}
+
+// src/hosts/cc/lifecycle.ts
+var wait2 = (milliseconds) => new Promise((resolve4) => setTimeout(resolve4, milliseconds));
+var localMidnight = (now = /* @__PURE__ */ new Date()) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+var processLiveness = (identity) => {
+  try {
+    process.kill(identity.pid, 0);
+    return "alive";
+  } catch (error3) {
+    if (error3.code === "ESRCH") return "dead";
+    return "unknown";
+  }
+};
+function hasLiveSibling(config3, coreSessionId, excludeNativeSessionId) {
+  for (const file2 of (0, import_node_fs10.readdirSync)((0, import_node_path8.dirname)(bindingPath(config3, excludeNativeSessionId)))) {
+    if (!file2.endsWith(".json")) continue;
+    const nativeSessionId = file2.slice(0, -".json".length);
+    if (nativeSessionId === excludeNativeSessionId) continue;
+    const sibling = readBinding(config3, nativeSessionId);
+    if (!sibling || sibling.coreSessionId !== coreSessionId || sibling.lastClose?.confirmed) continue;
+    const native = sibling.nativeProcess;
+    if (!native) {
+      for (const record3 of nativeSessionRecords(config3)) {
+        if (record3.nativeSessionId !== nativeSessionId) continue;
+        const liveness2 = processLiveness(record3);
+        if (liveness2 === "dead") continue;
+        if (liveness2 === "unknown") throw new Error(`CC sibling ${nativeSessionId} native process liveness is unknown`);
+        const startedAt2 = processStartedAt(record3.pid);
+        if (record3.startedAt === null || startedAt2 === null)
+          throw new Error(`CC sibling ${nativeSessionId} native process identity is unavailable`);
+        if (startedAt2 === record3.startedAt) return true;
+      }
+      continue;
+    }
+    const liveness = processLiveness(native);
+    if (liveness === "dead") continue;
+    if (liveness === "unknown") throw new Error(`CC sibling ${nativeSessionId} native process liveness is unknown`);
+    const startedAt = processStartedAt(native.pid);
+    if (startedAt === null) throw new Error(`CC sibling ${nativeSessionId} native process identity is unavailable`);
+    if (startedAt !== native.startedAt) continue;
+    const assigned = assignedNativeSession(config3, [{ pid: native.pid, startedAt }]);
+    if (!assigned) throw new Error(`CC sibling ${nativeSessionId} has no native session assignment`);
+    if (assigned.nativeSessionId !== nativeSessionId) continue;
+    if (assigned.transcriptPath !== sibling.transcriptPath)
+      throw new Error(`CC sibling ${nativeSessionId} disagrees with its native session assignment`);
+    return true;
+  }
+  return false;
+}
+async function recordCcSessionEnd(config3, input) {
+  if (input.hook_event_name !== "SessionEnd") throw new Error("expected a SessionEnd Hook input");
+  const nativeSessionId = validateNativeSessionId(input.session_id), binding = readBinding(config3, nativeSessionId);
+  const reason = `SessionEnd ${input.reason ?? "unknown"}`;
+  if (!binding) return { confirmed: false, reason, diagnostic: "trusted binding is missing" };
+  if (binding.dbPath !== config3.dbPath || binding.transcriptPath !== input.transcript_path)
+    throw new Error("SessionEnd disagrees with the trusted binding");
+  const nativeProcess = currentNativeProcess();
+  if (!nativeProcess || !binding.nativeProcess)
+    return { confirmed: false, reason, diagnostic: "SessionEnd native process identity is unavailable; a matching SessionStart is required" };
+  const matchesNative = (current) => current.nativeProcess?.pid === nativeProcess.pid && current.nativeProcess.startedAt === nativeProcess.startedAt;
+  if (!matchesNative(binding)) return { confirmed: false, reason, diagnostic: "SessionEnd belongs to an earlier native process" };
+  const store = binding.coreSessionId === null ? null : new Store(config3.dbPath);
+  try {
+    const close = (current) => {
+      if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path || current.coreSessionId !== binding.coreSessionId || !matchesNative(current))
+        throw new Error("CC binding changed during SessionEnd close");
+      if (store && current.coreSessionId !== null) {
+        const session = store.getSession(current.coreSessionId);
+        if (!session || session.host !== coreHostOf(current)) throw new Error("bound core session identity changed during SessionEnd close");
+        const liveSibling = hasLiveSibling(config3, current.coreSessionId, nativeSessionId);
+        if (current.executor) store.releaseExecutor(current.executor.executorId);
+        if (session.closedAt === null && !liveSibling) store.closeSession(current.coreSessionId);
+      }
+      return { ...current, executor: null, lastClose: { at: (/* @__PURE__ */ new Date()).toISOString(), reason, confirmed: true } };
+    };
+    if (store) await updateBindingInStoreTransaction(config3, nativeSessionId, store, close, config3.finalSyncTimeoutMs);
+    else await updateBinding(config3, nativeSessionId, close, config3.finalSyncTimeoutMs);
+    return { confirmed: true, reason };
+  } catch (error3) {
+    return { confirmed: false, reason, diagnostic: error3 instanceof Error ? error3.message : String(error3) };
+  } finally {
+    store?.close();
+  }
+}
+var CcCoordinator = class {
+  forkAuthority = new CcForkAuthority((agentId) => this.control?.stopFork(agentId));
+  forkLaunch = null;
+  activeForkTurnId = null;
+  importer = null;
+  scheduler = null;
+  control = null;
+  poll = null;
+  transcriptWatcher = null;
+  bindingWatcher = null;
+  queue = Promise.resolve(null);
+  wakeQueued = false;
+  closing = false;
+  closed = false;
+  startupComplete = false;
+  startup = new AbortController();
+  /** 70: the reconcile currently running under the binding lock, if any. `off`, a selected-path
+   * retarget and executor shutdown abort it before they wait for the lock themselves (off through
+   * `disableEnrollment`, retarget and shutdown through this queue); `stop` never touches it. */
+  currentImportAbort = null;
+  /** 70: outstanding preemption holds. While positive, a non-final reconcile that starts (including
+   * one already queued behind the one `abortCurrentImport` just aborted) returns without scanning,
+   * instead of racing the preempting operation for the binding lock. `final` reconciles (shutdown's
+   * own `finalReconcile`) are exempt — a hold never blocks the operation that is holding it. */
+  importHolds = 0;
+  config;
+  appliedConfig;
+  /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
+  nativeSessionId;
+  diagnostic;
+  /** Test-only override of the cooperative-scan slice/pause constants; unset in production. */
+  importTuning;
+  /** 78: the executor's runtime journal, handed to every worker this coordinator creates, for the
+   * one worker event with no home in the run record (a contained SDK control abort). */
+  journal;
+  /** Ticket 75: the most recent reconciled projection, read by `publish` for the counts' target path.
+   * `null` before any successful reconcile — counts render as `?`, never as `0`. */
+  lastReconcile = null;
+  /** Ticket 75: the last published (path, state) key, so a no-op stat-wake-up reconcile writes
+   * nothing — publishing is a lifecycle event, never a timer. */
+  lastStatusKey = null;
+  /** Native live turns only. No historical terminal is replayed on attach or restart. */
+  completedTurns = /* @__PURE__ */ new Set();
+  completedTerminals = /* @__PURE__ */ new Set();
+  completedHookAnchors = /* @__PURE__ */ new Set();
+  /** 102: the retargets in order, each after the last; shutdown waits for the one in flight. */
+  following = Promise.resolve(true);
+  constructor(config3, nativeSessionId, diagnostic = (message) => console.error(`Trace Memory CC: ${message}`), importTuning, journal = () => {
+  }) {
+    validateNativeSessionId(nativeSessionId);
+    this.config = config3;
+    this.appliedConfig = config3;
+    this.nativeSessionId = nativeSessionId;
+    this.diagnostic = diagnostic;
+    this.importTuning = importTuning;
+    this.journal = journal;
+  }
+  observe(event, details = {}) {
+    this.diagnostic(`lifecycle ${JSON.stringify({ event, at: Date.now(), ...details })}`);
+  }
+  /** The scan observes this at its next cooperative resume: it stops with stamp and offset
+   * unadvanced and releases the binding lock; the aborting operation then persists and acknowledges
+   * as today. A no-op when no reconcile is currently running. */
+  abortCurrentImport() {
+    this.currentImportAbort?.abort(new DOMException("CC import aborted for a higher-priority control operation", "AbortError"));
+  }
+  /** 70: begin a preemption hold and abort whatever is currently running. Until the returned release
+   * is called, no non-final reconcile scans — including one already queued behind the aborted run,
+   * which would otherwise start the instant it settles and win the lock before this operation does.
+   * Safe to call release more than once. */
+  holdImport() {
+    this.importHolds++;
+    this.abortCurrentImport();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.importHolds = Math.max(0, this.importHolds - 1);
+    };
+  }
+  /** Ticket 75: publish this executor's status file, or do nothing. Every failure mode — a stale
+   * binding, a `progress`/`spendSince` read that throws, a write that throws — is caught here and
+   * turned into a diagnostic at worst; publishing never affects memory work, never delays a control
+   * acknowledgement and never interrupts shutdown cleanup (Pi review). Ownership is re-checked against
+   * the binding on every call, not cached: a late call from a superseded executor sees a binding that
+   * no longer names it and writes nothing. */
+  publish(reason) {
+    if (this.closed) return;
+    try {
+      const binding = readBinding(this.config, this.nativeSessionId);
+      if (!binding?.executor || !this.control || binding.executor.token !== this.control.executor.token) return;
+      if (binding.coreSessionId !== null && !this.importer) return;
+      const enabled2 = sessionEnabled(binding, this.importer?.memory.store ?? { enabled: () => false });
+      const running = new Set(this.scheduler?.running() ?? []);
+      let counts, cost;
+      const reconcile = this.lastReconcile;
+      if (enabled2 && this.importer && reconcile && reconcile.coreSessionId !== null) {
+        try {
+          counts = this.importer.memory.progress(reconcile.coreSessionId, reconcile.branch, reconcile.headTurnId ?? null);
+        } catch (error3) {
+          this.diagnostic(`status counts unavailable (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
+        }
+      }
+      if (enabled2 && this.importer) {
+        try {
+          cost = this.importer.memory.spendSince(localMidnight());
+        } catch (error3) {
+          this.diagnostic(`status cost unavailable (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
+        }
+      }
+      const status = {
+        version: 1,
+        nativeSessionId: this.nativeSessionId,
+        executorId: binding.executor.executorId,
+        pid: binding.executor.pid,
+        token: binding.executor.token,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        enabled: enabled2,
+        running: { noting: running.has("noting"), dreaming: running.has("dreaming") },
+        ...counts ? { counts } : {},
+        ...cost !== void 0 ? { cost } : {}
+      };
+      writeCcStatus(this.config.stateDir, status);
+    } catch (error3) {
+      this.diagnostic(`status publish failed (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
+    }
+  }
+  async attach(final, deadline) {
+    if (this.importer || this.closed || this.closing && !final) return;
+    const binding = readBinding(this.config, this.nativeSessionId);
+    if (!binding || binding.lastClose?.confirmed) return;
+    this.observe("attach-start", { final });
+    try {
+      this.importer = new CcImporter(this.appliedConfig, binding, { journal: this.journal });
+      this.importer.setForkRunner((task) => this.runFork(task));
+      this.scheduler = new CcTaskScheduler(this.importer.memory, this.appliedConfig.worker, this.diagnostic, (reason) => this.publish(reason));
+      const timeout = deadline === void 0 ? void 0 : Math.max(1, deadline - Date.now());
+      await startControlServer(this.config, binding, this.importer.memory, timeout, final ? void 0 : this.startup.signal, {
+        catchup: async () => {
+          const scheduler = this.scheduler;
+          if (!scheduler) return {
+            state: "failed",
+            entriesDone: 0,
+            entriesTotal: 0,
+            factsDone: 0,
+            factsTotal: 0,
+            diagnostic: "CC executor scheduler is unavailable"
+          };
+          const active = scheduler.activeCatchup();
+          if (active) return active;
+          const ticket = scheduler.catchupTicket(), starting = scheduler.beginCatchup();
+          void (async () => {
+            let result;
+            try {
+              const projection = await this.requestReconcile("manual catchup");
+              result = projection ? scheduler.startCatchup(projection, ticket) : {
+                state: "failed",
+                entriesDone: 0,
+                entriesTotal: 0,
+                diagnostic: "authoritative transcript reconciliation is unavailable"
+              };
+            } catch (error3) {
+              result = {
+                state: "failed",
+                entriesDone: 0,
+                entriesTotal: 0,
+                diagnostic: error3 instanceof Error ? error3.message : String(error3)
+              };
+            }
+            scheduler.endCatchup(result);
+          })();
+          return starting;
+        },
+        turnEnd: (turnId, reason, signal, observation) => this.turnEnd(turnId, reason, signal, observation),
+        forkSources: (turnId, signal) => this.forkSources(turnId, signal),
+        forkNoStart: (turnId, reason, confirmed) => {
+          if (!this.activeForkTurnId || turnId !== this.activeForkTurnId) throw new Error("CC fork no-start belongs to another turn");
+          this.forkAuthority.noStart(reason, confirmed);
+          this.activeForkTurnId = null;
+        },
+        forkRegister: (turnId, agentId) => {
+          if (!this.activeForkTurnId || turnId !== this.activeForkTurnId) throw new Error("CC fork registration belongs to another turn");
+          this.forkAuthority.register(agentId);
+        },
+        forkDisconnected: (agentId) => {
+          if (this.forkAuthority.cancelAgent(agentId)) {
+            this.activeForkTurnId = null;
+            this.diagnostic(`native fork ${agentId} lost its physical-stop listener; writes fenced, physical termination unconfirmed`);
+          }
+        },
+        forkCall: (agentId, callId, name) => this.forkAuthority.call(agentId, callId, name),
+        forkCheck: (callId, name) => this.forkAuthority.allows(callId, name),
+        forkTerminal: async (agentId, reason, answer) => {
+          if (!["answer", "aborted", "refusal", "error"].includes(reason)) throw new Error(`unsupported CC fork completion reason ${reason}`);
+          const settled = await this.forkAuthority.complete(agentId, {
+            outcome: reason === "answer" ? "success" : reason === "aborted" ? "cancelled" : "failure",
+            output: answer,
+            mode: "fork",
+            audit: { available: false, reason: "CC native fork does not expose the exact provider request body" }
+          });
+          if (settled) this.activeForkTurnId = null;
+          return settled;
+        },
+        beforeCancel: () => {
+          this.forkAuthority.cancel();
+          this.activeForkTurnId = null;
+          this.scheduler?.stopCatchup();
+        },
+        holdImport: () => this.holdImport(),
+        effectiveConfig: () => this.appliedConfig,
+        catchupSnapshot: () => this.scheduler?.catchupSnapshot() ?? null,
+        applyConfig: (next) => {
+          if (!this.importer || !this.scheduler) throw new Error("CC executor is not attached for settings apply");
+          const prior = this.appliedConfig;
+          const nonLive = (value) => {
+            const fields2 = {
+              dbPath: value.dbPath,
+              stateDir: value.stateDir,
+              baseline: value.baseline,
+              retry: value.retry,
+              pollIntervalMs: value.pollIntervalMs,
+              finalSyncTimeoutMs: value.finalSyncTimeoutMs,
+              finalSyncStablePolls: value.finalSyncStablePolls,
+              writeSourceTimeoutMs: value.writeSourceTimeoutMs,
+              "worker.claudeExecutable": value.worker?.claudeExecutable,
+              "worker.cwd": value.worker?.cwd,
+              "worker.responseOriginTimeoutMs": value.worker?.responseOriginTimeoutMs
+            };
+            for (const [section, settings] of Object.entries(value.coreConfig)) {
+              if (section === "closedSessionScope") continue;
+              if (settings && typeof settings === "object") for (const [field, current] of Object.entries(settings)) {
+                if (section === "noting" && field === "forkModeDefault") continue;
+                fields2[`${section}.${field}`] = current;
+              }
+              else fields2[section] = settings;
+            }
+            return fields2;
+          };
+          const existingFields = nonLive(prior), nextFields = nonLive(next);
+          for (const key of Object.keys(existingFields))
+            if (JSON.stringify(existingFields[key]) !== JSON.stringify(nextFields[key]))
+              throw new Error(`CC executor cannot hot-apply ${key}; saved file is not applied`);
+          for (const [model, capacity] of Object.entries(prior.worker?.contextWindows ?? {}))
+            if (next.worker?.contextWindows[model] !== capacity)
+              throw new Error(`CC executor cannot hot-apply a changed capacity for ${model}`);
+          if (next.closedSessionScope !== this.appliedConfig.closedSessionScope || next.coreConfig.noting.forkModeDefault !== this.appliedConfig.coreConfig.noting.forkModeDefault)
+            this.importer.memory.configure({
+              closedSessionScope: next.closedSessionScope,
+              noting: { forkModeDefault: next.coreConfig.noting.forkModeDefault }
+            });
+          this.importer.applyWorker(next);
+          this.scheduler.applyWorker(next.worker);
+          this.appliedConfig = next;
+        }
+      }).then((control) => {
+        this.control = control;
+      });
+      this.watchTranscript(binding);
+      if (final) this.importer.memory.cancelTasks(true);
+      this.observe("attach-complete", { final });
+    } catch (error3) {
+      await this.discardAttachment();
+      throw error3;
+    }
+  }
+  /** Detach references before disposal: facade close may close its Store and then throw. */
+  async discardAttachment() {
+    this.forkAuthority.cancel();
+    this.activeForkTurnId = null;
+    this.control?.stopForks();
+    const importer = this.importer, scheduler = this.scheduler, control = this.control;
+    this.importer = null;
+    this.scheduler = null;
+    this.control = null;
+    this.transcriptWatcher?.close();
+    this.transcriptWatcher = null;
+    scheduler?.stop();
+    try {
+      if (control) await control.close();
+    } catch (error3) {
+      this.diagnostic(`attachment control cleanup failed: ${String(error3)}`);
+    }
+    try {
+      importer?.close();
+    } catch (error3) {
+      this.diagnostic(`attachment facade cleanup failed: ${String(error3)}`);
+    }
+  }
+  watchTranscript(binding) {
+    if (this.transcriptWatcher || !(0, import_node_fs10.existsSync)((0, import_node_path8.dirname)(binding.transcriptPath))) return;
+    const transcriptName = (0, import_node_path8.basename)(binding.transcriptPath);
+    this.transcriptWatcher = (0, import_node_fs10.watch)((0, import_node_path8.dirname)(binding.transcriptPath), (_event, filename) => {
+      if (String(filename) === transcriptName) void this.requestReconcile("transcript watch");
+    });
+    this.transcriptWatcher.on("error", (error3) => {
+      this.diagnostic(`transcript watch failed: ${String(error3)}; stat wake-up remains active`);
+      this.transcriptWatcher?.close();
+      this.transcriptWatcher = null;
+    });
+  }
+  async start() {
+    if (this.poll || this.closed || this.closing) return;
+    this.observe("startup-begin");
+    const bindingDirectory = (0, import_node_path8.dirname)(bindingPath(this.config, this.nativeSessionId));
+    if ((0, import_node_fs10.existsSync)(bindingDirectory)) {
+      this.bindingWatcher = (0, import_node_fs10.watch)(bindingDirectory, (_event, filename) => {
+        if (String(filename) === (0, import_node_path8.basename)(bindingPath(this.config, this.nativeSessionId))) void this.requestReconcile("binding watch");
+      });
+      this.bindingWatcher.on("error", (error3) => {
+        this.diagnostic(`binding watch failed: ${String(error3)}; stat wake-up remains active`);
+        this.bindingWatcher?.close();
+        this.bindingWatcher = null;
+      });
+    }
+    this.poll = setInterval(() => {
+      void this.requestReconcile("stat wake-up");
+    }, this.config.pollIntervalMs);
+    await this.requestReconcile("startup");
+  }
+  /** 65: follow the SessionStart Hook's session id while no binding has been attached. Returns false
+   * once attached: `retargetTo` follows it from then on. */
+  adoptNativeSessionId(nativeSessionId) {
+    validateNativeSessionId(nativeSessionId);
+    if (nativeSessionId === this.nativeSessionId) return true;
+    if (this.importer || this.closing || this.closed) return false;
+    const previous = this.nativeSessionId;
+    this.nativeSessionId = nativeSessionId;
+    this.observe("session-id-adopted", { from: previous, to: nativeSessionId });
+    if (this.poll) void this.requestReconcile("session adoption");
+    return true;
+  }
+  /** 102: this Claude Code process now serves another native session (`/clear`, or `/resume` inside
+   * the process). Leave the attached one as an exit does, then attach to the new one as at startup:
+   * its own binding, core session, project (62) and enrollment. One at a time; false once closing. */
+  retargetTo(nativeSessionId) {
+    validateNativeSessionId(nativeSessionId);
+    return this.following = this.following.then(() => this.follow(nativeSessionId)).catch((error3) => {
+      this.diagnostic(`retarget to ${nativeSessionId} failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+      return false;
+    });
+  }
+  async follow(nativeSessionId) {
+    if (this.closing || this.closed) return false;
+    if (this.adoptNativeSessionId(nativeSessionId)) return true;
+    const release = this.holdImport(), previous = this.nativeSessionId, token = this.control?.executor.token;
+    try {
+      this.observe("retarget-start", { from: previous, to: nativeSessionId });
+      await this.leave();
+      this.nativeSessionId = nativeSessionId;
+      this.lastReconcile = null;
+      this.lastStatusKey = null;
+      this.completedTurns.clear();
+      this.completedTerminals.clear();
+      this.completedHookAnchors.clear();
+      await this.discardAttachment();
+      if (token !== void 0 && readCcStatus(this.config.stateDir, previous)?.token === token) removeCcStatus(this.config.stateDir, previous);
+      this.observe("retarget-complete", { from: previous, to: nativeSessionId });
+    } finally {
+      release();
+    }
+    void this.requestReconcile("retarget");
+    return true;
+  }
+  /** Source bodies travel in a control RESPONSE, never the 16,384-byte request. This read neither
+   * reserves a task nor establishes coverage: the Hook must check the actual native API view, and
+   * the final checkpoint must revalidate the path before admitting a fork. */
+  async forkSources(turnId, signal) {
+    if (signal.aborted || this.closing || this.closed || this.completedTurns.has(turnId)) return null;
+    const result = await this.requestReconcile("fork source view");
+    if (signal.aborted || result?.state !== "ready" || result.coreSessionId === null || result.headTurnId === null || result.selectedTailId === null || !this.importer) return null;
+    const target = { sessionId: result.coreSessionId, branch: result.branch, headTurnId: result.headTurnId };
+    if (!this.importer.memory.config.noting.forkModeDefault || !this.importer.memory.taskEligibility("noting", target).due || this.scheduler?.running().includes("noting")) return null;
+    const batch = this.importer.memory.notingBatch(target);
+    const originals = this.importer.nativeRecords(batch.map((entry) => entry.nativeId));
+    if (originals === null) return null;
+    const store = this.importer.memory.store;
+    const remaining = new Set(batch.map((entry) => entry.turnId));
+    const ancestry = [];
+    for (const id of store.pathTurns(target)) {
+      ancestry.push(id);
+      remaining.delete(id);
+      if (!remaining.size) break;
+    }
+    if (remaining.size) throw new Error("CC fork batch has a Turn outside its selected path");
+    const compact = new Set(store.db.prepare("SELECT id FROM turns WHERE kind = 'compaction' AND id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ancestry)).map((row) => Number(row.id)));
+    const afterBoundary = /* @__PURE__ */ new Set();
+    for (const id of ancestry) {
+      if (compact.has(id)) break;
+      afterBoundary.add(id);
+    }
+    return {
+      turnId,
+      ...target,
+      tailId: result.selectedTailId,
+      selected: batch.map((entry, index) => ({
+        nativeId: entry.nativeId,
+        record: originals[index],
+        kind: classifySourceRecord(originals[index])?.kind ?? "compaction",
+        afterBoundary: afterBoundary.has(entry.turnId)
+      }))
+    };
+  }
+  runFork(task) {
+    const launch = this.forkLaunch;
+    if (!launch || launch.signal.aborted) return Promise.resolve({ outcome: "cancelled", output: "CC fork checkpoint is no longer live" });
+    const suppression = this.importer?.memory.store.forkSuppression(task.sessionId);
+    if (suppression) return Promise.resolve({
+      outcome: "failure",
+      output: "CC fork suppressed before launch",
+      refused: { reason: `cache miss latch: fork suppressed for this session since ${suppression.at}` }
+    });
+    const result = this.forkAuthority.begin(task);
+    this.activeForkTurnId = launch.turnId;
+    launch.resolve({ prompt: task.text, turnId: launch.turnId });
+    return result;
+  }
+  forkOption(target, result, observation) {
+    const refuse = (reason) => ({ refused: reason });
+    if (!observation || typeof observation.refused === "string")
+      return refuse(observation?.refused ?? "CC native parent observation is unavailable");
+    const checkpoint = observation.checkpoint;
+    if (!checkpoint || checkpoint.sessionId !== target.sessionId || checkpoint.branch !== target.branch || checkpoint.headTurnId !== target.headTurnId || checkpoint.tailId !== result.selectedTailId)
+      return refuse("CC fork source checkpoint moved before admission");
+    if (!this.importer || !Array.isArray(observation.batch) || !Array.isArray(observation.raw) || typeof observation.model !== "string" || !observation.model || !Number.isSafeInteger(observation.window) || !Number.isSafeInteger(observation.prefix) || observation.window <= CC_CONTEXT_HEADROOM || observation.prefix < 0)
+      return refuse("CC fork source coverage or native model capacity is unavailable");
+    const batch = this.importer.memory.notingBatch(target);
+    if (observation.batch.length !== batch.length || batch.some((entry, i) => observation.batch[i] !== entry.nativeId))
+      return refuse("CC fork batch changed since source observation");
+    if (this.importer.nativeRecords(batch.map((entry) => entry.nativeId)) === null)
+      return refuse("CC original source snapshot changed before fork admission");
+    const selected = new Set(batch.map((entry) => entry.nativeId));
+    if (new Set(observation.raw).size !== observation.raw.length || observation.raw.some((id) => typeof id !== "string" || !selected.has(id)))
+      return refuse("CC fork observation contains an unselected or repeated source identity");
+    const memory = this.importer.memory, binding = this.importer.currentBinding();
+    const head = ccDeliveryHead(binding, memory);
+    const delivered = deliveredView(memory.store.deliveredKnowledge(head.node));
+    const delta = memory.injection(target, delivered);
+    const visible = { ...delivered, raw: new Map(observation.raw.map((id) => [id, "source"])) };
+    const suppression = memory.store.forkSuppression(target.sessionId);
+    const decision = selectNotingMode({
+      requested: "fork",
+      ...suppression ? { suppression: `cache miss latch: fork suppressed for this session since ${suppression.at}` } : {},
+      publicationPending: !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length),
+      visible,
+      pending: () => memory.pendingEntries(target.sessionId, target.branch, target.headTurnId),
+      batch: () => batch
+    });
+    return decision.fallbackReason ? refuse(decision.fallbackReason) : {
+      visible,
+      model: observation.model,
+      capacity: { inputTokens: observation.window - CC_CONTEXT_HEADROOM, prefixTokens: observation.prefix }
+    };
+  }
+  /** The function hook proves the main turn ended; reconciliation supplies its selected Raw path
+   * and entry anchor. The hook's turnId is an event key, not a source UUID. */
+  async turnEnd(turnId, reason, signal, observation) {
+    if (signal.aborted || this.closing || this.closed || this.completedTurns.has(turnId)) return null;
+    if (!["answer", "aborted", "refusal", "error"].includes(reason))
+      throw new Error(`unsupported CC turn completion reason ${reason}`);
+    const epoch = this.scheduler?.catchupTicket();
+    const result = await this.requestReconcile("function turn end");
+    if (signal.aborted || !result || !this.scheduler || epoch !== void 0 && epoch !== this.scheduler.catchupTicket()) return null;
+    if (result.state !== "ready" || result.selectedTailId === null || result.headTurnId === null || result.coreSessionId === null)
+      throw new Error(`CC ${reason} turn ${turnId} has no ready selected native path after reconciliation (state=${result.state}, selectedTail=${result.selectedTailId})`);
+    if (this.completedHookAnchors.has(result.selectedTailId) || result.terminal && this.completedTerminals.has(result.terminal.uuid)) return null;
+    const target = {
+      sessionId: result.coreSessionId,
+      branch: result.branch,
+      headTurnId: result.headTurnId,
+      triggerEntryId: result.selectedTailId
+    };
+    let sourceFailure = this.importer?.memory.config.noting.forkModeDefault ? observation?.failed : void 0;
+    let fork;
+    if (this.importer?.memory.config.noting.forkModeDefault && !sourceFailure) {
+      try {
+        fork = this.forkOption(target, result, observation);
+      } catch (error3) {
+        sourceFailure = error3 instanceof Error ? error3.message : String(error3);
+      }
+    }
+    let resolve4;
+    const launch = new Promise((done) => {
+      resolve4 = done;
+    });
+    if (fork && !("refused" in fork)) {
+      if (this.forkLaunch) throw new Error("another CC fork checkpoint has not settled");
+      this.forkLaunch = { turnId, resolve: resolve4, signal };
+      signal.addEventListener("abort", () => resolve4(null), { once: true });
+    } else resolve4(null);
+    this.completedTurns.add(turnId);
+    this.completedHookAnchors.add(result.selectedTailId);
+    if (result.terminal) this.completedTerminals.add(result.terminal.uuid);
+    this.scheduler.turnEnd(result, this.scheduler.catchupTicket(), fork, () => resolve4(null), sourceFailure);
+    try {
+      return await launch;
+    } finally {
+      if (this.forkLaunch?.resolve === resolve4) this.forkLaunch = null;
+    }
+  }
+  requestReconcile(reason, final = false, deadline) {
+    if (!final && this.wakeQueued) return this.queue;
+    if (!final) this.wakeQueued = true;
+    const opportunityEpoch = this.scheduler?.catchupTicket();
+    this.queue = this.queue.then(async () => {
+      if (!final) this.wakeQueued = false;
+      if (this.closed || this.closing && !final) return null;
+      const wasAttached = this.importer !== null;
+      const importAbort = new AbortController();
+      this.currentImportAbort = importAbort;
+      const expiry = deadline === void 0 ? void 0 : setTimeout(() => importAbort.abort(new DOMException("CC final sync reached its deadline", "AbortError")), Math.max(0, deadline - Date.now()));
+      try {
+        const attaching = this.attach(final, deadline);
+        const epoch = opportunityEpoch ?? this.scheduler?.catchupTicket();
+        await attaching;
+        if (!final && readBinding(this.config, this.nativeSessionId)?.lastClose?.confirmed) {
+          this.scheduler?.stop();
+          this.importer?.memory.cancelTasks(true);
+          return null;
+        }
+        const result = !final && this.importHolds > 0 ? null : await this.importer?.reconcile(importAbort.signal, this.importTuning) ?? null;
+        if (this.importer) this.watchTranscript(this.importer.currentBinding());
+        if (!final && result) {
+          this.scheduler?.reconcile(result);
+          const binding = readBinding(this.config, this.nativeSessionId);
+          if (reason !== "function turn end" && reason !== "manual catchup" && this.startupComplete && !(binding && activeFunctionHook(binding)) && result.terminal && (result.terminal.stopReason === "end_turn" || result.terminal.isApiErrorMessage === true || result.terminal.interruptedMessageId !== void 0) && (result.selectedAppendedEntryIds.includes(result.terminal.entryId) || result.terminal.fresh === true) && !this.completedTerminals.has(result.terminal.uuid) && !this.completedHookAnchors.has(result.terminal.entryId)) {
+            this.completedTerminals.add(result.terminal.uuid);
+            this.scheduler?.turnEnd(result, epoch ?? this.scheduler.catchupTicket());
+          }
+        }
+        if (!final && result) {
+          this.lastReconcile = result;
+          const pathKey = `${result.coreSessionId}|${result.branch}|${result.headTurnId}|${result.state}`;
+          if (result.appendedEntryIds.length > 0 || pathKey !== this.lastStatusKey) {
+            this.lastStatusKey = pathKey;
+            this.publish(reason);
+          }
+        }
+        if (this.importer && result && !this.startupComplete && !final) {
+          this.startupComplete = true;
+          this.observe("startup-complete");
+        }
+        if (reason !== "stat wake-up") this.observe("reconcile", {
+          reason,
+          final,
+          state: result?.state ?? "unbound",
+          coreSessionId: result?.coreSessionId ?? null,
+          appended: result?.appendedEntryIds.length ?? 0
+        });
+        if (result?.problems.length && reason !== "stat wake-up") this.diagnostic(`${reason}: ${result.problems.join("; ")}`);
+        return result;
+      } catch (error3) {
+        if (!wasAttached) await this.discardAttachment();
+        if (error3.name === "AbortError") this.observe("startup-cancelled", { reason });
+        else this.diagnostic(`${reason} reconciliation failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+        return null;
+      } finally {
+        if (expiry !== void 0) clearTimeout(expiry);
+        if (this.currentImportAbort === importAbort) this.currentImportAbort = null;
+      }
+    });
+    return this.queue;
+  }
+  /** An executor-local native registration, never inferred from MCP model arguments. A retired
+   * call cannot become a manual write after cancellation or a duplicate dispatch. */
+  forkToolCall(callId, name) {
+    return this.forkAuthority.take(callId, name);
+  }
+  /** One non-waiting persisted projection for read tools. */
+  async toolProjection() {
+    const result = await this.requestReconcile("foreground read");
+    if (!this.importer) throw new Error("binding-not-ready: Claude Code session binding is unavailable");
+    const triggerEntryId = result?.selectedEntryIds.at(-1);
+    const binding = result?.coreSessionId && result.headTurnId && triggerEntryId ? { coreSessionId: result.coreSessionId, branch: result.branch, headTurnId: result.headTurnId, triggerEntryId, entryIds: result.selectedEntryIds } : void 0;
+    return { memory: this.importer.memory, ...binding ? { binding } : {} };
+  }
+  /** Write tools alone wait for the exact host-authenticated native call. */
+  async waitForToolCall(toolUseId, toolName, signal) {
+    const deadline = Date.now() + this.config.writeSourceTimeoutMs;
+    while (Date.now() < deadline) {
+      signal?.throwIfAborted();
+      if (this.closing || this.closed) throw new Error("source-not-ready: Claude Code executor is shutting down");
+      const result = await this.requestReconcile("foreground write binding");
+      if (result?.state === "disabled" && result.coreSessionId !== null)
+        throw new Error("Trace Memory is Disabled; use the operator command to enable memory");
+      const call = this.importer?.persistedCall(toolUseId, toolName);
+      if (call) return { memory: this.importer.memory, ...call };
+      await wait2(Math.min(20, this.config.pollIntervalMs, Math.max(1, deadline - Date.now())));
+    }
+    signal?.throwIfAborted();
+    throw new Error(`source-not-ready: exact current call ${toolUseId} was not persisted within ${this.config.writeSourceTimeoutMs} ms; retry this write`);
+  }
+  stopWakeups() {
+    if (this.poll) clearInterval(this.poll);
+    this.poll = null;
+    this.bindingWatcher?.close();
+    this.bindingWatcher = null;
+    this.transcriptWatcher?.close();
+    this.transcriptWatcher = null;
+  }
+  /** What an exit does to the attached session (shutdown and 102's retarget): its work stops, a final
+   * sync bounded by its deadline imports the transcript's tail, and its tasks are cancelled and settled
+   * and their claims released. The caller holds imports. */
+  async leave() {
+    this.forkAuthority.cancel();
+    this.control?.stopForks();
+    this.scheduler?.stop();
+    this.transcriptWatcher?.close();
+    this.transcriptWatcher = null;
+    await this.queue;
+    this.importer?.memory.cancelTasks(true);
+    const result = await this.finalReconcile();
+    if (this.importer) {
+      this.importer.memory.forceTasks();
+      await this.scheduler?.settle();
+      this.importer.memory.store.releaseExecutor(this.importer.memory.executorId);
+    }
+    return result;
+  }
+  async finalReconcile() {
+    const deadline = Date.now() + this.config.finalSyncTimeoutMs;
+    let stable = 0, signature = null, latest = null;
+    while (Date.now() < deadline) {
+      latest = await this.requestReconcile("final sync", true, deadline);
+      if (latest?.state === "disabled") return {
+        confirmed: false,
+        reason: "source reconciliation completed without normal producer termination",
+        diagnostic: "transport or process shutdown is not proof of a normal native session close",
+        reconcile: latest
+      };
+      let next = null;
+      if (latest?.state === "ready" && latest.snapshot.exists && latest.snapshot.incompleteBytes === 0 && !latest.snapshot.problem)
+        next = JSON.stringify([
+          latest.snapshot.device,
+          latest.snapshot.inode,
+          latest.snapshot.size,
+          latest.snapshot.modifiedMs,
+          latest.snapshot.completeBytes,
+          latest.snapshot.recordCount,
+          latest.selectedEntryIds,
+          latest.branch,
+          latest.headTurnId
+        ]);
+      stable = next !== null && next === signature ? stable + 1 : next === null ? 0 : 1;
+      signature = next;
+      if (stable >= this.config.finalSyncStablePolls && latest) return {
+        confirmed: false,
+        reason: "source reconciliation completed without normal producer termination",
+        diagnostic: "a stable snapshot after transport or process shutdown does not prove a normal native session close",
+        reconcile: latest
+      };
+      await wait2(Math.min(100, this.config.pollIntervalMs, Math.max(1, deadline - Date.now())));
+    }
+    const diagnostic = !latest || latest.state === "unavailable" ? "binding or transcript remained unavailable" : latest.snapshot.incompleteBytes ? `transcript retained ${latest.snapshot.incompleteBytes} incomplete trailing bytes` : latest.problems.length ? latest.problems.join("; ") : "completed projection did not remain stable before the configured deadline";
+    return { confirmed: false, reason: "final reconciliation unconfirmed", diagnostic, ...latest ? { reconcile: latest } : {} };
+  }
+  async shutdown(reason) {
+    if (this.closed) return { confirmed: false, reason: "coordinator already closed", diagnostic: "duplicate shutdown" };
+    if (this.closing) return { confirmed: false, reason: "coordinator shutdown already in progress" };
+    this.closing = true;
+    this.scheduler?.stop();
+    this.stopWakeups();
+    this.startup.abort(new DOMException("Lifecycle shutdown", "AbortError"));
+    this.holdImport();
+    this.observe("shutdown-begin", { reason });
+    let result = { confirmed: false, reason: "no bound importer", diagnostic: "binding was never established" };
+    try {
+      await this.following;
+      result = await this.leave();
+      const owner = this.control?.executor.token;
+      if (this.control) await this.control.close(true);
+      try {
+        if (owner !== void 0 && readBinding(this.config, this.nativeSessionId)?.executor?.token === owner)
+          removeCcStatus(this.config.stateDir, this.nativeSessionId);
+      } catch (error3) {
+        this.diagnostic(`status removal failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+      }
+      if (readBinding(this.config, this.nativeSessionId)) await updateBinding(this.config, this.nativeSessionId, (binding) => {
+        if (!binding) throw new Error("CC binding disappeared during shutdown");
+        if (binding.lastClose?.confirmed || owner !== void 0 && binding.executor?.token !== owner) return binding;
+        return { ...binding, lastClose: {
+          at: (/* @__PURE__ */ new Date()).toISOString(),
+          reason,
+          confirmed: result.confirmed,
+          ...result.diagnostic ? { diagnostic: result.diagnostic } : {}
+        } };
+      });
+      if (!result.confirmed) this.diagnostic(`close not confirmed: ${result.diagnostic ?? result.reason}`);
+      this.observe("shutdown-complete", { reason, confirmed: result.confirmed });
+      return result;
+    } finally {
+      this.stopWakeups();
+      this.closed = true;
+      this.closing = false;
+      this.importer?.close();
+      this.importer = null;
+      this.scheduler = null;
+      this.control = null;
+    }
+  }
+};
 
 // src/hosts/cc/slices.ts
 var CC_SLICE_COUNT = 24;
@@ -43683,11 +44306,23 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
       const name = ["Noter", "Dreamer"][index];
       const current2 = effective?.worker?.phases[phase];
       const saved = config3.worker?.phases[phase];
-      const sources = !effective ? { model: "effective configuration unavailable", thinking: "effective configuration unavailable" } : saved && current2 && (saved.model !== current2.model || saved.thinking !== current2.thinking) ? {
+      const modeChanged = phase === "noting" && config3.coreConfig.noting.forkModeDefault !== active.coreConfig.noting.forkModeDefault;
+      const sources = !effective ? {
+        model: "effective configuration unavailable",
+        thinking: "effective configuration unavailable",
+        ...phase === "noting" ? { mode: "effective configuration unavailable" } : {}
+      } : saved && current2 && (saved.model !== current2.model || saved.thinking !== current2.thinking || modeChanged) ? {
         ...saved.model !== current2.model ? { model: "saved file differs from running executor" } : {},
-        ...saved.thinking !== current2.thinking ? { thinking: "saved file differs from running executor" } : {}
+        ...saved.thinking !== current2.thinking ? { thinking: "saved file differs from running executor" } : {},
+        ...modeChanged ? { mode: "saved file differs from running executor" } : {}
       } : void 0;
-      return { phase: name, model: current2?.model ?? "unavailable", thinking: current2?.thinking ?? "unavailable", ...sources ? { sources } : {} };
+      return {
+        phase: name,
+        ...phase === "noting" ? { mode: active.coreConfig.noting.forkModeDefault ? "fork" : "subagent" } : {},
+        model: current2?.model ?? "unavailable",
+        thinking: current2?.thinking ?? "unavailable",
+        ...sources ? { sources } : {}
+      };
     });
     const settings = {
       database: config3.dbPath,
@@ -45083,6 +45718,7 @@ function applyEdits(text, edits) {
 
 // src/hosts/cc/menu-config.ts
 var PHASE_KEYS = {
+  "noting.mode": "noting.forkModeDefault",
   "noting.model": "notingModel",
   "noting.thinking": "notingThinking",
   "dreaming.model": "dreaming.model",
@@ -45106,11 +45742,12 @@ function editedCcConfig(text, id, value, capacity) {
   if (id !== "closedSessionScope" && !input.worker) throw new Error("CC worker must be configured to edit phase settings");
   if (id === "closedSessionScope" && !["off", "project", "global"].includes(value))
     throw new Error("closedSessionScope must be off, project or global");
+  if (id === "noting.mode" && !["fork", "subagent"].includes(value)) throw new Error("CC Noter mode must be fork or subagent");
   if (id.endsWith(".thinking") && !CC_EFFORT_LEVELS.includes(value))
     throw new Error(`thinking must be ${CC_EFFORT_LEVELS.join(", ")}`);
   if (id.endsWith(".model") && (!value.trim() || value === "session" || value === "follow foreground"))
     throw new Error("CC model must be an explicit model id");
-  let output = editJson(text, [key], value);
+  let output = editJson(text, [key], id === "noting.mode" ? value === "fork" : value);
   if (id.endsWith(".model")) {
     const known = Object.hasOwn(input.worker.contextWindows, value);
     if (known && capacity !== void 0) throw new Error("capacity already exists for this model");
@@ -45281,14 +45918,14 @@ var TRACE_SETTINGS_FIXTURE = {
 var TRACE_SETTINGS_FIXTURE_CC = {
   ...TRACE_SETTINGS_FIXTURE,
   workers: [
-    { phase: "Noter", model: "claude-sonnet-5", thinking: "medium" },
+    { phase: "Noter", mode: "subagent", model: "claude-sonnet-5", thinking: "medium" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" }
   ]
 };
 
 // src/hosts/cc/index.ts
 async function handleCcHook(configInput, input, prepareOnly = false) {
-  const config3 = resolveCcHostConfig(configInput);
+  const config3 = "coreConfig" in configInput ? configInput : resolveCcHostConfig(configInput);
   validateNativeSessionId(input.session_id);
   if (input.hook_event_name === "SessionStart") {
     await recordSessionStart(config3, input, readBinding(config3, input.session_id) ? null : readTranscriptCreatedAt(input.transcript_path));
@@ -45309,7 +45946,8 @@ async function handleCcHook(configInput, input, prepareOnly = false) {
   return null;
 }
 async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID) {
-  const config3 = resolveCcHostConfig(configInput), sessionId = validateNativeSessionId(nativeSessionId);
+  const config3 = "coreConfig" in configInput ? configInput : resolveCcHostConfig(configInput);
+  const sessionId = validateNativeSessionId(nativeSessionId);
   const runtimeDirectory = (0, import_node_path11.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path11.join)(runtimeDirectory, `${sessionId}.jsonl`);
   (0, import_node_fs13.mkdirSync)(runtimeDirectory, { recursive: true });
   const runtimeEvent = (event, details = {}) => {
@@ -45447,11 +46085,45 @@ async function readStdin() {
 }
 async function runCcCommand(argv = process.argv.slice(2)) {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
-  if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "hook-compact" && command !== "cli" && command !== "fs" || configFlag !== "--config" || !configPath)
+  if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "hook-compact" && command !== "hook-capable" && command !== "hook-turn" && command !== "hook-sources" && command !== "hook-fork" && command !== "hook-fork-watch" && command !== "cli" && command !== "fs" || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|grep|glob ...");
   const config3 = readConfig(configPath);
   if (command === "mcp") {
     await runCcStdioMcp(config3);
+    return;
+  }
+  if (command === "hook-capable" || command === "hook-turn" || command === "hook-sources") {
+    const input = JSON.parse(await readStdin());
+    const session = validateNativeSessionId(input.session_id);
+    if (command === "hook-capable") await markCcFunctionHook(config3, session);
+    else if (command === "hook-sources") {
+      if (typeof input.turnId !== "string" || !input.turnId) throw new Error("CC fork source read requires native turnId");
+      process.stdout.write(`${JSON.stringify(await requestCcForkSources(config3, session, input.turnId))}
+`);
+    } else {
+      if (typeof input.turnId !== "string" || !input.turnId || typeof input.reason !== "string")
+        throw new Error("CC turn-end hook requires native turnId and reason");
+      process.stdout.write(`${JSON.stringify(await signalCcTurnEnd(config3, session, input.turnId, input.reason, input.observation))}
+`);
+    }
+    return;
+  }
+  if (command === "hook-fork-watch") {
+    if (sessionFlag !== "--session" || typeof nativeSessionId !== "string" || !nativeSessionId || typeof verb !== "string" || !verb)
+      throw new Error("CC fork stop listener requires native session and agent ID");
+    validateNativeSessionId(nativeSessionId);
+    process.stdout.write(`${JSON.stringify(await waitCcForkCommand(config3, nativeSessionId, verb))}
+`);
+    return;
+  }
+  if (command === "hook-fork") {
+    const input = JSON.parse(await readStdin());
+    validateNativeSessionId(input.session_id);
+    if (!["fork-register", "fork-call", "fork-check", "fork-terminal", "fork-no-start", "fork-disconnect"].includes(input.verb))
+      throw new Error("invalid CC native fork event");
+    const { session_id: _session, verb: _verb, ...detail } = input;
+    process.stdout.write(`${JSON.stringify({ allowed: await signalCcForkEvent(config3, input.session_id, input.verb, detail) })}
+`);
     return;
   }
   if (command === "hook-compact") {

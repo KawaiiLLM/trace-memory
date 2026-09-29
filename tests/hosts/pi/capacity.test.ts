@@ -77,7 +77,7 @@ test("27a 2026-09-10: the input allowance is the context window minus the 10,000
     // 12,000 - 10,000 leaves 2,000 tokens for input, under the instruction and tool cost alone; the
     // diagnostic states the allowance it was given, which is the number this case pins.
     h.ctx.model = { ...h.ctx.model!, contextWindow: 12_000, maxTokens: 8_192 };
-    h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
+    h.persist(reply("completion")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
     expect(12_000 - CONTEXT_HEADROOM).toBe(2_000);
     expect(h.notices.join("\n")).toContain(`of the ${12_000 - CONTEXT_HEADROOM} tokens allowed for input`);
     expect(h.requests).toEqual([]);
@@ -86,7 +86,7 @@ test("27a 2026-09-10: the input allowance is the context window minus the 10,000
     // allowance, the floor and the verdict are the same sentence again.
     h.notices.length = 0;
     h.ctx.model = { ...h.ctx.model!, maxTokens: 64 };
-    h.persist(reply("next completion")); await h.emit("agent_end"); await h.drain();
+    await h.prompt("next capacity check"); await h.answer("next completion"); await h.drain();
     expect(h.notices.filter(n => n.includes("tokens allowed for input"))).toEqual(first);
     expect(h.requests).toEqual([]);
   } finally { await h.dispose(); }
@@ -174,7 +174,7 @@ test("27a 2026-09-10: a 300,000-token parent measure with a small increment fork
     const captured = f.sent[at]!;
     await f.h.emit("before_provider_request", { payload: captured });
     // Capacity under a stable parent; a competing settled leaf change is a separate gate case.
-    await f.h.drain();
+    await f.h.emit("agent_settled"); await f.h.drain();
 
     const measure = (f.h.ctx as unknown as { getContextUsage(): { tokens: number | null } }).getContextUsage().tokens!;
     expect(measure).toBeGreaterThanOrEqual(300_000);
@@ -229,8 +229,8 @@ test("27b 2026-09-10: an unknown context measure is not a fork base — the task
     // The fresh material was frozen for that model, sent, and its evidence committed exactly once.
     expect(h.requests.length).toBeGreaterThan(0);
     expect(h.conversations[0]!.systemPrompt).toContain("Noting (facts and knowledge)");
-    // Only the reply that arrived after this batch was frozen is still pending.
-    expect(h.memory.pendingEntries(1, "main", 1).map(e => e.nativeId)).toEqual(["e2"]);
+    // At the final turn checkpoint the reply is already persisted, so the batch includes it.
+    expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
     // No latch, no persisted mode change: the next task requests fork again.
     expect(h.memory.store.forkSuppression(1)).toBeNull();
     // Read the executor's preference, not the separate observer facade's defaults.

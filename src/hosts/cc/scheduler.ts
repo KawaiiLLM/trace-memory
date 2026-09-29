@@ -1,9 +1,10 @@
-import type { DreamingResult, NotingResult, TraceMemory, TaskBoundary, TaskTarget } from "../../core/api/index.ts";
+import { NOTING_CAPACITY, type DreamingResult, type NotingResult, type TraceMemory, type TaskBoundary, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
 import type { CcReconcileResult } from "./importer.ts";
 import type { ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
 export type CcWorkerPhase = "noting" | "dreaming";
+export type CcForkChoice = { model: string; capacity: { inputTokens: number; prefixTokens: number }; visible: VisibleView } | { refused: string };
 type CcTaskResult = NotingResult | DreamingResult;
 export type CcCatchupState = "starting" | "running" | "waiting" | "completed" | "stopped" | "failed";
 export interface CcCatchupStatus {
@@ -38,29 +39,9 @@ export class CcTaskScheduler {
   private stopped = false;
   private catchup?: Catchup;
   private cancellationEpoch = 0;
-  /** Ticket 72: ports 69's per-entry rule to CC. Noting has no entry here — every appended entry
-   * evaluates it, own and borrowed, exactly as before. Dreaming is evaluated only
-   * while armed; a phase disarms itself the moment its own evaluation comes back not-due, and a due
-   * phase that did not launch (busy slot, foreign claim, dropped) stays armed for the next opportunity.
-   * `noting: true` is never read; it exists only so `phase: CcWorkerPhase` can index this object
-   * without narrowing. Constructing this scheduler (attach) is itself an arming event. */
-  private readonly armed: Record<CcWorkerPhase, boolean> = { noting: true, dreaming: true };
-  private armDreaming(): void { this.armed.dreaming = true; }
-  /** The last-seen `Store.progressSignal` for this session: a change re-arms D, closing what the
-   * flags above miss on their own — a commit made through a different connection to the same database
-   * file (another executor, a Pi session, an operator CLI). Compared at every per-entry opportunity. */
-  private lastArmSignal?: string;
-  /** Was the last reconcile "ready" (a bound, enabled session with a persisted selected path and
-   * head), and on which branch. A transition into ready (attach, or memory re-enabled) and a branch
-   * switch (a selected-path change or a retarget) both arm D, mirroring 69's "restore" event on
-   * Pi. A transition OUT of ready, or a branch change, also fences in-flight completions the same way
-   * `stopCatchup` already does for stop/off: a task admitted against the old path must not use a late
-   * completion to launch D there (`checkpointDreaming` always re-evaluates the current path instead). */
+  /** A selected-path or enrollment transition fences in-flight admission and the manual drain. */
   private lastReady = false;
   private lastBranch?: string;
-  /** The freshest known effective path: what the completion checkpoint evaluates, never the settled
-   * task's own (possibly stale) target. Set at every ready reconcile, whether or not it appended entries. */
-  private currentTarget?: TaskTarget;
 
   constructor(memory: TraceMemory, worker: ResolvedCcWorkerConfig | undefined,
     diagnostic: (message: string) => void, notify: (reason: string) => void = () => {}) {
@@ -76,10 +57,7 @@ export class CcTaskScheduler {
   }
 
   /** Observe every authoritative projection. Polls can resume a waiting drain after claim expiry. */
-  reconcile(reconcile: CcReconcileResult, admitAutomatic = true, opportunityEpoch = this.cancellationEpoch): void {
-    // The fences below cancel the OLD path's in-flight work. They must not cancel this reconcile's own
-    // opportunities on the new path, so admission compares against the epoch as it stood on entry.
-    const entryEpoch = this.cancellationEpoch;
+  reconcile(reconcile: CcReconcileResult, _legacyAdmission?: boolean, _legacyEpoch?: number): void {
     const drain = this.catchup;
     if (drain && (drain.state === "running" || drain.state === "waiting")) {
       const pathChanged = reconcile.coreSessionId !== null &&
@@ -90,38 +68,11 @@ export class CcTaskScheduler {
       }
     }
     const ready = reconcile.state === "ready" && reconcile.coreSessionId !== null && reconcile.headTurnId !== null && reconcile.selectedCount > 0;
-    // Ticket 72: a selected-path change or a transition out of ready fences in-flight completions the
-    // same way stop/off already do through `stopCatchup` above — bump the epoch even with no catchup
-    // drain active, so the ordinary completion checkpoint observes it too.
+    // A selected-path change or transition out of ready invalidates a queued checkpoint.
     if (this.lastReady && (!ready || reconcile.branch !== this.lastBranch)) this.cancellationEpoch++;
-    if (ready) {
-      if (!this.lastReady || reconcile.branch !== this.lastBranch) this.armDreaming();
-      this.lastBranch = reconcile.branch;
-      this.currentTarget = { sessionId: reconcile.coreSessionId!, branch: reconcile.branch,
-        headTurnId: reconcile.headTurnId!, triggerEntryId: reconcile.selectedTailId! };
-    }
+    if (ready) this.lastBranch = reconcile.branch;
     this.lastReady = ready;
-    if (!ready) return;
-    if (admitAutomatic && opportunityEpoch === entryEpoch && reconcile.appendedEntryIds.length) {
-      // The projection supplies final-path membership for newly ingested entries without
-      // materializing the entire selected history on each ordinary event.
-      const appended = reconcile.selectedAppendedEntryIds;
-      // Bootstrap collapses actual new selected history, never an instance-start opportunity.
-      // Hook-first/known resumes and newly imported siblings grant no final-path check.
-      const opportunities = reconcile.bootstrap && appended.length ? [reconcile.selectedTailId!] : appended;
-      for (const entryId of opportunities) {
-        const entry = this.memory.store.getSourceEntry(entryId);
-        if (!entry) throw new Error(`CC appended entry ${entryId} disappeared before scheduling`);
-        const own: TaskTarget = { sessionId: reconcile.coreSessionId!, branch: reconcile.branch,
-          headTurnId: reconcile.bootstrap ? reconcile.headTurnId! : entry.turnId, triggerEntryId: entry.id };
-        // Ticket 72: an appended entry alone re-arms nothing; a change of the completed signal since
-        // the last opportunity does (a commit through another connection this executor has not seen).
-        const signal = this.memory.store.progressSignal(own.sessionId);
-        if (signal !== this.lastArmSignal) { this.lastArmSignal = signal; this.armDreaming(); }
-        for (const phase of ["noting", "dreaming"] as const) this.startAutomatic(phase, own);
-      }
-    }
-    this.driveCatchup(false);
+    if (ready) this.driveCatchup(false);
   }
 
   catchupTicket(): number { return this.cancellationEpoch; }
@@ -181,7 +132,7 @@ export class CcTaskScheduler {
       ...(drain.diagnostic ? { diagnostic: drain.diagnostic } : {}) };
   }
 
-  /** Mark first, then the caller fences core tasks. This prevents completion chaining in the race. */
+  /** Mark first, then the caller fences core tasks and the explicit manual drain. */
   stopCatchup(diagnostic = "stop requested"): void {
     this.cancellationEpoch++;
     if (!this.catchup || this.catchup.state === "completed" || this.catchup.state === "failed" || this.catchup.state === "stopped") return;
@@ -194,40 +145,46 @@ export class CcTaskScheduler {
     return { state: "failed", entriesDone: 0, entriesTotal: 0, diagnostic };
   }
 
-  /** Ticket 72: Noting always evaluates (own and borrowed, exactly as before). Dreaming
-   * evaluates its candidate only while armed — an appended entry alone cannot change
-   * that answer (67/69: Raw ingestion alone creates no knowledge revision) — but the borrowed
-   * closed-session scan keeps its per-opportunity timing unchanged, running regardless of `armed`, so
-   * `includeBorrowed=false` is only ever passed by the completion checkpoint below. */
-  private startAutomatic(phase: CcWorkerPhase, own: TaskTarget, includeBorrowed = true): void {
-    if (this.slots.has(phase) || this.stopped) return;
-    const evaluate = phase === "noting" || this.armed[phase];
+  /** One ordinary phase evaluation at the main-turn checkpoint. */
+  private startAutomatic(phase: CcWorkerPhase, own: TaskTarget, fork?: CcForkChoice,
+    noLaunch?: () => void): void {
+    if (this.slots.has(phase) || this.stopped) { noLaunch?.(); return; }
     let due = false;
-    if (evaluate) {
-      try { due = this.memory.taskEligibility(phase, own).due; }
-      catch (error) { this.diagnostic(`${phase} eligibility failed: ${error instanceof Error ? error.message : String(error)}`); return; }
-      if (phase !== "noting") this.armed[phase] = due; // not-due disarms; due leaves it armed until launch settles
-    }
+    try { due = this.memory.taskEligibility(phase, own).due; }
+    catch (error) { this.diagnostic(`${phase} eligibility failed: ${error instanceof Error ? error.message : String(error)}`); noLaunch?.(); return; }
     const candidates = due ? [{ ...own, borrowed: false }] : [];
-    if (phase !== "dreaming" && includeBorrowed) {
+    if (phase !== "dreaming") {
       try { candidates.push(...this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope)
         .map(target => ({ ...target, borrowed: true }))); }
       catch (error) { this.diagnostic(`${phase} closed-session scan failed: ${error instanceof Error ? error.message : String(error)}`); }
     }
-    if (!candidates.length) return;
+    if (!candidates.length) { noLaunch?.(); return; }
     if (!this.worker) {
       this.diagnostic(`${phase} admission failed: CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured`);
-      return;
+      noLaunch?.(); return;
     }
     const cancellationEpoch = this.cancellationEpoch;
-    this.reserve(phase, own.sessionId, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch));
+    this.reserve(phase, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch, fork, noLaunch));
   }
 
-  /**
-   * R4: a successful ordinary completion while a drain is active is a full checkpoint (both N/D
-   * checked). Failure and cancellation start no checks; empty/dropped/bounced retain the N-only drive.
-   */
-  private reserve(phase: CcWorkerPhase, sessionId: number, run: () => Promise<CcTaskResult | undefined>,
+  turnEnd(reconcile: Pick<CcReconcileResult, "state" | "coreSessionId" | "headTurnId" | "selectedTailId" | "branch">, epoch: number,
+    fork?: CcForkChoice, noLaunch?: () => void, notingFailure?: string): void {
+    if (epoch !== this.cancellationEpoch || this.stopped || reconcile.state !== "ready" ||
+      reconcile.coreSessionId === null || reconcile.headTurnId === null || reconcile.selectedTailId === null) { noLaunch?.(); return; }
+    const target: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
+      headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedTailId };
+    for (const phase of ["noting", "dreaming"] as const) {
+      if (phase === "noting" && notingFailure) {
+        this.diagnostic(`noting source observation failed: ${notingFailure}`);
+        noLaunch?.();
+        continue;
+      }
+      this.startAutomatic(phase, target, phase === "noting" ? fork : undefined, phase === "noting" ? noLaunch : undefined);
+    }
+  }
+
+  /** Ordinary completion never triggers automatic work; a running manual drain still owns its checks. */
+  private reserve(phase: CcWorkerPhase, run: () => Promise<CcTaskResult | undefined>,
     shouldDrive: (result: CcTaskResult | undefined) => boolean = result => {
       const drain = this.catchup;
       const drainActive = !!drain && (drain.state === "running" || drain.state === "waiting");
@@ -236,7 +193,6 @@ export class CcTaskScheduler {
       return false;
     }): void {
     const epoch = this.cancellationEpoch;
-    const admissionSignal = this.memory.store.progressSignal(sessionId);
     let settled: CcTaskResult | undefined;
     const work = Promise.resolve().then(run).then(result => { settled = result; return result; });
     this.slots.set(phase, work);
@@ -245,29 +201,8 @@ export class CcTaskScheduler {
       .finally(() => {
         this.slots.delete(phase);
         this.safeNotify(`${phase} settled`);
-        // Ticket 86: only a successful completion may check D. A failed D may retain partial
-        // writes, but failure starts no check. Gated on the signal having moved since admission, so
-        // a run that settles without committing anything falls back to the ordinary pace, as before.
-        // Only D may fail with partial writes; failed N must not replay an unrelated signal change.
-        if (settled?.outcome === "success" &&
-          this.memory.store.progressSignal(sessionId) !== admissionSignal) this.checkpointDreaming(sessionId, epoch);
         if (shouldDrive(settled)) this.driveCatchup();
       });
-  }
-
-  /** Ticket 72 item 3: fenced by the same admission an ordinary opportunity passes — the task's own
-   * cancellation epoch (a stop, an off, or a selected-path change/retarget since admission bumps it,
-   * per `reconcile` above), the executor not stopped, and memory still enabled — and it evaluates the
-   * CURRENT effective path (`currentTarget`), never the finished task's own (possibly stale) target.
-   * It checks only own D, scanning no borrowed candidates, so it composes with 68's catchup
-   * checkpoint through the same slot reservation: whichever `reserve`s a phase first wins that slot;
-   * the other's `startAutomatic` call becomes a no-op. */
-  private checkpointDreaming(sessionId: number, epoch: number): void {
-    if (this.stopped || this.cancellationEpoch !== epoch) return;
-    const target = this.currentTarget;
-    if (!target || target.sessionId !== sessionId || !this.memory.store.enabled(sessionId)) return;
-    this.armDreaming();
-    this.startAutomatic("dreaming", target, false);
   }
 
   private common(phase: CcWorkerPhase, target: TaskTarget, borrowed: boolean, automatic: boolean, boundary?: TaskBoundary) {
@@ -278,25 +213,52 @@ export class CcTaskScheduler {
   }
 
   private async runCandidates(phase: CcWorkerPhase, executorSessionId: number,
-    candidates: (TaskTarget & { borrowed: boolean })[], cancellationEpoch: number): Promise<CcTaskResult | undefined> {
-    for (const { borrowed, ...target } of candidates) {
+    candidates: (TaskTarget & { borrowed: boolean })[], cancellationEpoch: number,
+    fork?: CcForkChoice, noLaunch?: () => void): Promise<CcTaskResult | undefined> {
+    try { for (const { borrowed, ...target } of candidates) {
       try {
-        const result = await this.runCandidate(phase, executorSessionId, target, borrowed, cancellationEpoch);
+        const result = await this.runCandidate(phase, executorSessionId, target, borrowed, cancellationEpoch,
+          !borrowed && phase === "noting" ? fork : undefined, noLaunch);
         if (!result || result.outcome !== "dropped" && result.outcome !== "empty") return result;
       } catch (error) {
         this.diagnostic(`${phase} admission failed for S${target.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
         if (!(error instanceof Error && error.cause === "task admission")) return;
       }
     }
+    } finally { noLaunch?.(); }
   }
 
   /** One ordinary admission path; callers own continuation and error handling, not claim policy. */
   private async runCandidate(phase: CcWorkerPhase, executorSessionId: number, target: TaskTarget,
-    borrowed: boolean, epoch: number): Promise<CcTaskResult | undefined> {
-    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) return;
+    borrowed: boolean, epoch: number, fork?: CcForkChoice, noLaunch?: () => void): Promise<CcTaskResult | undefined> {
+    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) { noLaunch?.(); return; }
     const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
-    const result = phase === "noting" ? await this.memory.noting(options)
-      : await this.memory.dream(options);
+    let result: CcTaskResult;
+    if (phase === "noting" && fork) {
+      const fresh = (reason: string) => this.memory.noting({ ...options, mode: "fork", effectiveMode: "subagent",
+        fallbackReason: reason });
+      if ("refused" in fork) { noLaunch?.(); result = await fresh(fork.refused); }
+      else {
+        try {
+          const frozenIds = this.memory.notingBatch(target).map(entry => entry.id);
+          result = await this.memory.noting({ ...options, mode: "fork", effectiveMode: "fork",
+            model: fork.model, capacity: fork.capacity, visible: fork.visible });
+          if (result.outcome === "dropped" && "refused" in result && result.refused && !this.stopped && this.cancellationEpoch === epoch) {
+            const refusal = result.refused as { reason?: string };
+            noLaunch?.();
+            result = await this.memory.noting({ ...options, mode: "fork", effectiveMode: "subagent",
+              fallbackReason: refusal.reason ?? "CC native fork did not start", executionId: "executionId" in result ? result.executionId : undefined,
+              boundary: { exactEntryIds: frozenIds } });
+          }
+        } catch (error) {
+          if (!(error instanceof Error && error.cause === "task admission" && error.message.startsWith(NOTING_CAPACITY))) throw error;
+          noLaunch?.(); result = await fresh(error.message);
+        }
+      }
+    } else {
+      noLaunch?.();
+      result = phase === "noting" ? await this.memory.noting(options) : await this.memory.dream(options);
+    }
     this.report(phase, target, result);
     return result;
   }
@@ -361,7 +323,7 @@ export class CcTaskScheduler {
       launched = true; drain.active.add(phase); drain.state = "running";
       if (phase !== "dreaming") drain.phase = phase;
       let checkpoint = false, retry = false;
-      this.reserve(phase, drain.target.sessionId, async () => {
+      this.reserve(phase, async () => {
         if (!owned()) return;
         try {
           const result = phase === "noting"

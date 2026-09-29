@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
+import { afterAll, afterEach, expect, test } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -7,30 +7,22 @@ import { fact as seedFact } from "../support/seed.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
-import { createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
+import { fencedClaudeVersion, createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
 import { startLoopbackAnthropic, type LoopbackTurn } from "./cc-native-loopback.ts";
 
-const executable = "/opt/homebrew/bin/claude";
+const executable = process.env.TM_NATIVE_CLAUDE_EXECUTABLE ?? "/opt/homebrew/bin/claude";
 const available = fenceToolsAvailable(executable);
-let fenced: string;
 const dirs: string[] = [];
 function directory() { const dir = realpathSync(mkdtempSync(join(tmpdir(), "tm92-native-"))); dirs.push(dir); return dir; }
-beforeAll(async () => {
-  // This file is acceptance evidence, not a portable skip: missing prerequisites are unverified.
-  if (!available) throw new Error("native CC acceptance requires pinned CLI and sandbox-exec");
-  const fence = createFencedClaudeExecutable(directory(), executable);
-  await preflightNetworkFence(fence.profilePath); // abort before any CLI invocation if either control fails
-  fenced = fence.wrapperPath;
-});
-afterEach(() => { for (const dir of dirs.splice(1)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 afterAll(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 const opts = { DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1",
-  CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
-function config(cwd: string) { return resolveCcHostConfig({ dbPath: join(cwd, "memory.sqlite"), stateDir: join(cwd, "state"),
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1" };
+function config(cwd: string, claudeExecutable: string) { return resolveCcHostConfig({ dbPath: join(cwd, "memory.sqlite"), stateDir: join(cwd, "state"),
   notingModel: "sonnet", notingThinking: "medium", "dreaming.model": "sonnet", "dreaming.thinking": "medium",
-  worker: { claudeExecutable: fenced, contextWindows: { sonnet: 200_000 }, cwd } }); }
+  worker: { claudeExecutable, contextWindows: { sonnet: 200_000 }, cwd } }); }
 const fact = (text: string, source = "T2#E1") => ({ title: text, sources: [{ address: source, text }] });
 const empty = { operations: [], skipped: [] };
 const tool = (id: number, name: "note" | "memory", input: unknown): LoopbackTurn => ({
@@ -38,10 +30,14 @@ const tool = (id: number, name: "note" | "memory", input: unknown): LoopbackTurn
 });
 
 for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", "corrected-block"] as const)
-  test(`real pinned CC one-Noter publication: ${variant}`, async () => {
+  test(`real CC one-Noter publication: ${variant}`, async () => {
     const cwd = directory(), home = directory(), configDir = directory();
-    const settings = config(cwd);
+    let settings!: ReturnType<typeof config>;
+    let memory!: ReturnType<typeof sourceSeededMemory>;
+    let session!: { id: number };
+    let beforeKnowledge!: ReturnType<Store["currentKnowledge"]>;
     let observed = false;
+    let checkpointError: unknown;
     let nativeLog: string | undefined;
     const requests: unknown[] = [];
     let path!: { sessionId: number; branch: string; headTurnId: number };
@@ -59,16 +55,34 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
         tool(2, "note", { facts: [{ slot: "$1", ...fact("Illegal selected block", "T2#E1@text") }] }),
         ...(variant === "corrected-block" ? [tool(3, "note", { facts: [{ slot: "$1", ...fact("Claude Code corrected whole entry", "T2#E2") }] })] : []),
         tool(4, "memory", empty)];
-    const memory = sourceSeededMemory(settings.dbPath, async raw => {
+    const loopback = await startLoopbackAnthropic((index, body) => {
+      requests.push(body);
+      if (index === steps.length) {
+        const reader = new Store(settings.dbPath);
+        try {
+          expect(reader.listSessionFacts(session.id)).toHaveLength(variant === "nine-corrected" ? 1 : 0);
+          expect(reader.currentKnowledge(path)).toEqual(beforeKnowledge);
+          expect(entries.every(e => !reader.entryNoted(e.id))).toBe(true);
+          observed = true;
+        } catch (error) { checkpointError = error; } finally { reader.close(); }
+      }
+      return steps[index] ?? { blocks: [{ type: "text", text: "finished" }], stopReason: "end_turn" };
+    });
+    if (!available) throw new Error("native CC acceptance requires the installed CLI and sandbox-exec");
+    const fence = createFencedClaudeExecutable(join(cwd, "fence"), executable, [Number(new URL(loopback.url).port)], cwd);
+    await preflightNetworkFence(fence.profilePath, [Number(new URL(loopback.url).port)], cwd);
+    await fencedClaudeVersion(fence.wrapperPath, cwd);
+    settings = config(cwd, fence.wrapperPath);
+    memory = sourceSeededMemory(settings.dbPath, async raw => {
       const result = await new CcAgentWorker(settings, { environment: {
-      PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: configDir, TMPDIR: process.env.TMPDIR,
+      PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: configDir, TMPDIR: cwd, CLAUDE_CODE_TMPDIR: cwd,
       ANTHROPIC_BASE_URL: loopback.url, ANTHROPIC_API_KEY: "sk-ant-local-only", CLAUDE_CODE_MAX_RETRIES: "0", ...opts,
     } }).run(raw as CcAgentTask, 0);
       nativeLog = result.nativeLog;
       return result;
     });
     const project = memory.store.createProject({ name: "native-92", declaredBy: "mark" });
-    const session = memory.store.createSession({ projectId: project.id, host: "cc:native", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+    session = memory.store.createSession({ projectId: project.id, host: "cc:native", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
     const first = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "User established an earlier rule", assistantText: "Claude Code recorded the rule", startedAt: "now" });
     if (variant === "nine-corrected") {
       const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: first.id });
@@ -84,24 +98,10 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
     const second = memory.store.appendTurn({ sessionId: session.id, parentTurnId: first.id, kind: "turn", userPrompt: "New discussion", assistantText: "Claude Code considered it", startedAt: "later" });
     path = { sessionId: session.id, branch: "main", headTurnId: second.id };
     entries = memory.store.sourcePath(session.id, "main", second.id).filter(e => e.turnId === second.id);
-    const beforeKnowledge = memory.store.currentKnowledge(path);
-    let checkpointError: unknown;
-    const loopback = await startLoopbackAnthropic((index, body) => {
-      requests.push(body);
-      if (index === steps.length) {
-        const reader = new Store(settings.dbPath);
-        try {
-          expect(reader.listSessionFacts(session.id)).toHaveLength(variant === "nine-corrected" ? 1 : 0);
-          expect(reader.currentKnowledge(path)).toEqual(beforeKnowledge);
-          expect(entries.every(e => !reader.entryNoted(e.id))).toBe(true);
-          observed = true;
-        } catch (error) { checkpointError = error; } finally { reader.close(); }
-      }
-      return steps[index] ?? { blocks: [{ type: "text", text: "finished" }], stopReason: "end_turn" };
-    });
+    beforeKnowledge = memory.store.currentKnowledge(path);
     try {
       const outcome = await memory.noting({ ...path, model: "sonnet", mode: "subagent" });
-      const evidenceDir = join(tmpdir(), "tm92-native-evidence");
+      const evidenceDir = join(cwd, "evidence");
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, `${variant}.requests.json`), JSON.stringify(requests, null, 2) + "\n");
       if (nativeLog) writeFileSync(join(evidenceDir, `${variant}.jsonl`), readFileSync(nativeLog));

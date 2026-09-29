@@ -110,9 +110,11 @@ test("settings: budgets derive the knowledge window and max input from the code 
   expect(budgets.derivedLine).toBe("→ knowledge window 20,000 + shared allowance 10,000 = 30,000 max input");
 });
 
-test("settings: the mode column shows on Pi's fixture (Noter carries a mode, Dreamer never does) and hides on CC's (no worker does)", () => {
+test("settings: the Noter mode column appears on both hosts; Dreamer remains subagent-only", () => {
   expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE).workers.showModeColumn).toBe(true);
-  expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE_CC).workers.showModeColumn).toBe(false);
+  expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE_CC).workers.showModeColumn).toBe(true);
+  expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE_CC).workers.rows[0]).toMatchObject({ mode: "subagent" });
+  expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE_CC).workers.rows[1]!.mode).toBeUndefined();
 });
 
 test("settings: closed-session scope line lists all three choices", () => {

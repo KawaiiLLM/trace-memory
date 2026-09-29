@@ -1,6 +1,6 @@
 import { appendFileSync } from "node:fs";
 import { TraceMemory } from "../../src/core/api/index.ts";
-import { readBinding, updateBinding } from "../../src/hosts/cc/binding.ts";
+import { markCcFunctionHook, readBinding, updateBinding } from "../../src/hosts/cc/binding.ts";
 import { startControlServer } from "../../src/hosts/cc/control.ts";
 import type { ResolvedCcHostConfig } from "../../src/hosts/cc/config.ts";
 
@@ -50,6 +50,11 @@ if (mode === "update") {
       }
     })();
   });
+} else if (mode === "hook-identity") {
+  void markCcFunctionHook(input.config, input.nativeSessionId).then(
+    () => send({ type: "fulfilled", identity: readBinding(input.config, input.nativeSessionId)?.functionHookProcess }),
+    error => send({ type: "rejected", error: error instanceof Error ? error.message : String(error) }),
+  );
 } else {
   throw new Error(`unknown child mode ${String(mode)}`);
 }

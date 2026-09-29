@@ -14,7 +14,7 @@ const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 const line = (value: unknown) => `${JSON.stringify(value)}\n`;
 
-async function fixture(nativePrefix = "mcp__traceMemory__") {
+async function fixture(nativePrefix = "mcp__traceMemory__", forkToolCall: (id: string, name: "note" | "memory") => "retired" | null = () => null) {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-tools-")); directories.push(directory);
   const transcriptPath = join(directory, "native.jsonl"), nativeSessionId = "cc-tools-session";
   const config = resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
@@ -33,6 +33,7 @@ async function fixture(nativePrefix = "mcp__traceMemory__") {
   const importer = new CcImporter(config, binding), result = await importer.reconcile();
   const exact = importer.persistedCall("call-note", "note")!;
   const coordinator = {
+    forkToolCall,
     toolProjection: async () => ({ memory: importer.memory, binding: { coreSessionId: result.coreSessionId!, branch: result.branch,
       headTurnId: result.headTurnId!, triggerEntryId: result.selectedEntryIds.at(-1)! } }),
     waitForToolCall: async (id: string, name: "note" | "memory") => {
@@ -181,6 +182,32 @@ test("CC foreground writes fail closed on missing, malformed and mismatched nati
       expect(result.isError).toBe(true);
     }
     expect(f.importer.memory.store.listTurnFacts(f.exact.headTurnId)).toEqual([]);
+  } finally { f.importer.close(); }
+});
+
+test("expired fork calls never fall through to the persisted main manual write", async () => {
+  const f = await fixture("mcp__traceMemory__", id => id === "call-note" ? "retired" : null);
+  try {
+    const expired = await f.tools.call("note", { facts: [] }, { "claudecode/toolUseId": "call-note" });
+    expect(expired.isError).toBe(true);
+    expect(text(expired)).toContain("expired");
+    const manual = await f.tools.call("memory", { operations: [], skipped: [] }, { "claudecode/toolUseId": "call-memory" });
+    expect(manual.isError).toBeUndefined();
+    expect(f.importer.memory.store.listTurnFacts(f.exact.headTurnId)).toEqual([]);
+  } finally { f.importer.close(); }
+});
+
+test("a restarted executor cannot turn an old fork-only call into a manual write", async () => {
+  const f = await fixture();
+  try {
+    // The old fork's native call is not in this main-session transcript. Fresh executor
+    // authority has no registration, so the exact persisted main-call check must reject it.
+    const stale = await f.tools.call("note", { facts: [] }, { "claudecode/toolUseId": "old-fork-call" });
+    expect(stale.isError).toBe(true);
+    expect(text(stale)).toContain("source-not-ready: old-fork-call");
+    expect(f.importer.memory.store.listTurnFacts(f.exact.headTurnId)).toEqual([]);
+    const manual = await f.tools.call("memory", { operations: [], skipped: [] }, { "claudecode/toolUseId": "call-memory" });
+    expect(manual.isError).toBeUndefined();
   } finally { f.importer.close(); }
 });
 
