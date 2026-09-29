@@ -5983,15 +5983,13 @@ function renderKnowledgePreview(value, status, fields2, cap = 80, parents = [], 
     fields2.has("text")
   );
 }
-function renderKnowledgeTrace(value, parents, children, cap = Infinity, effectiveGrounds = value.revision.supports, fields2, historyLine = false, pathStatus, address2, versionLabel, supportTitles) {
+function renderKnowledgeTrace(value, parents, children, cap = Infinity, fields2, historyLine = false, pathStatus, address2, versionLabel, supportTitles) {
   const shown = address2 ?? ((r2) => `K${r2.knowledgeId}@${r2.id}`);
   const addresses = (commits) => commits.map(shown).join(", ") || "none";
-  const direct2 = new Set(value.revision.supports), inherited = effectiveGrounds.filter((id) => !direct2.has(id));
   if (!fields2) {
     const whole = [
       renderKnowledge(value, shown(value.revision)),
       ...value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : [],
-      ...value.revision.supportSemantics === "change" ? [`  inherited lineage supports: ${factAddresses(inherited)}`] : [],
       `  parents: ${addresses(parents)}`,
       `  children: ${addresses(children)}`,
       commitLine(value.revision)
@@ -6002,12 +6000,8 @@ function renderKnowledgeTrace(value, parents, children, cap = Infinity, effectiv
   const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "";
   const prefix = `[${shown(r)}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] `;
   const suffix = [
-    ...fields2.has("supports") ? [
-      `
-  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports, supportTitles)}${fields2.has("topics") ? topicList(r.topics) : ""}`,
-      ...r.supportSemantics === "change" ? [`
-  inherited lineage supports: ${factAddresses(inherited)}`] : []
-    ] : [],
+    ...fields2.has("supports") ? [`
+  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports, supportTitles)}${fields2.has("topics") ? topicList(r.topics) : ""}`] : [],
     ...!fields2.has("supports") && fields2.has("topics") && r.topics.length ? [`
   topics: ${JSON.stringify(r.topics)}`] : [],
     ...fields2.has("status") ? [`
@@ -7041,7 +7035,6 @@ function readFacade(store, config3, prepare = () => {
       const supportTitles = store.factTitles(store.revisionSupportIds(namedKnowledgeIds));
       const knowledgeBody2 = (value, parents, children, status, historyLine = false, titles = supportTitles) => {
         const { knowledge, revision } = value;
-        const grounds = [...store.revisionGrounds(revision)].sort((a, b) => a - b);
         const labels = new Map([revision, ...parents, ...children].map((r) => [
           r.id,
           `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}`
@@ -7051,9 +7044,9 @@ function readFacade(store, config3, prepare = () => {
         const shown = (r) => r.id === revision.id ? tag : labels.get(r.id);
         const plain = (r) => r.id === revision.id ? `K${knowledge.id}` : labels.get(r.id);
         return () => {
-          const full = renderKnowledgeTrace(value, parents, children, Infinity, grounds, fields2, historyLine, status, shown, labels.get(revision.id), titles);
+          const full = renderKnowledgeTrace(value, parents, children, Infinity, fields2, historyLine, status, shown, labels.get(revision.id), titles);
           if (!fields2.has("text") || tokens(full) > profile.entryTokens)
-            return renderKnowledgeTrace(value, parents, children, profile.entryTokens, grounds, fields2, historyLine, status, plain, labels.get(revision.id), titles);
+            return renderKnowledgeTrace(value, parents, children, profile.entryTokens, fields2, historyLine, status, plain, labels.get(revision.id), titles);
           return { lines: full.split("\n"), taggedHeader, plainHeader, tag };
         };
       };
@@ -7082,7 +7075,6 @@ function readFacade(store, config3, prepare = () => {
           const knowledge = revisions.map((revision) => {
             const parents = (selection.input.parents.get(revision.id) ?? []).map((id) => selection.byCommit.get(id));
             const children = selection.graph.revisions.filter((r) => selection.input.parents.get(r.id)?.includes(revision.id));
-            const grounds = [...store.revisionGrounds(revision)].sort((a, b) => a - b);
             const status2 = selection.status(revision);
             const value = { knowledge: records.get(revision.knowledgeId), revision };
             return options.modelFacing ? knowledgeBody2(value, parents, children, status2, false, projectTitles) : () => renderKnowledgeTrace(
@@ -7090,7 +7082,6 @@ function readFacade(store, config3, prepare = () => {
               parents,
               children,
               profile.entryTokens,
-              grounds,
               fields3,
               false,
               status2,
@@ -9232,9 +9223,8 @@ function TraceMemory(dbPath, runAgent, config3 = {}, resultText = rawResultText,
           if (descriptions.has(r.id)) continue;
           const parents = store.commitParents(r), children = store.commitChildren(r);
           descriptions.set(r.id, () => {
-            const grounds = [...store.revisionGrounds(r)].sort((a, b) => a - b);
             const address3 = display.modelFacing ? (revision) => revision.id === r.id ? `K${id}#${store.versionTag(id, r.id)}` : shown(revision) : void 0;
-            return renderKnowledgeTrace({ knowledge, revision: r }, parents, children, itemCap, grounds, fields2, historyLines, void 0, address3, void 0, supportTitles);
+            return renderKnowledgeTrace({ knowledge, revision: r }, parents, children, itemCap, fields2, historyLines, void 0, address3, void 0, supportTitles);
           });
         }
       };

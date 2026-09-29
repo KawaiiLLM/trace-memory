@@ -590,15 +590,13 @@ export function renderKnowledgePreview(value: KnowledgeWithRevision, status: str
 }
 
 export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity,
-  effectiveGrounds: number[] = value.revision.supports, fields?: ReadonlySet<string>, historyLine = false, pathStatus?: string,
+  fields?: ReadonlySet<string>, historyLine = false, pathStatus?: string,
   address?: (revision: KnowledgeRevision) => string, versionLabel?: string, supportTitles?: ReadonlyMap<number, string>): string {
   const shown = address ?? ((r: KnowledgeRevision) => `K${r.knowledgeId}@${r.id}`);
   const addresses = (commits: KnowledgeRevision[]) => commits.map(shown).join(", ") || "none";
-  const direct = new Set(value.revision.supports), inherited = effectiveGrounds.filter(id => !direct.has(id));
   if (!fields) {
     const whole = [renderKnowledge(value, shown(value.revision)),
       ...(value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : []),
-      ...(value.revision.supportSemantics === "change" ? [`  inherited lineage supports: ${factAddresses(inherited)}`] : []),
       `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
     const prefix = `[${shown(value.revision)}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] `;
     return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
@@ -606,8 +604,7 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
   const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "";
   const prefix = `[${shown(r)}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] `;
   const suffix = [
-    ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports, supportTitles)}${fields.has("topics") ? topicList(r.topics) : ""}`,
-      ...(r.supportSemantics === "change" ? [`\n  inherited lineage supports: ${factAddresses(inherited)}`] : [])] : []),
+    ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports, supportTitles)}${fields.has("topics") ? topicList(r.topics) : ""}`] : []),
     ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`\n  status: ${r.op}${r.op === "archive" && r.archiveKind ? ` (${r.archiveKind})` : ""} ${r.createdAt}${r.actorRole ? `; actor ${r.actorRole}; run R${r.runId}${!r.supports.length ? "; maintenance judgment" : ""}` : ""}`] : []),
     ...(fields.has("status") && pathStatus ? [`\n  status: ${pathStatus}`] : []),

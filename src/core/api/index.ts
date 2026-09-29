@@ -543,10 +543,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           if (descriptions.has(r.id)) continue;
           const parents = store.commitParents(r), children = store.commitChildren(r);
           descriptions.set(r.id, () => {
-            const grounds = [...store.revisionGrounds(r)].sort((a, b) => a - b);
             const address = display.modelFacing ? (revision: typeof r) => revision.id === r.id
               ? `K${id}#${store.versionTag(id, r.id)}` : shown(revision) : undefined;
-            return renderKnowledgeTrace({ knowledge, revision: r }, parents, children, itemCap, grounds, fields, historyLines, undefined, address, undefined, supportTitles);
+            return renderKnowledgeTrace({ knowledge, revision: r }, parents, children, itemCap, fields, historyLines, undefined, address, undefined, supportTitles);
           });
         }
       };

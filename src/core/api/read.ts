@@ -489,7 +489,6 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const knowledgeBody = (value: KnowledgeWithRevision, parents: KnowledgeRevision[], children: KnowledgeRevision[], status?: string,
         historyLine = false, titles = supportTitles) => {
         const { knowledge, revision } = value;
-        const grounds = [...store.revisionGrounds(revision)].sort((a, b) => a - b);
         const labels = new Map([revision, ...parents, ...children].map(r => [r.id,
           `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}`]));
         const tag = `K${knowledge.id}#${store.versionTag(knowledge.id, revision.id)}`;
@@ -497,9 +496,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         const shown = (r: KnowledgeRevision) => r.id === revision.id ? tag : labels.get(r.id)!;
         const plain = (r: KnowledgeRevision) => r.id === revision.id ? `K${knowledge.id}` : labels.get(r.id)!;
         return (): string | TaggedBody => {
-          const full = renderKnowledgeTrace(value, parents, children, Infinity, grounds, fields, historyLine, status, shown, labels.get(revision.id), titles);
+          const full = renderKnowledgeTrace(value, parents, children, Infinity, fields, historyLine, status, shown, labels.get(revision.id), titles);
           if (!fields.has("text") || tokens(full) > profile.entryTokens)
-            return renderKnowledgeTrace(value, parents, children, profile.entryTokens, grounds, fields, historyLine, status, plain, labels.get(revision.id), titles);
+            return renderKnowledgeTrace(value, parents, children, profile.entryTokens, fields, historyLine, status, plain, labels.get(revision.id), titles);
           return { lines: full.split("\n"), taggedHeader, plainHeader, tag };
         };
       };
@@ -524,11 +523,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           const knowledge = revisions.map(revision => {
             const parents = (selection.input.parents.get(revision.id) ?? []).map(id => selection.byCommit.get(id)!);
             const children = selection.graph.revisions.filter(r => selection.input.parents.get(r.id)?.includes(revision.id));
-            const grounds = [...store.revisionGrounds(revision)].sort((a, b) => a - b);
             const status = selection.status(revision);
             const value = { knowledge: records.get(revision.knowledgeId)!, revision };
             return options.modelFacing ? knowledgeBody(value, parents, children, status, false, projectTitles)
-              : () => renderKnowledgeTrace(value, parents, children, profile.entryTokens, grounds, fields, false, status,
+              : () => renderKnowledgeTrace(value, parents, children, profile.entryTokens, fields, false, status,
                 undefined, undefined, projectTitles);
           });
           const facts = store.listProjectFacts(project.id);
