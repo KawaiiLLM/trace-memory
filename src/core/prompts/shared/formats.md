@@ -1,6 +1,6 @@
 ### Formats
 
-- A new fact starts with `[F<id>] title`, followed by one segment per source, such as `[T12#E3@assistant] Pi agent proposed the change.` Core fills each citation and role; the segment names its original harness. Legacy facts retain their saved category, actor, status and quote; displayed sources use whole-entry addresses. Inbound relations are labelled `inbound`.
+- A new fact starts with `[F<id>] title`, followed by one segment per source, such as `[T12#E3@assistant] Pi agent proposed the change.` Core fills each citation and role. Legacy facts retain their saved category, actor, status and quote; displayed sources use whole-entry addresses. Inbound relations are labelled `inbound`.
 - Automatic material groups facts under `[T<id>] <Turn start time> (selected facts)`, Turns in order, ids ascending. Each fact appears under its owning Turn with all its sources; a group need not contain every fact of that Turn.
 - A Turn read shows facts with only that Turn's source segments; a legacy fact is shown whole. Unprocessed entries appear as Raw, and uncited processed entries as addresses. Follow the printed entry range to read the Turn's Raw.
 - A fact read links each visible knowledge identity that cited it, including in an earlier version. The link names the current version and the citing versions without expanding their bodies.
