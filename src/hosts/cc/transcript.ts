@@ -3,6 +3,21 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { SourceNormalizationError, type SourceBlock, type SourceNormalizer } from "../../core/model/source.ts";
 import type { SourceInput } from "../../core/store/index.ts";
+import type { ResultExtractor } from "../../core/render/index.ts";
+
+/** Ticket 107: this host's result-text extractor, registered at every `TraceMemory(` call site so all
+ * views render a result identically. Storage keeps `{content, toolUseResult}` (`classifySourceRecord`);
+ * a view shows only `content`, the text the model saw: a string as is, an array's text blocks joined
+ * with every other block marked by its type. `toolUseResult` is Claude Code's UI object, never output,
+ * and leaves no marker: `trace` with `full` still renders the stored envelope uncut. */
+export const ccResultText: ResultExtractor = (result) => {
+  let envelope: { content?: unknown };
+  try { envelope = JSON.parse(result); } catch { return { text: result }; }
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return { text: result };
+  const { content } = envelope;
+  return { text: typeof content === "string" ? content : Array.isArray(content)
+    ? content.map((block: { type?: string; text?: unknown }) => block?.type === "text" ? String(block.text ?? "") : `[${block?.type ?? "unknown"} omitted]`).join("\n") : "" };
+};
 
 // 70: measured on the 30k-record fixture (tests/hosts/cc-70-performance.test.ts) racing a second
 // process that writes every 10 ms with a 5 s busy_timeout. A 40 ms slice keeps the importing

@@ -5524,7 +5524,7 @@ var JoinedTokens = class {
 
 // src/core/render/index.ts
 var rawResultText = (result) => ({ text: result });
-var ENTRY_VIEW_VERSION = "50-v1-whitespace-pricing";
+var ENTRY_VIEW_VERSION = "107-cc-result-content";
 var truncated = (characters) => `[... ${characters} characters truncated]`;
 var detailsTruncated = (characters) => `[... ${characters} characters of details truncated]`;
 function fit(build, max, cap) {
@@ -10284,6 +10284,17 @@ async function recordSessionStart(config3, input, nativeCreatedAt2) {
 var import_node_crypto12 = require("node:crypto");
 var import_node_fs5 = require("node:fs");
 var import_node_perf_hooks = require("node:perf_hooks");
+var ccResultText = (result) => {
+  let envelope;
+  try {
+    envelope = JSON.parse(result);
+  } catch {
+    return { text: result };
+  }
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return { text: result };
+  const { content } = envelope;
+  return { text: typeof content === "string" ? content : Array.isArray(content) ? content.map((block2) => block2?.type === "text" ? String(block2.text ?? "") : `[${block2?.type ?? "unknown"} omitted]`).join("\n") : "" };
+};
 var INGEST_SLICE_MS = 40;
 var INGEST_PAUSE_MS = 15;
 var pause = (milliseconds, signal) => new Promise((resolve4, reject) => {
@@ -41369,7 +41380,7 @@ var CcImporter = class {
       config3.dbPath,
       (input) => this.runAgent ? this.runAgent(input) : unavailableRunner(),
       config3.coreConfig,
-      void 0,
+      ccResultText,
       (entry) => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : void 0
     );
     this.memory = memory;
@@ -42936,7 +42947,7 @@ async function deliver(config3, input, event, emit, options = {}) {
       throw new Error("CC injection Hook cannot run model work");
     },
     config3.coreConfig,
-    void 0,
+    ccResultText,
     (entry) => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : void 0
   );
   try {
@@ -42976,7 +42987,7 @@ async function ccPrepareSessionStartInjection(config3, input) {
   if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
   const memory = TraceMemory(config3.dbPath, async () => {
     throw new Error("CC injection Hook cannot run model work");
-  }, config3.coreConfig);
+  }, config3.coreConfig, ccResultText);
   try {
     await injectionBinding(config3, initial, memory);
   } finally {
@@ -43071,7 +43082,7 @@ async function ccCompaction(config3, input) {
       throw new Error("CC compaction cannot run model work");
     },
     config3.coreConfig,
-    void 0,
+    ccResultText,
     (entry) => entry.nativeLineage === lineage ? ccSourceBlocks(entry) : void 0
   );
   try {
@@ -43326,7 +43337,7 @@ async function operateCcSession(config3, nativeSessionId, command, timeoutMs) {
 async function declareCcProject(config3, nativeSessionId, name) {
   const id = validateNativeSessionId(nativeSessionId);
   const unavailable2 = async () => ({ outcome: "failure", output: "operator does not run workers" });
-  const memory = TraceMemory(config3.dbPath, unavailable2, { closedSessionScope: config3.closedSessionScope });
+  const memory = TraceMemory(config3.dbPath, unavailable2, { closedSessionScope: config3.closedSessionScope }, ccResultText);
   let result = "", coreSessionId = 0;
   try {
     await updateBindingInStoreTransaction(config3, id, memory.store, (current) => {
@@ -43657,7 +43668,7 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
   if (!binding) throw new Error(`Claude Code session ${id} is not bound`);
   const memory = TraceMemory(config3.dbPath, async () => {
     throw new Error("menu cannot run model work");
-  }, config3.coreConfig);
+  }, config3.coreConfig, ccResultText);
   try {
     const store = memory.store;
     assertOperatorBinding(config3, binding, store);
@@ -45199,7 +45210,7 @@ function runCcFiles(config3, nativeSessionId, [op, ...args]) {
   const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
   const memory = TraceMemory(config3.dbPath, async () => {
     throw new Error("/tm reads run no model work");
-  }, config3.coreConfig);
+  }, config3.coreConfig, ccResultText);
   try {
     const core = binding?.dbPath === config3.dbPath ? binding.coreSessionId : null;
     const reader = core !== null && memory.store.getSession(core) ? { ...memory.store.knowledgePath(core, binding.branch), projectId: memory.store.getSession(core).projectId } : { ...binding?.dbPath === config3.dbPath && binding.projectId !== null ? { projectId: binding.projectId } : {} };

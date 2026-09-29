@@ -107,7 +107,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bi
     expect(renderEntry(h.memory.store.getSourceEntry(before[1]!.id)!, h.memory.config.render).content).toBe(oldView);
     const audit = JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit;
     expect(audit.entries.map((e: { id: number }) => e.id)).toEqual(before.map(e => e.id));
-    expect(audit).toMatchObject({ branch: "main", viewVersion: "50-v1-whitespace-pricing", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
+    expect(audit).toMatchObject({ branch: "main", viewVersion: "107-cc-result-content", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
     await h.emit("session_start");
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)).toEqual(after);
     expect(h.memory.trace(`T1#E${lateResult.entryOrdinal}`, { full: true })).toContain("late result");
@@ -525,7 +525,7 @@ test("33/93: the Noter carries whole-entry role labels, not native message ident
     // The identities are still bound, in storage and in the run audit.
     const audit = JSON.parse(h.memory.store.listRuns(1).at(-1)!.response!).entryAudit;
     expect(audit.entries.every((e: { nativeId: string }) => Boolean(e.nativeId))).toBe(true);
-    expect(audit).toMatchObject({ viewVersion: "50-v1-whitespace-pricing", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
+    expect(audit).toMatchObject({ viewVersion: "107-cc-result-content", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
   } finally { await h.dispose(); }
 });
 

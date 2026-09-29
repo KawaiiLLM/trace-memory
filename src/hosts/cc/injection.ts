@@ -6,7 +6,7 @@ import type { TransportItem } from "../../core/render/material.ts";
 import type { KnowledgePath, Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
-import { CC_AUTO_CONTINUE_SUFFIX, CC_INJECTION_BEGIN, CC_INJECTION_HEADER, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
+import { CC_AUTO_CONTINUE_SUFFIX, CC_INJECTION_BEGIN, CC_INJECTION_HEADER, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccResultText, ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
 import { CcProjection } from "./importer.ts";
 import { executorLiveness } from "./control.ts";
 
@@ -232,7 +232,7 @@ async function deliver<T>(config: ResolvedCcHostConfig, input: Pick<CcHookInput,
   if (!initial || initial.dbPath !== config.dbPath || input.transcript_path !== undefined && initial.transcriptPath !== input.transcript_path)
     throw new Error("CC native session or transcript binding is unavailable");
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); },
-    config.coreConfig, undefined, entry => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : undefined);
+    config.coreConfig, ccResultText, entry => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : undefined);
   try {
     const binding = options.prepared ? initial : await injectionBinding(config, initial, memory);
     if (!enabled(binding, memory)) return null;
@@ -270,7 +270,7 @@ async function deliver<T>(config: ResolvedCcHostConfig, input: Pick<CcHookInput,
 export async function ccPrepareSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<void> {
   const initial = readBinding(config, input.session_id);
   if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); }, config.coreConfig);
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); }, config.coreConfig, ccResultText);
   try { await injectionBinding(config, initial, memory); } finally { memory.store.close(); }
 }
 
@@ -381,7 +381,7 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
   if (initial.dbPath !== config.dbPath) throw new Error("CC binding uses another database");
   const lineage = initial.nativeSessionId;
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC compaction cannot run model work"); },
-    config.coreConfig, undefined, entry => entry.nativeLineage === lineage ? ccSourceBlocks(entry) : undefined);
+    config.coreConfig, ccResultText, entry => entry.nativeLineage === lineage ? ccSourceBlocks(entry) : undefined);
   try {
     // Enrollment is settled once a core session exists or the import has read the creation time.
     const disabled = (binding: CcSessionBinding) => (binding.coreSessionId !== null || binding.nativeCreatedAt !== null) && !enabled(binding, memory);

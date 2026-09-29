@@ -6,6 +6,7 @@
 import { TraceMemory, memoryFiles, type MemoryGrepOptions, type MemoryReader } from "../../core/api/index.ts";
 import { readBinding, validateNativeSessionId } from "./binding.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
+import { ccResultText } from "./transcript.ts";
 
 const usage = "fs read <path> [offset] [limit] | fs grep [-i] [-n] [-c] [-F] [-A|-B|-C <n>] [--glob <g>] [--offset <n>] [--limit <n>] [--] <pattern> [path] | fs glob <pattern>";
 const integer = (value: string | undefined, name: string) => {
@@ -51,7 +52,7 @@ export function parseGrepArgs(args: readonly string[]): { pattern: string; path:
 /** One `/tm` operation for a native session, as JSON: a read page, or grep/glob listing lines. */
 export function runCcFiles(config: ResolvedCcHostConfig, nativeSessionId: string, [op, ...args]: readonly string[]): unknown {
   const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("/tm reads run no model work"); }, config.coreConfig);
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("/tm reads run no model work"); }, config.coreConfig, ccResultText);
   try {
     const core = binding?.dbPath === config.dbPath ? binding.coreSessionId : null;
     const reader: MemoryReader = core !== null && memory.store.getSession(core)

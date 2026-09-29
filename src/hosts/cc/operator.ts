@@ -1,6 +1,7 @@
 import { Store } from "../../core/store/index.ts";
 import { TraceMemory } from "../../core/api/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
+import { ccResultText } from "./transcript.ts";
 import { assertOperatorBinding, coreHostOf, readBinding, updateBindingInStoreTransaction, validateNativeSessionId } from "./binding.ts";
 import { controlSession, type OperatorControlResult } from "./control.ts";
 
@@ -37,7 +38,7 @@ export async function operateCcSession(config: ResolvedCcHostConfig, nativeSessi
 export async function declareCcProject(config: ResolvedCcHostConfig, nativeSessionId: string, name: string): Promise<CcOperatorResult> {
   const id = validateNativeSessionId(nativeSessionId);
   const unavailable = async () => ({ outcome: "failure" as const, output: "operator does not run workers" });
-  const memory = TraceMemory(config.dbPath, unavailable, { closedSessionScope: config.closedSessionScope });
+  const memory = TraceMemory(config.dbPath, unavailable, { closedSessionScope: config.closedSessionScope }, ccResultText);
   let result = "", coreSessionId = 0;
   try {
     await updateBindingInStoreTransaction(config, id, memory.store, current => {

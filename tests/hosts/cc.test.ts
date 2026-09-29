@@ -10,7 +10,7 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { piSourceBlocks } from "../../src/hosts/pi/source.ts";
 import { recordSessionStart, readBinding } from "../../src/hosts/cc/binding.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
-import { ccSourceBlocks, classifySourceRecord, readCompleteTranscript, selectedNativePath,
+import { ccResultText, ccSourceBlocks, classifySourceRecord, readCompleteTranscript, selectedNativePath,
   type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 import { copyThenTypedRecords, copyTypedPrompt, modelThenTypedRecords, modelTypedPrompt, toSpecPrompt, toSpecRecords }
   from "../fixtures/cc-ticket-52.ts";
@@ -243,6 +243,22 @@ test("CC import is idempotent, preserves all source evidence, and projects only 
       .toEqual([{ native_id: "u1", kind: "turn" }, { native_id: "compact", kind: "compaction" },
         { native_id: "u2", kind: "turn" }, { native_id: "u3", kind: "turn" }]);
   } finally { f.importer.close(); }
+});
+
+test("107: a CC result renders its model-visible content; the UI envelope stays in Raw", async () => {
+  const f = await importerFixture();
+  try {
+    await f.importer.reconcile();
+    const view = f.importer.memory.trace("T1#E3@observation");
+    expect(view).toContain("result");
+    expect(view).not.toContain("toolUseResult");
+    expect(view).not.toContain("kept in Raw");
+    expect(f.importer.memory.trace("T1#E3@observation", { full: true })).toContain("kept in Raw");
+  } finally { f.importer.close(); }
+  const stored = (content: unknown, toolUseResult?: unknown) => JSON.stringify({ content, toolUseResult });
+  expect(ccResultText(stored("Exit code 2\nboom", { stdout: "boom", interrupted: false }))).toEqual({ text: "Exit code 2\nboom" });
+  expect(ccResultText(stored([{ type: "text", text: "a" }, { type: "image" }, { type: "text", text: "b" }]))).toEqual({ text: "a\n[image omitted]\nb" });
+  expect(ccResultText("not json")).toEqual({ text: "not json" });
 });
 
 test("a tool result appended after its call is imported incrementally into the owning Turn", async () => {

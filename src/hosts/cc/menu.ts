@@ -3,6 +3,7 @@ import { Store } from "../../core/store/index.ts";
 import type { SettingsInput, TraceMenuInput } from "../trace-menu.ts";
 
 import type { ResolvedCcHostConfig } from "./config.ts";
+import { ccResultText } from "./transcript.ts";
 import type { CcCatchupStatus } from "./scheduler.ts";
 import { assertOperatorBinding, coreHostOf, readBinding, sessionEnabled, validateNativeSessionId } from "./binding.ts";
 const localMidnight = () => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(); };
@@ -54,7 +55,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
   if (!Number.isSafeInteger(runLimit) || runLimit < 1) throw new Error("Runs count must be a positive safe integer");
   const id = validateNativeSessionId(nativeSessionId), binding = readBinding(config, id);
   if (!binding) throw new Error(`Claude Code session ${id} is not bound`);
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("menu cannot run model work"); }, config.coreConfig);
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("menu cannot run model work"); }, config.coreConfig, ccResultText);
   try {
     const store = memory.store;
     assertOperatorBinding(config, binding, store);

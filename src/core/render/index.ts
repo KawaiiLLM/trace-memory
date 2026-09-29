@@ -30,7 +30,7 @@ export type ResultExtractor = (result: string) => ResultText;
 /** The default extractor: the stored result string as is. A host with an envelope registers its own. */
 export const rawResultText: ResultExtractor = (result) => ({ text: result });
 
-export const ENTRY_VIEW_VERSION = "50-v1-whitespace-pricing";
+export const ENTRY_VIEW_VERSION = "107-cc-result-content";
 // One marker family, Pi's own (`core/compaction/utils.js`: `[... N more characters truncated]`). Every
 // omission in a view is this line — a text part, an argument value, a result text, the whole-part floor
 // of a sealed call — and the honesty clause "the omitted middle was not inspected" is stated once in

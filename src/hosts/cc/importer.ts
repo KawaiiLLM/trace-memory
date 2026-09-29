@@ -3,7 +3,7 @@ import { StaleSourcePathError, type SourceEntry, type SourcePathState, type Stor
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, withCcBindingLock, type CcBindingLock, type CcSessionBinding } from "./binding.ts";
-import { CcTranscriptCursor, CcTranscriptScan, CcTranscriptScanFailure, ccSourceBlocks, classifySourceRecord,
+import { CcTranscriptCursor, CcTranscriptScan, CcTranscriptScanFailure, ccResultText, ccSourceBlocks, classifySourceRecord,
   nativeParentId, readTranscriptBootstrap, readTranscriptMetadata, type CcNativeNode, type CcNativeRecord, type CcSourceRecord,
   type CcTranscriptSnapshot } from "./transcript.ts";
 
@@ -578,7 +578,7 @@ export class CcImporter {
     this.runAgent = config.worker ? createCcRunAgent(config, workerDependencies,
       kind => memory.config[kind].maxToolRounds) : undefined;
     memory = TraceMemory(config.dbPath, input => this.runAgent ? this.runAgent(input) : unavailableRunner(),
-      config.coreConfig, undefined,
+      config.coreConfig, ccResultText,
       entry => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : undefined);
     this.memory = memory;
     this.projection = new CcProjection(config, binding, memory);
