@@ -10293,7 +10293,7 @@ var ccResultText = (result) => {
   }
   if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return { text: result };
   const { content } = envelope;
-  return { text: typeof content === "string" ? content : Array.isArray(content) ? content.map((block2) => block2?.type === "text" ? String(block2.text ?? "") : `[${block2?.type ?? "unknown"} omitted]`).join("\n") : "" };
+  return { text: typeof content === "string" ? content : Array.isArray(content) ? content.map((block2) => block2?.type === "text" ? String(block2.text ?? "") : block2?.type === "tool_reference" && typeof block2.tool_name === "string" ? `[tool_reference: ${block2.tool_name}]` : `[${block2?.type ?? "unknown"} omitted]`).join("\n") : "" };
 };
 var INGEST_SLICE_MS = 40;
 var INGEST_PAUSE_MS = 15;

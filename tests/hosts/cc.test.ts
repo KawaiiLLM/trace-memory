@@ -258,6 +258,7 @@ test("107: a CC result renders its model-visible content; the UI envelope stays 
   const stored = (content: unknown, toolUseResult?: unknown) => JSON.stringify({ content, toolUseResult });
   expect(ccResultText(stored("Exit code 2\nboom", { stdout: "boom", interrupted: false }))).toEqual({ text: "Exit code 2\nboom" });
   expect(ccResultText(stored([{ type: "text", text: "a" }, { type: "image" }, { type: "text", text: "b" }]))).toEqual({ text: "a\n[image omitted]\nb" });
+  expect(ccResultText(stored([{ type: "tool_reference", tool_name: "WebSearch" }]))).toEqual({ text: "[tool_reference: WebSearch]" });
   expect(ccResultText("not json")).toEqual({ text: "not json" });
 });
 
