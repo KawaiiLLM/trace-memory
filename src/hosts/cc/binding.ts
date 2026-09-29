@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { enrollmentDefault } from "../../core/api/index.ts";
 import type { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { currentNativeProcess, type CcProcessIdentity } from "./native-session.ts";
+import { currentNativeProcess, functionHookNativeProcess, type CcProcessIdentity } from "./native-session.ts";
 
 export interface CcHookInput {
   hook_event_name: "SessionStart" | "SessionEnd";
@@ -52,6 +52,8 @@ export interface CcSessionBinding {
   executor: CcExecutorBinding | null;
   /** Native SessionStart owner; fences a delayed SessionEnd from a previous native process. */
   nativeProcess?: CcProcessIdentity;
+  /** Function module actually registered in this native process, never merely configured. */
+  functionHookProcess?: CcProcessIdentity;
   lastClose: { at: string; reason: string; confirmed: boolean; diagnostic?: string } | null;
   /** Exact foreground truncation warning emitted by the last successful SessionStart; null if clean. */
   lastCompactionNotice?: string | null;
@@ -126,6 +128,8 @@ function parseBinding(value: unknown): CcSessionBinding {
       typeof binding.branch !== "string" || !binding.branch ||
       (binding.nativeProcess !== undefined && (!Number.isSafeInteger(binding.nativeProcess?.pid) || binding.nativeProcess.pid <= 0 ||
         typeof binding.nativeProcess.startedAt !== "string" || !binding.nativeProcess.startedAt)) ||
+      (binding.functionHookProcess !== undefined && (!Number.isSafeInteger(binding.functionHookProcess.pid) || binding.functionHookProcess.pid <= 0 ||
+        typeof binding.functionHookProcess.startedAt !== "string" || !binding.functionHookProcess.startedAt)) ||
       (binding.lastCompactionNotice !== undefined && binding.lastCompactionNotice !== null && typeof binding.lastCompactionNotice !== "string") ||
       (binding.cwd !== undefined && (typeof binding.cwd !== "string" || !isAbsolute(binding.cwd))) ||
       (binding.coreHost !== undefined && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:"))) ||
@@ -136,6 +140,20 @@ function parseBinding(value: unknown): CcSessionBinding {
       (binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid)))
     throw new Error("invalid Claude Code binding record");
   return binding as CcSessionBinding;
+}
+
+export function activeFunctionHook(binding: CcSessionBinding): boolean {
+  const hook = binding.functionHookProcess, owner = binding.nativeProcess;
+  return !!hook && !!owner && hook.pid === owner.pid && hook.startedAt === owner.startedAt && !binding.lastClose;
+}
+
+export async function markCcFunctionHook(config: ResolvedCcHostConfig, nativeSessionId: string): Promise<void> {
+  await updateBinding(config, nativeSessionId, binding => {
+    if (!binding || binding.lastClose || binding.dbPath !== config.dbPath)
+      throw new Error("CC function hook does not match the current SessionStart binding");
+    const native = functionHookNativeProcess(config, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
+    return { ...binding, functionHookProcess: native };
+  });
 }
 
 export function readBinding(config: ResolvedCcHostConfig, nativeSessionId: string): CcSessionBinding | null {
@@ -290,7 +308,7 @@ export function renewNativeBinding(current: CcSessionBinding, nativeProcess: CcP
   const sameOwner = nativeProcess ? current.nativeProcess?.pid === nativeProcess.pid &&
     current.nativeProcess.startedAt === nativeProcess.startedAt : current.nativeProcess === undefined;
   if (!current.lastClose && sameOwner) return current;
-  const { nativeProcess: previous, ...rest } = current;
+  const { nativeProcess: previous, functionHookProcess: _hook, ...rest } = current;
   return { ...rest, ...(nativeProcess ? { nativeProcess } : {}), lastClose: null };
 }
 

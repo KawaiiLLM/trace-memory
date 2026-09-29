@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -8,11 +8,12 @@ import { createConnection } from "node:net";
 import { TraceMemory } from "../../src/core/api/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
-import { bindingMutexPath, bindingPath, readBinding, recordSessionStart, updateBinding, withCcBindingLock, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
-import { controlSession, startControlServer } from "../../src/hosts/cc/control.ts";
+import { activeFunctionHook, bindingMutexPath, bindingPath, markCcFunctionHook, readBinding, recordSessionStart, updateBinding, withCcBindingLock, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
+import { controlSession, signalCcTurnEnd, startControlServer } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
-import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+import { processStartedAt, publishNativeSession } from "../../src/hosts/cc/native-session.ts";
+import { CcTranscriptCursor, CcTranscriptScan, classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 
 const dirs: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -49,8 +50,8 @@ const directControl = (executor: CcExecutorBinding, verb: unknown) =>
     socket.on("error", reject);
   });
 const childScript = resolve("tests/hosts/cc-binding-child.ts");
-const spawnBindingChild = (mode: "update" | "control", input: Record<string, unknown>): ChildProcess => spawn(process.execPath,
-  [childScript, mode], { cwd: resolve("."), env: { ...process.env, CC_BINDING_CHILD_INPUT: JSON.stringify(input) },
+const spawnBindingChild = (mode: "update" | "control" | "hook-identity", input: Record<string, unknown>, explicitPid?: string): ChildProcess => spawn(process.execPath,
+  [childScript, mode], { cwd: resolve("."), env: { ...process.env, CLAUDE_PID: explicitPid, CC_BINDING_CHILD_INPUT: JSON.stringify(input) },
     stdio: ["ignore", "ignore", "inherit", "ipc"] });
 const childMessage = (child: ChildProcess, type: string, timeoutMs = 3_000): Promise<Record<string, unknown>> => new Promise((resolveMessage, reject) => {
   const timer = setTimeout(() => { cleanup(); reject(new Error(`child ${child.pid} did not report ${type}`)); }, timeoutMs);
@@ -72,6 +73,374 @@ const childExit = (child: ChildProcess, timeoutMs = 3_000): Promise<void> => {
     child.once("exit", () => { clearTimeout(timer); resolveExit(); });
   });
 };
+
+test("function-hook child requires the exact live SessionStart assignment and owner", async () => {
+  const f = fixture("hook-identity"); f.write();
+  const input = { hook_event_name: "SessionStart" as const, session_id: f.nativeSessionId, transcript_path: f.transcriptPath };
+  await recordSessionStart(f.config, input, now);
+  const owner = readBinding(f.config, f.nativeSessionId)!.nativeProcess!;
+  expect(publishNativeSession(f.config, input)).toMatchObject({ pid: process.pid, startedAt: owner.startedAt });
+  const attempt = async (explicitPid?: string) => {
+    const child = spawnBindingChild("hook-identity", { config: f.config, nativeSessionId: f.nativeSessionId, worker: "hook" }, explicitPid);
+    const result = await Promise.race([childMessage(child, "fulfilled"), childMessage(child, "rejected")]);
+    child.disconnect(); await childExit(child);
+    return result;
+  };
+  expect(await attempt()).toMatchObject({ type: "fulfilled", identity: owner });
+  expect((await attempt(String(process.ppid))).type).toBe("rejected"); // Explicit mismatch never falls back.
+  expect((await attempt("invalid")).type).toBe("rejected");
+  const recordPath = join(f.config.stateDir, "native-sessions", `${process.pid}.json`);
+  const original = JSON.parse(readFileSync(recordPath, "utf8"));
+  const changed = async (change: Record<string, unknown>) => {
+    writeFileSync(recordPath, JSON.stringify({ ...original, ...change }));
+    expect((await attempt()).type).toBe("rejected");
+  };
+  await changed({ startedAt: "stale pid reuse" });
+  await changed({ startedAt: null }); // assignedNativeSession's legacy loose match cannot authorize a write.
+  await changed({ nativeSessionId: "wrong-session" });
+  await changed({ transcriptPath: join(f.dir, "other.jsonl") });
+  writeFileSync(recordPath, JSON.stringify(original));
+  await updateBinding(f.config, f.nativeSessionId, binding => ({ ...binding!, nativeProcess: { ...owner, startedAt: "old launch" } }));
+  expect((await attempt()).type).toBe("rejected");
+  await updateBinding(f.config, f.nativeSessionId, binding => ({ ...binding!, nativeProcess: owner }));
+  expect(processStartedAt(process.pid)).toBe(owner.startedAt);
+});
+
+test("live function-hook turns check once across both import orders and do not replay bootstrap", async () => {
+  const f = fixture("turn-hook"); enableSyntheticWorker(f);
+  (f.records[1]!.message as Record<string, unknown>).stop_reason = "end_turn"; f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  try {
+    await coordinator.start();
+    const memory = (coordinator as any).importer.memory;
+    const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
+    const dreaming = vi.fn(async () => ({ outcome: "success", revisions: [] }));
+    memory.noting = noting; memory.dream = dreaming;
+    memory.taskEligibility = (phase: string) => ({ due: phase === "noting" });
+    expect(noting).not.toHaveBeenCalled();
+    await markCcFunctionHook(f.config, f.nativeSessionId);
+    expect(activeFunctionHook(readBinding(f.config, f.nativeSessionId)!)).toBe(true);
+    await signalCcTurnEnd(f.config, f.nativeSessionId, "turn-one", "answer");
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(1));
+    await signalCcTurnEnd(f.config, f.nativeSessionId, "turn-one", "answer");
+    f.records.splice(-1, 1,
+      { uuid: "u2", parentUuid: "a1", type: "user", timestamp: "2026-01-01T00:00:02.000Z", ...sdkPrompt("p2"), message: { role: "user", content: "second" } },
+      { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "second answer" }] } },
+      { type: "last-prompt", leafUuid: "a2" });
+    f.write(); await coordinator.requestReconcile("pre-hook import");
+    expect(noting).toHaveBeenCalledTimes(1);
+    await signalCcTurnEnd(f.config, f.nativeSessionId, "turn-two", "answer");
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(2));
+    f.records.splice(-1, 1,
+      { uuid: "u3", parentUuid: "a2", type: "user", timestamp: "2026-01-01T00:00:04.000Z", ...sdkPrompt("p3"), message: { role: "user", content: "third" } },
+      { uuid: "a3", parentUuid: "u3", type: "assistant", timestamp: "2026-01-01T00:00:05.000Z", message: { role: "assistant", content: [{ type: "text", text: "partial response before interruption" }] } },
+      { type: "last-prompt", leafUuid: "a3" });
+    f.write(); await signalCcTurnEnd(f.config, f.nativeSessionId, "turn-three", "aborted");
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(3));
+    await signalCcTurnEnd(f.config, f.nativeSessionId, "turn-three", "aborted");
+    expect(noting).toHaveBeenCalledTimes(3);
+    for (const [id, reason] of [[4, "refusal"], [5, "error"]] as const) {
+      f.records.splice(-1, 1,
+        { uuid: `u${id}`, parentUuid: `a${id - 1}`, type: "user", timestamp: `2026-01-01T00:00:0${id * 2 - 2}.000Z`,
+          ...sdkPrompt(`p${id}`), message: { role: "user", content: `prompt ${id}` } },
+        { uuid: `a${id}`, parentUuid: `u${id}`, type: "assistant", timestamp: `2026-01-01T00:00:0${id * 2 - 1}.000Z`,
+          message: { role: "assistant", content: [{ type: "text", text: `partial ${id}` }] } },
+        { type: "last-prompt", leafUuid: `a${id}` });
+      f.write();
+      await signalCcTurnEnd(f.config, f.nativeSessionId, `turn-${id}`, reason);
+      await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(id));
+      await signalCcTurnEnd(f.config, f.nativeSessionId, `turn-${id}`, reason);
+      expect(noting).toHaveBeenCalledTimes(id);
+    }
+    await expect(signalCcTurnEnd(f.config, f.nativeSessionId, "invalid", "interrupted"))
+      .rejects.toThrow("unsupported CC turn completion reason interrupted");
+    expect(noting).toHaveBeenCalledTimes(5); expect(dreaming).not.toHaveBeenCalled();
+  } finally { await coordinator.shutdown("test"); }
+});
+
+test("without function hooks, only proven native ends check once", async () => {
+  const f = fixture("turn-raw"); enableSyntheticWorker(f);
+  (f.records[1]!.message as Record<string, unknown>).stop_reason = "end_turn"; f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const diagnostic: string[] = [];
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostic.push(message));
+  try {
+    await coordinator.start();
+    const memory = (coordinator as any).importer?.memory;
+    expect(memory, diagnostic.join("; ")).toBeDefined();
+    const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
+    memory.noting = noting;
+    memory.taskEligibility = (phase: string) => ({ due: phase === "noting" });
+    expect(noting).not.toHaveBeenCalled();
+    const append = (id: number, stop: string, error = false) => {
+      const parent = id === 2 ? "a1" : `a${id - 1}`;
+      f.records.splice(-1, 1,
+        { uuid: `u${id}`, parentUuid: parent, type: "user", timestamp: `2026-01-01T00:00:${String(id * 2).padStart(2, "0")}.000Z`, ...sdkPrompt(`p${id}`), message: { role: "user", content: "next" } },
+        { uuid: `a${id}`, parentUuid: `u${id}`, type: "assistant", timestamp: `2026-01-01T00:00:${String(id * 2 + 1).padStart(2, "0")}.000Z`,
+          ...(error ? { isApiErrorMessage: true, error: "server_error" } : {}),
+          message: { role: "assistant", ...(error ? { model: "<synthetic>" } : {}), stop_reason: stop, content: [{ type: "text", text: error ? "API Error: test" : "reply" }] } },
+        { type: "last-prompt", leafUuid: `a${id}` });
+      f.write();
+    };
+    append(2, "tool_use"); await coordinator.requestReconcile("tool result pending");
+    append(3, "stop_sequence"); await coordinator.requestReconcile("unknown stop");
+    expect(noting).not.toHaveBeenCalled();
+    append(4, "stop_sequence", true); const errorProjection = await coordinator.requestReconcile("native error");
+    expect(errorProjection?.terminal, JSON.stringify({ projection: errorProjection, binding: readBinding(f.config, f.nativeSessionId) })).toMatchObject({ uuid: "a4", isApiErrorMessage: true });
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(1));
+    await coordinator.requestReconcile("duplicate poll");
+    expect(noting).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect((coordinator as any).scheduler.running()).toEqual([]));
+    append(5, "end_turn"); const last = await coordinator.requestReconcile("answer end");
+    expect(last?.terminal?.uuid, JSON.stringify(last)).toBe("a5");
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(2));
+  } finally { await coordinator.shutdown("test"); }
+});
+
+test("no-hook native interruption after previously imported tool Raw checks once and stays out of Raw", async () => {
+  const f = fixture("cc-cancel"); enableSyntheticWorker(f);
+  (f.records[1]!.message as Record<string, unknown>).id = "api-read";
+  (f.records[1]!.message as Record<string, unknown>).stop_reason = "tool_use";
+  (f.records[1]!.message as Record<string, unknown>).content = [{ type: "tool_use", id: "read-call", name: "Read", input: { file_path: "sample.txt" } }];
+  f.records.splice(-1, 1, { uuid: "result", parentUuid: "a1", type: "user", timestamp: now,
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read-call", content: "sample" }] } });
+  f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const diagnostics: string[] = [];
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostics.push(message));
+  try {
+    await coordinator.start();
+    expect((coordinator as any).importer, diagnostics.join("; ")).not.toBeNull();
+    const memory = (coordinator as any).importer.memory;
+    const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
+    memory.noting = noting;
+    memory.taskEligibility = (phase: string) => ({ due: phase === "noting" });
+    const raw = memory.store.selectedSourceEntryIds(readBinding(f.config, f.nativeSessionId)!.coreSessionId!, "main") ?? [];
+    expect(raw).toHaveLength(3);
+    expect(noting).not.toHaveBeenCalled();
+    appendFileSync(f.transcriptPath, `${JSON.stringify({ uuid: "attach", parentUuid: "result", type: "attachment", timestamp: now })}\n`);
+    const nativeMarker = { uuid: "cancel", parentUuid: "attach", type: "user", timestamp: now,
+      interruptedMessageId: "api-read", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } };
+    appendFileSync(f.transcriptPath, `${JSON.stringify(nativeMarker)}\n`);
+    const terminal = await coordinator.requestReconcile("interruption append");
+    expect(terminal?.selectedAppendedEntryIds).toEqual([]);
+    expect(terminal?.terminal).toMatchObject({ uuid: "cancel", entryId: raw.at(-1), fresh: true, interruptedMessageId: "api-read" });
+    expect(memory.store.selectedSourceEntryIds(terminal!.coreSessionId!, terminal!.branch)).toEqual(raw);
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(1));
+    await coordinator.requestReconcile("duplicate interruption poll");
+    expect(noting).toHaveBeenCalledTimes(1);
+    const restarted = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
+    try {
+      const history = await restarted.reconcile();
+      expect(history.terminal).toMatchObject({ uuid: "cancel", fresh: false });
+      expect(history.selectedAppendedEntryIds).toEqual([]);
+      appendFileSync(f.transcriptPath, `${JSON.stringify(nativeMarker)}\n`);
+      const replay = await restarted.reconcile();
+      expect(replay.terminal).toMatchObject({ uuid: "cancel", fresh: false });
+      expect(replay.selectedAppendedEntryIds).toEqual([]);
+    } finally { restarted.close(); }
+  } finally { await coordinator.shutdown("test"); }
+});
+
+test("interruption marker requires the selected tool lineage and interrupted API message id", () => {
+  const f = fixture("cancel-path");
+  (f.records[1]!.message as Record<string, unknown>).id = "api-read";
+  (f.records[1]!.message as Record<string, unknown>).stop_reason = "tool_use";
+  f.records.splice(-1, 1, { uuid: "result", parentUuid: "a1", type: "user", timestamp: now,
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read-call", content: "ok" }] } });
+  f.write();
+  const cursor = new CcTranscriptCursor();
+  const scan = () => {
+    const value = cursor.scan(f.transcriptPath, () => {});
+    if (!(value instanceof CcTranscriptScan)) return null;
+    const terminal = value.selectedTerminal()?.uuid ?? null;
+    cursor.commit(value);
+    return terminal;
+  };
+  expect(scan()).toBeNull();
+  const marker = (uuid: string, parentUuid: string, interruptedMessageId: string) =>
+    appendFileSync(f.transcriptPath, `${JSON.stringify({ uuid, parentUuid, type: "user", timestamp: now,
+      interruptedMessageId, message: { role: "user", content: [{ type: "text", text: "untrusted display text" }] } })}\n`);
+  marker("wrong-api", "result", "result"); expect(scan()).toBeNull(); // UUID is not the API id.
+  marker("sibling", "u1", "api-read"); expect(scan()).toBeNull();
+  appendFileSync(f.transcriptPath, `${JSON.stringify({ uuid: "sidechain", parentUuid: "result", type: "user",
+    isSidechain: true, timestamp: now, interruptedMessageId: "api-read", message: { role: "user", content: "sidechain" } })}\n`);
+  expect(scan()).toBeNull();
+  appendFileSync(f.transcriptPath, `${JSON.stringify({ uuid: "invisible", parentUuid: "result", type: "user",
+    isVisibleInTranscriptOnly: true, timestamp: now, interruptedMessageId: "api-read", message: { role: "user", content: "hidden" } })}\n`);
+  expect(scan()).toBeNull();
+  appendFileSync(f.transcriptPath, `${JSON.stringify({ uuid: "summary", parentUuid: "result", type: "user",
+    isCompactSummary: true, timestamp: now, interruptedMessageId: "api-read", message: { role: "user", content: "summary" } })}\n`);
+  expect(scan()).toBeNull();
+  marker("broken", "unknown", "api-read"); expect(scan()).toBeNull();
+  marker("valid", "result", "api-read");
+  expect(() => cursor.scan(f.transcriptPath, record => { if (record.uuid === "valid") throw Error("interrupted import"); })).toThrow("interrupted import");
+  const retried = cursor.scan(f.transcriptPath, () => {});
+  expect(retried).toBeInstanceOf(CcTranscriptScan);
+  if (!(retried instanceof CcTranscriptScan)) throw Error("expected retry scan");
+  expect(retried.newIds.has("valid")).toBe(true); // An aborted scan indexed the UUID but never committed it.
+  expect(retried.selectedTerminal()?.uuid).toBe("valid");
+  cursor.commit(retried);
+  expect(scan()).toBeNull();
+  const typedMarker = { uuid: "typed-spoof", parentUuid: "result", type: "user",
+    promptSource: "typed", timestamp: now, interruptedMessageId: "api-read",
+    message: { role: "user", content: "ordinary-looking prompt" } };
+  expect(classifySourceRecord(typedMarker)).toBeNull();
+  appendFileSync(f.transcriptPath, `${JSON.stringify(typedMarker)}\n`);
+  expect(scan()).toBe("typed-spoof"); // Structured marker stays non-Raw even with native promptSource.
+
+  appendFileSync(f.transcriptPath, `${JSON.stringify({ uuid: "u2", parentUuid: "valid", type: "user", timestamp: now,
+    ...sdkPrompt("p2"), message: { role: "user", content: "next" } })}\n`);
+  expect(scan()).toBeNull();
+  writeFileSync(f.transcriptPath, readFileSync(f.transcriptPath, "utf8")); // Full rebuild keeps history, never a fresh marker.
+  expect(scan()).toBeNull();
+  appendFileSync(f.transcriptPath, `${JSON.stringify({ uuid: "api-failure", parentUuid: "u2", type: "assistant", timestamp: now,
+    isApiErrorMessage: true, message: { role: "assistant", model: "sonnet", stop_reason: "stop_sequence",
+      content: [{ type: "text", text: "API failed" }] } })}\n`);
+  expect(scan()).toBe("api-failure"); // A non-synthetic API-error row can itself be the selected Raw leaf.
+});
+
+test("incremental transcript terminal follows the selected source, not a sibling or replayed turn", () => {
+  const f = fixture("native-terminal-cursor"); f.write();
+  const cursor = new CcTranscriptCursor();
+  const check = () => {
+    const scan = cursor.scan(f.transcriptPath, () => {});
+    if (!(scan instanceof CcTranscriptScan)) return null;
+    const current = scan;
+    const terminal = current.selectedTerminal()?.uuid ?? null;
+    cursor.commit(current);
+    return terminal;
+  };
+  expect(check()).toBeNull();
+  const append = (record: CcNativeRecord) => appendFileSync(f.transcriptPath, `${JSON.stringify(record)}\n`);
+  append({ uuid: "u2", parentUuid: "a1", type: "user", timestamp: now, ...sdkPrompt("p2"), message: { role: "user", content: "next" } });
+  append({ uuid: "err2", parentUuid: "u2", type: "assistant", timestamp: now, isApiErrorMessage: true,
+    message: { role: "assistant", model: "<synthetic>", stop_reason: "stop_sequence", content: [{ type: "text", text: "API Error" }] } });
+  expect(check()).toBe("err2");
+  expect(check()).toBeNull(); // No new suffix: the cursor never offers historical work again.
+  append({ uuid: "u3", parentUuid: "u2", type: "user", timestamp: now, ...sdkPrompt("p3"), message: { role: "user", content: "new branch" } });
+  expect(check()).toBeNull(); // Prior terminal is on a sibling, not the new selected path.
+  append({ uuid: "errSibling", parentUuid: "u2", type: "assistant", timestamp: now, isApiErrorMessage: true,
+    message: { role: "assistant", model: "<synthetic>", content: [] } });
+  expect(check()).toBeNull();
+  append({ uuid: "u4", parentUuid: "u3", type: "user", timestamp: now, ...sdkPrompt("p4"), message: { role: "user", content: "new turn" } });
+  expect(check()).toBeNull();
+  // A whole-file rebuild cannot promote an old error across the later user prompt.
+  appendFileSync(f.transcriptPath, `${JSON.stringify({ type: "last-prompt", leafUuid: "u4" })}\n`);
+  expect(check()).toBeNull();
+  const restored = readFileSync(f.transcriptPath, "utf8");
+  writeFileSync(f.transcriptPath, restored);
+  expect(check()).toBeNull();
+  append({ uuid: "errBroken", parentUuid: "missing-parent", type: "assistant", timestamp: now, isApiErrorMessage: true,
+    message: { role: "assistant", model: "<synthetic>", content: [] } });
+  expect(check()).toBeNull(); // An unknown parent cannot certify selected ancestry.
+});
+
+test("excluded assistant suffix preserves only the selected main-turn terminal", async () => {
+  const f = fixture("terminal-excluded"); f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const importer = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
+  try {
+    await importer.reconcile();
+    const append = (record: CcNativeRecord) => appendFileSync(f.transcriptPath, `${JSON.stringify(record)}\n`);
+    append({ uuid: "u2", parentUuid: "a1", type: "user", timestamp: now, ...sdkPrompt("p2"), message: { role: "user", content: "next" } });
+    append({ uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: now,
+      message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "done" }] } });
+    for (const [index, flag] of ["isSidechain", "isCompactSummary", "isVisibleInTranscriptOnly"].entries()) {
+      append({ uuid: `excluded-${index}`, parentUuid: "a2", type: "assistant", timestamp: now, [flag]: true,
+        ...(index === 0 ? { isApiErrorMessage: true } : {}),
+        message: { role: "assistant", stop_reason: index === 1 ? "end_turn" : "tool_use", content: [{ type: "text", text: "excluded" }] } });
+    }
+    const completed = await importer.reconcile();
+    expect(completed.terminal).toMatchObject({ uuid: "a2", entryId: completed.selectedTailId, stopReason: "end_turn" });
+    expect(completed.selectedAppendedEntryIds).toContain(completed.selectedTailId);
+    expect((await importer.reconcile()).terminal).toBeUndefined();
+    append({ uuid: "u3", parentUuid: "a2", type: "user", timestamp: now, ...sdkPrompt("p3"), message: { role: "user", content: "third" } });
+    expect((await importer.reconcile()).terminal).toBeUndefined();
+    append({ uuid: "a3", parentUuid: "u3", type: "assistant", timestamp: now,
+      message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "text", text: "working" }] } });
+    expect((await importer.reconcile()).terminal).toBeUndefined();
+  } finally { importer.close(); }
+});
+
+test("cached terminal is bound to its projection; reselect, new user and restart do not replay it", async () => {
+  const f = fixture("terminal-cache");
+  (f.records[1]!.message as Record<string, unknown>).stop_reason = "end_turn"; f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const importer = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
+  try {
+    await importer.reconcile();
+    f.records.splice(-1, 1,
+      { uuid: "u2", parentUuid: "a1", type: "user", timestamp: "2026-01-01T00:00:02.000Z", ...sdkPrompt("p2"), message: { role: "user", content: "again" } },
+      { uuid: "err2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z", isApiErrorMessage: true,
+        message: { role: "assistant", model: "<synthetic>", stop_reason: "stop_sequence", content: [{ type: "text", text: "API Error" }] } });
+    f.write();
+    const terminal = await importer.reconcile();
+    expect(terminal.terminal).toMatchObject({ uuid: "err2", entryId: terminal.selectedTailId });
+    expect(terminal.selectedAppendedEntryIds).toEqual([terminal.selectedTailId]);
+    const cached = await importer.reconcile();
+    expect(cached.terminal).toBeUndefined(); // A no-change cache hit never replays terminal evidence.
+    expect(cached.selectedAppendedEntryIds).toEqual([]);
+    // Same file stamp, different external binding: short circuit must not use lastResult.
+    await updateBinding(f.config, f.nativeSessionId, binding => ({ ...binding!, branch: "external-reselect", selectedLeafUuid: "a1" }));
+    const reselected = await importer.reconcile();
+    expect(reselected.branch).toBe("external-reselect");
+    expect(reselected.terminal?.uuid).toBe("err2"); // Re-derived from the real selected ancestry.
+    expect(reselected.selectedAppendedEntryIds).toEqual([]);
+    const restarted = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
+    try {
+      const historical = await restarted.reconcile();
+      expect(historical.terminal?.uuid).toBe("err2");
+      expect(historical.selectedAppendedEntryIds).toEqual([]); // No historical terminal opportunity.
+    } finally { restarted.close(); }
+    f.records.push({ uuid: "u3", parentUuid: "u2", type: "user", timestamp: "2026-01-01T00:00:04.000Z",
+      ...sdkPrompt("p3"), message: { role: "user", content: "new branch" } });
+    f.write();
+    const moved = await importer.reconcile();
+    expect(moved.terminal).toBeUndefined();
+    expect(moved.selectedTailId).not.toBe(terminal.selectedTailId);
+  } finally { importer.close(); }
+});
+
+test("a disconnected turn-end control cannot admit after a slow import; a connected one can", async () => {
+  const f = fixture("turn-rpc"); enableSyntheticWorker(f);
+  (f.records[1]!.message as Record<string, unknown>).stop_reason = "end_turn"; f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  try {
+    await coordinator.start();
+    (coordinator as any).transcriptWatcher?.close();
+    const importer = (coordinator as any).importer as CcImporter;
+    const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
+    (importer.memory as any).noting = noting;
+    (importer.memory as any).taskEligibility = (phase: string) => ({ due: phase === "noting" });
+    await markCcFunctionHook(f.config, f.nativeSessionId);
+    const original = importer.reconcile.bind(importer);
+    let release!: () => void, arrived!: () => void;
+    let held = new Promise<void>(resolve => { release = resolve; });
+    let entered = new Promise<void>(resolve => { arrived = resolve; });
+    (importer as any).reconcile = async () => { arrived(); await held; return original(); };
+    const executor = readBinding(f.config, f.nativeSessionId)!.executor!;
+    const socket = createConnection(executor.socketPath);
+    await new Promise<void>(resolve => socket.once("connect", resolve));
+    socket.write(`${JSON.stringify({ verb: "turn-end", token: executor.token, turnId: "aborted", reason: "answer" })}\n`);
+    await entered;
+    socket.destroy(); await new Promise<void>(resolve => socket.once("close", resolve));
+    release(); await coordinator.requestReconcile("drain disconnected checkpoint");
+    expect(noting).not.toHaveBeenCalled();
+
+    held = new Promise<void>(resolve => { release = resolve; });
+    entered = new Promise<void>(resolve => { arrived = resolve; });
+    f.config.finalSyncTimeoutMs = 1; // A live control request must not expire at an unrelated final-sync deadline.
+    const connected = signalCcTurnEnd(f.config, f.nativeSessionId, "still-connected", "answer");
+    await entered;
+    await sleep(20);
+    expect(noting).not.toHaveBeenCalled();
+    release(); await connected;
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(1));
+  } finally { await coordinator.shutdown("test"); }
+});
 
 test("owner-token stop uses the facade's owned task path and leaves another executor running", async () => {
   const f = fixture("control"); f.write();
@@ -225,7 +594,7 @@ test("stop also fences the first attach opportunity while initial import is in f
   } finally { release(); spy.mockRestore(); await coordinator.shutdown("test"); }
 });
 
-test("stop invalidates an entry opportunity frozen before an in-flight reconcile result", async () => {
+test("stop during import does not create an automatic checkpoint; a later turn end remains eligible", async () => {
   const f = fixture("reconcile-stop-epoch"); f.write();
   f.config.stateDir = mkdtempSync("/tmp/tmcc-epoch-"); dirs.push(f.config.stateDir);
   f.config.pollIntervalMs = 100_000;
@@ -262,11 +631,10 @@ test("stop invalidates an entry opportunity frozen before an in-flight reconcile
 
   f.records.splice(-1, 1,
     { uuid: "u3", parentUuid: "a2", type: "user", timestamp: "2026-01-01T00:00:04.000Z", ...sdkPrompt("p3"), message: { role: "user", content: long } },
-    { uuid: "a3", parentUuid: "u3", type: "assistant", timestamp: "2026-01-01T00:00:05.000Z", message: { role: "assistant", content: [{ type: "text", text: "new answer" }] } },
+    { uuid: "a3", parentUuid: "u3", type: "assistant", timestamp: "2026-01-01T00:00:05.000Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "new answer" }] } },
     { type: "last-prompt", leafUuid: "a3" });
   try {
-    f.write(); await coordinator.requestReconcile("new entry opportunity");
-    // Watch events can coalesce with this request; admission is asynchronous, not a one-tick contract.
+    f.write(); await coordinator.requestReconcile("new turn import");
     await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(1));
   } finally { await coordinator.shutdown("test"); }
 });

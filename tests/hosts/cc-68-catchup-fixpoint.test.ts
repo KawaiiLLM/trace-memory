@@ -52,7 +52,7 @@ test("R4 successful ordinary D completion launches the still-due drain phase and
   const f = fixture(); let due = true; const releases: Array<() => void> = [];
   f.memory.dream.mockImplementation(async () => { await new Promise<void>(resolve => { releases.push(resolve); }); return { outcome: "success" }; });
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" && due }));
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1], selectedAppendedEntryIds: [1] }); await tick();
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
   expect(f.memory.dream).toHaveBeenCalledTimes(1);
   expect(f.scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase: "dreaming" });
   releases[0]!(); await tick(); await tick();
@@ -65,7 +65,7 @@ test("R4 non-success ordinary D completion does not launch the drain", async () 
   const f = fixture(); let release = () => {};
   f.memory.dream.mockImplementation(async () => { await new Promise<void>(resolve => { release = resolve; }); return { outcome: "failure", problems: ["boom"] }; });
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" }));
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1], selectedAppendedEntryIds: [1] }); await tick();
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
   expect(f.memory.dream).toHaveBeenCalledTimes(1);
   expect(f.scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase: "dreaming" });
   release(); await tick(); await tick();
@@ -92,7 +92,7 @@ test("86: failed ordinary D with partial writes does not checkpoint D", async ()
   f.memory.store.progressSignal = () => signal;
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" }));
   f.memory.dream.mockImplementation(async () => { signal = "partial-write"; return { outcome: "failure", problems: ["time bound after write"] }; });
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1], selectedAppendedEntryIds: [1] });
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket());
   for (let i = 0; i < 5; i++) await tick();
   expect(f.memory.dream).toHaveBeenCalledTimes(1);
   expect(f.memory.taskEligibility.mock.calls.map(([phase]) => phase)).toEqual(["noting", "dreaming"]);
@@ -134,7 +134,7 @@ test("R4 ordinary completion settles zero-Raw wait when it clears all due work w
   const f = fixture(); let due = true, release = () => {};
   f.memory.dream.mockImplementation(async () => { await new Promise<void>(resolve => { release = resolve; }); return { outcome: "success" }; });
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" && due }));
-  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1], selectedAppendedEntryIds: [1] }); await tick();
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
   expect(f.scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase: "dreaming" });
   due = false; release(); await tick(); await tick();
   expect(f.memory.dream).toHaveBeenCalledTimes(1); expect(f.scheduler.catchupStatus().state).toBe("completed");

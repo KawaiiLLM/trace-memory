@@ -34,6 +34,9 @@ export interface CcReconcileResult {
   appendedEntryIds: number[];
   /** First successful scan of this native projection, not a replay of live entry events. */
   bootstrap?: boolean;
+  /** Selected native assistant terminator, when the transcript itself proves one. */
+  terminal?: { uuid: string; stopReason?: string; isApiErrorMessage?: boolean; interruptedMessageId?: string;
+    entryId: number; /** A newly appended terminal on the live cursor, even when its Raw anchor was already imported. */ fresh?: boolean };
   problems: string[];
 }
 
@@ -551,6 +554,16 @@ export class CcProjection {
     const ready = this.result(state, problems.length ? { ...completed.snapshot, problem: problems[0] } : completed.snapshot, problems,
       { coreSessionId: sessionId, branch: projectionReady ? branch : this.binding.branch,
         headTurnId: projectionReady ? headTurnId : this.lastResult?.headTurnId ?? null,
+        ...(projectionReady && completed.selectedLeafUuid && (() => {
+          const terminal = completed.selectedTerminal();
+          const leaf = completed.node(completed.selectedLeafUuid);
+          // The error row is not Raw. Its selected source leaf supplies the persisted entry
+          // anchor; the separately checked native UUID supplies terminal identity.
+          return terminal && leaf?.entryId
+            ? { terminal: { uuid: terminal.uuid, stopReason: terminal.stopReason,
+              isApiErrorMessage: terminal.isApiErrorMessage, interruptedMessageId: terminal.interruptedMessageId,
+              entryId: leaf.entryId, fresh: !completed.reset && completed.newIds.has(terminal.uuid) } } : {};
+        })()),
         selectedAppendedEntryIds: projectionReady ? selectedEntryIds === null
           ? selectedDelta.filter(id => newlyImported?.has(id))
           : appendedEntryIds.filter(id => selectedMembership!.has(id)) : [],

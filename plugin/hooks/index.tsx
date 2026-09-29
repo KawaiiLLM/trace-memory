@@ -178,6 +178,37 @@ export const register = (on: any) => {
     return next(e);
   });
 
+  // Unlike session.start, this handler is awaited before the main model request. Command SessionStart
+  // has already published the binding by then; re-read the live identity on every step (also after /clear).
+  on("turn.step", async function* ($: any, e: any, next: any) {
+    if (e.agentId || versionError) return yield* next(e);
+    const session = await $.session.id();
+    const root = $.plugin.root;
+    if (!root) throw new Error("Trace Memory: Claude Code plugin root is unavailable");
+    const result = await $.process.run(["node", `${root}/dist/cc.cjs`, "hook-capable", "--config", `${root}/cc.config.json`],
+      { stdin: JSON.stringify({ session_id: session }) });
+    if (result.exitCode !== 0) throw new Error(`Trace Memory function hook registration: ${String(result.stderr || `exit ${result.exitCode}`)}`);
+    if (session !== await $.session.id()) throw new Error("Trace Memory: native session changed during function hook registration");
+    return yield* next(e);
+  });
+
+  on("turn.complete", async ($: any, e: any, next: any) => {
+    if (!e.agentId && !versionError) {
+      try {
+        const session = await $.session.id();
+        const result = await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-turn", "--config", `${$.plugin.root}/cc.config.json`],
+          { stdin: JSON.stringify({ session_id: session, turnId: e.turnId, reason: e.reason }) });
+        if (result.exitCode !== 0) throw new Error(String(result.stderr || `exit ${result.exitCode}`));
+      } catch (error) {
+        const message = `Trace Memory: this turn memory check failed: ${String(error)}`;
+        console.error(message);
+        try { $.ui.log(message); }
+        catch (logError) { console.error(`Trace Memory turn-end notification failed: ${String(logError)}`); }
+      }
+    }
+    return next(e);
+  });
+
   on("command.run", { command: "trace" }, async ($: any, e: any, next: any) => {
     if (versionError) return { text: versionError };
     try {

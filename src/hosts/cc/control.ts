@@ -6,7 +6,8 @@ import type { TraceMemory } from "../../core/api/index.ts";
 import type { CcCatchupStatus } from "./scheduler.ts";
 import { Store } from "../../core/store/index.ts";
 import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
-import { assertOperatorBinding, readBinding, updateBinding, updateBindingInStoreTransaction, type CcExecutorBinding, type CcSessionBinding } from "./binding.ts";
+import { activeFunctionHook, assertOperatorBinding, readBinding, validateNativeSessionId, updateBinding, updateBindingInStoreTransaction, type CcExecutorBinding, type CcSessionBinding } from "./binding.ts";
+import { functionHookNativeProcess } from "./native-session.ts";
 
 export type ControlVerb = "stop" | "off" | "catchup";
 export interface CancellationControlReply {
@@ -35,6 +36,7 @@ export interface CcControlHandlers {
   effectiveConfig?(): ResolvedCcHostConfig;
   catchupSnapshot?(): CcCatchupStatus | null;
   applyConfig?(next: ResolvedCcHostConfig): void;
+  turnEnd?(turnId: string, reason: string, signal: AbortSignal): Promise<void>;
 }
 
 export interface CcControlServer {
@@ -99,6 +101,8 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
   mkdirSync(dirname(path), { recursive: true });
   const server = createServer(connection => {
     let input = "", handled = false;
+    const disconnected = new AbortController();
+    connection.on("close", () => disconnected.abort());
     connection.setEncoding("utf8");
     connection.on("error", error => console.error(`Trace Memory CC: control connection failed: ${String(error)}`));
     connection.on("data", chunk => {
@@ -110,10 +114,10 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
       handled = true;
       void (async () => {
         try {
-          const request = JSON.parse(input.slice(0, newline)) as { verb?: unknown; token?: unknown; path?: unknown; expected?: unknown };
+          const request = JSON.parse(input.slice(0, newline)) as { verb?: unknown; token?: unknown; path?: unknown; expected?: unknown; turnId?: unknown; reason?: unknown };
           if (request.token !== token || typeof request.verb !== "string" ||
               (request.verb !== "stop" && request.verb !== "off" && request.verb !== "catchup" &&
-                request.verb !== "settings" && request.verb !== "apply"))
+                request.verb !== "settings" && request.verb !== "apply" && request.verb !== "turn-end"))
             throw new Error("invalid CC control request");
           const current = readBinding(config, binding.nativeSessionId);
           if (!current) throw new Error("CC binding disappeared before control");
@@ -124,7 +128,17 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
           if ((binding.coreSessionId !== null && current.coreSessionId !== binding.coreSessionId) ||
               current.executor?.token !== token)
             throw new Error("CC core or executor identity changed before control");
-          const verb = request.verb as ControlVerb | "settings" | "apply";
+          const verb = request.verb as ControlVerb | "settings" | "apply" | "turn-end";
+          if (verb === "turn-end") {
+            if (!handlers?.turnEnd || typeof request.turnId !== "string" || !request.turnId || typeof request.reason !== "string")
+              throw new Error("invalid CC turn-end request");
+            // The socket token and live binding authenticate this executor; its own CLAUDE_PID
+            // cannot authenticate the remote Hook process. The Hook child checks that identity
+            // before sending, and the registered process is rechecked here against the binding.
+            if (!activeFunctionHook(current)) throw new Error("CC function hook registration is not current");
+            await handlers.turnEnd(request.turnId, request.reason, disconnected.signal);
+            connection.end(`${JSON.stringify({ ok: true, verb })}\n`); return;
+          }
           if (verb === "settings") {
             if (!handlers?.effectiveConfig) throw new Error("effective settings are unavailable on this executor");
             connection.end(`${JSON.stringify({ ok: true, verb, config: handlers.effectiveConfig(),
@@ -200,13 +214,13 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
   } };
 }
 
-function request(executor: CcExecutorBinding, verb: ControlVerb | "settings" | "apply", timeoutMs: number,
+function request(executor: CcExecutorBinding, verb: ControlVerb | "settings" | "apply" | "turn-end", timeoutMs?: number,
   detail: Record<string, string> = {}): Promise<ControlReply | { ok: true; verb: "settings"; config: ResolvedCcHostConfig;
     catchup: CcCatchupStatus | null } | { ok: true; verb: "apply" }> {
   return new Promise((resolve, reject) => {
     const connection = createConnection(executor.socketPath); let output = "", settled = false;
     const finish = (error?: Error) => { if (settled) return; settled = true; clearTimeout(timer); connection.destroy(); error ? reject(error) : undefined; };
-    const timer = setTimeout(() => finish(new Error(`CC executor did not acknowledge ${verb} within ${timeoutMs} ms`)), timeoutMs);
+    const timer = timeoutMs === undefined ? undefined : setTimeout(() => finish(new Error(`CC executor did not acknowledge ${verb} within ${timeoutMs} ms`)), timeoutMs);
     connection.setEncoding("utf8");
     connection.on("connect", () => connection.write(`${JSON.stringify({ verb, token: executor.token, ...detail })}\n`));
     connection.on("data", chunk => output += chunk);
@@ -219,6 +233,17 @@ function request(executor: CcExecutorBinding, verb: ControlVerb | "settings" | "
     });
     connection.on("error", error => finish(error));
   });
+}
+
+/** Only the function-hook child in the current native process may publish its main-turn checkpoint. */
+export async function signalCcTurnEnd(config: ResolvedCcHostConfig, nativeSessionId: string, turnId: string, reason: string): Promise<void> {
+  const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
+  if (!binding?.executor || !activeFunctionHook(binding))
+    throw new Error("CC turn-end has no matching live function hook and executor binding");
+  functionHookNativeProcess(config, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
+  // This checkpoint stays attached to the Hook's connection. Native Hook cancellation closes it;
+  // a transport timeout would discard the caller while allowing its queued import to launch later.
+  await request(binding.executor, "turn-end", undefined, { turnId, reason });
 }
 
 export async function executorSnapshot(config: ResolvedCcHostConfig, nativeSessionId: string): Promise<{

@@ -1061,8 +1061,9 @@ test("scheduler reserves independent N/D slots and failed worker completion does
   const diagnostics: string[] = [], notingAdmission = vi.spyOn(memory, "noting"), dreamingAdmission = vi.spyOn(memory, "dream");
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, message => diagnostics.push(message));
   const reconcile = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: seed.turn.id,
-    selectedEntryIds: seed.ids, appendedEntryIds: [seed.entry.id], problems: [], snapshot: {} as any };
+    selectedEntryIds: seed.ids, selectedTailId: seed.entry.id, appendedEntryIds: [seed.entry.id], problems: [], snapshot: {} as any };
   scheduler.reconcile(reconcile);
+  scheduler.turnEnd(reconcile, scheduler.catchupTicket());
   scheduler.reconcile(reconcile);
   await tick();
   expect(new Set(starts)).toEqual(new Set(["noting", "dreaming"]));
@@ -1358,12 +1359,14 @@ test("stop before the reservation microtask fences all ordinary phases and later
   const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedEntryIds: [1], appendedEntryIds: [1], problems: [], snapshot: {} as any };
   scheduler.reconcile(projection);
+  scheduler.turnEnd({ ...projection, selectedTailId: 1 }, scheduler.catchupTicket());
   scheduler.stopCatchup(); memory.cancelTasks(false);
   await tick(); await tick();
   expect(calls).toEqual([]);
   expect(scheduler.running()).toEqual([]);
 
   scheduler.reconcile(projection);
+  scheduler.turnEnd({ ...projection, selectedTailId: 1 }, scheduler.catchupTicket());
   await scheduler.settle(); await tick();
   expect(new Set(calls)).toEqual(new Set(["noting", "dreaming"]));
 });
@@ -1381,7 +1384,8 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   const reconcile = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedEntryIds: [1], appendedEntryIds: [1], problems: [], snapshot: {} as any };
-  scheduler.reconcile(reconcile); scheduler.reconcile(reconcile); await tick();
+  scheduler.reconcile(reconcile); scheduler.turnEnd({ ...reconcile, selectedTailId: 1 }, scheduler.catchupTicket());
+  scheduler.reconcile(reconcile); await tick();
   expect(new Set(starts)).toEqual(new Set(["noting", "dreaming"]));
   expect(new Set(scheduler.running())).toEqual(new Set(["noting", "dreaming"]));
   expect(admissions.find(value => value.kind === "dreaming")).toMatchObject({ model: "opus-d",
@@ -1401,13 +1405,15 @@ test("scheduler diagnoses resolved bounced and successful-but-problemed results"
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, message => diagnostics.push(message));
   scheduler.reconcile({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedEntryIds: [1], appendedEntryIds: [1], problems: [], snapshot: {} as any });
+  scheduler.turnEnd({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 1,
+    selectedTailId: 1 }, scheduler.catchupTicket());
   await scheduler.settle();
   expect(diagnostics).toEqual(expect.arrayContaining([
     "noting worker bounced for S1 R7: candidate rejected",
     "dreaming worker success for S1 R8: post-commit warning"]));
 });
 
-test("scheduler checks each newly imported foreground entry with its own persisted trigger", async () => {
+test("scheduler checks the selected terminal once, not each imported entry", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-entry-opportunities-")); dirs.push(directory);
   const eligibility: { phase: string; triggerEntryId?: number; headTurnId: number }[] = [], started: { phase: string; triggerEntryId?: number }[] = [];
   const run = (phase: string) => async (target: TaskTarget) => { started.push({ phase, triggerEntryId: target.triggerEntryId }); return { outcome: "success" }; };
@@ -1417,18 +1423,19 @@ test("scheduler checks each newly imported foreground entry with its own persist
     store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: id === 1 ? 10 : 11 }), progressSignal: () => "sig" },
     noting: run("noting"), dream: run("dreaming") } as any;
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
-  scheduler.reconcile({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 11,
-    selectedEntryIds: [1, 2], appendedEntryIds: [1, 2, 99], problems: [], snapshot: {} as any });
+  const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 11,
+    selectedEntryIds: [1, 2], selectedTailId: 2, appendedEntryIds: [1, 2, 99], problems: [], snapshot: {} as any };
+  scheduler.reconcile(projection);
+  expect(eligibility).toEqual([]);
+  scheduler.turnEnd(projection, scheduler.catchupTicket());
   await scheduler.settle();
   expect(eligibility.filter(value => value.phase === "noting").map(value => [value.triggerEntryId, value.headTurnId]))
-    .toEqual([[1, 10], [2, 11]]);
-  // Entry 1 disarms D, so entry 2 evaluates N only; D waits for a re-arming event.
-  expect(new Set(started.map(value => `${value.phase}:${value.triggerEntryId}`))).toEqual(new Set(["noting:2"]));
-  // A normal unchanged importer projection carries no appended entries and grants no second chance.
-  scheduler.reconcile({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 11,
-    selectedEntryIds: [1, 2], appendedEntryIds: [], problems: [], snapshot: {} as any });
+    .toEqual([[2, 11]]);
+  expect(new Set(started.map(value => `${value.phase}:${value.triggerEntryId}`))).toEqual(new Set(["noting:2", "dreaming:2"]));
+  // A normal unchanged importer projection grants no second chance.
+  scheduler.reconcile({ ...projection, appendedEntryIds: [] });
   await tick();
-  expect(started).toHaveLength(1);
+  expect(started).toHaveLength(2);
 });
 
 test("scheduler borrows closed Noting work but never a closed Dreamer target", async () => {
@@ -1442,12 +1449,14 @@ test("scheduler borrows closed Noting work but never a closed Dreamer target", a
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   scheduler.reconcile({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedEntryIds: [1], appendedEntryIds: [1], problems: [], snapshot: {} as any });
+  scheduler.turnEnd({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 1,
+    selectedTailId: 1 }, scheduler.catchupTicket());
   await scheduler.settle();
   expect(queried).toEqual(["noting"]);
   expect(started).toEqual(["noting"]);
 });
 
-test("scheduler borrows an eligible closed target only at an executor entry-completion opportunity", async () => {
+test("scheduler borrows an eligible closed target only at the executor turn end", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-borrow-")); dirs.push(directory);
   const targets: number[] = [], admissions: NotingAgentInput[] = [];
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
@@ -1471,6 +1480,8 @@ test("scheduler borrows an eligible closed target only at an executor entry-comp
   await tick(); expect(targets).toEqual([]);
   scheduler.reconcile({ state: "ready", coreSessionId: executor.id, branch: "main", headTurnId: own.turn.id,
     selectedEntryIds: own.ids, appendedEntryIds: [own.entry.id], problems: [], snapshot: {} as any });
+  scheduler.turnEnd({ state: "ready", coreSessionId: executor.id, branch: "main", headTurnId: own.turn.id,
+    selectedTailId: own.entry.id }, scheduler.catchupTicket());
   await scheduler.settle(); await tick();
   expect(targets).toEqual([closed.id]);
   expect(notingAdmission.mock.calls[0]?.[0]).toMatchObject({ borrowed: true,

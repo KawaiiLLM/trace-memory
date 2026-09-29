@@ -2,7 +2,7 @@ import { existsSync, readdirSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, updateBindingInStoreTransaction, validateNativeSessionId, type CcHookInput,
+import { activeFunctionHook, bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, updateBindingInStoreTransaction, validateNativeSessionId, type CcHookInput,
   type CcSessionBinding } from "./binding.ts";
 import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
 import type { CcWorkerJournal } from "./worker.ts";
@@ -153,6 +153,10 @@ export class CcCoordinator {
   /** Ticket 75: the last published (path, state) key, so a no-op stat-wake-up reconcile writes
    * nothing — publishing is a lifecycle event, never a timer. */
   private lastStatusKey: string | null = null;
+  /** Native live turns only. No historical terminal is replayed on attach or restart. */
+  private readonly completedTurns = new Set<string>();
+  private readonly completedTerminals = new Set<string>();
+  private readonly completedHookAnchors = new Set<number>();
   /** 102: the retargets in order, each after the last; shutdown waits for the one in flight. */
   private following: Promise<boolean> = Promise.resolve(true);
 
@@ -254,6 +258,7 @@ export class CcCoordinator {
           })();
           return starting;
         },
+        turnEnd: (turnId, reason, signal) => this.turnEnd(turnId, reason, signal),
         beforeCancel: () => this.scheduler?.stopCatchup(),
         holdImport: () => this.holdImport(),
         effectiveConfig: () => this.appliedConfig,
@@ -380,6 +385,7 @@ export class CcCoordinator {
       // Switch before the attachment is dropped: a wake-up in between attaches the new session, never the old.
       this.nativeSessionId = nativeSessionId;
       this.lastReconcile = null; this.lastStatusKey = null;
+      this.completedTurns.clear(); this.completedTerminals.clear(); this.completedHookAnchors.clear();
       await this.discardAttachment();
       // Ticket 75: the old session's status file, while it is still this executor's.
       if (token !== undefined && readCcStatus(this.config.stateDir, previous)?.token === token) removeCcStatus(this.config.stateDir, previous);
@@ -387,6 +393,26 @@ export class CcCoordinator {
     } finally { release(); }
     void this.requestReconcile("retarget");
     return true;
+  }
+
+  /** The function hook proves the main turn ended; reconciliation supplies its selected Raw path
+   * and entry anchor. The hook's turnId is an event key, not a source UUID. */
+  async turnEnd(turnId: string, reason: string, signal: AbortSignal): Promise<void> {
+    if (signal.aborted || this.closing || this.closed || this.completedTurns.has(turnId)) return;
+    if (!['answer', 'aborted', 'refusal', 'error'].includes(reason))
+      throw new Error(`unsupported CC turn completion reason ${reason}`);
+    const epoch = this.scheduler?.catchupTicket();
+    const result = await this.requestReconcile("function turn end");
+    if (signal.aborted || !result || !this.scheduler || epoch !== undefined && epoch !== this.scheduler.catchupTicket()) return;
+    if (result.state !== "ready" || result.selectedTailId === null || result.headTurnId === null || result.coreSessionId === null)
+      throw new Error(`CC ${reason} turn ${turnId} has no ready selected native path after reconciliation (state=${result.state}, selectedTail=${result.selectedTailId})`);
+    // The real main-session Hook establishes completion. Its selected Raw may end in a tool
+    // result or a partial assistant when interrupted, not an API-error assistant row.
+    if (this.completedHookAnchors.has(result.selectedTailId) || result.terminal && this.completedTerminals.has(result.terminal.uuid)) return;
+    this.completedTurns.add(turnId);
+    this.completedHookAnchors.add(result.selectedTailId);
+    if (result.terminal) this.completedTerminals.add(result.terminal.uuid);
+    this.scheduler.turnEnd(result, this.scheduler.catchupTicket());
   }
 
   requestReconcile(reason: string, final = false, deadline?: number): Promise<CcReconcileResult | null> {
@@ -426,7 +452,20 @@ export class CcCoordinator {
         if (this.importer) this.watchTranscript(this.importer.currentBinding());
         // The explicit drain still observes path/enrollment changes, but its reconciliation must
         // not first become an ordinary threshold-trigger opportunity before the boundary freezes.
-        if (!final && result) this.scheduler?.reconcile(result, reason !== "manual catchup", epoch);
+        if (!final && result) {
+          this.scheduler?.reconcile(result);
+          // Only a process with no confirmed live function module uses transcript termination.
+          // Initial/restored history is not an automatic opportunity.
+          const binding = readBinding(this.config, this.nativeSessionId);
+          if (reason !== "function turn end" && reason !== "manual catchup" && this.startupComplete &&
+              !(binding && activeFunctionHook(binding)) && result.terminal && (result.terminal.stopReason === "end_turn" || result.terminal.isApiErrorMessage === true ||
+                result.terminal.interruptedMessageId !== undefined) &&
+              (result.selectedAppendedEntryIds.includes(result.terminal.entryId) || result.terminal.fresh === true) &&
+              !this.completedTerminals.has(result.terminal.uuid) && !this.completedHookAnchors.has(result.terminal.entryId)) {
+            this.completedTerminals.add(result.terminal.uuid);
+            this.scheduler?.turnEnd(result, epoch ?? this.scheduler.catchupTicket());
+          }
+        }
         // Ticket 75: publish at a lifecycle event, not on a timer — only when this reconcile appended
         // entries or moved the selected path (coreSessionId/branch/headTurnId), including the
         // enrollment on/off transitions carried in `state`. A no-op "stat wake-up" reconcile writes

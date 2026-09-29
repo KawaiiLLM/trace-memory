@@ -88,6 +88,21 @@ export function currentNativeProcess(): CcProcessIdentity | null {
   return startedAt === null ? null : { pid, startedAt };
 }
 
+/** Function-hook children do not inherit CLAUDE_PID. Resolve only an exact live SessionStart
+ * assignment on their OS ancestry; an explicit (even malformed) CLAUDE_PID never falls back. */
+export function functionHookNativeProcess(config: ResolvedCcHostConfig, nativeSessionId: string,
+  transcriptPath: string, owner: CcProcessIdentity | undefined): CcProcessIdentity {
+  const explicit = process.env.CLAUDE_PID !== undefined;
+  const ancestors = explicit ? [] : processAncestors();
+  const assigned = explicit ? null : assignedNativeSession(config, ancestors);
+  const native = explicit ? currentNativeProcess() : assigned && ancestors.find(ancestor => ancestor.pid === assigned.pid);
+  if (!native || !native.startedAt || !owner || native.pid !== owner.pid || native.startedAt !== owner.startedAt ||
+      (!explicit && (assigned?.startedAt !== native.startedAt || assigned.nativeSessionId !== nativeSessionId ||
+        assigned.transcriptPath !== transcriptPath)))
+    throw new Error("CC function hook does not match the current SessionStart process and transcript");
+  return native;
+}
+
 function readNativeSession(config: ResolvedCcHostConfig, pid: number): CcNativeSessionRecord | null {
   let record: Partial<CcNativeSessionRecord>;
   try { record = JSON.parse(readFileSync(nativeSessionPath(config, pid), "utf8")); }
