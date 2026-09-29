@@ -1,4 +1,4 @@
-// Function-hooks module for Claude Code (verified on 2.1.280; see src/hosts/cc/verified-version.ts). Bundled from this source for the isolated hooks VM.
+// Function-hooks module for Claude Code (last verified version: src/hosts/cc/verified-version.ts). Bundled from this source for the isolated hooks VM.
 import { buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type SettingsRowId, type TraceMenuInput, type SettingsInput } from "../../src/hosts/trace-menu.ts";
 import { renderTraceMenu, renderTraceMenuText, renderTraceSettings, type CcContextBreakdown, type CcMemorySplit } from "../../src/hosts/cc/trace-menu-render.ts";
 import { MEMORY_READ_ONLY, memoryGlob, memoryPath } from "../../src/core/model/address.ts";

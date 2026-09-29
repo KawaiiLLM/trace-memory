@@ -69,7 +69,7 @@ With the function module loaded, Read, Grep and Glob also read Trace Memory as r
 
 If the function module is not loaded, the next `UserPromptSubmit` is the recovery opportunity: it calculates missing bodies from the deliveries recorded on the selected path. **After automatic compaction, the rest of that same turn can lack knowledge until the next user submission.** This recovery does not provide another knowledge window, and versions already recorded as delivered on the path are not delivered again. It does not make `/trace` available without function hooks; there is no model-invoked fallback skill.
 
-The function module uses Claude Code's experimental function-hooks API, last verified on 2.1.280. Installation does not run a package manager or edit personal Claude Code settings or the user's status-line script.
+The function module uses Claude Code's experimental function-hooks API, last verified on 2.1.284. Installation does not run a package manager or edit personal Claude Code settings or the user's status-line script.
 
 ## Status line
 

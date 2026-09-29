@@ -36,7 +36,7 @@ function readCcStatus(stateDir, nativeSessionId) {
 }
 
 // src/hosts/cc/verified-version.ts
-var CC_VERIFIED_VERSION = "2.1.280";
+var CC_VERIFIED_VERSION = "2.1.284";
 
 // src/hosts/cc/status-entry.ts
 var ANSI = { accent: "\x1B[36m", success: "\x1B[32m", customMessageLabel: "\x1B[35m", dim: "\x1B[2m" };

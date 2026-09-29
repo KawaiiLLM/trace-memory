@@ -4,4 +4,4 @@
  * shows a marker while the running version differs. Kept in its own file so `status-entry.ts` can
  * import it without pulling in `config.ts`.
  */
-export const CC_VERIFIED_VERSION = "2.1.280";
+export const CC_VERIFIED_VERSION = "2.1.284";
