@@ -1,5 +1,5 @@
-// 102: Claude Code's manual and automatic compactions install Trace Memory's compaction. Real, pinned
-// Claude Code 2.1.280 with this plugin, behind the network fence (cc-native-fence.ts), against a
+// 102: Claude Code's manual and automatic compactions install Trace Memory's compaction. Real, installed
+// Claude Code with this plugin, behind the network fence (cc-native-fence.ts), against a
 // loopback provider that records every request; no request leaves the machine. Run at the outer
 // level, like cc-92-native.test.ts: the fence cannot nest.
 import { afterAll, beforeAll, expect, test } from "vitest";
@@ -31,7 +31,8 @@ beforeAll(async () => {
   await preflightNetworkFence(fence.profilePath); // abort before any CLI invocation if either control fails
   fenced = fence.wrapperPath;
 });
-afterAll(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+// The last run's Claude Code may still be stopping its executor and writing its config when this runs.
+afterAll(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 10 }); });
 
 type Body = { system?: unknown; messages?: { role: string; content: unknown }[] };
 type Block = { type: "text"; text: string } | { type: "tool_use"; id: string; name: string; input: unknown };
@@ -74,7 +75,9 @@ const promptOf = (body: Body) => texts([...body.messages ?? []].reverse().find(m
 const ack = (body: Body) => ({ blocks: [{ type: "text" as const, text: `ACK ${promptOf(body) || "compaction"}` }] });
 
 async function run(scenario: Scenario) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "tm102-native-"))); dirs.push(root);
+  // Under /tmp, as in the other executor tests: under macOS's per-user TMPDIR the executor's control
+  // socket path exceeds the Unix-domain limit (control.ts), so the executor never attaches or imports.
+  const root = realpathSync(mkdtempSync("/tmp/tm102-native-")); dirs.push(root);
   // As on any machine that ran a session before, the bindings directory exists, so the executor
   // inside Claude Code watches it and imports as the conversation goes.
   for (const d of ["home", "config", "cwd", "state/bindings"]) mkdirSync(join(root, d), { recursive: true });

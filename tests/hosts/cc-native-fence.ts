@@ -49,7 +49,9 @@ export function createFencedClaudeExecutable(dir: string, realExecutable: string
   const profilePath = join(dir, "network.sb");
   writeFileSync(profilePath, NETWORK_FENCE_PROFILE);
   const wrapperPath = join(dir, "claude-fenced.sh");
-  writeFileSync(wrapperPath, `#!/bin/sh\nexec ${SANDBOX_EXEC_PATH} -f ${shellQuote(profilePath)} ${shellQuote(realExecutable)} "$@"\n`);
+  // Claude Code 2.1.284 auto-installs its official marketplace with `git clone`, and this fence does not
+  // stop every git transport; the switch stops the clone itself in every fenced run.
+  writeFileSync(wrapperPath, `#!/bin/sh\nexport CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1\nexec ${SANDBOX_EXEC_PATH} -f ${shellQuote(profilePath)} ${shellQuote(realExecutable)} "$@"\n`);
   chmodSync(wrapperPath, 0o755);
   return { wrapperPath, profilePath };
 }
