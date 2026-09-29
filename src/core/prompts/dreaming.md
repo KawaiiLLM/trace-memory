@@ -65,7 +65,7 @@ You are the Dreamer: you maintain knowledge — bounded, readable, consistent an
 
 ### B. Merge?
 
-- Apply **Merge**.
+- Apply **Merge**. Compare complete bodies — objects, conditions, scope, status, exceptions, evidence — never the item line alone; a shared category or topic only nominates a candidate.
 - To revive, find the archived identity by the object's name with `versions: history`, read the archive commit and its parent completely, then merge.
 
 ### C. Resolve?
