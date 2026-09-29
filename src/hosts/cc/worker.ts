@@ -1,8 +1,6 @@
 import { readFileSync } from "node:fs";
-import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { createSdkMcpServer, query, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
@@ -16,7 +14,6 @@ export type CcAgentTask = NotingAgentInput | DreamingAgentInput;
  * (78: the contained SDK control abort can arrive on either side of settlement). Matches the shape
  * of the executor's own runtime journal writer (`runtimeEvent` in hosts/cc/index.ts). */
 export type CcWorkerJournal = (event: string, details?: Record<string, unknown>) => void;
-const execFileAsync = promisify(execFile);
 const AUDIT_UNAVAILABLE = `Claude Agent SDK ${CC_AGENT_SDK_VERSION} does not expose the exact provider request body`;
 
 /** Claude Code's own project-directory encoding: every character outside [A-Za-z0-9] becomes one
@@ -300,14 +297,8 @@ function userMessage(text: string, sessionId = "", synthetic = false): SDKUserMe
     parent_tool_use_id: null, ...(synthetic ? { isSynthetic: true } : {}) } as SDKUserMessage;
 }
 
-function nativeVersion(stdout: string): string | null {
-  return stdout.match(/\b(\d+\.\d+\.\d+)\b/)?.[1] ?? null;
-}
-
 function assertInit(message: Extract<SDKMessage, { type: "system"; subtype: "init" }>, worker: ResolvedCcWorkerConfig,
   allowedTools: readonly string[]): void {
-  if (message.claude_code_version !== worker.claudeVersion)
-    throw new Error(`CC worker expected Claude Code ${worker.claudeVersion}, got ${message.claude_code_version}`);
   if (message.cwd !== worker.cwd) throw new Error(`CC worker started in unexpected cwd ${message.cwd}`);
   const actual = [...message.tools].sort(), expected = [...allowedTools].sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected))
@@ -335,7 +326,6 @@ export class CcAgentWorker {
   private readonly environment: NodeJS.ProcessEnv;
   private readonly query: typeof query;
   private readonly journal: CcWorkerJournal;
-  private versionCheck: Promise<void> | null = null;
 
   constructor(config: ResolvedCcHostConfig, dependencies: CcWorkerDependencies = {}) {
     if (!config.worker) throw new Error("CC worker configuration is required for memory-task admission");
@@ -345,15 +335,6 @@ export class CcAgentWorker {
       : { ...environment, CLAUDE_CODE_MAX_RETRIES: String(config.retry.maxRetries) };
     this.query = dependencies.query ?? query;
     this.journal = dependencies.journal ?? (() => {});
-  }
-
-  private verifyExecutable(): Promise<void> {
-    return this.versionCheck ??= execFileAsync(this.worker.claudeExecutable, ["--version"], { timeout: 10_000, env: this.environment })
-      .then(({ stdout }) => {
-        const version = nativeVersion(stdout);
-        if (version !== this.worker.claudeVersion)
-          throw new Error(`CC worker expected Claude Code ${this.worker.claudeVersion}, got ${version ?? JSON.stringify(stdout.trim())}`);
-      });
   }
 
   async run(task: CcAgentTask, maxToolRounds: number): Promise<RunAgentResult> {
@@ -395,7 +376,6 @@ export class CcAgentWorker {
       this.journal("contained-sdk-control-abort", { taskKind: task.kind, nativeSessionId, error: error.message }),
       async () => { try {
       task.signal?.throwIfAborted();
-      await this.verifyExecutable();
       const allowedTools = task.tools.map(definition => `mcp__trace_memory__${definition.name}`);
       const execution = this.query({ prompt: input ?? task.text, options: {
         model: settings.model,
@@ -426,6 +406,8 @@ export class CcAgentWorker {
           if (initIdentity === null) {
             initIdentity = identity;
             nativeSessionId = message.session_id;
+            // 106: the Claude Code version is recorded per run, never required.
+            this.journal("worker-run-started", { taskKind: task.kind, nativeSessionId, claudeVersion: message.claude_code_version });
             nativeLog = ccNativeTranscriptPath(this.environment, this.worker.cwd, nativeSessionId);
             assertModelMetadata(await execution.supportedModels(), settings);
           } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");

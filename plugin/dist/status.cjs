@@ -35,6 +35,9 @@ function readCcStatus(stateDir, nativeSessionId) {
   }
 }
 
+// src/hosts/cc/verified-version.ts
+var CC_VERIFIED_VERSION = "2.1.280";
+
 // src/hosts/cc/status-entry.ts
 var ANSI = { accent: "\x1B[36m", success: "\x1B[32m", customMessageLabel: "\x1B[35m", dim: "\x1B[2m" };
 var RESET = "\x1B[0m";
@@ -86,6 +89,8 @@ async function runCcStatusCommand(io = {}) {
       counts: alive ? status.counts : void 0,
       cost: alive ? status.cost : void 0
     });
+    if (typeof input.version === "string" && input.version && input.version !== CC_VERIFIED_VERSION)
+      segments.push({ role: "dim", text: `unverified CC ${input.version}` });
     write(`\u{1F9E0} ${segments.map((segment) => paint(segment.role, segment.text)).join(" ")}
 `);
   } catch {

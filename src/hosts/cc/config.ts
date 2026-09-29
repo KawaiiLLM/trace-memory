@@ -5,7 +5,6 @@ import { MEMORY_PHASES, PHASE_SETTING_KEYS, type MemoryPhase } from "../phase-se
 import { retireConsolidationSettings } from "../retired-settings.ts";
 
 export const CC_AGENT_SDK_VERSION = "0.1.77";
-export const CC_NATIVE_VERSION = "2.1.280";
 export const CC_CONTEXT_HEADROOM = 10_000;
 export const CC_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type CcEffort = typeof CC_EFFORT_LEVELS[number];
@@ -16,9 +15,10 @@ export interface CcRetryConfig {
 }
 
 export interface CcWorkerConfig {
-  /** Prepared Claude Code executable. The worker verifies its exact version before use. */
+  /** Prepared Claude Code executable. Any installed version runs; the worker records the one it started. */
   claudeExecutable: string;
-  claudeVersion: string;
+  /** Retired by ticket 106: an existing value in an installed configuration is accepted and ignored. */
+  claudeVersion?: unknown;
   /** Offline capacities keyed by the exact configured model identifier. */
   contextWindows: Record<string, number>;
   /** Private child cwd; neither the foreground project nor cwd is inferred. */
@@ -33,7 +33,7 @@ export interface ResolvedCcPhaseConfig {
   capacity: { inputTokens: number; prefixTokens: 0 };
 }
 
-export interface ResolvedCcWorkerConfig extends Omit<CcWorkerConfig, "responseOriginTimeoutMs" | "contextWindows"> {
+export interface ResolvedCcWorkerConfig extends Omit<CcWorkerConfig, "responseOriginTimeoutMs" | "contextWindows" | "claudeVersion"> {
   contextWindows: Readonly<Record<string, number>>;
   phases: Readonly<Record<MemoryPhase, ResolvedCcPhaseConfig>>;
   responseOriginTimeoutMs: number;
@@ -144,8 +144,6 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       throw new Error("Invalid CC worker.claudeExecutable: expected an absolute path");
     if (typeof value.cwd !== "string" || !isAbsolute(value.cwd))
       throw new Error("Invalid CC worker.cwd: expected an absolute path");
-    if (value.claudeVersion !== CC_NATIVE_VERSION)
-      throw new Error(`Invalid CC worker.claudeVersion: this adapter is pinned to ${CC_NATIVE_VERSION}`);
     if (!value.contextWindows || typeof value.contextWindows !== "object" || Array.isArray(value.contextWindows))
       throw new Error("Invalid CC worker.contextWindows: expected model-to-capacity object");
     const phases = Object.fromEntries(MEMORY_PHASES.map(phase => {
@@ -157,7 +155,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
         throw new Error(`Invalid CC worker.contextWindows[${JSON.stringify(selected.model)}]: must exceed the ${CC_CONTEXT_HEADROOM}-token headroom`);
       return [phase, { ...selected, capacity: { inputTokens: contextWindow - CC_CONTEXT_HEADROOM, prefixTokens: 0 as const } }];
     })) as Record<MemoryPhase, ResolvedCcPhaseConfig>;
-    worker = { claudeExecutable: resolve(value.claudeExecutable), claudeVersion: value.claudeVersion,
+    worker = { claudeExecutable: resolve(value.claudeExecutable),
       contextWindows: { ...value.contextWindows }, phases, cwd: resolve(value.cwd),
       responseOriginTimeoutMs: positive("worker.responseOriginTimeoutMs", value.responseOriginTimeoutMs ?? 5_000) };
   }

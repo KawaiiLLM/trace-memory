@@ -2,7 +2,7 @@
 
 The standalone plugin requires Node >=24.6.0 and fails at its bundled entry before loading adapter or SDK code on an older runtime. It never downloads or installs a replacement runtime.
 
-Before loading the plugin, edit `cc.config.json`. Set absolute paths for `stateDir`, `worker.claudeExecutable`, and the worker's private `cwd`. In `worker.contextWindows`, supply the prepared context capacity for each selected model, keyed by its exact configured name; each must be a safe integer greater than 10,000. The template's `null` values require explicit preparation, not a guessed capacity. The adapter is pinned to Claude Code 2.1.280.
+Before loading the plugin, edit `cc.config.json`. Set absolute paths for `stateDir`, `worker.claudeExecutable`, and the worker's private `cwd`. In `worker.contextWindows`, supply the prepared context capacity for each selected model, keyed by its exact configured name; each must be a safe integer greater than 10,000. The template's `null` values require explicit preparation, not a guessed capacity. The adapter runs on any installed Claude Code and records the version each worker run started; the native probes last passed on 2.1.280, and the status line shows `unverified CC <version>` while the running version differs. An old `worker.claudeVersion` key in an installed file is ignored.
 
 CC uses the same flat phase-setting keys as Pi. The shipped defaults are:
 
@@ -69,7 +69,7 @@ With the function module loaded, Read, Grep and Glob also read Trace Memory as r
 
 If the function module is not loaded, the next `UserPromptSubmit` is the recovery opportunity: it calculates missing bodies from the deliveries recorded on the selected path. **After automatic compaction, the rest of that same turn can lack knowledge until the next user submission.** This recovery does not provide another knowledge window, and versions already recorded as delivered on the path are not delivered again. It does not make `/trace` available without function hooks; there is no model-invoked fallback skill.
 
-The function module requires pinned Claude Code 2.1.280. Installation does not run a package manager or edit personal Claude Code settings or the user's status-line script.
+The function module uses Claude Code's experimental function-hooks API, last verified on 2.1.280. Installation does not run a package manager or edit personal Claude Code settings or the user's status-line script.
 
 ## Status line
 

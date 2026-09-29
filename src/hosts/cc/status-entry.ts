@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { memoryStatusLine, type StatusColorRole } from "../status-line.ts";
 import { readCcStatus } from "./status.ts";
+import { CC_VERIFIED_VERSION } from "./verified-version.ts";
 
 /**
  * Ticket 75: the status command Claude Code's statusLine script runs after powerline. Deliberately
@@ -61,7 +62,7 @@ export async function runCcStatusCommand(io: CcStatusIo = {}): Promise<void> {
     const [configFlag, configPath] = argv;
     if (configFlag !== "--config" || typeof configPath !== "string" || !isAbsolute(configPath)) return;
     const stateDir = resolveStateDir(configPath);
-    const input = JSON.parse(await read()) as { session_id?: unknown };
+    const input = JSON.parse(await read()) as { session_id?: unknown; version?: unknown };
     if (typeof input.session_id !== "string" || !input.session_id) return;
     const status = readCcStatus(stateDir, input.session_id);
     if (!status) return; // this session is not bound to Trace Memory: the status line is unchanged
@@ -73,6 +74,9 @@ export async function runCcStatusCommand(io: CcStatusIo = {}): Promise<void> {
       counts: alive ? status.counts : undefined,
       cost: alive ? status.cost : undefined,
     });
+    // 106: the running Claude Code version comes from the status-line input; no process is started.
+    if (typeof input.version === "string" && input.version && input.version !== CC_VERIFIED_VERSION)
+      segments.push({ role: "dim", text: `unverified CC ${input.version}` });
     write(`🧠 ${segments.map(segment => paint(segment.role, segment.text)).join(" ")}\n`);
   } catch { /* never throw into the status line */ }
 }

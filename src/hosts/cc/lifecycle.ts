@@ -267,7 +267,7 @@ export class CcCoordinator {
               pollIntervalMs: value.pollIntervalMs, finalSyncTimeoutMs: value.finalSyncTimeoutMs,
               finalSyncStablePolls: value.finalSyncStablePolls, writeSourceTimeoutMs: value.writeSourceTimeoutMs,
               "worker.claudeExecutable": value.worker?.claudeExecutable,
-              "worker.claudeVersion": value.worker?.claudeVersion, "worker.cwd": value.worker?.cwd,
+              "worker.cwd": value.worker?.cwd,
               "worker.responseOriginTimeoutMs": value.worker?.responseOriginTimeoutMs,
             };
             for (const [section, settings] of Object.entries(value.coreConfig)) {

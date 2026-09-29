@@ -421,12 +421,11 @@ function memoryGlob(pattern, path) {
 }
 
 // plugin/hooks/index.tsx
-var PINNED_VERSION = "2.1.280";
 var screen = "main";
 var reply;
 var breakdown;
 var notice = "";
-var versionError = "";
+var unavailable = "";
 var pluginRoot = "";
 var selectedAction = "";
 var selectedSetting;
@@ -604,14 +603,11 @@ export const register = (on) => {
     try {
       pluginRoot = $.plugin.root;
       if (!pluginRoot) throw new Error("Claude Code plugin root is unavailable");
-      const output = await $.process.run(["claude", "--version"]);
-      const seen = decode(output, "Claude Code version").split(/\s+/)[0];
-      if (seen !== PINNED_VERSION) throw new Error(`version mismatch, pinned ${PINNED_VERSION}, running ${seen}`);
     } catch (error) {
-      versionError = `Trace Memory: ${String(error)} \u2014 /trace disabled`;
-      await $.ui.status(versionError);
+      unavailable = `Trace Memory: ${String(error)} \u2014 /trace disabled`;
+      await $.ui.status(unavailable);
     }
-    if (!versionError) {
+    if (!unavailable) {
       try {
         await $.command.register({ name: "trace", description: "Open the local Trace Memory menu" });
       } catch (error) {
@@ -621,7 +617,7 @@ export const register = (on) => {
     return next(e);
   });
   on("command.run", { command: "trace" }, async ($, e, next) => {
-    if (versionError) return { text: versionError };
+    if (unavailable) return { text: unavailable };
     try {
       screen = "main";
       notice = "";

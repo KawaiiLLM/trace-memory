@@ -307,7 +307,7 @@ function substantiveArchiveStatement(text) {
   return typeof text === "string" && !!text.trim() && !/^(?:invalid|obsolete|无效|过时|失效)[。.!！]?$/iu.test(text.trim());
 }
 
-// node_modules/diff/libesm/diff/base.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options = {}) {
     let callback;
@@ -509,7 +509,7 @@ var Diff = class {
   }
 };
 
-// node_modules/diff/libesm/diff/array.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/array.js
 var ArrayDiff = class extends Diff {
   tokenize(value) {
     return value.slice();
@@ -9785,7 +9785,6 @@ function upgradeSettingsFile(path, section, validate, report) {
 
 // src/hosts/cc/config.ts
 var CC_AGENT_SDK_VERSION = "0.1.77";
-var CC_NATIVE_VERSION = "2.1.280";
 var CC_CONTEXT_HEADROOM = 1e4;
 var CC_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 var positive2 = (name, value) => {
@@ -9842,8 +9841,6 @@ function resolveCcHostConfig(input) {
       throw new Error("Invalid CC worker.claudeExecutable: expected an absolute path");
     if (typeof value.cwd !== "string" || !(0, import_node_path2.isAbsolute)(value.cwd))
       throw new Error("Invalid CC worker.cwd: expected an absolute path");
-    if (value.claudeVersion !== CC_NATIVE_VERSION)
-      throw new Error(`Invalid CC worker.claudeVersion: this adapter is pinned to ${CC_NATIVE_VERSION}`);
     if (!value.contextWindows || typeof value.contextWindows !== "object" || Array.isArray(value.contextWindows))
       throw new Error("Invalid CC worker.contextWindows: expected model-to-capacity object");
     const phases = Object.fromEntries(MEMORY_PHASES.map((phase) => {
@@ -9857,7 +9854,6 @@ function resolveCcHostConfig(input) {
     }));
     worker = {
       claudeExecutable: (0, import_node_path2.resolve)(value.claudeExecutable),
-      claudeVersion: value.claudeVersion,
       contextWindows: { ...value.contextWindows },
       phases,
       cwd: (0, import_node_path2.resolve)(value.cwd),
@@ -11122,12 +11118,10 @@ var import_node_path8 = require("node:path");
 
 // src/hosts/cc/worker.ts
 var import_node_fs6 = require("node:fs");
-var import_node_child_process3 = require("node:child_process");
 var import_node_os3 = require("node:os");
 var import_node_path5 = require("node:path");
-var import_node_util = require("node:util");
 
-// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -31925,7 +31919,7 @@ function query({
   return queryInstance;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -31999,7 +31993,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// node_modules/zod/v4/core/util.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -32678,7 +32672,7 @@ var Class2 = class {
   }
 };
 
-// node_modules/zod/v4/core/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -32744,7 +32738,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -32824,7 +32818,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// node_modules/zod/v4/core/regexes.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -32981,7 +32975,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// node_modules/zod/v4/core/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -33529,7 +33523,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -33565,14 +33559,14 @@ var Doc2 = class {
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -35543,7 +35537,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -35652,7 +35646,7 @@ function en_default3() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -35700,7 +35694,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/api.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -36504,7 +36498,7 @@ function _stringFormat(Class3, format2, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -36856,7 +36850,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -37332,7 +37326,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -37501,7 +37495,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// node_modules/zod/v4/classic/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -37535,7 +37529,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// node_modules/zod/v4/classic/iso.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -37576,7 +37570,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -37616,7 +37610,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -37630,7 +37624,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -38709,22 +38703,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// node_modules/zod/v4/classic/compat.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// node_modules/zod/v4/classic/from-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// node_modules/zod/v4/classic/external.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -40300,7 +40294,6 @@ var CcForegroundTools = class {
 };
 
 // src/hosts/cc/worker.ts
-var execFileAsync = (0, import_node_util.promisify)(import_node_child_process3.execFile);
 var AUDIT_UNAVAILABLE = `Claude Agent SDK ${CC_AGENT_SDK_VERSION} does not expose the exact provider request body`;
 function ccProjectDirName(cwd2) {
   return cwd2.replace(/[^A-Za-z0-9]/g, "-");
@@ -40587,12 +40580,7 @@ function userMessage(text, sessionId = "", synthetic = false) {
     ...synthetic ? { isSynthetic: true } : {}
   };
 }
-function nativeVersion(stdout) {
-  return stdout.match(/\b(\d+\.\d+\.\d+)\b/)?.[1] ?? null;
-}
 function assertInit(message, worker, allowedTools) {
-  if (message.claude_code_version !== worker.claudeVersion)
-    throw new Error(`CC worker expected Claude Code ${worker.claudeVersion}, got ${message.claude_code_version}`);
   if (message.cwd !== worker.cwd) throw new Error(`CC worker started in unexpected cwd ${message.cwd}`);
   const actual = [...message.tools].sort(), expected = [...allowedTools].sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected))
@@ -40616,7 +40604,6 @@ var CcAgentWorker = class {
   environment;
   query;
   journal;
-  versionCheck = null;
   constructor(config3, dependencies = {}) {
     if (!config3.worker) throw new Error("CC worker configuration is required for memory-task admission");
     this.config = config3;
@@ -40625,13 +40612,6 @@ var CcAgentWorker = class {
     this.environment = config3.retry === void 0 ? environment : { ...environment, CLAUDE_CODE_MAX_RETRIES: String(config3.retry.maxRetries) };
     this.query = dependencies.query ?? query;
     this.journal = dependencies.journal ?? (() => {
-    });
-  }
-  verifyExecutable() {
-    return this.versionCheck ??= execFileAsync(this.worker.claudeExecutable, ["--version"], { timeout: 1e4, env: this.environment }).then(({ stdout }) => {
-      const version3 = nativeVersion(stdout);
-      if (version3 !== this.worker.claudeVersion)
-        throw new Error(`CC worker expected Claude Code ${this.worker.claudeVersion}, got ${version3 ?? JSON.stringify(stdout.trim())}`);
     });
   }
   async run(task, maxToolRounds) {
@@ -40682,7 +40662,6 @@ var CcAgentWorker = class {
       async () => {
         try {
           task.signal?.throwIfAborted();
-          await this.verifyExecutable();
           const allowedTools = task.tools.map((definition) => `mcp__trace_memory__${definition.name}`);
           const execution = this.query({ prompt: input ?? task.text, options: {
             model: settings.model,
@@ -40715,6 +40694,7 @@ var CcAgentWorker = class {
               if (initIdentity === null) {
                 initIdentity = identity;
                 nativeSessionId = message.session_id;
+                this.journal("worker-run-started", { taskKind: task.kind, nativeSessionId, claudeVersion: message.claude_code_version });
                 nativeLog = ccNativeTranscriptPath(this.environment, this.worker.cwd, nativeSessionId);
                 assertModelMetadata(await execution.supportedModels(), settings);
               } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");
@@ -42450,7 +42430,6 @@ var CcCoordinator = class {
               finalSyncStablePolls: value.finalSyncStablePolls,
               writeSourceTimeoutMs: value.writeSourceTimeoutMs,
               "worker.claudeExecutable": value.worker?.claudeExecutable,
-              "worker.claudeVersion": value.worker?.claudeVersion,
               "worker.cwd": value.worker?.cwd,
               "worker.responseOriginTimeoutMs": value.worker?.responseOriginTimeoutMs
             };
@@ -43366,7 +43345,7 @@ async function declareCcProject(config3, nativeSessionId, name) {
 var import_node_fs11 = require("node:fs");
 var import_node_path9 = require("node:path");
 
-// node_modules/@earendil-works/pi-tui/dist/terminal-image.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@earendil-works/pi-tui/dist/terminal-image.js
 function getPngDimensions(base64Data) {
   try {
     const buffer = Buffer.from(base64Data, "base64");
@@ -43764,7 +43743,7 @@ var import_node_fs12 = require("node:fs");
 var import_node_path10 = require("node:path");
 var import_node_crypto16 = require("node:crypto");
 
-// node_modules/jsonc-parser/lib/esm/impl/scanner.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/scanner.js
 function createScanner(text, ignoreTrivia = false) {
   const len = text.length;
   let pos = 0, value = "", tokenOffset = 0, token = 16, lineNumber = 0, lineStartOffset = 0, tokenLineStartOffset = 0, prevTokenLineStartOffset = 0, scanError = 0;
@@ -44185,7 +44164,7 @@ var CharacterCodes;
   CharacterCodes2[CharacterCodes2["tab"] = 9] = "tab";
 })(CharacterCodes || (CharacterCodes = {}));
 
-// node_modules/jsonc-parser/lib/esm/impl/string-intern.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/string-intern.js
 var cachedSpaces = new Array(20).fill(0).map((_, index) => {
   return " ".repeat(index);
 });
@@ -44216,7 +44195,7 @@ var cachedBreakLinesWithSpaces = {
 };
 var supportedEols = ["\n", "\r", "\r\n"];
 
-// node_modules/jsonc-parser/lib/esm/impl/format.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/format.js
 function format(documentText, range, options) {
   let initialIndentLevel;
   let formatText;
@@ -44452,7 +44431,7 @@ function isEOL(text, offset) {
   return "\r\n".indexOf(text.charAt(offset)) !== -1;
 }
 
-// node_modules/jsonc-parser/lib/esm/impl/parser.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/parser.js
 var ParseOptions;
 (function(ParseOptions2) {
   ParseOptions2.DEFAULT = {
@@ -44874,7 +44853,7 @@ function getNodeType(value) {
   }
 }
 
-// node_modules/jsonc-parser/lib/esm/impl/edit.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/edit.js
 function setProperty(text, originalPath, value, options) {
   const path = originalPath.slice();
   const errors = [];
@@ -45018,7 +44997,7 @@ function applyEdit(text, edit) {
   return text.substring(0, edit.offset) + edit.content + text.substring(edit.offset + edit.length);
 }
 
-// node_modules/jsonc-parser/lib/esm/main.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/main.js
 var ScanError;
 (function(ScanError2) {
   ScanError2[ScanError2["None"] = 0] = "None";

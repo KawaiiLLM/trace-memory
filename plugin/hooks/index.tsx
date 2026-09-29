@@ -1,16 +1,15 @@
-// Function-hooks module for Claude Code 2.1.280. Bundled from this source for the isolated hooks VM.
+// Function-hooks module for Claude Code (verified on 2.1.280; see src/hosts/cc/verified-version.ts). Bundled from this source for the isolated hooks VM.
 import { buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type SettingsRowId, type TraceMenuInput, type SettingsInput } from "../../src/hosts/trace-menu.ts";
 import { renderTraceMenu, renderTraceMenuText, renderTraceSettings, type CcContextBreakdown, type CcMemorySplit } from "../../src/hosts/cc/trace-menu-render.ts";
 import { MEMORY_READ_ONLY, memoryGlob, memoryPath } from "../../src/core/model/address.ts";
 
-const PINNED_VERSION = "2.1.280";
 type Reply = { menu: TraceMenuInput; settings: SettingsInput; context: { presence: "confirmed" | "unavailable"; estimatedMessagesTokens?: number; memory?: CcMemorySplit }; runs: { id: number; phase: string; status: string; cost: number; at: string }[] };
 type Screen = "main" | "settings" | "runs" | "project" | "confirm" | "edit";
 let screen: Screen = "main";
 let reply: Reply | undefined;
 let breakdown: CcContextBreakdown | undefined;
 let notice = "";
-let versionError = "";
+let unavailable = "";
 let pluginRoot = "";
 let selectedAction = "";
 let selectedSetting: SettingsRowId | undefined;
@@ -164,14 +163,11 @@ export const register = (on: any) => {
     try {
       pluginRoot = $.plugin.root;
       if (!pluginRoot) throw new Error("Claude Code plugin root is unavailable");
-      const output = await $.process.run(["claude", "--version"]);
-      const seen = decode(output, "Claude Code version").split(/\s+/)[0];
-      if (seen !== PINNED_VERSION) throw new Error(`version mismatch, pinned ${PINNED_VERSION}, running ${seen}`);
     } catch (error) {
-      versionError = `Trace Memory: ${String(error)} — /trace disabled`;
-      await $.ui.status(versionError);
+      unavailable = `Trace Memory: ${String(error)} — /trace disabled`;
+      await $.ui.status(unavailable);
     }
-    if (!versionError) {
+    if (!unavailable) {
       try { await $.command.register({ name: "trace", description: "Open the local Trace Memory menu" }); }
       catch (error) { await $.ui.status(`Trace Memory: /trace registration failed: ${String(error)}`); }
     }
@@ -179,7 +175,7 @@ export const register = (on: any) => {
   });
 
   on("command.run", { command: "trace" }, async ($: any, e: any, next: any) => {
-    if (versionError) return { text: versionError };
+    if (unavailable) return { text: unavailable };
     try {
       screen = "main";
       notice = "";

@@ -18,12 +18,11 @@ const menu = {
 };
 const pane = { title: "Trace Memory", isFocused: true, bodyColumns: 65, placement: "inline", scroll: { offset: 0, bodyRows: 45 }, view: {} } as const;
 
-function mockHost(on: any, seen: string[], version = "2.1.280", sessionId = () => "initial-id") {
+function mockHost(on: any, seen: string[], sessionId = () => "initial-id") {
   mock.env(on, { CLAUDE_PLUGIN_ROOT: "/tmp/fake-plugin" });
   on("process.run", ($: any, e: any) => {
     seen.push(e.argv.join(" "));
     const argv = e.argv as string[];
-    if (argv.includes("--version")) return { value: { exitCode: 0, stdout: `${version} (Claude Code)\n`, stderr: "" } };
     if (argv.includes("menu")) {
       expect(argv).toContain("--snapshot");
       expect(JSON.parse(e.init.stdin).session).toBe(sessionId());
@@ -107,18 +106,11 @@ test("local command renders headless text and a mountable narrow pane, then disp
 test("a later command resolves the new native identity after clear", async ($, on) => {
   const seen: string[] = [];
   let currentId = "before-clear";
-  mockHost(on, seen, "2.1.280", () => currentId);
+  mockHost(on, seen, () => currentId);
   await $.session.start({ cwd: "/tmp", surface: null, isInteractive: false });
   expect((await $.command.run({ command: "trace" })).text).toContain("Trace Memory · S1");
   currentId = "after-clear";
   expect((await $.command.run({ command: "trace" })).text).toContain("Trace Memory · S1");
   expect(seen.filter(args => args.includes(" menu --json")).some(args => args.includes("--session before-clear"))).toBe(true);
   expect(seen.filter(args => args.includes(" menu --json")).some(args => args.includes("--session after-clear"))).toBe(true);
-});
-
-test("version mismatch visibly disables the local command", async ($, on) => {
-  mockHost(on, [], "2.1.277");
-  await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
-  const result = await $.command.run({ command: "trace" });
-  expect(result.text).not.toContain("Trace Memory · S1");
 });
