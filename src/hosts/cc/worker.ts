@@ -394,7 +394,11 @@ export class CcAgentWorker {
         // skill ever loads for it, and it is never bound, imported or enrolled as a foreground session.
         permissionMode: "dontAsk",
         strictMcpConfig: true,
-        extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking },
+        // 106: Claude Code 2.1.284 loads its builtin `agents-md@builtin` plugin even so. The `--settings`
+        // layer is read whatever the setting sources, and turning the plugin off there keeps the worker
+        // plugin-free, as assertInit requires.
+        extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking,
+          settings: JSON.stringify({ enabledPlugins: { "agents-md@builtin": false } }) },
       } });
       for await (const message of execution) {
         if (task.kind === "dreaming" && dreamState === "complete")
