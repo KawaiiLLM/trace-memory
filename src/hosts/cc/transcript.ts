@@ -154,7 +154,9 @@ export const ccCarrierStart = (text: string): number => text.startsWith(CARRIER_
  * task without asking the user. Copied verbatim from the installed Claude Code 2.1.280
  * (@anthropic-ai/claude-code 2.1.280), bin/claude.exe: the sentence its own reactive (automatic)
  * compaction path appends to its summary message when `suppressFollowUpQuestions` is set, which only
- * that path sets. A manual `/compact` never sets it and gets no such sentence. */
+ * that path sets. A manual `/compact` never sets it and gets no such sentence. From 2.1.284 (same
+ * sentence, verbatim) a manual `/compact` runs that path too and its native summary gets the sentence;
+ * Trace Memory's manual block still gets none, by requirement 14 (a manual compaction is between turns). */
 export const CC_AUTO_CONTINUE_SUFFIX = "\nContinue the conversation from where it left off without asking the user any further questions. " +
   "Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. " +
   "Pick up the last task as if the break never happened.";
