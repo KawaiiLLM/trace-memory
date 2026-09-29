@@ -18,46 +18,44 @@ Name the original agent's harness (Pi agent or Claude Code) in both layers, not 
 
 <!-- include: common -->
 
-### Selecting facts
+### Facts
 
-Keep enough for a newcomer to recover the main discussion, important branches, reasoning and turns. Record what was discussed and why, what was proposed or observed, and the conclusions or questions.
-- Keep important objects, nontrivial reasoning, key examples, evidence, comparisons and questions or ideas worth continuing. Unsettled, unapproved or unsuitable for knowledge does not mean unworthy of a fact. A seriously considered explanation may matter even after rejection.
-- Leave details in Raw when omission changes neither understanding, grounds for judgment, turning points nor future direction. Omit repetition, routine operations and trivial process. Do not mechanically exclude numbers, code, tests or process information.
-- Write simple content briefly and develop complex discussion as needed. Do not pad detail, pursue exhaustive coverage or target a fixed compression ratio. Do not retain only final conclusions; each fact need not repeat all background.
+**Admission**
 
-### Organizing facts
+Keep enough for a newcomer to recover the discussion's main line, important branches, key reasoning and turning points: what was discussed and why, what was proposed or observed, and the conclusion or question.
 
-1. Keep one topic's question, proposal, evidence, objection, revision and decision together. Do not split by speaker or activity. Discussion, retrieval, analysis and implementation can share a slice; skip unrelated interleaving. Comparing objects does not necessarily make several topics.
-2. Start a new slice at a topic change or batch end. If capacity is tight, remove repetition and non-key detail before splitting by subtopic. Do not mechanically separate evidence from the analysis it supports. Record later corrections in later slices, without rewriting earlier facts.
-3. Give the episode a title describing what the discussion or work was doing. A final conclusion alone is not a title; a title does not replace the body.
-4. Give each contributing entry its own cited segment, in occurrence order. Record only its contribution to this topic. The same entry may contribute to different facts about different topics. Add neither the extractor's explanation nor later explanations to an earlier segment.
-5. Tool-result segments record actual returns; agent segments record the original agent's analysis, proposals or actions. Calls without new contributions, repeated searches and routine steps need no citation.
-6. Resolve references to concrete objects. For approval, withdrawal, objection or correction, say what it concerns, what the earlier position was and what changed. Do not merely say the user agreed or overturned something.
+- Keep important objects, nontrivial reasoning, key examples, evidence, comparisons, and questions and ideas worth continuing. Do not exclude content for being unsettled, not approved for implementation, or unable to produce knowledge; a seriously considered explanation that was later overturned may also matter.
+- Detail whose removal does not affect understanding of the problem, grounds for judgment, turning points or later direction stays in the Raw entries. Omit repetition, routine operations and trivial process; do not mechanically exclude numbers, code, tests or process information.
+- Write simple content briefly and develop complex discussion as needed. Do not pad detail, pursue item-by-item coverage or a fixed compression ratio, or keep only the final conclusion. A fact need not restate all background.
 
-**Example: observation versus explanation.** Illustrative only, not evidence or an admission rule.
+**Division**
 
-> Material: A timing tool reports that database commits dominate import time, without an internal breakdown. Claude Code suspects disk synchronization and proposes measuring the substeps.
-> Wrong observation: Disk synchronization caused the slowdown, and no later investigation occurred.
-> Correct observation segment: Database commits dominated the measured import time; the tool gave no internal breakdown.
-> Correct agent segment: Claude Code suspected disk synchronization but could not distinguish it from other commit costs, and proposed measuring the substeps.
+1. **Slice by topic**: record one topic's questions, proposals, evidence, rebuttals, revisions and decisions together; do not split mechanically by speaker or activity type. Discussion, retrieval, analysis and implementation can share one fact; skip unrelated interleaved content. Comparing several objects does not make several topics.
+2. **Clear boundaries**: start a new fact when the topic turns or the batch ends. When capacity runs short, first remove repetition and non-key detail; if it still does not fit, split along subtopics. Do not mechanically separate evidence from the analysis that depends on it. Record a later correction in a new slice; never rewrite an old fact.
 
-## Knowledge principles
+**Writing**
+
+1. **Write a situational title**: say what this discussion or work was doing, for recognition and lookup. A title is never only the final conclusion and never replaces the body.
+2. **Summarize source by source**: give each contributing entry its own cited segment, in order of occurrence. Write only that source's contribution to this topic; an entry touching several topics may serve each of their facts. Add none of your own explanation, and do not write later explanations back into earlier segments.
+3. **Separate results from interpretation**: a tool segment records what actually returned; an agent segment records the original agent's analysis, proposals or actions. Calls with no new contribution, repeated searches and routine steps need no citation.
+4. **Resolve references**: name the concrete objects. An approval, withdrawal, rebuttal or correction says what it concerns, what was there before and what changed, not merely "the user agreed" or "overturned the earlier claim".
+
+### Knowledge
 
 <!-- include: admission -->
 
-<!-- include: atomicity -->
-
-<!-- include: completeness -->
+<!-- include: division -->
 
 <!-- include: citations -->
 
-<!-- include: pending -->
+<!-- include: writing -->
 
-Assess value, evidence and completeness before choosing an operation. Do not rewrite merely to perform an operation.
-
-<!-- include: updating -->
-
+<!-- include: maintenance -->
 <!-- include: archiving -->
+
+## Examples
+
+<!-- include: examples -->
 
 ## Inputs
 

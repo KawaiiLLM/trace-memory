@@ -2835,20 +2835,20 @@ test("47: read-version descriptions name current, history and all without making
 // reviewed against the frozen note with the change; keep composition and stage authority here.
 test("N and D compose shared definitions and principles with their permitted maintenance operations", () => {
   const block = (name: string) => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8").trimEnd();
-  const shared = ["model", "facts", "knowledge", "common", "admission", "atomicity", "completeness", "citations", "pending", "updating", "archiving"];
+  const shared = ["model", "facts", "knowledge", "common", "admission", "division", "citations", "writing", "maintenance", "archiving", "examples"];
   for (const file of STAGE_PROMPTS) {
     const composed = loadPrompt(file);
     for (const name of shared) expect(composed, `${file}: ${name}`).toContain(block(name));
     expect(composed).not.toContain("<!-- include:");
   }
   const noting = loadPrompt("noting.md"), dreaming = loadPrompt("dreaming.md");
-  for (const heading of ["### Updating", "### Archiving"]) {
-    expect(noting).toContain(heading);
-    expect(dreaming).toContain(heading);
+  for (const principle of ["- **Update**:", "- **Archive**:"]) {
+    expect(noting).toContain(principle);
+    expect(dreaming).toContain(principle);
   }
-  for (const heading of ["### Splitting", "### Merging"]) {
-    expect(noting).not.toContain(heading);
-    expect(dreaming).toContain(heading);
+  for (const principle of ["- **Split**:", "- **Merge**:"]) {
+    expect(noting).not.toContain(principle);
+    expect(dreaming).toContain(principle);
   }
   expect(dreaming).toContain("Comparison is within one scope; items of different scopes are never merged.");
   expect(dreaming).toContain("A merge may omit `text`: the later parent's body then becomes the survivor's next version verbatim.");
@@ -2910,7 +2910,7 @@ test("61: sentences are short, paragraphs are not walls, and no internal referen
 });
 
 test("61: every backticked category, kind or field word used in a stage file is defined in the shared blocks", () => {
-  const shared = ["model", "facts", "knowledge", "admission", "atomicity", "completeness", "pending", "citations", "formats", "live"]
+  const shared = ["model", "facts", "knowledge", "admission", "division", "writing", "citations", "formats", "live"]
     .map(name => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8")).join("\n");
   const defined = new Set(["goal", "constraint", "understanding", "reference", "open", "observation", "user", "assistant", "role",
     "session", "project", "global", "trace", "search", "supports", "reason", "topics", "text", "title", "sources", "address",

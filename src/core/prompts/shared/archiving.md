@@ -1,5 +1,3 @@
-### Archiving
-
-Archive when knowledge no longer meets Admission, or when budget requires losing lower-value content. Do not mistake still-useful understanding for useless process.
-
-Judge the whole item: one piece of work finishing, or part of the content going stale, does not settle the rest. Understanding or open matters that should stay resident must first be carried by knowledge that keeps them; only then archive the rest.
+- **Archive**: use it when an item no longer meets admission, or when budget forces dropping lower-value content. Judge the whole item: part of it going stale or the work finishing does not justify dropping the rest. First carry what should stay resident through an update, a split or other knowledge. Each archive names its kind:
+  - `budget`: when budget is short, content that still has value may also be dropped by relative value. The content still holds and only budget cannot fit it, so the original body is kept.
+  - `invalid`: the item no longer meets admission or no longer holds; state the reason, the evidence and the replacement, if any.

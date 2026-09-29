@@ -1,21 +1,13 @@
-### Admission and importance
+**Admission**
 
-Ask what deletion would lose: only recoverable detail, or awareness that a relevant concept, object, experience, question or reason exists?
-- Preserve enough to recognize, understand and judge. This may be user intent, an object, understanding gained from events, mechanisms, reasons, lessons, open questions or a reference. It need not be an abstract rule.
-- Leave detail in facts, Raw, old versions or authoritative documents when existing understanding locates it and omission does not impair judgment. For work in progress, keep the necessary goal, the state existing evidence supports, key open points and where to check; do not accumulate process records and statistics that can be queried directly. Keep concrete values needed to identify an object, state a condition or explain a judgment.
-- Do not create equivalent duplicates or trivial conclusions existing knowledge already yields. When an existing topic changes, update its identity.
+Ask of each candidate: **without it, could a reader still be aware that the relevant concept, object, experience or question exists, correctly understand the current view, and recover the needed judgment or action?**
 
-A lasting convention does not become a one-off detail because it appears inside a dispatch, execution instructions or a routine exchange; judge it by its content, source and range of application. Recurrence is a cue to review it. It neither widens that range nor turns an agent's requirement into a user ruling.
+- **Impairs awareness or continuation → write knowledge**: keep enough to recognize, understand, judge or continue. It may be user intent, an object, understanding left by what happened, a mechanism, a reason, a lesson, an open question or an entry point to material; it is not limited to abstract rules.
+- **Only loses detail → leave it in place**: when the retained clues reliably lead back to it and omission affects no understanding, judgment or continuation, leave it where it is. Such detail stays in facts, Raw entries, old versions or authoritative documents. Concrete values needed to identify an object, state a condition, explain a judgment or act correctly must still be kept.
+- **No new understanding → do not create**: do not create equivalent duplicates or trivial conclusions one step away. When existing knowledge changes, update it under its identity.
 
-Rank by the actual consequences of forgetting, not a fixed priority of categories. Would it lose a discussion thread, misread the user, cause a wrong choice, repeat a refuted approach, miss an unresolved matter or greatly increase recovery cost?
+When judging:
 
-Completion does not make concepts, reasons or lessons useless. Time invested does not make the details worth keeping resident.
-
-**Example: a concrete case worth remembering.** This fictional example is not evidence or a rule to retain every case.
-
-> Material: The user recalls visiting Harbor Museum. Optional galleries rejoined a main loop, letting them shorten the visit without losing orientation, unlike a compulsory route. They saved the layout in Visitor Route Notes.
-> Too abstract: Offer flexible routes.
-> Too thin: Harbor Museum; see Visitor Route Notes.
-> Useful knowledge: The user's Harbor Museum visit is a reference for flexible navigation. Optional galleries reconnect to a main loop, allowing a shorter visit while preserving orientation. Consult the sketch in Visitor Route Notes when comparing route designs.
-
-The object, comparison and retrieval cue preserve why this case matters. Routine visit details can stay in the source when they do not affect that understanding.
+1. **Content, not position**: a lasting agreement inside a dispatch, execution instructions or a routine exchange is not a one-off detail; judge it by content, source and range of application. Recurrence only prompts review. It neither widens the range of validity nor turns an agent's requirement into a user ruling.
+2. **Progress serves continuation**: keep the necessary goal, the latest evidenced state, key open points and where to check, so the reader knows how far things got and what continuing or waiting requires. Keep next steps and execution bounds already stated. Do not invent plans, or pile up process records and statistics that can be looked up.
+3. **Rank by the consequences of forgetting**: would forgetting lose a discussion thread, misread the user or cause a wrong choice, repeat a rejected route, miss an open matter, or greatly raise recovery cost? Categories have no fixed priority. Finishing a matter does not make its concepts, reasons and lessons useless; time invested does not make details worth keeping resident.

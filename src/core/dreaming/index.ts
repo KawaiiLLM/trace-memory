@@ -78,8 +78,8 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const excludedSize = due.tokens - remainder;
   const processedExcessOrder = remainder > due.budget
     ? pending.length
-      ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items occupy ${excludedSize}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under Budget priorities until that remainder fits, then deliberate the pending items below.`
-      : ` This pool is ${due.tokens}/${due.budget} tokens, over budget, and this run has no pending items. Reduce the already-processed knowledge under Budget priorities until the pool fits.`
+      ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items occupy ${excludedSize}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under the Over budget principle until that remainder fits, then deliberate the pending items below.`
+      : ` This pool is ${due.tokens}/${due.budget} tokens, over budget, and this run has no pending items. Reduce the already-processed knowledge under the Over budget principle until the pool fits.`
     : "";
   const references = due.versions.filter(value => !frozenIds.has(value.revision.id));
   const budgets = store.knowledgeBudgets();

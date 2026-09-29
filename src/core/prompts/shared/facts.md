@@ -1,21 +1,14 @@
 ### Facts
 
-A fact is one topic's slice over a continuous stretch of conversation, restoring what happened. It may span entries and Turns. Its short, nonempty, single-line `title` identifies the episode; it does not replace the body.
+A situational slice of one topic over a continuous stretch of time, restoring what happened then. One fact may span Turns and gather many Raw entries; slicing too finely loses the narrative thread.
 
-Its nonempty `sources` contain one `{address,text}` segment per contributing whole entry. Each segment has nonempty text describing that source's contribution to the topic. Core orders segments by path and joins them with line breaks into the fact's `text`; the writer supplies no separate body.
+The writer fills:
 
-Each cited entry has a core-derived `role`:
-- `user` — a user's message.
-- `assistant` — the original agent's message or tool call.
-- `observation` — a tool result; this does not mean its content was independently verified.
+- **`title`**: a one-line situational title saying what this discussion or work was doing, for recognition and lookup. It is not only the final conclusion and does not replace the body.
+- **`sources`**: one `{address, text}` segment per contributing entry. `address` is the entry's address; `text` summarizes only that entry's contribution to this topic. One entry gets one segment within a fact.
+- **`support`** and **`negate`** (optional): relations to existing facts, each naming the target fact and a strength.
+  - `support`: this fact affirms the target, such as adoption, approval, agreement, an answer, a restatement or execution of a ruling.
+  - `negate`: this fact opposes the target, such as withdrawal, veto, correction, a changed state, doubt or contrary evidence.
+  - Strength is `strong` when the entries state the relation explicitly, and `weak` when it is inferred or the evidence is incomplete. Strength follows the evidence, not the tone.
 
-An `address` names a whole entry, such as `T123#E2`, never an internal block or thinking-only entry. Assistant sources retain their original harness (Pi agent or Claude Code), not the executor's harness. A relayed report retains the role of the entry relaying it.
-
-Progress and necessary verbatim wording belong in the source segments. A new fact has no fact-wide category, actor, status or quote. Historical rows retain those fields and their stored source strings unchanged.
-
-**Optional relations, each strong or weak.**
-- **support** — this fact affirms the target: adoption, approval, agreement, an answer, a restatement, execution of a ruling.
-- **negate** — this fact opposes the target: withdrawal, veto, correction, a changed state, doubt or contrary evidence.
-- **strong** — the Raw states the relation explicitly. **weak** — the relation is inferred or its evidence is partial.
-
-Strength describes how the evidence supports or negates the target, not the tone of agreement or objection.
+The system generates the id (such as `F123`), each segment's role and the body, joining the segments in order of occurrence. The writer writes no separate body and fills no fact-level category, status, speaker or quote. Progress and necessary verbatim wording go in the source segments.
