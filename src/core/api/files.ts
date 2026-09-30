@@ -8,11 +8,12 @@ import type { SourceEntry } from "../store/index.ts";
 import { MEMORY_ROOT, memoryPath } from "../model/address.ts";
 import { renderEntryWhole, tokens } from "../render/index.ts";
 import { MAX_PUBLIC_READ_TOKENS } from "./read.ts";
+import { canonicalToolNames, renderToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
 export { MEMORY_ROOT, MEMORY_READ_ONLY, memoryPath, memoryGlob } from "../model/address.ts";
 
 /** Whose view a `/tm` file shows: the reader's own path, as a host binds `trace`. */
-export interface MemoryReader { sessionId?: number; branch?: string; headTurnId?: number | null; projectId?: number }
+export interface MemoryReader { sessionId?: number; branch?: string; headTurnId?: number | null; projectId?: number; toolNames?: ToolNames }
 export interface MemoryPage { lines: string[]; startLine: number; totalLines: number; cut?: string }
 export type MemoryGrepMode = "files_with_matches" | "content" | "count";
 export interface MemoryGrepOptions {
@@ -28,11 +29,11 @@ const VISIBLE = `${MEMORY_ROOT}/knowledge`, ALL = `${MEMORY_ROOT}/knowledge-all`
 const SESSION = /^\/tm\/S([1-9]\d*)$/, TURN = /^\/tm\/S([1-9]\d*)\/T([1-9]\d*)$/, ENTRY = /^\/tm\/S([1-9]\d*)\/T([1-9]\d*)\/E([1-9]\d*)$/;
 const INHERITED = /^\/tm\/S([1-9]\d*)\/knowledge$/, HISTORY = /^\/tm\/(K[1-9]\d*)\.history$/;
 const LEGEND = [
-  "Trace Memory, read-only (write with the note and memory tools). A file shows what trace(<address>) shows you. Grep lists matching files (content mode: path:line:text) and searches Raw entries in full, beyond their compressed view.",
+  "Trace Memory, read-only (write with the {{tool.note}} and {{tool.memory}} tools). A file shows what {{tool.trace}}(<address>) shows you. Grep lists matching files (content mode: path:line:text) and searches Raw entries in full, beyond their compressed view.",
   "/tm/knowledge: your visible knowledge · /tm/knowledge-all: every knowledge identity, other projects and archived ones included, at its latest version (Grep there searches every version)",
   "/tm/K<id>: current on your path · /tm/K<id>@v<n>: one version · /tm/K<id>#<tag>: an exact version · /tm/K<id>.history: its versions on your path",
   "/tm/F<id>: a fact and the knowledge citing it · /tm/S<n>: a session's Turns · /tm/S<n>/T<t>: a Turn (its facts and unprocessed Raw), also the directory of its Raw entries E<k>",
-  "/tm/S<n>/knowledge: the knowledge a fresh context of S<n> receives (not listed; point a subagent at it) · /tm/<address>: any other trace address, e.g. /tm/T12#E1..E5",
+  "/tm/S<n>/knowledge: the knowledge a fresh context of S<n> receives (not listed; point a subagent at it) · /tm/<address>: any other {{tool.trace}} address, e.g. /tm/T12#E1..E5",
   "",
 ];
 const PREVIEW = 160;
@@ -100,16 +101,17 @@ const capNotice = (tokensCut: number | undefined) => tokensCut === undefined ? "
 
 export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
   const store = memory.store;
+  const toolNames = reader.toolNames ?? canonicalToolNames;
   const bound = reader.sessionId === undefined ? {} : { sessionId: reader.sessionId, headTurnId: reader.headTurnId,
     ...(reader.branch === undefined ? {} : { branch: reader.branch }) };
   const trace = (address: string, extra: { versions?: "history" } = {}) =>
-    memory.trace(address, { modelFacing: true, pageBudget: null, ...bound, ...extra });
+    memory.trace(address, { modelFacing: true, pageBudget: null, ...bound, ...extra, toolNames });
   /** Grep's search source for a fact or knowledge address: the same rendering `trace` gives a plain
    * read, with its per-item body compression removed. A manual fact or knowledge body may legally
    * exceed that compression's cap, and a needle in its middle must still be found; what Grep displays
    * of a match stays bounded regardless (windowedLine, below). Read keeps its own trace-equivalence
    * (fileText), unchanged. */
-  const full = (address: string) => memory.trace(address, { modelFacing: true, pageBudget: null, itemBudget: null, ...bound });
+  const full = (address: string) => memory.trace(address, { modelFacing: true, pageBudget: null, itemBudget: null, ...bound, toolNames });
   const resolve = (raw: string) => {
     const path = memoryPath(raw);
     if (!path) throw new Error(`not a Trace Memory path: ${raw}`);
@@ -190,7 +192,7 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
   const lines = (path: string): string[] => {
     const listing = TURN.test(path) ? null : children(path);
     if (!listing) return fileText(path).split("\n");
-    return [...(path === MEMORY_ROOT ? LEGEND : []), ...(listing.length ? listing.map(([child, label]) => label ? `${child}  ${label}` : child) : ["(empty)"])];
+    return [...(path === MEMORY_ROOT ? LEGEND.map(line => renderToolNames(line, toolNames)) : []), ...(listing.length ? listing.map(([child, label]) => label ? `${child}  ${label}` : child) : ["(empty)"])];
   };
 
   const read = (raw: string, offset = 1, limit = 2000): MemoryPage => {

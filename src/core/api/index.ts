@@ -1,6 +1,7 @@
 export { toolDefinitions, toolRejected, reviewFeedback, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 import { knowledgeReadSelection } from "./knowledge-read.ts";
+import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
 import { sourceBlocks, resultHasText, type SourceNormalizer } from "../model/source.ts";
@@ -428,14 +429,14 @@ export interface TraceMemory {
   noting(input: NotingInput): Promise<NotingResult>;
   dream(input: DreamingInput): Promise<DreamingResult>;
   /** Committed lineage facts and unrecorded raw, without dropping facts. */
-  branchSummary(sessionId: number, branch: string, headTurnId: number): string;
+  branchSummary(sessionId: number, branch: string, headTurnId: number, toolNames?: ToolNames): string;
   /** Ticket 20, as 30 and 28a left it: the compaction result — the three allocated windows over one
    * envelope, or the explicit ask that the host decline and let its native compaction run (20c).
    * `retainedView` describes actually retained Raw/fact/knowledge identities; legacy native-ID arrays
    * remain accepted for Raw-only callers. A host that keeps none passes none. */
   compact(sessionId: number, branch?: string, headTurnId?: number, retainedView?: readonly string[] | VisibleView, transportItems?: boolean,
     /** 97: `knowledge: false` leaves the Knowledge window empty, for a host that cannot record its delivery. */
-    options?: { knowledge?: boolean }): CompactResult;
+    options?: { knowledge?: boolean; toolNames?: ToolNames }): CompactResult;
   /** Ticket 21b: the path-selected applicable knowledge grouped by topic, as commit references; a
    * read projection only — it neither reorders injection nor changes what is applicable. */
   topicGroups(sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups;
@@ -597,7 +598,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       return () => [path ? `K${id} path current: ${tips.map(shown).join(", ") || "none"}`
         : `K${id} tips (newest-created: ${tips.length ? shown(tips.reduce((a, b) => a.id > b.id ? a : b)) : "none"}):`,
         ...tips.map(r => (tips.length > 1 ? `Alternative ${shown(r)}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
-        ...archived.map(r => `  ${shown(r)}: ${selection.status(r)}; inspect trace(K${id}, versions:history)`),
+        ...archived.map(r => `  ${shown(r)}: ${selection.status(r)}; inspect ${display.toolNames?.trace ?? canonicalToolNames.trace}(K${id}, versions:history)`),
         ...(fields.has("links") ? links.map(l => `  ${l.kind}: ${display.modelFacing ? `K${l.toKnowledge}@v${store.versionOrdinal(l.toKnowledge, l.toCommit)}` : `K${l.toKnowledge}@${l.toCommit}`} (from ${display.modelFacing ? `K${l.fromKnowledge}@v${store.versionOrdinal(l.fromKnowledge, l.fromCommit)}` : `K${l.fromKnowledge}@${l.fromCommit}`})`) : []),
         ...(versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable, fields, shown)]
           : ["Commit history:", renderCommitHistory(allHistory, fields, shown)]),
@@ -954,7 +955,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       Object.assign(run, store.bindRunOrigin(run, origin));
       if (phase === "dreaming") Object.assign(run, store.bindDreamingRun(run));
       const binding = bindTools(store, read, input.maxReadChars === undefined ? context : { ...context, maxReadChars: input.maxReadChars },
-        run, dreaming);
+        run, dreaming, frozen!.names);
       task.close = binding.close;
       return binding;
     };

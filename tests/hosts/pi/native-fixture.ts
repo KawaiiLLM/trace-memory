@@ -9,6 +9,8 @@ import { expect, vi } from "vitest";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
 import { toolDefinitions } from "../../../src/core/api/index.ts";
+import { renderToolDefinitions } from "../../../src/core/api/tools.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import type { NativeForkTask, ThinkingLevel } from "../../../src/hosts/pi/native.ts";
 
 export type Body = Record<string, any>;
@@ -144,7 +146,7 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
   // The parent registers its own foreground tool plus the four memory tools, as the real
   // foreground does: the child must reproduce all five definitions but may execute only the memory ones.
   const tools = [{ name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
-    ...toolDefinitions].map(definition => ({ ...definition, label: definition.name,
+    ...renderToolDefinitions(toolDefinitions, canonicalToolNames)].map(definition => ({ ...definition, label: definition.name,
     async execute() { return { content: [{ type: "text", text: "ok" }], details: {} }; } }));
   const { session } = await createAgentSession({ cwd: h.dir, agentDir, model, modelRuntime, settingsManager, resourceLoader,
     sessionManager: manager, thinkingLevel: parent.thinkingLevel, noTools: "all", tools: tools.map(t => t.name), customTools: tools as never });

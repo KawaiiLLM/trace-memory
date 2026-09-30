@@ -3,15 +3,15 @@ import { createHash } from "node:crypto";
 import type { Store, RunInput, TaskClaim } from "../store/index.ts";
 import { processedBlock } from "../store/processing.ts";
 import { budgetKnowledge, renderFact, renderFactGroups, renderKnowledgeBlock, tokens } from "../render/index.ts";
-import { dreamingToolDefinitions, type bindTools } from "../api/tools.ts";
+import { dreamingToolDefinitions, pricedToolDefinitions, type bindTools } from "../api/tools.ts";
+import { canonicalToolNames, validateToolNames } from "../prompts/tool-names.ts";
 import type { AgentControl, RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
 import type { NotingInput } from "../noting/index.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { TriggerOrigin } from "../model/index.ts";
 import { renderDreamingCheckReceipt, type DreamingCheckResult } from "./check-receipt.ts";
 
-const prompt = loadPrompt("dreaming.md");
-const promptHash = createHash("sha256").update(prompt).digest("hex");
+
 export type DreamingInput = Omit<NotingInput, "mode" | "effectiveMode" | "visible" | "boundary">;
 export type DreamingResult = { automaticOff?: string } & (
   | { outcome: "empty" }
@@ -65,6 +65,8 @@ export function admitDreaming(store: Store, input: DreamingInput, config: TraceM
 function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig, claim: TaskClaim,
   path: { sessionId: number; branch: string; headTurnId: number },
   { pool: due, range }: ReturnType<Store["freezeKnowledgePool"]>) {
+  if (store.getSession(path.sessionId)!.host.startsWith("cc:") && !input.toolNames)
+    throw new Error("CC Dreamer launch requires exposed tool names");
   const frozenIds = new Set(range.eventIds);
   const pending = due.pending.filter(value => frozenIds.has(value.revisionId));
   const changed = ["Pending current knowledge:", ...pending.map(value => value.material)].join("\n");
@@ -112,9 +114,10 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   });
   const times = store.factTurnTimes(facts), snapshot = store.pathSnapshot(path);
   const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot);
+  const names = validateToolNames(input.toolNames ?? canonicalToolNames);
   const factText = (count: number) => ["Direct supporting facts:",
     ...renderFactGroups(facts.slice(0, count), fact => renderFact(fact, relations.get(fact.id) ?? []), times),
-    ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count).map(fact => `F${fact.id}`).join(", ")}; expand with trace.`] : [])].join("\n");
+    ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count).map(fact => `F${fact.id}`).join(", ")}; expand with ${names.trace}.`] : [])].join("\n");
   let count = facts.length;
   while (count && tokens(factText(count)) > 10_000) count--;
   const direct = factText(count);
@@ -123,12 +126,14 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const material = { bound: `Run wall-clock bound: ${config.dreaming.timeoutMs} ms. Wrap up before this deadline.${processedExcessOrder}`,
     processed: old, changed, facts: direct };
   const text = Object.values(material).join("\n\n");
+  const prompt = loadPrompt("dreaming.md", names);
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
-      tokens(prompt) + tokens(JSON.stringify(dreamingToolDefinitions())) + tokens(text) > input.capacity.inputTokens))
+      tokens(prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingToolDefinitions(), names))) + tokens(text) > input.capacity.inputTokens))
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
   return { sessionId: path.sessionId, branch: path.branch, path, range, pool: due.pool, frozenIds: [...frozenIds],
     eventIds: [...frozenIds], changed: { versions: [...frozenValues, ...frozenArchives] }, material, text,
     profile: structuredClone(config.render), model: input.model ?? "session", mode: "subagent" as const, claim,
+    prompt, names, promptHash: createHash("sha256").update(prompt).digest("hex"),
     maxToolRounds: config.dreaming.maxToolRounds, admittedProcessedInputCap: processedInputCap };
 }
 
@@ -137,7 +142,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   const { sessionId, branch, path, range } = frozen;
   let rounds = 0;
   const run: RunInput = { kind: "dreaming", sessionId, branch, dreamingRangeId: range.id, model: frozen.model, mode: "subagent",
-    promptHash, rangeFrom: `${frozen.pool}#${range.id}`, rangeTo: `${frozen.pool}#${range.id}`, createdAt: new Date().toISOString() };
+    promptHash: frozen.promptHash, rangeFrom: `${frozen.pool}#${range.id}`, rangeTo: `${frozen.pool}#${range.id}`, createdAt: new Date().toISOString() };
   let binding!: ReturnType<typeof bindTools>;
   const address = (commit: number) => {
     const revision = store.knowledgeRevision(commit)!;
@@ -173,7 +178,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
         ? "version was already consumed by this run" : undefined });
   let result: RunAgentResult;
   try {
-    result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt, promptHash,
+    result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt: frozen.prompt, promptHash: frozen.promptHash,
       text: frozen.text, material: frozen.material, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
       tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest,
       passEnd: (used: number) => { rounds = used; return undefined; }, reportRounds: (used: number) => { rounds = used; } } satisfies DreamingAgentInput);

@@ -12,6 +12,8 @@ import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
 import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
 import { agentDirectory, configuration, configuredMode, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
+import { canonicalToolNames } from "../../core/prompts/tool-names.ts";
+import { renderToolDefinitions } from "../../core/api/tools.ts";
 import { TraceMemory, cacheMissWarning, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, formatCost, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
@@ -532,7 +534,7 @@ export default function (pi: ExtensionAPI) {
     const common = { ...target, ...selection, effectiveMode: effective, thinkingLevel: inheritedThinking,
       ...(inherited ? { visible: inherited } : {}),
       subagentThinkingLevel: subagentThinking,
-      borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
+      borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,
       ...(options.boundary ? { boundary: options.boundary } : {}),
       // 27c: the refused attempt's gate result, for a refusal that recorded no run of its own.
       // 27d: with it, the cancellation generation that attempt was admitted under — core drops this
@@ -1356,7 +1358,7 @@ export default function (pi: ExtensionAPI) {
   });
   // The main agent registers the façade metadata (same name, description, schema the runs send)
   // wrapped with an executor bound to the current session and turn.
-  const definitions = toolDefinitions.map(definition => ({ ...definition, label: definition.name,
+  const definitions = renderToolDefinitions(toolDefinitions, canonicalToolNames).map(definition => ({ ...definition, label: definition.name,
     async execute(_id: string, raw: unknown, _signal: unknown, _update: unknown, context: ExtensionContext) {
       ensure(context); reconcile();
       const bound = state.sessionId && current?.id ? memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id, triggerEntryId: state.sourceHead }) : null;

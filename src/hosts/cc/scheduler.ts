@@ -2,10 +2,11 @@ import { NOTING_CAPACITY, type DreamingResult, type NotingResult, type TraceMemo
 import type { CcReconcileResult } from "./importer.ts";
 import type { ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
+import { ccPluginToolNames, ccWorkerToolNames } from "./tool-names.ts";
 
 // CC alone defers MCP tools in a native fork. Core receives and prices this exact text at freeze;
 // the host must not append anything to the admitted task at launch.
-const CC_NOTER_FORK_GUIDANCE = "In this Claude Code fork, note and memory may be deferred. Use ToolSearch to load both tools before writing.";
+const CC_NOTER_FORK_GUIDANCE = "In this Claude Code fork, {{tool.note}} and {{tool.memory}} may be deferred. Use ToolSearch to load both tools before writing.";
 
 export type CcWorkerPhase = "noting" | "dreaming";
 export type CcForkChoice = { model: string; capacity: { inputTokens: number; prefixTokens: number }; visible: VisibleView } | { refused: string };
@@ -213,6 +214,7 @@ export class CcTaskScheduler {
     const execution = this.worker!.phases[phase];
     return { ...target, borrowed, automatic, executorSessionId: target.sessionId, mode: "subagent" as const,
       effectiveMode: "subagent" as const, model: execution.model, capacity: execution.capacity, maxReadChars: CC_MAX_RESULT_CHARS,
+      toolNames: ccWorkerToolNames,
       thinkingLevel: execution.thinking, subagentThinkingLevel: execution.thinking, ...(boundary ? { boundary } : {}) };
   }
 
@@ -246,7 +248,8 @@ export class CcTaskScheduler {
         try {
           const frozenIds = this.memory.notingBatch(target).map(entry => entry.id);
           result = await this.memory.noting({ ...options, mode: "fork", effectiveMode: "fork",
-            model: fork.model, capacity: fork.capacity, visible: fork.visible, forkGuidance: CC_NOTER_FORK_GUIDANCE });
+            model: fork.model, capacity: fork.capacity, visible: fork.visible, forkGuidance: CC_NOTER_FORK_GUIDANCE,
+            toolNames: ccPluginToolNames });
           if (result.outcome === "dropped" && "refused" in result && result.refused && !this.stopped && this.cancellationEpoch === epoch) {
             const refusal = result.refused as { reason?: string };
             noLaunch?.();

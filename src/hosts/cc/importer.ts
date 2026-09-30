@@ -66,8 +66,8 @@ interface BootstrapSummary {
   incompleteBytes: number;
 }
 const snapshotKey = (value: CcTranscriptSnapshot) => JSON.stringify([value.exists, value.device, value.inode, value.size, value.modifiedMs, value.changedMs]);
-export const CC_PLUGIN_NAME = "trace-memory";
-export const CC_MCP_SERVER_NAME = "traceMemory";
+export { CC_PLUGIN_NAME, CC_MCP_SERVER_NAME } from "./tool-names.ts";
+import { CC_PLUGIN_NAME, CC_MCP_SERVER_NAME } from "./tool-names.ts";
 
 export class CcProjection {
   readonly memory: TraceMemoryFacade;

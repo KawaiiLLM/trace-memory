@@ -8,6 +8,8 @@ import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { hydrate } from "../../source-fixture.ts";
 import { fact as seedFact, facts as seedFacts } from "../../support/seed.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { rawWindowTokens } from "../../../src/core/render/material.ts";
 
 // 30 capped one entry view at `render.entryTokens` (2,000), so the cases below reach a trigger, a
@@ -101,7 +103,7 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     await h.emit("session_start");
     // Price the current shared prompt/schema, not the pre-92 fixed overhead. The remaining
     // 3k holds one 2k entry and framing, but not two entries. Production limits are unchanged.
-    const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(toolDefinitions));
+    const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
     const fittingWindow = fixed + 3_000 + CONTEXT_HEADROOM;
     h.ctx.model = { ...h.ctx.model!, contextWindow: fittingWindow };
     h.persist(reply("completion")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();

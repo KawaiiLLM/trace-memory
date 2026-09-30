@@ -1,5 +1,6 @@
 import { prepareMemory } from "../knowledge-write/prepare.ts";
 import { KnowledgeVersionProblem, type FactCommitInput, type KnowledgePath, type RunInput, type Store } from "../store/index.ts";
+import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
 /** Private to a single N binding. Tombstones preserve handle identity; invalid replacements
  * deliberately remove the old accepted value. No database IDs exist before publication. */
@@ -9,7 +10,8 @@ class Slots<T> {
   used = false;
   error?: string;
   readonly prefix: "$" | "M";
-  constructor(prefix: "$" | "M") { this.prefix = prefix; }
+  private readonly names: ToolNames;
+  constructor(prefix: "$" | "M", names: ToolNames) { this.prefix = prefix; this.names = names; }
   id(value: unknown): number {
     const match = typeof value === "string" && (this.prefix === "$" ? /^\$([1-9]\d*)$/ : /^M([1-9]\d*)$/).exec(value);
     if (!match || !this.rows.has(Number(match[1]))) throw new Error(`unknown ${this.prefix} slot ${String(value)}`);
@@ -22,7 +24,7 @@ class Slots<T> {
         Object.keys(input).some(key => ![field, "drop", ...(field === "operations" ? ["skipped"] : [])].includes(key)) ||
         (input.drop !== undefined && (!Array.isArray(input.drop) || input.drop.some(id => typeof id !== "string"))) ||
         (field === "operations" && (!Array.isArray(input.skipped) || input.skipped.length))) {
-      this.error = `${field === "facts" ? "note" : "memory"} expects ${field}, optional drop${field === "operations" ? ", and skipped: []" : ""}`;
+      this.error = `${this.names[field === "facts" ? "note" : "memory"]} expects ${field}, optional drop${field === "operations" ? ", and skipped: []" : ""}`;
       // A refused envelope still withdraws explicitly named replacement values. Do not
       // allocate append slots or apply drops from a call whose structure was refused.
       for (const item of Array.isArray(input?.[field]) ? input[field] as unknown[] : []) {
@@ -63,8 +65,9 @@ class Slots<T> {
 }
 
 export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
-  validateFact: (raw: unknown, slot: number, earlier: (slot: number) => boolean) => FactCommitInput) {
-  const facts = new Slots<FactCommitInput>("$"), operations = new Slots<unknown>("M");
+  validateFact: (raw: unknown, slot: number, earlier: (slot: number) => boolean) => FactCommitInput,
+  names: ToolNames = canonicalToolNames) {
+  const facts = new Slots<FactCommitInput>("$", names), operations = new Slots<unknown>("M", names);
   const fact = (raw: unknown, id: number) => validateFact(raw, id,
     target => target < id && facts.rows.get(target)?.value !== undefined);
   const prepare = (raw: unknown, mapping?: ReadonlyMap<number, number>) => {
@@ -112,15 +115,16 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
   const status = (toolProblems: ReadonlyMap<string, string>): string => {
     const blockers: string[] = [];
     for (const [name, slots] of [["note", facts], ["memory", operations]] as const) {
-      if (!slots.used) blockers.push(`${name} not called; call ${name === "note" ? "note({facts: []})" : "memory({operations: [], skipped: []})"}`);
-      if (slots.error) blockers.push(`${name} call error: ${slots.error}; make a structurally valid ${name} call to clear it`);
+      const exposed = names[name];
+      if (!slots.used) blockers.push(`${exposed} not called; call ${exposed}${name === "note" ? "({facts: []})" : "({operations: [], skipped: []})"}`);
+      if (slots.error) blockers.push(`${exposed} call error: ${slots.error}; make a structurally valid ${exposed} call to clear it`);
       for (const [id, row] of slots.rows) if (row.error) {
         const address = `${slots.prefix}${id}`;
         blockers.push(`${address}: ${row.error}; resubmit with slot: "${address}" or drop: ["${address}"] (drop may be refused if referenced)`);
       }
       // A wrapper failure can block publication even when the held layer has no error.
       if (toolProblems.has(name) && !slots.problems().length)
-        blockers.push(`${name} call error: ${toolProblems.get(name)}; make a structurally valid ${name} call to clear it`);
+        blockers.push(`${exposed} call error: ${toolProblems.get(name)}; make a structurally valid ${exposed} call to clear it`);
     }
     return blockers.length
       ? `Not publishable: ${blockers.join("; ")}. Ending now publishes nothing.`

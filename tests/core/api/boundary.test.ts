@@ -5,6 +5,8 @@
 // names the ruling it pins.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -267,7 +269,7 @@ test("19b/92: N with unavailable audit stages knowledge on earlier facts and com
 // ---------------------------------------------------------- gate 4: budget before selection
 
 /** Cost of everything core adds to the material of a Noting run in an empty database. */
-const overhead = () => tokens(notingPrompt) + tokens(JSON.stringify(toolDefinitions));
+const overhead = () => tokens(notingPrompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
 /** 29b: what a fork pays before its material — its inherited measure and the instructions. The tool
  * definitions are not in it: a fork inherits them with the context its measure already covers. */
 const forkOverhead = (prefix: number) => tokens(notingPrompt) + prefix;

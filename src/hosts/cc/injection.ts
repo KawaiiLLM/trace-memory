@@ -9,6 +9,7 @@ import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessio
 import { CC_AUTO_CONTINUE_SUFFIX, CC_INJECTION_BEGIN, CC_INJECTION_HEADER, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccResultText, ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
 import { CcProjection } from "./importer.ts";
 import { executorLiveness } from "./control.ts";
+import { ccPluginToolNames } from "./tool-names.ts";
 
 export { CC_INJECTION_BEGIN, CC_INJECTION_HEADER };
 const BEGIN = CC_INJECTION_BEGIN;
@@ -414,7 +415,7 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
     const headTurnId = memory.store.findSourceEntry(core, lineage, leaf)?.turnId ?? memory.store.findNativeTurn(core, lineage, leaf)?.turnId;
     if (headTurnId === undefined) throw new Error("the selected native source has no persisted core Turn");
     const { compacted, watermark } = memory.store.readSnapshot(() => ({
-      compacted: memory.compact(core, branch, headTurnId, [], false), watermark: memory.store.deliveryWatermark(owner) }));
+      compacted: memory.compact(core, branch, headTurnId, [], false, { toolNames: ccPluginToolNames }), watermark: memory.store.deliveryWatermark(owner) }));
     if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation: ${compacted.reason}`);
     // 102 (ruled): the one place the carrier is framed as Pi frames a compaction summary; the delivery
     // below is recorded from the same supplied material, and the framing is outside its Knowledge cost.

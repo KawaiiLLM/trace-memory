@@ -7,6 +7,8 @@ import { freezeDreaming } from "../../../src/core/dreaming/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { validateConfig, toolDefinitions } from "../../../src/core/api/index.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 
 const memories: ReturnType<typeof sourceSeededMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -96,7 +98,7 @@ test("ticket92material capacity shrinking reuses metadata and Raw views but rebi
   f.select();
   const config = { ...f.memory.config, compaction: { ...f.memory.config.compaction, factsTokens: 1 } };
   const complete = freezeNoting(f.store, { ...f.target, mode: "subagent" }, config);
-  const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(toolDefinitions));
+  const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
   const raw = vi.spyOn(f.store, "getSourceEntry"), snapshots = vi.spyOn(f.store, "pathSnapshot");
   const statements = vi.spyOn(f.store.db, "prepare");
   const reduced = freezeNoting(f.store, { ...f.target, mode: "subagent", capacity: {

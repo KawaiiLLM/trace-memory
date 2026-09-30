@@ -9,7 +9,10 @@ import { TraceMemory, toolDefinitions, type NotingAgentInput, type RunAgentResul
 import { resolveCcHostConfig, CC_CONTEXT_HEADROOM } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, CcResponseOrigins, ccNativeTranscriptPath, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
 import { installCcNativeRejectionGuard } from "../../src/hosts/cc/native-rejection.ts";
-import { CC_MAX_RESULT_CHARS } from "../../src/hosts/cc/tools.ts";
+import { CC_MAX_RESULT_CHARS, CcForegroundTools } from "../../src/hosts/cc/tools.ts";
+import { CC_MCP_SERVER_NAME, CC_PLUGIN_NAME, ccPluginToolNames, ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
+import { renderToolDefinitions } from "../../src/core/api/tools.ts";
+import { canonicalToolNames } from "../../src/core/prompts/tool-names.ts";
 import { CcTaskScheduler as CoreCcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import type { CcReconcileResult } from "../../src/hosts/cc/importer.ts";
 import { TEST_CC_VERSION } from "../support/cc-version.ts";
@@ -105,6 +108,22 @@ test("production worker serves original schemas and raw arguments, publishes the
   expect(optionsSeen[0]).toMatchObject({ settingSources: [], plugins: [], tools: [], strictMcpConfig: true,
     systemPrompt: task.prompt });
   expect(optionsSeen[0]).not.toHaveProperty("hooks");
+  expect(optionsSeen[0]!.allowedTools).toContain(ccWorkerToolNames.trace);
+  expect((listed[0] as any).tools.map((tool: { name: string }) => `mcp__${(optionsSeen[0]!.mcpServers as object && Object.keys(optionsSeen[0]!.mcpServers as object)[0])}__${tool.name}`)).toContain(ccWorkerToolNames.trace);
+});
+
+test("host tool maps match registered MCP names and rendered tool descriptions", () => {
+  const plugin = JSON.parse(readFileSync(new URL("../../plugin/.mcp.json", import.meta.url), "utf8"));
+  const listed = new CcForegroundTools({} as never).list();
+  expect(plugin).toHaveProperty(CC_MCP_SERVER_NAME);
+  const pluginName = JSON.parse(readFileSync(new URL("../../plugin/.claude-plugin/plugin.json", import.meta.url), "utf8")).name;
+  expect(pluginName).toBe(CC_PLUGIN_NAME);
+  for (const tool of listed) {
+    expect(ccPluginToolNames[tool.name as keyof typeof ccPluginToolNames]).toBe(`mcp__plugin_${pluginName}_${CC_MCP_SERVER_NAME}__${tool.name}`);
+    expect(tool.description).not.toContain("{{tool.");
+  }
+  expect(listed.find(tool => tool.name === "note")!.description).toContain(ccPluginToolNames.memory);
+  expect(renderToolDefinitions(toolDefinitions, canonicalToolNames).find(tool => tool.name === "note")!.description).toContain("Both note and memory");
 });
 
 test("worker passes only native retry count, records native events, and preserves API failure detail and usage", async () => {
@@ -629,7 +648,8 @@ test("production MCP preserves non-default trace and search cursors through real
   const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
   const target = append(memory, session.id, "source", text);
   const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: target.turn.id,
-    triggerEntryId: target.entry.id, mode: "subagent", model: "claude-sonnet-4-5", maxReadChars: CC_MAX_RESULT_CHARS });
+    triggerEntryId: target.entry.id, mode: "subagent", model: "claude-sonnet-4-5", maxReadChars: CC_MAX_RESULT_CHARS,
+    toolNames: ccWorkerToolNames });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
   const listed = (schemas[0] as any).tools;
   for (const name of ["trace", "search"]) expect(listed.find((value: any) => value.name === name).inputSchema)
@@ -693,7 +713,7 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
       source: [`T${target.turn.id}#E1`], createdAt: "now" }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: target.turn.id,
-    triggerEntryId: target.entry.id, mode: "subagent", model: "claude-sonnet-4-5" });
+    triggerEntryId: target.entry.id, mode: "subagent", model: "claude-sonnet-4-5", toolNames: ccWorkerToolNames });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
   expect(memory.store.currentKnowledge()).toHaveLength(1);
   if (invalidFirst) expect(receipts[0]).toContain("rejected:");
@@ -757,7 +777,7 @@ test("production protocol aborts remain failures while external cancellation sta
     startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
   const tail = append(memory, session.id, "protocol", "Pending source material for the protocol failure test.");
   const target = { sessionId: session.id, branch: "main", headTurnId: tail.turn.id,
-    triggerEntryId: tail.entry.id, mode: "subagent" as const, model: "claude-sonnet-4-5" };
+    triggerEntryId: tail.entry.id, mode: "subagent" as const, model: "claude-sonnet-4-5", toolNames: ccWorkerToolNames };
 
   const controller = new AbortController();
   const cancellation = memory.noting({ ...target, signal: controller.signal });

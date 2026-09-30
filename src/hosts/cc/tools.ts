@@ -1,3 +1,5 @@
+import { renderToolDefinitions } from "../../core/api/tools.ts";
+import { ccPluginToolNames } from "./tool-names.ts";
 import { toolDefinitions, toolRejected, validateReadInput, type SearchScope, type ToolDefinition } from "../../core/api/index.ts";
 import type { CcCoordinator, CcReadProjection, CcToolProjection } from "./lifecycle.ts";
 
@@ -18,7 +20,7 @@ export class CcForegroundTools {
   constructor(coordinator: CcCoordinator) { this.coordinator = coordinator; }
 
   list(): { name: string; description: string; inputSchema: Record<string, unknown>; _meta: typeof RESULT_SIZE_META }[] {
-    return toolDefinitions.filter(tool => FOREGROUND.has(tool.name)).map(tool => ({
+    return renderToolDefinitions(toolDefinitions.filter(tool => FOREGROUND.has(tool.name)), ccPluginToolNames).map(tool => ({
       name: tool.name, description: tool.description, inputSchema: structuredClone(tool.parameters), _meta: RESULT_SIZE_META,
     }));
   }
@@ -35,14 +37,14 @@ export class CcForegroundTools {
   private boundTools(projection: CcToolProjection): ToolDefinition[] {
     return projection.memory.tools({ kind: "manual", sessionId: projection.coreSessionId, branch: projection.branch,
       currentTurnId: projection.headTurnId, triggerEntryId: projection.triggerEntryId, entryIds: projection.entryIds,
-      maxReadChars: CC_MAX_RESULT_CHARS });
+      maxReadChars: CC_MAX_RESULT_CHARS, toolNames: ccPluginToolNames });
   }
 
   private read(projection: CcReadProjection, name: "trace" | "search", input: unknown): string {
     if (projection.binding) return this.boundTools({ memory: projection.memory, ...projection.binding })
       .find(candidate => candidate.name === name)!.execute(input);
     const value = validateReadInput(name, input);
-    const options = { ...value, modelFacing: true, maxChars: CC_MAX_RESULT_CHARS };
+    const options = { ...value, modelFacing: true, toolNames: ccPluginToolNames, maxChars: CC_MAX_RESULT_CHARS };
     return name === "trace" ? projection.memory.trace(value.address as string, options)
       : projection.memory.search(value.query as string, value.layer as SearchScope | undefined, options);
   }

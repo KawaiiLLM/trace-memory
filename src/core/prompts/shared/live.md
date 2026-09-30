@@ -1,1 +1,1 @@
-- **Live conversation**: when the message carries the range and an index or list instead of the material itself, the material is already in this conversation and is not repeated. Only what is not yet visible is supplied. Work on exactly what is listed; `trace` what you cannot find.
+- **Live conversation**: when the message carries the range and an index or list instead of the material itself, the material is already in this conversation and is not repeated. Only what is not yet visible is supplied. Work on exactly what is listed; `{{tool.trace}}` what you cannot find.

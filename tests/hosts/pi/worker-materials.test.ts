@@ -55,6 +55,9 @@ test("92: the Noter fork inherits its stable parent without a Raw or preceding-f
     expect(run.mode).toBe("fork");
     const increment = task(child);
     const instructions = loadPrompt("noting.md");
+    const registered = child.tools.map((tool: Body) => tool.function.name);
+    for (const name of ["trace", "search", "note", "memory"]) expect(registered).toContain(name);
+    expect(instructions).toContain(`\`${registered.find((name: string) => name === "note")}({facts: []})\``);
     expect(text(child.messages.at(-1)!)).toContain(`${instructions}\n\n`);
     expect(text(child.messages.at(-1)!).split(instructions)).toHaveLength(2);
     // Mandatory framing, whatever the data delta is: instruction, range, head reply, source index.
@@ -78,6 +81,8 @@ test("25a 2026-09-09: the same task in subagent mode carries full history and ti
     expect(run.mode).toBe("subagent");
     // A fresh child: core's prompt as the system message, the whole fresh material as the task.
     expect(String(child.messages[0].content)).toBe(loadPrompt("noting.md"));
+    expect(child.tools.map((tool: Body) => tool.function.name)).toEqual(expect.arrayContaining(["trace", "search", "note", "memory"]));
+    expect(String(child.messages[0].content)).toContain("`note({facts: []})`");
     const body = text(child.messages.at(-1)!);
     expect(body).toContain("Recent facts (by Turn):");
     expect(body).toContain("[F1]"); // Both modes must supply this missing fact history.

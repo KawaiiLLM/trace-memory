@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
+import { ccPluginToolNames, ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-67.db", stateDir: "/tmp/unused-67",
@@ -30,10 +31,11 @@ test("112: only an admitted CC fork passes its ToolSearch guidance to Core befor
     visible: { raw: new Map(), facts: new Set(), knowledge: new Set() } } as never;
   f.scheduler.turnEnd(projection, f.scheduler.catchupTicket(), fork); await tick();
   expect(f.memory.noting).toHaveBeenCalledWith(expect.objectContaining({ effectiveMode: "fork",
-    forkGuidance: expect.stringContaining("ToolSearch") }));
+    toolNames: ccPluginToolNames, forkGuidance: expect.stringContaining("ToolSearch") }));
   const input = f.memory.noting.mock.calls[0]![0] as { forkGuidance: string };
-  expect(input.forkGuidance).toContain("note and memory");
+  expect(input.forkGuidance).toContain("{{tool.note}} and {{tool.memory}}");
   f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
+  expect(f.memory.noting.mock.calls[1]![0]).toMatchObject({ toolNames: ccWorkerToolNames });
   expect(f.memory.noting.mock.calls[1]![0]).not.toHaveProperty("forkGuidance");
 });
 

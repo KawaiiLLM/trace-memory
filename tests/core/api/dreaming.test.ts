@@ -1,9 +1,12 @@
 import { afterEach, expect, test } from "vitest";
+import { createHash } from "node:crypto";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -45,6 +48,26 @@ async function admitted(f: ReturnType<typeof fixture>, scenario: (input: Dreamin
   const trigger = createDreamerTrigger(f.memory, f.target, f.fact, f.store.listKnowledgeRevisions().length + 1, scope);
   return { trigger, result: await f.scenarios.run(f.memory, f.target, input => scenario(input, trigger)) };
 }
+
+test("Dreamer instructions use its fresh host's exposed check, memory and read tools in the audited prompt", async () => {
+  const f = fixture();
+  createDreamerTrigger(f.memory, f.target, f.fact, 1);
+  const names = Object.fromEntries(Object.keys(canonicalToolNames).map(role => [role, `mcp__trace_memory__${role}`])) as unknown as typeof canonicalToolNames;
+  const rendered = loadPrompt("dreaming.md", names);
+  const result = await f.scenarios.run(f.memory, { ...f.target, toolNames: names } as typeof f.target, task => {
+    expect(task.prompt).toBe(rendered);
+    expect(task.prompt).toContain("call `mcp__trace_memory__check`");
+    expect(task.prompt).toContain("`mcp__trace_memory__memory({operations, skipped})`");
+    expect(task.prompt).not.toContain("{{tool.");
+    expect(task.promptHash).toBe(createHash("sha256").update(rendered).digest("hex"));
+    expect(task.tools.map(tool => tool.name)).toEqual(["trace", "search", "check", "memory"]);
+    task.acknowledgeRequest();
+    return { outcome: "failure", output: "fixture stopped", request: { exact: "dream names" } };
+  });
+  expect(result.outcome).toBe("failure");
+  if (!("runId" in result)) throw new Error("missing audited run");
+  expect(f.store.getRun(result.runId)!.promptHash).toBe(createHash("sha256").update(rendered).digest("hex"));
+});
 
 test("64c exact provider request and terminal audit are preserved while success processes the frozen pool revisions", async () => {
   const f = fixture(), base = f.create("durable base");

@@ -7,6 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { sourceSeededMemory } from "../source-fixture.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
+import { ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
 import { TEST_CC_VERSION } from "../support/cc-version.ts";
 
 const dirs: string[] = [];
@@ -92,7 +93,7 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
       const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
       // The query closes over the same target through these bindings.
       target = { session, path };
-      const result = await memory.noting({ ...path, model: "test", mode: "subagent" });
+      const result = await memory.noting({ ...path, model: "test", mode: "subagent", toolNames: ccWorkerToolNames });
       expect(replies, JSON.stringify(result)).toHaveLength(2);
       expect(replies[0]).toContain("held: $1"); expect(replies[1]).toContain("held: M1");
       const succeeds = ending === "success" || ending.startsWith("corrected");

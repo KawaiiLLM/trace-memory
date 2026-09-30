@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { type Fact, type Turn } from "../model/index.ts";
 import type { Store, RunInput, SourceEntry, SourceEntryMeta } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
-import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
+import { pricedToolDefinitions, toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
+import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskBoundary, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderEntryIndex, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor } from "../render/index.ts";
@@ -12,14 +13,19 @@ import { readFacade } from "../api/read.ts";
 import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
 import type { NotingDiagnostic } from "./review.ts";
 
-const prompt = loadPrompt("noting.md");
-const promptHash = createHash("sha256").update(prompt).digest("hex");
-// 22d: what every candidate of every freeze pays before any material is added. The instructions and
-// the tool definitions are the same bytes for the life of the process, so they are estimated once
-// instead of once per re-freeze. Lazily, because `toolDefinitions` reaches this module through an
-// import cycle and is not yet initialized while this module's body runs.
-let fixed: { instructions: number; tools: number } | undefined;
-const fixedCost = () => (fixed ??= { instructions: tokens(prompt), tools: tokens(JSON.stringify(toolDefinitions)) });
+// Pricing includes the launch's rendered names, not the canonical template. The lazy per-map cache
+// avoids repeatedly tokenizing static schemas through the source-selection loop.
+const fixed = new Map<string, { prompt: string; instructions: number; tools: number }>();
+const fixedCost = (names: ToolNames) => {
+  const key = JSON.stringify(names);
+  let cost = fixed.get(key);
+  if (!cost) {
+    const prompt = loadPrompt("noting.md", names);
+    cost = { prompt, instructions: tokens(prompt), tools: tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, names))) };
+    fixed.set(key, cost);
+  }
+  return cost;
+};
 
 export interface NotingInput extends TaskOptions {
   sessionId: number;
@@ -37,6 +43,8 @@ export interface NotingInput extends TaskOptions {
    * range/index/head increment). CC fork alone adds ToolSearch guidance, priced here before admission.
    * No other host instruction text is permitted. */
   forkGuidance?: string;
+  /** Actual names exposed in this launch; a direct Core invocation uses its canonical tools. */
+  toolNames?: ToolNames;
 }
 /** The frozen task material of one Noting run: the shared parts (knowledge, historical facts,
  * compressed Raw entries, receipts) plus this task's head reply and source index. Core renders and
@@ -117,7 +125,8 @@ export const NOTING_MEMBERSHIP = "Noting membership: the frozen batch is no long
  * a `note` call, `note({facts: []})` included; final prose is never read as an implicit empty
  * submission. The run is recorded with its usage under the existing `failure` outcome and advances no
  * entry progress, so the same entries stay pending for the next admission. */
-export const NOTING_INCOMPLETE = "incomplete Noting: explicitly call both note({facts: []}) and memory({operations: [], skipped: []}) even for empty output. The selected entries stay pending.";
+const incompleteTemplate = "incomplete Noting: explicitly call both {{tool.note}}({facts: []}) and {{tool.memory}}({operations: [], skipped: []}) even for empty output. The selected entries stay pending.";
+export const NOTING_INCOMPLETE = renderToolNames(incompleteTemplate, canonicalToolNames);
 
 /** The pending entries one task's boundary admits, and the exact-membership form when it has one.
  * A manual catchup (18b) freezes an entry-id boundary so later arrivals never join this target.
@@ -160,6 +169,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   pendingAll?: SourceEntryMeta[]) {
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
+  if (session.host.startsWith("cc:") && !input.toolNames) throw new Error("CC Noter launch requires exposed tool names");
   if (typeof input.branch !== "string" || !input.branch) throw new Error("noting requires a non-empty branch");
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
     !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
@@ -176,9 +186,10 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // has been re-frozen once per entry down to nothing. This is a floor and not the guard: the hard
   // budget check inside the loop below is unchanged and still decides every freeze that passes here
   // (parent 22: "A fast preflight supplements the final guard; it does not replace it").
-  const { instructions, tools } = fixedCost();
+  const names = validateToolNames(input.toolNames ?? canonicalToolNames);
+  const { prompt, instructions, tools } = fixedCost(names);
   const inheriting = (input.effectiveMode ?? mode) === "fork";
-  const forkPrompt = input.forkGuidance ? `${prompt}\n\n${input.forkGuidance}` : prompt;
+  const forkPrompt = input.forkGuidance ? `${prompt}\n\n${renderToolNames(input.forkGuidance, names)}` : prompt;
   const forkInstructions = input.forkGuidance ? tokens(forkPrompt) : instructions;
   // 29b: the floor is the price of the mode that will run, as the loop below prices it — a fork pays
   // its inherited measure and its full sent instructions (including host guidance), a fresh child the
@@ -235,7 +246,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const assembled = readFacade(store, { ...config, compaction: { ...config.compaction,
       rawTokens: config.noting.batchTokens, factsTokens: history } }, undefined, resultText)
       .compact(session.id, input.branch, endpoint.turnId, [], false,
-        { endpointEntryId: endpoint.id, processedRawRefill: false, renderedEntries: rendered, preparedSources });
+        { endpointEntryId: endpoint.id, processedRawRefill: false, renderedEntries: rendered, preparedSources, toolNames: names });
     if ("native" in assembled || !assembled.material) throw new Error("Noting material assembly produced no material");
     if (assembled.supplied.entries.length !== entries.length
       || assembled.supplied.entries.some((entry, index) => entry.id !== entries[index]!.id))
@@ -258,7 +269,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
       : instructions + tools + tokens(prepared.text);
     lastPrice = priced;
     const fits = !capacity || priced <= capacity.inputTokens;
-    if (fits) return { ...frozen, prepared, forkPrompt };
+    if (fits) return { ...frozen, prepared, prompt, promptHash: createHash("sha256").update(inheriting ? forkPrompt : prompt).digest("hex"), forkPrompt, names };
     // Optional history goes first (review 2026-09-08): trim the historical facts by the excess before
     // a selected entry is given up; only when none are left does the batch shrink.
     if (capacity && history && prepared.material.facts.length) { history = Math.max(0, Math.min(history - 1, charge(prepared.material.facts) - (priced - capacity.inputTokens))); continue; }
@@ -275,7 +286,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   if (pending.length) throw new Error(NOTING_CAPACITY
     + `it costs ${lastPrice} tokens`
     + `${input.capacity ? ` against the ${input.capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
-  return { sessionId: session.id, branch: input.branch, entries, turns: [], model: input.model ?? "session", mode, prepared: undefined };
+  return { sessionId: session.id, branch: input.branch, entries, turns: [], model: input.model ?? "session", mode, prepared: undefined,
+    names, prompt, promptHash: createHash("sha256").update(inheriting ? forkPrompt : prompt).digest("hex"), forkPrompt };
 }
 
 /** The one Noting material builder (29b, parent 29 "One material-selection mechanism"). The frozen
@@ -357,10 +369,10 @@ export async function runNoting(
     branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { entryTokens: config.render.entryTokens,
       toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } };
   const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
-    promptHash, model, mode, entryAudit, createdAt: new Date().toISOString() };
+    promptHash: frozen.promptHash, model, mode, entryAudit, createdAt: new Date().toISOString() };
   const binding = tools({ kind: "noting", sessionId, branch, range, entryIds: entries.map(e => e.id) }, run);
   const agentInput: NotingAgentInput = { kind: "noting", entryIds: entries.map(e => e.id), sessionId, branch, range,
-    model, mode, prompt, promptHash, forkPrompt: frozen.forkPrompt ?? prompt,
+    model, mode, prompt: frozen.prompt!, promptHash: frozen.promptHash!, forkPrompt: frozen.forkPrompt ?? frozen.prompt!,
     material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit),
     tools: binding.tools, reportToolRejection: binding.reportToolRejection,
     acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
@@ -395,7 +407,7 @@ export async function runNoting(
   const incomplete = result.outcome === "success" && binding.incomplete;
   const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)]
     : requestMissing(result) ? ["runAgent must return the exact provider request"]
-    : [...binding.problems, ...(incomplete ? [NOTING_INCOMPLETE] : [])];
+    : [...binding.problems, ...(incomplete ? [renderToolNames(incompleteTemplate, frozen.names ?? canonicalToolNames)] : [])];
   recordAttempt(run, result, mode, { toolCalls: binding.sequence, fetched: binding.fetched, problems });
   try {
     if (result.outcome === "success" && !problems.length) {

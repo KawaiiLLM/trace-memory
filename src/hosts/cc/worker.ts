@@ -8,6 +8,7 @@ import { toolRejected } from "../../core/api/index.ts";
 import { CC_AGENT_SDK_VERSION, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
 import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
+import { CC_WORKER_SERVER_NAME, ccWorkerToolNames } from "./tool-names.ts";
 
 export type CcAgentTask = NotingAgentInput | DreamingAgentInput;
 /** Called for every runtime-journal-worthy event this worker produces, before or after it returns
@@ -110,7 +111,7 @@ export class CcResponseOrigins {
       if (prior && prior !== responseId)
         throw this.fail(new Error(`CC tool use ${block.id} is ambiguous across assistant responses`));
       this.origins.set(block.id, responseId);
-      const name = block.name.replace(/^mcp__trace_memory__/, "");
+      const name = block.name.startsWith(`mcp__${CC_WORKER_SERVER_NAME}__`) ? block.name.slice(`mcp__${CC_WORKER_SERVER_NAME}__`.length) : block.name;
       if (this.task.kind === "noting" && (name === "note" || name === "memory") && !this.pendingWrites.has(block.id))
         this.pendingWrites.set(block.id, { name, input: structuredClone(block.input) });
       for (const waiter of this.waiters.get(block.id) ?? []) {
@@ -194,7 +195,7 @@ const RESULT_SIZE_META = { "anthropic/maxResultSizeChars": CC_MAX_RESULT_CHARS }
 /** SDK tool helpers convert through Zod and parse arguments. Core owns the schemas and validation,
  * so the public low-level MCP handlers advertise the originals and pass arguments through unchanged. */
 function workerServer(task: CcAgentTask, origins: CcResponseOrigins, toolsAllowed: () => boolean) {
-  const config = createSdkMcpServer({ name: "trace_memory", version: "0.1.0-beta.7" });
+  const config = createSdkMcpServer({ name: CC_WORKER_SERVER_NAME, version: "0.1.0-beta.7" });
   const definitions = new Map<string, ToolDefinition>(task.tools.map(definition => [definition.name, definition]));
   config.instance.server.registerCapabilities({ tools: {} });
   config.instance.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: task.tools.map(definition => ({
@@ -305,7 +306,7 @@ function assertInit(message: Extract<SDKMessage, { type: "system"; subtype: "ini
     throw new Error(`CC worker tool isolation failed: expected ${expected.join(", ")}, got ${actual.join(", ")}`);
   if (message.plugins.length || message.skills.length || message.slash_commands.length)
     throw new Error("CC worker isolation failed: plugins, skills or slash commands were loaded");
-  if (message.mcp_servers.length !== 1 || message.mcp_servers[0]?.name !== "trace_memory" || message.mcp_servers[0].status !== "connected")
+  if (message.mcp_servers.length !== 1 || message.mcp_servers[0]?.name !== CC_WORKER_SERVER_NAME || message.mcp_servers[0].status !== "connected")
     throw new Error("CC worker isolation failed: the private trace_memory MCP server is not the sole connected server");
 }
 
@@ -376,7 +377,7 @@ export class CcAgentWorker {
       this.journal("contained-sdk-control-abort", { taskKind: task.kind, nativeSessionId, error: error.message }),
       async () => { try {
       task.signal?.throwIfAborted();
-      const allowedTools = task.tools.map(definition => `mcp__trace_memory__${definition.name}`);
+      const allowedTools = task.tools.map(definition => ccWorkerToolNames[definition.name]);
       const execution = this.query({ prompt: input ?? task.text, options: {
         model: settings.model,
         cwd: this.worker.cwd,
@@ -384,7 +385,7 @@ export class CcAgentWorker {
         env: this.environment,
         tools: [],
         allowedTools,
-        mcpServers: { trace_memory: workerServer(task, origins, toolsAllowed) },
+        mcpServers: { [CC_WORKER_SERVER_NAME]: workerServer(task, origins, toolsAllowed) },
         abortController: controller,
         systemPrompt: task.prompt,
         settingSources: [],

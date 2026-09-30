@@ -10,6 +10,8 @@
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { loadPrompt } from "../../src/core/prompts/load.ts";
+import { canonicalToolNames } from "../../src/core/prompts/tool-names.ts";
+import { pricedToolDefinitions } from "../../src/core/api/tools.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generate, nativeAncestry, countSourceReads, countGraphResolutions, countRunBodies, runAudit, searchCorpus, type Fixture } from "./fixture.ts";
@@ -255,7 +257,7 @@ async function capacityScenarios(fixture: Fixture, size: string, main: ReturnTyp
   const memory = TraceMemory(copy, async () => { throw new Error("the performance suite must not call a model"); });
   const store = memory.store, samples: Sample[] = [];
   const instructions = (file: "noting.md" | "dreaming.md") => tokens(loadPrompt(file));
-  const toolCost = tokens(JSON.stringify(toolDefinitions));
+  const toolCost = tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
   const rejected = (name: string, note: string, run: () => unknown) => samples.push(measure(name, () => {
     try { run(); } catch (error) { if (/capacity/.test(String(error))) return; throw error; }
     throw new Error(`${name}: an impossible allowance must be rejected`);

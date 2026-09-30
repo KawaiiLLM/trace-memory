@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toolDefinitions } from "../../src/core/api/index.ts";
+import { renderToolDefinitions } from "../../src/core/api/tools.ts";
+import { ccPluginToolNames } from "../../src/hosts/cc/tool-names.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
@@ -58,7 +60,7 @@ test("installed native identity stays derived from the fixed plugin manifest and
 test("CC foreground list reuses exactly the four core schemas and no Dreamer capability", async () => {
   const f = await fixture();
   try {
-    const listed = f.tools.list(), expected = toolDefinitions.filter(tool => tool.name !== "check");
+    const listed = f.tools.list(), expected = renderToolDefinitions(toolDefinitions.filter(tool => tool.name !== "check"), ccPluginToolNames);
     expect(listed.map(tool => tool.name)).toEqual(["trace", "search", "note", "memory"]);
     expect(listed.map(tool => tool.description)).toEqual(expected.map(tool => tool.description));
     expect(listed.map(tool => tool.inputSchema)).toEqual(expected.map(tool => tool.parameters));

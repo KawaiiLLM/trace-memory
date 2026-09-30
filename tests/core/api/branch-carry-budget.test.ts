@@ -19,6 +19,18 @@ function fixture(texts: string[], normalized = false) {
 }
 const receipt = (n: number) => `[... ${n} earlier pending entries omitted from the carry budget; read them with trace]`;
 
+test("carry prices the supplied host's omission hint before fitting its window", () => {
+  const f = fixture(["older source", "newer source"]);
+  try {
+    f.memory.config.render.episodicBlockTokens = charge(["Pending raw:", receipt(2).replace("with trace]", "with mcp__trace_memory__trace]")]) + 3;
+    const hosted = f.memory.branchSummary(f.session.id, "main", f.turn.id,
+      { trace: "mcp__trace_memory__trace", search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check" });
+    expect(hosted).toContain("read them with mcp__trace_memory__trace");
+    expect(hosted).not.toContain("read them with trace]");
+    expect(tokens(hosted.split("Pending raw:\n")[1]!.split("</branch_carry>")[0]!)).toBeLessThanOrEqual(f.memory.config.render.episodicBlockTokens);
+  } finally { f.memory.close(); }
+});
+
 test("entry/cleanup integration: carry budgets only its exact normalized Raw suffix, not complete grouped facts or commits", () => {
   const f = fixture(["old evidence ".repeat(500), "SIBLING-ONLY"], true);
   try {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { knowledgeReadSelection, KNOWLEDGE_REPRESENTATIVE_RECEIPT } from "./knowledge-read.ts";
+import { canonicalToolNames, renderToolNames, type ToolNames } from "../prompts/tool-names.ts";
 import { parseKnowledgeAddress, publicTraceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, SourceEntryMeta, PathSnapshot } from "../store/index.ts";
@@ -24,7 +25,7 @@ export const SEARCH_DEFAULT_FIELDS: readonly ReadField[] = ["text"];
 export const SEARCH_HISTORY_DEFAULT_FIELDS: readonly ReadField[] = ["text", "status"];
 export const SEARCH_PREVIEW_TOKENS = 80;
 export const MAX_PUBLIC_READ_TOKENS = 8000;
-export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; /** Host transport ceiling over the final returned string, in JavaScript UTF-16 code units. Not model-facing. */ maxChars?: number; cap?: number; cursor?: string; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; rawTurn?: boolean; factBacklinks?: ReadonlyMap<number, readonly string[]>; /** Internal frozen metadata for batched exact F reads. */ factReadSnapshot?: { ids: ReadonlySet<number>; relations: ReadonlyMap<number, FactRelation[]> }; profile?: EntryProfile; /** Internal presentation seam; never accepted from model input. */ modelFacing?: boolean }
+export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; /** Host transport ceiling over the final returned string, in JavaScript UTF-16 code units. Not model-facing. */ maxChars?: number; cap?: number; cursor?: string; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; rawTurn?: boolean; factBacklinks?: ReadonlyMap<number, readonly string[]>; /** Internal frozen metadata for batched exact F reads. */ factReadSnapshot?: { ids: ReadonlySet<number>; relations: ReadonlyMap<number, FactRelation[]> }; profile?: EntryProfile; /** Internal presentation seam; never accepted from model input. */ modelFacing?: boolean; /** Internal host names for generated call hints, not evidence. */ toolNames?: ToolNames }
 /** Validate aliases and filters before rendering or touching cursor state. Null is only a
  * content-ceiling disable; pageBudget=null is reserved for internal assembled material reads. */
 export function validateBudgets(options: ListingOptions): void {
@@ -535,7 +536,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
             return store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path);
           })();
           const times = store.factTurnTimes(facts);
-          collectionReceipts.push(`selected: project ${project.name} facts; ${options.scope ?? "global/project"} knowledge; ${options.versions} versions`, KNOWLEDGE_REPRESENTATIVE_RECEIPT);
+          collectionReceipts.push(`selected: project ${project.name} facts; ${options.scope ?? "global/project"} knowledge; ${options.versions} versions`, renderToolNames(KNOWLEDGE_REPRESENTATIVE_RECEIPT, options.toolNames ?? canonicalToolNames));
           return () => [...knowledge.map(render => render()), ...renderFactGroups(facts,
             (fact, frame) => renderFact(fact, relations.get(fact.id) ?? [], profile.entryTokens, frame), times, true)].filter(Boolean);
         }
@@ -680,7 +681,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         /** Internal: views from this synchronous freeze under this exact profile/extractor. */
         renderedEntries?: ReadonlyMap<number, EntryView>;
         /** Internal: authoritative ordered metadata and processing state of this same freeze. */
-        preparedSources?: { path: KnowledgePath; entries: readonly SourceEntryMeta[]; pending: readonly SourceEntryMeta[] } } = {}): CompactResult => {
+        preparedSources?: { path: KnowledgePath; entries: readonly SourceEntryMeta[]; pending: readonly SourceEntryMeta[] }; toolNames?: ToolNames } = {}): CompactResult => {
       if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
       const prepared = options.preparedSources;
@@ -777,7 +778,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         }
       }
       const rawReceipt = (kept: number) => candidates.length - kept
-        ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window; read them with trace]`] : [];
+        ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window; read them with ${options.toolNames?.trace ?? canonicalToolNames.trace}]`] : [];
       // Exactly what the Raw window adds to the output: the `<episodic>` tag and title only when it
       // has entries, each kept entry's own view receipts, and its omission receipt.
       const rawWindowCost = (kept: number, receipt: string[]) => {
@@ -857,7 +858,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         charged: { knowledge: knowledgeUsed, facts: factsWindowCost(finalFacts.length, finalFactReceipts), raw: rawCharged, envelope },
         ...(Object.keys(truncated).length ? { truncated } : {}) };
     },
-    branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
+    branchSummary: (sessionId: number, branch: string, headTurnId: number, toolNames: ToolNames = canonicalToolNames): string => {
       if (!store.enabled(sessionId)) return "";
       // Carry is optional, unlike compact's required pending Raw. Consider the whole pending set,
       // not Noting's next batch, and keep a newest whole suffix under the shared view profile.
@@ -866,7 +867,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const pending = store.pendingEntries(sessionId, branch, headTurnId);
       const raw: ReturnType<typeof renderEntry>[] = [];
       let omitted = pending.length, used = charge([title]);
-      const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget; read them with trace]`] : [];
+      const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget; read them with ${toolNames.trace}]`] : [];
       // A whole suffix is monotone: after the first entry that cannot fit, no earlier
       // entry can join it. Do not render the history that will only be receipted.
       for (let i = pending.length - 1; i >= 0; i--) {
@@ -1001,7 +1002,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const preview = `preview: ${fields.size === 0 ? "identity only" : fields.size === 1 && fields.has("text") ? "text only" : `fields ${[...fields].join(", ")}`}; omitted fields: ${omitted.join(", ") || "none"}`;
       return page({ items, format, capture, ...(batched ? { queryCap: perQuery } : {}) }, { ...options, ...(batched ? { cap: undefined } : {}),
         maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS },
-        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${KNOWLEDGE_REPRESENTATIVE_RECEIPT}\n${preview}`, "search").text;
+        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${renderToolNames(KNOWLEDGE_REPRESENTATIVE_RECEIPT, options.toolNames ?? canonicalToolNames)}\n${preview}`, "search").text;
     },
     status: (sessionId: number, branch?: string, headTurnId?: number | null): string => {
       const s = session(sessionId), runs = store.listRuns(sessionId);

@@ -56,6 +56,18 @@ function fixture() {
   return { memory, store, files, trace, text, reader, other, t1, t2, t3, f1, f2, k: [k1, k2, k3, k4, k5].map(k => k.knowledgeId) };
 }
 
+test("/tm generated hints use the bound host tools without changing evidence", () => {
+  const f = fixture();
+  const names = { trace: "mcp__plugin_trace-memory_traceMemory__trace", search: "mcp__plugin_trace-memory_traceMemory__search",
+    note: "mcp__plugin_trace-memory_traceMemory__note", memory: "mcp__plugin_trace-memory_traceMemory__memory", check: "mcp__plugin_trace-memory_traceMemory__check" };
+  const files = memoryFiles(f.memory, { sessionId: f.reader.id, branch: "main", headTurnId: f.t2.id, toolNames: names });
+  const root = files.read("/tm").lines.join("\n");
+  expect(root).toContain(`with the ${names.note} and ${names.memory} tools`);
+  expect(root).toContain(`${names.trace}(<address>)`);
+  expect(files.read("/tm/alpha").lines.join("\n")).toContain(names.trace);
+  expect(files.read(`/tm/F${f.f1.id}`).lines.join("\n")).toBe(f.trace(`F${f.f1.id}`));
+});
+
 test("a /tm path shows what trace shows the reader at that address", () => {
   const f = fixture(), S = `/tm/S${f.reader.id}`;
   expect(f.text(`${S}/T${f.t1.id}`)).toBe(f.trace(`S${f.reader.id}/T${f.t1.id}`));

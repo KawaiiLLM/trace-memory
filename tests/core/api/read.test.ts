@@ -275,6 +275,12 @@ test("20c/23 scenario 10, rescaled by 73: one bounded view of every entry under 
   if ("native" in delegated) throw new Error("unreachable");
   expect(delegated.truncated?.raw).toBeTruthy();
   expect(compacted(delegated)).toContain("earlier entries omitted from the Raw window");
+  const hosted = memory.compact(s.id, "main", next.id, [], false, { toolNames: { note: "host_note", memory: "host_memory", trace: "host_trace", search: "host_search", check: "host_check" } });
+  expect(compacted(hosted)).toContain("read them with host_trace");
+  expect(compacted(hosted)).not.toContain("read them with trace");
+  expect(charged(hosted).raw).toBeLessThanOrEqual(memory.config.compaction.rawTokens);
+  if ("native" in hosted) throw new Error(hosted.reason);
+  expect(charged(hosted).raw).toBeGreaterThanOrEqual(tokens(hosted.material!.receipts.find(line => line.includes("host_trace"))!));
   expect(hydrate(memory.pendingEntries(s.id, "main", next.id), memory.store).map(e => e.id)).toEqual(pending.map(e => e.id));
   defaultWindows();
   // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled

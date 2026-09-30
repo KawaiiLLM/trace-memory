@@ -14,15 +14,15 @@ const temporary = `${output}.${process.pid}.${randomUUID()}.tmp`;
 const statusOutput = resolve(plugin, "dist", "status.cjs");
 const statusTemporary = `${statusOutput}.${process.pid}.${randomUUID()}.tmp`;
 mkdirSync(dirname(output), { recursive: true });
-const promptLoader = {
+export const promptLoader = {
   name: "trace-memory-prompts",
   setup(build) {
     // The bundle carries the composed prompts as constants, composed by the same `loadPrompt` the
     // runtime uses (Node strips the types), so the bundle needs no prompt files and cannot drift.
     build.onLoad({ filter: /src\/core\/prompts\/load\.ts$/ }, async () => {
-      const { loadPrompt } = await import(pathToFileURL(resolve(root, "src/core/prompts/load.ts")).href);
-      const prompts = Object.fromEntries(["noting.md", "dreaming.md"].map(file => [file, loadPrompt(file)]));
-      return { contents: `const PROMPTS = ${JSON.stringify(prompts)};\nexport function loadPrompt(file) { const prompt = PROMPTS[file]; if (prompt === undefined) throw new Error("unknown prompt " + file); return prompt; }\n`, loader: "ts" };
+      const { composePrompt } = await import(pathToFileURL(resolve(root, "src/core/prompts/load.ts")).href);
+      const prompts = Object.fromEntries(["noting.md", "dreaming.md"].map(file => [file, composePrompt(file)]));
+      return { contents: `import { canonicalToolNames, renderToolNames, validateToolNames } from "./tool-names.ts";\nconst PROMPTS = ${JSON.stringify(prompts)};\nexport function loadPrompt(file, names = canonicalToolNames) { const prompt = PROMPTS[file]; if (prompt === undefined) throw new Error("unknown prompt " + file); return renderToolNames(prompt, validateToolNames(names)); }\n`, loader: "ts" };
     });
   },
 };

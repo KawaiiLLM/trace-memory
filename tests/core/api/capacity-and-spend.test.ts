@@ -11,6 +11,8 @@ import { sourceSeededMemory, tokens, toolDefinitions, type NotingAgentInput } fr
 import { countRunBodies } from "../../perf/fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { renderRun } from "../../../src/core/render/index.ts";
+import { pricedToolDefinitions } from "../../../src/core/api/tools.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 
 /** 77: every real writer stores `response` and its five usage columns in one statement (Store's
  * private `usageColumns` helper), so a raw-SQL amendment that only sets `response` -- exactly what
@@ -93,7 +95,7 @@ test("22d: the rejection costs the same whatever the pending backlog is, and a w
 test("22d: the preflight is a floor and not the guard — an allowance over the fixed cost but under the material is still refused", async () => {
   expect((await noting()).outcome).toBe("success");
   const first = calls[0]!;
-  const fixed = tokens(first.prompt) + tokens(JSON.stringify(toolDefinitions)); // what the preflight alone can see
+  const fixed = tokens(first.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))); // what the preflight alone can see
   memory.appendEntry({ sessionId, turnId, nativeLineage: "fixture", nativeId: "long-assistant", role: "assistant", text: "word ".repeat(5_000), raw: "", calls: [] });
   // Comfortably above the mandatory floor, so the preflight passes and says nothing; far below what
   // the pending material costs, so the hard-budget check inside the freeze must still refuse to send.
@@ -104,7 +106,7 @@ test("22d: the preflight is a floor and not the guard — an allowance over the 
   const generous = 60_000;
   expect((await noting({ inputTokens: generous, prefixTokens: 0 })).outcome).toBe("success");
   const run = calls.at(-1)!;
-  expect(tokens(run.prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(run.text)).toBeLessThanOrEqual(generous);
+  expect(tokens(run.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(run.text)).toBeLessThanOrEqual(generous);
 });
 
 // 27a: the host's half of the rule (`contextWindow - 10,000`) is pinned in tests/hosts/pi/capacity.test.ts.
@@ -114,7 +116,7 @@ test("22d: the preflight is a floor and not the guard — an allowance over the 
 test("27a 2026-09-10: the freeze admits material the allowance exactly fits and refuses the same material one token above it", async () => {
   const price = (input: NotingAgentInput, prefix = 0) =>
     prefix ? prefix + tokens(input.prompt) + tokens(input.text)
-      : tokens(input.prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(input.text);
+      : tokens(input.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(input.text);
   // What this batch costs, priced by the same terms the freeze prices it by.
   expect((await noting({ inputTokens: 60_000, prefixTokens: 0 })).outcome).toBe("success");
   const whole = calls[0]!;

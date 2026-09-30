@@ -7,6 +7,7 @@ import { TraceMemory, memoryFiles, type MemoryGrepOptions, type MemoryReader } f
 import { readBinding, validateNativeSessionId } from "./binding.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { ccResultText } from "./transcript.ts";
+import { ccPluginToolNames } from "./tool-names.ts";
 
 const usage = "fs read <path> [offset] [limit] | fs grep [-i] [-n] [-c] [-F] [-A|-B|-C <n>] [--glob <g>] [--offset <n>] [--limit <n>] [--] <pattern> [path] | fs glob <pattern>";
 const integer = (value: string | undefined, name: string) => {
@@ -58,7 +59,7 @@ export function runCcFiles(config: ResolvedCcHostConfig, nativeSessionId: string
     const reader: MemoryReader = core !== null && memory.store.getSession(core)
       ? { ...memory.store.knowledgePath(core, binding!.branch), projectId: memory.store.getSession(core)!.projectId }
       : { ...(binding?.dbPath === config.dbPath && binding.projectId !== null ? { projectId: binding.projectId } : {}) };
-    const files = memoryFiles(memory, reader);
+    const files = memoryFiles(memory, { ...reader, toolNames: ccPluginToolNames });
     if (op === "read") {
       const [path, offset, limit, ...extra] = args;
       if (!path || extra.length) throw new Error(usage);

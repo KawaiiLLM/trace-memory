@@ -13,7 +13,8 @@ import { DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, visibleTarget, ca
 import * as api from "../../source-fixture.ts";
 import { tokens, hydrate } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
-import { dreamingToolDefinitions } from "../../../src/core/api/tools.ts";
+import { dreamingToolDefinitions, pricedToolDefinitions } from "../../../src/core/api/tools.ts";
+import { canonicalToolNames, renderToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
@@ -2536,7 +2537,7 @@ test("27 amendment 6: frozen membership survives fallback or the task stays pend
   const instructions = loadPrompt("noting.md");
   const priced = (exactEntryIds: number[]) => {
     const frozen = freezeNoting(memory.store, { ...target, boundary: { exactEntryIds } }, memory.config);
-    return tokens(instructions) + tokens(JSON.stringify(toolDefinitions)) + tokens(frozen.prepared!.text);
+    return tokens(instructions) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(frozen.prepared!.text);
   };
   const capacity = { inputTokens: priced([e1.id]), prefixTokens: 0 };
   expect(priced([e1.id, e2.id])).toBeGreaterThan(capacity.inputTokens);
@@ -2910,8 +2911,8 @@ test("61: sentences are short, paragraphs are not walls, and no internal referen
 });
 
 test("61: every backticked category, kind or field word used in a stage file is defined in the shared blocks", () => {
-  const shared = ["model", "facts", "knowledge", "admission", "division", "writing", "citations", "formats", "live"]
-    .map(name => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8")).join("\n");
+  const shared = renderToolNames(["model", "facts", "knowledge", "admission", "division", "writing", "citations", "formats", "live"]
+    .map(name => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8")).join("\n"), canonicalToolNames);
   const defined = new Set(["goal", "constraint", "understanding", "reference", "open", "observation", "user", "assistant", "role",
     "session", "project", "global", "trace", "search", "supports", "reason", "topics", "text", "title", "sources", "address",
     "category", "scope", "inbound", "support", "negate", "strong", "weak"]);

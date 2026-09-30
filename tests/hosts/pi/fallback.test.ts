@@ -30,6 +30,8 @@ import { hydrate } from "../../source-fixture.ts";
 import { fact } from "../../support/seed.ts";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { tokens } from "../../../src/core/render/tokens.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
 import { forkable, runNative } from "../../../src/hosts/pi/native.ts";
@@ -588,7 +590,7 @@ test("27d 2026-09-10 (parent 27 amendment 6): a fallback model that cannot hold 
       const model = find(provider, id);
       // The Noter's fixed cost fits with 204 tokens to spare, as it did when this window was 18,000:
       // the whole frozen batch cannot, so the capacity loop, not the preflight floor, refuses it.
-      const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(toolDefinitions));
+      const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
       return id === "test-mini" && model ? { ...model, contextWindow: CONTEXT_HEADROOM + fixed + 204 } : model;
     }) as typeof f.h.ctx.modelRegistry.find;
     let frozen: number[] = [];
