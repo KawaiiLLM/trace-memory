@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { TraceMemory, toolDefinitions, type NotingAgentInput, type RunAgentResult, type TaskTarget, type ToolDefinition } from "../../src/core/api/index.ts";
 import { resolveCcHostConfig, CC_CONTEXT_HEADROOM } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, CcResponseOrigins, ccNativeTranscriptPath, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
@@ -92,7 +93,7 @@ test("production worker serves original schemas and raw arguments, publishes the
     return stream;
   }) as any;
   const acknowledgeRequest = vi.fn();
-  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [definition], acknowledgeRequest,
+  const task = { kind: "noting", text: "material", prompt: loadPrompt("noting.md"), tools: [definition], acknowledgeRequest,
     fallbackReason: "original source is no longer in parent context" } as unknown as CcAgentTask;
   const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 2);
   expect(result).toMatchObject({ outcome: "success", mode: "subagent", fallbackReason: task.fallbackReason });
@@ -101,7 +102,8 @@ test("production worker serves original schemas and raw arguments, publishes the
   expect(acknowledgeRequest).toHaveBeenCalledTimes(1);
   expect((listed[0] as any).tools[0]).toMatchObject({ inputSchema: conditional,
     _meta: { "anthropic/maxResultSizeChars": CC_MAX_RESULT_CHARS } });
-  expect(optionsSeen[0]).toMatchObject({ settingSources: [], plugins: [], tools: [], strictMcpConfig: true });
+  expect(optionsSeen[0]).toMatchObject({ settingSources: [], plugins: [], tools: [], strictMcpConfig: true,
+    systemPrompt: task.prompt });
   expect(optionsSeen[0]).not.toHaveProperty("hooks");
 });
 

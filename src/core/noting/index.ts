@@ -32,6 +32,11 @@ export interface NotingInput extends TaskOptions {
   capacity?: { inputTokens: number; prefixTokens: number };
   model?: string;
   mode?: "fork" | "subagent";
+  /** Instruction deviations: fresh uses the unchanged prompt as system text and rendered material;
+   * fork uses the same prompt leading its user message and inherited material (core supplies its
+   * range/index/head increment). CC fork alone adds ToolSearch guidance, priced here before admission.
+   * No other host instruction text is permitted. */
+  forkGuidance?: string;
 }
 /** The frozen task material of one Noting run: the shared parts (knowledge, historical facts,
  * compressed Raw entries, receipts) plus this task's head reply and source index. Core renders and
@@ -48,6 +53,8 @@ export interface NotingAgentInput extends AgentControl {
   /** The domain instructions; core owns the prompt file and its hash. */
   prompt: string;
   promptHash: string;
+  /** Priced leading fork message: audited prompt plus optional host guidance. */
+  forkPrompt: string;
   material: NotingMaterial;
   /** Core's prepared domain text: the one material this task supplies, whatever mode runs it (29b).
    * The host places it in its own messages and never chooses between two representations. */
@@ -171,12 +178,15 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // (parent 22: "A fast preflight supplements the final guard; it does not replace it").
   const { instructions, tools } = fixedCost();
   const inheriting = (input.effectiveMode ?? mode) === "fork";
+  const forkPrompt = input.forkGuidance ? `${prompt}\n\n${input.forkGuidance}` : prompt;
+  const forkInstructions = input.forkGuidance ? tokens(forkPrompt) : instructions;
   // 29b: the floor is the price of the mode that will run, as the loop below prices it — a fork pays
-  // its inherited measure and the instructions, a fresh child the instructions and the tools. Keeping
+  // its inherited measure and its full sent instructions (including host guidance), a fresh child the
+  // unchanged instructions and the tools. Keeping
   // the subagent's floor over a fork would reject batches the loop would then admit.
-  const mandatory = inheriting ? (input.capacity?.prefixTokens ?? 0) + instructions : instructions + tools;
+  const mandatory = inheriting ? (input.capacity?.prefixTokens ?? 0) + forkInstructions : instructions + tools;
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
-    throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${instructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`}`
+    throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${forkInstructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`}`
       + ` already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
   const { entries, rendered } = notingBatch(store, pending, config, resultText);
   if (pending.length && !entries.length)
@@ -244,11 +254,11 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     // visible is not refused for a cost nothing would have paid. Its fallback is not left unguarded:
     // a re-admitted subagent (27b/27c) re-freezes with the empty initial state and is priced by this
     // same line at the fresh child's own model capacity, and refuses the batch there if it must.
-    const priced = inheriting ? initial.inheritedTokens + instructions + tokens(prepared.text)
+    const priced = inheriting ? initial.inheritedTokens + forkInstructions + tokens(prepared.text)
       : instructions + tools + tokens(prepared.text);
     lastPrice = priced;
     const fits = !capacity || priced <= capacity.inputTokens;
-    if (fits) return { ...frozen, prepared };
+    if (fits) return { ...frozen, prepared, forkPrompt };
     // Optional history goes first (review 2026-09-08): trim the historical facts by the excess before
     // a selected entry is given up; only when none are left does the batch shrink.
     if (capacity && history && prepared.material.facts.length) { history = Math.max(0, Math.min(history - 1, charge(prepared.material.facts) - (priced - capacity.inputTokens))); continue; }
@@ -350,7 +360,7 @@ export async function runNoting(
     promptHash, model, mode, entryAudit, createdAt: new Date().toISOString() };
   const binding = tools({ kind: "noting", sessionId, branch, range, entryIds: entries.map(e => e.id) }, run);
   const agentInput: NotingAgentInput = { kind: "noting", entryIds: entries.map(e => e.id), sessionId, branch, range,
-    model, mode, prompt, promptHash,
+    model, mode, prompt, promptHash, forkPrompt: frozen.forkPrompt ?? prompt,
     material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit),
     tools: binding.tools, reportToolRejection: binding.reportToolRejection,
     acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };

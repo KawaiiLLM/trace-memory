@@ -142,6 +142,28 @@ test("27a 2026-09-10: the freeze admits material the allowance exactly fits and 
   expect(calls[0]!.entryIds.length).toBeLessThan(whole.entryIds.length); // one token more: refused, and reduced
 });
 
+test("112: CC fork guidance is part of the frozen prompt and the pre-admission capacity gate", async () => {
+  const fork = { mode: "fork" as const, effectiveMode: "fork" as const };
+  expect((await noting(undefined, fork)).outcome).toBe("success");
+  const original = calls[0]!;
+  const guidance = "Use ToolSearch to load note and memory before writing.";
+  const prefix = 20_000;
+  const withoutGuidance = prefix + tokens(original.prompt) + tokens(original.text);
+  const withGuidance = prefix + tokens(`${original.prompt}\n\n${guidance}`) + tokens(original.text);
+  expect(withGuidance).toBeGreaterThan(withoutGuidance);
+
+  memory.close(); open();
+  await expect(noting({ inputTokens: withoutGuidance, prefixTokens: prefix }, { ...fork, forkGuidance: guidance,
+    boundary: { exactEntryIds: memory.pendingEntries(sessionId, "main", turnId).map(e => e.id) } })).rejects.toThrow(/Noting capacity/);
+  expect(calls).toEqual([]);
+  expect(memory.store.listRuns(sessionId)).toEqual([]);
+
+  memory.close(); open();
+  expect((await noting({ inputTokens: withGuidance, prefixTokens: prefix }, { ...fork, forkGuidance: guidance })).outcome).toBe("success");
+  expect(calls[0]!.forkPrompt).toBe(`${calls[0]!.prompt}\n\n${guidance}`);
+  expect(calls[0]!.entryIds).toHaveLength(original.entryIds.length);
+});
+
 test("22d: spend totals come from the recorded usage without loading a run's request or response body", async () => {
   expect((await noting()).outcome).toBe("success");
   const usage = { input: 1_200, output: 300, cacheRead: 4_000, cacheWrite: 100, cost: { total: 0.25 } };

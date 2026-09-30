@@ -549,7 +549,7 @@ export class CcCoordinator {
       void account.finally(() => this.forkAccounting.delete(account));
     });
     this.activeForkTurnId = launch.turnId;
-    launch.resolve({ prompt: task.text, turnId: launch.turnId });
+    launch.resolve({ prompt: `${task.forkPrompt}\n\n${task.text}`, turnId: launch.turnId });
     return result;
   }
 

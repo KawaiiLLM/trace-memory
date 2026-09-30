@@ -1,6 +1,7 @@
 import { beforeAll, expect, test, vi } from "vitest";
 import { build } from "esbuild";
 import { resolve } from "node:path";
+import { loadPrompt } from "../../src/core/prompts/load.ts";
 
 let moduleUrl: string;
 beforeAll(async () => {
@@ -157,6 +158,25 @@ test("source read failure differs from unavailable usage and changed native sess
     if (scenario === "corrupt") expect(seen[0].failed).toContain("indexed JSON is invalid");
     else expect(seen[0].refused).toContain(scenario === "usage" ? "usage is unavailable" : "native session changed");
   }
+});
+
+test("the CC Hook sends the whole priced Noter directive to the native fork without rewriting it", async () => {
+  const f = await fixture();
+  const prompt = loadPrompt("noting.md");
+  const directive = `${prompt}\n\nUse ToolSearch to load note and memory before writing.\n\nRange: S1/T1..S1/T2\nSources: S1/T1#E1`;
+  const spawn = vi.fn(async () => ({ deny: "fork unavailable" }));
+  Object.assign(f.host, { agent: { spawn }, session: { id: async () => "first", usage: async () => ({ context: { breakdown:
+    { model: "opus", maxTokens: 200000, totalTokens: 100 } } }) } });
+  f.run.mockImplementation(async (argv: string[], options?: { stdin: string }) => {
+    if (argv.includes("hook-sources")) return { exitCode: 0, stdout: JSON.stringify({ sessionId: 1, branch: "main", headTurnId: 1, tailId: 1, selected: ["raw"] }), stderr: "" };
+    if (argv.includes("hook-turn")) return { exitCode: 0, stdout: JSON.stringify({ turnId: "t", prompt: directive }), stderr: "" };
+    return { exitCode: 0, stdout: JSON.stringify({ allowed: true }), stderr: "" };
+  });
+  await f.handlers.get("turn.complete")!(f.host, { turnId: "t", reason: "answer" }, async () => undefined);
+  expect(spawn).toHaveBeenCalledWith({ subagentType: "fork", prompt: directive, description: "Trace Memory Noter" });
+  expect(directive.split(prompt)).toHaveLength(2);
+  expect(prompt.length).toBeGreaterThan(7_000); // expanded shared blocks, not just the template's include marker
+  expect(prompt).not.toContain("<!-- include:");
 });
 
 test("fork listener spawn failure fences the exact registered agent before an unconfirmed physical stop", async () => {

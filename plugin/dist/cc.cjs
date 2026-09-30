@@ -307,7 +307,7 @@ function substantiveArchiveStatement(text) {
   return typeof text === "string" && !!text.trim() && !/^(?:invalid|obsolete|无效|过时|失效)[。.!！]?$/iu.test(text.trim());
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/base.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options = {}) {
     let callback;
@@ -509,7 +509,7 @@ var Diff = class {
   }
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/array.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/array.js
 var ArrayDiff = class extends Diff {
   tokenize(value) {
     return value.slice();
@@ -8546,9 +8546,13 @@ function freezeNoting(store, input, config3, resultText = rawResultText, pending
   const mode = input.mode ?? (config3.noting.forkModeDefault ? "fork" : "subagent");
   const { instructions, tools } = fixedCost();
   const inheriting = (input.effectiveMode ?? mode) === "fork";
-  const mandatory = inheriting ? (input.capacity?.prefixTokens ?? 0) + instructions : instructions + tools;
+  const forkPrompt = input.forkGuidance ? `${prompt}
+
+${input.forkGuidance}` : prompt;
+  const forkInstructions = input.forkGuidance ? tokens(forkPrompt) : instructions;
+  const mandatory = inheriting ? (input.capacity?.prefixTokens ?? 0) + forkInstructions : instructions + tools;
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
-    throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${instructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`} already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
+    throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${forkInstructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`} already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
   const { entries, rendered } = notingBatch(store, pending, config3, resultText);
   if (pending.length && !entries.length)
     throw new Error(`${NOTING_CAPACITY}oldest entry and Raw framing exceed noting.batchTokens (${config3.noting.batchTokens}); left pending`);
@@ -8614,10 +8618,10 @@ function freezeNoting(store, input, config3, resultText = rawResultText, pending
       throw new Error("Noting material Raw membership differs from its frozen processing batch; left pending");
     const prepared = notingMaterial(frozen, (entry) => rendered.get(entry.id), assembled.material, assembled.supplied, initial, inheriting);
     const capacity = input.capacity;
-    const priced = inheriting ? initial.inheritedTokens + instructions + tokens(prepared.text) : instructions + tools + tokens(prepared.text);
+    const priced = inheriting ? initial.inheritedTokens + forkInstructions + tokens(prepared.text) : instructions + tools + tokens(prepared.text);
     lastPrice = priced;
     const fits = !capacity || priced <= capacity.inputTokens;
-    if (fits) return { ...frozen, prepared };
+    if (fits) return { ...frozen, prepared, forkPrompt };
     if (capacity && history && prepared.material.facts.length) {
       history = Math.max(0, Math.min(history - 1, charge(prepared.material.facts) - (priced - capacity.inputTokens)));
       continue;
@@ -8713,6 +8717,7 @@ async function runNoting(store, frozen, runAgent, config3, tools) {
     mode,
     prompt,
     promptHash,
+    forkPrompt: frozen.forkPrompt ?? prompt,
     material,
     text,
     supplied: structuredClone(supplied),
@@ -11236,7 +11241,7 @@ var import_node_fs6 = require("node:fs");
 var import_node_os3 = require("node:os");
 var import_node_path5 = require("node:path");
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -32034,7 +32039,7 @@ function query({
   return queryInstance;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -32108,7 +32113,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -32787,7 +32792,7 @@ var Class2 = class {
   }
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -32853,7 +32858,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -32933,7 +32938,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -33090,7 +33095,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -33638,7 +33643,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -33674,14 +33679,14 @@ var Doc2 = class {
   }
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -35652,7 +35657,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -35761,7 +35766,7 @@ function en_default3() {
   };
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -35809,7 +35814,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -36613,7 +36618,7 @@ function _stringFormat(Class3, format2, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -36965,7 +36970,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -37441,7 +37446,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -37610,7 +37615,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -37644,7 +37649,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -37685,7 +37690,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -37725,7 +37730,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -37739,7 +37744,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -38818,22 +38823,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -42387,6 +42392,7 @@ async function ccDeltaInjection(config3, input, event, slice) {
 }
 
 // src/hosts/cc/scheduler.ts
+var CC_NOTER_FORK_GUIDANCE = "In this Claude Code fork, note and memory may be deferred. Use ToolSearch to load both tools before writing.";
 var CcTaskScheduler = class {
   memory;
   worker;
@@ -42665,7 +42671,8 @@ var CcTaskScheduler = class {
             effectiveMode: "fork",
             model: fork.model,
             capacity: fork.capacity,
-            visible: fork.visible
+            visible: fork.visible,
+            forkGuidance: CC_NOTER_FORK_GUIDANCE
           });
           if (result.outcome === "dropped" && "refused" in result && result.refused && !this.stopped && this.cancellationEpoch === epoch) {
             const refusal = result.refused;
@@ -43809,7 +43816,9 @@ var CcCoordinator = class {
       void account.finally(() => this.forkAccounting.delete(account));
     });
     this.activeForkTurnId = launch.turnId;
-    launch.resolve({ prompt: task.text, turnId: launch.turnId });
+    launch.resolve({ prompt: `${task.forkPrompt}
+
+${task.text}`, turnId: launch.turnId });
     return result;
   }
   /** 108: after a fork settled, off the write fence and the physical stop, read its transcript until its input side holds
@@ -44375,7 +44384,7 @@ async function declareCcProject(config3, nativeSessionId, name) {
 var import_node_fs12 = require("node:fs");
 var import_node_path10 = require("node:path");
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@earendil-works/pi-tui/dist/terminal-image.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@earendil-works/pi-tui/dist/terminal-image.js
 function getPngDimensions(base64Data) {
   try {
     const buffer = Buffer.from(base64Data, "base64");
@@ -44789,7 +44798,7 @@ var import_node_fs13 = require("node:fs");
 var import_node_path11 = require("node:path");
 var import_node_crypto16 = require("node:crypto");
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/scanner.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/scanner.js
 function createScanner(text, ignoreTrivia = false) {
   const len = text.length;
   let pos = 0, value = "", tokenOffset = 0, token = 16, lineNumber = 0, lineStartOffset = 0, tokenLineStartOffset = 0, prevTokenLineStartOffset = 0, scanError = 0;
@@ -45210,7 +45219,7 @@ var CharacterCodes;
   CharacterCodes2[CharacterCodes2["tab"] = 9] = "tab";
 })(CharacterCodes || (CharacterCodes = {}));
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/string-intern.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/string-intern.js
 var cachedSpaces = new Array(20).fill(0).map((_, index) => {
   return " ".repeat(index);
 });
@@ -45241,7 +45250,7 @@ var cachedBreakLinesWithSpaces = {
 };
 var supportedEols = ["\n", "\r", "\r\n"];
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/format.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/format.js
 function format(documentText, range, options) {
   let initialIndentLevel;
   let formatText;
@@ -45477,7 +45486,7 @@ function isEOL(text, offset) {
   return "\r\n".indexOf(text.charAt(offset)) !== -1;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/parser.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/parser.js
 var ParseOptions;
 (function(ParseOptions2) {
   ParseOptions2.DEFAULT = {
@@ -45899,7 +45908,7 @@ function getNodeType(value) {
   }
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/edit.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/edit.js
 function setProperty(text, originalPath, value, options) {
   const path = originalPath.slice();
   const errors = [];
@@ -46043,7 +46052,7 @@ function applyEdit(text, edit) {
   return text.substring(0, edit.offset) + edit.content + text.substring(edit.offset + edit.length);
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/main.js
+// ../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/main.js
 var ScanError;
 (function(ScanError2) {
   ScanError2[ScanError2["None"] = 0] = "None";

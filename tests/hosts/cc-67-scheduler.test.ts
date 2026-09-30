@@ -16,12 +16,26 @@ function fixture() {
     store: { enabled: () => enabled, pendingEntryIds: () => [...pending], getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     taskEligibility: vi.fn((phase: string, target: { triggerEntryId?: number; headTurnId?: number }) => ({ due: !!phase && !!target })),
-    noting: vi.fn(async (): Promise<Result> => { starts.push("N"); pending.shift(); return { outcome: "success" }; }),
+    notingBatch: vi.fn(() => [{ id: 1 }, { id: 2 }]),
+    noting: vi.fn(async (_input?: unknown): Promise<Result> => { starts.push("N"); pending.shift(); return { outcome: "success" }; }),
     dream: vi.fn(async (): Promise<Result> => { starts.push("D"); return { outcome: "success" }; }) };
   const scheduler = new CcTaskScheduler(memory as unknown as ConstructorParameters<typeof CcTaskScheduler>[0], worker, () => {});
   return { scheduler, memory, starts, pending, disable: () => { enabled = false; } };
 }
 const settle = async (f: ReturnType<typeof fixture>) => { for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick(); };
+
+test("112: only an admitted CC fork passes its ToolSearch guidance to Core before freezing", async () => {
+  const f = fixture();
+  const fork = { model: "synthetic", capacity: { inputTokens: 150_000, prefixTokens: 1_000 },
+    visible: { raw: new Map(), facts: new Set(), knowledge: new Set() } } as never;
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket(), fork); await tick();
+  expect(f.memory.noting).toHaveBeenCalledWith(expect.objectContaining({ effectiveMode: "fork",
+    forkGuidance: expect.stringContaining("ToolSearch") }));
+  const input = f.memory.noting.mock.calls[0]![0] as { forkGuidance: string };
+  expect(input.forkGuidance).toContain("note and memory");
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
+  expect(f.memory.noting.mock.calls[1]![0]).not.toHaveProperty("forkGuidance");
+});
 
 test("entry imports and bootstrap do not check automatic work; one turn end checks both phases", () => {
   const f = fixture(); f.memory.taskEligibility.mockImplementation(() => ({ due: false }));

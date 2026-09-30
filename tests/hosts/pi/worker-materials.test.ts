@@ -6,6 +6,7 @@ import { expect, test, vi } from "vitest";
 // Pin fork for inherited-material cases; the fresh-material case explicitly overrides it.
 import { noteAndMemory, stableForkFixture as fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
@@ -53,6 +54,9 @@ test("92: the Noter fork inherits its stable parent without a Raw or preceding-f
     const { run, child } = await thirdPrompt(f);
     expect(run.mode).toBe("fork");
     const increment = task(child);
+    const instructions = loadPrompt("noting.md");
+    expect(text(child.messages.at(-1)!)).toContain(`${instructions}\n\n`);
+    expect(text(child.messages.at(-1)!).split(instructions)).toHaveLength(2);
     // Mandatory framing, whatever the data delta is: instruction, range, head reply, source index.
     expect(increment).toContain("Noting (facts and knowledge)");
     expect(increment).toContain("Range: ");
@@ -73,7 +77,7 @@ test("25a 2026-09-09: the same task in subagent mode carries full history and ti
     const { run, child } = await thirdPrompt(f);
     expect(run.mode).toBe("subagent");
     // A fresh child: core's prompt as the system message, the whole fresh material as the task.
-    expect(String(child.messages[0].content)).toContain("Noting (facts and knowledge)");
+    expect(String(child.messages[0].content)).toBe(loadPrompt("noting.md"));
     const body = text(child.messages.at(-1)!);
     expect(body).toContain("Recent facts (by Turn):");
     expect(body).toContain("[F1]"); // Both modes must supply this missing fact history.
@@ -101,6 +105,6 @@ test("25a 2026-09-09: a fork that cannot be prepared sends the complete subagent
     expect(fresh).toContain("Recent facts (by Turn):");
     expect(fresh).toContain("Raw:");
     expect(fresh).not.toContain("<knowledge>");
-    expect(String(child.messages[0].content)).toContain("Noting (facts and knowledge)"); // a fresh child, not a fork
+    expect(String(child.messages[0].content)).toBe(loadPrompt("noting.md")); // a fresh child, not a fork
   } finally { await f.dispose(); }
 });

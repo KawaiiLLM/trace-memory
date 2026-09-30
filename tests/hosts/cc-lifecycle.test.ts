@@ -6,6 +6,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { createConnection } from "node:net";
 import { TraceMemory } from "../../src/core/api/index.ts";
+import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { activeFunctionHook, bindingMutexPath, bindingPath, markCcFunctionHook, readBinding, recordSessionStart, updateBinding, withCcBindingLock, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
@@ -1638,6 +1639,25 @@ test("86: a late SessionEnd from an earlier native process cannot close a reopen
     const store = new Store(f.config.dbPath);
     try { expect(store.getSession(imported.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
   } finally { newer.kill("SIGTERM"); await childExit(newer); }
+});
+
+test("112: coordinator delivers the frozen complete Noter directive to the Hook unchanged", async () => {
+  const f = fixture("noter-instructions"); enableSyntheticWorker(f); f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  await coordinator.start();
+  const prompt = loadPrompt("noting.md"), guidance = "Use ToolSearch to load note and memory before writing.";
+  let resolve!: (result: unknown) => void;
+  vi.spyOn((coordinator as any).forkAuthority, "begin").mockReturnValue(new Promise(done => { resolve = done; }));
+  let directive!: { prompt: string; turnId: string };
+  (coordinator as any).forkLaunch = { turnId: "t", resolve: (value: typeof directive) => { directive = value; }, signal: new AbortController().signal };
+  try {
+    const result = (coordinator as any).runFork({ sessionId: 1, prompt, forkPrompt: `${prompt}\n\n${guidance}`, text: "Range: S1/T1\nSources: S1/T1#E1" });
+    expect(directive.prompt).toBe(`${prompt}\n\n${guidance}\n\nRange: S1/T1\nSources: S1/T1#E1`);
+    expect(directive.prompt.split(prompt)).toHaveLength(2);
+    resolve({ outcome: "cancelled" });
+    await result;
+  } finally { await coordinator.shutdown("test"); }
 });
 
 // Ticket 108: a CC fork's cost is amended into its run after the fork settled. Shutdown waits for that, and the

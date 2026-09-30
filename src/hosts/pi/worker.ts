@@ -174,7 +174,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
         const native = await runNative({ ...common, mode: "fork", parentFile: binding.fork.parentFile,
           parentSessionId: binding.fork.parentSessionId, checkpoint: binding.fork.checkpoint, captured: binding.fork.captured,
           recheck: binding.fork.recheck,
-          task: `${task.prompt}\n\n${task.text}`, onCache: binding.onCache });
+          task: `${task.forkPrompt}\n\n${task.text}`, onCache: binding.onCache });
         request = native.request ?? request; verification = native.verification;
         // 27b: the one post-attempt refusal. A request the provider rejected for context capacity, in
         // a run that submitted nothing, is re-admitted on the same frozen evidence; the attempt's own

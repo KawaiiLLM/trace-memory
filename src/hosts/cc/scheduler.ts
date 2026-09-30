@@ -3,6 +3,10 @@ import type { CcReconcileResult } from "./importer.ts";
 import type { ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
+// CC alone defers MCP tools in a native fork. Core receives and prices this exact text at freeze;
+// the host must not append anything to the admitted task at launch.
+const CC_NOTER_FORK_GUIDANCE = "In this Claude Code fork, note and memory may be deferred. Use ToolSearch to load both tools before writing.";
+
 export type CcWorkerPhase = "noting" | "dreaming";
 export type CcForkChoice = { model: string; capacity: { inputTokens: number; prefixTokens: number }; visible: VisibleView } | { refused: string };
 type CcTaskResult = NotingResult | DreamingResult;
@@ -242,7 +246,7 @@ export class CcTaskScheduler {
         try {
           const frozenIds = this.memory.notingBatch(target).map(entry => entry.id);
           result = await this.memory.noting({ ...options, mode: "fork", effectiveMode: "fork",
-            model: fork.model, capacity: fork.capacity, visible: fork.visible });
+            model: fork.model, capacity: fork.capacity, visible: fork.visible, forkGuidance: CC_NOTER_FORK_GUIDANCE });
           if (result.outcome === "dropped" && "refused" in result && result.refused && !this.stopped && this.cancellationEpoch === epoch) {
             const refusal = result.refused as { reason?: string };
             noLaunch?.();
