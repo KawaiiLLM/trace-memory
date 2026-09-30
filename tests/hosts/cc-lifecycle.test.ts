@@ -1510,3 +1510,49 @@ test("86: a late SessionEnd from an earlier native process cannot close a reopen
     try { expect(store.getSession(imported.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
   } finally { newer.kill("SIGTERM"); await childExit(newer); }
 });
+
+// Ticket 108: a CC fork's cost is amended into its run after the fork settled. Shutdown waits for that, and the
+// run is found by its transcript path however many runs core recorded since.
+async function forkAccountingFixture(label: string, laterRuns: number) {
+  const f = fixture(label); enableSyntheticWorker(f); f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  await coordinator.start();
+  const memory = (coordinator as any).importer.memory, store: Store = memory.store;
+  const sessionId = (store.db.prepare("SELECT id FROM sessions LIMIT 1").get() as { id: number }).id;
+  const nativeLog = join(f.dir, "agent-x.jsonl");
+  const tokens = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 };
+  (coordinator as any).catalog = () => ({ tiers: { t: { input: 1e6, output: 1e6, cache_write_5m: 0, cache_write_1h: 0, cache_read: 0, web_search: 0 } }, models: { m: "t" } });
+  let settle!: (result: unknown) => void;
+  vi.spyOn((coordinator as any).forkAuthority, "begin").mockReturnValue(new Promise(resolve => { settle = resolve; }));
+  (coordinator as any).forkLaunch = { turnId: "t", resolve: () => {}, signal: new AbortController().signal };
+ 
+  const settled = (coordinator as any).runFork({ sessionId, text: "note" });
+  const record = (response: object) => store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: now, response: JSON.stringify(response) }).id;
+  const runId = record({ nativeLog, usage: { ...tokens } });
+  for (let i = 0; i < laterRuns; i++) record({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } });
+  settle({ outcome: "success", nativeLog, usage: tokens });
+  await settled;
+  const transcript = JSON.stringify({ type: "assistant", message: { id: "a", model: "m", usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
+  return { coordinator, store, runId, nativeLog, transcript, cost: () => (store.db.prepare("SELECT usage_cost FROM runs WHERE id = ?").get(runId) as { usage_cost: number | null }).usage_cost };
+}
+
+test("shutdown waits for fork accounting: a transcript flushed after shutdown began is still read and priced", async () => {
+  const a = await forkAccountingFixture("acct-late", 0);
+  setTimeout(() => writeFileSync(a.nativeLog, a.transcript), 400);
+  expect(a.cost()).toBeNull();
+  await a.coordinator.shutdown("test");
+  expect(a.store.closed).toBe(true);
+  // Read through a fresh connection: the amendment reached the run before the Store closed.
+  const db = new Store((a.coordinator as any).config.dbPath);
+  try { expect((db.db.prepare("SELECT usage_cost FROM runs WHERE id = ?").get(a.runId) as { usage_cost: number }).usage_cost).toBeCloseTo(15, 6); } finally { db.close(); }
+});
+
+test("the settled fork's run is found by its transcript path after more than five later noting runs", async () => {
+  const a = await forkAccountingFixture("acct-later", 7);
+  writeFileSync(a.nativeLog, a.transcript);
+  await (coordinatorAccounting(a.coordinator));
+  expect(a.cost()).not.toBeNull();
+  await a.coordinator.shutdown("test");
+});
+const coordinatorAccounting = (coordinator: any) => Promise.allSettled([...coordinator.forkAccounting]);

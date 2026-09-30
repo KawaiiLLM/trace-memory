@@ -429,11 +429,12 @@ function usageFromFields(fields: string | null): UsageColumns {
   return [count(input), count(output), count(cacheRead), count(cacheWrite), typeof costTotal === "number" ? costTotal : typeof costTotal === "boolean" ? Number(costTotal) : null];
 }
 
-/** 108: a run's cost is unknown when it recorded tokens without a price, or was cancelled with no
- * usage at all (a cancelled run's absent usage is unknown, never zero: review 2026-09-08). A run that
- * never reached a model has no cost to know. */
+/** 108: part of a run's cost is unknown when it recorded tokens without a price, or was cancelled: its usage is
+ * absent (unknown, never zero: review 2026-09-08) or partial (`usageStatus: "partial"`, which the audit sets on
+ * exactly the cancelled runs that have usage). A known part still counts in totals, which are then lower
+ * bounds. A run that never reached a model has no cost to know. */
 const costUnknown = (row: { outcome: string; usage_input: number | null; usage_cost: number | null }): boolean =>
-  row.usage_cost === null && (row.usage_input !== null || row.outcome === "cancelled");
+  row.outcome === "cancelled" || (row.usage_cost === null && row.usage_input !== null);
 
 export type Phase = "noting" | "dreaming";
 /** Historical executions remain readable without granting retired stages admission. */
@@ -4286,7 +4287,7 @@ export class Store {
     const rows = this.db.prepare(`SELECT id, outcome, usage_input, usage_cost FROM runs INDEXED BY idx_runs_created_at
       WHERE created_at >= ? ORDER BY id`).all(since) as { id: number; outcome: string; usage_input: number | null; usage_cost: number | null }[];
     let cost = 0, unknown = 0;
-    for (const row of rows) { if (row.usage_cost !== null) cost += row.usage_cost; else if (costUnknown(row)) unknown++; }
+    for (const row of rows) { if (row.usage_cost !== null) cost += row.usage_cost; if (costUnknown(row)) unknown++; }
     return { cost, unknown };
   }
   listFactsByRun(runId: number): Fact[] {

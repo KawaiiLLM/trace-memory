@@ -9,8 +9,9 @@ import { assertOperatorBinding, coreHostOf, readBinding, sessionEnabled, validat
 const localMidnight = () => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(); };
 import { ccContextEvidence, type CcContextSnapshot } from "./menu-context.ts";
 
-/** `cost` is null when the run's cost is unknown (108); the pane says so instead of showing $0. */
-export interface CcMenuRun { id: number; phase: string; status: string; cost: number | null; at: string }
+/** `cost` is null when the run's cost is unknown (108); the pane says so instead of showing $0. `partial`: the
+ * cost is a known part only (a cancelled run's), shown as a lower bound. */
+export interface CcMenuRun { id: number; phase: string; status: string; cost: number | null; partial: boolean; at: string }
 /** Match Pi's one-line catchup progress, from the executor's existing in-memory drain. */
 export function ccCatchupNotice(status: CcCatchupStatus | null): string | null {
   if (!status) return null;
@@ -35,7 +36,7 @@ function runsFor(store: Store, sessionId: number, limit: number): CcMenuRun[] {
   return (store.db.prepare(`SELECT id, kind, outcome, usage_cost, created_at FROM runs
     WHERE session_id = ? ORDER BY id DESC LIMIT ?`).all(sessionId, limit) as
     { id: number; kind: string; outcome: string; usage_cost: number | null; created_at: string }[]).map(run => ({
-    id: run.id, phase: run.kind, status: run.outcome, cost: run.usage_cost, at: run.created_at,
+    id: run.id, phase: run.kind, status: run.outcome, cost: run.usage_cost, partial: run.outcome === "cancelled" && run.usage_cost !== null, at: run.created_at,
   }));
 }
 

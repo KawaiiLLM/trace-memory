@@ -314,6 +314,9 @@ test("108: amending a recorded run's usage prices it in place: columns follow, p
     cacheMiss: { miss: true } });
   const run = store.getRun(id)!, response = JSON.parse(run.response!);
   expect(response).toMatchObject({ usage: { input: 5, cost: { total: 0.25 } }, usageStatus: "partial", problems: ["stopped", "CC fork cost unknown: example"], verification: { cacheMiss: { miss: true } } });
-  expect(memory.spend(sessionId)).toMatchObject({ input: 5, cost: 0.25, unknown: 0 });
+  // A partial cost is a lower bound: the known part counts, the run is still marked unknown.
+  expect(memory.spend(sessionId)).toMatchObject({ input: 5, cost: 0.25, unknown: 1 });
+  expect(memory.spendSince(time)).toEqual({ cost: 0.25, unknown: 1 });
+  expect(memory.status(sessionId)).toContain("$0.2500 + 1 run of unknown cost");
   expect(renderRun(run, [], [])).toContain("known usage only; remaining cost unknown");
 });

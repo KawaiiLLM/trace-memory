@@ -1019,7 +1019,7 @@ export const register = (on) => {
       </Box>;
     }
     if (screen === "runs") return <Box flexDirection="column"><Text>Trace Memory · Runs</Text>
-      {reply.runs.map((run2, i) => <Text key={`run-${i}`}>{`R${run2.id} ${run2.phase} ${run2.status} ${run2.cost === null ? "cost unknown" : `$${run2.cost.toFixed(2)}`} ${run2.at}`}</Text>)}
+      {reply.runs.map((run2, i) => <Text key={`run-${i}`}>{`R${run2.id} ${run2.phase} ${run2.status} ${run2.cost === null ? "cost unknown" : `$${run2.cost.toFixed(2)}${run2.partial ? "+ (rest unknown)" : ""}`} ${run2.at}`}</Text>)}
       <Input key="run-count" label={MENU_INPUTS.runs} onSubmit={(value) => {
       try {
         runsLimit = parseRunsCount(value);

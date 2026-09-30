@@ -133,6 +133,9 @@ export class CcCoordinator {
   /** 108: each settled fork's accounting (its price, partial usage and cache-miss warnings), keyed by the
    * fork transcript path and taken once by the Hook, which shows the warnings. */
   private readonly forkAccounts = new Map<string, Promise<string[]>>();
+  /** Every accounting still running, whether or not a Hook has already taken its entry from `forkAccounts`:
+   * shutdown waits for these before it closes the Store. */
+  private readonly forkAccounting = new Set<Promise<string[]>>();
   private priceCatalog: CcPriceCatalog | undefined;
   private forkLaunch: { turnId: string; resolve: (directive: { prompt: string; turnId: string } | null) => void; signal: AbortSignal } | null = null;
   private activeForkTurnId: string | null = null;
@@ -496,7 +499,16 @@ export class CcCoordinator {
     const launch = this.forkLaunch;
     if (!launch || launch.signal.aborted) return Promise.resolve({ outcome: "cancelled", output: "CC fork checkpoint is no longer live" });
     const result = this.forkAuthority.begin(task);
-    void result.then(settled => { if (settled.nativeLog) this.forkAccounts.set(settled.nativeLog, this.accountFork(task, settled)); });
+    // The run core records at settlement has an id above every run this session has now.
+    const store = this.importer?.memory.store;
+    const firstRunId = store ? ((store.db.prepare("SELECT MAX(id) AS id FROM runs WHERE session_id = ?").get(task.sessionId) as { id: number | null }).id ?? 0) + 1 : 0;
+    void result.then(settled => {
+      if (!settled.nativeLog) return;
+      const account = this.accountFork(task, settled, firstRunId);
+      this.forkAccounts.set(settled.nativeLog, account);
+      this.forkAccounting.add(account);
+      void account.finally(() => this.forkAccounting.delete(account));
+    });
     this.activeForkTurnId = launch.turnId;
     launch.resolve({ prompt: task.text, turnId: launch.turnId });
     return result;
@@ -507,13 +519,13 @@ export class CcCoordinator {
    * amend the run. A fork stopped before it completed has no recorded tokens: whatever its transcript holds is
    * recorded as partial usage. Unpriceable, undercounted or missing leaves the cost unknown and says why in
    * the run's problems. Returns the cache-miss warnings, one per missed response. */
-  private async accountFork(task: NotingAgentInput, settled: RunAgentResult): Promise<string[]> {
+  private async accountFork(task: NotingAgentInput, settled: RunAgentResult, firstRunId: number): Promise<string[]> {
     const path = settled.nativeLog!;
     try {
       const { patch, warnings } = await accountForkTranscript(path, settled.usage ? settled.usage as CcTokens : undefined,
-        () => this.catalog(), { stop: () => this.closed || this.closing });
+        () => this.catalog(), { stop: () => this.closed });
       if (patch) {
-        const runId = await this.findForkRun(task, path);
+        const runId = await this.findForkRun(task, path, firstRunId);
         const store = this.importer?.memory.store;
         if (runId !== undefined && store && !store.closed) store.amendRunUsage(runId, patch);
         else this.diagnostic(`fork accounting found no run for ${path}`);
@@ -526,15 +538,17 @@ export class CcCoordinator {
     }
   }
 
-  /** The run core recorded for the fork that settled, found by the transcript path it carries. Core records
-   * it right after the settlement, so a few short retries are enough. */
-  private async findForkRun(task: NotingAgentInput, nativeLog: string): Promise<number | undefined> {
+  /** The run core recorded for the fork that settled, found by the transcript path it carries, among this
+   * session's runs from `firstRunId` on (the ones recorded since the fork started). Core records it right
+   * after the settlement, so a few short retries are enough. */
+  private async findForkRun(task: NotingAgentInput, nativeLog: string, firstRunId: number): Promise<number | undefined> {
     for (let attempt = 0; attempt < 100 && !this.closed; attempt++) {
       const store = this.importer?.memory.store;
       if (!store || store.closed) return;
-      const rows = store.db.prepare(`SELECT r.id, b.response FROM runs r JOIN run_bodies b ON b.run_id = r.id
-        WHERE r.session_id = ? AND r.kind = 'noting' ORDER BY r.id DESC LIMIT 5`).all(task.sessionId) as { id: number; response: string | null }[];
-      for (const row of rows) { try { if (JSON.parse(row.response ?? "{}").nativeLog === nativeLog) return Number(row.id); } catch { /* not this row */ } }
+      const row = store.db.prepare(`SELECT r.id FROM runs r JOIN run_bodies b ON b.run_id = r.id
+        WHERE r.session_id = ? AND r.kind = 'noting' AND r.id >= ? AND json_extract(b.response, '$.nativeLog') = ?
+        ORDER BY r.id DESC LIMIT 1`).get(task.sessionId, firstRunId, nativeLog) as { id: number } | undefined;
+      if (row) return Number(row.id);
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
@@ -805,6 +819,9 @@ export class CcCoordinator {
     try {
       await this.following; // a retarget in flight finishes its handoff first
       result = await this.leave();
+      // 108: a fork's accounting amends its run through the Store, so the Store outlives it (each is bounded by
+      // its own ten-second read; a killed process leaves the cost unknown).
+      while (this.forkAccounting.size) await Promise.allSettled([...this.forkAccounting]);
       // MCP teardown is never close authority. Preserve its executor binding unless SessionEnd
       // already cleared it, so another attach cannot mistake an unfinished teardown for no owner.
       const owner = this.control?.executor.token;

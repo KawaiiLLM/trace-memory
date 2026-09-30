@@ -90,6 +90,9 @@ test("runs uses the requested count beyond 20 with no silent limit", async () =>
     expect(runs[0]!.id).toBe(30);
     expect(runs.at(-1)!.id).toBe(4);
     expect(readCcRuns(f.config, f.session, 50)).toHaveLength(30);
+    // 108: a cancelled run's known cost is a lower bound; an unpriced one has no cost at all.
+    store.db.prepare("UPDATE runs SET outcome = 'cancelled', usage_cost = 0.5 WHERE id = 30").run();
+    expect(readCcRuns(f.config, f.session, 2).map(r => [r.id, r.cost, r.partial])).toEqual([[30, 0.5, true], [29, null, false]]);
   } finally { store.close(); }
 });
 
