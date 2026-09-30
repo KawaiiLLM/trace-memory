@@ -42,11 +42,11 @@ function enableSyntheticWorker(f: ReturnType<typeof fixture>): void {
   Object.assign(f.config, configured);
 }
 const sleep = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
-const directControl = (executor: CcExecutorBinding, verb: unknown) =>
+const directControl = (executor: CcExecutorBinding, verb: unknown, fields: Record<string, unknown> = {}) =>
   new Promise<any>((resolveReply, reject) => {
     const socket = createConnection(executor.socketPath); let output = "";
     socket.setEncoding("utf8");
-    socket.on("connect", () => socket.write(`${JSON.stringify({ verb, token: executor.token })}\n`));
+    socket.on("connect", () => socket.write(`${JSON.stringify({ verb, token: executor.token, ...fields })}\n`));
     socket.on("data", chunk => output += chunk);
     socket.on("end", () => { try { resolveReply(JSON.parse(output)); } catch (error) { reject(error); } });
     socket.on("error", reject);
@@ -172,6 +172,99 @@ test("function-hook child requires the exact live SessionStart assignment and ow
   expect((await attempt()).type).toBe("rejected");
   await updateBinding(f.config, f.nativeSessionId, binding => ({ ...binding!, nativeProcess: owner }));
   expect(processStartedAt(process.pid)).toBe(owner.startedAt);
+});
+
+test("reloaded executor clears only an unconfirmed close for the same live native assignment", async () => {
+  const f = fixture("reload-close"); f.write();
+  const input = { hook_event_name: "SessionStart" as const, session_id: f.nativeSessionId, transcript_path: f.transcriptPath };
+  await recordSessionStart(f.config, input, now);
+  const original = readBinding(f.config, f.nativeSessionId)!;
+  const owner = original.nativeProcess!;
+  expect(publishNativeSession(f.config, input)).toMatchObject({ pid: owner.pid, startedAt: owner.startedAt });
+  const assignmentPath = join(f.config.stateDir, "native-sessions", `${owner.pid}.json`);
+  const assignment = JSON.parse(readFileSync(assignmentPath, "utf8"));
+  const close = { at: now, reason: "SIGTERM", confirmed: false };
+  const fields = { enrollment: { defaultEnabled: true, choice: true }, branch: "selected", selectedLeafUuid: "a1",
+    nativeProcess: owner, functionHookProcess: owner, lastClose: close };
+  const restore = async () => updateBinding(f.config, f.nativeSessionId, current => ({ ...current!, ...fields, executor: null }));
+  const attempt = async () => {
+    const child = spawnBindingChild("control", { config: f.config, nativeSessionId: f.nativeSessionId, worker: "reload" });
+    try {
+      await childMessage(child, "ready"); child.send({ type: "attach" });
+      const result = await Promise.race([childMessage(child, "fulfilled"), childMessage(child, "rejected")]);
+      if (result.type !== "fulfilled") throw new Error(String(result.error));
+      return { child, executor: result.executor as CcExecutorBinding };
+    } catch (error) { child.kill("SIGKILL"); await childExit(child); throw error; }
+  };
+  const run = async (expected: boolean) => {
+    const { child, executor } = await attempt();
+    try {
+      const current = readBinding(f.config, f.nativeSessionId)!;
+      expect(current.lastClose === null).toBe(expected);
+      expect(current).toMatchObject({ enrollment: fields.enrollment, branch: fields.branch,
+        selectedLeafUuid: fields.selectedLeafUuid, nativeProcess: owner, functionHookProcess: owner });
+      expect(activeFunctionHook(current)).toBe(expected);
+      const answer = await directControl(executor, "turn-end", { turnId: "next", reason: "answer" });
+      expect(answer.ok).toBe(expected);
+      if (expected) expect(answer.directive).toEqual({ turnId: "next", prompt: "checked" });
+      else expect(answer.error).toContain("registration is not current");
+    } finally { child.send({ type: "close" }); await childExit(child); }
+  };
+  await restore(); await run(true);
+  // A later SessionEnd wins over the attach: the callback reads the binding under the lock.
+  await restore();
+  const mutex = new DatabaseSync(bindingMutexPath(f.config, f.nativeSessionId), { timeout: 0 });
+  mutex.exec("BEGIN IMMEDIATE");
+  const contender = spawnBindingChild("control", { config: f.config, nativeSessionId: f.nativeSessionId, worker: "reload" });
+  try {
+    await childMessage(contender, "ready"); contender.send({ type: "attach" });
+    await vi.waitFor(() => expect(existsSync(join(f.config.stateDir, "control")) &&
+      readdirSync(join(f.config.stateDir, "control")).some(name => name.endsWith(".sock"))).toBe(true));
+    const confirmed = { at: now, reason: "SessionEnd", confirmed: true };
+    const current = readBinding(f.config, f.nativeSessionId)!;
+    writeFileSync(bindingPath(f.config, f.nativeSessionId), `${JSON.stringify({ ...current, lastClose: confirmed })}\n`);
+    mutex.exec("ROLLBACK");
+    const result = await Promise.race([childMessage(contender, "fulfilled"), childMessage(contender, "rejected")]);
+    expect(result.type).toBe("fulfilled");
+    expect(readBinding(f.config, f.nativeSessionId)!.lastClose).toEqual(confirmed);
+    contender.send({ type: "close" }); await childExit(contender);
+  } finally {
+    try { mutex.exec("ROLLBACK"); } catch { /* already released */ }
+    mutex.close();
+    if (contender.exitCode === null && contender.signalCode === null) { contender.kill("SIGKILL"); await childExit(contender); }
+  }
+  await restore(); await updateBinding(f.config, f.nativeSessionId, current => ({ ...current!, lastClose: { ...close, confirmed: true } })); await run(false);
+  for (const changes of [
+    { nativeProcess: { pid: owner.pid + 100_000, startedAt: owner.startedAt } },
+    { nativeProcess: { pid: owner.pid, startedAt: "previous process" } },
+    { nativeProcess: undefined },
+  ]) {
+    await restore(); await updateBinding(f.config, f.nativeSessionId, current => ({ ...current!, ...changes }));
+    const { child } = await attempt();
+    try { expect(readBinding(f.config, f.nativeSessionId)!.lastClose).toEqual(close); }
+    finally { child.send({ type: "close" }); await childExit(child); }
+  }
+  for (const changes of [
+    { startedAt: "reused pid" }, { startedAt: null }, { nativeSessionId: "other" },
+    { transcriptPath: join(f.dir, "other.jsonl") },
+  ]) {
+    await restore(); writeFileSync(assignmentPath, JSON.stringify({ ...assignment, ...changes }));
+    const { child } = await attempt();
+    try { expect(readBinding(f.config, f.nativeSessionId)!.lastClose).toEqual(close); }
+    finally { child.send({ type: "close" }); await childExit(child); }
+  }
+  await restore(); writeFileSync(assignmentPath, JSON.stringify({ ...assignment, nativeSessionId: 123 }));
+  const malformed = spawnBindingChild("control", { config: f.config, nativeSessionId: f.nativeSessionId, worker: "reload" });
+  try {
+    await childMessage(malformed, "ready"); malformed.send({ type: "attach" });
+    expect((await childMessage(malformed, "rejected")).error).toContain("invalid native session record");
+    expect(readBinding(f.config, f.nativeSessionId)!.lastClose).toEqual(close);
+  } finally { malformed.disconnect(); await childExit(malformed); }
+  writeFileSync(assignmentPath, JSON.stringify(assignment));
+  await restore(); rmSync(assignmentPath);
+  const { child } = await attempt();
+  try { expect(readBinding(f.config, f.nativeSessionId)!.lastClose).toEqual(close); }
+  finally { child.send({ type: "close" }); await childExit(child); }
 });
 
 test("live function-hook turns check once across both import orders and do not replay bootstrap", async () => {

@@ -7,7 +7,7 @@ import type { CcCatchupStatus } from "./scheduler.ts";
 import { Store } from "../../core/store/index.ts";
 import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
 import { activeFunctionHook, assertOperatorBinding, readBinding, validateNativeSessionId, updateBinding, updateBindingInStoreTransaction, type CcExecutorBinding, type CcSessionBinding } from "./binding.ts";
-import { functionHookNativeProcess } from "./native-session.ts";
+import { assignedNativeSession, functionHookNativeProcess, processAncestors } from "./native-session.ts";
 
 export type ControlVerb = "stop" | "off" | "catchup";
 export interface CcForkObservation {
@@ -294,6 +294,18 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
         const liveness = executorLiveness(current.executor);
         if (liveness === "alive") throw new Error(`CC session already has a live executor process ${current.executor.pid}`);
         if (liveness === "unknown") throw new Error(`cannot establish liveness of CC executor process ${current.executor.pid}`);
+      }
+      // Only a restarted executor under the same live SessionStart owner may release an
+      // unconfirmed shutdown mark. Resolve ancestry and assignment under the binding lock so
+      // a concurrent SessionEnd cannot be replaced by a stale pre-attach snapshot.
+      if (current.lastClose && !current.lastClose.confirmed && current.nativeProcess?.startedAt) {
+        const ancestors = processAncestors();
+        const assigned = assignedNativeSession(config, ancestors);
+        const owner = ancestors.find(ancestor => ancestor.pid === assigned?.pid);
+        if (owner?.startedAt && assigned?.startedAt === owner.startedAt &&
+            owner.pid === current.nativeProcess.pid && owner.startedAt === current.nativeProcess.startedAt &&
+            assigned.nativeSessionId === current.nativeSessionId && assigned.transcriptPath === current.transcriptPath)
+          return { ...current, executor, lastClose: null };
       }
       return { ...current, executor };
     }, bindingTimeoutMs, signal);
