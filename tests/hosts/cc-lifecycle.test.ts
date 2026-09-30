@@ -227,7 +227,7 @@ test("live function-hook turns check once across both import orders and do not r
   } finally { await coordinator.shutdown("test"); }
 });
 
-test("fork source observation returns committed originals without scheduling a turn", async () => {
+test("fork source observation returns frozen batch identities without scheduling a turn", async () => {
   const f = fixture("fs"); enableSyntheticWorker(f); f.write();
   f.config.coreConfig.noting.triggerTokens = 1;
   f.config.coreConfig.noting.forkModeDefault = true;
@@ -240,9 +240,59 @@ test("fork source observation returns committed originals without scheduling a t
     await markCcFunctionHook(f.config, f.nativeSessionId);
     const sources = await requestCcForkSources(f.config, f.nativeSessionId, "first-turn");
     expect(sources?.turnId).toBe("first-turn");
-    expect(sources?.selected.map(row => row.nativeId)).toContain("u1");
-    expect(sources?.selected.find(row => row.nativeId === "u1")?.record.message?.content).toBe("question");
+    expect(sources?.selected).toContain("u1");
     expect((coordinator as any).scheduler.running()).toEqual([]);
+  } finally { await coordinator.shutdown("test"); }
+});
+
+test("CC final admission uses the selected compaction boundary, frozen batch and checkpoint (110)", async () => {
+  const f = fixture("boundary-admission"); enableSyntheticWorker(f); f.write();
+  f.config.stateDir = mkdtempSync("/tmp/tmcc-110-"); dirs.push(f.config.stateDir);
+  f.records.unshift({ uuid: "initial-boundary", parentUuid: null, type: "system", subtype: "compact_boundary",
+    timestamp: "2025-12-31T23:59:59.000Z" });
+  f.records[1]!.parentUuid = "initial-boundary"; f.write();
+  f.config.coreConfig.noting.triggerTokens = 1;
+  f.config.coreConfig.noting.forkModeDefault = true;
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId);
+  try {
+    await coordinator.start();
+    await markCcFunctionHook(f.config, f.nativeSessionId);
+    const initial = await requestCcForkSources(f.config, f.nativeSessionId, "before");
+    expect(initial?.selected).toEqual(["u1", "a1"]);
+    const observed = (source: NonNullable<typeof initial>) => ({ checkpoint: { sessionId: source.sessionId,
+      branch: source.branch, headTurnId: source.headTurnId, tailId: source.tailId }, batch: source.selected,
+      model: "synthetic", window: 200000, prefix: 100 });
+    const admit = (source: NonNullable<typeof initial>, observation = observed(source)) => {
+      const result = (coordinator as any).lastReconcile;
+      return (coordinator as any).forkOption({ sessionId: source.sessionId, branch: source.branch,
+        headTurnId: source.headTurnId }, result, observation);
+    };
+    expect(admit(initial!).visible.raw.size).toBe(2);
+    expect(admit(initial!, { ...observed(initial!), batch: ["a1", "u1"] }).refused).toContain("batch changed");
+    expect(admit(initial!, { ...observed(initial!), checkpoint: { ...observed(initial!).checkpoint, tailId: -1 } }).refused)
+      .toContain("checkpoint moved");
+    f.records.splice(-1, 1,
+      { uuid: "boundary", parentUuid: null, logicalParentUuid: "a1", type: "system", subtype: "compact_boundary",
+        timestamp: "2026-01-01T00:00:02.000Z" },
+      { uuid: "summary", parentUuid: "boundary", type: "user", isCompactSummary: true,
+        timestamp: "2026-01-01T00:00:03.000Z", message: { role: "user", content: "summary" } },
+      { uuid: "u2", parentUuid: "summary", type: "user", ...sdkPrompt("p2"),
+        timestamp: "2026-01-01T00:00:04.000Z", message: { role: "user", content: "next question" } },
+      { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:05.000Z",
+        message: { role: "assistant", content: [{ type: "thinking", thinking: "" }, { type: "text", text: "answer" }] } },
+      { type: "last-prompt", leafUuid: "a2" });
+    f.write(); await coordinator.requestReconcile("compact boundary");
+    const spanning = await requestCcForkSources(f.config, f.nativeSessionId, "after");
+    expect(spanning?.selected).toEqual(["u1", "a1", "u2", "a2"]);
+    expect(admit(initial!).refused).toContain("checkpoint moved");
+    expect(admit(spanning!).refused).toContain("Raw availability: entry");
+    expect(admit(spanning!).refused).toContain("native u1");
+    const noting = vi.spyOn((coordinator as any).importer.memory, "noting").mockResolvedValue({ outcome: "success", facts: [] });
+    expect(await signalCcTurnEnd(f.config, f.nativeSessionId, "after", "answer", observed(spanning!))).toBeNull();
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledOnce());
+    expect(noting.mock.calls[0]![0]).toMatchObject({ effectiveMode: "subagent",
+      fallbackReason: expect.stringContaining("Raw availability: entry") });
   } finally { await coordinator.shutdown("test"); }
 });
 
@@ -421,33 +471,6 @@ test("no-hook native interruption after previously imported tool Raw checks once
       expect(replay.selectedAppendedEntryIds).toEqual([]);
     } finally { restarted.close(); }
   } finally { await coordinator.shutdown("test"); }
-});
-
-test("selected native records use indexed JSONL byte ranges and reject stale snapshots", () => {
-  const f = fixture("native-record-offset"); f.write();
-  const cursor = new CcTranscriptCursor();
-  const scanned = cursor.scan(f.transcriptPath, () => {});
-  expect(scanned).toBeInstanceOf(CcTranscriptScan);
-  if (!(scanned instanceof CcTranscriptScan)) throw Error("expected native scan");
-  const selected = scanned.selectedPath().nodes.filter(node => node.sourceKind && node.sourceKind !== "compaction");
-  cursor.commit(scanned, undefined, selected);
-  expect(cursor.selectedRecords(f.transcriptPath, ["u1", "a1"])?.map(row => row.uuid)).toEqual(["u1", "a1"]);
-  expect(cursor.selectedRecords(f.transcriptPath, ["unknown"])).toBeNull();
-  appendFileSync(f.transcriptPath, `${JSON.stringify({ uuid: "u2", parentUuid: "a1", type: "user", timestamp: now,
-    ...sdkPrompt("p2"), message: { role: "user", content: "later" } })}\n`);
-  appendFileSync(f.transcriptPath, `${JSON.stringify({ type: "last-prompt", leafUuid: "u2" })}\n`);
-  expect(cursor.selectedRecords(f.transcriptPath, ["u1"])).toBeNull();
-  const appended = cursor.scan(f.transcriptPath, () => {});
-  expect(appended).toBeInstanceOf(CcTranscriptScan);
-  if (!(appended instanceof CcTranscriptScan)) throw Error("expected append scan");
-  expect(appended.selectedPath().nodes.map(node => node.uuid)).toContain("u2");
-  cursor.commit(appended, undefined, appended.selectedPath().nodes);
-  expect(cursor.node("u2")).toMatchObject({ selected: true, committed: true });
-  expect(cursor.selectedRecords(f.transcriptPath, ["u1"])?.map(row => row.uuid)).toEqual(["u1"]);
-  expect(cursor.selectedRecords(f.transcriptPath, ["u2"])?.map(row => row.uuid)).toEqual(["u2"]);
-  writeFileSync(f.transcriptPath, `${JSON.stringify({ uuid: "replacement", parentUuid: null, type: "user", timestamp: now,
-    message: { role: "user", content: "new" } })}\n`);
-  expect(cursor.selectedRecords(f.transcriptPath, ["u1"])).toBeNull();
 });
 
 test("interruption marker requires the selected tool lineage and interrupted API message id", () => {

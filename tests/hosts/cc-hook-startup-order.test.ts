@@ -133,13 +133,12 @@ test("failed main turn-end RPC is logged in the foreground without a second chec
   } finally { failure.mockRestore(); }
 });
 
-test("source read failure differs from absent Raw, unavailable usage and changed native session", async () => {
-  for (const scenario of ["corrupt", "absent", "usage", "changed"] as const) {
+test("source read failure differs from unavailable usage and changed native session", async () => {
+  for (const scenario of ["corrupt", "usage", "changed"] as const) {
     const f = await fixture();
     const seen: any[] = [];
     const source = { sessionId: 1, branch: "main", headTurnId: 1, tailId: 1,
-      selected: [{ nativeId: "original", kind: "user", afterBoundary: true,
-        record: { message: { content: "original text" } } }] };
+      selected: ["original"] };
     Object.assign(f.host.session, { messages: async () => [], usage: async () => ({ context: { breakdown:
       scenario === "usage" ? null : { model: "opus", maxTokens: 200000, totalTokens: 100 } } }) });
     f.run.mockImplementation(async (argv: string[], options?: { stdin: string }) => {
@@ -150,14 +149,12 @@ test("source read failure differs from absent Raw, unavailable usage and changed
       return { exitCode: 0, stdout: "null", stderr: "" };
     });
     if (scenario === "changed") {
-      const session = f.host.session as typeof f.host.session & { messages: () => Promise<unknown> };
-      const original = session.messages;
-      session.messages = async () => { f.setSession("after-clear"); return original(); };
+      const session = f.host.session as any;
+      session.usage = async () => { f.setSession("after-clear"); return { context: { breakdown: { model: "opus", maxTokens: 200000, totalTokens: 100 } } }; };
     }
     await f.handlers.get("turn.complete")!(f.host, { turnId: "t", reason: "answer" }, async () => undefined);
     expect(seen).toHaveLength(1);
     if (scenario === "corrupt") expect(seen[0].failed).toContain("indexed JSON is invalid");
-    else if (scenario === "absent") { expect(seen[0].raw).toEqual([]); expect(seen[0].failed).toBeUndefined(); }
     else expect(seen[0].refused).toContain(scenario === "usage" ? "usage is unavailable" : "native session changed");
   }
 });

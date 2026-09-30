@@ -2,7 +2,6 @@
 import { buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type SettingsRowId, type TraceMenuInput, type SettingsInput } from "../../src/hosts/trace-menu.ts";
 import { renderTraceMenu, renderTraceMenuText, renderTraceSettings, type CcContextBreakdown, type CcMemorySplit } from "../../src/hosts/cc/trace-menu-render.ts";
 import { MEMORY_READ_ONLY, memoryGlob, memoryPath } from "../../src/core/model/address.ts";
-import { ccOriginalRaw } from "../../src/hosts/cc/coverage-original.ts";
 
 type Reply = { menu: TraceMenuInput; settings: SettingsInput; context: { presence: "confirmed" | "unavailable"; estimatedMessagesTokens?: number; memory?: CcMemorySplit }; runs: { id: number; phase: string; status: string; cost: number | null; partial: boolean; at: string }[] };
 type Screen = "main" | "settings" | "runs" | "project" | "confirm" | "edit";
@@ -288,14 +287,13 @@ export const register = (on: any) => {
         } catch (error) { observation = { failed: `CC fork source read failed: ${String(error)}` }; }
         if (sources && !observation.failed) {
           observation = {};
-          let api: unknown, usage: any;
-          try { [api, usage] = await Promise.all([$.session.messages({ as: "api" }), $.session.usage({ breakdown: "summary" })]); }
-          catch (error) { observation = { refused: `CC native parent view unavailable: ${String(error)}` }; }
+          let usage: any;
+          try { usage = await $.session.usage({ breakdown: "summary" }); }
+          catch (error) { observation = { refused: `CC native parent usage unavailable: ${String(error)}` }; }
           if (!observation.refused) {
             if (session !== await $.session.id()) observation = { refused: "native session changed during fork source check" };
             else {
               try {
-                const raw = ccOriginalRaw(sources.selected, api);
                 const measure = usage?.context?.breakdown;
                 if (typeof measure?.model !== "string" || !Number.isSafeInteger(measure.maxTokens) ||
                     !Number.isSafeInteger(measure.totalTokens) || measure.maxTokens <= 0 || measure.totalTokens < 0)
@@ -303,12 +301,12 @@ export const register = (on: any) => {
                 else {
                   observation = { checkpoint: { sessionId: sources.sessionId, branch: sources.branch,
                     headTurnId: sources.headTurnId, tailId: sources.tailId },
-                    batch: sources.selected.map((source: any) => source.nativeId), raw: [...raw.keys()],
+                    batch: sources.selected,
                     model: measure.model, window: measure.maxTokens, prefix: measure.totalTokens };
                   if (new TextEncoder().encode(JSON.stringify(observation)).length > 12_000)
                     observation = { refused: "CC fork source identities exceed the control request bound" };
                 }
-              } catch (error) { observation = { failed: `CC fork source matching failed: ${String(error)}` }; }
+              } catch (error) { observation = { failed: `CC fork observation failed: ${String(error)}` }; }
             }
           }
         }

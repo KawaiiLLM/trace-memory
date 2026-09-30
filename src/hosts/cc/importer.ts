@@ -93,12 +93,6 @@ export class CcProjection {
 
   currentBinding(): CcSessionBinding { return this.binding; }
 
-  /** Only already-selected original records, read at their existing cursor offsets. No second
-   * ancestry reconstruction and no body cache survives reconciliation. */
-  nativeRecords(nativeIds: readonly string[]): CcNativeRecord[] | null {
-    return this.transcript.selectedRecords(this.binding.transcriptPath, nativeIds);
-  }
-
   /** Resolve one native tool call from the incremental structural index. The transcript supplies
    * identity; source_paths only names the already-published branch that owns that ancestry. */
   persistedCall(toolUseId: string, toolName: "note" | "memory"): CcPersistedCall | null {
@@ -612,7 +606,6 @@ export class CcImporter {
   setForkRunner(run: (task: import("../../core/api/index.ts").NotingAgentInput) => Promise<import("../../core/api/index.ts").RunAgentResult>): void {
     this.forkRunner = run;
   }
-  nativeRecords(nativeIds: readonly string[]): CcNativeRecord[] | null { return this.projection.nativeRecords(nativeIds); }
   /** Core invokes the runner synchronously before yielding to the provider. An in-flight task
    * holds its invoked worker Promise; only a later task reads this replacement. */
   applyWorker(config: ResolvedCcHostConfig): void {

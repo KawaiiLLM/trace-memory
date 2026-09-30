@@ -4,7 +4,6 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { TraceMemory } from "../../core/api/index.ts";
 import type { CcCatchupStatus } from "./scheduler.ts";
-import type { CcOriginalCandidate } from "./coverage-original.ts";
 import { Store } from "../../core/store/index.ts";
 import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
 import { activeFunctionHook, assertOperatorBinding, readBinding, validateNativeSessionId, updateBinding, updateBindingInStoreTransaction, type CcExecutorBinding, type CcSessionBinding } from "./binding.ts";
@@ -14,7 +13,6 @@ export type ControlVerb = "stop" | "off" | "catchup";
 export interface CcForkObservation {
   checkpoint?: { sessionId: number; branch: string; headTurnId: number; tailId: number };
   batch?: string[];
-  raw?: string[];
   model?: string;
   window?: number;
   prefix?: number;
@@ -50,7 +48,7 @@ export interface CcControlHandlers {
   applyConfig?(next: ResolvedCcHostConfig): void;
   turnEnd?(turnId: string, reason: string, signal: AbortSignal, observation?: CcForkObservation): Promise<{ prompt: string; turnId: string } | null>;
   forkSources?(turnId: string, signal: AbortSignal): Promise<{ turnId: string; sessionId: number; branch: string;
-    headTurnId: number; tailId: number; selected: CcOriginalCandidate[] } | null>;
+    headTurnId: number; tailId: number; selected: string[] } | null>;
   forkRegister?(turnId: string, agentId: string): void;
   forkCall?(agentId: string, callId: string, name: "note" | "memory"): Promise<boolean>;
   forkCheck?(callId: string, name: "note" | "memory"): boolean;

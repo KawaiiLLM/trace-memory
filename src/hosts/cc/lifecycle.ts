@@ -6,8 +6,6 @@ import type { ResolvedCcHostConfig } from "./config.ts";
 import { activeFunctionHook, bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, updateBindingInStoreTransaction, validateNativeSessionId, type CcHookInput,
   type CcSessionBinding } from "./binding.ts";
 import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
-import type { CcOriginalCandidate } from "./coverage-original.ts";
-import { classifySourceRecord } from "./transcript.ts";
 import type { CcWorkerJournal } from "./worker.ts";
 import { startControlServer, type CcControlServer, type CcForkObservation } from "./control.ts";
 import { CC_CONTEXT_HEADROOM } from "./config.ts";
@@ -455,12 +453,11 @@ export class CcCoordinator {
     return true;
   }
 
-  /** Source bodies travel in a control RESPONSE, never the 16,384-byte request. This read neither
-   * reserves a task nor establishes coverage: the Hook must check the actual native API view, and
-   * the final checkpoint must revalidate the path before admitting a fork. */
+  /** Freeze batch identity and checkpoint without reserving a task. Coverage is computed against
+   * the selected path's latest persisted compaction at final admission. */
   async forkSources(turnId: string, signal: AbortSignal): Promise<{
     turnId: string; sessionId: number; branch: string; headTurnId: number; tailId: number;
-    selected: CcOriginalCandidate[];
+    selected: string[];
   } | null> {
     if (signal.aborted || this.closing || this.closed || this.completedTurns.has(turnId)) return null;
     const result = await this.requestReconcile("fork source view");
@@ -470,29 +467,7 @@ export class CcCoordinator {
     if (!this.importer.memory.config.noting.forkModeDefault || !this.importer.memory.taskEligibility("noting", target).due ||
         this.scheduler?.running().includes("noting")) return null;
     const batch = this.importer.memory.notingBatch(target);
-    const originals = this.importer.nativeRecords(batch.map(entry => entry.nativeId));
-    if (originals === null) return null;
-    // The Store's selected Turn ancestry already records the last confirmed native compact.
-    // A pre-compact source remains pending, but a summary quoting it is not its original API block.
-    const store = this.importer.memory.store;
-    const remaining = new Set(batch.map(entry => entry.turnId));
-    const ancestry: number[] = [];
-    for (const id of store.pathTurns(target)) {
-      ancestry.push(id);
-      remaining.delete(id);
-      if (!remaining.size) break;
-    }
-    if (remaining.size) throw new Error("CC fork batch has a Turn outside its selected path");
-    const compact = new Set((store.db.prepare("SELECT id FROM turns WHERE kind = 'compaction' AND id IN (SELECT value FROM json_each(?))")
-      .all(JSON.stringify(ancestry)) as { id: number }[]).map(row => Number(row.id)));
-    const afterBoundary = new Set<number>();
-    for (const id of ancestry) {
-      if (compact.has(id)) break;
-      afterBoundary.add(id);
-    }
-    return { turnId, ...target, tailId: result.selectedTailId,
-      selected: batch.map((entry, index) => ({ nativeId: entry.nativeId, record: originals[index]!,
-        kind: classifySourceRecord(originals[index]!)?.kind ?? "compaction", afterBoundary: afterBoundary.has(entry.turnId) })) };
+    return { turnId, ...target, tailId: result.selectedTailId, selected: batch.map(entry => entry.nativeId) };
   }
 
   private runFork(task: NotingAgentInput): Promise<RunAgentResult> {
@@ -574,7 +549,7 @@ export class CcCoordinator {
     if (!checkpoint || checkpoint.sessionId !== target.sessionId || checkpoint.branch !== target.branch ||
         checkpoint.headTurnId !== target.headTurnId || checkpoint.tailId !== result.selectedTailId)
       return refuse("CC fork source checkpoint moved before admission");
-    if (!this.importer || !Array.isArray(observation.batch) || !Array.isArray(observation.raw) ||
+    if (!this.importer || !Array.isArray(observation.batch) ||
         typeof observation.model !== "string" || !observation.model ||
         !Number.isSafeInteger(observation.window) || !Number.isSafeInteger(observation.prefix) ||
         observation.window! <= CC_CONTEXT_HEADROOM || observation.prefix! < 0)
@@ -582,17 +557,20 @@ export class CcCoordinator {
     const batch = this.importer.memory.notingBatch(target);
     if (observation.batch.length !== batch.length || batch.some((entry, i) => observation.batch![i] !== entry.nativeId))
       return refuse("CC fork batch changed since source observation");
-    if (this.importer.nativeRecords(batch.map(entry => entry.nativeId)) === null)
-      return refuse("CC original source snapshot changed before fork admission");
-    const selected = new Set(batch.map(entry => entry.nativeId));
-    if (new Set(observation.raw).size !== observation.raw.length ||
-        observation.raw.some(id => typeof id !== "string" || !selected.has(id)))
-      return refuse("CC fork observation contains an unselected or repeated source identity");
     const memory = this.importer.memory, binding = this.importer.currentBinding();
+    const path = [...memory.store.pathTurns(target)];
+    const compact = new Set((memory.store.db.prepare("SELECT id FROM turns WHERE kind = 'compaction' AND id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(path)) as { id: number }[]).map(row => row.id));
+    const afterBoundary = new Set<number>();
+    for (const id of path) {
+      if (compact.has(id)) break;
+      afterBoundary.add(id);
+    }
+    if (batch.some(entry => !path.includes(entry.turnId))) throw new Error("CC fork batch has a Turn outside its selected path");
     const head = ccDeliveryHead(binding, memory);
     const delivered = deliveredView(memory.store.deliveredKnowledge(head.node));
     const delta = memory.injection(target, delivered);
-    const visible = { ...delivered, raw: new Map(observation.raw.map(id => [id, "source" as const])) };
+    const visible = { ...delivered, raw: new Map(batch.filter(entry => afterBoundary.has(entry.turnId)).map(entry => [entry.nativeId, "source" as const])) };
     const decision = selectNotingMode({ requested: "fork",
       publicationPending: !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length),
       visible, pending: () => memory.pendingEntries(target.sessionId, target.branch, target.headTurnId),

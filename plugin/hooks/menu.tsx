@@ -421,70 +421,6 @@ function memoryGlob(pattern, path) {
   return root === null ? null : wild < 0 ? root : [root, ...segments.slice(wild)].join("/");
 }
 
-// src/hosts/cc/coverage-original.ts
-function sameJson(a, b) {
-  if (Object.is(a, b)) return true;
-  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((value, index) => sameJson(value, b[index]));
-  if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) || Array.isArray(b)) return false;
-  const left = a, right = b;
-  const keys = Object.keys(left);
-  return keys.length === Object.keys(right).length && keys.every((key) => Object.hasOwn(right, key) && sameJson(left[key], right[key]));
-}
-var object = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
-var blocks = (value) => Array.isArray(value) ? value.map(object).filter((v) => v !== null) : [];
-function completeResult(original, visible) {
-  const before = typeof original === "string" ? [{ type: "text", text: original }] : blocks(original);
-  const after = blocks(visible);
-  if (Array.isArray(original) && before.length !== original.length || Array.isArray(visible) && after.length !== visible.length || !before.length || after.length < before.length || before.some((block) => block.type !== "text" || typeof block.text !== "string")) return false;
-  return before.every((block, index) => {
-    const actual = after[index];
-    return actual?.type === "text" && typeof actual.text === "string" && (actual.text === block.text || actual.text === `${block.text}
-`);
-  });
-}
-function matches(part, row, role) {
-  if (row.role !== role || part.type !== row.block.type) return false;
-  if (part.type === "text") return part.text === row.block.text && typeof part.text === "string";
-  if (part.type === "tool_use") return typeof part.id === "string" && part.id === row.block.id && part.name === row.block.name && sameJson(part.input, row.block.input);
-  if (part.type === "tool_result") return typeof part.tool_use_id === "string" && part.tool_use_id === row.block.tool_use_id && part.is_error === true === (row.block.is_error === true) && completeResult(part.content, row.block.content);
-  return false;
-}
-function ccOriginalRaw(selected, api) {
-  const inherited = /* @__PURE__ */ new Map();
-  if (!Array.isArray(api)) return inherited;
-  const messages = api.map(object);
-  if (messages.some((message) => !message || !Array.isArray(message.content))) return inherited;
-  const content = messages.flatMap((message) => blocks(message.content).map((block) => ({ block, role: message.role, at: 0 })));
-  content.forEach((row, at) => {
-    row.at = at;
-  });
-  const eligible = selected.filter((entry) => entry.afterBoundary);
-  const parts = eligible.map((entry) => {
-    const original = entry.record.message?.content;
-    if (entry.kind === "compaction") return null;
-    if (entry.kind === "user" && typeof original === "string") return [{ type: "text", text: original }];
-    const values = blocks(original);
-    if (!Array.isArray(original) || values.length !== original.length || !values.length || values.some((part) => entry.kind === "assistant" ? part.type !== "text" && part.type !== "tool_use" : entry.kind === "user" ? part.type !== "text" : part.type !== "tool_result")) return null;
-    return values;
-  });
-  const used = /* @__PURE__ */ new Set();
-  let last = -1;
-  eligible.forEach((entry, index) => {
-    const values = parts[index];
-    if (!values) return;
-    const role = entry.kind === "assistant" ? "assistant" : "user";
-    const rows = values.map((part) => content.filter((row) => matches(part, row, role)));
-    if (rows.some((group, partIndex) => group.length !== 1 || parts.some((other, otherIndex) => otherIndex !== index && other?.some((candidate) => matches(candidate, group[0], role) && sameJson(candidate, values[partIndex]))))) return;
-    const positions = rows.map((group) => group[0].at);
-    const ordered = entry.kind === "toolResult" || positions.every((at, i) => at > (i ? positions[i - 1] : last));
-    if (!ordered || positions.some((at) => used.has(at))) return;
-    for (const at of positions) used.add(at);
-    if (entry.kind !== "toolResult") last = positions.at(-1);
-    inherited.set(entry.nativeId, "source");
-  });
-  return inherited;
-}
-
 // plugin/hooks/index.tsx
 var screen = "main";
 var reply;
@@ -810,17 +746,16 @@ export const register = (on) => {
         }
         if (sources && !observation.failed) {
           observation = {};
-          let api, usage;
+          let usage;
           try {
-            [api, usage] = await Promise.all([$.session.messages({ as: "api" }), $.session.usage({ breakdown: "summary" })]);
+            usage = await $.session.usage({ breakdown: "summary" });
           } catch (error) {
-            observation = { refused: `CC native parent view unavailable: ${String(error)}` };
+            observation = { refused: `CC native parent usage unavailable: ${String(error)}` };
           }
           if (!observation.refused) {
             if (session !== await $.session.id()) observation = { refused: "native session changed during fork source check" };
             else {
               try {
-                const raw = ccOriginalRaw(sources.selected, api);
                 const measure = usage?.context?.breakdown;
                 if (typeof measure?.model !== "string" || !Number.isSafeInteger(measure.maxTokens) || !Number.isSafeInteger(measure.totalTokens) || measure.maxTokens <= 0 || measure.totalTokens < 0)
                   observation = { refused: "native parent model, window or prefix usage is unavailable" };
@@ -832,8 +767,7 @@ export const register = (on) => {
                       headTurnId: sources.headTurnId,
                       tailId: sources.tailId
                     },
-                    batch: sources.selected.map((source) => source.nativeId),
-                    raw: [...raw.keys()],
+                    batch: sources.selected,
                     model: measure.model,
                     window: measure.maxTokens,
                     prefix: measure.totalTokens
@@ -842,7 +776,7 @@ export const register = (on) => {
                     observation = { refused: "CC fork source identities exceed the control request bound" };
                 }
               } catch (error) {
-                observation = { failed: `CC fork source matching failed: ${String(error)}` };
+                observation = { failed: `CC fork observation failed: ${String(error)}` };
               }
             }
           }

@@ -516,42 +516,6 @@ export class CcTranscriptCursor {
   }
   node(uuid: string): CcNativeNode | undefined { return this.nodes.get(uuid); }
 
-  /** Read only selected, committed original records from the same native file this cursor scanned.
-   * A changed or reset file gives no coverage; the next reconciliation rebuilds its index. */
-  selectedRecords(path: string, ids: readonly string[]): CcNativeRecord[] | null {
-    if (!this.stamp || !this.lastSnapshot || this.lastSnapshot.problem) return null;
-    const records: CcNativeRecord[] = [];
-    let descriptor: number;
-    try { descriptor = openSync(path, "r"); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    }
-    try {
-      const before = fstatSync(descriptor);
-      const stamp: FileStamp = { size: before.size, modifiedMs: before.mtimeMs, changedMs: before.ctimeMs, device: before.dev, inode: before.ino };
-      if (!sameStamp(this.stamp, stamp)) return null;
-      for (const id of ids) {
-        const node = this.nodes.get(id), range = node?.byteRange;
-        if (!node?.committed || !node.selected || !range || range.start < 0 || range.end > this.completeOffset || range.end <= range.start) return null;
-        const bytes = Buffer.alloc(range.end - range.start);
-        let offset = 0;
-        while (offset < bytes.length) {
-          const amount = readSync(descriptor, bytes, offset, bytes.length - offset, range.start + offset);
-          if (!amount) return null;
-          offset += amount;
-        }
-        if (bytes.at(-1) !== 0x0a) return null;
-        const parsed = JSON.parse(bytes.subarray(0, -1).toString("utf8"));
-        if (!object(parsed) || parsed.uuid !== id) return null;
-        records.push(parsed);
-      }
-      const after = fstatSync(descriptor);
-      if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs || after.dev !== before.dev || after.ino !== before.ino) return null;
-      return records;
-    } finally { closeSync(descriptor); }
-  }
-
   callPath(toolUseId: string, expectedNames: readonly string[]): CcNativeNode[] | null {
     const carrierIds = this.callCarriers.get(toolUseId);
     if (!carrierIds?.size) return null;
