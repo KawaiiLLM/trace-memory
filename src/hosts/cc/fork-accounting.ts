@@ -5,7 +5,9 @@ import { cacheMissWarning, cacheObservation } from "../../core/api/index.ts";
 
 /** Ticket 108: what a CC fork run cost. Tokens come from the fork's `turn.complete`; the price comes from
  * the fork's own transcript (one usage per response, with the 1h/5m cache split the event lacks) priced
- * with Claude Code's own baked model catalog. Every function here reports "unknown" instead of guessing:
+ * with Claude Code's own baked model catalog. The transcript's `output_tokens` is written at stream start
+ * and is not final (real CC 2.1.284: 1,251 against a recorded 31,798), so only its input-side fields
+ * (input, cache read, cache write) are matched and priced per response; output is the recorded total. Every function here reports "unknown" instead of guessing:
  * an unlisted model, an unreadable catalog or a transcript that never reached the recorded tokens leaves
  * the cost unknown, never zero. */
 
@@ -62,7 +64,7 @@ export function eventTokens(usage: unknown): CcTokens | undefined {
 // ---- The bounded read ------------------------------------------------------------------------------
 
 export interface ForkRead {
-  /** `match`: the transcript totals equal the expected tokens. `mismatch`: a counter is already above them, so more time cannot help.
+  /** `match`: the transcript's input-side totals equal the expected tokens'. `mismatch`: one is already above them, so more time cannot help.
    * `timeout`: the deadline passed short of them. `settled`: with nothing expected, the transcript stopped growing. */
   status: "match" | "mismatch" | "timeout" | "settled";
   responses: CcResponseUsage[];
@@ -79,8 +81,9 @@ const readIfPresent = (path: string): string | null => {
   try { return readFileSync(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 };
 
-/** Re-reads the fork transcript until its per-response totals equal `expected` (the tokens recorded from
- * `turn.complete`), for at most ten seconds: the transcript is written after the event fires. Without
+/** Re-reads the fork transcript until its per-response input-side totals (input, cache read, cache write; the
+ * output counter is not final in the transcript) equal `expected` (the tokens recorded from `turn.complete`),
+ * for at most ten seconds: the transcript is written after the event fires. Without
  * `expected` (a fork stopped before it completed) it reads as far as the transcript goes: until two
  * consecutive polls see the same content. Never prices anything: the caller prices only a match, or the
  * partial usage of a settlement that had no expectation. */
@@ -95,9 +98,9 @@ export async function readForkTranscript(path: string, expected: CcTokens | unde
     last = text === null ? [] : transcriptResponses(text);
     if (expected) {
       const t = sumTokens(last);
-      if (t.input === expected.input && t.output === expected.output && t.cacheRead === expected.cacheRead && t.cacheWrite === expected.cacheWrite)
+      if (t.input === expected.input && t.cacheRead === expected.cacheRead && t.cacheWrite === expected.cacheWrite)
         return { status: "match", responses: last, present: true };
-      if (t.input > expected.input || t.output > expected.output || t.cacheRead > expected.cacheRead || t.cacheWrite > expected.cacheWrite)
+      if (t.input > expected.input || t.cacheRead > expected.cacheRead || t.cacheWrite > expected.cacheWrite)
         return { status: "mismatch", responses: last, present: true };
     } else {
       same = text === previous ? same + 1 : 0;
@@ -233,13 +236,29 @@ export function priceResponses(catalog: CcPriceCatalog, responses: readonly CcRe
   return total;
 }
 
+/** A finished fork's cost: the input side priced per response (own model row, 1h/5m split, geo, web search),
+ * output priced once from `output`, the recorded total, at the fork's model rate. Exact only when every
+ * response shares one model and one `inference_geo`, so anything else is unknown, never a guess. */
+export function priceFork(catalog: CcPriceCatalog, responses: readonly CcResponseUsage[], output: number): number | { unknown: string } {
+  const first = responses[0];
+  if (!first) return { unknown: "its transcript holds no response to price" };
+  const models = [...new Set(responses.map(r => r.model))], geos = [...new Set(responses.map(r => r.geo))];
+  if (models.length > 1) return { unknown: `its responses ran on ${models.length} models (${models.join(", ")}), so the recorded output cannot be priced` };
+  if (geos.length > 1) return { unknown: `its responses have ${geos.length} inference_geo values (${geos.map(String).join(", ")}), so the recorded output cannot be priced` };
+  const input = priceResponses(catalog, responses.map(r => ({ ...r, output: 0 })));
+  if (typeof input !== "number") return input;
+  const out = priceResponse(catalog, { ...first, input: 0, output, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, webSearch: 0 });
+  return typeof out === "number" ? input + out : out;
+}
+
 export const forkTranscriptPath = (sessionTranscript: string, agentId: string): string =>
   join(sessionTranscript.replace(/\.jsonl$/, ""), "subagents", `agent-${agentId}.jsonl`);
 
 /** What a settled fork's transcript adds to its recorded run (`Store.amendRunUsage`'s patch) and the cache-miss
  * warnings of its responses. `expected` is the tokens recorded from `turn.complete`; a fork stopped before it
  * completed has none, and whatever its transcript holds becomes partial usage. The patch is absent when there
- * is nothing to add: a stopped fork whose transcript holds no response stays unknown. A cost that cannot be
+ * is nothing to add: a stopped fork whose transcript holds no response stays unknown. Its partial output is a lower bound (the transcript's
+ * counter is not final), so `usageStatus: "partial"` stands for it as for the rest of its cost. A cost that cannot be
  * known (catalog, model, undercounted transcript) is absent from the usage and named in a problem. */
 export async function accountForkTranscript(path: string, expected: CcTokens | undefined,
   catalog: () => CcPriceCatalog | { unknown: string }, options: ForkReadOptions = {}) {
@@ -252,11 +271,11 @@ export async function accountForkTranscript(path: string, expected: CcTokens | u
   }
   const patch: { usage?: CcTokens & { cost?: { total: number } }; usageStatus?: "partial"; problem?: string; cacheMiss?: unknown } = {};
   if (expected ? read.status === "match" : read.responses.length > 0) {
-    const known = catalog(), price = "unknown" in known ? known : priceResponses(known, read.responses);
+    const known = catalog(), price = "unknown" in known ? known : expected ? priceFork(known, read.responses, expected.output) : priceResponses(known, read.responses);
     patch.usage = { ...(expected ?? sumTokens(read.responses)), ...(typeof price === "number" ? { cost: { total: price } } : {}) };
     if (typeof price !== "number") patch.problem = `CC fork cost unknown: ${price.unknown}`;
     if (!expected) patch.usageStatus = "partial";
-  } else if (expected) patch.problem = `CC fork cost unknown: its transcript ${read.present ? `did not reach the recorded tokens (${read.status})` : "was never written"} within ${(options.deadlineMs ?? FORK_READ_DEADLINE_MS) / 1000} s`;
+  } else if (expected) patch.problem = `CC fork cost unknown: its transcript ${read.present ? `did not reach the recorded input-side tokens (${read.status})` : "was never written"} within ${(options.deadlineMs ?? FORK_READ_DEADLINE_MS) / 1000} s`;
   if (misses.length) patch.cacheMiss = misses[0];
   return { patch: Object.keys(patch).length ? patch : undefined, warnings };
 }

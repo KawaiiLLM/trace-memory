@@ -87,9 +87,27 @@ test("a match prices each response and keeps the recorded tokens; the cost is ex
   expect(account.patch?.usageStatus).toBeUndefined();
 });
 
+test("a transcript whose output is still the stream-start count but whose input side matches is priced, output from the recorded total", async () => {
+  const streamStart = [row("a", usage({ output_tokens: 1 })), row("b", usage({ output_tokens: 1 })), JSON.stringify({ type: "assistant", message: { id: "s", model: "<synthetic>", usage: usage({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }) } })].join("\n");
+  const account = await accountForkTranscript("x", tokens, () => catalog, harness({ 0: streamStart }));
+  expect(account.patch?.usage).toMatchObject({ ...tokens, cost: { total: expect.closeTo(PRICE * 2 - 0.04 + 4100 * 10 / 1e6, 9) } });
+  expect(account.patch?.problem).toBeUndefined();
+});
+
+test("a transcript with more than one model or inference_geo leaves the cost unknown and says why; the tokens are kept", async () => {
+  const twoModels = [row("a", usage()), row("b", usage(), { model: "claude-haiku-4-5" })].join("\n");
+  const twoGeos = [row("a", usage({ inference_geo: "us" })), row("b", usage({ inference_geo: "not_available" }))].join("\n");
+  const rich = { ...catalog, models: { ...catalog.models, "claude-haiku-4-5": "tier_2_10" } };
+  for (const [text, why] of [[twoModels, "2 models"], [twoGeos, "2 inference_geo"]] as const) {
+    const account = await accountForkTranscript("x", tokens, () => rich, harness({ 0: text }));
+    expect(account.patch?.usage).toEqual(tokens);
+    expect(account.patch?.problem).toContain(why);
+  }
+});
+
 test("an undercount or a missing transcript records a problem and no cost; an unreadable catalog keeps the tokens and says why", async () => {
   const under = await accountForkTranscript("x", tokens, () => catalog, harness({ 0: row("a", usage({ output_tokens: 2000 })) }));
-  expect(under.patch).toEqual({ problem: expect.stringMatching(/cost unknown: its transcript did not reach the recorded tokens \(timeout\) within 10 s/) });
+  expect(under.patch).toEqual({ problem: expect.stringMatching(/cost unknown: its transcript did not reach the recorded input-side tokens \(timeout\) within 10 s/) });
   const none = await accountForkTranscript("x", tokens, () => catalog, harness({ 0: null }));
   expect(none.patch?.problem).toContain("was never written");
   const noCatalog = await accountForkTranscript("x", tokens, () => ({ unknown: "the running Claude Code executable cannot be found" }), harness({ 0: late }));

@@ -489,8 +489,8 @@ export class CcCoordinator {
     return result;
   }
 
-  /** 108: after a fork settled, off the write fence and the physical stop, read its transcript until it holds
-   * exactly the recorded tokens (at most ten seconds), price each response with Claude Code's own catalog and
+  /** 108: after a fork settled, off the write fence and the physical stop, read its transcript until its input side holds
+   * exactly the recorded tokens (at most ten seconds; its output count is not final, so output is the recorded one), price each response with Claude Code's own catalog and
    * amend the run. A fork stopped before it completed has no recorded tokens: whatever its transcript holds is
    * recorded as partial usage. Unpriceable, undercounted or missing leaves the cost unknown and says why in
    * the run's problems. Returns the cache-miss warnings, one per missed response. */

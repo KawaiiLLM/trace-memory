@@ -43034,9 +43034,9 @@ async function readForkTranscript(path, expected, options = {}) {
     last = text === null ? [] : transcriptResponses(text);
     if (expected) {
       const t = sumTokens(last);
-      if (t.input === expected.input && t.output === expected.output && t.cacheRead === expected.cacheRead && t.cacheWrite === expected.cacheWrite)
+      if (t.input === expected.input && t.cacheRead === expected.cacheRead && t.cacheWrite === expected.cacheWrite)
         return { status: "match", responses: last, present: true };
-      if (t.input > expected.input || t.output > expected.output || t.cacheRead > expected.cacheRead || t.cacheWrite > expected.cacheWrite)
+      if (t.input > expected.input || t.cacheRead > expected.cacheRead || t.cacheWrite > expected.cacheWrite)
         return { status: "mismatch", responses: last, present: true };
     } else {
       same = text === previous ? same + 1 : 0;
@@ -43176,6 +43176,17 @@ function priceResponses(catalog, responses) {
   }
   return total;
 }
+function priceFork(catalog, responses, output) {
+  const first = responses[0];
+  if (!first) return { unknown: "its transcript holds no response to price" };
+  const models = [...new Set(responses.map((r) => r.model))], geos = [...new Set(responses.map((r) => r.geo))];
+  if (models.length > 1) return { unknown: `its responses ran on ${models.length} models (${models.join(", ")}), so the recorded output cannot be priced` };
+  if (geos.length > 1) return { unknown: `its responses have ${geos.length} inference_geo values (${geos.map(String).join(", ")}), so the recorded output cannot be priced` };
+  const input = priceResponses(catalog, responses.map((r) => ({ ...r, output: 0 })));
+  if (typeof input !== "number") return input;
+  const out = priceResponse(catalog, { ...first, input: 0, output, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, webSearch: 0 });
+  return typeof out === "number" ? input + out : out;
+}
 var forkTranscriptPath = (sessionTranscript, agentId) => (0, import_node_path7.join)(sessionTranscript.replace(/\.jsonl$/, ""), "subagents", `agent-${agentId}.jsonl`);
 async function accountForkTranscript(path, expected, catalog, options = {}) {
   const read = await readForkTranscript(path, expected, options);
@@ -43193,11 +43204,11 @@ async function accountForkTranscript(path, expected, catalog, options = {}) {
   }
   const patch = {};
   if (expected ? read.status === "match" : read.responses.length > 0) {
-    const known = catalog(), price = "unknown" in known ? known : priceResponses(known, read.responses);
+    const known = catalog(), price = "unknown" in known ? known : expected ? priceFork(known, read.responses, expected.output) : priceResponses(known, read.responses);
     patch.usage = { ...expected ?? sumTokens(read.responses), ...typeof price === "number" ? { cost: { total: price } } : {} };
     if (typeof price !== "number") patch.problem = `CC fork cost unknown: ${price.unknown}`;
     if (!expected) patch.usageStatus = "partial";
-  } else if (expected) patch.problem = `CC fork cost unknown: its transcript ${read.present ? `did not reach the recorded tokens (${read.status})` : "was never written"} within ${(options.deadlineMs ?? FORK_READ_DEADLINE_MS) / 1e3} s`;
+  } else if (expected) patch.problem = `CC fork cost unknown: its transcript ${read.present ? `did not reach the recorded input-side tokens (${read.status})` : "was never written"} within ${(options.deadlineMs ?? FORK_READ_DEADLINE_MS) / 1e3} s`;
   if (misses.length) patch.cacheMiss = misses[0];
   return { patch: Object.keys(patch).length ? patch : void 0, warnings };
 }
@@ -43733,8 +43744,8 @@ var CcCoordinator = class {
     launch.resolve({ prompt: task.text, turnId: launch.turnId });
     return result;
   }
-  /** 108: after a fork settled, off the write fence and the physical stop, read its transcript until it holds
-   * exactly the recorded tokens (at most ten seconds), price each response with Claude Code's own catalog and
+  /** 108: after a fork settled, off the write fence and the physical stop, read its transcript until its input side holds
+   * exactly the recorded tokens (at most ten seconds; its output count is not final, so output is the recorded one), price each response with Claude Code's own catalog and
    * amend the run. A fork stopped before it completed has no recorded tokens: whatever its transcript holds is
    * recorded as partial usage. Unpriceable, undercounted or missing leaves the cost unknown and says why in
    * the run's problems. Returns the cache-miss warnings, one per missed response. */
