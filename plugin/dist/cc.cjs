@@ -43334,6 +43334,8 @@ async function recordCcSessionEnd(config3, input) {
     store?.close();
   }
 }
+var CONFIG_SETTLE_MS = 50;
+var CONFIG_INVALID_SETTLE_MS = 1e3;
 var CcCoordinator = class {
   forkAuthority = new CcForkAuthority((agentId) => this.control?.stopFork(agentId), (agentId) => {
     const binding = readBinding(this.config, this.nativeSessionId);
@@ -43354,6 +43356,12 @@ var CcCoordinator = class {
   poll = null;
   transcriptWatcher = null;
   bindingWatcher = null;
+  /** The `--config` file this executor was started with, and its directory watch. */
+  configPath;
+  configWatcher = null;
+  configTimer = null;
+  /** The last notice about the file, so an unchanged problem is reported once, not on every event. */
+  configNotice = null;
   queue = Promise.resolve(null);
   wakeQueued = false;
   closing = false;
@@ -43392,8 +43400,9 @@ var CcCoordinator = class {
   /** 102: the retargets in order, each after the last; shutdown waits for the one in flight. */
   following = Promise.resolve(true);
   constructor(config3, nativeSessionId, diagnostic = (message) => console.error(`Trace Memory CC: ${message}`), importTuning, journal = () => {
-  }) {
+  }, configPath) {
     validateNativeSessionId(nativeSessionId);
+    this.configPath = configPath;
     this.config = config3;
     this.appliedConfig = config3;
     this.nativeSessionId = nativeSessionId;
@@ -43564,59 +43573,63 @@ var CcCoordinator = class {
         holdImport: () => this.holdImport(),
         effectiveConfig: () => this.appliedConfig,
         catchupSnapshot: () => this.scheduler?.catchupSnapshot() ?? null,
-        applyConfig: (next) => {
-          if (!this.importer || !this.scheduler) throw new Error("CC executor is not attached for settings apply");
-          const prior = this.appliedConfig;
-          const nonLive = (value) => {
-            const fields2 = {
-              dbPath: value.dbPath,
-              stateDir: value.stateDir,
-              baseline: value.baseline,
-              retry: value.retry,
-              pollIntervalMs: value.pollIntervalMs,
-              finalSyncTimeoutMs: value.finalSyncTimeoutMs,
-              finalSyncStablePolls: value.finalSyncStablePolls,
-              writeSourceTimeoutMs: value.writeSourceTimeoutMs,
-              "worker.claudeExecutable": value.worker?.claudeExecutable,
-              "worker.cwd": value.worker?.cwd,
-              "worker.responseOriginTimeoutMs": value.worker?.responseOriginTimeoutMs
-            };
-            for (const [section, settings] of Object.entries(value.coreConfig)) {
-              if (section === "closedSessionScope") continue;
-              if (settings && typeof settings === "object") for (const [field, current] of Object.entries(settings)) {
-                if (section === "noting" && field === "forkModeDefault") continue;
-                fields2[`${section}.${field}`] = current;
-              }
-              else fields2[section] = settings;
-            }
-            return fields2;
-          };
-          const existingFields = nonLive(prior), nextFields = nonLive(next);
-          for (const key of Object.keys(existingFields))
-            if (JSON.stringify(existingFields[key]) !== JSON.stringify(nextFields[key]))
-              throw new Error(`CC executor cannot hot-apply ${key}; saved file is not applied`);
-          for (const [model, capacity] of Object.entries(prior.worker?.contextWindows ?? {}))
-            if (next.worker?.contextWindows[model] !== capacity)
-              throw new Error(`CC executor cannot hot-apply a changed capacity for ${model}`);
-          if (next.closedSessionScope !== this.appliedConfig.closedSessionScope || next.coreConfig.noting.forkModeDefault !== this.appliedConfig.coreConfig.noting.forkModeDefault)
-            this.importer.memory.configure({
-              closedSessionScope: next.closedSessionScope,
-              noting: { forkModeDefault: next.coreConfig.noting.forkModeDefault }
-            });
-          this.importer.applyWorker(next);
-          this.scheduler.applyWorker(next.worker);
-          this.appliedConfig = next;
-        }
+        applyConfig: (next) => this.applyConfig(next)
       }).then((control) => {
         this.control = control;
       });
       this.watchTranscript(binding);
+      this.scheduleConfigReload();
       if (final) this.importer.memory.cancelTasks(true);
       this.observe("attach-complete", { final });
     } catch (error3) {
       await this.discardAttachment();
       throw error3;
     }
+  }
+  /** The one apply path: the control verb and the configuration watcher both end here. A change that
+   * touches any non-live key throws before anything is replaced. */
+  applyConfig(next) {
+    if (!this.importer || !this.scheduler) throw new Error("CC executor is not attached for settings apply");
+    const prior = this.appliedConfig;
+    const nonLive = (value) => {
+      const fields2 = {
+        dbPath: value.dbPath,
+        stateDir: value.stateDir,
+        baseline: value.baseline,
+        retry: value.retry,
+        pollIntervalMs: value.pollIntervalMs,
+        finalSyncTimeoutMs: value.finalSyncTimeoutMs,
+        finalSyncStablePolls: value.finalSyncStablePolls,
+        writeSourceTimeoutMs: value.writeSourceTimeoutMs,
+        "worker.claudeExecutable": value.worker?.claudeExecutable,
+        "worker.cwd": value.worker?.cwd,
+        "worker.responseOriginTimeoutMs": value.worker?.responseOriginTimeoutMs
+      };
+      for (const [section, settings] of Object.entries(value.coreConfig)) {
+        if (section === "closedSessionScope") continue;
+        if (settings && typeof settings === "object") for (const [field, current] of Object.entries(settings)) {
+          if (section === "noting" && field === "forkModeDefault") continue;
+          fields2[`${section}.${field}`] = current;
+        }
+        else fields2[section] = settings;
+      }
+      return fields2;
+    };
+    const existingFields = nonLive(prior), nextFields = nonLive(next);
+    for (const key of Object.keys(existingFields))
+      if (JSON.stringify(existingFields[key]) !== JSON.stringify(nextFields[key]))
+        throw new Error(`CC executor cannot hot-apply ${key}; saved file is not applied`);
+    for (const [model, capacity] of Object.entries(prior.worker?.contextWindows ?? {}))
+      if (next.worker?.contextWindows[model] !== capacity)
+        throw new Error(`CC executor cannot hot-apply a changed capacity for ${model}`);
+    if (next.closedSessionScope !== this.appliedConfig.closedSessionScope || next.coreConfig.noting.forkModeDefault !== this.appliedConfig.coreConfig.noting.forkModeDefault)
+      this.importer.memory.configure({
+        closedSessionScope: next.closedSessionScope,
+        noting: { forkModeDefault: next.coreConfig.noting.forkModeDefault }
+      });
+    this.importer.applyWorker(next);
+    this.scheduler.applyWorker(next.worker);
+    this.appliedConfig = next;
   }
   /** Detach references before disposal: facade close may close its Store and then throw. */
   async discardAttachment() {
@@ -43653,6 +43666,60 @@ var CcCoordinator = class {
       this.transcriptWatcher = null;
     });
   }
+  /** The directory is watched, not the file: a save that writes a temporary file and renames it replaces
+   * the inode, which a file watch would lose. Other files in the directory wake nothing. */
+  watchConfig() {
+    if (!this.configPath || this.configWatcher || !(0, import_node_fs11.existsSync)((0, import_node_path9.dirname)(this.configPath))) return;
+    const name = (0, import_node_path9.basename)(this.configPath);
+    this.configWatcher = (0, import_node_fs11.watch)((0, import_node_path9.dirname)(this.configPath), (_event, filename) => {
+      if (filename === null || String(filename) === name) this.scheduleConfigReload();
+    });
+    this.configWatcher.on("error", (error3) => {
+      this.diagnostic(`configuration watch failed: ${String(error3)}; this executor keeps its current configuration`);
+      this.configWatcher?.close();
+      this.configWatcher = null;
+    });
+  }
+  scheduleConfigReload(attempt = 0) {
+    if (!this.configPath || this.closed || this.closing) return;
+    if (this.configTimer) clearTimeout(this.configTimer);
+    this.configTimer = setTimeout(() => {
+      this.configTimer = null;
+      this.reloadConfig(attempt);
+    }, attempt ? CONFIG_INVALID_SETTLE_MS : CONFIG_SETTLE_MS);
+  }
+  /** Re-read the file and hand it to `applyConfig`. A file that cannot be read, parsed or resolved, or that
+   * changes a key that cannot change live, leaves the running configuration whole. */
+  reloadConfig(attempt) {
+    if (!this.configPath || this.closed || this.closing || !this.importer || !this.scheduler) return;
+    let next;
+    try {
+      next = resolveCcHostConfig(JSON.parse((0, import_node_fs11.readFileSync)(this.configPath, "utf8")));
+    } catch (error3) {
+      if (!attempt) {
+        this.scheduleConfigReload(1);
+        return;
+      }
+      this.noticeConfig(`configuration file ${this.configPath} is invalid (${error3 instanceof Error ? error3.message : String(error3)}); the running configuration is unchanged`);
+      return;
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.appliedConfig)) {
+      this.configNotice = null;
+      return;
+    }
+    try {
+      this.applyConfig(next);
+      this.configNotice = null;
+      this.diagnostic("configuration change applied to tasks admitted from now on");
+    } catch (error3) {
+      this.noticeConfig(`${error3 instanceof Error ? error3.message : String(error3)}; restart this session to apply it. The running configuration is unchanged`);
+    }
+  }
+  noticeConfig(message) {
+    if (message === this.configNotice) return;
+    this.configNotice = message;
+    this.diagnostic(message);
+  }
   async start() {
     if (this.poll || this.closed || this.closing) return;
     this.observe("startup-begin");
@@ -43667,6 +43734,7 @@ var CcCoordinator = class {
         this.bindingWatcher = null;
       });
     }
+    this.watchConfig();
     this.poll = setInterval(() => {
       void this.requestReconcile("stat wake-up");
     }, this.config.pollIntervalMs);
@@ -43985,6 +44053,10 @@ var CcCoordinator = class {
     this.bindingWatcher = null;
     this.transcriptWatcher?.close();
     this.transcriptWatcher = null;
+    this.configWatcher?.close();
+    this.configWatcher = null;
+    if (this.configTimer) clearTimeout(this.configTimer);
+    this.configTimer = null;
   }
   /** What an exit does to the attached session (shutdown and 102's retarget): its work stops, a final
    * sync bounded by its deadline imports the transcript's tail, and its tasks are cancelled and settled
@@ -46274,7 +46346,7 @@ async function handleCcHook(configInput, input, prepareOnly = false) {
   if (!result.confirmed) console.error(`Trace Memory CC: SessionEnd close not confirmed: ${result.diagnostic ?? result.reason}`);
   return null;
 }
-async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID) {
+async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID, configPath) {
   const config3 = "coreConfig" in configInput ? configInput : resolveCcHostConfig(configInput);
   const sessionId = validateNativeSessionId(nativeSessionId);
   const runtimeDirectory = (0, import_node_path12.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path12.join)(runtimeDirectory, `${sessionId}.jsonl`);
@@ -46298,7 +46370,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
     }
-  }, void 0, runtimeEvent);
+  }, void 0, runtimeEvent, configPath);
   const foreground = new CcForegroundTools(coordinator);
   let follower = null;
   try {
@@ -46418,7 +46490,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|grep|glob ...");
   const config3 = readConfig(configPath);
   if (command === "mcp") {
-    await runCcStdioMcp(config3);
+    await runCcStdioMcp(config3, void 0, configPath);
     return;
   }
   if (command === "hook-capable" || command === "hook-turn" || command === "hook-sources") {

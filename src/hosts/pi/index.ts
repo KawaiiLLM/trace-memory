@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, renameSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -10,7 +10,7 @@ import { statusBody } from "./session-status.ts";
 import { showSessionPanel } from "./session-panel.ts";
 import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
 import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
-import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
+import { agentDirectory, configuration, configuredMode, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
 import { TraceMemory, cacheMissWarning, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, formatCost, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
@@ -872,6 +872,7 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("session_start", (_event, context) => {
     restore(context);
+    watchSettings();
     // 101: Pi keeps the first registration of a tool name; say what that costs when it is not ours.
     const tools = pi.getAllTools();
     for (const [name, description] of memoryTools) {
@@ -1294,6 +1295,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     if (closed) return;
     closed = true;
+    clearTimeout(settingsTimer);
+    for (const watcher of settingsWatchers.values()) watcher.close();
+    settingsWatchers.clear();
     const report = (error: unknown) => { try { ctx?.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* reporting cannot block exit */ } };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); });
@@ -1435,14 +1439,56 @@ export default function (pi: ExtensionAPI) {
    * `configure`. Tasks admitted from now on use the new values; running tasks retain their scope,
    * mode, model, evidence and budgets. Nothing here dispatches a
    * worker or reopens the database. */
-  const applySettings = () => {
-    const loaded = configuration(ctx.cwd, environment, agentDir);
-    if (loaded.flat.dbPath !== flat.dbPath) throw new Error("dbPath changed; reload the extension to reopen the database");
+  const applySettings = (loaded = configuration(ctx.cwd, environment, agentDir)) => {
+    // Whole or nothing: a file that changes a key a running session cannot replace is not applied at all.
+    const next = fixedSettings(loaded.flat, loaded.core), before = fixedSettings(flat, core);
+    for (const key of Object.keys(next)) if (JSON.stringify(next[key]) !== JSON.stringify(before[key]))
+      throw new Error(key === "dbPath" ? "dbPath changed; reload the extension to reopen the database" : `${key} changed and cannot apply to a running session`);
     ({ flat, core, sources, layers } = loaded);
     // The merged, validated layers decide: a project or environment override still wins, and core is
     // told the value that is actually effective — never the global one an override masks.
     const effective = validateConfig(core);
     memory.configure({ closedSessionScope: effective.closedSessionScope, noting: { forkModeDefault: effective.noting.forkModeDefault } });
+  };
+  // Ticket 114: each session watches the settings files it reads and applies a change through
+  // `applySettings`, the path the menu's save uses. A second apply of an unchanged file is a no-op.
+  const settingsWatchers = new Map<string, FSWatcher>();
+  let settingsTimer: ReturnType<typeof setTimeout> | undefined, settingsNotice: string | undefined;
+  const settingsNoticeOnce = (message: string) => {
+    if (message === settingsNotice) return;
+    settingsNotice = message;
+    ctx.ui.notify(`Trace Memory: ${message}`, "warning");
+  };
+  const reloadSettings = (attempt: number) => {
+    settingsTimer = undefined;
+    if (closed) return;
+    let loaded: ReturnType<typeof configuration>;
+    try { loaded = configuration(ctx.cwd, environment, agentDir); }
+    catch (error) {
+      // A write in progress looks invalid until it finishes: read again after a settle, report only a file that stays so.
+      if (!attempt) scheduleSettingsReload(1);
+      else settingsNoticeOnce(`settings could not be read (${String(error)}); the running settings are unchanged`);
+      return;
+    }
+    if (JSON.stringify([loaded.flat, loaded.core]) === JSON.stringify([flat, core])) { settingsNotice = undefined; return; }
+    try { applySettings(loaded); settingsNotice = undefined; }
+    catch (error) { settingsNoticeOnce(`${String(error instanceof Error ? error.message : error)}; restart Pi to apply it. The running settings are unchanged`); }
+  };
+  const scheduleSettingsReload = (attempt = 0) => {
+    clearTimeout(settingsTimer);
+    settingsTimer = setTimeout(() => reloadSettings(attempt), attempt ? 1_000 : 50);
+    settingsTimer.unref?.();
+  };
+  /** Directories, not files: a save that renames a temporary file over `settings.json` replaces the inode. */
+  const watchSettings = () => {
+    for (const directory of [agentDir, join(ctx.cwd, ".pi")]) {
+      if (settingsWatchers.has(directory) || !existsSync(directory)) continue;
+      try {
+        const watcher = watch(directory, { persistent: false }, (_event, filename) => { if (filename === null || String(filename) === "settings.json") scheduleSettingsReload(); });
+        watcher.on("error", () => { watcher.close(); settingsWatchers.delete(directory); });
+        settingsWatchers.set(directory, watcher);
+      } catch { /* this directory cannot be watched; the next session start reads the files anyway */ }
+    }
   };
   const saveGlobal = (p: Preference, value: string | boolean) => {
     let replaced: string | undefined;

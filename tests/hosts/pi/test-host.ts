@@ -141,18 +141,19 @@ const emptyMemoryReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", co
 export const emptyNote = (conversation: Conversation): Reply | undefined =>
   conversation.systemPrompt?.startsWith("# Noting") ? !latestNoteResult(conversation) ? emptyNoteReply() : !memoryUsed(conversation) ? emptyMemoryReply() : undefined : undefined;
 
-export function host(config: Record<string, unknown> = {}, options: { native?: NativeSource; fetch?: boolean; extension?: typeof extension; inflight?: () => number } = {}) {
+export function host(config: Record<string, unknown> = {}, options: { native?: NativeSource; agentDir?: string; fetch?: boolean; extension?: typeof extension; inflight?: () => number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-host-"));
   const origin = `https://fake-${wireCount++}.invalid`;
   // Pi settings the child reads through its own SettingsManager (19c gate 6): a fast, deterministic
   // retry policy instead of the user's ~/.pi/agent.
-  const agentDir = join(dir, "agent"); mkdirSync(agentDir, { recursive: true });
+  // `options.agentDir`: a second session of the same Pi installation, which shares the files of the first.
+  const agentDir = options.agentDir ?? join(dir, "agent"); mkdirSync(agentDir, { recursive: true });
   // `defaultThinkingLevel` and `modelThinkingLevels` are Pi's own settings, not this extension's
   // configuration: 26b's cases put a global default and a per-model preference here to prove that
   // neither of them decides a worker's level.
   // 27b: `compaction` is Pi's own setting too. A case that wants the user's file to ask for automatic
   // compaction — the state the memory child overrides in memory — states it here.
-  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 5, ...(config.retry as object ?? {}) },
+  if (!options.agentDir) writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 5, ...(config.retry as object ?? {}) },
     ...(config.compaction ? { compaction: config.compaction } : {}),
     ...(config.defaultThinkingLevel ? { defaultThinkingLevel: config.defaultThinkingLevel } : {}),
     ...(config.modelThinkingLevels ? { modelThinkingLevels: config.modelThinkingLevels } : {}) }));
@@ -164,7 +165,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   // (`contextWindow`), like `retry` and the thinking levels below: it is Pi's model metadata, not this
   // extension's configuration, and is stripped from TRACE_MEMORY_CONFIG with them.
   const contextWindow = Number(config.contextWindow ?? 200_000);
-  writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: Object.fromEntries((["openai-completions", "anthropic-messages"] as const).map((api, i) => [
+  if (!options.agentDir) writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: Object.fromEntries((["openai-completions", "anthropic-messages"] as const).map((api, i) => [
     i === 0 ? "fake" : "fakeanthropic", { name: "Fake", baseUrl: `${origin}/v1`, apiKey: "fake-key", api,
       models: MODELS.map(id => ({ id, name: `Test ${id}`, reasoning: reasoning(id), input: ["text", "image"], contextWindow, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) }])) }));
   claimAgentDir(agentDir);
@@ -373,7 +374,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     /** 27a: the context measure `ctx.getContextUsage()` reports, switchable per case. */
     setContextUsage: (value: { tokens: number | null; contextWindow: number; percent: number | null } | undefined) => { contextUsage = value; },
     /** The foreground level this host reports to the extension, switchable mid-run by a case. */
-    setThinkingLevel: (level: ThinkingLevel) => { thinkingLevel = level; }, getThinkingLevel: () => thinkingLevel, dialogs, answers, dispose, dir, dbPath, signals, ctx, eventBus, entries, allEntries, persist, compaction, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
+    setThinkingLevel: (level: ThinkingLevel) => { thinkingLevel = level; }, getThinkingLevel: () => thinkingLevel, dialogs, answers, dispose, dir, agentDir, dbPath, signals, ctx, eventBus, entries, allEntries, persist, compaction, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean; ignoreAbort?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; ignoreAbort = options.ignoreAbort ?? false; } };
 }
 /** Explicit successful Noter script: one fact plus empty knowledge in the same assistant message. */

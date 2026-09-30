@@ -104,6 +104,16 @@ export function configuration(cwd: string, environment = process.env.TRACE_MEMOR
 /** What one load produced, as the settings view and the writer read it back. */
 export type Loaded = ReturnType<typeof configuration>;
 
+/** The core values a running session cannot replace: every section value except the Noter mode, plus
+ * the database path. Host strings (models, thinking levels, runs directory) and the closed-session
+ * scope are read live and are not listed. */
+export function fixedSettings(flat: FlatConfig, core: ConfigOverride): Record<string, unknown> {
+  const fixed: Record<string, unknown> = { dbPath: flat.dbPath };
+  for (const section of CONFIG_SECTIONS) for (const [key, value] of Object.entries(core[section] ?? {}))
+    if (!(section === "noting" && key === "forkModeDefault")) fixed[`${section}.${key}`] = value;
+  return fixed;
+}
+
 /** 24b "Global settings", the write itself: re-read the resolved global settings file, merge the
  * one edited preference into its `trace-memory` section, validate the merged layer through the load
  * path (`parseLayer` over `canonicalFlatConfig`), then replace the file atomically. Everything else

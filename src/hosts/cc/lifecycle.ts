@@ -1,8 +1,8 @@
-import { existsSync, readdirSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, readdirSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { Store } from "../../core/store/index.ts";
 import { deliveredView, selectNotingMode, type NotingAgentInput, type RunAgentResult, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
-import type { ResolvedCcHostConfig } from "./config.ts";
+import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
 import { activeFunctionHook, bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, updateBindingInStoreTransaction, validateNativeSessionId, type CcHookInput,
   type CcSessionBinding } from "./binding.ts";
 import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
@@ -123,6 +123,11 @@ export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: Cc
   } finally { store?.close(); }
 }
 
+/** A save is a burst of events; wait for it to end before reading. */
+const CONFIG_SETTLE_MS = 50;
+/** How long an unreadable file may stay so before it is reported. */
+const CONFIG_INVALID_SETTLE_MS = 1_000;
+
 export class CcCoordinator {
   private readonly forkAuthority = new CcForkAuthority(agentId => this.control?.stopFork(agentId), agentId => {
     const binding = readBinding(this.config, this.nativeSessionId);
@@ -143,6 +148,12 @@ export class CcCoordinator {
   private poll: ReturnType<typeof setInterval> | null = null;
   private transcriptWatcher: FSWatcher | null = null;
   private bindingWatcher: FSWatcher | null = null;
+  /** The `--config` file this executor was started with, and its directory watch. */
+  private readonly configPath?: string;
+  private configWatcher: FSWatcher | null = null;
+  private configTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The last notice about the file, so an unchanged problem is reported once, not on every event. */
+  private configNotice: string | null = null;
   private queue: Promise<CcReconcileResult | null> = Promise.resolve(null);
   private wakeQueued = false;
   private closing = false;
@@ -183,8 +194,9 @@ export class CcCoordinator {
 
   constructor(config: ResolvedCcHostConfig, nativeSessionId: string,
     diagnostic: CcDiagnostic = message => console.error(`Trace Memory CC: ${message}`), importTuning?: CcImportInstrumentation,
-    journal: CcWorkerJournal = () => {}) {
+    journal: CcWorkerJournal = () => {}, configPath?: string) {
     validateNativeSessionId(nativeSessionId);
+    this.configPath = configPath;
     this.config = config; this.appliedConfig = config; this.nativeSessionId = nativeSessionId; this.diagnostic = diagnostic;
     this.importTuning = importTuning; this.journal = journal;
   }
@@ -320,49 +332,54 @@ export class CcCoordinator {
         holdImport: () => this.holdImport(),
         effectiveConfig: () => this.appliedConfig,
         catchupSnapshot: () => this.scheduler?.catchupSnapshot() ?? null,
-        applyConfig: next => {
-          if (!this.importer || !this.scheduler) throw new Error("CC executor is not attached for settings apply");
-          const prior = this.appliedConfig;
-          const nonLive = (value: ResolvedCcHostConfig): Record<string, unknown> => {
-            const fields: Record<string, unknown> = {
-              dbPath: value.dbPath, stateDir: value.stateDir, baseline: value.baseline, retry: value.retry,
-              pollIntervalMs: value.pollIntervalMs, finalSyncTimeoutMs: value.finalSyncTimeoutMs,
-              finalSyncStablePolls: value.finalSyncStablePolls, writeSourceTimeoutMs: value.writeSourceTimeoutMs,
-              "worker.claudeExecutable": value.worker?.claudeExecutable,
-              "worker.cwd": value.worker?.cwd,
-              "worker.responseOriginTimeoutMs": value.worker?.responseOriginTimeoutMs,
-            };
-            for (const [section, settings] of Object.entries(value.coreConfig)) {
-              if (section === "closedSessionScope") continue;
-              if (settings && typeof settings === "object") for (const [field, current] of Object.entries(settings)) {
-                if (section === "noting" && field === "forkModeDefault") continue;
-                fields[`${section}.${field}`] = current;
-              }
-              else fields[section] = settings;
-            }
-            return fields;
-          };
-          const existingFields = nonLive(prior), nextFields = nonLive(next);
-          for (const key of Object.keys(existingFields))
-            if (JSON.stringify(existingFields[key]) !== JSON.stringify(nextFields[key]))
-              throw new Error(`CC executor cannot hot-apply ${key}; saved file is not applied`);
-          for (const [model, capacity] of Object.entries(prior.worker?.contextWindows ?? {}))
-            if (next.worker?.contextWindows[model] !== capacity)
-              throw new Error(`CC executor cannot hot-apply a changed capacity for ${model}`);
-          // No reconciliation or admission: only subsequent tasks observe these replacements.
-          if (next.closedSessionScope !== this.appliedConfig.closedSessionScope ||
-              next.coreConfig.noting.forkModeDefault !== this.appliedConfig.coreConfig.noting.forkModeDefault)
-            this.importer.memory.configure({ closedSessionScope: next.closedSessionScope,
-              noting: { forkModeDefault: next.coreConfig.noting.forkModeDefault } });
-          this.importer.applyWorker(next);
-          this.scheduler.applyWorker(next.worker);
-          this.appliedConfig = next;
-        },
+        applyConfig: next => this.applyConfig(next),
       }).then(control => { this.control = control; });
       this.watchTranscript(binding);
+      this.scheduleConfigReload(); // a change saved before this executor could apply it
       if (final) this.importer.memory.cancelTasks(true);
       this.observe("attach-complete", { final });
     } catch (error) { await this.discardAttachment(); throw error; }
+  }
+
+  /** The one apply path: the control verb and the configuration watcher both end here. A change that
+   * touches any non-live key throws before anything is replaced. */
+  private applyConfig(next: ResolvedCcHostConfig): void {
+    if (!this.importer || !this.scheduler) throw new Error("CC executor is not attached for settings apply");
+    const prior = this.appliedConfig;
+    const nonLive = (value: ResolvedCcHostConfig): Record<string, unknown> => {
+      const fields: Record<string, unknown> = {
+        dbPath: value.dbPath, stateDir: value.stateDir, baseline: value.baseline, retry: value.retry,
+        pollIntervalMs: value.pollIntervalMs, finalSyncTimeoutMs: value.finalSyncTimeoutMs,
+        finalSyncStablePolls: value.finalSyncStablePolls, writeSourceTimeoutMs: value.writeSourceTimeoutMs,
+        "worker.claudeExecutable": value.worker?.claudeExecutable,
+        "worker.cwd": value.worker?.cwd,
+        "worker.responseOriginTimeoutMs": value.worker?.responseOriginTimeoutMs,
+      };
+      for (const [section, settings] of Object.entries(value.coreConfig)) {
+        if (section === "closedSessionScope") continue;
+        if (settings && typeof settings === "object") for (const [field, current] of Object.entries(settings)) {
+          if (section === "noting" && field === "forkModeDefault") continue;
+          fields[`${section}.${field}`] = current;
+        }
+        else fields[section] = settings;
+      }
+      return fields;
+    };
+    const existingFields = nonLive(prior), nextFields = nonLive(next);
+    for (const key of Object.keys(existingFields))
+      if (JSON.stringify(existingFields[key]) !== JSON.stringify(nextFields[key]))
+        throw new Error(`CC executor cannot hot-apply ${key}; saved file is not applied`);
+    for (const [model, capacity] of Object.entries(prior.worker?.contextWindows ?? {}))
+      if (next.worker?.contextWindows[model] !== capacity)
+        throw new Error(`CC executor cannot hot-apply a changed capacity for ${model}`);
+    // No reconciliation or admission: only subsequent tasks observe these replacements.
+    if (next.closedSessionScope !== this.appliedConfig.closedSessionScope ||
+        next.coreConfig.noting.forkModeDefault !== this.appliedConfig.coreConfig.noting.forkModeDefault)
+      this.importer.memory.configure({ closedSessionScope: next.closedSessionScope,
+        noting: { forkModeDefault: next.coreConfig.noting.forkModeDefault } });
+    this.importer.applyWorker(next);
+    this.scheduler.applyWorker(next.worker);
+    this.appliedConfig = next;
   }
 
   /** Detach references before disposal: facade close may close its Store and then throw. */
@@ -390,6 +407,52 @@ export class CcCoordinator {
     });
   }
 
+  /** The directory is watched, not the file: a save that writes a temporary file and renames it replaces
+   * the inode, which a file watch would lose. Other files in the directory wake nothing. */
+  private watchConfig(): void {
+    if (!this.configPath || this.configWatcher || !existsSync(dirname(this.configPath))) return;
+    const name = basename(this.configPath);
+    this.configWatcher = watch(dirname(this.configPath), (_event, filename) => {
+      if (filename === null || String(filename) === name) this.scheduleConfigReload();
+    });
+    this.configWatcher.on("error", error => {
+      this.diagnostic(`configuration watch failed: ${String(error)}; this executor keeps its current configuration`);
+      this.configWatcher?.close(); this.configWatcher = null;
+    });
+  }
+
+  private scheduleConfigReload(attempt = 0): void {
+    if (!this.configPath || this.closed || this.closing) return;
+    if (this.configTimer) clearTimeout(this.configTimer);
+    // A save is a burst of events; an invalid read waits longer, because a write in progress looks
+    // invalid until it finishes, and only a file that is still invalid then is reported.
+    this.configTimer = setTimeout(() => { this.configTimer = null; this.reloadConfig(attempt); }, attempt ? CONFIG_INVALID_SETTLE_MS : CONFIG_SETTLE_MS);
+  }
+
+  /** Re-read the file and hand it to `applyConfig`. A file that cannot be read, parsed or resolved, or that
+   * changes a key that cannot change live, leaves the running configuration whole. */
+  private reloadConfig(attempt: number): void {
+    if (!this.configPath || this.closed || this.closing || !this.importer || !this.scheduler) return;
+    let next: ResolvedCcHostConfig;
+    try { next = resolveCcHostConfig(JSON.parse(readFileSync(this.configPath, "utf8")) as CcHostConfig); }
+    catch (error) {
+      if (!attempt) { this.scheduleConfigReload(1); return; }
+      this.noticeConfig(`configuration file ${this.configPath} is invalid (${error instanceof Error ? error.message : String(error)}); the running configuration is unchanged`);
+      return;
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.appliedConfig)) { this.configNotice = null; return; }
+    try { this.applyConfig(next); this.configNotice = null; this.diagnostic("configuration change applied to tasks admitted from now on"); }
+    catch (error) {
+      this.noticeConfig(`${error instanceof Error ? error.message : String(error)}; restart this session to apply it. The running configuration is unchanged`);
+    }
+  }
+
+  private noticeConfig(message: string): void {
+    if (message === this.configNotice) return;
+    this.configNotice = message;
+    this.diagnostic(message);
+  }
+
   async start(): Promise<void> {
     if (this.poll || this.closed || this.closing) return;
     this.observe("startup-begin");
@@ -404,6 +467,7 @@ export class CcCoordinator {
         this.bindingWatcher?.close(); this.bindingWatcher = null;
       });
     }
+    this.watchConfig();
     this.poll = setInterval(() => { void this.requestReconcile("stat wake-up"); }, this.config.pollIntervalMs);
     await this.requestReconcile("startup");
   }
@@ -744,6 +808,9 @@ export class CcCoordinator {
     this.poll = null;
     this.bindingWatcher?.close(); this.bindingWatcher = null;
     this.transcriptWatcher?.close(); this.transcriptWatcher = null;
+    this.configWatcher?.close(); this.configWatcher = null;
+    if (this.configTimer) clearTimeout(this.configTimer);
+    this.configTimer = null;
   }
 
   /** What an exit does to the attached session (shutdown and 102's retarget): its work stops, a final

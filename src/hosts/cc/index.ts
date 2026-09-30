@@ -55,7 +55,7 @@ export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostCon
 }
 
 export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostConfig,
-  nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID): Promise<void> {
+  nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID, configPath?: string): Promise<void> {
   const config = "coreConfig" in configInput ? configInput : resolveCcHostConfig(configInput);
   const sessionId = validateNativeSessionId(nativeSessionId);
   const runtimeDirectory = join(config.stateDir, "runtime"), runtimePath = join(runtimeDirectory, `${sessionId}.jsonl`);
@@ -71,7 +71,7 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
     console.error(`Trace Memory CC: ${message}`);
     try { appendFileSync(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}\n`, { mode: 0o600 }); }
     catch (error) { console.error(`Trace Memory CC: lifecycle journal failed: ${String(error)}`); }
-  }, undefined, runtimeEvent);
+  }, undefined, runtimeEvent, configPath);
   const foreground = new CcForegroundTools(coordinator);
   // 65: the Hook's id is authoritative. Until the coordinator attaches, an assignment for this
   // process's ancestors re-targets it; afterwards (102) the executor leaves the attached session as an
@@ -174,7 +174,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
       command !== "hook-compact" && command !== "hook-capable" && command !== "hook-turn" && command !== "hook-sources" && command !== "hook-fork" && command !== "hook-fork-watch" && command !== "cli" && command !== "fs") || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|grep|glob ...");
   const config = readConfig(configPath);
-  if (command === "mcp") { await runCcStdioMcp(config); return; }
+  if (command === "mcp") { await runCcStdioMcp(config, undefined, configPath); return; }
   if (command === "hook-capable" || command === "hook-turn" || command === "hook-sources") {
     const input = JSON.parse(await readStdin()) as { session_id?: unknown; turnId?: unknown; reason?: unknown;
       observation?: import("./control.ts").CcForkObservation };
