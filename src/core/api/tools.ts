@@ -293,6 +293,12 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
           : `rejected: ${error instanceof Error ? error.message : String(error)}`;
         if (dreaming || (held && (name === "note" || name === "memory"))) toolProblems.set(name, result);
         if (name === "note" && !committed) problems = [result]; }
+      if (held && (name === "note" || name === "memory")) {
+        const status = held.status(toolProblems);
+        // Preserve the existing structured receipt and plain rejection forms. Evaluate after
+        // the wrapper has cleared or recorded its per-tool error, not inside the held call.
+        result = result.startsWith("{") ? JSON.stringify({ ...JSON.parse(result), status }) : `${result}\nStatus: ${status}`;
+      }
       sequence.push({ name, input: structuredClone(raw), result,
         ...(name === "memory" && memory.failure ? { problems: memory.failure.problems } : {}) });
       if (context.kind === "manual" && (name === "note" || name === "memory") && result.includes("rejected:")) store.recordRun({ ...run, request: JSON.stringify(raw), response: result, outcome: "bounced" });

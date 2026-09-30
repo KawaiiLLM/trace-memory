@@ -109,13 +109,30 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
   });
   const problems = () => [...facts.problems(), ...operations.problems()];
   const incomplete = () => !facts.used || !operations.used;
+  const status = (toolProblems: ReadonlyMap<string, string>): string => {
+    const blockers: string[] = [];
+    for (const [name, slots] of [["note", facts], ["memory", operations]] as const) {
+      if (!slots.used) blockers.push(`${name} not called; call ${name === "note" ? "note({facts: []})" : "memory({operations: [], skipped: []})"}`);
+      if (slots.error) blockers.push(`${name} call error: ${slots.error}; make a structurally valid ${name} call to clear it`);
+      for (const [id, row] of slots.rows) if (row.error) {
+        const address = `${slots.prefix}${id}`;
+        blockers.push(`${address}: ${row.error}; resubmit with slot: "${address}" or drop: ["${address}"] (drop may be refused if referenced)`);
+      }
+      // A wrapper failure can block publication even when the held layer has no error.
+      if (toolProblems.has(name) && !slots.problems().length)
+        blockers.push(`${name} call error: ${toolProblems.get(name)}; make a structurally valid ${name} call to clear it`);
+    }
+    return blockers.length
+      ? `Not publishable: ${blockers.join("; ")}. Ending now publishes nothing.`
+      : "Publishable: current submission requirements are met; ending normally attempts to publish facts and knowledge together (not a commit guarantee).";
+  };
   const validate = () => {
     if (incomplete()) throw new Error("incomplete Noting: explicitly call both note and memory, including empty arrays");
     if (problems().length) throw new Error(problems().join("; "));
     // Recheck the final sources/content, including facts cited before a later correction.
     for (const [id, row] of facts.rows) row.value = fact(row.raw, id);
   };
-  return { note, memory, problems, incomplete, validate,
+  return { note, memory, problems, incomplete, status, validate,
     reject: (name: "note" | "memory", raw: unknown, reason: string) => name === "note"
       ? facts.call(raw, "facts", fact, () => {}, reason)
       : operations.call(raw, "operations", value => value, () => {}, reason),

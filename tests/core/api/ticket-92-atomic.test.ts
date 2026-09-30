@@ -161,12 +161,110 @@ test("04: shared schema does not grant manual draft semantics or remove within-c
   expect(f.entries.some(entry => f.memory.store.entryNoted(entry.id))).toBe(false);
 });
 
+test("Noting receipt names an uncalled note even after memory succeeds", async () => {
+  const f = fixture(task => {
+    const receipt = JSON.parse(emptyMemory(task));
+    expect(receipt.status).toContain("note not called; call note({facts: []})");
+    expect(receipt.status).toContain("Ending now publishes nothing");
+  });
+  expect((await f.run()).outcome).not.toBe("success");
+  expect(f.entries.some(entry => f.memory.store.entryNoted(entry.id))).toBe(false);
+});
+
+test("Noting receipts describe whole-run readiness without changing atomic publication", async () => {
+  const f = fixture(task => {
+    const first = JSON.parse(call(task, "note", { facts: [fact("first"), fact("second", "T1#E99")] }));
+    expect(first.status).toContain("Not publishable");
+    expect(first.status).toContain("$2:");
+    expect(first.status).toContain('slot: "$2"');
+    expect(first.status).toContain('drop: ["$2"]');
+    expect(first.status).toContain("memory({operations: [], skipped: []})");
+    const other = JSON.parse(emptyMemory(task));
+    expect(other.status).toContain("$2:");
+    expect(other.status).toContain("Ending now publishes nothing");
+    // Appending a new fact does not replace the rejected old slot.
+    const appended = JSON.parse(call(task, "note", { facts: [fact("third")] }));
+    expect(appended.held).toEqual(["$1", "$3"]);
+    expect(appended.status).toContain("$2:");
+    const corrected = JSON.parse(call(task, "note", { facts: [{ slot: "$2", ...fact("corrected") }] }));
+    expect(corrected.status).toContain("Publishable: current submission requirements are met");
+    expect(corrected.status).toContain("not a commit guarantee");
+  });
+  expect((await f.run()).outcome).toBe("success");
+  expect(f.memory.store.listSessionFacts(f.session.id)).toHaveLength(3);
+  expect(f.entries.every(entry => f.memory.store.entryNoted(entry.id))).toBe(true);
+});
+
+test.each(["note", "memory"] as const)("Noting %s call errors survive other-tool receipts until same-tool correction", async kind => {
+  const f = fixture(task => {
+    const other = kind === "note" ? "memory" : "note";
+    const invalid = kind === "note" ? { facts: "invalid" } : { operations: "invalid", skipped: [] };
+    expect(call(task, kind, invalid)).toContain("Not publishable");
+    const otherReceipt = call(task, other, other === "note" ? { facts: [] } : { operations: [], skipped: [] });
+    expect(otherReceipt).toContain(`${kind} call error:`);
+    // A valid envelope with a rejected item clears the call error, not the rejected slot.
+    const rejected = kind === "note" ? { facts: [fact("bad source", "T1#E99")] }
+      : { operations: [knowledge(["$99"])], skipped: [] };
+    const withSlot = JSON.parse(call(task, kind, rejected));
+    expect(withSlot.status).not.toContain(`${kind} call error:`);
+    const address = kind === "note" ? "$1" : "M1";
+    expect(withSlot.status).toContain(`${address}:`);
+    expect(JSON.parse(call(task, kind, kind === "note" ? { facts: [] } : { operations: [], skipped: [] })).status).toContain(`${address}:`);
+    expect(JSON.parse(call(task, kind, kind === "note" ? { facts: [], drop: [address] }
+      : { operations: [], skipped: [], drop: [address] })).status).toContain("Publishable:");
+  });
+  expect((await f.run()).outcome).toBe("success");
+  expect(f.entries.every(entry => f.memory.store.entryNoted(entry.id))).toBe(true);
+});
+
+test("Noting native rejection appears in the other tool's receipt and clears only on same-tool correction", async () => {
+  const f = fixture(task => {
+    task.reportToolRejection("same-id", "note", { facts: "invalid" }, "native schema refusal");
+    task.reportToolRejection("same-id", "note", { facts: "invalid" }, "native schema refusal");
+    expect(JSON.parse(emptyMemory(task)).status).toContain("note call error:");
+    expect(JSON.parse(call(task, "note", { facts: [] })).status).toContain("Publishable:");
+    expect(JSON.parse(emptyMemory(task)).status).toContain("Publishable:");
+  });
+  expect((await f.run()).outcome).toBe("success");
+});
+
+test("Noting wrapper failures remain blocking across tool receipts", async () => {
+  const f = fixture(task => {
+    // Disabled is rejected by the wrapper, before the held handler runs.
+    f.memory.store.setEnrollment(f.session.id, false);
+    expect(call(task, "note", { facts: [] })).toContain("Trace Memory is Disabled");
+    expect(call(task, "memory", { operations: [], skipped: [] })).toContain("note call error:");
+    f.memory.store.setEnrollment(f.session.id, true);
+    expect(JSON.parse(call(task, "note", { facts: [] })).status).toContain("memory call error:");
+    expect(JSON.parse(emptyMemory(task)).status).toContain("Publishable:");
+  });
+  expect((await f.run()).outcome).toBe("success");
+});
+
+test("Noting replacement rejection withdraws prior held value and drop may be refused for a reference", async () => {
+  const f = fixture(task => {
+    expect(JSON.parse(call(task, "note", { facts: [fact()] })).status).toContain("memory({operations: [], skipped: []})");
+    expect(JSON.parse(call(task, "memory", { operations: [knowledge()], skipped: [] })).status).toContain("Publishable:");
+    const invalid = JSON.parse(call(task, "note", { facts: [{ slot: "$1", ...fact("invalid", "T1#E99") }] }));
+    expect(invalid.held).toEqual([]);
+    expect(invalid.status).toContain("$1:");
+    const drop = JSON.parse(call(task, "note", { facts: [], drop: ["$1"] }));
+    expect(drop.status).toContain("cannot drop referenced fact $1");
+    expect(drop.status).toContain("$1:");
+  });
+  expect((await f.run()).outcome).toBe("bounced");
+  expect(f.memory.store.listSessionFacts(f.session.id)).toEqual([]);
+  expect(f.entries.some(entry => f.memory.store.entryNoted(entry.id))).toBe(false);
+});
+
 test("04: duplicate native refusal IDs allocate one rejected append slot; empties expose it without clearing", async () => {
   const f = fixture(task => {
     call(task, "note", { facts: [fact()] });
     for (let i = 0; i < 2; i++) task.reportToolRejection("same-native-id", "note", { facts: [{ source: ["T1#E1"] }] }, "missing text");
     const inspected = JSON.parse(call(task, "note", { facts: [] }));
     expect(inspected.rejected).toEqual({ "$2": "missing text" });
+    expect(inspected.status).toContain('$2: missing text; resubmit with slot: "$2"');
+    expect(JSON.parse(emptyMemory(task)).status).toContain("$2: missing text");
     call(task, "note", { facts: [{ slot: "$2", ...fact("corrected") }, fact("appended") ] });
     emptyMemory(task);
   });

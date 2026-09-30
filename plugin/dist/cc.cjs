@@ -7719,6 +7719,20 @@ function holdNoting(store, run, path, validateFact) {
   });
   const problems = () => [...facts.problems(), ...operations.problems()];
   const incomplete = () => !facts.used || !operations.used;
+  const status = (toolProblems) => {
+    const blockers = [];
+    for (const [name, slots] of [["note", facts], ["memory", operations]]) {
+      if (!slots.used) blockers.push(`${name} not called; call ${name === "note" ? "note({facts: []})" : "memory({operations: [], skipped: []})"}`);
+      if (slots.error) blockers.push(`${name} call error: ${slots.error}; make a structurally valid ${name} call to clear it`);
+      for (const [id, row] of slots.rows) if (row.error) {
+        const address2 = `${slots.prefix}${id}`;
+        blockers.push(`${address2}: ${row.error}; resubmit with slot: "${address2}" or drop: ["${address2}"] (drop may be refused if referenced)`);
+      }
+      if (toolProblems.has(name) && !slots.problems().length)
+        blockers.push(`${name} call error: ${toolProblems.get(name)}; make a structurally valid ${name} call to clear it`);
+    }
+    return blockers.length ? `Not publishable: ${blockers.join("; ")}. Ending now publishes nothing.` : "Publishable: current submission requirements are met; ending normally attempts to publish facts and knowledge together (not a commit guarantee).";
+  };
   const validate = () => {
     if (incomplete()) throw new Error("incomplete Noting: explicitly call both note and memory, including empty arrays");
     if (problems().length) throw new Error(problems().join("; "));
@@ -7729,6 +7743,7 @@ function holdNoting(store, run, path, validateFact) {
     memory,
     problems,
     incomplete,
+    status,
     validate,
     reject: (name, raw, reason) => name === "note" ? facts.call(raw, "facts", fact, () => {
     }, reason) : operations.call(raw, "operations", (value) => value, () => {
@@ -8045,6 +8060,11 @@ function bindTools(store, read, supplied, metadata, dreaming) {
         result = held && (name === "note" || name === "memory") ? held.reject(name, raw, error3 instanceof Error ? error3.message : String(error3)) : `rejected: ${error3 instanceof Error ? error3.message : String(error3)}`;
         if (dreaming || held && (name === "note" || name === "memory")) toolProblems.set(name, result);
         if (name === "note" && !committed) problems = [result];
+      }
+      if (held && (name === "note" || name === "memory")) {
+        const status = held.status(toolProblems);
+        result = result.startsWith("{") ? JSON.stringify({ ...JSON.parse(result), status }) : `${result}
+Status: ${status}`;
       }
       sequence.push({
         name,
