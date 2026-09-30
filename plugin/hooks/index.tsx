@@ -4,7 +4,7 @@ import { renderTraceMenu, renderTraceMenuText, renderTraceSettings, type CcConte
 import { MEMORY_READ_ONLY, memoryGlob, memoryPath } from "../../src/core/model/address.ts";
 import { ccOriginalRaw } from "../../src/hosts/cc/coverage-original.ts";
 
-type Reply = { menu: TraceMenuInput; settings: SettingsInput; context: { presence: "confirmed" | "unavailable"; estimatedMessagesTokens?: number; memory?: CcMemorySplit }; runs: { id: number; phase: string; status: string; cost: number | null; at: string }[] };
+type Reply = { menu: TraceMenuInput; settings: SettingsInput; context: { presence: "confirmed" | "unavailable"; estimatedMessagesTokens?: number; memory?: CcMemorySplit }; runs: { id: number; phase: string; status: string; cost: number | null; partial: boolean; at: string }[] };
 type Screen = "main" | "settings" | "runs" | "project" | "confirm" | "edit";
 let screen: Screen = "main";
 let reply: Reply | undefined;
@@ -459,7 +459,7 @@ export const register = (on: any) => {
       </Box>;
     }
     if (screen === "runs") return <Box flexDirection="column"><Text>Trace Memory · Runs</Text>
-      {reply.runs.map((run, i) => <Text key={`run-${i}`}>{`R${run.id} ${run.phase} ${run.status} ${run.cost === null ? "cost unknown" : `$${run.cost.toFixed(2)}`} ${run.at}`}</Text>)}
+      {reply.runs.map((run, i) => <Text key={`run-${i}`}>{`R${run.id} ${run.phase} ${run.status} ${run.cost === null ? "cost unknown" : `$${run.cost.toFixed(2)}${run.partial ? "+ (rest unknown)" : ""}`} ${run.at}`}</Text>)}
       <Input key="run-count" label={MENU_INPUTS.runs} onSubmit={(value: string) => {
         try { runsLimit = parseRunsCount(value); }
         catch (error) { notice = String(error); $.ui.invalidate("ui.render"); return; }

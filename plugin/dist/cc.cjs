@@ -1434,7 +1434,7 @@ function usageFromFields(fields2) {
   const count3 = (value) => typeof value === "number" ? value : typeof value === "boolean" ? Number(value) : 0;
   return [count3(input), count3(output), count3(cacheRead), count3(cacheWrite), typeof costTotal === "number" ? costTotal : typeof costTotal === "boolean" ? Number(costTotal) : null];
 }
-var costUnknown = (row) => row.usage_cost === null && (row.usage_input !== null || row.outcome === "cancelled");
+var costUnknown = (row) => row.outcome === "cancelled" || row.usage_cost === null && row.usage_input !== null;
 var commitAddress = (knowledgeId2, commitId) => `K${knowledgeId2}@${commitId}`;
 var KnowledgeVersionProblem = class extends Error {
   describe;
@@ -4737,7 +4737,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     let cost = 0, unknown3 = 0;
     for (const row of rows) {
       if (row.usage_cost !== null) cost += row.usage_cost;
-      else if (costUnknown(row)) unknown3++;
+      if (costUnknown(row)) unknown3++;
     }
     return { cost, unknown: unknown3 };
   }
@@ -43368,6 +43368,9 @@ var CcCoordinator = class {
   /** 108: each settled fork's accounting (its price, partial usage and cache-miss warnings), keyed by the
    * fork transcript path and taken once by the Hook, which shows the warnings. */
   forkAccounts = /* @__PURE__ */ new Map();
+  /** Every accounting still running, whether or not a Hook has already taken its entry from `forkAccounts`:
+   * shutdown waits for these before it closes the Store. */
+  forkAccounting = /* @__PURE__ */ new Set();
   priceCatalog;
   forkLaunch = null;
   activeForkTurnId = null;
@@ -43782,8 +43785,14 @@ var CcCoordinator = class {
     const launch = this.forkLaunch;
     if (!launch || launch.signal.aborted) return Promise.resolve({ outcome: "cancelled", output: "CC fork checkpoint is no longer live" });
     const result = this.forkAuthority.begin(task);
+    const store = this.importer?.memory.store;
+    const firstRunId = store ? (store.db.prepare("SELECT MAX(id) AS id FROM runs WHERE session_id = ?").get(task.sessionId).id ?? 0) + 1 : 0;
     void result.then((settled) => {
-      if (settled.nativeLog) this.forkAccounts.set(settled.nativeLog, this.accountFork(task, settled));
+      if (!settled.nativeLog) return;
+      const account = this.accountFork(task, settled, firstRunId);
+      this.forkAccounts.set(settled.nativeLog, account);
+      this.forkAccounting.add(account);
+      void account.finally(() => this.forkAccounting.delete(account));
     });
     this.activeForkTurnId = launch.turnId;
     launch.resolve({ prompt: task.text, turnId: launch.turnId });
@@ -43794,17 +43803,17 @@ var CcCoordinator = class {
    * amend the run. A fork stopped before it completed has no recorded tokens: whatever its transcript holds is
    * recorded as partial usage. Unpriceable, undercounted or missing leaves the cost unknown and says why in
    * the run's problems. Returns the cache-miss warnings, one per missed response. */
-  async accountFork(task, settled) {
+  async accountFork(task, settled, firstRunId) {
     const path = settled.nativeLog;
     try {
       const { patch, warnings } = await accountForkTranscript(
         path,
         settled.usage ? settled.usage : void 0,
         () => this.catalog(),
-        { stop: () => this.closed || this.closing }
+        { stop: () => this.closed }
       );
       if (patch) {
-        const runId = await this.findForkRun(task, path);
+        const runId = await this.findForkRun(task, path, firstRunId);
         const store = this.importer?.memory.store;
         if (runId !== void 0 && store && !store.closed) store.amendRunUsage(runId, patch);
         else this.diagnostic(`fork accounting found no run for ${path}`);
@@ -43816,20 +43825,17 @@ var CcCoordinator = class {
       return [];
     }
   }
-  /** The run core recorded for the fork that settled, found by the transcript path it carries. Core records
-   * it right after the settlement, so a few short retries are enough. */
-  async findForkRun(task, nativeLog) {
+  /** The run core recorded for the fork that settled, found by the transcript path it carries, among this
+   * session's runs from `firstRunId` on (the ones recorded since the fork started). Core records it right
+   * after the settlement, so a few short retries are enough. */
+  async findForkRun(task, nativeLog, firstRunId) {
     for (let attempt = 0; attempt < 100 && !this.closed; attempt++) {
       const store = this.importer?.memory.store;
       if (!store || store.closed) return;
-      const rows = store.db.prepare(`SELECT r.id, b.response FROM runs r JOIN run_bodies b ON b.run_id = r.id
-        WHERE r.session_id = ? AND r.kind = 'noting' ORDER BY r.id DESC LIMIT 5`).all(task.sessionId);
-      for (const row of rows) {
-        try {
-          if (JSON.parse(row.response ?? "{}").nativeLog === nativeLog) return Number(row.id);
-        } catch {
-        }
-      }
+      const row = store.db.prepare(`SELECT r.id FROM runs r JOIN run_bodies b ON b.run_id = r.id
+        WHERE r.session_id = ? AND r.kind = 'noting' AND r.id >= ? AND json_extract(b.response, '$.nativeLog') = ?
+        ORDER BY r.id DESC LIMIT 1`).get(task.sessionId, firstRunId, nativeLog);
+      if (row) return Number(row.id);
       await new Promise((resolve4) => setTimeout(resolve4, 100));
     }
   }
@@ -44094,6 +44100,7 @@ var CcCoordinator = class {
     try {
       await this.following;
       result = await this.leave();
+      while (this.forkAccounting.size) await Promise.allSettled([...this.forkAccounting]);
       const owner = this.control?.executor.token;
       if (this.control) await this.control.close(true);
       try {
@@ -44623,6 +44630,7 @@ function runsFor(store, sessionId, limit) {
     phase: run.kind,
     status: run.outcome,
     cost: run.usage_cost,
+    partial: run.outcome === "cancelled" && run.usage_cost !== null,
     at: run.created_at
   }));
 }
