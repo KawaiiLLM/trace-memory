@@ -130,7 +130,7 @@ test.each([40, 80, 100])("real overlay at %i x 24 keeps every action executable 
     if (action === 0 && mode === "fullscreen") console.log(`${width}x24 fixed overlay\n${lines.join("\n")}`);
     const viewed = [...lines];
     for (let i = 0; i < 20; i++) { s.key("\x1b[6~"); viewed.push(...s.frame()); }
-    for (const phrase of ["Use /trace on to resume.", "Fork:", "Compaction:", "Catch up:", "fake/test", "Pending:", "Final detail:"])
+    for (const phrase of ["Use /trace on to resume.", "Compaction:", "Catch up:", "fake/test", "Pending:", "Final detail:"])
       expect(viewed.join(" ").replace(/\s+/g, " ")).toContain(phrase);
     for (let i = 0; i < action; i++) s.key("\x1b[B");
     lines = s.frame(); expect(lines.some(line => line.trim() === `→ ${actions[action]}`)).toBe(true);

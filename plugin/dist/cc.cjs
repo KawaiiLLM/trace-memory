@@ -8764,6 +8764,30 @@ async function runNoting(store, frozen, runAgent, config3, tools) {
   }
 }
 
+// src/core/api/cache-miss.ts
+var CACHE_MINIMUM = [
+  { api: "anthropic-messages", model: /haiku/i, tokens: 2048 },
+  { api: "anthropic-messages", tokens: 1024 },
+  { api: "openai-completions", tokens: 1024 },
+  { api: "openai-responses", tokens: 1024 },
+  { api: "openai-codex-responses", tokens: 1024 }
+];
+var cacheMinimum = (api, model) => CACHE_MINIMUM.find((entry) => entry.api === api && (!entry.model || entry.model.test(model)))?.tokens;
+var CACHE_MISS_READ_RATIO = 0.5;
+function cacheObservation(model, usage2, cacheEnabled, ratio = CACHE_MISS_READ_RATIO) {
+  if (!cacheEnabled) return;
+  const minimum = cacheMinimum(model.api, model.id);
+  if (minimum === void 0) return;
+  if (!usage2 || typeof usage2 !== "object") return;
+  const reported = usage2;
+  if (typeof reported.input !== "number" || typeof reported.cacheRead !== "number") return;
+  const cacheWrite = typeof reported.cacheWrite === "number" ? reported.cacheWrite : 0;
+  const total = reported.input + reported.cacheRead + cacheWrite;
+  if (!Number.isFinite(total) || total < minimum) return;
+  return { model: `${model.provider}/${model.id}`, api: model.api, minimum, ratio, input: reported.input, cacheRead: reported.cacheRead, cacheWrite, total, miss: reported.cacheRead < ratio * total };
+}
+var cacheMissWarning = (observation) => `Trace Memory: fork cache miss (${observation.cacheRead} of ${observation.total} input tokens read from cache).`;
+
 // src/core/project/directory.ts
 var import_node_child_process = require("node:child_process");
 var import_node_fs = require("node:fs");
@@ -42974,32 +42998,6 @@ var CcForkAuthority = class {
 var import_node_child_process3 = require("node:child_process");
 var import_node_fs9 = require("node:fs");
 var import_node_path7 = require("node:path");
-
-// src/core/api/cache-miss.ts
-var CACHE_MINIMUM = [
-  { api: "anthropic-messages", model: /haiku/i, tokens: 2048 },
-  { api: "anthropic-messages", tokens: 1024 },
-  { api: "openai-completions", tokens: 1024 },
-  { api: "openai-responses", tokens: 1024 },
-  { api: "openai-codex-responses", tokens: 1024 }
-];
-var cacheMinimum = (api, model) => CACHE_MINIMUM.find((entry) => entry.api === api && (!entry.model || entry.model.test(model)))?.tokens;
-var CACHE_MISS_READ_RATIO = 0.5;
-function cacheObservation(model, usage2, cacheEnabled, ratio = CACHE_MISS_READ_RATIO) {
-  if (!cacheEnabled) return;
-  const minimum = cacheMinimum(model.api, model.id);
-  if (minimum === void 0) return;
-  if (!usage2 || typeof usage2 !== "object") return;
-  const reported = usage2;
-  if (typeof reported.input !== "number" || typeof reported.cacheRead !== "number") return;
-  const cacheWrite = typeof reported.cacheWrite === "number" ? reported.cacheWrite : 0;
-  const total = reported.input + reported.cacheRead + cacheWrite;
-  if (!Number.isFinite(total) || total < minimum) return;
-  return { model: `${model.provider}/${model.id}`, api: model.api, minimum, ratio, input: reported.input, cacheRead: reported.cacheRead, cacheWrite, total, miss: reported.cacheRead < ratio * total };
-}
-var cacheMissWarning = (observation) => `Trace Memory: fork cache miss (${observation.cacheRead} of ${observation.total} input tokens read from cache).`;
-
-// src/hosts/cc/fork-accounting.ts
 var count2 = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : void 0;
 function transcriptResponses(text) {
   const latest = /* @__PURE__ */ new Map();

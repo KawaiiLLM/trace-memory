@@ -20,6 +20,7 @@ import { DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS } from
 import { freezeNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, tokensJoined, JoinedTokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
+export { cacheMinimum, cacheObservation, cacheMissWarning, type CacheObservation } from "./cache-miss.ts";
 export { tokens, tokensJoined, JoinedTokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, formatCost, ENTRY_VIEW_VERSION } from "../render/index.ts";
 export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.ts";
 // 20a: core owns the domain text of every memory consumer. A host places this text; it does not lay

@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync, realpathSync, statSync, writeFileSync, mkdirSync, renameSync, openSync, readSync, closeSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
-import { cacheMissWarning, cacheObservation } from "../../core/api/cache-miss.ts";
+import { cacheMissWarning, cacheObservation } from "../../core/api/index.ts";
 
 /** Ticket 108: what a CC fork run cost. Tokens come from the fork's `turn.complete`; the price comes from
  * the fork's own transcript (one usage per response, with the 1h/5m cache split the event lacks) priced

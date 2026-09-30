@@ -10,8 +10,7 @@ import { mkdirSync } from "node:fs";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
   type ExtensionAPI, type SessionEntry, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
 import { capturedSystemPrompt, capturedTools, hash, messageKey, serialize, stripCacheControl, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./fork.ts";
-import { toolRejected, type ToolDefinition } from "../../core/api/index.ts";
-import { cacheObservation, type CacheObservation } from "../../core/api/cache-miss.ts";
+import { cacheObservation, toolRejected, type CacheObservation, type ToolDefinition } from "../../core/api/index.ts";
 import { THINKING_LEVELS, type ThinkingLevel } from "../phase-settings.ts";
 
 export { THINKING_LEVELS, type ThinkingLevel } from "../phase-settings.ts";
