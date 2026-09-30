@@ -9,7 +9,8 @@ import { assertOperatorBinding, coreHostOf, readBinding, sessionEnabled, validat
 const localMidnight = () => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(); };
 import { ccContextEvidence, type CcContextSnapshot } from "./menu-context.ts";
 
-export interface CcMenuRun { id: number; phase: string; status: string; cost: number; at: string }
+/** `cost` is null when the run's cost is unknown (108); the pane says so instead of showing $0. */
+export interface CcMenuRun { id: number; phase: string; status: string; cost: number | null; at: string }
 /** Match Pi's one-line catchup progress, from the executor's existing in-memory drain. */
 export function ccCatchupNotice(status: CcCatchupStatus | null): string | null {
   if (!status) return null;
@@ -34,7 +35,7 @@ function runsFor(store: Store, sessionId: number, limit: number): CcMenuRun[] {
   return (store.db.prepare(`SELECT id, kind, outcome, usage_cost, created_at FROM runs
     WHERE session_id = ? ORDER BY id DESC LIMIT ?`).all(sessionId, limit) as
     { id: number; kind: string; outcome: string; usage_cost: number | null; created_at: string }[]).map(run => ({
-    id: run.id, phase: run.kind, status: run.outcome, cost: run.usage_cost ?? 0, at: run.created_at,
+    id: run.id, phase: run.kind, status: run.outcome, cost: run.usage_cost, at: run.created_at,
   }));
 }
 
@@ -108,6 +109,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     const progress = ccCatchupNotice(catchup);
     if (progress) notices.push(progress);
     if (binding.clearedFrom || binding.clearedInto) notices.push("Shared identity");
+    const today = memory.spendSince(localMidnight());
     const data: TraceMenuInput = {
       header: { session: session ? `S${session.id}` : "unbound", project: project?.name ?? "unavailable", enabled,
         explicit: binding.enrollment.choice !== null },
@@ -115,13 +117,13 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
       pending: { noting: pending("noting"), dreaming: {
         pending: dreaming.pending ?? { tokens: null, trigger: null },
         knowledge: dreaming.knowledge ? { tokens: dreaming.knowledge.tokens, trigger: dreaming.knowledge.window } : { tokens: null, trigger: null } } },
-      spend: { session: spend?.cost ?? 0,
+      spend: { session: spend?.cost ?? 0, sessionUnknown: spend?.unknown ?? 0,
         noting: { runs: spend?.runs.noting ?? 0, cost: spend?.costs.noting ?? 0 },
         consolidation: { runs: spend?.runs.consolidation ?? 0, cost: spend?.costs.consolidation ?? 0 },
         dreaming: { runs: spend?.runs.dreaming ?? 0, cost: spend?.costs.dreaming ?? 0 },
-        today: memory.spendSince(localMidnight()) },
+        today: today.cost, todayUnknown: today.unknown },
       notices,
-      actions: { enabled, retryForkAvailable: false },
+      actions: { enabled },
     };
     // 102: a compaction's carrier, framed (Trace Memory's compaction) or bare (the supplement), is attributed by its compaction's recorded delivery (97).
     const recorded = store.db.prepare(`SELECT 1 FROM knowledge_deliveries WHERE owner = ? AND follows IS NOT NULL

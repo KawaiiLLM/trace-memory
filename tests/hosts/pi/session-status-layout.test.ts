@@ -20,11 +20,10 @@ const { createChatViewport } = await import(fileURLToPath(new URL("modes/interac
 const { renderLayoutFrame } = await import(fileURLToPath(new URL("layout.js", tui)));
 export const recovery = [
   "Automatic off: noting, backlog head 1, 3 failures; last R3: incomplete submission. Use /trace on to resume.",
-  "Fork: suppressed since 2026-09-11 (cache miss); Retry fork in the /trace menu",
   "Compaction: cancelled; original context retained.",
   "Catch up: stopped; pending evidence retained.",
 ];
-export const actions = ["On", "Runs", "Project", "Retry fork"];
+export const actions = ["On", "Runs", "Project", "Settings"];
 const body = (width: number) => statusBody(["Current session", ...contextMap({ tokens: 44500, contextWindow: 1000000, percent: 4.45 }, "fake/test", width),
   "Session: S1", "Enrollment: Disabled (default)", "Project: example (mark)", "Pending: / trigger — estimated tokens",
   "Noting: [##########] 12,000 / 10,000 (120.0%)", "Consolidation: [..........] 0 / 5,000 (0.0%)",
@@ -46,7 +45,7 @@ test.each([40, 80, 100])("legacy native title reproduces fullscreen clipping at 
   try {
     const frame = dockFrame(selector, width, 24);
     console.log(`${width}x24 native selector\n${frame.lines.join("\n")}`);
-    expect(frame.lines.map(stripTerminalSequences).some((s: string) => s.trim() === "Retry fork")).toBe(false);
+    expect(frame.lines.map(stripTerminalSequences).some((s: string) => s.trim() === "Settings")).toBe(false);
   } finally { selector.dispose(); }
 });
 
@@ -178,10 +177,10 @@ test.each([40, 80, 100])("overlay remains independent of the real minimum editor
   const selector = new ExtensionSelectorComponent(body(width - 2), actions, () => {}, () => {});
   try {
     const legacy = dockFrame(selector, width, 24, true).lines.map(stripTerminalSequences);
-    expect(legacy.some((line: string) => line.trim() === "Retry fork")).toBe(false);
+    expect(legacy.some((line: string) => line.trim() === "Settings")).toBe(false);
     const s = screenHarness(width, 24, "fullscreen", true);
     const result = showSessionPanel(s.ctx, overview, actions);
-    expect(s.frame().some(line => line.trim() === "Retry fork")).toBe(true);
+    expect(s.frame().some(line => line.trim() === "Settings")).toBe(true);
     expect(s.frame().join(" ")).toContain("Automatic off:");
     s.key("\x1b"); expect(await result).toBeUndefined();
   } finally { selector.dispose(); }
@@ -216,9 +215,9 @@ test("injected remapped keys and legacy j/k navigation are honored", () => {
 // Legacy Ctrl+J is the same byte as LF; CSI u also represents Ctrl+J unambiguously.
 const oldConfirmKeys = ["\r", "\n", "\x1b[106;5u"];
 
-test.each([{ binding: "ctrl+y" }, { binding: [] }])("confirm override $binding rejects old keys for Off and Retry fork", ({ binding }) => {
+test.each([{ binding: "ctrl+y" }, { binding: [] }])("confirm override $binding rejects old keys for Off and Settings", ({ binding }) => {
   const kb = new KeybindingsManager({ "tui.select.confirm": binding });
-  for (const action of ["Off", "Retry fork"]) {
+  for (const action of ["Off", "Settings"]) {
     const done = vi.fn();
     const panel = new SessionPanel(overview, [action], () => 24, { fg: (_color, text) => text, getFgAnsi: () => "", getColorMode: () => "truecolor" }, kb, done, () => {});
     const help = panel.render(80).join("\n");
@@ -260,31 +259,6 @@ test("default confirmation follows Pi manager for legacy CR/LF and encoded Ctrl+
     panel.handleInput(key); expect(done).not.toHaveBeenCalled();
     panel.handleInput("\x1b"); expect(done.mock.calls).toEqual([[undefined]]);
   }
-});
-
-test.each([{ binding: "ctrl+y" }, { binding: [] }])("Retry fork has no side effect from old confirmation keys with override $binding", async ({ binding }) => {
-  const h = host();
-  try {
-    await h.turn(); h.ctx.mode = "tui"; h.ctx.hasUI = true;
-    h.memory.store.suppressFork(1, "2026-09-11T00:00:00Z");
-    const before = h.memory.store.forkSuppression(1);
-    const s = screenHarness(40, 24); h.ctx.ui.custom = s.ctx.ui.custom;
-    s.kb.setUserBindings({ "tui.select.confirm": binding });
-    const command = h.commands.get("trace").handler("", h.ctx);
-    await new Promise(resolve => setImmediate(resolve));
-    for (let i = 0; i < 6; i++) s.key("j");
-    expect(s.frame().some(line => line.trim() === "→ Retry fork")).toBe(true);
-    for (const key of oldConfirmKeys) {
-      s.key(key); await new Promise(resolve => setImmediate(resolve));
-      expect(h.memory.store.forkSuppression(1)).toEqual(before);
-    }
-    s.key("\x1b[6~"); s.frame(); s.key("\x1b[5~");
-    expect(s.frame().some(line => line.trim() === "→ Retry fork")).toBe(true);
-    s.key("\x19"); await new Promise(resolve => setImmediate(resolve));
-    expect(h.memory.store.forkSuppression(1)).toEqual(binding === "ctrl+y" ? null : before);
-    s.key("\x1b"); await command;
-    expect(h.requests).toEqual([]);
-  } finally { await h.dispose(); }
 });
 
 test("actual TUI command opens custom panel, reflow never scans, and Escape writes nothing", async () => {
@@ -367,7 +341,7 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
   } finally { await h.dispose(); }
 });
 
-test("TUI keyboard actions retain confirmations, inputs and conditional Retry fork", async () => {
+test("TUI keyboard actions retain confirmations and inputs", async () => {
   const h = host();
   try {
     await h.turn(); h.ctx.mode = "tui"; h.ctx.hasUI = true;
@@ -385,13 +359,7 @@ test("TUI keyboard actions retain confirmations, inputs and conditional Retry fo
     await choose("Turn on", [true]); expect(h.memory.store.enabled(1)).toBe(true);
     await choose("Runs…", ["3"]); expect(h.notices.at(-1)).toContain("no runs yet");
     await choose("Project…", ["overlay-project"]); expect(h.notices.at(-1)).toContain("project: overlay-project (mark)");
-    h.memory.store.suppressFork(1, "2026-09-11T00:00:00Z");
-    await choose("Retry fork"); expect(h.memory.store.forkSuppression(1)).toBeNull();
     expect(h.memory.store.enabled(1)).toBe(true); expect(h.requests).toEqual([]);
-    const command = h.commands.get("trace").handler("", h.ctx);
-    await new Promise(resolve => setImmediate(resolve));
-    expect(s.frame().some(line => line.trim() === "Retry fork")).toBe(false);
-    s.key("\x1b"); await command;
   } finally { await h.dispose(); }
 });
 
@@ -446,7 +414,6 @@ test.each([20, 40, 79, 80, 100, 160])("long project and actual recovery remain r
       const run = store.recordRun({ kind: "noting", sessionId: 1, executionId: execution, outcome: "failure", createdAt: "now" });
       store.settleExecution(execution, "failure", run.id, "incomplete submission");
     }
-    store.suppressFork(1, "2026-09-11T00:00:00Z");
     h.ctx.mode = "tui"; h.ctx.hasUI = true;
     const s = screenHarness(width, 24); h.ctx.ui.custom = s.ctx.ui.custom;
     const command = h.commands.get("trace").handler("", h.ctx);
@@ -454,12 +421,12 @@ test.each([20, 40, 79, 80, 100, 160])("long project and actual recovery remain r
     const seen: string[] = [];
     for (let i = 0; i < 20; i++) {
       const frame = s.frame(); seen.push(...frame);
-      for (const label of ["Turn on", "Catch up", "Stop", "Project…", "Runs…", "Settings…", "Retry fork"])
+      for (const label of ["Turn on", "Catch up", "Stop", "Project…", "Runs…", "Settings…"])
         expect(frame.some(line => line.trim().replace(/^→ /, "") === label)).toBe(true);
       s.key("\x1b[6~");
     }
     const text = seen.join(" ").replace(/\s+/g, " ");
-    for (const phrase of ["Automatic off:", "Turn on to resume.", "Retry fork", "pending", "knowledge", "END"])
+    for (const phrase of ["Automatic off:", "Turn on to resume.", "pending", "knowledge", "END"])
       expect(text).toContain(phrase);
     expect(text).toContain("long-projec");
     expect(text.replace(/\s+/g, "")).toContain("PROVIDER-END");

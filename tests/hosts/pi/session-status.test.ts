@@ -266,7 +266,6 @@ test.each([false, true])("enrollment notices share only lightweight session word
   const h = setup();
   if (allocated) {
     await h.turn();
-    h.memory.store.suppressFork(1, "2026-09-11T00:00:00Z");
   } else await h.emit("session_start");
   const census = vi.spyOn(composition, "contextComposition");
   const command = (args: string) => h.commands.get("trace").handler(args, h.ctx);
@@ -287,8 +286,7 @@ test.each([false, true])("enrollment notices share only lightweight session word
       : "Processing and future injection are paused. Stored memory and already-injected text remain.");
     expect(notice).toContain(`Enrollment: ${value === "on" ? "Enabled" : "Disabled"} (explicit choice)`);
     expect(notice).toContain(allocated ? "Session: S1" : "Session: None (no assistant reply)");
-    if (allocated) expect(notice).toContain("Fork: suppressed since 2026-09-11");
-    else expect(notice).toContain("Cost: N/A (no session)");
+    if (!allocated) expect(notice).toContain("Cost: N/A (no session)");
   }
   expect(coreStatus).not.toHaveBeenCalled();
   expect(h.memory.store.listTurns(1)).toHaveLength(allocated ? 1 : 0);
@@ -328,7 +326,6 @@ test("headless and UI read the same composition once per opening without writes 
   const h = setup(); await h.turn();
   h.ctx.getSystemPrompt = () => "x".repeat(408);
   h.setContextUsage({ tokens: 1, contextWindow: 1000, percent: 0.1 });
-  h.memory.store.suppressFork(1, "2026-09-11T00:00:00Z");
   const before = changes(h), entries = structuredClone(h.entries), footer = h.statuses.get("trace-memory");
   const usage = vi.spyOn(h.ctx, "getContextUsage");
   const census = vi.spyOn(h.ctx.sessionManager, "buildContextEntries");
@@ -348,7 +345,6 @@ test("headless and UI read the same composition once per opening without writes 
     expect(text).toContain("Free"); expect(text).toContain("999");
     expect(text).not.toContain("Difference");
     expect(text).not.toContain("?".repeat(20));
-    expect(text).toContain("Fork suppressed");
   }
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
   expect(h.statuses.get("trace-memory")).toBe(footer); expect(h.requests).toEqual([]);
@@ -380,7 +376,7 @@ test.each([100, 40])("exact capacity and trigger output at %i columns", width =>
   expect(statusBody(lines, width)).toMatchSnapshot();
 });
 
-test("automatic-off reason and fork reset remain actionable and opening is inert", async () => {
+test("automatic-off reason remains actionable and opening is inert", async () => {
   const h = setup(); await h.turn();
   const s = h.memory.store;
   for (let i = 0; i < 3; i++) {
@@ -388,14 +384,12 @@ test("automatic-off reason and fork reset remain actionable and opening is inert
     const run = s.recordRun({ kind: "noting", sessionId: 1, executionId: execution, outcome: "failure", createdAt: "now" });
     s.settleExecution(execution, "failure", run.id, "incomplete submission");
   }
-  s.suppressFork(1, "2026-09-11T00:00:00Z");
   const before = changes(h), title = await open(h);
   expect(title).toContain("Automatic off: noting"); expect(title).toContain("incomplete submission");
-  expect(title.replace(/\s+/g, " ")).toContain("Turn on to resume."); expect(title).toContain("Fork suppressed since 2026-09-11");
-  expect(h.dialogs.at(-1)!.options).toEqual(["Turn on", "Catch up", "Stop", "Project…", "Runs…", "Settings…", "Retry fork"]);
+  expect(title.replace(/\s+/g, " ")).toContain("Turn on to resume.");
+  expect(h.dialogs.at(-1)!.options).toEqual(["Turn on", "Catch up", "Stop", "Project…", "Runs…", "Settings…"]);
   expect(changes(h)).toBe(before);
-  h.answers.push("Retry fork"); await h.commands.get("trace").handler("", h.ctx);
-  expect(s.forkSuppression(1)).toBeNull(); expect(s.enabled(1)).toBe(false); expect(h.requests).toEqual([]);
+  expect(s.enabled(1)).toBe(false); expect(h.requests).toEqual([]);
 });
 
 test("panel queries occur only on open; failure and shared-identity recovery remain visible", async () => {

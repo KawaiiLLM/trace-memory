@@ -51,6 +51,18 @@ describe("CC native Noter authority", () => {
     expect(await uncertain).not.toHaveProperty("refused");
   });
 
+  it("records the fork's own transcript on every settlement that knows its agent (108)", async () => {
+    const transcriptOf = (agent: string) => `/native/subagents/agent-${agent}.jsonl`;
+    const authority = new CcForkAuthority(undefined, transcriptOf);
+    const done = authority.begin(task()); authority.register("a1");
+    await authority.complete("a1", { outcome: "success", output: "ok", usage: { input: 1 } });
+    expect(await done).toMatchObject({ outcome: "success", usage: { input: 1 }, nativeLog: "/native/subagents/agent-a1.jsonl" });
+    const cancelled = authority.begin(task()); authority.register("a2"); authority.cancelAgent("a2");
+    expect(await cancelled).toMatchObject({ outcome: "cancelled", nativeLog: "/native/subagents/agent-a2.jsonl" });
+    const unstarted = authority.begin(task()); authority.cancel();
+    expect(await unstarted).not.toHaveProperty("nativeLog"); // no agent, no transcript
+  });
+
   it("cancels only the registered native agent on abort, never on a normal terminal", async () => {
     const stopped: string[] = [], authority = new CcForkAuthority(agent => stopped.push(agent));
     const unstarted = authority.begin(task()); authority.cancel(); await unstarted;

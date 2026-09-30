@@ -20,7 +20,7 @@ import { DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS } from
 import { freezeNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, tokensJoined, JoinedTokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
-export { tokens, tokensJoined, JoinedTokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
+export { tokens, tokensJoined, JoinedTokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, formatCost, ENTRY_VIEW_VERSION } from "../render/index.ts";
 export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.ts";
 // 20a: core owns the domain text of every memory consumer. A host places this text; it does not lay
 // out knowledge, facts or Raw itself.
@@ -307,7 +307,7 @@ export interface TaskOptions {
   /** Persisted source-entry identity at host admission; later same-Turn entries must not move it. */
   triggerEntryId?: number;
   /** The mode the host will actually run this task in when it differs from the requested `mode`
-   * (a requested fork resolved to subagent by the host's cache-miss latch). Capacity and material
+   * (a requested fork resolved to subagent by the host's admission). Capacity and material
    * follow it; the requested mode is still recorded (review 2026-09-08). */
   effectiveMode?: "fork" | "subagent";
   /** 26b: the runtime thinking level the host froze for this task at admission, beside its model.
@@ -455,9 +455,12 @@ export interface TraceMemory {
     knowledge: number; changedKnowledge: number };
   /** Model spend of one session's runs: run counts and cost by kind, token totals and total cost (51: Current session shows this composition). */
   spend(sessionId: number): { runs: { noting: number; consolidation: number; dreaming: number; manual: number }; costs: { noting: number; consolidation: number; dreaming: number; manual: number };
-    input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
-  /** Cost of every session's runs created at or after a UTC instant (51: the footer's figure for today, from the host's local midnight). */
-  spendSince(since: string): number;
+    input: number; output: number; cacheRead: number; cacheWrite: number; cost: number;
+    /** 108: runs whose cost is unknown; `cost` does not include them, and a display marks them instead of counting them as free. */
+    unknown: number };
+  /** Cost of every session's runs created at or after a UTC instant (51: the footer's figure for today, from the host's local midnight),
+   * and how many runs of that span have an unknown cost (108). */
+  spendSince(since: string): { cost: number; unknown: number };
 }
 
 /** 79 item 2 (Pi review of 5ee34b5): an ordinal/range selection (`#E2`, `#E2..E7`) is decidable from

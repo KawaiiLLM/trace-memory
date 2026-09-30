@@ -65,7 +65,6 @@ test("32c replaces 26a: three incomplete runs with a growing tail disable memory
     await tick(h); await tick(h);
     expect(notingRuns(h)).toHaveLength(3);
     expect(disabled(h)).toHaveLength(1);
-    expect(h.memory.store.forkSuppression(1)).toBeNull();
   } finally { await h.dispose(); }
 }, 20000);
 

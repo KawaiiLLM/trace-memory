@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, watch, type FSWatcher } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Store } from "../../core/store/index.ts";
 import { deliveredView, selectNotingMode, type NotingAgentInput, type RunAgentResult, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
@@ -15,6 +15,7 @@ import { ccDeliveryHead } from "./injection.ts";
 import { assignedNativeSession, currentNativeProcess, nativeSessionRecords, processStartedAt } from "./native-session.ts";
 import { CcTaskScheduler, type CcCatchupStatus } from "./scheduler.ts";
 import { CcForkAuthority } from "./fork-authority.ts";
+import { accountForkTranscript, eventTokens, forkTranscriptPath, readPriceCatalog, runningExecutable, type CcPriceCatalog, type CcTokens } from "./fork-accounting.ts";
 import { readCcStatus, removeCcStatus, writeCcStatus, type CcStatusFile } from "./status.ts";
 
 /** Claude Code's `turn.complete` reasons, for the main turn and a fork alike. */
@@ -125,7 +126,14 @@ export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: Cc
 }
 
 export class CcCoordinator {
-  private readonly forkAuthority = new CcForkAuthority(agentId => this.control?.stopFork(agentId));
+  private readonly forkAuthority = new CcForkAuthority(agentId => this.control?.stopFork(agentId), agentId => {
+    const binding = readBinding(this.config, this.nativeSessionId);
+    return binding ? forkTranscriptPath(binding.transcriptPath, agentId) : undefined;
+  });
+  /** 108: each settled fork's accounting (its price, partial usage and cache-miss warnings), keyed by the
+   * fork transcript path and taken once by the Hook, which shows the warnings. */
+  private readonly forkAccounts = new Map<string, Promise<string[]>>();
+  private priceCatalog: CcPriceCatalog | undefined;
   private forkLaunch: { turnId: string; resolve: (directive: { prompt: string; turnId: string } | null) => void; signal: AbortSignal } | null = null;
   private activeForkTurnId: string | null = null;
   private importer: CcImporter | null = null;
@@ -218,7 +226,7 @@ export class CcCoordinator {
       if (binding.coreSessionId !== null && !this.importer) return;
       const enabled = sessionEnabled(binding, this.importer?.memory.store ?? { enabled: () => false });
       const running = new Set(this.scheduler?.running() ?? []);
-      let counts: CcStatusFile["counts"], cost: number | undefined;
+      let counts: CcStatusFile["counts"], cost: number | undefined, costUnknown = 0;
       const reconcile = this.lastReconcile;
       // Off counts nothing (24a, as Pi's footer): no path, Raw or run reads for a line that shows `○ off`.
       if (enabled && this.importer && reconcile && reconcile.coreSessionId !== null) {
@@ -226,13 +234,13 @@ export class CcCoordinator {
         catch (error) { this.diagnostic(`status counts unavailable (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
       }
       if (enabled && this.importer) {
-        try { cost = this.importer.memory.spendSince(localMidnight()); }
+        try { ({ cost, unknown: costUnknown } = this.importer.memory.spendSince(localMidnight())); }
         catch (error) { this.diagnostic(`status cost unavailable (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
       }
       const status: CcStatusFile = { version: 1, nativeSessionId: this.nativeSessionId, executorId: binding.executor.executorId,
         pid: binding.executor.pid, token: binding.executor.token, updatedAt: new Date().toISOString(), enabled,
         running: { noting: running.has("noting"), dreaming: running.has("dreaming") },
-        ...(counts ? { counts } : {}), ...(cost !== undefined ? { cost } : {}) };
+        ...(counts ? { counts } : {}), ...(cost !== undefined ? { cost, ...(costUnknown ? { costUnknown } : {}) } : {}) };
       writeCcStatus(this.config.stateDir, status);
     } catch (error) { this.diagnostic(`status publish failed (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
   }
@@ -289,10 +297,21 @@ export class CcCoordinator {
         },
         forkCall: (agentId, callId, name) => this.forkAuthority.call(agentId, callId, name),
         forkCheck: (callId, name) => this.forkAuthority.allows(callId, name),
-        forkTerminal: async (agentId, reason, answer) => {
+        forkAccounted: agentId => {
+          const binding = readBinding(this.config, this.nativeSessionId);
+          const key = binding ? forkTranscriptPath(binding.transcriptPath, agentId) : undefined;
+          const account = key ? this.forkAccounts.get(key) : undefined;
+          if (key) this.forkAccounts.delete(key);
+          return account ?? Promise.resolve([]);
+        },
+        forkTerminal: async (agentId, reason, answer, usage) => {
           if (!CC_TURN_END_REASONS.includes(reason)) throw new Error(`unsupported CC fork completion reason ${reason}`);
+          // 108: the tokens are recorded at settlement from the event, which sums the fork's own responses in
+          // memory; the price follows from the transcript once it has caught up (accountFork).
+          const tokens = eventTokens(usage);
           const settled = await this.forkAuthority.complete(agentId, { outcome: reason === "answer" ? "success" : reason === "aborted" ? "cancelled" : "failure",
-            output: answer, mode: "fork", audit: { available: false, reason: "CC native fork does not expose the exact provider request body" } });
+            output: answer, mode: "fork", audit: { available: false, reason: "CC native fork does not expose the exact provider request body" },
+            ...(tokens ? { usage: tokens } : {}) });
           if (settled) this.activeForkTurnId = null;
           return settled;
         },
@@ -476,13 +495,60 @@ export class CcCoordinator {
   private runFork(task: NotingAgentInput): Promise<RunAgentResult> {
     const launch = this.forkLaunch;
     if (!launch || launch.signal.aborted) return Promise.resolve({ outcome: "cancelled", output: "CC fork checkpoint is no longer live" });
-    const suppression = this.importer?.memory.store.forkSuppression(task.sessionId);
-    if (suppression) return Promise.resolve({ outcome: "failure", output: "CC fork suppressed before launch",
-      refused: { reason: `cache miss latch: fork suppressed for this session since ${suppression.at}` } });
     const result = this.forkAuthority.begin(task);
+    void result.then(settled => { if (settled.nativeLog) this.forkAccounts.set(settled.nativeLog, this.accountFork(task, settled)); });
     this.activeForkTurnId = launch.turnId;
     launch.resolve({ prompt: task.text, turnId: launch.turnId });
     return result;
+  }
+
+  /** 108: after a fork settled, off the write fence and the physical stop, read its transcript until it holds
+   * exactly the recorded tokens (at most ten seconds), price each response with Claude Code's own catalog and
+   * amend the run. A fork stopped before it completed has no recorded tokens: whatever its transcript holds is
+   * recorded as partial usage. Unpriceable, undercounted or missing leaves the cost unknown and says why in
+   * the run's problems. Returns the cache-miss warnings, one per missed response. */
+  private async accountFork(task: NotingAgentInput, settled: RunAgentResult): Promise<string[]> {
+    const path = settled.nativeLog!;
+    try {
+      const { patch, warnings } = await accountForkTranscript(path, settled.usage ? settled.usage as CcTokens : undefined,
+        () => this.catalog(), { stop: () => this.closed || this.closing });
+      if (patch) {
+        const runId = await this.findForkRun(task, path);
+        const store = this.importer?.memory.store;
+        if (runId !== undefined && store && !store.closed) store.amendRunUsage(runId, patch);
+        else this.diagnostic(`fork accounting found no run for ${path}`);
+        this.publish("fork accounted");
+      }
+      return warnings;
+    } catch (error) {
+      this.diagnostic(`fork accounting failed for ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+  }
+
+  /** The run core recorded for the fork that settled, found by the transcript path it carries. Core records
+   * it right after the settlement, so a few short retries are enough. */
+  private async findForkRun(task: NotingAgentInput, nativeLog: string): Promise<number | undefined> {
+    for (let attempt = 0; attempt < 100 && !this.closed; attempt++) {
+      const store = this.importer?.memory.store;
+      if (!store || store.closed) return;
+      const rows = store.db.prepare(`SELECT r.id, b.response FROM runs r JOIN run_bodies b ON b.run_id = r.id
+        WHERE r.session_id = ? AND r.kind = 'noting' ORDER BY r.id DESC LIMIT 5`).all(task.sessionId) as { id: number; response: string | null }[];
+      for (const row of rows) { try { if (JSON.parse(row.response ?? "{}").nativeLog === nativeLog) return Number(row.id); } catch { /* not this row */ } }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  /** Claude Code's price list from the running Claude Code's own executable (found through the native
+   * process the binding records), cached in the state directory per executable build. */
+  private catalog(): CcPriceCatalog | { unknown: string } {
+    if (this.priceCatalog) return this.priceCatalog;
+    const pid = readBinding(this.config, this.nativeSessionId)?.nativeProcess?.pid;
+    const executable = pid === undefined ? undefined : runningExecutable(pid);
+    if (!executable) return { unknown: "the running Claude Code executable cannot be found" };
+    const catalog = readPriceCatalog(executable, join(this.config.stateDir, "cc-price-catalog.json"));
+    if (!("unknown" in catalog)) this.priceCatalog = catalog;
+    return catalog;
   }
 
   private forkOption(target: TaskTarget, result: CcReconcileResult, observation: CcForkObservation | undefined):
@@ -513,9 +579,7 @@ export class CcCoordinator {
     const delivered = deliveredView(memory.store.deliveredKnowledge(head.node));
     const delta = memory.injection(target, delivered);
     const visible = { ...delivered, raw: new Map(observation.raw.map(id => [id, "source" as const])) };
-    const suppression = memory.store.forkSuppression(target.sessionId);
     const decision = selectNotingMode({ requested: "fork",
-      ...(suppression ? { suppression: `cache miss latch: fork suppressed for this session since ${suppression.at}` } : {}),
       publicationPending: !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length),
       visible, pending: () => memory.pendingEntries(target.sessionId, target.branch, target.headTurnId),
       batch: () => batch });

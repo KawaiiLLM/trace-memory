@@ -9,9 +9,8 @@ const select = (options: Partial<Parameters<typeof selectNotingMode>[0]> = {}) =
     pending: () => [entry(1)], batch: () => [entry(1)], ...options });
 
 describe("shared Noter execution mode", () => {
-  it("preserves explicit fresh mode and refuses suppression or unlanded exact-node publication", () => {
+  it("preserves explicit fresh mode and refuses unlanded exact-node publication", () => {
     expect(select({ requested: "subagent" }).effectiveMode).toBe("subagent");
-    expect(select({ suppression: "fork disabled" }).fallbackReason).toBe("fork disabled");
     expect(select({ publicationPending: true }).fallbackReason).toContain("Knowledge publication");
   });
   it("requires proven source or bounded-carrier coverage of the frozen oldest batch", () => {

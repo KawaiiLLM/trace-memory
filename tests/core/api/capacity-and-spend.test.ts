@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { sourceSeededMemory, tokens, toolDefinitions, type NotingAgentInput } from "../../source-fixture.ts";
 import { countRunBodies } from "../../perf/fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
+import { renderRun } from "../../../src/core/render/index.ts";
 
 /** 77: every real writer stores `response` and its five usage columns in one statement (Store's
  * private `usageColumns` helper), so a raw-SQL amendment that only sets `response` -- exactly what
@@ -23,7 +24,7 @@ function writeRunResponse(store: Store, runId: number, response: unknown): void 
   const columns = usage && typeof usage === "object" ? [
     (usage as { input?: number }).input ?? 0, (usage as { output?: number }).output ?? 0,
     (usage as { cacheRead?: number }).cacheRead ?? 0, (usage as { cacheWrite?: number }).cacheWrite ?? 0,
-    (usage as { cost?: { total?: number } }).cost?.total ?? 0,
+    (usage as { cost?: { total?: number } }).cost?.total ?? null,
   ] : [null, null, null, null, null];
   // 79: `response` moved to `run_bodies`; the usage columns stay on `runs`.
   store.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(JSON.stringify(response), runId);
@@ -149,7 +150,7 @@ test("22d: spend totals come from the recorded usage without loading a run's req
   write(runId, { output: "x".repeat(200_000), usage, problems: [] });
   // The pre-change implementation, computed here from the bodies: the same totals, read the slow way.
   const reference = { runs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 }, costs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 },
-    input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unknown: 0 };
   for (const run of memory.store.listRuns(sessionId)) {
     reference.runs[run.kind]++;
     let recorded: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } | null = null;
@@ -227,7 +228,7 @@ test("77: listRunUsage never selects response or request, served by its covering
   // to dodge anymore, so SCHEMA_SQL's plain idx_runs_session answers the same lookup on a tiny row.
   expect(statements[0]).toMatch(/INDEXED BY idx_runs_session\b/);
   expect(usage.map(u => u.usage === null)).toEqual([false, true, true, true, false]);
-  expect(usage[4]!.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }); // the string usage: all zero, not reparsed
+  expect(usage[4]!.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null }); // the string usage: zero tokens, not reparsed; no cost.total, so the cost is unknown
 });
 
 test("77: listRunUsage's persisted columns match 71's extraction SQL for every scalar shape, booleans included", async () => {
@@ -254,8 +255,8 @@ test("77: listRunUsage's persisted columns match 71's extraction SQL for every s
       CASE WHEN json_valid(b.response) THEN json_extract(b.response, '$.usage.cost.total') END cost
     FROM runs r JOIN run_bodies b ON b.run_id = r.id WHERE r.session_id = ? ORDER BY r.id`).all(sessionId) as Record<string, unknown>[];
   const count = (value: unknown) => (typeof value === "number" ? value : 0);
-  const expected = legacy.map(row => ({ kind: row.kind, usage: !row.recorded || row.recorded === "null" ? null
-    : { input: count(row.input), output: count(row.output), cacheRead: count(row.cacheRead), cacheWrite: count(row.cacheWrite), cost: count(row.cost) } }));
+  const expected = legacy.map(row => ({ kind: row.kind, costUnknown: !(!row.recorded || row.recorded === "null") && typeof row.cost !== "number", usage: !row.recorded || row.recorded === "null" ? null
+    : { input: count(row.input), output: count(row.output), cacheRead: count(row.cacheRead), cacheWrite: count(row.cacheWrite), cost: typeof row.cost === "number" ? row.cost : null } }));
   expect(expected.some(value => value.usage?.input === 1 && value.usage.cost === 1)).toBe(true); // the boolean case is really exercised
   expect(memory.store.listRunUsage(sessionId)).toEqual(expected);
 });
@@ -279,5 +280,40 @@ test("71: spendSince keeps an inclusive UTC midnight boundary", async () => {
     response: JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 2 } } }) });
   memory.store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: "2026-09-09T00:00:01.000Z",
     response: JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 4 } } }) });
-  expect(memory.spendSince("2026-09-09T00:00:00.000Z")).toBe(6); // midnight itself counts; the run just before it does not
+  expect(memory.spendSince("2026-09-09T00:00:00.000Z").cost).toBe(6); // midnight itself counts; the run just before it does not
+});
+
+// Ticket 108: tokens without a price (a CC fork's cost until its transcript is read, or when it cannot be
+// priced) are stored with a null cost. Unknown is never a zero: it is left out of every total and marked.
+test("108: an unknown cost is stored as null, marked in the totals and the daily figure, and rendered as unknown", () => {
+  const store = memory.store, known = { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } };
+  const record = (response: unknown, outcome: "success" | "cancelled" = "success") =>
+    store.recordRun({ kind: "noting", sessionId, branch: "main", outcome, createdAt: time, response: JSON.stringify(response) }).id;
+  record({ output: "priced", usage: known });
+  const tokensOnly = record({ output: "unpriced", usage: { input: 7, output: 1, cacheRead: 3, cacheWrite: 4 } });
+  const cancelled = record({ output: "stopped", usage: null, usageStatus: "unknown" }, "cancelled");
+  record({ output: "failed before any request" }); // no usage observation, not cancelled: nothing to know
+  const rows = store.db.prepare("SELECT id, usage_input, usage_cost FROM runs ORDER BY id").all() as { id: number; usage_input: number | null; usage_cost: number | null }[];
+  expect(rows.map(r => [r.usage_input, r.usage_cost])).toEqual([[10, 0.5], [7, null], [null, null], [null, null]]); // null, never 0
+  const totals = memory.spend(sessionId);
+  expect(totals).toMatchObject({ input: 17, cost: 0.5, unknown: 2, runs: { noting: 4 } }); // the tokens count, the price is left out and marked
+  expect(memory.spendSince(time)).toEqual({ cost: 0.5, unknown: 2 });
+  expect(store.listRunUsage(sessionId).map(r => r.costUnknown)).toEqual([false, true, true, false]);
+  expect(renderRun(store.getRun(tokensOnly)!, [], [])).toContain("cost unknown");
+  expect(renderRun(store.getRun(tokensOnly)!, [], [])).not.toContain("$0.0000");
+  expect(renderRun(store.getRun(cancelled)!, [], [])).toContain("cost unknown");
+  expect(memory.status(sessionId)).toContain("$0.5000 + 2 runs of unknown cost");
+});
+
+test("108: amending a recorded run's usage prices it in place: columns follow, problems accumulate, partial is marked", () => {
+  const store = memory.store;
+  const id = store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "cancelled", createdAt: time,
+    response: JSON.stringify({ output: "stopped", usage: null, usageStatus: "unknown", problems: ["stopped"] }) }).id;
+  expect(memory.spend(sessionId).unknown).toBe(1);
+  store.amendRunUsage(id, { usage: { input: 5, output: 1, cacheRead: 2, cacheWrite: 3, cost: { total: 0.25 } }, usageStatus: "partial", problem: "CC fork cost unknown: example",
+    cacheMiss: { miss: true } });
+  const run = store.getRun(id)!, response = JSON.parse(run.response!);
+  expect(response).toMatchObject({ usage: { input: 5, cost: { total: 0.25 } }, usageStatus: "partial", problems: ["stopped", "CC fork cost unknown: example"], verification: { cacheMiss: { miss: true } } });
+  expect(memory.spend(sessionId)).toMatchObject({ input: 5, cost: 0.25, unknown: 0 });
+  expect(renderRun(run, [], [])).toContain("known usage only; remaining cost unknown");
 });

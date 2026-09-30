@@ -83,7 +83,6 @@ test("27b 2026-09-10: a fork prefix the freeze cannot fit is re-admitted once as
     expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId)).toEqual(["e1", "e2"]);
     expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]); // 105 freezes after the final reply
     // No latch, no configuration change.
-    expect(h.memory.store.forkSuppression(1)).toBeNull();
     // Settings belongs to the executor; `h.memory` is only an independent database observer.
     h.ctx.hasUI = true;
     h.answers.push("Settings…", undefined); await h.commands.get("trace")!.handler("", h.ctx);
@@ -398,7 +397,6 @@ test("27b 2026-09-10: a capacity fallback latches nothing — the next task requ
       return runs.sort((a, b) => a.id - b.id)[1]!;
     }, { timeout: 5000 });
     expect(second.mode).toBe("fork");
-    expect(f.h.memory.store.forkSuppression(1)).toBeNull();
   } finally { await f.dispose(); }
 }, 30000);
 
@@ -411,7 +409,6 @@ test("27b 2026-09-10: a capacity fallback latches nothing — the next task requ
 const foregroundTooSmall = (h: ReturnType<typeof host>) => { h.ctx.model = { ...h.ctx.model!, contextWindow: 11_000 }; };
 
 test.each([
-  ["the cache-miss latch", (h: ReturnType<typeof host>) => { foregroundTooSmall(h); expect(h.memory.store.suppressFork(1)).toBe(true); }, "cache miss latch"],
   // 29c: a compaction Pi persisted that kept none of the selected entries and carried no views of
   // ours, so the batch is no longer available in the context a fork would inherit.
   ["an entry the compacted context no longer holds", (h: ReturnType<typeof host>) => { foregroundTooSmall(h); h.compaction(); }, "Raw availability: entry "],
@@ -483,7 +480,6 @@ test("27c 2026-09-10: the reported live case — an entry the compaction did not
     expect(audit.thinking).toEqual({ requested: "high", effective: "high" });
     expect(child.reasoning_effort).toBe("high");
     expect(f.h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
-    expect(f.h.memory.store.forkSuppression(1)).toBeNull(); // a warning, not the latch
   } finally { await f.dispose(); }
 }, 30000);
 
@@ -702,7 +698,6 @@ test.each([
       expect(String(response.fallbackReason)).toContain(`Raw availability: entry ${entry.id} (T${entry.turnId}, native ${entry.nativeId})`);
       expect(frozen).toContain(entry.id); // the entry that refused the fork is in the batch that ran
       expect(h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
-      expect(h.memory.store.forkSuppression(1)).toBeNull(); // a per-task refusal, not the cache-miss latch
     }
   } finally { await h.dispose(); }
 });

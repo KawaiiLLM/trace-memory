@@ -11,7 +11,8 @@
 // extension (tests/package-smoke.mjs catches it). No pattern list of ours, and no error string
 // rebuilt from the terminal message.
 import { isContextOverflow } from "@earendil-works/pi-ai";
-import { NotForkable, runNative, type CacheObservation, type NativeForkTask, type NativeResult, type ThinkingLevel, type Verification as NativeVerification } from "./native.ts";
+import type { CacheObservation } from "../../core/api/cache-miss.ts";
+import { NotForkable, runNative, type NativeForkTask, type NativeResult, type ThinkingLevel, type Verification as NativeVerification } from "./native.ts";
 import type { Body } from "./fork.ts";
 import type { NotingAgentInput, DreamingAgentInput, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 

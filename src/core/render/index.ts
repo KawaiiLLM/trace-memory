@@ -449,6 +449,13 @@ export function renderEntryIndex(entry: SourceEntry): string {
  * the rename came with the cutover, every run that carries it was executed by the deleted
  * request-copy runner, not by an `AgentSession`: the read side says so instead of relabelling it.
  * Stored values are never rewritten — no migration, no bulk update, no rewrite on open or on read. */
+/** 108: a cost is a dollar figure or "unknown", never a zero manufactured for a missing one. With `unknown`
+ * runs behind a total, the figure is a lower bound and says so. */
+export function formatCost(cost: number | undefined, unknown = 0): string {
+  if (cost === undefined) return "unknown";
+  return `$${cost.toFixed(4)}${unknown ? ` + ${unknown} ${unknown === 1 ? "run" : "runs"} of unknown cost` : ""}`;
+}
+
 export const runMode = (mode: string | null): string =>
   mode === "branch" ? "legacy request-copy execution (branch)" : mode ?? "?";
 
@@ -470,7 +477,7 @@ export function renderRun(run: { id: number; kind: string; outcome: string; sess
     `  model ${run.model ?? "?"}  mode ${runMode(run.mode)}`,
     `  created: ${[...factIds.map((id) => `F${id}`), ...commits.map((c) => `K${c.knowledgeId}@${c.id} (${c.op}: ${c.reason})`)].join(", ") || "nothing"}`,
     response.usageStatus === "unknown" ? "  usage: unknown  cost unknown"
-      : `  usage: ${usage ? `in ${usage.input ?? 0} out ${usage.output ?? 0} cacheRead ${usage.cacheRead ?? 0} cacheWrite ${usage.cacheWrite ?? 0}` : "none"}  cost $${(usage?.cost?.total ?? 0).toFixed(4)}${response.usageStatus === "partial" ? " (known usage only; remaining cost unknown)" : ""}`,
+      : `  usage: ${usage ? `in ${usage.input ?? 0} out ${usage.output ?? 0} cacheRead ${usage.cacheRead ?? 0} cacheWrite ${usage.cacheWrite ?? 0}` : "none"}  cost ${formatCost(usage?.cost?.total)}${response.usageStatus === "partial" ? " (known usage only; remaining cost unknown)" : ""}`,
     `  tools: ${[...counts].map(([n, k]) => `${n} ×${k}`).join(", ") || "none"}`,
     `  problems: ${problems.length ? problems.join("; ") : "none"}`];
   if (full) {

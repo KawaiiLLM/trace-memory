@@ -9,7 +9,7 @@ const menu = {
     pending: { noting: { tokens: 0, trigger: 10000 }, consolidation: { tokens: 0, trigger: 5000 },
       dreaming: { global: { tokens: 0, trigger: 4000 }, project: { tokens: 0, trigger: 5000 }, session: { tokens: 0, trigger: 1000 } } },
     spend: { session: 0, noting: { runs: 0, cost: 0 }, consolidation: { runs: 0, cost: 0 }, dreaming: { runs: 0, cost: 0 }, today: 0 },
-    notices: [], actions: { enabled: true, retryForkAvailable: false },
+    notices: [], actions: { enabled: true },
   },
   settings: { database: "/tmp/test-trace.db", budgets: { global: 4000, project: 15000, session: 1000, sharedAllowanceTokens: 10000 },
     workers: [{ phase: "Noter", model: "sonnet", thinking: "high" }, { phase: "Consolidator", model: "opus", thinking: "high" }, { phase: "Dreamer", model: "opus", thinking: "high" }],

@@ -4,7 +4,7 @@ import { parseKnowledgeAddress, publicTraceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, SourceEntryMeta, PathSnapshot } from "../store/index.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, knowledgeCategoryGroup, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
-import { budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, sessionKnowledgeNotice, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
+import { formatCost, budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, sessionKnowledgeNotice, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { injectionText, compactText, measuredMemory, type MemoryComposition, type SharedMaterial, type TransportItem, rawWindowTokens, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
@@ -579,19 +579,21 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const spend = (sessionId: number) => {
     session(sessionId);
     const totals = { runs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 }, costs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 },
-      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-    for (const { kind, usage } of store.listRunUsage(sessionId)) {
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unknown: 0 };
+    for (const { kind, usage, costUnknown } of store.listRunUsage(sessionId)) {
       totals.runs[kind]++;
+      if (costUnknown) totals.unknown++;
       if (!usage) continue;
       totals.input += usage.input; totals.output += usage.output;
-      totals.cacheRead += usage.cacheRead; totals.cacheWrite += usage.cacheWrite; totals.cost += usage.cost; totals.costs[kind] += usage.cost;
+      totals.cacheRead += usage.cacheRead; totals.cacheWrite += usage.cacheWrite;
+      if (usage.cost !== null) { totals.cost += usage.cost; totals.costs[kind] += usage.cost; }
     }
     return totals;
   };
   // 51: the footer's figure — every session's runs created at or after `since` (the host passes local
   // midnight as a UTC instant), so the number resets at the day boundary on its own. 77: the store's
   // own query, answered from a covering index on `created_at`, never `listRunUsage`'s session index.
-  const spendSince = (since: string): number => store.spendSince(since);
+  const spendSince = (since: string) => store.spendSince(since);
   /** Ticket 69/72: `facts`, `unconsolidated`, `knowledge` and `changedKnowledge` are cached per
    * (sessionId, branch), invalidated by `Store.progressSignal` — a cheap composite that changes
    * exactly when a commit (by this process or another connection to the same file) could change one
@@ -1008,7 +1010,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       return [`Session: S${sessionId}`, `Enrollment: ${store.enabled(sessionId) ? "Enabled" : "Disabled"} (${store.enrollment(sessionId).choice === null ? "default" : "explicit choice"})`, `Project: ${store.getProject(s.projectId)!.name} (${store.projectDeclaration(sessionId)})`,
         ...(!store.enabled(sessionId) ? store.taskFailures(sessionId).filter(task => task.count >= 3).map(task =>
           `Automatic off: ${task.phase}, ${task.pool ? `pool ${task.pool}` : `backlog head ${task.head}`}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`) : []),
-        `Spend: ${totals.runs.noting} noting, ${totals.runs.consolidation} consolidation, ${totals.runs.dreaming} dreaming, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
+        `Spend: ${totals.runs.noting} noting, ${totals.runs.consolidation} consolidation, ${totals.runs.dreaming} dreaming, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; ${formatCost(totals.cost, totals.unknown)}`,
         // 24a: the footer's own counts, spelled out. They describe imported evidence only: native
         // history of a disabled interval is imported when the session is enabled again, so a zero
         // here is not proof that every available native message has been processed.

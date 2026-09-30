@@ -12,7 +12,8 @@ import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
 import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
+import { cacheMissWarning } from "../../core/api/cache-miss.ts";
+import { TraceMemory, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, formatCost, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -131,15 +132,11 @@ export default function (pi: ExtensionAPI) {
    * queued before a transition cannot bypass one. */
   const forkLaunch = (context: ExtensionContext, input: NotingAgentInput,
       model: { id: string; provider: string }, piId: string): ForkLaunch | { refused: string } => {
-    // 19c cache-miss latch: the requested mode stays fork; admission resolves it to subagent
-    // while this memory session is automatically downgraded.
-    const suppression = memory.store.forkSuppression(input.sessionId);
-    if (suppression) return { refused: latchReason(suppression) };
     // Ticket 29c, rechecked here at the actual launch against the exact frozen entry set — a task
     // admitted before a compaction but held for a slot, a claim or native readiness reaches this line
     // with its batch already frozen, and the context it would inherit has moved since. The whole batch
     // then runs as a fresh child instead, recorded like any other fallback: requested mode fork,
-    // actual mode subagent, reason named. A per-task readiness decision, not the cache-miss latch.
+    // actual mode subagent, reason named. A per-task readiness decision.
     if (input.kind === "noting") {
       const refused = rawUnavailable(input.entryAudit.entries);
       if (refused) return { refused };
@@ -206,19 +203,11 @@ export default function (pi: ExtensionAPI) {
       // refused one. Every other condition is re-derived here, for this task, at this moment.
       fork: input.mode === "fork" && model && !input.fallbackReason && !input.signal?.aborted
         ? forkLaunch(callContext, input, model, callPiId) : undefined,
+      // Ticket 108: every eligible miss is warned once with the input tokens read from cache, and
+      // nothing follows from it (no downgrade). The first miss of a run is audited under
+      // `verification.cacheMiss` in its run record.
       onCache: observation => {
-        // User rulings 2026-09-09: every eligible miss is noticed once, with its count; a hit
-        // resets the count; the second consecutive miss downgrades the session — one transition,
-        // decided by the store's guarded UPDATE, so two phases reaching it together notice once.
-        // This run continues in its own native session; the first miss of a run is audited under
-        // `verification.cacheMiss` in its run record.
-        if (!observation.miss) { cacheMisses.delete(input.sessionId); return; }
-        const misses = (cacheMisses.get(input.sessionId) ?? 0) + 1;
-        cacheMisses.set(input.sessionId, misses);
-        callContext.ui.notify(`Trace Memory: fork cache miss ${Math.min(misses, 2)}/2 (${observation.cacheRead} of ${observation.total} input tokens read from cache).`, "warning");
-        if (misses < 2 || !memory.store.suppressFork(input.sessionId)) return;
-        missDetected.add(input.kind);
-        callContext.ui.notify("Trace Memory: fork downgraded after two consecutive cache misses. Future memory tasks in this session will use subagent.", "warning");
+        if (observation.miss) callContext.ui.notify(cacheMissWarning(observation), "warning");
       },
       // Pi's own retry policy runs inside the child; the one warning per scheduled backoff stays the
       // adapter's. 51: the footer indicator no longer tracks a retry — the notify reports it.
@@ -229,7 +218,7 @@ export default function (pi: ExtensionAPI) {
     });
   }, core, piResultText, piSourceBlocks);
   /** One fork-to-subagent notice per Pi session, whatever refused the fork: the live state at
-   * admission (the cache-miss latch, 29c's Raw availability), the launch, the native runner's own
+   * admission (29c's Raw availability), the launch, the native runner's own
    * gate, and (27b) a capacity refusal before sending or a provider overflow after a real attempt.
    * A warning, never an error — the work continues on the fresh child, and a later task may request
    * fork again. */
@@ -296,15 +285,6 @@ export default function (pi: ExtensionAPI) {
   type Slot = { target: TaskTarget; boundary?: TaskBoundary; result?: Promise<NotingResult | { outcome: string } | undefined>; done?: Promise<unknown> };
   type WorkerPhase = "noting" | "dreaming";
   const slots = new Map<WorkerPhase, Slot>();
-  // 19c: the phase whose run observed the eligible cache miss, so the run id can be linked to the
-  // session's suppression once core has allocated it (the miss is seen before any run row exists).
-  const missDetected = new Set<WorkerPhase>();
-  // Consecutive eligible fork cache misses per memory session, in this process only (user ruling
-  // 2026-09-09): a reopen starts at zero; the persisted latch itself is the session-scoped state.
-  const cacheMisses = new Map<number, number>();
-  const suppressed = () => (state.sessionId ? memory.store.forkSuppression(state.sessionId) : null);
-  /** The one wording of the cache-miss latch's refusal, said the same way at admission and at launch. */
-  const latchReason = (suppression: { at: string }) => `cache miss latch: fork suppressed for this session since ${suppression.at}`;
   /** Ticket 29a "Carriers": the `details.traceMemory` written on the two entries that put memory
    * material into this conversation — the injected `custom_message` and a custom compaction — beside
    * what the renderer actually supplied. The database identity is the resolved `dbPath`, the same
@@ -353,14 +333,12 @@ export default function (pi: ExtensionAPI) {
    * established, so there is no fork base to check a target against. */
   /** Why a requested fork will not run with inherited context for this task, decided against this
    * host's live state at admission — before anything is frozen, so the refused task is admitted once
-   * more as a subagent with fresh material (27c): the cache-miss latch is set, or 29c's Raw
-   * availability rule refuses the batch. Undefined means it may fork. Neither refusal is a latch:
-   * both are re-decided for every task, and 27c records the reason rather than only its verdict,
-   * because the reason is what the run audit and the one warning say. */
+   * more as a subagent with fresh material (27c): 29c's Raw availability rule refuses the batch.
+   * Undefined means it may fork. The refusal is re-decided for every task, and 27c records the
+   * reason rather than only its verdict, because the reason is what the run audit and the one
+   * warning say. */
   const forkRefused = (requested: "fork" | "subagent", task?: ForkTask): string | undefined => {
     if (requested !== "fork") return;
-    const suppression = suppressed();
-    if (suppression) return latchReason(suppression);
     if (task?.kind !== "noting") return;
     const parentFile = ctx.sessionManager.getSessionFile?.();
     const checkpoint = ctx.sessionManager.getLeafId();
@@ -421,19 +399,19 @@ export default function (pi: ExtensionAPI) {
     const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
     const isEnabled = enabled();
-    let counts: ReturnType<typeof memory.progress> | undefined, cost: number | undefined;
+    let counts: ReturnType<typeof memory.progress> | undefined, cost: number | undefined, costUnknown = 0;
     // Off counts nothing at all (24a): the off line reads no path, no Raw and no run audit body.
     if (isEnabled) {
       if (state?.sessionId) {
         try { counts = memory.progress(state.sessionId, state.branch, state.head ?? null); } catch { /* unavailable: shown as ?, never as 0 */ }
       }
-      try { cost = memory.spendSince(localMidnight()); } catch { /* the same rule for the amount */ }
+      try { ({ cost, unknown: costUnknown } = memory.spendSince(localMidnight())); } catch { /* the same rule for the amount */ }
     }
     // Ticket 75: text/indicator logic moved to the host-neutral formatter Claude Code's status
     // command shares; only the painting (this host's theme roles) stays here.
     const segments = memoryStatusLine({ enabled: isEnabled,
       running: { noting: runningKind("noting"), dreaming: runningKind("dreaming") },
-      counts, cost });
+      counts, cost, costUnknown });
     context.ui.setStatus(tag, `🧠 ${segments.map(segment => paint(segment.role, segment.text)).join(" ")}`);
   };
   const reportProblems = (result: unknown, context: ExtensionContext) => {
@@ -486,8 +464,7 @@ export default function (pi: ExtensionAPI) {
     // run's recorded reason. A task carrying one is never refused a fork again (the launch below is
     // not even offered one), which is the structural one-transition guard.
     const asSubagent = (reason: string) => { notifyFallback(kind, reason); return { ...selected, model: fallbackModel, fallbackReason: reason }; };
-    // The refusals this host knows before anything is frozen — the cache-miss latch, 29c's Raw
-    // availability — are applied here, where the model and the capacity are still open:
+    // The refusal this host knows before anything is frozen — 29c's Raw availability — is applied here, where the model and the capacity are still open:
     // one admission, no second freeze. A re-admitted task carries its own reason and re-resolves none.
     const refusal = selected.fallbackReason ? undefined : forkRefused(selected.mode, { kind, target, boundary: options.boundary });
     const selection = refusal ? asSubagent(refusal) : selected;
@@ -512,7 +489,6 @@ export default function (pi: ExtensionAPI) {
     // and a later foreground turn cannot move the number this task was admitted on. A capture from
     // another branch or another model is not a fork base and prices no prefix; the launch below
     // refuses those to a fresh child, which is priced by the same freeze's subagent material.
-    // A session the cache-miss latch has downgraded runs with fresh context, so there is no prefix.
     const base = effective === "fork" && session.capture?.branch === target.branch
       && session.capture.model === model.id && session.capture.provider === model.provider;
     const measure = base ? context.getContextUsage() : undefined;
@@ -650,12 +626,7 @@ export default function (pi: ExtensionAPI) {
       : provisional() ?? latest?.enrollment ?? saved?.enrollment ?? { defaultEnabled: enrollmentDefault(ctx.sessionManager.getHeader()?.timestamp, baseline), choice: null };
     if (!state.sessionId) { persistProvisional(state.enrollment); state.enrollment = provisional()!; }
     state.shared = state.shared || (!!state.sessionId && memory.store.getSession(state.sessionId)!.host !== `pi:${piId}`);
-    // 19 amendment 2026-09-09: "a reopen starts at zero; the persisted latch itself is unchanged".
-    // The reopen of the memory session is that boundary, so the process-local consecutive-miss count
-    // is cleared exactly here — not on a tree switch (`fork`), which moves position inside the same
-    // session and leaves its misses consecutive, and never together with `forkSuppression`, which is
-    // database state and survives (its only reset is the menu's Retry fork).
-    if (state.sessionId && !fork) { memory.store.reopenSession(state.sessionId, memory.executorId); cacheMisses.delete(state.sessionId); }
+    if (state.sessionId && !fork) memory.store.reopenSession(state.sessionId, memory.executorId);
     // 18b lifecycle: switching away from a catchup's frozen path ends it and cancels its owned
     // in-flight work; it is never retargeted to the newly selected branch or resumed on reopen.
     if (catchup && !catchup.outcome && (catchup.sessionId !== state.sessionId || catchup.branch !== state.branch)) {
@@ -1030,10 +1001,6 @@ export default function (pi: ExtensionAPI) {
           try {
             const selected = borrowed ? { mode: "subagent" as const, model: modelName(kind) } : launch(kind);
             const result = await attemptPhase(context, kind, target, selected, { borrowed, automatic: true });
-            // The run that detected the cache miss now has an id: link it, so status and the audit
-            // name the response that downgraded this session. Its own mode stays fork.
-            const runId = (result as { runId?: number }).runId;
-            if (missDetected.delete(kind) && typeof runId === "number") memory.store.linkForkSuppression(target.sessionId, runId);
             if (result.outcome !== "dropped" && result.outcome !== "empty") return result;
           } catch (error) {
             context.ui.notify(String(error), "error");
@@ -1468,7 +1435,7 @@ export default function (pi: ExtensionAPI) {
    * model selection follows `flat`, and core's mode booleans and borrowing scope are replaced through
    * `configure`. Tasks admitted from now on use the new values; running tasks retain their scope,
    * mode, model, evidence and budgets. Nothing here dispatches a
-   * worker, touches the cache-miss latch or reopens the database. */
+   * worker or reopens the database. */
   const applySettings = () => {
     const loaded = configuration(ctx.cwd, environment, agentDir);
     if (loaded.flat.dbPath !== flat.dbPath) throw new Error("dbPath changed; reload the extension to reopen the database");
@@ -1602,7 +1569,7 @@ export default function (pi: ExtensionAPI) {
       if (!state.sessionId) cost = "Cost: N/A (no session)";
       else {
         const totals = memory.spend(state.sessionId);
-        cost = `Cost: $${totals.cost.toFixed(4)}`;
+        cost = `Cost: ${formatCost(totals.cost, totals.unknown)}`;
         // 51: the session's cumulative spend by phase, two short lines under the total; the footer
         // shows today's database-wide figure instead, so neither repeats the other.
         const phase = (kind: "noting" | "consolidation" | "dreaming" | "manual", label: string) => `${label} ${totals.runs[kind]} runs $${totals.costs[kind].toFixed(4)}`;
@@ -1611,8 +1578,6 @@ export default function (pi: ExtensionAPI) {
       }
     } catch { cost = "Cost: Unknown (unavailable)"; }
     if (compact) lines[0] += ` | ${cost.replace(/^Cost: /, "")}`;
-    const downgrade = suppressed();
-    if (downgrade) recovery.push(`Fork: suppressed since ${downgrade.at} (cache miss${downgrade.runId ? ` on R${downgrade.runId}` : ""}); Retry fork in the /trace menu`);
     if (lastCompaction) recovery.push(`Compaction: ${lastCompaction}`);
     const catchupStatus = catchupLine();
     if (catchupStatus) recovery.push(catchupStatus);
@@ -1632,12 +1597,11 @@ export default function (pi: ExtensionAPI) {
     const notices: string[] = [];
     if (state.sessionId && !enabled()) for (const task of memory.store.taskFailures(state.sessionId).filter(t => t.count >= 3))
       notices.push(`Automatic off: ${task.phase} failed ${task.count} times (R${task.lastRunId}: ${task.lastReason}). Turn on to resume.`);
-    const downgrade = suppressed();
-    if (downgrade) notices.push(`Fork suppressed since ${downgrade.at}${downgrade.runId ? ` (R${downgrade.runId})` : ""}.`);
     if (lastCompaction) notices.push(`Compaction: ${lastCompaction}`);
     const catchup = catchupLine();
     if (catchup) notices.push(catchup);
     if (state.shared) notices.push("Shared identity");
+    const today = memory.spendSince(localMidnight());
     return {
       header: { session: state.sessionId ? `S${state.sessionId}` : "No session",
         project: state.sessionId ? memory.store.getProject(memory.store.getSession(state.sessionId)!.projectId)!.name : state.project ?? "Unassigned",
@@ -1653,11 +1617,11 @@ export default function (pi: ExtensionAPI) {
       pending: { noting: { tokens: noting.tokens, trigger: noting.trigger, ...(noting.state === "known" && noting.atLeast ? { atLeast: true, entries: noting.entries } : {}) },
         dreaming: { pending: dreaming.pending ?? { tokens: null, trigger: memory.config.dreaming.triggerTokens },
           knowledge: dreaming.knowledge ? { tokens: dreaming.knowledge.tokens, trigger: dreaming.knowledge.window } : { tokens: null, trigger: null } } },
-      spend: { session: totals?.cost ?? 0,
+      spend: { session: totals?.cost ?? 0, sessionUnknown: totals?.unknown ?? 0,
         noting: { runs: totals?.runs.noting ?? 0, cost: totals?.costs.noting ?? 0 },
         consolidation: { runs: totals?.runs.consolidation ?? 0, cost: totals?.costs.consolidation ?? 0 },
-        dreaming: { runs: totals?.runs.dreaming ?? 0, cost: totals?.costs.dreaming ?? 0 }, today: memory.spendSince(localMidnight()) },
-      notices, actions: { enabled: enabled(), retryForkAvailable: !!downgrade },
+        dreaming: { runs: totals?.runs.dreaming ?? 0, cost: totals?.costs.dreaming ?? 0 }, today: today.cost, todayUnknown: today.unknown },
+      notices, actions: { enabled: enabled() },
     };
   };
   const sessionMenu = async () => {
@@ -1667,13 +1631,6 @@ export default function (pi: ExtensionAPI) {
       (width, paint) => renderTraceMenu(input, width, paint).slice(0, -1).join("\n"), actions)
       : await ctx.ui.select(renderTraceMenu(input, Math.max(1, (process.stdout.columns ?? 100) - 2)).join("\n"), actions);
     if (choice === undefined) return; // cancellation is inert: no write, no request
-    if (choice === "Retry fork") {
-      memory.store.clearForkSuppression(state.sessionId!);
-      cacheMisses.delete(state.sessionId!);
-      showSpend(ctx);
-      ctx.ui.notify("Trace Memory: fork retry enabled for this session. The next memory task may request fork again; no task was started and global settings are unchanged.", "info");
-      return;
-    }
     if (choice === "Runs…") {
       const count = await ctx.ui.input(MENU_INPUTS.runs, "10");
       if (count !== undefined) {

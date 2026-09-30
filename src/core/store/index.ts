@@ -58,12 +58,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   project_id INTEGER NOT NULL REFERENCES projects(id),
   parent_session_id INTEGER REFERENCES sessions(id),
   project_declaration TEXT NOT NULL DEFAULT 'marker' CHECK (project_declaration IN ('undeclared','marker','mark')),
-  -- 19c cache-miss latch: set once when a host observes an eligible fork cache miss for this memory
-  -- session, so later inherited-context work resolves to fresh context until the user retries. It is
-  -- session-scoped state, not configuration: a reopen, a fork or a copied host sharing this session
-  -- shares it. fork_suppressed_run is the run that detected the miss, linked once it has an id.
-  fork_suppressed_at TEXT,
-  fork_suppressed_run INTEGER,
   -- 62: the real repository root (or cwd) the session started in; the key later sessions join by.
   -- NULL for sessions allocated before the column existed or in an excluded directory (home, temp).
   directory TEXT
@@ -422,7 +416,8 @@ type UsageColumns = [input: number | null, output: number | null, cacheRead: num
 /** 77: turns 71's six-value extraction into the five stored columns, matching `listRunUsage`'s old
  * derivation exactly. `null` in every field is "no observation" — an unparsable response (`fields`
  * itself null) or a missing/explicit-null `usage` — kept apart from an observed zero, which every
- * other case (including a non-object `usage`) returns as a real 0. */
+ * other case (including a non-object `usage`) returns as a real 0. 108: the cost alone is null when
+ * the usage carries no `cost.total`: tokens known, price unknown. */
 function usageFromFields(fields: string | null): UsageColumns {
   if (fields === null) return [null, null, null, null, null];
   const [input, output, cacheRead, cacheWrite, costTotal, usage] = JSON.parse(fields) as unknown[];
@@ -430,8 +425,15 @@ function usageFromFields(fields: string | null): UsageColumns {
   // A per-field SQL extraction returns JSON true/false as the integers 1/0; keep them boolean-derived
   // here too, so historical totals do not drift.
   const count = (value: unknown) => (typeof value === "number" ? value : typeof value === "boolean" ? Number(value) : 0);
-  return [count(input), count(output), count(cacheRead), count(cacheWrite), count(costTotal)];
+  // 108: a missing cost is unknown, never a zero: tokens can be recorded before (or without) a price.
+  return [count(input), count(output), count(cacheRead), count(cacheWrite), typeof costTotal === "number" ? costTotal : typeof costTotal === "boolean" ? Number(costTotal) : null];
 }
+
+/** 108: a run's cost is unknown when it recorded tokens without a price, or was cancelled with no
+ * usage at all (a cancelled run's absent usage is unknown, never zero: review 2026-09-08). A run that
+ * never reached a model has no cost to know. */
+const costUnknown = (row: { outcome: string; usage_input: number | null; usage_cost: number | null }): boolean =>
+  row.usage_cost === null && (row.usage_input !== null || row.outcome === "cancelled");
 
 export type Phase = "noting" | "dreaming";
 /** Historical executions remain readable without granting retired stages admission. */
@@ -1014,6 +1016,9 @@ export class Store {
         // 64b: lineage cursors replace the never-deployed session-wide foreground columns.
         if (sessionColumns.some(r => r.name === "current_branch")) this.db.exec("ALTER TABLE sessions DROP COLUMN current_branch");
         if (sessionColumns.some(r => r.name === "current_head")) this.db.exec("ALTER TABLE sessions DROP COLUMN current_head");
+        // 108: the cache-miss latch is gone; a miss is audited and warned, never a session state.
+        if (sessionColumns.some(r => r.name === "fork_suppressed_at")) this.db.exec("ALTER TABLE sessions DROP COLUMN fork_suppressed_at");
+        if (sessionColumns.some(r => r.name === "fork_suppressed_run")) this.db.exec("ALTER TABLE sessions DROP COLUMN fork_suppressed_run");
         // Allocate once in original insertion order, across every branch of each Turn. Raw and
         // historic citation strings remain untouched. Recheck under the immediate write lock.
         if (!this.db.prepare("PRAGMA table_info(source_entries)").all().some(r => r.name === "entry_ordinal")) {
@@ -1733,29 +1738,6 @@ export class Store {
     if (!this.enabled(sessionId)) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
   }
 
-  /** 19c: record one eligible fork cache miss for this session. The UPDATE is guarded by IS NULL, so
-   * two phases reporting a miss together produce one transition (and one warning): only the call
-   * that changed the row returns true. */
-  suppressFork(sessionId: number, at = new Date().toISOString()): boolean {
-    this.enrollment(sessionId); // a missing session is an error, not a silent no-op
-    return !!this.db.prepare("UPDATE sessions SET fork_suppressed_at = ? WHERE id = ? AND fork_suppressed_at IS NULL").run(at, sessionId).changes;
-  }
-  /** The session's automatic fork suppression, or null while it is not suppressed. */
-  forkSuppression(sessionId: number): { at: string; runId: number | null } | null {
-    const row = this.db.prepare("SELECT fork_suppressed_at, fork_suppressed_run FROM sessions WHERE id = ?").get(sessionId);
-    if (!row) throw new Error(`session S${sessionId} does not exist`);
-    return row.fork_suppressed_at === null ? null
-      : { at: String(row.fork_suppressed_at), runId: row.fork_suppressed_run === null ? null : Number(row.fork_suppressed_run) };
-  }
-  /** Link the detecting run once core has given it an id; never overwrites an earlier episode's run. */
-  linkForkSuppression(sessionId: number, runId: number): void {
-    this.db.prepare("UPDATE sessions SET fork_suppressed_run = ? WHERE id = ? AND fork_suppressed_at IS NOT NULL AND fork_suppressed_run IS NULL").run(runId, sessionId);
-  }
-  /** The explicit retry (menu only). A later eligible miss starts a new downgrade episode. */
-  clearForkSuppression(sessionId: number): void {
-    this.db.prepare("UPDATE sessions SET fork_suppressed_at = NULL, fork_suppressed_run = NULL WHERE id = ?").run(sessionId);
-  }
-
   closeSession(sessionId: number, at = new Date().toISOString()): void {
     this.db.prepare("UPDATE sessions SET closed_at = ? WHERE id = ?").run(at, sessionId);
   }
@@ -2140,6 +2122,26 @@ export class Store {
       this.db.prepare(`UPDATE runs SET outcome = ?, mode = ?,
           usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`)
         .run(input.outcome, input.mode ?? null, ...this.usageColumns(nextResponse), id);
+    });
+  }
+
+  /** 108: a host that learns what a run cost after core recorded it (a CC fork's price, or the partial
+   * usage of a fork stopped mid-run) amends the recorded run through the same writer as `updateRun`,
+   * so the usage columns stay derived from the stored response. */
+  amendRunUsage(id: number, patch: { usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total: number } };
+    usageStatus?: "partial" | null; problem?: string; cacheMiss?: unknown }): void {
+    this.transaction(() => {
+      const row = this.db.prepare("SELECT response FROM run_bodies WHERE run_id = ?").get(id) as { response: string | null } | undefined;
+      if (!row) throw new Error(`run ${id} does not exist`);
+      const response = JSON.parse(row.response ?? "{}");
+      if (patch.usage) response.usage = patch.usage;
+      if (patch.usageStatus === null) delete response.usageStatus; else if (patch.usageStatus) response.usageStatus = patch.usageStatus;
+      if (patch.problem) response.problems = [...response.problems ?? [], patch.problem];
+      if (patch.cacheMiss !== undefined) response.verification = { ...response.verification, cacheMiss: patch.cacheMiss };
+      const next = JSON.stringify(response);
+      this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(next, id);
+      this.db.prepare(`UPDATE runs SET usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`)
+        .run(...this.usageColumns(next), id);
     });
   }
 
@@ -4265,12 +4267,12 @@ export class Store {
    * read directly for `kind`/`usage_*`, measured on the split tables. A direct `session_id = ?`
    * condition, not the optional-parameter form: that form lets the planner scan the whole table or
    * index as history grows. */
-  listRunUsage(sessionId: number): { kind: RunKind; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | null }[] {
-    const rows = this.db.prepare(`SELECT kind, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost
+  listRunUsage(sessionId: number): { kind: RunKind; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number | null } | null; costUnknown: boolean }[] {
+    const rows = this.db.prepare(`SELECT kind, outcome, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost
       FROM runs INDEXED BY idx_runs_session WHERE session_id = ? ORDER BY id`).all(sessionId) as
-      { kind: RunKind; usage_input: number | null; usage_output: number | null; usage_cache_read: number | null; usage_cache_write: number | null; usage_cost: number | null }[];
-    return rows.map(row => ({ kind: row.kind, usage: row.usage_cost === null ? null :
-      { input: row.usage_input!, output: row.usage_output!, cacheRead: row.usage_cache_read!, cacheWrite: row.usage_cache_write!, cost: row.usage_cost } }));
+      { kind: RunKind; outcome: string; usage_input: number | null; usage_output: number | null; usage_cache_read: number | null; usage_cache_write: number | null; usage_cost: number | null }[];
+    return rows.map(row => ({ kind: row.kind, costUnknown: costUnknown(row), usage: row.usage_input === null ? null :
+      { input: row.usage_input, output: row.usage_output!, cacheRead: row.usage_cache_read!, cacheWrite: row.usage_cache_write!, cost: row.usage_cost } }));
   }
 
   /** 51/77: the footer's daily figure — every run's cost, created at or after `since` (77 replaces a
@@ -4278,13 +4280,14 @@ export class Store {
    * persisted usage columns). 79: the split still needs a `created_at` lookup index (the ticket's own
    * "lookup indexes a query still needs stay"), but its old covering trailing columns (`id`,
    * `usage_cost`) are redundant now that the row has no body to dodge — `idx_runs_created_at`
-   * replaces `idx_runs_daily_usage` (item 0). Rows read still grow with the day's runs, not history. */
-  spendSince(since: string): number {
-    const rows = this.db.prepare(`SELECT id, usage_cost FROM runs INDEXED BY idx_runs_created_at
-      WHERE created_at >= ? ORDER BY id`).all(since) as { id: number; usage_cost: number | null }[];
-    let cost = 0;
-    for (const row of rows) if (row.usage_cost !== null) cost += row.usage_cost;
-    return cost;
+   * replaces `idx_runs_daily_usage` (item 0). Rows read still grow with the day's runs, not history.
+   * 108: `unknown` counts the runs whose cost is unknown, which `cost` does not include. */
+  spendSince(since: string): { cost: number; unknown: number } {
+    const rows = this.db.prepare(`SELECT id, outcome, usage_input, usage_cost FROM runs INDEXED BY idx_runs_created_at
+      WHERE created_at >= ? ORDER BY id`).all(since) as { id: number; outcome: string; usage_input: number | null; usage_cost: number | null }[];
+    let cost = 0, unknown = 0;
+    for (const row of rows) { if (row.usage_cost !== null) cost += row.usage_cost; else if (costUnknown(row)) unknown++; }
+    return { cost, unknown };
   }
   listFactsByRun(runId: number): Fact[] {
     return this.hydrateFactSegments(this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(runId).map(toFact));

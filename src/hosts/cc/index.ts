@@ -16,7 +16,7 @@ import { installCcNativeRejectionGuard } from "./native-rejection.ts";
 import { readCcMenu, readCcRuns } from "./menu.ts";
 import type { CcContextSnapshot } from "./menu-context.ts";
 import { editedCcConfig, saveCcConfig, type CcSettingId } from "./menu-config.ts";
-import { executorSettings, executorSnapshot, requestCcForkSources, signalCcForkEvent, signalCcTurnEnd, waitCcForkCommand } from "./control.ts";
+import { executorSettings, executorSnapshot, requestCcForkSources, requestCcForkWarnings, signalCcForkEvent, signalCcTurnEnd, waitCcForkCommand } from "./control.ts";
 import { runCcFiles } from "./files.ts";
 import { Store } from "../../core/store/index.ts";
 import { parseRunsCount } from "../trace-menu.ts";
@@ -198,11 +198,16 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
     return;
   }
   if (command === "hook-fork") {
-    const input = JSON.parse(await readStdin()) as { session_id: string; verb: "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-no-start" | "fork-disconnect";
-      turnId?: string; agentId?: string; callId?: string; name?: string; reason?: string; answer?: string; confirmed?: boolean };
+    const input = JSON.parse(await readStdin()) as { session_id: string; verb: "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-account" | "fork-no-start" | "fork-disconnect";
+      turnId?: string; agentId?: string; callId?: string; name?: string; reason?: string; answer?: string; confirmed?: boolean; usage?: unknown };
     validateNativeSessionId(input.session_id);
-    if (!["fork-register", "fork-call", "fork-check", "fork-terminal", "fork-no-start", "fork-disconnect"].includes(input.verb))
+    if (!["fork-register", "fork-call", "fork-check", "fork-terminal", "fork-account", "fork-no-start", "fork-disconnect"].includes(input.verb))
       throw new Error("invalid CC native fork event");
+    if (input.verb === "fork-account") {
+      if (typeof input.agentId !== "string" || !input.agentId) throw new Error("CC fork accounting requires the native agent ID");
+      process.stdout.write(`${JSON.stringify({ allowed: true, warnings: await requestCcForkWarnings(config, input.session_id, input.agentId) })}\n`);
+      return;
+    }
     const { session_id: _session, verb: _verb, ...detail } = input;
     process.stdout.write(`${JSON.stringify({ allowed: await signalCcForkEvent(config, input.session_id, input.verb, detail) })}\n`);
     return;

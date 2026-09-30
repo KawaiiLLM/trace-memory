@@ -4,7 +4,7 @@ import { renderTraceMenu, renderTraceMenuText, renderTraceSettings, type CcConte
 import { MEMORY_READ_ONLY, memoryGlob, memoryPath } from "../../src/core/model/address.ts";
 import { ccOriginalRaw } from "../../src/hosts/cc/coverage-original.ts";
 
-type Reply = { menu: TraceMenuInput; settings: SettingsInput; context: { presence: "confirmed" | "unavailable"; estimatedMessagesTokens?: number; memory?: CcMemorySplit }; runs: { id: number; phase: string; status: string; cost: number; at: string }[] };
+type Reply = { menu: TraceMenuInput; settings: SettingsInput; context: { presence: "confirmed" | "unavailable"; estimatedMessagesTokens?: number; memory?: CcMemorySplit }; runs: { id: number; phase: string; status: string; cost: number | null; at: string }[] };
 type Screen = "main" | "settings" | "runs" | "project" | "confirm" | "edit";
 let screen: Screen = "main";
 let reply: Reply | undefined;
@@ -95,6 +95,17 @@ async function forkEvent($: any, session: string, verb: string, detail: Record<s
   return JSON.parse(decode(result, `Trace Memory ${verb}`)).allowed === true;
 }
 
+// 108: what a settled fork's accounting found (a cache miss per response) is shown in the foreground, the
+// channel Trace Memory's other warnings use. The executor answers once its accounting is done, up to ten
+// seconds after the fork settled; nothing here can fence or stop anything, so a failure only logs.
+async function showForkWarnings($: any, session: string, agent: string): Promise<void> {
+  try {
+    const result = await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-fork", "--config", `${$.plugin.root}/cc.config.json`],
+      { stdin: JSON.stringify({ session_id: session, verb: "fork-account", agentId: agent }) });
+    for (const warning of JSON.parse(decode(result, "Trace Memory fork-account")).warnings ?? []) $.ui.log(String(warning));
+  } catch (error) { console.error(`Trace Memory fork accounting: ${String(error)}`); }
+}
+
 async function stopNativeFork($: any, session: string, agent: string): Promise<void> {
   if (await $.session.id() !== session) throw new Error("native session changed before fork stop");
   const live = (await $.agent.list()).find((item: any) => item.id === agent && item.type === "fork" && item.status === "running");
@@ -127,6 +138,7 @@ function watchNativeFork($: any, session: string, agent: string): void {
         await stopNativeFork($, session, agent);
         console.error(`Trace Memory native fork ${agent} physically stopped by TaskStop`);
       }
+      await showForkWarnings($, session, agent);
     } catch (error) {
       // Fence held writes first even if the helper never connected and TaskStop fails.
       try { await forkEvent($, session, "fork-disconnect", { agentId: agent }); }
@@ -260,7 +272,7 @@ export const register = (on: any) => {
 
   on("turn.complete", async ($: any, e: any, next: any) => {
     if (e.agentId && !unavailable) {
-      try { await forkEvent($, await $.session.id(), "fork-terminal", { agentId: e.agentId, reason: e.reason, answer: e.answer ?? "" }); }
+      try { await forkEvent($, await $.session.id(), "fork-terminal", { agentId: e.agentId, reason: e.reason, answer: e.answer ?? "", usage: e.usage ?? null }); }
       catch (error) { console.error(`Trace Memory fork terminal: ${String(error)}`); }
     }
     if (!e.agentId && !unavailable) {
@@ -447,7 +459,7 @@ export const register = (on: any) => {
       </Box>;
     }
     if (screen === "runs") return <Box flexDirection="column"><Text>Trace Memory · Runs</Text>
-      {reply.runs.map((run, i) => <Text key={`run-${i}`}>{`R${run.id} ${run.phase} ${run.status} $${run.cost.toFixed(2)} ${run.at}`}</Text>)}
+      {reply.runs.map((run, i) => <Text key={`run-${i}`}>{`R${run.id} ${run.phase} ${run.status} ${run.cost === null ? "cost unknown" : `$${run.cost.toFixed(2)}`} ${run.at}`}</Text>)}
       <Input key="run-count" label={MENU_INPUTS.runs} onSubmit={(value: string) => {
         try { runsLimit = parseRunsCount(value); }
         catch (error) { notice = String(error); $.ui.invalidate("ui.render"); return; }

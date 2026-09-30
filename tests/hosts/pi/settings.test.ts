@@ -367,14 +367,12 @@ test("24b: the legacy spelling of the edited preference is replaced, and unrelat
   expect(h.dialogs.at(-1)!.options![3]).toBe("Noter mode: subagent");
 });
 
-test("24b: editing a setting starts no worker and does not clear the cache-miss latch", async () => {
+test("24b: editing a setting starts no worker", async () => {
   const h = setup();
   await h.turn();
-  h.memory.store.suppressFork(1, "2026-09-09T00:00:00.000Z");
   const runs = h.memory.store.listRuns(1).length;
   await edit(h, "Noter mode: subagent (Default)", "fork");
   await edit(h, "Dreamer model: follow foreground (Default)", "fake/test-mini");
-  expect(h.memory.store.forkSuppression(1)).toMatchObject({ at: "2026-09-09T00:00:00.000Z" });
   expect(h.memory.store.listRuns(1)).toHaveLength(runs);
   expect(h.requests).toEqual([]);
   expect(h.conversations).toEqual([]);

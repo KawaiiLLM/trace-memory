@@ -24,6 +24,8 @@ export interface CcStatusFile {
   running: CcStatusRunning;
   counts?: MemoryStatusCounts;
   cost?: number;
+  /** 108: runs of today whose cost is unknown; `cost` leaves them out. */
+  costUnknown?: number;
 }
 
 export function statusPath(stateDir: string, nativeSessionId: string): string {

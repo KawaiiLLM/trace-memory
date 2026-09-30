@@ -246,33 +246,6 @@ test("fork source observation returns committed originals without scheduling a t
   } finally { await coordinator.shutdown("test"); }
 });
 
-test("suppressed CC fork uses shared selector and fresh Noter with explicit reason", async () => {
-  const f = fixture("sf"); enableSyntheticWorker(f); f.write();
-  f.config.coreConfig.noting.triggerTokens = 1;
-  f.config.coreConfig.noting.forkModeDefault = true;
-  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
-  const diagnostic: string[] = [];
-  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostic.push(message));
-  try {
-    await coordinator.start();
-    expect((coordinator as any).importer, diagnostic.join("; ")).not.toBeNull();
-    await markCcFunctionHook(f.config, f.nativeSessionId);
-    const memory = (coordinator as any).importer.memory;
-    vi.spyOn(memory.store, "forkSuppression").mockReturnValue({ at: now, runId: null });
-    const noting = vi.spyOn(memory, "noting").mockResolvedValue({ outcome: "success", facts: [] });
-    const sources = await requestCcForkSources(f.config, f.nativeSessionId, "suppressed");
-    expect(sources?.selected.length).toBeGreaterThan(0);
-    const observation = { checkpoint: { sessionId: sources!.sessionId, branch: sources!.branch,
-      headTurnId: sources!.headTurnId, tailId: sources!.tailId },
-      batch: sources!.selected.map(row => row.nativeId), raw: sources!.selected.map(row => row.nativeId),
-      model: "synthetic", window: 200000, prefix: 100 };
-    expect(await signalCcTurnEnd(f.config, f.nativeSessionId, "suppressed", "answer", observation)).toBeNull();
-    await vi.waitFor(() => expect(noting).toHaveBeenCalledOnce());
-    expect(noting.mock.calls[0]![0]).toMatchObject({ mode: "fork", effectiveMode: "subagent",
-      fallbackReason: expect.stringContaining("cache miss latch") });
-  } finally { await coordinator.shutdown("test"); }
-});
-
 test.each(["hook", "transcript"] as const)("accepted CC scan race preserves turn-end dedup and published Raw (%s; imposed order)", async mode => {
   const f = fixture(`queued-user-${mode}`); enableSyntheticWorker(f);
   f.config.stateDir = mkdtempSync("/tmp/tmcc-scan-race-"); dirs.push(f.config.stateDir);
@@ -730,7 +703,8 @@ test("registered fork watcher receives done on terminal and stop on external sto
     catchup: async () => ({ state: "completed", entriesDone: 0, entriesTotal: 0 }),
     beforeCancel: () => events.push("fenced"), holdImport: () => () => {},
     forkRegister: (_turn, id) => events.push(`registered:${id}`),
-    forkTerminal: async id => { events.push(`terminal:${id}`); return true; },
+    forkTerminal: async (id, _reason, _answer, usage) => { events.push(`terminal:${id}`, `usage:${JSON.stringify(usage)}`); return true; },
+    forkAccounted: async id => [`warning for ${id}`],
     forkDisconnected: id => events.push(`disconnected:${id}`),
   });
   const call = (verb: string, agentId: string) => new Promise<any>((resolveReply, reject) => {
@@ -738,7 +712,7 @@ test("registered fork watcher receives done on terminal and stop on external sto
     socket.setEncoding("utf8");
     socket.on("connect", () => socket.write(`${JSON.stringify({ token: server.executor.token, verb, agentId,
       ...(verb === "fork-register" ? { turnId: "turn" } : {}),
-      ...(verb === "fork-terminal" ? { reason: "answer", answer: "done" } : {}) })}\n`));
+      ...(verb === "fork-terminal" ? { reason: "answer", answer: "done", usage: { input_tokens: 1 } } : {}) })}\n`));
     socket.on("data", chunk => output += chunk);
     socket.on("end", () => { try { resolveReply(JSON.parse(output)); } catch (error) { reject(error); } });
     socket.on("error", reject);
@@ -749,6 +723,8 @@ test("registered fork watcher receives done on terminal and stop on external sto
     const done = call("fork-watch", "agent-done");
     expect(await call("fork-terminal", "agent-done")).toMatchObject({ ok: true, allowed: true });
     expect(await done).toEqual({ kind: "done", session: f.nativeSessionId, agent: "agent-done" });
+    expect(events).toContain('usage:{"input_tokens":1}'); // 108: the event's usage reaches the settlement
+    expect(await call("fork-account", "agent-done")).toEqual({ ok: true, verb: "fork-account", allowed: true, warnings: ["warning for agent-done"] });
     expect(await call("fork-register", "agent-early")).toMatchObject({ ok: true });
     expect(await call("fork-terminal", "agent-early")).toMatchObject({ ok: true });
     expect(await call("fork-watch", "agent-early")).toEqual({ kind: "done", session: f.nativeSessionId, agent: "agent-early" });

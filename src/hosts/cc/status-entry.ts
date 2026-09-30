@@ -73,6 +73,7 @@ export async function runCcStatusCommand(io: CcStatusIo = {}): Promise<void> {
       running: alive ? status.running : { noting: false, dreaming: false },
       counts: alive ? status.counts : undefined,
       cost: alive ? status.cost : undefined,
+      costUnknown: alive ? status.costUnknown : undefined,
     });
     // 106: the running Claude Code version comes from the status-line input; no process is started.
     if (typeof input.version === "string" && input.version && input.version !== CC_VERIFIED_VERSION)

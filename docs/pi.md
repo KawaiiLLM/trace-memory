@@ -530,7 +530,7 @@ Bare `/trace` opens a native menu with four top-level entries:
 - **Current session:** a compact context-capacity map and pending/trigger estimates,
   enrollment, project, the session's spend by phase and recovery warnings in a scrollable Pi-themed panel, with
   `On`/`Off` with confirmation and shared fork/clone scope, `Runs` with a count input,
-  `Project` with a name input, and `Retry fork` only while this session is automatically downgraded.
+  and `Project` with a name input.
 - **Catch up:** starts (or reports) the manual finite drain described below.
 - **Stop:** cancels this executor's background work, including a running or
   waiting catchup. It never changes participation.
@@ -708,7 +708,7 @@ refused there. A task already running keeps its admission scope, mode, model,
 evidence and budgets. Setting scope to `off` does not cancel it; use Stop to end
 running work. Another Pi process sees the new
 global default through its own settings load; there is no cross-process watcher.
-Editing a preference starts no worker and does not touch the cache-miss latch. The same Settings
+Editing a preference starts no worker and starts nothing else. The same Settings
 screen separately edits the bound database's Global, Project and Session Knowledge budgets. Those
 values are database policy, not Pi global preferences, and saves never copy them into `settings.json`.
 The screen shows the Knowledge base, shared allowance and their maximum Knowledge input separately.
@@ -861,7 +861,7 @@ Turn's own reply. Once the head moves on and a later task does select it, the vi
 retained `source` like any other entry. So a target whose only non-inherited entry is the head
 reply forks, and the view is the right authority as it stands.
 
-Untouched by this rule: the cache-miss latch, checkpoint readiness, `forkable()`, prefix
+Untouched by this rule: checkpoint readiness, `forkable()`, prefix
 verification and capacity. Visibility is necessary, not proof that a prefix check or provider
 caching will succeed.
 
@@ -1237,8 +1237,7 @@ amendments 1, 4, 5 and 6).** One rule covers every reason a requested fork does 
 
 The reasons, and where each is decided:
 
-- **At admission, from this host's live state.** The cache-miss latch, and — for a Noter only —
-  29c's Raw availability. Nothing is frozen yet, so this admission simply selects the phase's model
+- **At admission, from this host's live state.** For a Noter only, 29c's Raw availability. Nothing is frozen yet, so this admission simply selects the phase's model
   and its capacity: no second admission, and the reason is frozen with the task
   (`TaskOptions.fallbackReason`, opaque to core) as the run's `fallbackReason`.
 - **At admission, from the freeze (27b).** A fork whose inherited context plus instructions cannot
@@ -1246,7 +1245,7 @@ The reasons, and where each is decided:
   of leaving feasible work pending, the host admits the task **once more** with the model, the
   capacity and the fresh material above, under the ordinary exact selection.
 - **After admission, at the launch.** Every condition `forkLaunch` rechecks against the live state
-  for the task it is about to run — the latch, Raw availability, a branch changed since
+  for the task it is about to run — Raw availability, a branch changed since
   admission, a missing or foreign capture, a session model changed since the capture, an
   unpersisted parent, no persisted leaf — and the native gate's rejection of the child's first body
   (`native runner: <reason>`, with the rejected comparison under `verification.native`). Nothing
@@ -1310,7 +1309,7 @@ executor already released its replacement and the exact target is still pending.
 claim may be released for the authorized fallback; that release is not mistaken for ownership loss.
 Sent attempts retain their own run records and usage in either case.
 
-Every one of these is a warning, not an error: none sets the cache-miss latch, changes a setting, a
+Every one of these is a warning, not an error: none changes a setting, a
 default mode or a persisted mode, and a later task may request fork again. One warning per Pi
 session names the reason.
 
@@ -1354,7 +1353,7 @@ the gate compares against; the runs directory is never pruned; a gate rejection 
 file was created leaves that (unused) child log behind; and no live provider run was made —
 every check above uses stubbed HTTP with the real adapters.
 
-## Launch readiness and the cache-miss latch (19c)
+## Launch readiness and cache-miss warnings (19c, 108)
 
 ### Readiness: trigger and launch are different authorities
 
@@ -1385,11 +1384,11 @@ separate question about the native checkpoint, asked in `checkQueues` before adm
   run when the task's frozen branch is no longer the selected one. The waiting task's entries
   stay pending on their own branch; the new position's work is its own task.
 
-### Cache-miss latch
+### Cache-miss observation
 
 Gate 3: the deterministic prefix check runs first on every fork request. A body that differs
-from the parent prefix is a known miss, routed to subagent for that task **without touching the
-latch**. Only a response whose request passed the gate can count, which is why the observation is
+from the parent prefix is a known miss, routed to subagent for that task **without a cache-miss
+warning**. Only a response whose request passed the gate can count, which is why the observation is
 recorded inside `verification` and why the fresh-context runner is never given the callback.
 
 An eligible miss is judged per completed fork response, on that response's own usage:
@@ -1408,15 +1407,10 @@ a **hit** otherwise. A response whose input is below the provider's documented c
 (table above) is neither: it could not have been cached. The observation carries
 `{model, api, minimum, ratio, input, cacheRead, cacheWrite, total, miss}`.
 
-The session is downgraded only on the **second consecutive** eligible miss. The count lives in
-the executor process, per memory session: an eligible hit resets it, an unknown response neither
-counts nor resets, a reopen starts at zero (the persisted latch below is the session-scoped
-state), and the menu's **Retry fork** resets it with the latch. The reopen boundary is the one
-`restore()` reopens the memory session at; a tree switch moves position inside the same session,
-so its misses stay consecutive and only the position changes. Every eligible miss emits one TUI
-notice with its count — `Trace Memory: fork cache miss 1/2 (… of … input tokens read from cache).`
-— and the downgrade emits its own single notice: `Trace Memory: fork downgraded after two
-consecutive cache misses. Future memory tasks in this session will use subagent.`
+**Ticket 108 removed the session downgrade** (the latch and the two-consecutive-miss rule). Every eligible miss emits
+one TUI warning naming how much of the input the cache served — `Trace Memory: fork cache miss (… of … input tokens
+read from cache).` — and nothing else follows: no consecutive count, no downgrade notice, no persisted state. The rule
+lives in `src/core/api/cache-miss.ts`, shared with Claude Code.
 
 pi-ai normalizes both families to one counting convention: `input` excludes `cacheRead` and
 `cacheWrite` (`openai-completions` subtracts them from `prompt_tokens`; `anthropic-messages`
@@ -1426,34 +1420,10 @@ missing usage, non-numeric or absent cache counts, the SDK's placeholder zeros o
 cancelled response, an Anthropic body that carried no `cache_control` marker (a disabled cache),
 and an unlisted provider.
 
-On the second consecutive eligible miss:
-
-- `store.suppressFork(sessionId)` sets `sessions.fork_suppressed_at` with an `IS NULL` guard, so
-  two phases reaching the second miss in the same instant produce **one** transition; only the
-  winner emits the downgrade notice. Headless operation records the same state without any UI.
-- The detecting run continues untouched: same native session, same tool protocol, same trailing
-  replies, no replay, no extra trigger, and its run record keeps `mode: "fork"`. The run's first
-  miss is audited as `verification.cacheMiss = {model, api, minimum, ratio, input, cacheRead,
-  cacheWrite, total, miss}`, and the run id is linked to the session's suppression once core has
-  allocated it (the miss is seen before any run row exists).
-- Every later task rechecks the latch at fork admission, so a task queued before the transition
-  cannot bypass it. The configured requested mode is retained: the run records
-  `requestedMode: "fork"`, `mode: "subagent"` and `fallbackReason: "cache miss latch: …"`.
-  Sibling tasks already running stay frozen. Global configuration and other sessions are
-  unchanged; branches and copied hosts sharing the memory session share the latch, and it
-  survives reopen because it lives in the database.
-
-The status text adds one line while the latch is set:
-
-```
-Fork: suppressed since <ISO timestamp> (cache miss on R<n>); Retry fork in the /trace menu
-```
-
-The reset is menu-only. `/trace` → **Current session** lists a **Retry fork** action *only while
-the session is downgraded*; choosing it clears the suppression, says so, and starts no
-extraction. There is no `/trace retry` subcommand and no permanent top-level item, and neither a
-reopen nor a settings refresh clears the state. Two later consecutive eligible misses begin a new
-episode and may downgrade once again.
+The detecting run continues untouched: same native session, same tool protocol, same trailing replies, no replay, no
+extra trigger, and its run record keeps `mode: "fork"`. The run's first miss is audited as
+`verification.cacheMiss = {model, api, minimum, ratio, input, cacheRead, cacheWrite, total, miss}`. Later tasks are
+admitted as before: a miss never turns the requested fork into a subagent.
 
 ## Three failures turn memory off (32c)
 
@@ -1563,8 +1533,7 @@ This is a human-run check, not an automated claim of live cache hits.
 4. Save the two bodies and printed response. Check `usage.cacheRead` and
    `verification.cache_read` for cached input tokens. A positive count is an
    observation, not identity proof; zero/missing counts do not fail comparison — but note that
-   one *eligible* zero-cache fork response arms the session's cache-miss latch (19c), which the
-   `/trace` menu's Retry fork clears. Hashes should each match their respective body, not each
+   one *eligible* zero-cache fork response emits one cache-miss warning (108). Hashes should each match their respective body, not each
    other. Inspect the appended tail: the inherited head reply, then the noting prompt with
    range-only input and no copied raw. `response.nativeLog` points at the child's own JSONL.
 5. Change the session model, then send another prompt and wait. A model change since the
@@ -1718,10 +1687,7 @@ reads and search listings are unchanged. See [Fact groups](core.md#fact-groups) 
   each boundary while a task waits. It is read-only and creates nothing, but on a very large
   session file it is repeated read I/O, bounded by how often a task is actually due.
 - The cacheable-minimum table is a documented constant, not a provider query. A provider that
-  changes its minimum, or a model family the table does not name, yields "unknown", which can
-  never downgrade a session — the conservative direction.
-- The latch never expires by itself and is not time-boxed: only the menu's Retry fork clears it.
-  Between the miss and the end of the detecting run, status shows the timestamp without a run id.
+  changes its minimum, or a model family the table does not name, yields "unknown", which is never a miss — the conservative direction.
 - No live provider run backs any of it: the eligibility numbers in the tests are stubbed usage
   values fed through the real pi-ai adapters, so nothing here claims a real cache hit or miss.
 

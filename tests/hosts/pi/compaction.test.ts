@@ -155,7 +155,6 @@ test("20c 2026-09-08 scenario 13 (rule replaced in 29c): a persisted compaction 
     expect(response(h).requestedMode).toBe("fork"); // the configured/requested mode is preserved
     // 29c: the reason names the first entry of the batch the context no longer holds.
     expect(String(response(h).fallbackReason)).toContain(`Raw availability: entry ${dropped.id} (T${dropped.turnId}, native ${dropped.nativeId})`);
-    expect(h.memory.store.forkSuppression(1)).toBeNull(); // not the cache-miss latch, and no enrollment change
     const sent = String(h.conversations.at(-1)!.messages[0]!.content);
     expect(sent).toContain("[T1#E1@user] user: "); // full primary material for the whole batch
     expect(sent).toContain("HEAD"); expect(sent).toContain("after");
@@ -179,7 +178,6 @@ test("20c 2026-09-08 scenario 14: a task whose entries the compacted context sti
     expect(response(h).requestedMode).toBe("fork");
     expect(String(response(h).fallbackReason)).not.toContain("Raw availability");
     expect(String(response(h).fallbackReason)).toContain("No current-branch provider payload captured");
-    expect(h.memory.store.forkSuppression(1)).toBeNull();
   } finally { await h.dispose(); }
 });
 

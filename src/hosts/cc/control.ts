@@ -54,7 +54,9 @@ export interface CcControlHandlers {
   forkRegister?(turnId: string, agentId: string): void;
   forkCall?(agentId: string, callId: string, name: "note" | "memory"): Promise<boolean>;
   forkCheck?(callId: string, name: "note" | "memory"): boolean;
-  forkTerminal?(agentId: string, reason: string, answer: string): Promise<boolean>;
+  forkTerminal?(agentId: string, reason: string, answer: string, usage?: unknown): Promise<boolean>;
+  /** 108: the cache-miss warnings of the fork's accounting, once it has finished (at most ten seconds after it settled). */
+  forkAccounted?(agentId: string): Promise<string[]>;
   forkNoStart?(turnId: string, reason: string, confirmed: boolean): void;
   forkDisconnected?(agentId: string): void;
 }
@@ -150,11 +152,11 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
       void (async () => {
         try {
           const request = JSON.parse(input.slice(0, newline)) as { verb?: unknown; token?: unknown; path?: unknown; expected?: unknown; turnId?: unknown; reason?: unknown; observation?: CcForkObservation; agentId?: unknown; callId?: unknown; name?: unknown;
-            answer?: unknown; confirmed?: unknown };
+            answer?: unknown; confirmed?: unknown; usage?: unknown };
           if (request.token !== token || typeof request.verb !== "string" ||
               (request.verb !== "stop" && request.verb !== "off" && request.verb !== "catchup" &&
                 request.verb !== "settings" && request.verb !== "apply" && request.verb !== "turn-end" && request.verb !== "fork-sources" &&
-                request.verb !== "fork-register" && request.verb !== "fork-call" && request.verb !== "fork-check" && request.verb !== "fork-terminal" &&
+                request.verb !== "fork-register" && request.verb !== "fork-call" && request.verb !== "fork-check" && request.verb !== "fork-terminal" && request.verb !== "fork-account" &&
                 request.verb !== "fork-no-start" && request.verb !== "fork-watch" && request.verb !== "fork-disconnect"))
             throw new Error("invalid CC control request");
           const current = readBinding(config, binding.nativeSessionId);
@@ -167,7 +169,7 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
               current.executor?.token !== token)
             throw new Error("CC core or executor identity changed before control");
           const verb = request.verb as ControlVerb | "settings" | "apply" | "turn-end" | "fork-sources" |
-            "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-no-start" | "fork-watch" | "fork-disconnect";
+            "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-account" | "fork-no-start" | "fork-watch" | "fork-disconnect";
           if (verb.startsWith("fork-") && verb !== "fork-sources") {
             if (!activeFunctionHook(current)) throw new Error("CC function hook registration is not current");
             if (typeof request.agentId !== "string" && verb !== "fork-check" && verb !== "fork-no-start" ||
@@ -209,10 +211,14 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
             } else if (verb === "fork-check") {
               if (!handlers?.forkCheck) throw new Error("CC fork permission routing is unavailable");
               allowed = handlers.forkCheck(request.callId as string, request.name as "note" | "memory");
+            } else if (verb === "fork-account") {
+              if (!handlers?.forkAccounted) throw new Error("CC fork accounting is unavailable");
+              const warnings = await handlers.forkAccounted(request.agentId as string);
+              connection.end(`${JSON.stringify({ ok: true, verb, allowed: true, warnings })}\n`); return;
             } else {
               if (typeof request.reason !== "string" || typeof request.answer !== "string" || !handlers?.forkTerminal)
                 throw new Error("invalid CC fork terminal");
-              allowed = await handlers.forkTerminal(request.agentId as string, request.reason, request.answer);
+              allowed = await handlers.forkTerminal(request.agentId as string, request.reason, request.answer, request.usage);
               if (allowed) commandWatch(request.agentId as string, "done");
             }
             connection.end(`${JSON.stringify({ ok: true, verb, allowed })}\n`); return;
@@ -313,12 +319,12 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
 }
 
 function request(executor: CcExecutorBinding, verb: ControlVerb | "settings" | "apply" | "turn-end" | "fork-sources" |
-  "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-no-start" | "fork-disconnect", timeoutMs?: number,
+  "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-account" | "fork-no-start" | "fork-disconnect", timeoutMs?: number,
   detail: Record<string, unknown> = {}): Promise<ControlReply | { ok: true; verb: "settings"; config: ResolvedCcHostConfig;
     catchup: CcCatchupStatus | null } | { ok: true; verb: "apply" } | { ok: true; verb: "turn-end";
       directive: { prompt: string; turnId: string } | null } | { ok: true; verb: "fork-sources";
       sources: Awaited<ReturnType<NonNullable<CcControlHandlers["forkSources"]>>> } |
-    { ok: true; verb: "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-no-start" | "fork-disconnect"; allowed: boolean }> {
+    { ok: true; verb: "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-account" | "fork-no-start" | "fork-disconnect"; allowed: boolean; warnings?: string[] }> {
   return new Promise((resolve, reject) => {
     const connection = createConnection(executor.socketPath); let output = "", settled = false;
     const finish = (error?: Error) => { if (settled) return; settled = true; clearTimeout(timer); connection.destroy(); error ? reject(error) : undefined; };
@@ -360,6 +366,17 @@ export async function signalCcForkEvent(config: ResolvedCcHostConfig, nativeSess
   const reply = await request(binding.executor, verb, undefined, detail);
   if (reply.verb !== verb) throw new Error("CC fork event response disagrees with request");
   return reply.allowed;
+}
+
+/** 108: the cache-miss warnings of a settled fork's accounting, which the executor answers once it is done
+ * (at most ten seconds after the settlement). The Hook shows them in the foreground. */
+export async function requestCcForkWarnings(config: ResolvedCcHostConfig, nativeSessionId: string, agentId: string): Promise<string[]> {
+  const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
+  if (!binding?.executor || !activeFunctionHook(binding)) throw new Error("CC fork accounting has no live function hook and executor");
+  functionHookNativeProcess(config, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
+  const reply = await request(binding.executor, "fork-account", undefined, { agentId });
+  if (reply.verb !== "fork-account") throw new Error("CC fork accounting response disagrees with request");
+  return reply.warnings ?? [];
 }
 
 // The Hook helper waits on one authenticated control connection, without a process.run timeout.

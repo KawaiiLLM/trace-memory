@@ -35,6 +35,8 @@ export interface MemoryStatusInput {
   counts?: MemoryStatusCounts;
   /** Undefined cost renders as `$?`. */
   cost?: number;
+  /** 108: runs whose cost is unknown are left out of `cost`; a lower bound renders as `$1.23+`. */
+  costUnknown?: number;
 }
 
 const INDICATOR_ROLE: Record<MemoryPhase, StatusColorRole> = { noting: "accent", dreaming: "customMessageLabel" };
@@ -49,6 +51,6 @@ export function memoryStatusLine(input: MemoryStatusInput): StatusSegment[] {
   const c = input.counts ?? {};
   const text = `notes: ${value(c.entries)}->${value(c.facts)}` +
     ` memory: ${value(c.changedKnowledge)}/${value(c.knowledge)}` +
-    ` cost: ${input.cost === undefined ? "$?" : `$${input.cost.toFixed(2)}`}`;
+    ` cost: ${input.cost === undefined ? "$?" : `$${input.cost.toFixed(2)}${input.costUnknown ? "+" : ""}`}`;
   return [{ role, text: glyph }, { role: "dim", text }];
 }

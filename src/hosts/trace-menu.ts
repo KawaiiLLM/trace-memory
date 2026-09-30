@@ -28,6 +28,8 @@ export const formatPercent = (ratio: number): string => {
 };
 export const formatShare = (value: number, total: number): string => total > 0 ? formatPercent(value / total) : "0.0%";
 export const formatMoney = (n: number): string => `$${n.toFixed(2)}`;
+/** 108: a total that leaves out runs of unknown cost is a lower bound and says so, never a bare figure. */
+export const formatMoneyBound = (n: number, unknown = 0): string => unknown ? `${formatMoney(n)}+ (${unknown} unknown)` : formatMoney(n);
 /** Pending/trigger rows round to a whole percent ("32%"), unlike the context section's one-decimal
  * shares — the ticket's mockup shows no decimal on any Pending row ("32%", "8%", "0%", "31%"). */
 export const formatWholePercent = (ratio: number): string => `${Math.round(ratio * 100)}%`;
@@ -144,14 +146,16 @@ export function buildPendingSection(input: PendingSectionInput): PendingSection 
 // ---- Spend ---------------------------------------------------------------------------------------
 
 export interface SpendPhase { runs: number; cost: number }
-export interface SpendSectionInput { session: number; noting: SpendPhase; consolidation: SpendPhase; dreaming: SpendPhase; today: number }
+export interface SpendSectionInput { session: number; noting: SpendPhase; consolidation: SpendPhase; dreaming: SpendPhase; today: number;
+  /** 108: runs whose cost is unknown, counted in neither figure. */
+  sessionUnknown?: number; todayUnknown?: number }
 export interface SpendSection { sessionLine: string; phaseLine: string; todayLine: string }
 export function buildSpendSection(input: SpendSectionInput): SpendSection {
   const phase = (label: string, p: SpendPhase) => `${label} ${p.runs} ${p.runs === 1 ? "run" : "runs"} ${formatMoney(p.cost)}`;
   return {
-    sessionLine: `Spend   session ${formatMoney(input.session)}`,
+    sessionLine: `Spend   session ${formatMoneyBound(input.session, input.sessionUnknown)}`,
     phaseLine: `${phase("Noting", input.noting)} · ${phase("Consolidation", input.consolidation)} · ${phase("Dreaming", input.dreaming)}`,
-    todayLine: `        today   ${formatMoney(input.today)}`,
+    todayLine: `        today   ${formatMoneyBound(input.today, input.todayUnknown)}`,
   };
 }
 
@@ -164,11 +168,11 @@ export function buildHeader(input: HeaderInput): string {
   return `Trace Memory · ${input.session} · ${input.project} · ${state}${suffix}`;
 }
 
-export interface MenuActionsInput { enabled: boolean; retryForkAvailable: boolean }
-export type MenuAction = "Turn on" | "Turn off" | "Catch up" | "Stop" | "Project…" | "Runs…" | "Settings…" | "Retry fork";
+export interface MenuActionsInput { enabled: boolean }
+export type MenuAction = "Turn on" | "Turn off" | "Catch up" | "Stop" | "Project…" | "Runs…" | "Settings…";
 export function buildActions(input: MenuActionsInput): MenuAction[] {
   const toggle: MenuAction = input.enabled ? "Turn off" : "Turn on";
-  return [toggle, "Catch up", "Stop", "Project…", "Runs…", "Settings…", ...(input.retryForkAvailable ? ["Retry fork" as const] : [])];
+  return [toggle, "Catch up", "Stop", "Project…", "Runs…", "Settings…"];
 }
 export const toggleConfirmation = (turnOn: boolean, shared: boolean) => ({
   title: `Turn Trace Memory ${turnOn ? "on" : "off"} for this session?`,
@@ -320,7 +324,7 @@ export const TRACE_MENU_FIXTURE: TraceMenuInput = {
     today: 5.31,
   },
   notices: [],
-  actions: { enabled: true, retryForkAvailable: false },
+  actions: { enabled: true },
 };
 
 export const TRACE_MENU_FIXTURE_WITH_NOTICE: TraceMenuInput = {

@@ -1114,17 +1114,16 @@ chaining, slots, waiting and cancellation are entirely host-local (18b), reusing
 17c's claims, token fence and `cancelTasks()` unchanged.
 
 
-## Host-observed fork suppression (19c)
+## Fork cache misses are audited and warned, never a session state (108)
 
-The `sessions` table gains `fork_suppressed_at` and `fork_suppressed_run`, and the store
-gains four methods over them: `suppressFork(sessionId, at?)`, `forkSuppression(sessionId)`,
-`linkForkSuppression(sessionId, runId)` and `clearForkSuppression(sessionId)`. They hold one
-piece of host-observed session state — a host saw an eligible inherited-context cache miss for
-this memory session — so that it is shared by every executor of that session, survives reopen
-and is not a global setting. `suppressFork` is a single UPDATE guarded by `IS NULL` and returns
-whether it changed the row, which is how two concurrent phases produce one transition and one
-warning. Core neither reads nor enforces this state: it decides no execution mode, changes no
-threshold and gates no write. The Pi adapter reads it at fork admission, records the miss in its
-own run record and clears it from its menu. `reopenSession` and enrollment leave it untouched;
-`closeSession` does too. v1 is unreleased, so the two columns are added in place with no
-migration, as the earlier tickets' schema additions were.
+Ticket 19c's cache-miss latch (`sessions.fork_suppressed_at` and `fork_suppressed_run`, with the store methods
+`suppressFork`, `forkSuppression`, `linkForkSuppression` and `clearForkSuppression`) is gone in both hosts, and a
+migration drops the two columns from an existing database. A host that observes a fork response whose cache read is
+below half of its input (`src/core/api/cache-miss.ts`, `cacheObservation`: the one rule both hosts judge by) audits it
+under `verification.cacheMiss` in the run and warns once per miss, naming how many input tokens were read from cache.
+Nothing follows from a miss: `selectNotingMode` takes no suppression and there is no `cache miss latch` fallback reason.
+
+Spend keeps an unknown cost apart from a zero (108). `runs.usage_cost` is null when a run recorded tokens without a
+price, and `Store.amendRunUsage` lets a host add the price (or the partial usage of a stopped run) to a recorded run
+later. `spend` and `spendSince` count such runs in `unknown` (tokens without a price, or a cancelled run with no usage)
+and leave them out of `cost`; every display marks the total as a lower bound instead of counting them as free.

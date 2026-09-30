@@ -92,12 +92,10 @@ test("notices: empty by default, one line when automatic off fires", () => {
   expect(buildTraceMenu(TRACE_MENU_FIXTURE_WITH_NOTICE).notices).toHaveLength(1);
 });
 
-test("actions: Turn off/on flips with enrollment, Retry fork only when offered", () => {
+test("actions: Turn off/on flips with enrollment", () => {
   expect(buildTraceMenu(TRACE_MENU_FIXTURE).actions).toEqual(["Turn off", "Catch up", "Stop", "Project…", "Runs…", "Settings…"]);
-  const off = buildTraceMenu({ ...TRACE_MENU_FIXTURE, actions: { enabled: false, retryForkAvailable: false } });
+  const off = buildTraceMenu({ ...TRACE_MENU_FIXTURE, actions: { enabled: false } });
   expect(off.actions[0]).toBe("Turn on");
-  const withRetry = buildTraceMenu({ ...TRACE_MENU_FIXTURE, actions: { enabled: true, retryForkAvailable: true } });
-  expect(withRetry.actions.at(-1)).toBe("Retry fork");
 });
 
 test("settings: budgets derive the knowledge window and max input from the code defaults", () => {

@@ -4,7 +4,11 @@ import type { NotingAgentInput, RunAgentResult } from "../../core/api/index.ts";
  * model arguments and MCP metadata alone never establish a grant. */
 export class CcForkAuthority {
   private readonly onCancel?: (agentId: string) => void;
-  constructor(onCancel?: (agentId: string) => void) { this.onCancel = onCancel; }
+  /** 108: where the native fork's own transcript lives, recorded on every settlement that knows the agent. */
+  private readonly transcriptOf?: (agentId: string) => string | undefined;
+  constructor(onCancel?: (agentId: string) => void, transcriptOf?: (agentId: string) => string | undefined) {
+    this.onCancel = onCancel; this.transcriptOf = transcriptOf;
+  }
   private attempt?: {
     task: NotingAgentInput;
     agentId: string | null;
@@ -104,6 +108,8 @@ export class CcForkAuthority {
     for (const id of attempt.calls.keys()) this.retired.add(id);
     attempt.calls.clear();
     if (outcome === "cancelled" && attempt.agentId) this.onCancel?.(attempt.agentId);
-    attempt.finish(result ?? { outcome, output: "CC Noter fork authority retired before native completion" });
+    const nativeLog = attempt.agentId ? this.transcriptOf?.(attempt.agentId) : undefined;
+    attempt.finish({ ...(result ?? { outcome, output: "CC Noter fork authority retired before native completion" }),
+      ...(nativeLog ? { nativeLog } : {}) });
   }
 }

@@ -45,7 +45,7 @@ const enumerated = (h: Host, branch = "main") => {
   return { entries: String(h.memory.pendingEntries(1, branch, head).length),
     facts: String(h.memory.store.listBranchFacts(1, branch, head).length),
     changedKnowledge: String(knowledge.length - processed.size), knowledge: String(knowledge.length),
-    cost: h.memory.spendSince(midnight()).toFixed(2) };
+    cost: h.memory.spendSince(midnight()).cost.toFixed(2) };
 };
 /** An existing refresh point, not a new one: `agent_end` is the boundary at which this turn's
  * evidence became importable. */

@@ -232,7 +232,6 @@ test("27b 2026-09-10: an unknown context measure is not a fork base — the task
     // At the final turn checkpoint the reply is already persisted, so the batch includes it.
     expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
     // No latch, no persisted mode change: the next task requests fork again.
-    expect(h.memory.store.forkSuppression(1)).toBeNull();
     // Read the executor's preference, not the separate observer facade's defaults.
     h.ctx.hasUI = true;
     h.answers.push("Settings…", undefined); await h.commands.get("trace")!.handler("", h.ctx);

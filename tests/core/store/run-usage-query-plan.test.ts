@@ -22,7 +22,7 @@ test("77: listRunUsage is a direct session_id search on its covering index, neve
     const usage = store.listRunUsage(session.id);
     const queries = prepare.mock.calls.map(([sql]) => sql);
     prepare.mockRestore();
-    expect(usage).toEqual([{ kind: "noting", usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: 0.5 } }]);
+    expect(usage).toEqual([{ kind: "noting", costUnknown: false, usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: 0.5 } }]);
     expect(queries).toHaveLength(1);
     const [query] = queries;
     expect(query).not.toContain("IS NULL OR"); // a direct condition, not the optional-parameter form
@@ -39,7 +39,7 @@ test("77: spendSince is a direct created_at range search on its covering index, 
     store.recordRun({ kind: "noting", sessionId: session.id, branch: "main", outcome: "success", createdAt: "2026-09-09T00:00:00Z",
       response: JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 1.25 } } }) });
     const prepare = vi.spyOn(store.db, "prepare");
-    const cost = store.spendSince("2026-09-09T00:00:00Z");
+    const { cost } = store.spendSince("2026-09-09T00:00:00Z");
     const queries = prepare.mock.calls.map(([sql]) => sql);
     prepare.mockRestore();
     expect(cost).toBe(1.25);
@@ -66,9 +66,9 @@ test("77: spendSince's rows read grow with the day's runs, not with history", ()
         store.recordRun({ kind: "noting", sessionId: session.id, branch: "main", outcome: "success", createdAt: "2026-09-09T00:00:00Z",
           response: JSON.stringify({ usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 2 } } }) });
     });
-    const all = vi.spyOn(store.db.prepare(`SELECT id, usage_cost FROM runs INDEXED BY idx_runs_created_at
+    const all = vi.spyOn(store.db.prepare(`SELECT id, outcome, usage_input, usage_cost FROM runs INDEXED BY idx_runs_created_at
       WHERE created_at >= ? ORDER BY id`).constructor.prototype, "all");
-    const cost = store.spendSince("2026-09-09T00:00:00Z");
+    const { cost } = store.spendSince("2026-09-09T00:00:00Z");
     const rowsRead = all.mock.results.flatMap(r => (Array.isArray(r.value) ? r.value.length : 0));
     all.mockRestore();
     expect(cost).toBe(6); // 3 recent runs at 2 each; the 500 old runs are outside the range
@@ -80,15 +80,15 @@ test("77: derivation pinned — one usage_* column set per response shape", () =
   const { store, session } = seeded();
   const run = (response: string | null) => store.recordRun({ kind: "noting", sessionId: session.id, branch: "main", outcome: "success", createdAt: "2026-09-09T00:00:00Z", response }).id;
   try {
-    const cases: { name: string; response: string | null; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | null }[] = [
+    const cases: { name: string; response: string | null; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number | null } | null }[] = [
       { name: "invalid JSON", response: "not json at all", usage: null },
       { name: "no usage key", response: JSON.stringify({ output: "x" }), usage: null },
       { name: "explicit null usage", response: JSON.stringify({ usage: null }), usage: null },
-      { name: "non-object usage (boolean)", response: JSON.stringify({ usage: true }), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } },
-      { name: "non-object usage (string that looks like JSON)", response: JSON.stringify({ usage: '{"input":999}' }), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } },
+      { name: "non-object usage (boolean)", response: JSON.stringify({ usage: true }), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } },
+      { name: "non-object usage (string that looks like JSON)", response: JSON.stringify({ usage: '{"input":999}' }), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } },
       { name: "booleans as 1/0", response: JSON.stringify({ usage: { input: true, output: false, cacheRead: 0, cacheWrite: 0, cost: { total: true } } }), usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, cost: 1 } },
-      { name: "missing fields default to 0", response: JSON.stringify({ usage: { input: 5 } }), usage: { input: 5, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } },
-      { name: "cost.total absent", response: JSON.stringify({ usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 } }), usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: 0 } },
+      { name: "missing fields default to 0", response: JSON.stringify({ usage: { input: 5 } }), usage: { input: 5, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } },
+      { name: "cost.total absent: tokens known, cost unknown (108)", response: JSON.stringify({ usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 } }), usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: null } },
       { name: "no response at all", response: null, usage: null },
     ];
     for (const { response } of cases) run(response);
