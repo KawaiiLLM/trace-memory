@@ -10749,44 +10749,6 @@ var CcTranscriptCursor = class {
   node(uuid5) {
     return this.nodes.get(uuid5);
   }
-  /** Read only selected, committed original records from the same native file this cursor scanned.
-   * A changed or reset file gives no coverage; the next reconciliation rebuilds its index. */
-  selectedRecords(path, ids) {
-    if (!this.stamp || !this.lastSnapshot || this.lastSnapshot.problem) return null;
-    const records = [];
-    let descriptor;
-    try {
-      descriptor = (0, import_node_fs5.openSync)(path, "r");
-    } catch (error3) {
-      if (error3.code === "ENOENT") return null;
-      throw error3;
-    }
-    try {
-      const before = (0, import_node_fs5.fstatSync)(descriptor);
-      const stamp = { size: before.size, modifiedMs: before.mtimeMs, changedMs: before.ctimeMs, device: before.dev, inode: before.ino };
-      if (!sameStamp(this.stamp, stamp)) return null;
-      for (const id of ids) {
-        const node = this.nodes.get(id), range = node?.byteRange;
-        if (!node?.committed || !node.selected || !range || range.start < 0 || range.end > this.completeOffset || range.end <= range.start) return null;
-        const bytes = Buffer.alloc(range.end - range.start);
-        let offset = 0;
-        while (offset < bytes.length) {
-          const amount = (0, import_node_fs5.readSync)(descriptor, bytes, offset, bytes.length - offset, range.start + offset);
-          if (!amount) return null;
-          offset += amount;
-        }
-        if (bytes.at(-1) !== 10) return null;
-        const parsed2 = JSON.parse(bytes.subarray(0, -1).toString("utf8"));
-        if (!object3(parsed2) || parsed2.uuid !== id) return null;
-        records.push(parsed2);
-      }
-      const after = (0, import_node_fs5.fstatSync)(descriptor);
-      if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs || after.dev !== before.dev || after.ino !== before.ino) return null;
-      return records;
-    } finally {
-      (0, import_node_fs5.closeSync)(descriptor);
-    }
-  }
   callPath(toolUseId, expectedNames) {
     const carrierIds = this.callCarriers.get(toolUseId);
     if (!carrierIds?.size) return null;
@@ -10886,7 +10848,6 @@ var CcTranscriptCursor = class {
       });
       let beginning = 0;
       while (beginning < completeLength) {
-        const lineStart = start + beginning;
         const ending = bytes.indexOf(10, beginning);
         const raw = bytes.subarray(beginning, ending).toString("utf8");
         beginning = ending + 1;
@@ -10912,7 +10873,6 @@ var CcTranscriptCursor = class {
           } else {
             if (!prior?.committed) newIds.add(node.uuid);
             if (!prior) {
-              node.byteRange = { start: lineStart, end: start + beginning };
               const named = node.parentUuid, parentKey = named === null ? void 0 : scanNodes.get(named)?.messageKey;
               const latest = source?.kind === "toolResult" && parentKey !== void 0 ? scanKeys.get(parentKey) : void 0;
               if (latest !== void 0 && latest !== named) {
@@ -41010,11 +40970,6 @@ var CcProjection = class {
   currentBinding() {
     return this.binding;
   }
-  /** Only already-selected original records, read at their existing cursor offsets. No second
-   * ancestry reconstruction and no body cache survives reconciliation. */
-  nativeRecords(nativeIds) {
-    return this.transcript.selectedRecords(this.binding.transcriptPath, nativeIds);
-  }
   /** Resolve one native tool call from the incremental structural index. The transcript supplies
    * identity; source_paths only names the already-published branch that owns that ancestry. */
   persistedCall(toolUseId, toolName) {
@@ -41562,9 +41517,6 @@ var CcImporter = class {
   }
   setForkRunner(run) {
     this.forkRunner = run;
-  }
-  nativeRecords(nativeIds) {
-    return this.projection.nativeRecords(nativeIds);
   }
   /** Core invokes the runner synchronously before yielding to the provider. An in-flight task
    * holds its invoked worker Promise; only a later task reads this replacement. */
@@ -43742,9 +43694,8 @@ var CcCoordinator = class {
     void this.requestReconcile("retarget");
     return true;
   }
-  /** Source bodies travel in a control RESPONSE, never the 16,384-byte request. This read neither
-   * reserves a task nor establishes coverage: the Hook must check the actual native API view, and
-   * the final checkpoint must revalidate the path before admitting a fork. */
+  /** Freeze batch identity and checkpoint without reserving a task. Coverage is computed against
+   * the selected path's latest persisted compaction at final admission. */
   async forkSources(turnId, signal) {
     if (signal.aborted || this.closing || this.closed || this.completedTurns.has(turnId)) return null;
     const result = await this.requestReconcile("fork source view");
@@ -43752,34 +43703,7 @@ var CcCoordinator = class {
     const target = { sessionId: result.coreSessionId, branch: result.branch, headTurnId: result.headTurnId };
     if (!this.importer.memory.config.noting.forkModeDefault || !this.importer.memory.taskEligibility("noting", target).due || this.scheduler?.running().includes("noting")) return null;
     const batch = this.importer.memory.notingBatch(target);
-    const originals = this.importer.nativeRecords(batch.map((entry) => entry.nativeId));
-    if (originals === null) return null;
-    const store = this.importer.memory.store;
-    const remaining = new Set(batch.map((entry) => entry.turnId));
-    const ancestry = [];
-    for (const id of store.pathTurns(target)) {
-      ancestry.push(id);
-      remaining.delete(id);
-      if (!remaining.size) break;
-    }
-    if (remaining.size) throw new Error("CC fork batch has a Turn outside its selected path");
-    const compact = new Set(store.db.prepare("SELECT id FROM turns WHERE kind = 'compaction' AND id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ancestry)).map((row) => Number(row.id)));
-    const afterBoundary = /* @__PURE__ */ new Set();
-    for (const id of ancestry) {
-      if (compact.has(id)) break;
-      afterBoundary.add(id);
-    }
-    return {
-      turnId,
-      ...target,
-      tailId: result.selectedTailId,
-      selected: batch.map((entry, index) => ({
-        nativeId: entry.nativeId,
-        record: originals[index],
-        kind: classifySourceRecord(originals[index])?.kind ?? "compaction",
-        afterBoundary: afterBoundary.has(entry.turnId)
-      }))
-    };
+    return { turnId, ...target, tailId: result.selectedTailId, selected: batch.map((entry) => entry.nativeId) };
   }
   runFork(task) {
     const launch = this.forkLaunch;
@@ -43857,21 +43781,30 @@ var CcCoordinator = class {
     const checkpoint = observation.checkpoint;
     if (!checkpoint || checkpoint.sessionId !== target.sessionId || checkpoint.branch !== target.branch || checkpoint.headTurnId !== target.headTurnId || checkpoint.tailId !== result.selectedTailId)
       return refuse("CC fork source checkpoint moved before admission");
-    if (!this.importer || !Array.isArray(observation.batch) || !Array.isArray(observation.raw) || typeof observation.model !== "string" || !observation.model || !Number.isSafeInteger(observation.window) || !Number.isSafeInteger(observation.prefix) || observation.window <= CC_CONTEXT_HEADROOM || observation.prefix < 0)
+    if (!this.importer || !Array.isArray(observation.batch) || typeof observation.model !== "string" || !observation.model || !Number.isSafeInteger(observation.window) || !Number.isSafeInteger(observation.prefix) || observation.window <= CC_CONTEXT_HEADROOM || observation.prefix < 0)
       return refuse("CC fork source coverage or native model capacity is unavailable");
     const batch = this.importer.memory.notingBatch(target);
     if (observation.batch.length !== batch.length || batch.some((entry, i) => observation.batch[i] !== entry.nativeId))
       return refuse("CC fork batch changed since source observation");
-    if (this.importer.nativeRecords(batch.map((entry) => entry.nativeId)) === null)
-      return refuse("CC original source snapshot changed before fork admission");
-    const selected = new Set(batch.map((entry) => entry.nativeId));
-    if (new Set(observation.raw).size !== observation.raw.length || observation.raw.some((id) => typeof id !== "string" || !selected.has(id)))
-      return refuse("CC fork observation contains an unselected or repeated source identity");
     const memory = this.importer.memory, binding = this.importer.currentBinding();
+    const remaining = new Set(batch.map((entry) => entry.turnId));
+    const ancestry = [];
+    for (const id of memory.store.pathTurns(target)) {
+      ancestry.push(id);
+      remaining.delete(id);
+      if (!remaining.size) break;
+    }
+    if (remaining.size) throw new Error("CC fork batch has a Turn outside its selected path");
+    const compact = new Set(memory.store.db.prepare("SELECT id FROM turns WHERE kind = 'compaction' AND id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ancestry)).map((row) => Number(row.id)));
+    const afterBoundary = /* @__PURE__ */ new Set();
+    for (const id of ancestry) {
+      if (compact.has(id)) break;
+      afterBoundary.add(id);
+    }
     const head = ccDeliveryHead(binding, memory);
     const delivered = deliveredView(memory.store.deliveredKnowledge(head.node));
     const delta = memory.injection(target, delivered);
-    const visible = { ...delivered, raw: new Map(observation.raw.map((id) => [id, "source"])) };
+    const visible = { ...delivered, raw: new Map(batch.filter((entry) => afterBoundary.has(entry.turnId)).map((entry) => [entry.nativeId, "source"])) };
     const decision = selectNotingMode({
       requested: "fork",
       publicationPending: !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length),
