@@ -192,7 +192,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       if (!fact) return false;
       const entries = store.factEntries(factId);
       return entries.length ? entries.every(entryId => manualEntryIds.has(entryId)) : fact.turnId !== path.headTurnId;
-    } : undefined, dreaming?.skippable);
+    } : undefined, dreaming?.skippable, names);
   const sequence = memory.sequence;
   const fetched: { address: string; input: unknown; content: string }[] = [];
   let closed = false, committed: { runId: number; facts: Fact[]; diagnostics: NotingDiagnostic[] } | undefined;
@@ -256,7 +256,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       return `rejected: ${problems[0]}`;
     }
     if (!Array.isArray(input.facts) || Object.keys(input).some((k) => k !== "facts")) {
-      problems = ["note expects {facts: [...]} only"]; return `rejected: ${problems[0]}`;
+      problems = [`${names.note} expects {facts: [...]} only`]; return `rejected: ${problems[0]}`;
     }
     // Manual validation shares one current path within this synchronous submission only.
     // A later call reads it again; Noting's callback instead retains its frozen initial path.
@@ -328,7 +328,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       return read.search(query as string | string[], input.layer as SearchScope | undefined, { ...input as ListingOptions, modelFacing: true, toolNames: names, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch,
         ...(context.maxReadChars === undefined ? {} : { maxChars: context.maxReadChars }) });
     }),
-    ...(dreaming ? [definition("check", input => { if (Object.keys(input).length) throw new Error("check expects {} only"); return dreaming.check(); })] : [definition("note", note)]),
+    ...(dreaming ? [definition("check", input => { if (Object.keys(input).length) throw new Error(`${names.check} expects {} only`); return dreaming.check(); })] : [definition("note", note)]),
     definition("memory", input => held ? held.memory(input) : memory.execute(input)),
   ];
   const acknowledgeRequest = () => {

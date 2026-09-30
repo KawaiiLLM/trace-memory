@@ -7,7 +7,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { TraceMemory, type DreamingAgentInput, type NotingAgentInput } from "../../src/core/api/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
-import { ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
+import { ccWorkerToolNames, CC_WORKER_SERVER_NAME } from "../../src/hosts/cc/tool-names.ts";
+import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { TEST_CC_VERSION } from "../support/cc-version.ts";
 
 const dirs: string[] = [];
@@ -73,6 +74,11 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
         const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
         await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
         client = new Client({ name: "deadline-test", version: "1" }); await client.connect(clientTransport);
+        const listed = await client.listTools();
+        expect(request.options.allowedTools).toEqual(listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`));
+        expect(new Set(request.options.allowedTools)).toEqual(new Set([ccWorkerToolNames.trace, ccWorkerToolNames.search, ccWorkerToolNames.memory, ccWorkerToolNames.check]));
+        expect(request.options.systemPrompt).toBe(loadPrompt("dreaming.md", ccWorkerToolNames));
+        expect(listed.tools.find(tool => tool.name === "check")?.description).not.toContain("{{tool.");
         yield init(directory, request.options.allowedTools, "timed-child");
         yield { type: "assistant", session_id: "timed-child", message: { id: "tool-round", content: [{
           type: "tool_use", id: "late-memory", name: "memory", input: { operations: [], skipped: [] },

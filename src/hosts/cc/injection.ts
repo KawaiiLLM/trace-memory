@@ -246,7 +246,7 @@ async function deliver<T>(config: ResolvedCcHostConfig, input: Pick<CcHookInput,
       const delivered = event.kind === "compact" ? { ...noVisibility(), knowledgeTokens: 0 }
         : deliveredView(memory.store.deliveredKnowledge(event.kind === "prompt"
           ? { ...head.node, pending: [...head.node.pending ?? [], { key: event.promptId }] } : head.node));
-      return { head, at, injection: memory.injection(head.target, delivered, true), watermark: memory.store.deliveryWatermark(head.owner) };
+      return { head, at, injection: memory.injection(head.target, delivered, true, ccPluginToolNames), watermark: memory.store.deliveryWatermark(head.owner) };
     });
     const { head, at, injection } = selected;
     const output: CcHookOutput | null = injection.text ? { hookSpecificOutput: { hookEventName: "SessionStart",

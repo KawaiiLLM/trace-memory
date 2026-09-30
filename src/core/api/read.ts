@@ -219,7 +219,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     if (saved && saved.modelFacing !== !!options.modelFacing) throw new Error("cursor belongs to another presentation surface");
-    if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue a trace cursor; use trace");
+    if (saved?.origin === "trace" && origin === "search") throw new Error(`search cannot continue a trace cursor; use ${options.toolNames?.trace ?? canonicalToolNames.trace}`);
     const defaults = { itemBudget: config.render.entryTokens, toolCallBudget: config.render.toolInputTokens,
       toolResultBudget: config.render.toolResultTokens };
     const content = (key: keyof typeof defaults): number | null => options[key] !== undefined ? options[key]!
@@ -351,7 +351,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   /** 92/97: current visible exact versions minus the node's delivered state, which hosts read from
    * the per-node delivery records. Facts and Raw are evidence, not substitutes for a publication. */
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility(),
-    transport = false): Injection => {
+    transport = false, toolNames: ToolNames = canonicalToolNames): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
     const budgets = store.knowledgeBudgets();
     const knowledgeCap = budgets.injection + config.compaction.sharedAllowanceTokens;
@@ -372,7 +372,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     }));
     const current = values(graph.current.filter(revision => revision.op !== "archive"));
     const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? undefined : projectId, graph, true);
-    const notice = id === undefined ? undefined : sessionKnowledgeNotice(id);
+    const notice = id === undefined ? undefined : sessionKnowledgeNotice(id, undefined, toolNames);
 
     const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
     const states = allStates.filter(state => !(visible.knowledgeStates ?? new Set()).has(knowledgeStateKey(state.receipt)));
@@ -666,7 +666,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // Every enabled ordinary prompt uses this evidence-aware Knowledge-only publication predicate.
     // Worker completion alone never delivers material into the foreground.
     injection,
-    inject: (target: number | { projectId: number } | KnowledgePath): string => injection(target).text,
+    inject: (target: number | { projectId: number } | KnowledgePath, toolNames?: ToolNames): string => injection(target, undefined, false, toolNames).text,
     // One allocator: required state notices/facts/Raw first, then optional current knowledge and
     // Raw-first historical refill in each own base remainder. Scheduling pairs never affect it.
     // No worker, processing mark or coverage persistence is performed by this synchronous render.
@@ -738,7 +738,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // With nothing kept, a receipt that does not fit either leaves the notices window empty.
       const noteOmittedReceipt = noteCost(noteKept) <= knowledgeEnvelope ? noteReceipt(allNotes.length - noteKept) : [];
       const knowledgeNoticeCost = noteTextCost(noteKept) + receiptCharge(noteOmittedReceipt);
-      const notice = sessionKnowledgeNotice(sessionId);
+      const notice = sessionKnowledgeNotice(sessionId, undefined, options.toolNames);
       const active = budgetKnowledge(knowledge, Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
         knowledgeLine, "Knowledge base plus shared allowance", new Set(), undefined, notice);
       const knowledgeUsed = knowledgeNoticeCost + active.cost;

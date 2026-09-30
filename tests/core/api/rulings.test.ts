@@ -15,6 +15,7 @@ import { tokens, hydrate } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
 import { dreamingToolDefinitions, pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames, renderToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { ccPluginToolNames } from "../../../src/hosts/cc/tool-names.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
@@ -562,7 +563,10 @@ test("2026-09-28, 101: '1-2. 可以' (2); 2026-09-29: '只加虚拟地址相关�
   expect(compacted(memory.compact(s.id, "main", t.id))).toContain(`${KNOWLEDGE_RECENCY_NOTICE}\n${line}\n${MEMORY_FILES_NOTICE}\n`);
   const cc = sliceCcInjection({ db: "db", nativeSession: "native", coreSession: s.id }, memory.injection(s.id, undefined, true).transportItems!)
     .filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext).join("\n");
-  expect(cc).toContain(`${line}\n${MEMORY_FILES_NOTICE}`);
+  const ccNotice = MEMORY_FILES_NOTICE.replace("trace(<address>)", `${ccPluginToolNames.trace}(<address>)`);
+  expect(cc).toContain(`${line}\n${ccNotice}`);
+  expect(memory.injection(s.id, undefined, false, ccPluginToolNames).text).toContain(ccNotice);
+  expect(compacted(memory.compact(s.id, "main", t.id, [], false, { toolNames: ccPluginToolNames }))).toContain(ccNotice);
   expect(memory.inject({ projectId: memory.store.getSession(s.id)!.projectId })).not.toContain("Session S");
 });
 

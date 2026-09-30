@@ -1,6 +1,7 @@
 import { isKnowledgeCategory, substantiveArchiveStatement, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
 import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
+import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
 export type ConsolidationDiagnostic =
   | { kind: "unsupported_numbers"; knowledge: string; numbers: string[] }
@@ -11,7 +12,7 @@ const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 export function prepareMemory(store: Store, sessionId: number, raw: unknown, run: RunInput,
   path: KnowledgePath = store.knowledgePath(sessionId),
   eligibleSupport?: (factId: number) => boolean, skippable?: (commit: number) => string | undefined,
-  localFacts?: ReadonlyMap<number, { text: string; quote?: string | null }>) {
+  localFacts?: ReadonlyMap<number, { text: string; quote?: string | null }>, names: ToolNames = canonicalToolNames) {
   const results: string[] = [], operations: KnowledgeOperationInput[] = [];
   const batch = raw as MemoryBatch;
   const projectId = store.getSession(sessionId)!.projectId;
@@ -21,7 +22,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     return { results: ["rejected: drop is N-only; this role uses immediate memory writes"], operations, batch,
       diagnostics: [] as ConsolidationDiagnostic[], declinedCommits: new Map<MemoryBatch["skipped"][number], number>() };
   if (!batch || typeof batch !== "object" || Array.isArray(batch) || !Array.isArray(batch.operations) || !Array.isArray(batch.skipped) || Object.keys(batch).some(k => !["operations", "skipped"].includes(k))) {
-    return { results: ["rejected: memory expects {operations: [...], skipped: [...]} only"], operations, batch,
+    return { results: [`rejected: ${names.memory} expects {operations: [...], skipped: [...]} only`], operations, batch,
       diagnostics: [] as ConsolidationDiagnostic[], declinedCommits: new Map<MemoryBatch["skipped"][number], number>() };
   }
   const facts = (raw: unknown, errors: string[], nonempty = false): number[] => {

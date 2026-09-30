@@ -443,12 +443,12 @@ export interface TraceMemory {
    * read projection only — it neither reorders injection nor changes what is applicable. */
   topicGroups(sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups;
   /** A session id after the first reply; before it exists (first prompt), the project alone: global + project knowledge. */
-  inject(target: number | { projectId: number } | KnowledgePath): string;
+  inject(target: number | { projectId: number } | KnowledgePath, toolNames?: ToolNames): string;
   /** 29a: the same block with the commit ids it kept, for the carrier the host writes on the message
    * it persists. `inject` is this call read for its text alone. 31: `visible` is the reader's own
    * context, whose commits are subtracted and whose stale commits get a status line; the
    * default empty view is the whole applicable set, which is what a fresh context always got. */
-  injection(target: number | { projectId: number } | KnowledgePath, visible?: VisibleView, transportItems?: boolean): Injection;
+  injection(target: number | { projectId: number } | KnowledgePath, visible?: VisibleView, transportItems?: boolean, toolNames?: ToolNames): Injection;
   trace(address: string, options?: ListingOptions): string;
   search(query: string | readonly string[], scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
   declareProject(sessionId: number, name: string, source?: "marker" | "mark", path?: KnowledgePath): string;
@@ -697,7 +697,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         }
         if (raw.length) {
           // Ordinary Turn views omit thinking; explicit full reads retain the original Raw.
-          const rendered = renderTrace(turn, raw, profile, { full: display.full, includeThinking: display.full === true }, display.full ? rawResultText : resultText);
+          const rendered = renderTrace(turn, raw, profile, { full: display.full, includeThinking: display.full === true, traceName: display.toolNames?.trace }, display.full ? rawResultText : resultText);
           const heading = lines[0]! + "\n";
           if (!rendered.content.startsWith(heading)) throw new Error("Raw Turn heading does not match selected Turn");
           lines.push(finish({ ...rendered, content: rendered.content.slice(heading.length) }));
@@ -756,7 +756,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }
     const profile = readProfile(display, display.profile ?? cfg.render);
     const uncompressed = Object.values(profile).every(cap => cap === Infinity);
-    return () => finish(renderTrace(turn, occurrences, profile, { ...options, full: uncompressed }, uncompressed ? rawResultText : resultText));
+    return () => finish(renderTrace(turn, occurrences, profile, { ...options, full: uncompressed, traceName: display.toolNames?.trace }, uncompressed ? rawResultText : resultText));
   };
 
   const read = readFacade(store, cfg, prepareTrace, resultText);

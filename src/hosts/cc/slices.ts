@@ -2,6 +2,7 @@ import { ccInjectionLength, encodeCcInjection, type CcHookOutput, type CcVisible
 import { expandList, knowledgeBlockParts, sessionKnowledgeNotice } from "../../core/render/index.ts";
 import { transportItemText, type TransportItem } from "../../core/render/material.ts";
 import { tokens } from "../../core/render/tokens.ts";
+import { ccPluginToolNames } from "./tool-names.ts";
 
 export const CC_SLICE_COUNT = 24;
 export const CC_SLICE_LIMIT = 10_000;
@@ -10,7 +11,7 @@ export const CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segmen
 /** 101 (ruled): a bound session's knowledge header also names it and the path a subagent inherits
  * its knowledge from. */
 export const ccKnowledgeHeader = (binding: CcVisibleBinding): string => binding.coreSession === null
-  ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE);
+  ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE, ccPluginToolNames);
 
 const address = (item: TransportItem): string => item.kind === "knowledge" ? item.address
   : item.kind === "fact" ? `F${item.factId}` : item.kind === "raw" ? item.address

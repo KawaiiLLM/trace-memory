@@ -10,6 +10,7 @@ import type { CcWorkerJournal } from "./worker.ts";
 import { startControlServer, type CcControlServer, type CcForkObservation } from "./control.ts";
 import { CC_CONTEXT_HEADROOM } from "./config.ts";
 import { ccDeliveryHead } from "./injection.ts";
+import { ccPluginToolNames } from "./tool-names.ts";
 import { assignedNativeSession, currentNativeProcess, nativeSessionRecords, processStartedAt } from "./native-session.ts";
 import { CcTaskScheduler, type CcCatchupStatus } from "./scheduler.ts";
 import { CcForkAuthority } from "./fork-authority.ts";
@@ -639,7 +640,7 @@ export class CcCoordinator {
     }
     const head = ccDeliveryHead(binding, memory);
     const delivered = deliveredView(memory.store.deliveredKnowledge(head.node));
-    const delta = memory.injection(target, delivered);
+    const delta = memory.injection(target, delivered, false, ccPluginToolNames);
     const visible = { ...delivered, raw: new Map(batch.filter(entry => afterBoundary.has(entry.turnId)).map(entry => [entry.nativeId, "source" as const])) };
     const decision = selectNotingMode({ requested: "fork",
       publicationPending: !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length),

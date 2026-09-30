@@ -7,6 +7,8 @@ import { expect, test, vi } from "vitest";
 import { noteAndMemory, stableForkFixture as fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { toolDefinitions } from "../../../src/core/api/tools.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
@@ -56,8 +58,11 @@ test("92: the Noter fork inherits its stable parent without a Raw or preceding-f
     const increment = task(child);
     const instructions = loadPrompt("noting.md");
     const registered = child.tools.map((tool: Body) => tool.function.name);
-    for (const name of ["trace", "search", "note", "memory"]) expect(registered).toContain(name);
-    expect(instructions).toContain(`\`${registered.find((name: string) => name === "note")}({facts: []})\``);
+    expect(new Set(registered.filter((name: string) => name !== "read")))
+      .toEqual(new Set(toolDefinitions.filter(tool => tool.name !== "check").map(tool => tool.name)));
+    expect(child.tools.find((tool: Body) => tool.function.name === canonicalToolNames.note)?.function.parameters)
+      .toEqual(toolDefinitions.find(tool => tool.name === "note")!.parameters);
+    expect(instructions).toContain(`\`${canonicalToolNames.note}({facts: []})\``);
     expect(text(child.messages.at(-1)!)).toContain(`${instructions}\n\n`);
     expect(text(child.messages.at(-1)!).split(instructions)).toHaveLength(2);
     // Mandatory framing, whatever the data delta is: instruction, range, head reply, source index.

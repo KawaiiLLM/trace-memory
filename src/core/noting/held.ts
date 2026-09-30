@@ -80,7 +80,7 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
     });
     const locals = new Map([...facts.rows].flatMap(([id, row]) => row.value ? [[id, row.value] as const] : []));
     const result = prepareMemory(store, path.sessionId, { operations: [value], skipped: [] }, run,
-      path, undefined, undefined, mapping ? undefined : locals);
+      path, undefined, undefined, mapping ? undefined : locals, names);
     const errors = result.results.filter(line => line.startsWith("rejected:"));
     if (errors.length) throw new Error(errors.join("; "));
     const requested = result.operations[0]!;
@@ -131,7 +131,7 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
       : "Publishable: current submission requirements are met; ending normally attempts to publish facts and knowledge together (not a commit guarantee).";
   };
   const validate = () => {
-    if (incomplete()) throw new Error("incomplete Noting: explicitly call both note and memory, including empty arrays");
+    if (incomplete()) throw new Error(`incomplete Noting: explicitly call both ${names.note} and ${names.memory}, including empty arrays`);
     if (problems().length) throw new Error(problems().join("; "));
     // Recheck the final sources/content, including facts cited before a later correction.
     for (const [id, row] of facts.rows) row.value = fact(row.raw, id);

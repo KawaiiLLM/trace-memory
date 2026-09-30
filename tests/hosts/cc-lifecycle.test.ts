@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { createConnection } from "node:net";
-import { TraceMemory } from "../../src/core/api/index.ts";
+import { TraceMemory, noVisibility } from "../../src/core/api/index.ts";
 import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
@@ -13,7 +13,7 @@ import { activeFunctionHook, bindingMutexPath, bindingPath, markCcFunctionHook, 
 import { controlSession, requestCcForkSources, signalCcTurnEnd, startControlServer } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
-import { ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
+import { ccPluginToolNames, ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
 import { CcForkAuthority } from "../../src/hosts/cc/fork-authority.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { processStartedAt, publishNativeSession } from "../../src/hosts/cc/native-session.ts";
@@ -1659,6 +1659,42 @@ test("112: coordinator delivers the frozen complete Noter directive to the Hook 
     resolve({ outcome: "cancelled" });
     await result;
   } finally { await coordinator.shutdown("test"); }
+});
+
+test("112: scheduler freezes actual Core Noter instructions and lifecycle emits that directive with registered plugin names", async () => {
+  const f = fixture("noter-admission-instructions"); enableSyntheticWorker(f);
+  Object.assign(f.config, resolveCcHostConfig({ ...f.config, "noting.triggerTokens": 1,
+    worker: { claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 }, cwd: f.dir } }));
+  f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  await coordinator.start();
+  const importer = (coordinator as any).importer as CcImporter;
+  const memory = importer.memory;
+  const projection = await importer.reconcile();
+  expect(projection.state).toBe("ready");
+  const scheduler = new CcTaskScheduler(memory, f.config.worker, () => {});
+  let release!: (result: unknown) => void, frozen!: { prompt: string; forkPrompt: string; text: string; promptHash: string; tools: { name: string }[] };
+  vi.spyOn((coordinator as any).forkAuthority, "begin").mockImplementation((task: unknown) => {
+    frozen = task as typeof frozen; return new Promise(resolve => { release = resolve; });
+  });
+  let directive!: { prompt: string; turnId: string };
+  (coordinator as any).forkLaunch = { turnId: "native-turn", resolve: (value: typeof directive) => { directive = value; }, signal: new AbortController().signal };
+  try {
+    const visible = { ...noVisibility(), raw: new Map(projection.selectedEntryIds.map(id => [memory.store.getSourceEntry(id)!.nativeId, "source" as const])) };
+    scheduler.reconcile(projection);
+    scheduler.turnEnd(projection, scheduler.catchupTicket(), { model: "synthetic", capacity: { inputTokens: 150_000, prefixTokens: 0 }, visible });
+    await vi.waitFor(() => expect(frozen).toBeDefined());
+    expect(frozen.prompt).toBe(loadPrompt("noting.md", ccPluginToolNames));
+    expect(frozen.forkPrompt).toContain(ccPluginToolNames.note);
+    expect(frozen.forkPrompt).toContain(ccPluginToolNames.memory);
+    expect(frozen.forkPrompt).toContain("ToolSearch");
+    expect(frozen.tools.map(tool => tool.name)).toEqual(["trace", "search", "note", "memory"]);
+    expect(directive.prompt).toBe(`${frozen.forkPrompt}\n\n${frozen.text}`);
+    expect(directive.prompt.split(frozen.prompt)).toHaveLength(2);
+    expect(directive.prompt).toContain("Sources:");
+    release({ outcome: "cancelled" }); await scheduler.settle();
+  } finally { if (release) release({ outcome: "cancelled" }); await coordinator.shutdown("test"); }
 });
 
 // Ticket 108: a CC fork's cost is amended into its run after the fork settled. Shutdown waits for that, and the

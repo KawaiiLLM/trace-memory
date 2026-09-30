@@ -526,6 +526,20 @@ function diffArrays(oldArr, newArr, options) {
   return arrayDiff.diff(oldArr, newArr, options);
 }
 
+// src/core/prompts/tool-names.ts
+var TOOL_ROLES = ["trace", "search", "note", "memory", "check"];
+var canonicalToolNames = { trace: "trace", search: "search", note: "note", memory: "memory", check: "check" };
+function validateToolNames(names) {
+  if (!names || TOOL_ROLES.some((role) => typeof names[role] !== "string" || !/^[a-zA-Z][\w-]*$/.test(names[role])))
+    throw new Error("Missing or invalid exposed tool name for worker launch");
+  if (new Set(TOOL_ROLES.map((role) => names[role])).size !== TOOL_ROLES.length)
+    throw new Error("Worker exposed tool names must be distinct");
+  return Object.freeze({ ...names });
+}
+function renderToolNames(text, names) {
+  return text.replace(/\{\{tool\.(trace|search|note|memory|check)\}\}/g, (_, role) => names[role]);
+}
+
 // src/core/store/index.ts
 var import_node_crypto3 = require("node:crypto");
 
@@ -5810,7 +5824,7 @@ function renderTrace(turn, entries, profile, options = {}, resultText = rawResul
   }
   const receipts = omittedCalls ? [
     `T${turn.id}: ${omittedCalls} omitted calls (including partial calls)`,
-    ...[...omitted].map((address2) => `expand: trace(${JSON.stringify({ address: address2, itemBudget: null, toolCallBudget: null, toolResultBudget: null })})`)
+    ...[...omitted].map((address2) => `expand: ${options.traceName ?? "trace"}(${JSON.stringify({ address: address2, itemBudget: null, toolCallBudget: null, toolResultBudget: null })})`)
   ] : [];
   return { content: lines.join("\n"), receipts };
 }
@@ -6141,10 +6155,11 @@ var charge = (parts) => parts.reduce((total, part) => total + tokens(part) + 1, 
 var EXPAND_LIMIT = 8;
 var expandList = (addresses) => addresses.length <= EXPAND_LIMIT ? addresses.join(", ") : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 var KNOWLEDGE_RECENCY_NOTICE = "Items are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.";
-var MEMORY_FILES_NOTICE = "Memory is also readable as files with your read and grep tools: /tm/<address> shows what trace(<address>) shows (e.g. /tm/K12, /tm/F123, /tm/T45#E2); grep over /tm searches full text beyond compressed views; /tm lists the layout.";
-var sessionKnowledgeNotice = (sessionId, recencyNotice = KNOWLEDGE_RECENCY_NOTICE) => `${recencyNotice}
+var MEMORY_FILES_TEMPLATE = "Memory is also readable as files with your read and grep tools: /tm/<address> shows what {{tool.trace}}(<address>) shows (e.g. /tm/K12, /tm/F123, /tm/T45#E2); grep over /tm searches full text beyond compressed views; /tm lists the layout.";
+var MEMORY_FILES_NOTICE = renderToolNames(MEMORY_FILES_TEMPLATE, canonicalToolNames);
+var sessionKnowledgeNotice = (sessionId, recencyNotice = KNOWLEDGE_RECENCY_NOTICE, toolNames = canonicalToolNames) => `${recencyNotice}
 Session S${sessionId}: a subagent inherits this session's knowledge by reading /tm/S${sessionId}/knowledge.
-${MEMORY_FILES_NOTICE}`;
+${renderToolNames(MEMORY_FILES_TEMPLATE, toolNames)}`;
 var renderKnowledgeOmissions = (omitted) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
   const members = omitted.filter((value) => knowledgeCategoryGroup(value.revision.category) === category);
   return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map((value) => `K${value.knowledge.id}`))}`] : [];
@@ -6224,7 +6239,7 @@ var listingLine = (text) => text.replaceAll("\n", " \u23CE ");
 
 // src/core/knowledge-write/prepare.ts
 var numbers = (text) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
-function prepareMemory(store, sessionId, raw, run, path = store.knowledgePath(sessionId), eligibleSupport, skippable, localFacts) {
+function prepareMemory(store, sessionId, raw, run, path = store.knowledgePath(sessionId), eligibleSupport, skippable, localFacts, names = canonicalToolNames) {
   const results = [], operations = [];
   const batch = raw;
   const projectId = store.getSession(sessionId).projectId;
@@ -6240,7 +6255,7 @@ function prepareMemory(store, sessionId, raw, run, path = store.knowledgePath(se
     };
   if (!batch || typeof batch !== "object" || Array.isArray(batch) || !Array.isArray(batch.operations) || !Array.isArray(batch.skipped) || Object.keys(batch).some((k) => !["operations", "skipped"].includes(k))) {
     return {
-      results: ["rejected: memory expects {operations: [...], skipped: [...]} only"],
+      results: [`rejected: ${names.memory} expects {operations: [...], skipped: [...]} only`],
       operations,
       batch,
       diagnostics: [],
@@ -6398,7 +6413,7 @@ ${fact.quote ?? ""}`);
 }
 
 // src/core/knowledge-write/bind.ts
-function bindMemory(store, sessionId, run, path = store.knowledgePath(sessionId), eligibleSupport, skippable) {
+function bindMemory(store, sessionId, run, path = store.knowledgePath(sessionId), eligibleSupport, skippable, names = canonicalToolNames) {
   const allCommitted = [];
   const skipped = [];
   const skippedCommits = [];
@@ -6407,7 +6422,7 @@ function bindMemory(store, sessionId, run, path = store.knowledgePath(sessionId)
   let failure;
   const sequence = [];
   const execute = (input) => {
-    const prepared = prepareMemory(store, sessionId, input, run, path, eligibleSupport, skippable);
+    const prepared = prepareMemory(store, sessionId, input, run, path, eligibleSupport, skippable, void 0, names);
     problems = prepared.results.filter((r) => r.startsWith("rejected:"));
     if (problems.length) {
       failure = void 0;
@@ -6528,20 +6543,6 @@ function knowledgeReadSelection(store, options, namedProject) {
   return { input, graph, path, byCommit, matches, representatives, status };
 }
 var KNOWLEDGE_REPRESENTATIVE_RECEIPT = "One representative per K; inspect a K with {{tool.trace}}(Kn, versions:history/all) or {{tool.trace}}(Kn..).";
-
-// src/core/prompts/tool-names.ts
-var TOOL_ROLES = ["trace", "search", "note", "memory", "check"];
-var canonicalToolNames = { trace: "trace", search: "search", note: "note", memory: "memory", check: "check" };
-function validateToolNames(names) {
-  if (!names || TOOL_ROLES.some((role) => typeof names[role] !== "string" || !/^[a-zA-Z][\w-]*$/.test(names[role])))
-    throw new Error("Missing or invalid exposed tool name for worker launch");
-  if (new Set(TOOL_ROLES.map((role) => names[role])).size !== TOOL_ROLES.length)
-    throw new Error("Worker exposed tool names must be distinct");
-  return Object.freeze({ ...names });
-}
-function renderToolNames(text, names) {
-  return text.replace(/\{\{tool\.(trace|search|note|memory|check)\}\}/g, (_, role) => names[role]);
-}
 
 // src/core/render/material.ts
 var import_node_crypto4 = require("node:crypto");
@@ -6770,7 +6771,7 @@ function readFacade(store, config3, prepare = () => {
     const saved = options.cursor ? cursors.get(options.cursor) : void 0;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     if (saved && saved.modelFacing !== !!options.modelFacing) throw new Error("cursor belongs to another presentation surface");
-    if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue a trace cursor; use trace");
+    if (saved?.origin === "trace" && origin === "search") throw new Error(`search cannot continue a trace cursor; use ${options.toolNames?.trace ?? canonicalToolNames.trace}`);
     const defaults = {
       itemBudget: config3.render.entryTokens,
       toolCallBudget: config3.render.toolInputTokens,
@@ -6903,7 +6904,7 @@ function readFacade(store, config3, prepare = () => {
     `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`
   );
   const applicable = (projectId, sessionId = 0, headTurnId, branch) => store.listVisibleKnowledge(sessionId, projectId, headTurnId, branch);
-  const injection = (target, visible = noVisibility(), transport = false) => {
+  const injection = (target, visible = noVisibility(), transport = false, toolNames = canonicalToolNames) => {
     const empty = () => ({ text: "", knowledgeCommitIds: [] });
     const budgets2 = store.knowledgeBudgets();
     const knowledgeCap = budgets2.injection + config3.compaction.sharedAllowanceTokens;
@@ -6922,7 +6923,7 @@ function readFacade(store, config3, prepare = () => {
     }));
     const current = values(graph.current.filter((revision) => revision.op !== "archive"));
     const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? void 0 : projectId, graph, true);
-    const notice = id === void 0 ? void 0 : sessionKnowledgeNotice(id);
+    const notice = id === void 0 ? void 0 : sessionKnowledgeNotice(id, void 0, toolNames);
     const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
     const states = allStates.filter((state) => !(visible.knowledgeStates ?? /* @__PURE__ */ new Set()).has(knowledgeStateKey(state.receipt)));
     if (!delta.length && !states.length) return empty();
@@ -7234,7 +7235,7 @@ function readFacade(store, config3, prepare = () => {
     // Every enabled ordinary prompt uses this evidence-aware Knowledge-only publication predicate.
     // Worker completion alone never delivers material into the foreground.
     injection,
-    inject: (target) => injection(target).text,
+    inject: (target, toolNames) => injection(target, void 0, false, toolNames).text,
     // One allocator: required state notices/facts/Raw first, then optional current knowledge and
     // Raw-first historical refill in each own base remainder. Scheduling pairs never affect it.
     // No worker, processing mark or coverage persistence is performed by this synchronous render.
@@ -7285,7 +7286,7 @@ function readFacade(store, config3, prepare = () => {
       const notes = allNotes.slice(0, noteKept).map((note) => note.text);
       const noteOmittedReceipt = noteCost(noteKept) <= knowledgeEnvelope ? noteReceipt(allNotes.length - noteKept) : [];
       const knowledgeNoticeCost = noteTextCost(noteKept) + receiptCharge(noteOmittedReceipt);
-      const notice = sessionKnowledgeNotice(sessionId);
+      const notice = sessionKnowledgeNotice(sessionId, void 0, options.toolNames);
       const active = budgetKnowledge(
         knowledge,
         Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
@@ -7705,7 +7706,8 @@ function holdNoting(store, run, path, validateFact, names = canonicalToolNames) 
       path,
       void 0,
       void 0,
-      mapping ? void 0 : locals
+      mapping ? void 0 : locals,
+      names
     );
     const errors = result.results.filter((line) => line.startsWith("rejected:"));
     if (errors.length) throw new Error(errors.join("; "));
@@ -7751,7 +7753,7 @@ function holdNoting(store, run, path, validateFact, names = canonicalToolNames) 
     return blockers.length ? `Not publishable: ${blockers.join("; ")}. Ending now publishes nothing.` : "Publishable: current submission requirements are met; ending normally attempts to publish facts and knowledge together (not a commit guarantee).";
   };
   const validate = () => {
-    if (incomplete()) throw new Error("incomplete Noting: explicitly call both note and memory, including empty arrays");
+    if (incomplete()) throw new Error(`incomplete Noting: explicitly call both ${names.note} and ${names.memory}, including empty arrays`);
     if (problems().length) throw new Error(problems().join("; "));
     for (const [id, row] of facts.rows) row.value = fact(row.raw, id);
   };
@@ -7966,7 +7968,7 @@ function bindTools(store, read, supplied, metadata, dreaming, exposedNames = can
     if (!fact) return false;
     const entries = store.factEntries(factId2);
     return entries.length ? entries.every((entryId) => manualEntryIds.has(entryId)) : fact.turnId !== path.headTurnId;
-  } : void 0, dreaming?.skippable);
+  } : void 0, dreaming?.skippable, names);
   const sequence = memory.sequence;
   const fetched = [];
   let closed = false, committed;
@@ -8033,7 +8035,7 @@ function bindTools(store, read, supplied, metadata, dreaming, exposedNames = can
       return `rejected: ${problems[0]}`;
     }
     if (!Array.isArray(input.facts) || Object.keys(input).some((k) => k !== "facts")) {
-      problems = ["note expects {facts: [...]} only"];
+      problems = [`${names.note} expects {facts: [...]} only`];
       return `rejected: ${problems[0]}`;
     }
     const sourcePath = input.facts.length ? manualEntryIds ? manualEntries : store.sourcePath(session.id, context.branch, path.headTurnId) : [];
@@ -8129,7 +8131,7 @@ Status: ${status}`;
       });
     }),
     ...dreaming ? [definition("check", (input) => {
-      if (Object.keys(input).length) throw new Error("check expects {} only");
+      if (Object.keys(input).length) throw new Error(`${names.check} expects {} only`);
       return dreaming.check();
     })] : [definition("note", note)],
     definition("memory", (input) => held ? held.memory(input) : memory.execute(input))
@@ -8345,7 +8347,7 @@ function memoryFiles(memory, reader) {
     let m;
     if (m = INHERITED.exec(path)) {
       const id = Number(m[1]);
-      return memory.injection(store.currentPath(id)).text || `(a fresh context at S${id}'s current head would receive no knowledge)`;
+      return memory.injection(store.currentPath(id), void 0, false, toolNames).text || `(a fresh context at S${id}'s current head would receive no knowledge)`;
     }
     if (m = HISTORY.exec(path)) return trace(m[1], { versions: "history" });
     if (m = ENTRY.exec(path)) return trace(`S${m[1]}/T${m[2]}#E${m[3]}`);
@@ -9491,7 +9493,7 @@ Knowledge: ${backlinks.join("; ")}` : "");
           } else lines.push(renderFact(fact, relations.get(fact.id) ?? [], itemCap));
         }
         if (raw.length) {
-          const rendered = renderTrace(turn, raw, profile2, { full: display.full, includeThinking: display.full === true }, display.full ? rawResultText : resultText);
+          const rendered = renderTrace(turn, raw, profile2, { full: display.full, includeThinking: display.full === true, traceName: display.toolNames?.trace }, display.full ? rawResultText : resultText);
           const heading = lines[0] + "\n";
           if (!rendered.content.startsWith(heading)) throw new Error("Raw Turn heading does not match selected Turn");
           lines.push(finish({ ...rendered, content: rendered.content.slice(heading.length) }));
@@ -9533,7 +9535,7 @@ Knowledge: ${backlinks.join("; ")}` : "");
     }
     const profile = readProfile(display, display.profile ?? cfg.render);
     const uncompressed = Object.values(profile).every((cap) => cap === Infinity);
-    return () => finish(renderTrace(turn, occurrences, profile, { ...options, full: uncompressed }, uncompressed ? rawResultText : resultText));
+    return () => finish(renderTrace(turn, occurrences, profile, { ...options, full: uncompressed, traceName: display.toolNames?.trace }, uncompressed ? rawResultText : resultText));
   };
   const read = readFacade(store, cfg, prepareTrace, resultText);
   const notingViewCache = /* @__PURE__ */ new Map();
@@ -42284,7 +42286,7 @@ async function deliver(config3, input, event, emit, options = {}) {
       const head2 = ccDeliveryHead(binding, memory);
       const at2 = event.kind === "prompt" ? { nodeKey: event.promptId } : event.kind === "compact" ? head2.following() : head2.at();
       const delivered = event.kind === "compact" ? { ...noVisibility(), knowledgeTokens: 0 } : deliveredView(memory.store.deliveredKnowledge(event.kind === "prompt" ? { ...head2.node, pending: [...head2.node.pending ?? [], { key: event.promptId }] } : head2.node));
-      return { head: head2, at: at2, injection: memory.injection(head2.target, delivered, true), watermark: memory.store.deliveryWatermark(head2.owner) };
+      return { head: head2, at: at2, injection: memory.injection(head2.target, delivered, true, ccPluginToolNames), watermark: memory.store.deliveryWatermark(head2.owner) };
     });
     const { head, at, injection } = selected;
     const output = injection.text ? {
@@ -43989,7 +43991,7 @@ ${task.text}`, turnId: launch.turnId });
     }
     const head = ccDeliveryHead(binding, memory);
     const delivered = deliveredView(memory.store.deliveredKnowledge(head.node));
-    const delta = memory.injection(target, delivered);
+    const delta = memory.injection(target, delivered, false, ccPluginToolNames);
     const visible = { ...delivered, raw: new Map(batch.filter((entry) => afterBoundary.has(entry.turnId)).map((entry) => [entry.nativeId, "source"])) };
     const decision = selectNotingMode({
       requested: "fork",
@@ -44261,7 +44263,7 @@ ${task.text}`, turnId: launch.turnId });
 var CC_SLICE_COUNT = 24;
 var CC_SLICE_LIMIT = 1e4;
 var CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segments, order knowledge by the header's p[0] segment number, then by position within that segment: higher segments and later items are newer. Arrival order is not recency. For claims about the same object, the newer item takes precedence until maintenance merges them.";
-var ccKnowledgeHeader = (binding) => binding.coreSession === null ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE);
+var ccKnowledgeHeader = (binding) => binding.coreSession === null ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE, ccPluginToolNames);
 var address = (item) => item.kind === "knowledge" ? item.address : item.kind === "fact" ? `F${item.factId}` : item.kind === "raw" ? item.address : item.kind === "state" ? item.address : "";
 function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinity) {
   const slots = Array.from({ length: CC_SLICE_COUNT }, () => ({ items: [] }));

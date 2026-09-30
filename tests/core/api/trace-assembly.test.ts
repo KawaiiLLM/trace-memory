@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, renderEntry, renderEntryWhole, type ConfigOverride , hydrate } from "../../source-fixture.ts";
 import { wholeTrace } from "../../trace-pages.ts";
+import { ccPluginToolNames } from "../../../src/hosts/cc/tool-names.ts";
 
 const time = "2026-09-09T00:00:00Z";
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, sessionId: number;
@@ -161,6 +162,7 @@ test("23b: a read of a tool result without full is the entry renderer's tier-1 r
   const views = entries.map(e => renderEntry(e, memory.config.render, memory.resultText).content);
   expect(memory.trace(`T${t.id}`)).toBe([header(t.id), ...views].join("\n") +
     `\n\nReceipts:\nT${t.id}: 1 omitted calls (including partial calls)\nexpand: trace({"address":"T${t.id}#E3","itemBudget":null,"toolCallBudget":null,"toolResultBudget":null})` + `\nRaw: T${t.id}#E1..E3`);
+  expect(memory.trace(`T${t.id}`, { toolNames: ccPluginToolNames })).toContain(`expand: ${ccPluginToolNames.trace}({"address":"T${t.id}#E3"`);
   const result = entries.find(e => e.role === "toolResult")!;
   expect(memory.trace(`T${t.id}#E3`)).toContain(renderEntry(result, memory.config.render, memory.resultText).content);
 });

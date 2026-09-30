@@ -1,4 +1,5 @@
 import { diffArrays } from "diff";
+import { canonicalToolNames, renderToolNames, type ToolNames } from "../prompts/tool-names.ts";
 import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup } from "../model/index.ts";
 import type { KnowledgeCategory, KnowledgeRevision, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import { sourceAddresses } from "../store/index.ts";
@@ -11,7 +12,7 @@ import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
 import { tokens, tokensJoined, JoinedTokens } from "./tokens.ts";
 export { tokens, tokensJoined, JoinedTokens };
 
-export interface TurnOptions { full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean; includeThinking?: boolean }
+export interface TurnOptions { full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean; includeThinking?: boolean; traceName?: string }
 export interface Rendered { content: string; receipts: string[] }
 
 /** Ticket 30 "One bounded Raw entry view": the three numbers of the one profile. `E` is the most one
@@ -412,7 +413,7 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
     }
   }
   const receipts = omittedCalls ? [`T${turn.id}: ${omittedCalls} omitted calls (including partial calls)`,
-    ...[...omitted].map(address => `expand: trace(${JSON.stringify({ address, itemBudget: null, toolCallBudget: null, toolResultBudget: null })})`)] : [];
+    ...[...omitted].map(address => `expand: ${options.traceName ?? "trace"}(${JSON.stringify({ address, itemBudget: null, toolCallBudget: null, toolResultBudget: null })})`)] : [];
   return { content: lines.join("\n"), receipts };
 }
 
@@ -763,11 +764,12 @@ export const expandList = (addresses: string[]): string => addresses.length <= E
 export const KNOWLEDGE_RECENCY_NOTICE = "Items are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.";
 /** How a session's reader learns the /tm files exist. Ruled 2026-09-29: keep `trace` and only add
  * this hint; the agent picks whichever access is more convenient. */
-export const MEMORY_FILES_NOTICE = "Memory is also readable as files with your read and grep tools: /tm/<address> shows what trace(<address>) shows (e.g. /tm/K12, /tm/F123, /tm/T45#E2); grep over /tm searches full text beyond compressed views; /tm lists the layout.";
+const MEMORY_FILES_TEMPLATE = "Memory is also readable as files with your read and grep tools: /tm/<address> shows what {{tool.trace}}(<address>) shows (e.g. /tm/K12, /tm/F123, /tm/T45#E2); grep over /tm searches full text beyond compressed views; /tm lists the layout.";
+export const MEMORY_FILES_NOTICE = renderToolNames(MEMORY_FILES_TEMPLATE, canonicalToolNames);
 /** 101 (ruled): a session's own knowledge header also names the session and the path a subagent
  * inherits its knowledge from, so a main agent can pass one line to a subagent. */
-export const sessionKnowledgeNotice = (sessionId: number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): string =>
-  `${recencyNotice}\nSession S${sessionId}: a subagent inherits this session's knowledge by reading /tm/S${sessionId}/knowledge.\n${MEMORY_FILES_NOTICE}`;
+export const sessionKnowledgeNotice = (sessionId: number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE, toolNames: ToolNames = canonicalToolNames): string =>
+  `${recencyNotice}\nSession S${sessionId}: a subagent inherits this session's knowledge by reading /tm/S${sessionId}/knowledge.\n${renderToolNames(MEMORY_FILES_TEMPLATE, toolNames)}`;
 
 export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision[]): string[] =>
   KNOWLEDGE_CATEGORIES.flatMap(category => {

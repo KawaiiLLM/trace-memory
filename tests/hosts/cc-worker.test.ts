@@ -10,7 +10,7 @@ import { resolveCcHostConfig, CC_CONTEXT_HEADROOM } from "../../src/hosts/cc/con
 import { CcAgentWorker, CcResponseOrigins, ccNativeTranscriptPath, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
 import { installCcNativeRejectionGuard } from "../../src/hosts/cc/native-rejection.ts";
 import { CC_MAX_RESULT_CHARS, CcForegroundTools } from "../../src/hosts/cc/tools.ts";
-import { CC_MCP_SERVER_NAME, CC_PLUGIN_NAME, ccPluginToolNames, ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
+import { CC_MCP_SERVER_NAME, CC_PLUGIN_NAME, CC_WORKER_SERVER_NAME, ccPluginToolNames, ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
 import { renderToolDefinitions } from "../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../src/core/prompts/tool-names.ts";
 import { CcTaskScheduler as CoreCcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
@@ -124,6 +124,18 @@ test("host tool maps match registered MCP names and rendered tool descriptions",
   }
   expect(listed.find(tool => tool.name === "note")!.description).toContain(ccPluginToolNames.memory);
   expect(renderToolDefinitions(toolDefinitions, canonicalToolNames).find(tool => tool.name === "note")!.description).toContain("Both note and memory");
+  const memory = TraceMemory(":memory:", async () => { throw new Error("no model request"); });
+  try {
+    const project = memory.store.createProject({ name: "registered-tools", declaredBy: "mark" });
+    const session = memory.store.createSession({ host: "cc:registered", projectId: project.id, enrollmentChoice: true,
+      startedAt: "now", firstReplyAt: "now" });
+    const source = append(memory, session.id, "registered", "source");
+    const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: source.turn.id,
+      toolNames: ccPluginToolNames });
+    for (const tool of tools) expect(tool.description).toBe(listed.find(registered => registered.name === tool.name)!.description);
+    expect(tools.find(tool => tool.name === "note")!.execute({})).toContain(`${ccPluginToolNames.note} expects`);
+    expect(tools.find(tool => tool.name === "memory")!.execute({})).toContain(`${ccPluginToolNames.memory} expects`);
+  } finally { memory.close(); }
 });
 
 test("worker passes only native retry count, records native events, and preserves API failure detail and usage", async () => {
@@ -675,6 +687,14 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
       await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
       const client = new Client({ name: "consolidation-worker-test", version: "1" }); await client.connect(clientTransport);
       const listed = await client.listTools();
+      const exposed = listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`);
+      expect(request.options.allowedTools).toEqual(exposed);
+      expect(request.options.systemPrompt).toBe(loadPrompt("noting.md", ccWorkerToolNames));
+      for (const tool of listed.tools) {
+        const role = tool.name as keyof typeof ccWorkerToolNames;
+        expect(exposed.find(name => name.endsWith(`__${role}`))).toBe(ccWorkerToolNames[role]);
+        expect(tool.description).not.toContain("{{tool.");
+      }
       const memorySchema = (listed.tools.find(tool => tool.name === "memory") as any).inputSchema.properties.operations.items;
       // Joint N creates/updates/archives. Invalid replacement is corrected by its stable slot.
       expect(memorySchema.properties.op.enum).toEqual(["create", "update", "archive"]);

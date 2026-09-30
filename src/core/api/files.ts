@@ -181,7 +181,7 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
     if ((m = INHERITED.exec(path))) {
       // The injection selection with an empty delivered set and the normal budget; nothing is recorded.
       const id = Number(m[1]);
-      return memory.injection(store.currentPath(id)).text || `(a fresh context at S${id}'s current head would receive no knowledge)`;
+      return memory.injection(store.currentPath(id), undefined, false, toolNames).text || `(a fresh context at S${id}'s current head would receive no knowledge)`;
     }
     if ((m = HISTORY.exec(path))) return trace(m[1]!, { versions: "history" });
     if ((m = ENTRY.exec(path))) return trace(`S${m[1]}/T${m[2]}#E${m[3]}`);

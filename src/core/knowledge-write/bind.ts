@@ -1,11 +1,12 @@
 import { prepareMemory } from "./prepare.ts";
+import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 import type { MemoryBatch } from "../model/index.ts";
 import type { Store, RunInput, KnowledgePath } from "../store/index.ts";
 
 export function bindMemory(store: Store, sessionId: number, run: RunInput,
   path: KnowledgePath = store.knowledgePath(sessionId),
   eligibleSupport?: (factId: number) => boolean,
-  skippable?: (commit: number) => string | undefined) {
+  skippable?: (commit: number) => string | undefined, names: ToolNames = canonicalToolNames) {
   const allCommitted: import("../store/index.ts").CommittedKnowledgeOp[] = [];
   // Accepted Dreamer skips become exact processing records when the frozen range settles.
   const skipped: { knowledge: string; because: string }[] = [];
@@ -17,7 +18,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput,
   let failure: { runId: number; problems: string[] } | undefined;
   const sequence: { name: string; input: unknown; result: string; problems?: string[] }[] = [];
   const execute = (input: unknown) => {
-    const prepared = prepareMemory(store, sessionId, input, run, path, eligibleSupport, skippable);
+    const prepared = prepareMemory(store, sessionId, input, run, path, eligibleSupport, skippable, undefined, names);
     problems = prepared.results.filter(r => r.startsWith("rejected:"));
     if (problems.length) { failure = undefined; return JSON.stringify({ results: prepared.results }); }
     const diagnostics = prepared.diagnostics;
