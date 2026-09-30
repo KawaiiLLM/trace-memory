@@ -12,7 +12,7 @@ import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
 import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
+import { TraceMemory, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -115,18 +115,20 @@ export default function (pi: ExtensionAPI) {
   // One extension instance serves one Pi session: Pi tears the runtime down and re-runs the
   // factory on new/resume/fork, so the capture state is a single object.
   const session: { capture?: Capture; notified?: boolean } = {};
+  const rawUnavailable = (entries: readonly { id: number; turnId: number; nativeId: string }[]): string | undefined =>
+    selectNotingMode({ requested: "fork", publicationPending: false, visible: visible(binding()), pending: () => entries,
+      batch: () => entries }).fallbackReason;
+  /** Knowledge this target is still owed: the parent context does not yet hold it. */
+  const knowledgePending = (target: TaskTarget): boolean => {
+    const delta = memory.injection(target, delivered(target));
+    return !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length);
+  };
+  const unpublishedKnowledge = (target: TaskTarget): string | undefined =>
+    knowledgePending(target) ? KNOWLEDGE_PUBLICATION_PENDING : undefined;
   /** Whether this task may still run with inherited context, decided against this host's live state
    * at the moment it launches, and handed to the worker as a value: either the parent state to fork
    * at or the reason it was refused. Every condition is rechecked here for every task, so a task
    * queued before a transition cannot bypass one. */
-  const rawUnavailable = (entries: readonly { id: number; turnId: number; nativeId: string }[]): string | undefined =>
-    selectNotingMode({ requested: "fork", publicationPending: false, visible: visible(binding()), pending: () => entries,
-      batch: () => entries }).fallbackReason;
-  const unpublishedKnowledge = (target: TaskTarget): string | undefined => {
-    const delta = memory.injection(target, delivered(target));
-    return delta.knowledgeCommitIds.length || delta.knowledgeStates?.length
-      ? "Knowledge publication: ordinary deliverable material has not landed in the exact parent context" : undefined;
-  };
   const forkLaunch = (context: ExtensionContext, input: NotingAgentInput,
       model: { id: string; provider: string }, piId: string): ForkLaunch | { refused: string } => {
     // 19c cache-miss latch: the requested mode stays fork; admission resolves it to subagent
@@ -366,10 +368,7 @@ export default function (pi: ExtensionAPI) {
       const refusal = checkpointReadiness(parentFile, checkpoint);
       if (refusal) return refusal;
     }
-    const view = visible(binding());
-    const delta = memory.injection(task.target, delivered(task.target));
-    return selectNotingMode({ requested,
-      publicationPending: !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length), visible: view,
+    return selectNotingMode({ requested, publicationPending: knowledgePending(task.target), visible: visible(binding()),
       pending: () => memory.pendingEntries(task.target.sessionId, task.target.branch, task.target.headTurnId),
       batch: () => memory.notingBatch(task.target, task.boundary) }).fallbackReason;
   };

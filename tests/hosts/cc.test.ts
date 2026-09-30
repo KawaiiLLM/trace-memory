@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -242,6 +242,22 @@ test("CC import is idempotent, preserves all source evidence, and projects only 
     expect(f.importer.memory.store.db.prepare("SELECT native_id, kind FROM native_turns ORDER BY turn_id").all())
       .toEqual([{ native_id: "u1", kind: "turn" }, { native_id: "compact", kind: "compaction" },
         { native_id: "u2", kind: "turn" }, { native_id: "u3", kind: "turn" }]);
+  } finally { f.importer.close(); }
+});
+
+test("a fork Noter's own transcript beside the session is never imported", async () => {
+  // Claude Code 2.1.284 writes a fork's records to <session>/subagents/agent-<id>.jsonl, as sidechain rows.
+  const f = await importerFixture();
+  try {
+    const forkDir = join(f.dir, f.nativeSessionId, "subagents"); mkdirSync(forkDir, { recursive: true });
+    writeFileSync(join(forkDir, "agent-fork.jsonl"), [
+      { type: "fork-context-ref", agentId: "fork", parentSessionId: f.nativeSessionId, parentLastUuid: "a3", contextLength: 7 },
+      { uuid: "fork-a1", parentUuid: null, isSidechain: true, agentId: "fork", type: "assistant", timestamp: at(10),
+        message: { role: "assistant", content: [{ type: "text", text: "fork note" }] } },
+    ].map(line).join(""));
+    const result = await f.importer.reconcile();
+    expect(f.importer.memory.store.listSourceEntries(result.coreSessionId!).map(entry => entry.nativeId))
+      .toEqual(["u1", "a1", "r1", "u2", "a2", "u3", "a3"]);
   } finally { f.importer.close(); }
 });
 

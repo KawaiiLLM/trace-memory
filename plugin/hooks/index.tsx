@@ -11,6 +11,8 @@ let reply: Reply | undefined;
 let breakdown: CcContextBreakdown | undefined;
 let notice = "";
 let unavailable = "";
+/** The session whose function-hook registration this process already made (see turn.step). */
+let registeredSession = "";
 let pluginRoot = "";
 let selectedAction = "";
 let selectedSetting: SettingsRowId | undefined;
@@ -209,6 +211,7 @@ export const register = (on: any) => {
   });
 
   on("session.start", async ($: any, e: any, next: any) => {
+    registeredSession = "";
     try {
       pluginRoot = $.plugin.root;
       if (!pluginRoot) throw new Error("Claude Code plugin root is unavailable");
@@ -224,16 +227,21 @@ export const register = (on: any) => {
   });
 
   // Unlike session.start, this handler is awaited before the main model request. Command SessionStart
-  // has already published the binding by then; re-read the live identity on every step (also after /clear).
+  // has already published the binding by then. The binding keeps the registration while its owner
+  // process is unchanged, so it is made once per session: again only when the live session id
+  // changes (/clear, /resume) or after session.start. Each registration spawns a process.
   on("turn.step", async function* ($: any, e: any, next: any) {
     if (e.agentId || unavailable) return yield* next(e);
     const session = await $.session.id();
-    const root = $.plugin.root;
-    if (!root) throw new Error("Trace Memory: Claude Code plugin root is unavailable");
-    const result = await $.process.run(["node", `${root}/dist/cc.cjs`, "hook-capable", "--config", `${root}/cc.config.json`],
-      { stdin: JSON.stringify({ session_id: session }) });
-    if (result.exitCode !== 0) throw new Error(`Trace Memory function hook registration: ${String(result.stderr || `exit ${result.exitCode}`)}`);
-    if (session !== await $.session.id()) throw new Error("Trace Memory: native session changed during function hook registration");
+    if (session !== registeredSession) {
+      const root = $.plugin.root;
+      if (!root) throw new Error("Trace Memory: Claude Code plugin root is unavailable");
+      const result = await $.process.run(["node", `${root}/dist/cc.cjs`, "hook-capable", "--config", `${root}/cc.config.json`],
+        { stdin: JSON.stringify({ session_id: session }) });
+      if (result.exitCode !== 0) throw new Error(`Trace Memory function hook registration: ${String(result.stderr || `exit ${result.exitCode}`)}`);
+      if (session !== await $.session.id()) throw new Error("Trace Memory: native session changed during function hook registration");
+      registeredSession = session;
+    }
     return yield* next(e);
   });
 

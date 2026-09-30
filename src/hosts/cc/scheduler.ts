@@ -57,7 +57,7 @@ export class CcTaskScheduler {
   }
 
   /** Observe every authoritative projection. Polls can resume a waiting drain after claim expiry. */
-  reconcile(reconcile: CcReconcileResult, _legacyAdmission?: boolean, _legacyEpoch?: number): void {
+  reconcile(reconcile: CcReconcileResult): void {
     const drain = this.catchup;
     if (drain && (drain.state === "running" || drain.state === "waiting")) {
       const pathChanged = reconcile.coreSessionId !== null &&

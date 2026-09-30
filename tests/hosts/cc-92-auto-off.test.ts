@@ -68,7 +68,7 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
       selectedCount: entries.length, selectedTailId: entries.at(-1)!, selectedAppendedEntryIds: [], appendedEntryIds: [], problems: [],
       snapshot: { path: "/unused/fixture.jsonl", exists: true, size: 0, modifiedMs: 0, changedMs: 0, device: 0, inode: 0,
         completeBytes: 0, recordCount: 0, records: [], incompleteBytes: 0, changed: false, reset: false } };
-    scheduler.reconcile(projection, false);
+    scheduler.reconcile(projection);
     expect(scheduler.startCatchup(projection).state).toBe("running");
     for (let i = 0; i < 30 && scheduler.running().length; i++) await new Promise<void>(resolve => setImmediate(resolve));
     expect(scheduler.running()).toEqual([]);

@@ -8450,11 +8450,12 @@ function memoryFiles(memory, reader) {
 }
 
 // src/core/api/fork.ts
+var KNOWLEDGE_PUBLICATION_PENDING = "Knowledge publication: ordinary deliverable material has not landed in the exact parent context";
 function selectNotingMode(input) {
   if (input.requested !== "fork") return { effectiveMode: "subagent" };
   const fallback = (reason) => ({ effectiveMode: "subagent", fallbackReason: reason });
   if (input.suppression) return fallback(input.suppression);
-  if (input.publicationPending) return fallback("Knowledge publication: ordinary deliverable material has not landed in the exact parent context");
+  if (input.publicationPending) return fallback(KNOWLEDGE_PUBLICATION_PENDING);
   if (!input.visible.raw.size)
     return fallback("Raw availability: the selected context holds no conversation entry of ours, so nothing establishes that this task's evidence is inherited");
   if (!input.pending().some((entry) => !input.visible.raw.has(entry.nativeId))) return { effectiveMode: "fork" };
@@ -42418,7 +42419,7 @@ var CcTaskScheduler = class {
     }
   }
   /** Observe every authoritative projection. Polls can resume a waiting drain after claim expiry. */
-  reconcile(reconcile, _legacyAdmission, _legacyEpoch) {
+  reconcile(reconcile) {
     const drain = this.catchup;
     if (drain && (drain.state === "running" || drain.state === "waiting")) {
       const pathChanged = reconcile.coreSessionId !== null && (reconcile.coreSessionId !== drain.target.sessionId || reconcile.branch !== drain.target.branch);
@@ -42981,6 +42982,7 @@ function readCcStatus(stateDir, nativeSessionId) {
 }
 
 // src/hosts/cc/lifecycle.ts
+var CC_TURN_END_REASONS = ["answer", "aborted", "refusal", "error"];
 var wait2 = (milliseconds) => new Promise((resolve4) => setTimeout(resolve4, milliseconds));
 var localMidnight = (now = /* @__PURE__ */ new Date()) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 var processLiveness = (identity) => {
@@ -43256,7 +43258,7 @@ var CcCoordinator = class {
         forkCall: (agentId, callId, name) => this.forkAuthority.call(agentId, callId, name),
         forkCheck: (callId, name) => this.forkAuthority.allows(callId, name),
         forkTerminal: async (agentId, reason, answer) => {
-          if (!["answer", "aborted", "refusal", "error"].includes(reason)) throw new Error(`unsupported CC fork completion reason ${reason}`);
+          if (!CC_TURN_END_REASONS.includes(reason)) throw new Error(`unsupported CC fork completion reason ${reason}`);
           const settled = await this.forkAuthority.complete(agentId, {
             outcome: reason === "answer" ? "success" : reason === "aborted" ? "cancelled" : "failure",
             output: answer,
@@ -43520,7 +43522,7 @@ var CcCoordinator = class {
    * and entry anchor. The hook's turnId is an event key, not a source UUID. */
   async turnEnd(turnId, reason, signal, observation) {
     if (signal.aborted || this.closing || this.closed || this.completedTurns.has(turnId)) return null;
-    if (!["answer", "aborted", "refusal", "error"].includes(reason))
+    if (!CC_TURN_END_REASONS.includes(reason))
       throw new Error(`unsupported CC turn completion reason ${reason}`);
     const epoch = this.scheduler?.catchupTicket();
     const result = await this.requestReconcile("function turn end");

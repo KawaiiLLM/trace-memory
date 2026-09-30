@@ -44,7 +44,7 @@ test.each(["empty", "dropped"] as const)("R4 %s does not spin, complete while du
   f.scheduler.startCatchup(projection); for (let i = 0; i < 5; i++) await tick();
   expect(f.starts).toEqual(["D"]);
   expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase: "dreaming" });
-  f.scheduler.reconcile(projection, false); await tick();
+  f.scheduler.reconcile(projection); await tick();
   expect(f.starts).toEqual(["D"]); expect(f.scheduler.catchupStatus().state).toBe("waiting");
 });
 

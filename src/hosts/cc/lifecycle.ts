@@ -17,6 +17,9 @@ import { CcTaskScheduler, type CcCatchupStatus } from "./scheduler.ts";
 import { CcForkAuthority } from "./fork-authority.ts";
 import { readCcStatus, removeCcStatus, writeCcStatus, type CcStatusFile } from "./status.ts";
 
+/** Claude Code's `turn.complete` reasons, for the main turn and a fork alike. */
+const CC_TURN_END_REASONS: readonly string[] = ["answer", "aborted", "refusal", "error"];
+
 export interface CcCloseResult {
   confirmed: boolean;
   reason: string;
@@ -287,7 +290,7 @@ export class CcCoordinator {
         forkCall: (agentId, callId, name) => this.forkAuthority.call(agentId, callId, name),
         forkCheck: (callId, name) => this.forkAuthority.allows(callId, name),
         forkTerminal: async (agentId, reason, answer) => {
-          if (!["answer", "aborted", "refusal", "error"].includes(reason)) throw new Error(`unsupported CC fork completion reason ${reason}`);
+          if (!CC_TURN_END_REASONS.includes(reason)) throw new Error(`unsupported CC fork completion reason ${reason}`);
           const settled = await this.forkAuthority.complete(agentId, { outcome: reason === "answer" ? "success" : reason === "aborted" ? "cancelled" : "failure",
             output: answer, mode: "fork", audit: { available: false, reason: "CC native fork does not expose the exact provider request body" } });
           if (settled) this.activeForkTurnId = null;
@@ -525,7 +528,7 @@ export class CcCoordinator {
   async turnEnd(turnId: string, reason: string, signal: AbortSignal,
     observation?: CcForkObservation): Promise<{ prompt: string; turnId: string } | null> {
     if (signal.aborted || this.closing || this.closed || this.completedTurns.has(turnId)) return null;
-    if (!['answer', 'aborted', 'refusal', 'error'].includes(reason))
+    if (!CC_TURN_END_REASONS.includes(reason))
       throw new Error(`unsupported CC turn completion reason ${reason}`);
     const epoch = this.scheduler?.catchupTicket();
     const result = await this.requestReconcile("function turn end");

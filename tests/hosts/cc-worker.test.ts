@@ -22,8 +22,8 @@ class CcTaskScheduler extends CoreCcTaskScheduler {
     return { ...value, selectedCount: value.selectedEntryIds.length, selectedTailId: value.selectedEntryIds.at(-1) ?? null,
       selectedAppendedEntryIds: value.appendedEntryIds.filter(id => selected.has(id)) };
   }
-  override reconcile(value: FixtureProjection, admitAutomatic?: boolean, opportunityEpoch?: number): void {
-    super.reconcile(this.projection(value), admitAutomatic, opportunityEpoch);
+  override reconcile(value: FixtureProjection): void {
+    super.reconcile(this.projection(value));
   }
   override startCatchup(value: FixtureProjection, ticket?: number) {
     return super.startCatchup(this.projection(value), ticket);
@@ -1280,7 +1280,7 @@ test("manual catchup reports waiting on a foreign claim and resumes only on a la
   expect(scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase: "noting" });
   for (let i = 0; i < 10; i++) scheduler.reconcile(projection);
   expect(calls).toEqual([]);
-  foreign = false; scheduler.reconcile(projection, false); await tick();
+  foreign = false; scheduler.reconcile(projection); await tick();
   expect(calls).toEqual(["noting"]);
   expect(scheduler.catchupStatus().state).toBe("completed");
   pending = true; scheduler.startCatchup(projection);
@@ -1355,12 +1355,12 @@ test("manual catchup fences pre-admission cancellation, concurrent status, dropp
   expect(calls).toEqual(["noting"]);
   await tick(); expect(calls).toHaveLength(1);
   dropped = false;
-  scheduler.reconcile(projection, false); await tick();
+  scheduler.reconcile(projection); await tick();
   expect(calls).toHaveLength(2);
 
   pending = true;
   scheduler.startCatchup(projection);
-  scheduler.reconcile({ ...projection, branch: "other" }, false);
+  scheduler.reconcile({ ...projection, branch: "other" });
   expect(scheduler.catchupStatus()).toMatchObject({ state: "stopped", diagnostic: "selected branch changed" });
   expect(cancelled).toBe(2);
 });

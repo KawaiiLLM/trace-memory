@@ -9,15 +9,13 @@ beforeAll(async () => {
   moduleUrl = `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0]!.contents).toString("base64")}`;
 });
 
-async function fixture(version = "2.1.280") {
-  // Each instance isolates the real module's version guard; no native process runs in this fixture.
+async function fixture() {
+  // Each instance isolates the real module's state; no native process runs in this fixture.
   const { register } = await import(`${moduleUrl}#${Math.random()}`);
   const handlers = new Map<string, (host: any, event: any, next: any) => any>();
   register((name: string, ...args: any[]) => handlers.set(name, args.at(-1)));
   let session = "first";
-  const run = vi.fn(async (argv: string[], _options?: { stdin: string }) =>
-    argv.includes("--version") ? { exitCode: 0, stdout: `${version} (Claude Code)`, stderr: "" }
-      : { exitCode: 0, stdout: "", stderr: "" });
+  const run = vi.fn(async (_argv: string[], _options?: { stdin: string }) => ({ exitCode: 0, stdout: "", stderr: "" }));
   const status = vi.fn(), log = vi.fn();
   const host = { plugin: { root: "/isolated/plugin" }, session: { id: async () => session },
     process: { run }, command: { register: async () => undefined }, ui: { status, log } };
@@ -63,7 +61,7 @@ test("streaming model request waits for registration and preserves chunks and fi
     return f.result;
   });
   const handler = f.handlers.get("turn.step")!;
-  // The pinned native loader rejects a Promise-returning handler for this streaming event.
+  // Claude Code's native loader rejects a Promise-returning handler for this streaming event.
   expect(handler.constructor.name).toBe("AsyncGeneratorFunction");
   const handling = collect(handler(f.host, step, f.next));
   await vi.waitFor(() => expect(order).toEqual(["registration started"]));
@@ -84,12 +82,15 @@ test("subagent stream passes through; clear and resume use the fresh live native
   expect(child.chunks).toEqual(f.chunks);
   expect(child.result).toBe(f.result);
   expect(f.run).not.toHaveBeenCalled();
-  for (const id of ["first", "after-clear", "after-resume"]) {
+  for (const id of ["first", "first", "after-clear", "after-resume", "after-resume"]) {
     f.setSession(id);
     await collect(handle(f.host, step, f.next));
   }
+  await f.handlers.get("session.start")!(f.host, {}, async () => undefined);
+  await collect(handle(f.host, step, f.next));
+  // One registration per session: a later step in the same session spawns no process until session.start.
   expect(f.run.mock.calls.map(([, options]) => JSON.parse(options!.stdin).session_id))
-    .toEqual(["first", "after-clear", "after-resume"]);
+    .toEqual(["first", "after-clear", "after-resume", "after-resume"]);
 });
 
 test("refused registration or changed session never enters the model request", async () => {

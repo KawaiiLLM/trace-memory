@@ -490,6 +490,7 @@ var reply;
 var breakdown;
 var notice = "";
 var unavailable = "";
+var registeredSession = "";
 var pluginRoot = "";
 var selectedAction = "";
 var selectedSetting;
@@ -726,6 +727,7 @@ export const register = (on) => {
     return nativeCompaction($, e, next, session);
   });
   on("session.start", async ($, e, next) => {
+    registeredSession = "";
     try {
       pluginRoot = $.plugin.root;
       if (!pluginRoot) throw new Error("Claude Code plugin root is unavailable");
@@ -745,14 +747,17 @@ export const register = (on) => {
   on("turn.step", async function* ($, e, next) {
     if (e.agentId || unavailable) return yield* next(e);
     const session = await $.session.id();
-    const root = $.plugin.root;
-    if (!root) throw new Error("Trace Memory: Claude Code plugin root is unavailable");
-    const result = await $.process.run(
-      ["node", `${root}/dist/cc.cjs`, "hook-capable", "--config", `${root}/cc.config.json`],
-      { stdin: JSON.stringify({ session_id: session }) }
-    );
-    if (result.exitCode !== 0) throw new Error(`Trace Memory function hook registration: ${String(result.stderr || `exit ${result.exitCode}`)}`);
-    if (session !== await $.session.id()) throw new Error("Trace Memory: native session changed during function hook registration");
+    if (session !== registeredSession) {
+      const root = $.plugin.root;
+      if (!root) throw new Error("Trace Memory: Claude Code plugin root is unavailable");
+      const result = await $.process.run(
+        ["node", `${root}/dist/cc.cjs`, "hook-capable", "--config", `${root}/cc.config.json`],
+        { stdin: JSON.stringify({ session_id: session }) }
+      );
+      if (result.exitCode !== 0) throw new Error(`Trace Memory function hook registration: ${String(result.stderr || `exit ${result.exitCode}`)}`);
+      if (session !== await $.session.id()) throw new Error("Trace Memory: native session changed during function hook registration");
+      registeredSession = session;
+    }
     return yield* next(e);
   });
   on("tool.call", async ($, e, next) => {

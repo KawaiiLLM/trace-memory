@@ -122,7 +122,7 @@ test.each(["failure", "cancelled", "throw"] as const)("catchup-owned D %s fences
   releaseD(); await tick(); await tick();
   expect(f.scheduler.catchupStatus()).toMatchObject({ state: outcome === "throw" ? "failed" : "stopped",
     diagnostic: outcome === "throw" ? "downstream transport failed" : "downstream terminated" });
-  releaseN(); await tick(); await tick(); f.scheduler.reconcile(projection, false); await tick();
+  releaseN(); await tick(); await tick(); f.scheduler.reconcile(projection); await tick();
   expect(f.memory.noting).toHaveBeenCalledTimes(2); expect(f.memory.dream).toHaveBeenCalledTimes(1);
   expect(f.pending).toEqual([3]); expect(f.memory.cancelTasks).not.toHaveBeenCalled();
 });
@@ -133,7 +133,7 @@ test.each(["empty", "dropped"] as const)("downstream %s is not a catchup failure
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" && f.memory.dream.mock.calls.length === 0 }));
   f.scheduler.startCatchup(projection); await settle(f);
   expect(f.scheduler.catchupStatus().state).toBe("completed"); expect(f.memory.dream).toHaveBeenCalledTimes(1);
-  await tick(); f.scheduler.reconcile(projection, false); await tick();
+  await tick(); f.scheduler.reconcile(projection); await tick();
   expect(f.memory.dream).toHaveBeenCalledTimes(1);
 });
 
@@ -143,7 +143,7 @@ test.each(["stop", "off", "path"] as const)("%s fences held D completion after N
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" }));
   f.scheduler.startCatchup(projection); for (let i = 0; i < 10 && f.memory.noting.mock.calls.length < 2; i++) await tick();
   if (action === "stop") f.scheduler.stopCatchup(); else if (action === "off") f.disable();
-  else f.scheduler.reconcile({ ...projection, branch: "other" }, false);
+  else f.scheduler.reconcile({ ...projection, branch: "other" });
   release(); await tick(); await tick();
   expect(f.memory.dream).toHaveBeenCalledTimes(1); expect(f.scheduler.catchupStatus().state).toBe("stopped");
 });

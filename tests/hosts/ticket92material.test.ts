@@ -37,7 +37,7 @@ for (const cancel of [false, true]) {
           completeBytes: 0, recordCount: 0, records: [], incompleteBytes: 0, changed: false, reset: false } };
       const diagnostics: string[] = [];
       scheduler = new CcTaskScheduler(memory, worker, message => diagnostics.push(message));
-      scheduler.reconcile(projection, false);
+      scheduler.reconcile(projection);
       scheduler.startCatchup(projection);
       if (cancel) {
         await vi.waitFor(() => expect(release).toBeDefined());
