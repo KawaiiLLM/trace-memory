@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { toolDefinitions } from "../../../src/core/api/tools.ts";
+import { toolDefinitions, renderToolDefinitions, canonicalToolNames } from "../../../src/core/api/index.ts";
 import { runNative, NotForkable } from "../../../src/hosts/pi/native.ts";
 import { fixture, say, type Body } from "./native-fixture.ts";
 
@@ -32,7 +32,7 @@ for (const provider of ["fake", "fakeanthropic"])
         const sent = f.sent.length;
         let requests = 0;
         const task = f.task(captured, {
-          tools: toolDefinitions.filter(tool => tool.name === "note" || tool.name === "memory")
+          tools: renderToolDefinitions(toolDefinitions.filter(tool => tool.name === "note" || tool.name === "memory"), canonicalToolNames)
             .map(tool => ({ ...tool, execute: () => { throw new Error("no tool call was scripted"); } })),
           reportToolRejection: () => { throw new Error("no tool call was scripted"); },
           onRequest: () => { requests++; },

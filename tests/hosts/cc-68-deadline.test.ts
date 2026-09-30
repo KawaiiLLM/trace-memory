@@ -7,6 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { TraceMemory, type DreamingAgentInput, type NotingAgentInput } from "../../src/core/api/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
+import { ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
 import { TEST_CC_VERSION } from "../support/cc-version.ts";
 
 const dirs: string[] = [];
@@ -106,7 +107,7 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
   deadlineRun = true;
   try {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const running = memory.dream({ ...target, model: "sonnet", subagentThinkingLevel: "medium" });
+    const running = memory.dream({ ...target, model: "sonnet", subagentThinkingLevel: "medium", toolNames: ccWorkerToolNames });
     await started;
     await vi.advanceTimersByTimeAsync(1000);
     const result = await running;

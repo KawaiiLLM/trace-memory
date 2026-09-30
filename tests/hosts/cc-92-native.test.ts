@@ -7,6 +7,7 @@ import { fact as seedFact } from "../support/seed.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
+import { ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
 import { fencedClaudeVersion, createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
 import { startLoopbackAnthropic, type LoopbackTurn } from "./cc-native-loopback.ts";
 
@@ -100,7 +101,7 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
     entries = memory.store.sourcePath(session.id, "main", second.id).filter(e => e.turnId === second.id);
     beforeKnowledge = memory.store.currentKnowledge(path);
     try {
-      const outcome = await memory.noting({ ...path, model: "sonnet", mode: "subagent" });
+      const outcome = await memory.noting({ ...path, model: "sonnet", mode: "subagent", toolNames: ccWorkerToolNames });
       const evidenceDir = join(cwd, "evidence");
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, `${variant}.requests.json`), JSON.stringify(requests, null, 2) + "\n");

@@ -1,4 +1,4 @@
-import { canonicalToolNames, type ToolNames } from "../../core/prompts/tool-names.ts";
+import { canonicalToolNames, type ToolNames } from "../../core/api/index.ts";
 
 /** These are the MCP server identities used by the registered worker and plugin. */
 export const CC_WORKER_SERVER_NAME = "trace_memory";

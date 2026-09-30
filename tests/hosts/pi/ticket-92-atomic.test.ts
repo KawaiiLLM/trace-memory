@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
 import { fixture, call, say, broken } from "./native-fixture.ts";
 import { runWorker } from "../../../src/hosts/pi/worker.ts";
-import { toolDefinitions } from "../../../src/core/api/tools.ts";
+import { toolDefinitions, renderToolDefinitions, canonicalToolNames } from "../../../src/core/api/index.ts";
 
 for (const ending of ["success", "error"] as const) test(`04: actual Pi worker holds both tools until ${ending} terminal`, async () => {
   const f = await fixture();
@@ -51,7 +51,7 @@ for (const obsolete of [false, true]) test(`04: real Pi fork shared schemas pres
     const task = raw as NotingAgentInput;
     for (const name of ["note", "memory"]) {
       const bound = task.tools.find(tool => tool.name === name)!;
-      const shared = toolDefinitions.find(tool => tool.name === name)!;
+      const shared = renderToolDefinitions(toolDefinitions, canonicalToolNames).find(tool => tool.name === name)!;
       expect({ name: bound.name, description: bound.description, parameters: bound.parameters }).toEqual(shared);
     }
     return runWorker(task, { model: f.model as never, checkCapacity: () => {}, tools: task.tools,

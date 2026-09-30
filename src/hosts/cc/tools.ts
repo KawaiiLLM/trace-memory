@@ -1,6 +1,5 @@
-import { renderToolDefinitions } from "../../core/api/tools.ts";
 import { ccPluginToolNames } from "./tool-names.ts";
-import { toolDefinitions, toolRejected, validateReadInput, type SearchScope, type ToolDefinition } from "../../core/api/index.ts";
+import { toolDefinitions, renderToolDefinitions, toolRejected, validateReadInput, type SearchScope, type ToolDefinition } from "../../core/api/index.ts";
 import type { CcCoordinator, CcReadProjection, CcToolProjection } from "./lifecycle.ts";
 
 export interface CcMcpToolResult {

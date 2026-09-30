@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
 import { renderFact, renderFactPreview, renderFactGroups } from "../../../src/core/render/index.ts";
-import { toolDefinitions } from "../../../src/core/api/tools.ts";
+import { toolDefinitions, canonicalToolNames } from "../../../src/core/api/index.ts";
 import { assignVersionTag } from "../../../src/core/store/version-tags.ts";
 import { CcForegroundTools } from "../../../src/hosts/cc/tools.ts";
 import type { CcCoordinator } from "../../../src/hosts/cc/lifecycle.ts";
@@ -177,7 +177,7 @@ test("92: N material carries legacy owner-session harness context without rewrit
     if (!result.ok) throw new Error(result.problems.join("; "));
     const before = memory.store.db.prepare("SELECT * FROM facts WHERE id=?").get(result.facts[0]!.id);
     const next = memory.store.appendTurn({ sessionId: session.id, parentTurnId: old.id, kind: "turn", userPrompt: "new question", startedAt: "later" });
-    const noting = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: next.id });
+    const noting = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: next.id, toolNames: canonicalToolNames });
     expect(noting.outcome, JSON.stringify(noting)).toBe("success");
     expect(inputText).toContain("Legacy actor episode");
     expect(inputText).toContain("[observation/agent]");

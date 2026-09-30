@@ -1,4 +1,6 @@
-export { toolDefinitions, toolRejected, reviewFeedback, validateReadInput } from "./tools.ts";
+export { toolDefinitions, toolRejected, reviewFeedback, validateReadInput, renderToolDefinitions } from "./tools.ts";
+export { canonicalToolNames } from "../prompts/tool-names.ts";
+export type { ToolNames } from "../prompts/tool-names.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 import { knowledgeReadSelection } from "./knowledge-read.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";

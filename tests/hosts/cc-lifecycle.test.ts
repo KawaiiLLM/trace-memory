@@ -13,6 +13,7 @@ import { activeFunctionHook, bindingMutexPath, bindingPath, markCcFunctionHook, 
 import { controlSession, requestCcForkSources, signalCcTurnEnd, startControlServer } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
+import { ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
 import { CcForkAuthority } from "../../src/hosts/cc/fork-authority.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { processStartedAt, publishNativeSession } from "../../src/hosts/cc/native-session.ts";
@@ -803,8 +804,8 @@ test("owner-token stop uses the facade's owned task path and leaves another exec
   await updateBinding(f.config, f.nativeSessionId, current => ({ ...current!, coreSessionId: a.session.id, projectId: project.id }));
   const server = await startControlServer(f.config, readBinding(f.config, f.nativeSessionId)!, owner);
   try {
-    const ownerRun = owner.noting({ sessionId: a.session.id, branch: "main", headTurnId: a.turn.id, mode: "subagent" });
-    const otherRun = other.noting({ sessionId: b.session.id, branch: "main", headTurnId: b.turn.id, mode: "subagent" });
+    const ownerRun = owner.noting({ sessionId: a.session.id, branch: "main", headTurnId: a.turn.id, mode: "subagent", toolNames: ccWorkerToolNames });
+    const otherRun = other.noting({ sessionId: b.session.id, branch: "main", headTurnId: b.turn.id, mode: "subagent", toolNames: ccWorkerToolNames });
     for (let i = 0; i < 100 && owner.store.getClaim(a.session.id, "noting")?.executorId !== owner.executorId; i++) await sleep(2);
     const controlled = await controlSession(f.config, f.nativeSessionId, "stop", 2_000);
     expect(controlled.state).toBe("acknowledged");
@@ -812,7 +813,7 @@ test("owner-token stop uses the facade's owned task path and leaves another exec
     expect(controlled.reply.abortRequested).toEqual([expect.objectContaining({ sessionId: a.session.id, phase: "noting", executionId: expect.any(String) })]);
     await ownerRun; expect(ownerAborted).toBe(true); expect(owner.store.getClaim(a.session.id, "noting")).toBeNull();
     ownerAborted = false;
-    const ownerRetry = owner.noting({ sessionId: a.session.id, branch: "main", headTurnId: a.turn.id, mode: "subagent" });
+    const ownerRetry = owner.noting({ sessionId: a.session.id, branch: "main", headTurnId: a.turn.id, mode: "subagent", toolNames: ccWorkerToolNames });
     for (let i = 0; i < 100 && owner.store.getClaim(a.session.id, "noting")?.executorId !== owner.executorId; i++) await sleep(2);
     const off = await controlSession(f.config, f.nativeSessionId, "off", 2_000);
     expect(off.state).toBe("acknowledged"); await ownerRetry;
