@@ -67,14 +67,17 @@ const promptOf = (body: Body) => texts([...body.messages ?? []].reverse().find(m
 const ack = (body: Body) => ({ blocks: [{ type: "text" as const, text: `ACK ${promptOf(body) || "compaction"}` }] });
 
 async function run(scenario: Scenario) {
-  // Under /tmp, as in the other executor tests: under macOS's per-user TMPDIR the executor's control
-  // socket path exceeds the Unix-domain limit (control.ts), so the executor never attaches or imports.
-  const root = realpathSync(mkdtempSync("/tmp/tm102-native-")); dirs.push(root);
+  // Use the inherited private socket root under an outer fence; standalone runs need a short /tmp path
+  // because the executor's control socket exceeds the Unix-domain limit under macOS's user TMPDIR.
+  const root = realpathSync(mkdtempSync(join(process.env.TM_NATIVE_SOCKET_ROOT ?? "/tmp", "tm102-native-"))); dirs.push(root);
   // As on any machine that ran a session before, the bindings directory exists, so the executor
   // inside Claude Code watches it and imports as the conversation goes.
   for (const d of ["home", "config", "cwd", "state/bindings"]) mkdirSync(join(root, d), { recursive: true });
   const plugin = join(root, "plugin"), dbPath = join(root, "memory.sqlite"), stateDir = join(root, "state");
-  cpSync(resolve("plugin"), plugin, { recursive: true });
+  cpSync(resolve("plugin"), plugin, { recursive: true, dereference: true });
+  for (const path of [join(plugin, "cc.config.json"), join(plugin, "dist", "cc.cjs"), join(plugin, "hooks", "index.tsx")]) {
+    if (!realpathSync(path).startsWith(root + "/")) throw new Error(`writable plugin fixture escapes scenario: ${path}`);
+  }
   // Never the shipped configuration: it would name the default database.
   writeFileSync(join(plugin, "cc.config.json"), JSON.stringify({ dbPath, stateDir, baseline: "2025-01-01T00:00:00.000Z", ...scenario.settings }));
   if (scenario.failBuild) {
