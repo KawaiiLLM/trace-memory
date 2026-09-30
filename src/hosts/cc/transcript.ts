@@ -90,7 +90,6 @@ export interface CcNativeNode {
   importProblem?: string;
   turnId?: number;
   entryId?: number;
-  /** Original JSONL bytes, indexed during the existing scan; no Raw body is retained. */
   /** An assistant row's message id and content, or a tool result's content, hashed: what a copy shares
    * with the row it repeats. */
   messageKey?: string;
