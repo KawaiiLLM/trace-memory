@@ -16,7 +16,7 @@ function memoryStatusLine(input) {
   const glyph = runningPhase ? "\u25CF" : "\u25CB";
   const value = (count) => count === void 0 ? "?" : String(count);
   const c = input.counts ?? {};
-  const text = `notes: ${value(c.entries)}->${value(c.facts)} memory: ${value(c.changedKnowledge)}/${value(c.knowledge)} cost: ${input.cost === void 0 ? "$?" : `$${input.cost.toFixed(2)}`}`;
+  const text = `notes: ${value(c.entries)}->${value(c.facts)} memory: ${value(c.changedKnowledge)}/${value(c.knowledge)} cost: ${input.cost === void 0 ? "$?" : `$${input.cost.toFixed(2)}${input.costUnknown ? "+" : ""}`}`;
   return [{ role, text: glyph }, { role: "dim", text }];
 }
 
@@ -87,7 +87,8 @@ async function runCcStatusCommand(io = {}) {
       enabled: status.enabled,
       running: alive ? status.running : { noting: false, dreaming: false },
       counts: alive ? status.counts : void 0,
-      cost: alive ? status.cost : void 0
+      cost: alive ? status.cost : void 0,
+      costUnknown: alive ? status.costUnknown : void 0
     });
     if (typeof input.version === "string" && input.version && input.version !== CC_VERIFIED_VERSION)
       segments.push({ role: "dim", text: `unverified CC ${input.version}` });

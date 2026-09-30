@@ -13,6 +13,7 @@ var formatPercent = (ratio) => {
 };
 var formatShare = (value, total) => total > 0 ? formatPercent(value / total) : "0.0%";
 var formatMoney = (n) => `$${n.toFixed(2)}`;
+var formatMoneyBound = (n, unknown = 0) => unknown ? `${formatMoney(n)}+ (${unknown} unknown)` : formatMoney(n);
 var formatWholePercent = (ratio) => `${Math.round(ratio * 100)}%`;
 var CONTEXT_CATEGORY_ORDER = [
   "System",
@@ -86,9 +87,9 @@ function buildPendingSection(input) {
 function buildSpendSection(input) {
   const phase = (label, p) => `${label} ${p.runs} ${p.runs === 1 ? "run" : "runs"} ${formatMoney(p.cost)}`;
   return {
-    sessionLine: `Spend   session ${formatMoney(input.session)}`,
+    sessionLine: `Spend   session ${formatMoneyBound(input.session, input.sessionUnknown)}`,
     phaseLine: `${phase("Noting", input.noting)} \xB7 ${phase("Consolidation", input.consolidation)} \xB7 ${phase("Dreaming", input.dreaming)}`,
-    todayLine: `        today   ${formatMoney(input.today)}`
+    todayLine: `        today   ${formatMoneyBound(input.today, input.todayUnknown)}`
   };
 }
 function buildHeader(input) {
@@ -98,7 +99,7 @@ function buildHeader(input) {
 }
 function buildActions(input) {
   const toggle = input.enabled ? "Turn off" : "Turn on";
-  return [toggle, "Catch up", "Stop", "Project\u2026", "Runs\u2026", "Settings\u2026", ...input.retryForkAvailable ? ["Retry fork"] : []];
+  return [toggle, "Catch up", "Stop", "Project\u2026", "Runs\u2026", "Settings\u2026"];
 }
 var toggleConfirmation = (turnOn, shared) => ({
   title: `Turn Trace Memory ${turnOn ? "on" : "off"} for this session?`,
@@ -195,7 +196,7 @@ var TRACE_MENU_FIXTURE = {
     today: 5.31
   },
   notices: [],
-  actions: { enabled: true, retryForkAvailable: false }
+  actions: { enabled: true }
 };
 var TRACE_MENU_FIXTURE_WITH_NOTICE = {
   ...TRACE_MENU_FIXTURE,
@@ -582,6 +583,17 @@ async function forkEvent($, session, verb, detail) {
   );
   return JSON.parse(decode(result, `Trace Memory ${verb}`)).allowed === true;
 }
+async function showForkWarnings($, session, agent) {
+  try {
+    const result = await $.process.run(
+      ["node", `${$.plugin.root}/dist/cc.cjs`, "hook-fork", "--config", `${$.plugin.root}/cc.config.json`],
+      { stdin: JSON.stringify({ session_id: session, verb: "fork-account", agentId: agent }) }
+    );
+    for (const warning of JSON.parse(decode(result, "Trace Memory fork-account")).warnings ?? []) $.ui.log(String(warning));
+  } catch (error) {
+    console.error(`Trace Memory fork accounting: ${String(error)}`);
+  }
+}
 async function stopNativeFork($, session, agent) {
   if (await $.session.id() !== session) throw new Error("native session changed before fork stop");
   const live = (await $.agent.list()).find((item) => item.id === agent && item.type === "fork" && item.status === "running");
@@ -622,6 +634,7 @@ function watchNativeFork($, session, agent) {
         await stopNativeFork($, session, agent);
         console.error(`Trace Memory native fork ${agent} physically stopped by TaskStop`);
       }
+      await showForkWarnings($, session, agent);
     } catch (error) {
       try {
         await forkEvent($, session, "fork-disconnect", { agentId: agent });
@@ -775,7 +788,7 @@ export const register = (on) => {
   on("turn.complete", async ($, e, next) => {
     if (e.agentId && !unavailable) {
       try {
-        await forkEvent($, await $.session.id(), "fork-terminal", { agentId: e.agentId, reason: e.reason, answer: e.answer ?? "" });
+        await forkEvent($, await $.session.id(), "fork-terminal", { agentId: e.agentId, reason: e.reason, answer: e.answer ?? "", usage: e.usage ?? null });
       } catch (error) {
         console.error(`Trace Memory fork terminal: ${String(error)}`);
       }
@@ -1006,7 +1019,7 @@ export const register = (on) => {
       </Box>;
     }
     if (screen === "runs") return <Box flexDirection="column"><Text>Trace Memory · Runs</Text>
-      {reply.runs.map((run2, i) => <Text key={`run-${i}`}>{`R${run2.id} ${run2.phase} ${run2.status} $${run2.cost.toFixed(2)} ${run2.at}`}</Text>)}
+      {reply.runs.map((run2, i) => <Text key={`run-${i}`}>{`R${run2.id} ${run2.phase} ${run2.status} ${run2.cost === null ? "cost unknown" : `$${run2.cost.toFixed(2)}`} ${run2.at}`}</Text>)}
       <Input key="run-count" label={MENU_INPUTS.runs} onSubmit={(value) => {
       try {
         runsLimit = parseRunsCount(value);

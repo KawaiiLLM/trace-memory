@@ -34,9 +34,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/hosts/cc/index.ts
-var import_node_fs13 = require("node:fs");
+var import_node_fs14 = require("node:fs");
 var import_node_crypto17 = require("node:crypto");
-var import_node_path11 = require("node:path");
+var import_node_path12 = require("node:path");
 var import_node_url = require("node:url");
 
 // src/hosts/cc/config.ts
@@ -988,8 +988,8 @@ function settleExecution(store, id, outcome, runId, reason = "", dreamingAuthori
       last_reason = ?, last_run_id = ?, updated_at = ? WHERE ${task}`).run(Number(outcome === "success"), reason, runId, now, ...key);
     if (!counted.changes) store.db.prepare(`INSERT INTO task_failures(session_id,phase,head,pool,count,last_reason,last_run_id,updated_at)
       VALUES (?,?,?,?,?,?,?,?)`).run(...key, outcome === "success" ? 0 : 1, reason, runId, now);
-    const count2 = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${task}`).get(...key).count);
-    if (count2 !== 3 || !store.enabled(Number(row.session_id))) return {};
+    const count3 = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${task}`).get(...key).count);
+    if (count3 !== 3 || !store.enabled(Number(row.session_id))) return {};
     store.setEnrollment(Number(row.session_id), false);
     store.db.prepare(`UPDATE task_claims AS c SET expires_at = 0 WHERE session_id = ?
       AND NOT (phase = 'dreaming' AND reserved = 0 AND expires_at > ? AND EXISTS (
@@ -1162,12 +1162,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   project_id INTEGER NOT NULL REFERENCES projects(id),
   parent_session_id INTEGER REFERENCES sessions(id),
   project_declaration TEXT NOT NULL DEFAULT 'marker' CHECK (project_declaration IN ('undeclared','marker','mark')),
-  -- 19c cache-miss latch: set once when a host observes an eligible fork cache miss for this memory
-  -- session, so later inherited-context work resolves to fresh context until the user retries. It is
-  -- session-scoped state, not configuration: a reopen, a fork or a copied host sharing this session
-  -- shares it. fork_suppressed_run is the run that detected the miss, linked once it has an id.
-  fork_suppressed_at TEXT,
-  fork_suppressed_run INTEGER,
   -- 62: the real repository root (or cwd) the session started in; the key later sessions join by.
   -- NULL for sessions allocated before the column existed or in an excluded directory (home, temp).
   directory TEXT
@@ -1437,9 +1431,10 @@ function usageFromFields(fields2) {
   if (fields2 === null) return [null, null, null, null, null];
   const [input, output, cacheRead, cacheWrite, costTotal, usage2] = JSON.parse(fields2);
   if (usage2 === null) return [null, null, null, null, null];
-  const count2 = (value) => typeof value === "number" ? value : typeof value === "boolean" ? Number(value) : 0;
-  return [count2(input), count2(output), count2(cacheRead), count2(cacheWrite), count2(costTotal)];
+  const count3 = (value) => typeof value === "number" ? value : typeof value === "boolean" ? Number(value) : 0;
+  return [count3(input), count3(output), count3(cacheRead), count3(cacheWrite), typeof costTotal === "number" ? costTotal : typeof costTotal === "boolean" ? Number(costTotal) : null];
 }
+var costUnknown = (row) => row.usage_cost === null && (row.usage_input !== null || row.outcome === "cancelled");
 var commitAddress = (knowledgeId2, commitId) => `K${knowledgeId2}@${commitId}`;
 var KnowledgeVersionProblem = class extends Error {
   describe;
@@ -1580,8 +1575,8 @@ function pathPending(ids, key) {
     append(id) {
       ids.push(id);
     },
-    removePrefix(count2) {
-      first += count2;
+    removePrefix(count3) {
+      first += count3;
       if (first - base > 1024 && first - base > ids.length / 2) {
         ids.splice(0, first - base);
         base = first;
@@ -1723,6 +1718,8 @@ var Store = class {
         if (!sessionColumns.some((r) => r.name === "directory")) this.db.exec("ALTER TABLE sessions ADD COLUMN directory TEXT");
         if (sessionColumns.some((r) => r.name === "current_branch")) this.db.exec("ALTER TABLE sessions DROP COLUMN current_branch");
         if (sessionColumns.some((r) => r.name === "current_head")) this.db.exec("ALTER TABLE sessions DROP COLUMN current_head");
+        if (sessionColumns.some((r) => r.name === "fork_suppressed_at")) this.db.exec("ALTER TABLE sessions DROP COLUMN fork_suppressed_at");
+        if (sessionColumns.some((r) => r.name === "fork_suppressed_run")) this.db.exec("ALTER TABLE sessions DROP COLUMN fork_suppressed_run");
         if (!this.db.prepare("PRAGMA table_info(source_entries)").all().some((r) => r.name === "entry_ordinal")) {
           this.db.exec(`ALTER TABLE source_entries ADD COLUMN entry_ordinal INTEGER CHECK(entry_ordinal > 0);
             WITH numbered AS (SELECT id, row_number() OVER (PARTITION BY turn_id ORDER BY id) AS ordinal FROM source_entries)
@@ -2285,27 +2282,6 @@ var Store = class {
   requireEnabled(sessionId) {
     if (!this.enabled(sessionId)) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
   }
-  /** 19c: record one eligible fork cache miss for this session. The UPDATE is guarded by IS NULL, so
-   * two phases reporting a miss together produce one transition (and one warning): only the call
-   * that changed the row returns true. */
-  suppressFork(sessionId, at = (/* @__PURE__ */ new Date()).toISOString()) {
-    this.enrollment(sessionId);
-    return !!this.db.prepare("UPDATE sessions SET fork_suppressed_at = ? WHERE id = ? AND fork_suppressed_at IS NULL").run(at, sessionId).changes;
-  }
-  /** The session's automatic fork suppression, or null while it is not suppressed. */
-  forkSuppression(sessionId) {
-    const row = this.db.prepare("SELECT fork_suppressed_at, fork_suppressed_run FROM sessions WHERE id = ?").get(sessionId);
-    if (!row) throw new Error(`session S${sessionId} does not exist`);
-    return row.fork_suppressed_at === null ? null : { at: String(row.fork_suppressed_at), runId: row.fork_suppressed_run === null ? null : Number(row.fork_suppressed_run) };
-  }
-  /** Link the detecting run once core has given it an id; never overwrites an earlier episode's run. */
-  linkForkSuppression(sessionId, runId) {
-    this.db.prepare("UPDATE sessions SET fork_suppressed_run = ? WHERE id = ? AND fork_suppressed_at IS NOT NULL AND fork_suppressed_run IS NULL").run(runId, sessionId);
-  }
-  /** The explicit retry (menu only). A later eligible miss starts a new downgrade episode. */
-  clearForkSuppression(sessionId) {
-    this.db.prepare("UPDATE sessions SET fork_suppressed_at = NULL, fork_suppressed_run = NULL WHERE id = ?").run(sessionId);
-  }
   closeSession(sessionId, at = (/* @__PURE__ */ new Date()).toISOString()) {
     this.db.prepare("UPDATE sessions SET closed_at = ? WHERE id = ?").run(at, sessionId);
   }
@@ -2649,6 +2625,24 @@ var Store = class {
       this.db.prepare("UPDATE run_bodies SET request = ?, response = ? WHERE run_id = ?").run(input.request ?? null, nextResponse, id);
       this.db.prepare(`UPDATE runs SET outcome = ?, mode = ?,
           usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`).run(input.outcome, input.mode ?? null, ...this.usageColumns(nextResponse), id);
+    });
+  }
+  /** 108: a host that learns what a run cost after core recorded it (a CC fork's price, or the partial
+   * usage of a fork stopped mid-run) amends the recorded run through the same writer as `updateRun`,
+   * so the usage columns stay derived from the stored response. */
+  amendRunUsage(id, patch) {
+    this.transaction(() => {
+      const row = this.db.prepare("SELECT response FROM run_bodies WHERE run_id = ?").get(id);
+      if (!row) throw new Error(`run ${id} does not exist`);
+      const response = JSON.parse(row.response ?? "{}");
+      if (patch.usage) response.usage = patch.usage;
+      if (patch.usageStatus === null) delete response.usageStatus;
+      else if (patch.usageStatus) response.usageStatus = patch.usageStatus;
+      if (patch.problem) response.problems = [...response.problems ?? [], patch.problem];
+      if (patch.cacheMiss !== void 0) response.verification = { ...response.verification, cacheMiss: patch.cacheMiss };
+      const next = JSON.stringify(response);
+      this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(next, id);
+      this.db.prepare(`UPDATE runs SET usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`).run(...this.usageColumns(next), id);
     });
   }
   /** The session a run was run for, as metadata: one column, never the request and response bodies.
@@ -3255,7 +3249,7 @@ var Store = class {
           ownerRevisions.set(owner, revisions);
         }
       }
-      const join11 = (id, parent) => {
+      const join13 = (id, parent) => {
         const left = componentOf.get(id), right = componentOf.get(parent);
         if (right === void 0) throw Error(`knowledge lineage references missing commit ${parent}`);
         if (left === right) return;
@@ -3265,7 +3259,7 @@ var Store = class {
         }
         components.delete(right);
       };
-      for (const revision of input2.revisions) for (const parent of input2.parents.get(revision.id) ?? []) join11(revision.id, parent);
+      for (const revision of input2.revisions) for (const parent of input2.parents.get(revision.id) ?? []) join13(revision.id, parent);
       const results = new Map([...components].map(([id, revisions]) => [id, this.graphComponent(input2, revisions)]));
       const liveness = /* @__PURE__ */ new Map();
       for (const ids of owners2.values()) for (const id of ids) {
@@ -3886,13 +3880,13 @@ var Store = class {
         const turns2 = pathMembership(head.ids, head.positions, head.ids.length, () => true, true);
         const endpoint = endpointEntryId === void 0 ? void 0 : view.positions.get(endpointEntryId);
         if (endpointEntryId !== void 0 && (endpoint === void 0 || endpoint >= view.state.count || !turns2.has(view.turns.get(endpointEntryId)))) throw new Error("Material endpoint is not on the selected native path");
-        const count2 = endpoint === void 0 ? view.state.count : endpoint + 1;
-        const selected = pathMembership(view.ids, view.positions, count2, (id) => turns2.has(view.turns.get(id)));
+        const count3 = endpoint === void 0 ? view.state.count : endpoint + 1;
+        const selected = pathMembership(view.ids, view.positions, count3, (id) => turns2.has(view.turns.get(id)));
         return { turns: turns2, entries: { ids: selected, addresses: (turnId) => {
           const addresses = /* @__PURE__ */ new Set();
           if (turns2.has(turnId)) {
             for (const id of view.entriesByTurn.get(turnId) ?? [])
-              if (view.positions.get(id) < count2) for (const address2 of view.addresses.get(id)) addresses.add(address2);
+              if (view.positions.get(id) < count3) for (const address2 of view.addresses.get(id)) addresses.add(address2);
           }
           return addresses;
         } }, consolidatedRuns: /* @__PURE__ */ new Map() };
@@ -4726,22 +4720,26 @@ ${archivedBody}${evidenceLine}${diffLine}`;
    * condition, not the optional-parameter form: that form lets the planner scan the whole table or
    * index as history grows. */
   listRunUsage(sessionId) {
-    const rows = this.db.prepare(`SELECT kind, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost
+    const rows = this.db.prepare(`SELECT kind, outcome, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost
       FROM runs INDEXED BY idx_runs_session WHERE session_id = ? ORDER BY id`).all(sessionId);
-    return rows.map((row) => ({ kind: row.kind, usage: row.usage_cost === null ? null : { input: row.usage_input, output: row.usage_output, cacheRead: row.usage_cache_read, cacheWrite: row.usage_cache_write, cost: row.usage_cost } }));
+    return rows.map((row) => ({ kind: row.kind, costUnknown: costUnknown(row), usage: row.usage_input === null ? null : { input: row.usage_input, output: row.usage_output, cacheRead: row.usage_cache_read, cacheWrite: row.usage_cache_write, cost: row.usage_cost } }));
   }
   /** 51/77: the footer's daily figure — every run's cost, created at or after `since` (77 replaces a
    * per-refresh reparse of every run's `response`, 71's ruling, with the same figure read from the
    * persisted usage columns). 79: the split still needs a `created_at` lookup index (the ticket's own
    * "lookup indexes a query still needs stay"), but its old covering trailing columns (`id`,
    * `usage_cost`) are redundant now that the row has no body to dodge — `idx_runs_created_at`
-   * replaces `idx_runs_daily_usage` (item 0). Rows read still grow with the day's runs, not history. */
+   * replaces `idx_runs_daily_usage` (item 0). Rows read still grow with the day's runs, not history.
+   * 108: `unknown` counts the runs whose cost is unknown, which `cost` does not include. */
   spendSince(since) {
-    const rows = this.db.prepare(`SELECT id, usage_cost FROM runs INDEXED BY idx_runs_created_at
+    const rows = this.db.prepare(`SELECT id, outcome, usage_input, usage_cost FROM runs INDEXED BY idx_runs_created_at
       WHERE created_at >= ? ORDER BY id`).all(since);
-    let cost = 0;
-    for (const row of rows) if (row.usage_cost !== null) cost += row.usage_cost;
-    return cost;
+    let cost = 0, unknown3 = 0;
+    for (const row of rows) {
+      if (row.usage_cost !== null) cost += row.usage_cost;
+      else if (costUnknown(row)) unknown3++;
+    }
+    return { cost, unknown: unknown3 };
   }
   listFactsByRun(runId) {
     return this.hydrateFactSegments(this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(runId).map(toFact));
@@ -5162,8 +5160,8 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   selectedSourceEntrySnapshot(sessionId, branch) {
     const view = this.pathView(sessionId, branch);
     if (!view) return null;
-    const count2 = view.state.count;
-    return { state: view.state, count: count2, tailId: view.state.tailId, ids: () => view.ids.slice(0, count2) };
+    const count3 = view.state.count;
+    return { state: view.state, count: count3, tailId: view.state.tailId, ids: () => view.ids.slice(0, count3) };
   }
   /** Resolve a persisted native ancestry without exposing source_paths storage to a host adapter.
    * A later extension of the same branch is eligible; a sibling that diverged before the prefix is not. */
@@ -5248,11 +5246,11 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       const pathId = Number(this.db.prepare("SELECT id FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch).id);
       const insert = this.db.prepare("INSERT INTO source_path_entries(path_id,position,entry_id) VALUES (?,?,?)");
       newEntryIds.forEach((id, position) => insert.run(pathId, state.count + position, id));
-      const count2 = state.count + newEntryIds.length, tailId = newEntryIds.at(-1);
+      const count3 = state.count + newEntryIds.length, tailId = newEntryIds.at(-1);
       this.db.prepare(`UPDATE source_paths SET length = ?, tail_entry_id = ?, version = ?, hwm_entry_id = ?
-        WHERE session_id = ? AND branch = ?`).run(count2, tailId, nextVersion, Math.max(hwm, ...newEntryIds), sessionId, branch);
+        WHERE session_id = ? AND branch = ?`).run(count3, tailId, nextVersion, Math.max(hwm, ...newEntryIds), sessionId, branch);
       this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
-      return { count: count2, tailId, version: nextVersion };
+      return { count: count3, tailId, version: nextVersion };
     });
   }
   /** Ticket 72: only the writer knows whether the new list extends the stored one — an unbroken
@@ -5410,11 +5408,11 @@ function whitespaceRunTokens(length, newline, precedingPunctuation, indented, al
   return length > 1 || indented || alone ? Math.ceil(length / 128) : 0;
 }
 function whitespaceTokens(segment, previous, next) {
-  let count2 = 0, context = previous;
+  let count3 = 0, context = previous;
   const parts = segment.match(/\n+|[^\S\n]+/g);
   for (const part of parts) {
     const newline = part[0] === "\n";
-    count2 += whitespaceRunTokens(
+    count3 += whitespaceRunTokens(
       part.length,
       newline,
       newline && PUNCTUATION.test(context.slice(-1)),
@@ -5423,7 +5421,7 @@ function whitespaceTokens(segment, previous, next) {
     );
     context = part;
   }
-  return count2;
+  return count3;
 }
 function segmentTokens(segment, previous, next) {
   if (/^\s+$/.test(segment)) return whitespaceTokens(segment, previous, next);
@@ -5543,7 +5541,7 @@ function fit(build, max, cap) {
 }
 function fairShares(total, costs) {
   const pool = Math.max(0, total);
-  const cut2 = (available, count2, index) => Math.floor(available / count2) + (index < available % count2 ? 1 : 0);
+  const cut2 = (available, count3, index) => Math.floor(available / count3) + (index < available % count3 ? 1 : 0);
   const equal = costs.map((_, index) => cut2(pool, costs.length, index));
   const short = costs.filter((cost, index) => cost <= equal[index]).length;
   if (!short || short === costs.length) return equal;
@@ -5567,12 +5565,12 @@ function units(text, json2) {
   return list;
 }
 function codePoints(text) {
-  let count2 = 0;
-  for (let index = 0; index < text.length; index++, count2++) {
+  let count3 = 0;
+  for (let index = 0; index < text.length; index++, count3++) {
     const code = text.charCodeAt(index);
     if (code >= 55296 && code < 56320 && index + 1 < text.length && (text.charCodeAt(index + 1) & 64512) === 56320) index++;
   }
-  return count2;
+  return count3;
 }
 function cutUnits(text, json2) {
   const list = units(text, json2);
@@ -5843,6 +5841,10 @@ var string = (value) => typeof value === "string" ? value : value == null ? "" :
 function renderEntryIndex(entry) {
   return `[${entryAddress(entry)}@${entry.role === "toolResult" ? "observation" : entry.role}] ${entry.role}`;
 }
+function formatCost(cost, unknown3 = 0) {
+  if (cost === void 0) return "unknown";
+  return `$${cost.toFixed(4)}${unknown3 ? ` + ${unknown3} ${unknown3 === 1 ? "run" : "runs"} of unknown cost` : ""}`;
+}
 var runMode = (mode) => mode === "branch" ? "legacy request-copy execution (branch)" : mode ?? "?";
 function renderRun(run, factIds, commits, full = false) {
   let response = {};
@@ -5863,7 +5865,7 @@ function renderRun(run, factIds, commits, full = false) {
     `  trigger origin: ${run.origin ? `S${run.origin.sessionId}/E${run.origin.entryIds.at(-1)}` : "unknown"}`,
     `  model ${run.model ?? "?"}  mode ${runMode(run.mode)}`,
     `  created: ${[...factIds.map((id) => `F${id}`), ...commits.map((c) => `K${c.knowledgeId}@${c.id} (${c.op}: ${c.reason})`)].join(", ") || "nothing"}`,
-    response.usageStatus === "unknown" ? "  usage: unknown  cost unknown" : `  usage: ${usage2 ? `in ${usage2.input ?? 0} out ${usage2.output ?? 0} cacheRead ${usage2.cacheRead ?? 0} cacheWrite ${usage2.cacheWrite ?? 0}` : "none"}  cost $${(usage2?.cost?.total ?? 0).toFixed(4)}${response.usageStatus === "partial" ? " (known usage only; remaining cost unknown)" : ""}`,
+    response.usageStatus === "unknown" ? "  usage: unknown  cost unknown" : `  usage: ${usage2 ? `in ${usage2.input ?? 0} out ${usage2.output ?? 0} cacheRead ${usage2.cacheRead ?? 0} cacheWrite ${usage2.cacheWrite ?? 0}` : "none"}  cost ${formatCost(usage2?.cost?.total)}${response.usageStatus === "partial" ? " (known usage only; remaining cost unknown)" : ""}`,
     `  tools: ${[...counts].map(([n, k]) => `${n} \xD7${k}`).join(", ") || "none"}`,
     `  problems: ${problems.length ? problems.join("; ") : "none"}`
   ];
@@ -6921,7 +6923,7 @@ function readFacade(store, config3, prepare = () => {
     };
     const remaining = knowledgeCap - (visible.knowledgeTokens ?? unaccountedCost());
     if (remaining <= 0) return empty();
-    const buildStates = (count3) => injectionText({ knowledge: [], receipts: [] }, states.slice(0, count3).map((state) => state.text));
+    const buildStates = (count4) => injectionText({ knowledge: [], receipts: [] }, states.slice(0, count4).map((state) => state.text));
     const longest = (high, fits) => {
       let low = 0;
       while (low < high) {
@@ -6940,7 +6942,7 @@ function readFacade(store, config3, prepare = () => {
         address: `K${from.knowledgeId}@v${store.versionOrdinal(from.knowledgeId, from.id)}`
       };
     };
-    const stateCount = longest(states.length, (count3) => tokens(buildStates(count3)) <= remaining);
+    const stateCount = longest(states.length, (count4) => tokens(buildStates(count4)) <= remaining);
     if (stateCount < states.length) {
       if (!stateCount) return empty();
       const material2 = { knowledge: [], receipts: [] };
@@ -6956,17 +6958,17 @@ function readFacade(store, config3, prepare = () => {
     }
     const selectedStates = states.slice(0, stateCount);
     const ordered = [...delta].sort((a, b) => b.revision.id - a.revision.id);
-    const build = (count3) => {
-      const selected2 = budgetKnowledge(ordered.slice(0, count3), Infinity, line);
+    const build = (count4) => {
+      const selected2 = budgetKnowledge(ordered.slice(0, count4), Infinity, line);
       const material2 = {
         knowledge: selected2.groups,
-        receipts: count3 ? renderKnowledgeOmissions(ordered.slice(count3)) : [],
+        receipts: count4 ? renderKnowledgeOmissions(ordered.slice(count4)) : [],
         knowledgeNotice: notice
       };
       return { selected: selected2, material: material2, text: injectionText(material2, selectedStates.map((state) => state.text)) };
     };
-    const count2 = longest(ordered.length, (count3) => tokens(build(count3).text) <= remaining);
-    const { selected, material, text } = build(count2);
+    const count3 = longest(ordered.length, (count4) => tokens(build(count4).text) <= remaining);
+    const { selected, material, text } = build(count3);
     if (tokens(text) > remaining || !selected.commits.length && !selectedStates.length) return empty();
     const rendered = measuredMemory(text, material);
     return {
@@ -7145,17 +7147,21 @@ function readFacade(store, config3, prepare = () => {
       output: 0,
       cacheRead: 0,
       cacheWrite: 0,
-      cost: 0
+      cost: 0,
+      unknown: 0
     };
-    for (const { kind, usage: usage2 } of store.listRunUsage(sessionId)) {
+    for (const { kind, usage: usage2, costUnknown: costUnknown2 } of store.listRunUsage(sessionId)) {
       totals.runs[kind]++;
+      if (costUnknown2) totals.unknown++;
       if (!usage2) continue;
       totals.input += usage2.input;
       totals.output += usage2.output;
       totals.cacheRead += usage2.cacheRead;
       totals.cacheWrite += usage2.cacheWrite;
-      totals.cost += usage2.cost;
-      totals.costs[kind] += usage2.cost;
+      if (usage2.cost !== null) {
+        totals.cost += usage2.cost;
+        totals.costs[kind] += usage2.cost;
+      }
     }
     return totals;
   };
@@ -7564,7 +7570,7 @@ ${preview2}`,
         `Enrollment: ${store.enabled(sessionId) ? "Enabled" : "Disabled"} (${store.enrollment(sessionId).choice === null ? "default" : "explicit choice"})`,
         `Project: ${store.getProject(s.projectId).name} (${store.projectDeclaration(sessionId)})`,
         ...!store.enabled(sessionId) ? store.taskFailures(sessionId).filter((task) => task.count >= 3).map((task) => `Automatic off: ${task.phase}, ${task.pool ? `pool ${task.pool}` : `backlog head ${task.head}`}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`) : [],
-        `Spend: ${totals.runs.noting} noting, ${totals.runs.consolidation} consolidation, ${totals.runs.dreaming} dreaming, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
+        `Spend: ${totals.runs.noting} noting, ${totals.runs.consolidation} consolidation, ${totals.runs.dreaming} dreaming, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; ${formatCost(totals.cost, totals.unknown)}`,
         // 24a: the footer's own counts, spelled out. They describe imported evidence only: native
         // history of a disabled interval is imported when the session is enabled again, so a zero
         // here is not proof that every available native message has been processed.
@@ -8454,7 +8460,6 @@ var KNOWLEDGE_PUBLICATION_PENDING = "Knowledge publication: ordinary deliverable
 function selectNotingMode(input) {
   if (input.requested !== "fork") return { effectiveMode: "subagent" };
   const fallback = (reason) => ({ effectiveMode: "subagent", fallbackReason: reason });
-  if (input.suppression) return fallback(input.suppression);
   if (input.publicationPending) return fallback(KNOWLEDGE_PUBLICATION_PENDING);
   if (!input.visible.raw.size)
     return fallback("Raw availability: the selected context holds no conversation entry of ours, so nothing establishes that this task's evidence is inherited");
@@ -8889,14 +8894,14 @@ function prepareDreaming(store, input, config3, claim, path, { pool: due, range 
   });
   const times = store.factTurnTimes(facts), snapshot2 = store.pathSnapshot(path);
   const relations = store.listFactRelationsOnPathOf(facts.map((fact) => fact.id), path, snapshot2);
-  const factText = (count3) => [
+  const factText = (count4) => [
     "Direct supporting facts:",
-    ...renderFactGroups(facts.slice(0, count3), (fact) => renderFact(fact, relations.get(fact.id) ?? []), times),
-    ...count3 < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count3).map((fact) => `F${fact.id}`).join(", ")}; expand with trace.`] : []
+    ...renderFactGroups(facts.slice(0, count4), (fact) => renderFact(fact, relations.get(fact.id) ?? []), times),
+    ...count4 < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count4).map((fact) => `F${fact.id}`).join(", ")}; expand with trace.`] : []
   ].join("\n");
-  let count2 = facts.length;
-  while (count2 && tokens(factText(count2)) > 1e4) count2--;
-  const direct2 = factText(count2);
+  let count3 = facts.length;
+  while (count3 && tokens(factText(count3)) > 1e4) count3--;
+  const direct2 = factText(count3);
   if (tokens(direct2) > 1e4) throw new Error("Dreaming direct fact receipts exceed 10000");
   const material = {
     bound: `Run wall-clock bound: ${config3.dreaming.timeoutMs} ms. Wrap up before this deadline.${processedExcessOrder}`,
@@ -9479,8 +9484,8 @@ Knowledge: ${backlinks.join("; ")}` : "");
     if (!target) return { tokens: null, trigger, state: "no session" };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
-      const pending = pendingState(target), count2 = countPending(pending, upToTrigger ? trigger : Infinity);
-      return !upToTrigger || count2 < trigger ? { tokens: count2, trigger, state: "known" } : { tokens: trigger, trigger, state: "known", atLeast: true, entries: pending.length };
+      const pending = pendingState(target), count3 = countPending(pending, upToTrigger ? trigger : Infinity);
+      return !upToTrigger || count3 < trigger ? { tokens: count3, trigger, state: "known" } : { tokens: trigger, trigger, state: "known", atLeast: true, entries: pending.length };
     } catch {
       return { tokens: null, trigger, state: "unavailable" };
     }
@@ -11239,8 +11244,8 @@ function readTranscriptCreatedAt(path) {
 }
 
 // src/hosts/cc/lifecycle.ts
-var import_node_fs10 = require("node:fs");
-var import_node_path8 = require("node:path");
+var import_node_fs11 = require("node:fs");
+var import_node_path9 = require("node:path");
 
 // src/hosts/cc/worker.ts
 var import_node_fs6 = require("node:fs");
@@ -13362,20 +13367,20 @@ var require_resolve = __commonJS((exports2) => {
     return false;
   }
   function countKeys(schema) {
-    let count2 = 0;
+    let count3 = 0;
     for (const key in schema) {
       if (key === "$ref")
         return Infinity;
-      count2++;
+      count3++;
       if (SIMPLE_INLINED.has(key))
         continue;
       if (typeof schema[key] == "object") {
-        (0, util_1.eachItem)(schema[key], (sch) => count2 += countKeys(sch));
+        (0, util_1.eachItem)(schema[key], (sch) => count3 += countKeys(sch));
       }
-      if (count2 === Infinity)
+      if (count3 === Infinity)
         return Infinity;
     }
-    return count2;
+    return count3;
   }
   function getFullPath(resolver, id = "", normalize) {
     if (normalize !== false)
@@ -16225,8 +16230,8 @@ var require_contains = __commonJS((exports2) => {
       cxt.result(valid, () => cxt.reset());
       function validateItemsWithCount() {
         const schValid = gen.name("_valid");
-        const count2 = gen.let("count", 0);
-        validateItems(schValid, () => gen.if(schValid, () => checkLimits(count2)));
+        const count3 = gen.let("count", 0);
+        validateItems(schValid, () => gen.if(schValid, () => checkLimits(count3)));
       }
       function validateItems(_valid, block2) {
         gen.forRange("i", 0, len, (i) => {
@@ -16239,16 +16244,16 @@ var require_contains = __commonJS((exports2) => {
           block2();
         });
       }
-      function checkLimits(count2) {
-        gen.code((0, codegen_1._)`${count2}++`);
+      function checkLimits(count3) {
+        gen.code((0, codegen_1._)`${count3}++`);
         if (max === void 0) {
-          gen.if((0, codegen_1._)`${count2} >= ${min}`, () => gen.assign(valid, true).break());
+          gen.if((0, codegen_1._)`${count3} >= ${min}`, () => gen.assign(valid, true).break());
         } else {
-          gen.if((0, codegen_1._)`${count2} > ${max}`, () => gen.assign(valid, false).break());
+          gen.if((0, codegen_1._)`${count3} > ${max}`, () => gen.assign(valid, false).break());
           if (min === 1)
             gen.assign(valid, true);
           else
-            gen.if((0, codegen_1._)`${count2} >= ${min}`, () => gen.assign(valid, true));
+            gen.if((0, codegen_1._)`${count3} >= ${min}`, () => gen.assign(valid, true));
         }
       }
     }
@@ -41076,7 +41081,7 @@ var CcProjection = class {
     const branch = rest.branch ?? this.binding.branch;
     const selected = sessionId === null || !published && this.lastResult ? null : this.memory.store.selectedSourceEntrySnapshot(sessionId, branch);
     const previous = selected ? null : this.lastResult;
-    const count2 = selectedEntryIds?.length ?? selected?.count ?? previous?.selectedCount ?? 0;
+    const count3 = selectedEntryIds?.length ?? selected?.count ?? previous?.selectedCount ?? 0;
     const result = {
       state,
       snapshot: snapshot2,
@@ -41086,8 +41091,8 @@ var CcProjection = class {
       appendedEntryIds: [],
       selectedAppendedEntryIds: [],
       problems,
-      selectedCount: count2,
-      selectedTailId: selectedEntryIds ? selectedEntryIds[count2 - 1] ?? null : selected?.tailId ?? previous?.selectedTailId ?? null,
+      selectedCount: count3,
+      selectedTailId: selectedEntryIds ? selectedEntryIds[count3 - 1] ?? null : selected?.tailId ?? previous?.selectedTailId ?? null,
       ...rest
     };
     Object.defineProperty(result, "selectedEntryIds", { enumerable: true, get: () => selectedEntryIds?.slice() ?? selected?.ids() ?? previous?.selectedEntryIds ?? [] });
@@ -41650,7 +41655,7 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
       void (async () => {
         try {
           const request2 = JSON.parse(input.slice(0, newline));
-          if (request2.token !== token || typeof request2.verb !== "string" || request2.verb !== "stop" && request2.verb !== "off" && request2.verb !== "catchup" && request2.verb !== "settings" && request2.verb !== "apply" && request2.verb !== "turn-end" && request2.verb !== "fork-sources" && request2.verb !== "fork-register" && request2.verb !== "fork-call" && request2.verb !== "fork-check" && request2.verb !== "fork-terminal" && request2.verb !== "fork-no-start" && request2.verb !== "fork-watch" && request2.verb !== "fork-disconnect")
+          if (request2.token !== token || typeof request2.verb !== "string" || request2.verb !== "stop" && request2.verb !== "off" && request2.verb !== "catchup" && request2.verb !== "settings" && request2.verb !== "apply" && request2.verb !== "turn-end" && request2.verb !== "fork-sources" && request2.verb !== "fork-register" && request2.verb !== "fork-call" && request2.verb !== "fork-check" && request2.verb !== "fork-terminal" && request2.verb !== "fork-account" && request2.verb !== "fork-no-start" && request2.verb !== "fork-watch" && request2.verb !== "fork-disconnect")
             throw new Error("invalid CC control request");
           const current = readBinding(config3, binding.nativeSessionId);
           if (!current) throw new Error("CC binding disappeared before control");
@@ -41701,10 +41706,16 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
             } else if (verb === "fork-check") {
               if (!handlers?.forkCheck) throw new Error("CC fork permission routing is unavailable");
               allowed = handlers.forkCheck(request2.callId, request2.name);
+            } else if (verb === "fork-account") {
+              if (!handlers?.forkAccounted) throw new Error("CC fork accounting is unavailable");
+              const warnings = await handlers.forkAccounted(request2.agentId);
+              connection.end(`${JSON.stringify({ ok: true, verb, allowed: true, warnings })}
+`);
+              return;
             } else {
               if (typeof request2.reason !== "string" || typeof request2.answer !== "string" || !handlers?.forkTerminal)
                 throw new Error("invalid CC fork terminal");
-              allowed = await handlers.forkTerminal(request2.agentId, request2.reason, request2.answer);
+              allowed = await handlers.forkTerminal(request2.agentId, request2.reason, request2.answer, request2.usage);
               if (allowed) commandWatch(request2.agentId, "done");
             }
             connection.end(`${JSON.stringify({ ok: true, verb, allowed })}
@@ -41882,6 +41893,14 @@ async function signalCcForkEvent(config3, nativeSessionId, verb, detail) {
   if (reply.verb !== verb) throw new Error("CC fork event response disagrees with request");
   return reply.allowed;
 }
+async function requestCcForkWarnings(config3, nativeSessionId, agentId) {
+  const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
+  if (!binding?.executor || !activeFunctionHook(binding)) throw new Error("CC fork accounting has no live function hook and executor");
+  functionHookNativeProcess(config3, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
+  const reply = await request(binding.executor, "fork-account", void 0, { agentId });
+  if (reply.verb !== "fork-account") throw new Error("CC fork accounting response disagrees with request");
+  return reply.warnings ?? [];
+}
 async function waitCcForkCommand(config3, nativeSessionId, agentId) {
   const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
   if (!binding?.executor || !activeFunctionHook(binding)) throw new Error("CC fork stop listener has no live executor");
@@ -42006,7 +42025,7 @@ var databaseIdentity = (path) => {
 };
 var positiveId = (value) => Number.isSafeInteger(value) && Number(value) > 0;
 var object6 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
-var identityCount = (injection) => injection.knowledgeCommitIds.length + (injection.knowledgeStates ?? []).reduce((count2, state) => count2 + 1 + state.toCommits.length, 0) + (injection.factIds?.length ?? 0) + (injection.entryIds?.length ?? 0);
+var identityCount = (injection) => injection.knowledgeCommitIds.length + (injection.knowledgeStates ?? []).reduce((count3, state) => count3 + 1 + state.toCommits.length, 0) + (injection.factIds?.length ?? 0) + (injection.entryIds?.length ?? 0);
 function injectionFrame(binding, injection, hash3) {
   if (injection.knowledgeTokens !== void 0 && (!Number.isSafeInteger(injection.knowledgeTokens) || injection.knowledgeTokens < 0))
     throw new Error("invalid Knowledge accounting metadata");
@@ -42841,8 +42860,11 @@ var CcTaskScheduler = class {
 // src/hosts/cc/fork-authority.ts
 var CcForkAuthority = class {
   onCancel;
-  constructor(onCancel) {
+  /** 108: where the native fork's own transcript lives, recorded on every settlement that knows the agent. */
+  transcriptOf;
+  constructor(onCancel, transcriptOf) {
     this.onCancel = onCancel;
+    this.transcriptOf = transcriptOf;
   }
   attempt;
   retired = /* @__PURE__ */ new Set();
@@ -42940,41 +42962,316 @@ var CcForkAuthority = class {
     for (const id of attempt.calls.keys()) this.retired.add(id);
     attempt.calls.clear();
     if (outcome === "cancelled" && attempt.agentId) this.onCancel?.(attempt.agentId);
-    attempt.finish(result ?? { outcome, output: "CC Noter fork authority retired before native completion" });
+    const nativeLog = attempt.agentId ? this.transcriptOf?.(attempt.agentId) : void 0;
+    attempt.finish({
+      ...result ?? { outcome, output: "CC Noter fork authority retired before native completion" },
+      ...nativeLog ? { nativeLog } : {}
+    });
   }
 };
 
-// src/hosts/cc/status.ts
+// src/hosts/cc/fork-accounting.ts
+var import_node_child_process3 = require("node:child_process");
 var import_node_fs9 = require("node:fs");
 var import_node_path7 = require("node:path");
+
+// src/core/api/cache-miss.ts
+var CACHE_MINIMUM = [
+  { api: "anthropic-messages", model: /haiku/i, tokens: 2048 },
+  { api: "anthropic-messages", tokens: 1024 },
+  { api: "openai-completions", tokens: 1024 },
+  { api: "openai-responses", tokens: 1024 },
+  { api: "openai-codex-responses", tokens: 1024 }
+];
+var cacheMinimum = (api, model) => CACHE_MINIMUM.find((entry) => entry.api === api && (!entry.model || entry.model.test(model)))?.tokens;
+var CACHE_MISS_READ_RATIO = 0.5;
+function cacheObservation(model, usage2, cacheEnabled, ratio = CACHE_MISS_READ_RATIO) {
+  if (!cacheEnabled) return;
+  const minimum = cacheMinimum(model.api, model.id);
+  if (minimum === void 0) return;
+  if (!usage2 || typeof usage2 !== "object") return;
+  const reported = usage2;
+  if (typeof reported.input !== "number" || typeof reported.cacheRead !== "number") return;
+  const cacheWrite = typeof reported.cacheWrite === "number" ? reported.cacheWrite : 0;
+  const total = reported.input + reported.cacheRead + cacheWrite;
+  if (!Number.isFinite(total) || total < minimum) return;
+  return { model: `${model.provider}/${model.id}`, api: model.api, minimum, ratio, input: reported.input, cacheRead: reported.cacheRead, cacheWrite, total, miss: reported.cacheRead < ratio * total };
+}
+var cacheMissWarning = (observation) => `Trace Memory: fork cache miss (${observation.cacheRead} of ${observation.total} input tokens read from cache).`;
+
+// src/hosts/cc/fork-accounting.ts
+var count2 = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : void 0;
+function transcriptResponses(text) {
+  const latest = /* @__PURE__ */ new Map();
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const message = row?.type === "assistant" ? row.message : void 0;
+    if (typeof message?.id !== "string" || typeof message.model !== "string" || message.model === "<synthetic>") continue;
+    const usage2 = message.usage;
+    const input = count2(usage2?.input_tokens), output = count2(usage2?.output_tokens), cacheRead = count2(usage2?.cache_read_input_tokens), cacheWrite = count2(usage2?.cache_creation_input_tokens);
+    if (input === void 0 || output === void 0 || cacheRead === void 0 || cacheWrite === void 0) continue;
+    latest.set(message.id, {
+      id: message.id,
+      model: message.model,
+      input,
+      output,
+      cacheRead,
+      cacheWrite,
+      cacheWrite1h: count2(usage2.cache_creation?.ephemeral_1h_input_tokens) ?? 0,
+      geo: typeof usage2.inference_geo === "string" ? usage2.inference_geo : null,
+      webSearch: count2(usage2.server_tool_use?.web_search_requests) ?? 0,
+      fast: usage2.speed === "fast"
+    });
+  }
+  return [...latest.values()];
+}
+function sumTokens(responses) {
+  const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (const r of responses) {
+    total.input += r.input;
+    total.output += r.output;
+    total.cacheRead += r.cacheRead;
+    total.cacheWrite += r.cacheWrite;
+  }
+  return total;
+}
+function eventTokens(usage2) {
+  const u = usage2;
+  const input = count2(u?.input_tokens), output = count2(u?.output_tokens), cacheRead = count2(u?.cache_read_input_tokens), cacheWrite = count2(u?.cache_creation_input_tokens);
+  return input === void 0 || output === void 0 || cacheRead === void 0 || cacheWrite === void 0 ? void 0 : { input, output, cacheRead, cacheWrite };
+}
+var FORK_READ_DEADLINE_MS = 1e4;
+var readIfPresent = (path) => {
+  try {
+    return (0, import_node_fs9.readFileSync)(path, "utf8");
+  } catch (error3) {
+    if (error3.code === "ENOENT") return null;
+    throw error3;
+  }
+};
+async function readForkTranscript(path, expected, options = {}) {
+  const {
+    deadlineMs = FORK_READ_DEADLINE_MS,
+    pollMs = 50,
+    stablePolls = 4,
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+    now = Date.now,
+    read = readIfPresent,
+    stop = () => false
+  } = options;
+  const deadline = now() + deadlineMs;
+  let previous, same = 0, seen = false, last = [];
+  for (; ; ) {
+    const text = read(path);
+    seen = seen || text !== null;
+    last = text === null ? [] : transcriptResponses(text);
+    if (expected) {
+      const t = sumTokens(last);
+      if (t.input === expected.input && t.output === expected.output && t.cacheRead === expected.cacheRead && t.cacheWrite === expected.cacheWrite)
+        return { status: "match", responses: last, present: true };
+      if (t.input > expected.input || t.output > expected.output || t.cacheRead > expected.cacheRead || t.cacheWrite > expected.cacheWrite)
+        return { status: "mismatch", responses: last, present: true };
+    } else {
+      same = text === previous ? same + 1 : 0;
+      previous = text;
+      if (same >= stablePolls) return { status: "settled", responses: last, present: seen };
+    }
+    if (now() >= deadline || stop()) return { status: expected ? "timeout" : "settled", responses: last, present: seen };
+    await sleep(pollMs);
+  }
+}
+var CATALOG_MARKER = Buffer.from('{"//":"Hand-maintained baked-in model catalog');
+var CATALOG_LIMIT = 1 << 20;
+function catalogLiteral(executable) {
+  const fd = (0, import_node_fs9.openSync)(executable, "r");
+  try {
+    const chunk = Buffer.alloc(8 << 20);
+    let position = 0, carry = Buffer.alloc(0);
+    for (; ; ) {
+      const n = (0, import_node_fs9.readSync)(fd, chunk, 0, chunk.length, position);
+      if (n <= 0) return;
+      const window = Buffer.concat([carry, chunk.subarray(0, n)]);
+      const at = window.indexOf(CATALOG_MARKER);
+      if (at >= 0) {
+        const tail = Buffer.alloc(CATALOG_LIMIT);
+        const start = position - carry.length + at, got = (0, import_node_fs9.readSync)(fd, tail, 0, CATALOG_LIMIT, start);
+        return braceSlice(tail.subarray(0, got).toString("utf8"));
+      }
+      carry = window.subarray(Math.max(0, window.length - CATALOG_MARKER.length));
+      position += n;
+    }
+  } finally {
+    (0, import_node_fs9.closeSync)(fd);
+  }
+}
+function braceSlice(text) {
+  let depth = 0, inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return text.slice(0, i + 1);
+  }
+}
+function catalogFromLiteral(literal3) {
+  const json2 = literal3.split(/("(?:[^"\\]|\\.)*")/).map((part, i) => i % 2 ? part : part.replace(/void 0/g, "null").replace(/!0/g, "true").replace(/!1/g, "false").replace(/([{,])\s*([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":')).join("");
+  let parsed2;
+  try {
+    parsed2 = JSON.parse(json2);
+  } catch {
+    return;
+  }
+  if (!parsed2 || typeof parsed2.pricing_tiers !== "object" || !Array.isArray(parsed2.models)) return;
+  const tiers = {};
+  for (const [name, tier] of Object.entries(parsed2.pricing_tiers)) {
+    const fields2 = ["input", "output", "cache_write_5m", "cache_write_1h", "cache_read", "web_search"];
+    if (fields2.every((f) => typeof tier?.[f] === "number")) tiers[name] = Object.fromEntries(fields2.map((f) => [f, tier[f]]));
+  }
+  const models = {};
+  for (const model of parsed2.models) {
+    if (typeof model?.id !== "string" || typeof model.pricing !== "string" || !tiers[model.pricing]) continue;
+    models[model.id] = model.pricing;
+    const firstParty = model.provider_ids?.first_party;
+    if (typeof firstParty === "string") models[firstParty] = model.pricing;
+  }
+  return Object.keys(models).length ? { tiers, models } : void 0;
+}
+function readPriceCatalog(executable, cachePath) {
+  let key;
+  try {
+    const real = (0, import_node_fs9.realpathSync)(executable), stat = (0, import_node_fs9.statSync)(real);
+    key = `${real}
+${stat.size}
+${stat.mtimeMs}`;
+  } catch (error3) {
+    return { unknown: `Claude Code executable ${executable} is unreadable: ${String(error3)}` };
+  }
+  try {
+    const cached3 = JSON.parse((0, import_node_fs9.readFileSync)(cachePath, "utf8"));
+    if (cached3?.key === key && cached3.catalog) return cached3.catalog;
+  } catch {
+  }
+  let catalog;
+  try {
+    const literal3 = catalogLiteral(executable);
+    catalog = literal3 ? catalogFromLiteral(literal3) : void 0;
+  } catch (error3) {
+    return { unknown: `Claude Code executable ${executable} cannot be scanned: ${String(error3)}` };
+  }
+  if (!catalog) return { unknown: `no model catalog found in Claude Code executable ${executable}` };
+  try {
+    (0, import_node_fs9.mkdirSync)((0, import_node_path7.dirname)(cachePath), { recursive: true });
+    const temporary = `${cachePath}.${process.pid}.tmp`;
+    (0, import_node_fs9.writeFileSync)(temporary, JSON.stringify({ key, catalog }));
+    (0, import_node_fs9.renameSync)(temporary, cachePath);
+  } catch {
+  }
+  return catalog;
+}
+function runningExecutable(pid) {
+  const run = (file2, args) => {
+    try {
+      return (0, import_node_child_process3.execFileSync)(file2, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5e3 });
+    } catch {
+      return "";
+    }
+  };
+  try {
+    return (0, import_node_fs9.readlinkSync)(`/proc/${pid}/exe`);
+  } catch {
+  }
+  const named = run("ps", ["-o", "comm=", "-p", String(pid)]).trim();
+  if ((0, import_node_path7.isAbsolute)(named) && (0, import_node_fs9.existsSync)(named)) return named;
+  for (const lsof of ["lsof", "/usr/sbin/lsof"])
+    for (const line of run(lsof, ["-p", String(pid), "-a", "-d", "txt", "-Fn"]).split("\n"))
+      if (line.startsWith("n/") && (0, import_node_fs9.existsSync)(line.slice(1))) return line.slice(1);
+}
+function priceResponse(catalog, r) {
+  const tier = catalog.tiers[catalog.models[r.model] ?? ""];
+  if (!tier) return { unknown: `model ${r.model} is not in Claude Code's price list` };
+  if (r.fast) return { unknown: `response ${r.id} ran in fast mode, which the price list cache does not hold` };
+  const oneHour = Math.min(r.cacheWrite1h, r.cacheWrite);
+  const writes = oneHour <= 0 ? r.cacheWrite / 1e6 * tier.cache_write_5m : oneHour / 1e6 * tier.cache_write_1h + (r.cacheWrite - oneHour) / 1e6 * tier.cache_write_5m;
+  const base = r.input / 1e6 * tier.input + r.output / 1e6 * tier.output + r.cacheRead / 1e6 * tier.cache_read + writes;
+  return base * (r.geo === "us" ? 1.1 : 1) + r.webSearch * tier.web_search;
+}
+function priceResponses(catalog, responses) {
+  let total = 0;
+  for (const r of responses) {
+    const price = priceResponse(catalog, r);
+    if (typeof price !== "number") return price;
+    total += price;
+  }
+  return total;
+}
+var forkTranscriptPath = (sessionTranscript, agentId) => (0, import_node_path7.join)(sessionTranscript.replace(/\.jsonl$/, ""), "subagents", `agent-${agentId}.jsonl`);
+async function accountForkTranscript(path, expected, catalog, options = {}) {
+  const read = await readForkTranscript(path, expected, options);
+  const warnings = [], misses = [];
+  for (const r of read.responses) {
+    const observed = cacheObservation(
+      { api: "anthropic-messages", id: r.model, provider: "anthropic" },
+      { input: r.input, cacheRead: r.cacheRead, cacheWrite: r.cacheWrite },
+      true
+    );
+    if (observed?.miss) {
+      misses.push(observed);
+      warnings.push(cacheMissWarning(observed));
+    }
+  }
+  const patch = {};
+  if (expected ? read.status === "match" : read.responses.length > 0) {
+    const known = catalog(), price = "unknown" in known ? known : priceResponses(known, read.responses);
+    patch.usage = { ...expected ?? sumTokens(read.responses), ...typeof price === "number" ? { cost: { total: price } } : {} };
+    if (typeof price !== "number") patch.problem = `CC fork cost unknown: ${price.unknown}`;
+    if (!expected) patch.usageStatus = "partial";
+  } else if (expected) patch.problem = `CC fork cost unknown: its transcript ${read.present ? `did not reach the recorded tokens (${read.status})` : "was never written"} within ${(options.deadlineMs ?? FORK_READ_DEADLINE_MS) / 1e3} s`;
+  if (misses.length) patch.cacheMiss = misses[0];
+  return { patch: Object.keys(patch).length ? patch : void 0, warnings };
+}
+
+// src/hosts/cc/status.ts
+var import_node_fs10 = require("node:fs");
+var import_node_path8 = require("node:path");
 var import_node_crypto15 = require("node:crypto");
 function statusPath(stateDir, nativeSessionId) {
-  return (0, import_node_path7.join)(stateDir, "status", `${nativeSessionId}.json`);
+  return (0, import_node_path8.join)(stateDir, "status", `${nativeSessionId}.json`);
 }
 function writeCcStatus(stateDir, status) {
   const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto15.randomUUID)()}.tmp`;
-  (0, import_node_fs9.mkdirSync)((0, import_node_path7.dirname)(target), { recursive: true });
+  (0, import_node_fs10.mkdirSync)((0, import_node_path8.dirname)(target), { recursive: true });
   let descriptor;
   try {
-    descriptor = (0, import_node_fs9.openSync)(temporary, "w", 384);
-    (0, import_node_fs9.writeFileSync)(descriptor, `${JSON.stringify(status)}
+    descriptor = (0, import_node_fs10.openSync)(temporary, "w", 384);
+    (0, import_node_fs10.writeFileSync)(descriptor, `${JSON.stringify(status)}
 `);
-    (0, import_node_fs9.fsyncSync)(descriptor);
-    (0, import_node_fs9.closeSync)(descriptor);
+    (0, import_node_fs10.fsyncSync)(descriptor);
+    (0, import_node_fs10.closeSync)(descriptor);
     descriptor = void 0;
-    (0, import_node_fs9.renameSync)(temporary, target);
+    (0, import_node_fs10.renameSync)(temporary, target);
   } catch (error3) {
-    if (descriptor !== void 0) (0, import_node_fs9.closeSync)(descriptor);
-    (0, import_node_fs9.rmSync)(temporary, { force: true });
+    if (descriptor !== void 0) (0, import_node_fs10.closeSync)(descriptor);
+    (0, import_node_fs10.rmSync)(temporary, { force: true });
     throw error3;
   }
 }
 function removeCcStatus(stateDir, nativeSessionId) {
-  (0, import_node_fs9.rmSync)(statusPath(stateDir, nativeSessionId), { force: true });
+  (0, import_node_fs10.rmSync)(statusPath(stateDir, nativeSessionId), { force: true });
 }
 function readCcStatus(stateDir, nativeSessionId) {
   try {
-    return JSON.parse((0, import_node_fs9.readFileSync)(statusPath(stateDir, nativeSessionId), "utf8"));
+    return JSON.parse((0, import_node_fs10.readFileSync)(statusPath(stateDir, nativeSessionId), "utf8"));
   } catch (error3) {
     if (error3.code === "ENOENT") return null;
     throw error3;
@@ -42995,7 +43292,7 @@ var processLiveness = (identity) => {
   }
 };
 function hasLiveSibling(config3, coreSessionId, excludeNativeSessionId) {
-  for (const file2 of (0, import_node_fs10.readdirSync)((0, import_node_path8.dirname)(bindingPath(config3, excludeNativeSessionId)))) {
+  for (const file2 of (0, import_node_fs11.readdirSync)((0, import_node_path9.dirname)(bindingPath(config3, excludeNativeSessionId)))) {
     if (!file2.endsWith(".json")) continue;
     const nativeSessionId = file2.slice(0, -".json".length);
     if (nativeSessionId === excludeNativeSessionId) continue;
@@ -43066,7 +43363,14 @@ async function recordCcSessionEnd(config3, input) {
   }
 }
 var CcCoordinator = class {
-  forkAuthority = new CcForkAuthority((agentId) => this.control?.stopFork(agentId));
+  forkAuthority = new CcForkAuthority((agentId) => this.control?.stopFork(agentId), (agentId) => {
+    const binding = readBinding(this.config, this.nativeSessionId);
+    return binding ? forkTranscriptPath(binding.transcriptPath, agentId) : void 0;
+  });
+  /** 108: each settled fork's accounting (its price, partial usage and cache-miss warnings), keyed by the
+   * fork transcript path and taken once by the Hook, which shows the warnings. */
+  forkAccounts = /* @__PURE__ */ new Map();
+  priceCatalog;
   forkLaunch = null;
   activeForkTurnId = null;
   importer = null;
@@ -43159,7 +43463,7 @@ var CcCoordinator = class {
       if (binding.coreSessionId !== null && !this.importer) return;
       const enabled2 = sessionEnabled(binding, this.importer?.memory.store ?? { enabled: () => false });
       const running = new Set(this.scheduler?.running() ?? []);
-      let counts, cost;
+      let counts, cost, costUnknown2 = 0;
       const reconcile = this.lastReconcile;
       if (enabled2 && this.importer && reconcile && reconcile.coreSessionId !== null) {
         try {
@@ -43170,7 +43474,7 @@ var CcCoordinator = class {
       }
       if (enabled2 && this.importer) {
         try {
-          cost = this.importer.memory.spendSince(localMidnight());
+          ({ cost, unknown: costUnknown2 } = this.importer.memory.spendSince(localMidnight()));
         } catch (error3) {
           this.diagnostic(`status cost unavailable (${reason}): ${error3 instanceof Error ? error3.message : String(error3)}`);
         }
@@ -43185,7 +43489,7 @@ var CcCoordinator = class {
         enabled: enabled2,
         running: { noting: running.has("noting"), dreaming: running.has("dreaming") },
         ...counts ? { counts } : {},
-        ...cost !== void 0 ? { cost } : {}
+        ...cost !== void 0 ? { cost, ...costUnknown2 ? { costUnknown: costUnknown2 } : {} } : {}
       };
       writeCcStatus(this.config.stateDir, status);
     } catch (error3) {
@@ -43257,13 +43561,22 @@ var CcCoordinator = class {
         },
         forkCall: (agentId, callId, name) => this.forkAuthority.call(agentId, callId, name),
         forkCheck: (callId, name) => this.forkAuthority.allows(callId, name),
-        forkTerminal: async (agentId, reason, answer) => {
+        forkAccounted: (agentId) => {
+          const binding2 = readBinding(this.config, this.nativeSessionId);
+          const key = binding2 ? forkTranscriptPath(binding2.transcriptPath, agentId) : void 0;
+          const account = key ? this.forkAccounts.get(key) : void 0;
+          if (key) this.forkAccounts.delete(key);
+          return account ?? Promise.resolve([]);
+        },
+        forkTerminal: async (agentId, reason, answer, usage2) => {
           if (!CC_TURN_END_REASONS.includes(reason)) throw new Error(`unsupported CC fork completion reason ${reason}`);
+          const tokens3 = eventTokens(usage2);
           const settled = await this.forkAuthority.complete(agentId, {
             outcome: reason === "answer" ? "success" : reason === "aborted" ? "cancelled" : "failure",
             output: answer,
             mode: "fork",
-            audit: { available: false, reason: "CC native fork does not expose the exact provider request body" }
+            audit: { available: false, reason: "CC native fork does not expose the exact provider request body" },
+            ...tokens3 ? { usage: tokens3 } : {}
           });
           if (settled) this.activeForkTurnId = null;
           return settled;
@@ -43354,9 +43667,9 @@ var CcCoordinator = class {
     }
   }
   watchTranscript(binding) {
-    if (this.transcriptWatcher || !(0, import_node_fs10.existsSync)((0, import_node_path8.dirname)(binding.transcriptPath))) return;
-    const transcriptName = (0, import_node_path8.basename)(binding.transcriptPath);
-    this.transcriptWatcher = (0, import_node_fs10.watch)((0, import_node_path8.dirname)(binding.transcriptPath), (_event, filename) => {
+    if (this.transcriptWatcher || !(0, import_node_fs11.existsSync)((0, import_node_path9.dirname)(binding.transcriptPath))) return;
+    const transcriptName = (0, import_node_path9.basename)(binding.transcriptPath);
+    this.transcriptWatcher = (0, import_node_fs11.watch)((0, import_node_path9.dirname)(binding.transcriptPath), (_event, filename) => {
       if (String(filename) === transcriptName) void this.requestReconcile("transcript watch");
     });
     this.transcriptWatcher.on("error", (error3) => {
@@ -43368,10 +43681,10 @@ var CcCoordinator = class {
   async start() {
     if (this.poll || this.closed || this.closing) return;
     this.observe("startup-begin");
-    const bindingDirectory = (0, import_node_path8.dirname)(bindingPath(this.config, this.nativeSessionId));
-    if ((0, import_node_fs10.existsSync)(bindingDirectory)) {
-      this.bindingWatcher = (0, import_node_fs10.watch)(bindingDirectory, (_event, filename) => {
-        if (String(filename) === (0, import_node_path8.basename)(bindingPath(this.config, this.nativeSessionId))) void this.requestReconcile("binding watch");
+    const bindingDirectory = (0, import_node_path9.dirname)(bindingPath(this.config, this.nativeSessionId));
+    if ((0, import_node_fs11.existsSync)(bindingDirectory)) {
+      this.bindingWatcher = (0, import_node_fs11.watch)(bindingDirectory, (_event, filename) => {
+        if (String(filename) === (0, import_node_path9.basename)(bindingPath(this.config, this.nativeSessionId))) void this.requestReconcile("binding watch");
       });
       this.bindingWatcher.on("error", (error3) => {
         this.diagnostic(`binding watch failed: ${String(error3)}; stat wake-up remains active`);
@@ -43470,16 +43783,68 @@ var CcCoordinator = class {
   runFork(task) {
     const launch = this.forkLaunch;
     if (!launch || launch.signal.aborted) return Promise.resolve({ outcome: "cancelled", output: "CC fork checkpoint is no longer live" });
-    const suppression = this.importer?.memory.store.forkSuppression(task.sessionId);
-    if (suppression) return Promise.resolve({
-      outcome: "failure",
-      output: "CC fork suppressed before launch",
-      refused: { reason: `cache miss latch: fork suppressed for this session since ${suppression.at}` }
-    });
     const result = this.forkAuthority.begin(task);
+    void result.then((settled) => {
+      if (settled.nativeLog) this.forkAccounts.set(settled.nativeLog, this.accountFork(task, settled));
+    });
     this.activeForkTurnId = launch.turnId;
     launch.resolve({ prompt: task.text, turnId: launch.turnId });
     return result;
+  }
+  /** 108: after a fork settled, off the write fence and the physical stop, read its transcript until it holds
+   * exactly the recorded tokens (at most ten seconds), price each response with Claude Code's own catalog and
+   * amend the run. A fork stopped before it completed has no recorded tokens: whatever its transcript holds is
+   * recorded as partial usage. Unpriceable, undercounted or missing leaves the cost unknown and says why in
+   * the run's problems. Returns the cache-miss warnings, one per missed response. */
+  async accountFork(task, settled) {
+    const path = settled.nativeLog;
+    try {
+      const { patch, warnings } = await accountForkTranscript(
+        path,
+        settled.usage ? settled.usage : void 0,
+        () => this.catalog(),
+        { stop: () => this.closed || this.closing }
+      );
+      if (patch) {
+        const runId = await this.findForkRun(task, path);
+        const store = this.importer?.memory.store;
+        if (runId !== void 0 && store && !store.closed) store.amendRunUsage(runId, patch);
+        else this.diagnostic(`fork accounting found no run for ${path}`);
+        this.publish("fork accounted");
+      }
+      return warnings;
+    } catch (error3) {
+      this.diagnostic(`fork accounting failed for ${path}: ${error3 instanceof Error ? error3.message : String(error3)}`);
+      return [];
+    }
+  }
+  /** The run core recorded for the fork that settled, found by the transcript path it carries. Core records
+   * it right after the settlement, so a few short retries are enough. */
+  async findForkRun(task, nativeLog) {
+    for (let attempt = 0; attempt < 100 && !this.closed; attempt++) {
+      const store = this.importer?.memory.store;
+      if (!store || store.closed) return;
+      const rows = store.db.prepare(`SELECT r.id, b.response FROM runs r JOIN run_bodies b ON b.run_id = r.id
+        WHERE r.session_id = ? AND r.kind = 'noting' ORDER BY r.id DESC LIMIT 5`).all(task.sessionId);
+      for (const row of rows) {
+        try {
+          if (JSON.parse(row.response ?? "{}").nativeLog === nativeLog) return Number(row.id);
+        } catch {
+        }
+      }
+      await new Promise((resolve4) => setTimeout(resolve4, 100));
+    }
+  }
+  /** Claude Code's price list from the running Claude Code's own executable (found through the native
+   * process the binding records), cached in the state directory per executable build. */
+  catalog() {
+    if (this.priceCatalog) return this.priceCatalog;
+    const pid = readBinding(this.config, this.nativeSessionId)?.nativeProcess?.pid;
+    const executable = pid === void 0 ? void 0 : runningExecutable(pid);
+    if (!executable) return { unknown: "the running Claude Code executable cannot be found" };
+    const catalog = readPriceCatalog(executable, (0, import_node_path9.join)(this.config.stateDir, "cc-price-catalog.json"));
+    if (!("unknown" in catalog)) this.priceCatalog = catalog;
+    return catalog;
   }
   forkOption(target, result, observation) {
     const refuse = (reason) => ({ refused: reason });
@@ -43503,10 +43868,8 @@ var CcCoordinator = class {
     const delivered = deliveredView(memory.store.deliveredKnowledge(head.node));
     const delta = memory.injection(target, delivered);
     const visible = { ...delivered, raw: new Map(observation.raw.map((id) => [id, "source"])) };
-    const suppression = memory.store.forkSuppression(target.sessionId);
     const decision = selectNotingMode({
       requested: "fork",
-      ...suppression ? { suppression: `cache miss latch: fork suppressed for this session since ${suppression.at}` } : {},
       publicationPending: !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length),
       visible,
       pending: () => memory.pendingEntries(target.sessionId, target.branch, target.headTurnId),
@@ -43835,13 +44198,13 @@ function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinit
   };
   for (const item of ordered.filter((item2) => item2.kind === "receipt")) {
     if (tryPlace(item)) continue;
-    const count2 = item.text.match(/omitted (\d+)/)?.[1];
+    const count3 = item.text.match(/omitted (\d+)/)?.[1];
     const expansion = item.text.split("expand: ")[1];
     const addresses = expansion?.match(/(?:K\d+(?:@v\d+)?|F\d+|T\d+#E\d+)/g) ?? [];
     const compact = {
       kind: "receipt",
       knowledge: item.knowledge,
-      text: `omitted ${count2 ?? "1"} ${count2 ? "items" : "receipt"}; expand: ${expandList(addresses)}`
+      text: `omitted ${count3 ?? "1"} ${count3 ? "items" : "receipt"}; expand: ${expandList(addresses)}`
     };
     if (!addresses.length || !tryPlace(compact)) throw new Error("CC core omission receipt has no usable expansion address");
   }
@@ -43977,8 +44340,8 @@ async function declareCcProject(config3, nativeSessionId, name) {
 }
 
 // src/hosts/cc/menu-context.ts
-var import_node_fs11 = require("node:fs");
-var import_node_path9 = require("node:path");
+var import_node_fs12 = require("node:fs");
+var import_node_path10 = require("node:path");
 
 // ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@earendil-works/pi-tui/dist/terminal-image.js
 function getPngDimensions(base64Data) {
@@ -44165,12 +44528,12 @@ function carrier(text, identity) {
     return { retained: payload, offset: HOOK_CONTEXT.length };
   }
   const preview2 = /^<persisted-output>\n[^\n]*Full output saved to: ([^\n]+)\n\nPreview \(first 2KB\):\n([\s\S]+)\n\.\.\.\n<\/persisted-output>$/.exec(payload);
-  if (!preview2 || !(0, import_node_path9.isAbsolute)(preview2[1])) throw new Error("malformed native memory preview");
+  if (!preview2 || !(0, import_node_path10.isAbsolute)(preview2[1])) throw new Error("malformed native memory preview");
   const retained = preview2[2], header = decodeCcInjectionHeader(retained, identity);
   if (!header) throw new Error("memory preview failed identity verification");
   let full;
   try {
-    full = (0, import_node_fs11.readFileSync)(preview2[1], "utf8");
+    full = (0, import_node_fs12.readFileSync)(preview2[1], "utf8");
   } catch (error3) {
     if (error3.code !== "ENOENT") throw error3;
   }
@@ -44261,7 +44624,7 @@ function runsFor(store, sessionId, limit) {
     id: run.id,
     phase: run.kind,
     status: run.outcome,
-    cost: run.usage_cost ?? 0,
+    cost: run.usage_cost,
     at: run.created_at
   }));
 }
@@ -44349,6 +44712,7 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
     const progress = ccCatchupNotice(catchup);
     if (progress) notices.push(progress);
     if (binding.clearedFrom || binding.clearedInto) notices.push("Shared identity");
+    const today = memory.spendSince(localMidnight2());
     const data = {
       header: {
         session: session ? `S${session.id}` : "unbound",
@@ -44363,13 +44727,15 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
       } },
       spend: {
         session: spend?.cost ?? 0,
+        sessionUnknown: spend?.unknown ?? 0,
         noting: { runs: spend?.runs.noting ?? 0, cost: spend?.costs.noting ?? 0 },
         consolidation: { runs: spend?.runs.consolidation ?? 0, cost: spend?.costs.consolidation ?? 0 },
         dreaming: { runs: spend?.runs.dreaming ?? 0, cost: spend?.costs.dreaming ?? 0 },
-        today: memory.spendSince(localMidnight2())
+        today: today.cost,
+        todayUnknown: today.unknown
       },
       notices,
-      actions: { enabled: enabled2, retryForkAvailable: false }
+      actions: { enabled: enabled2 }
     };
     const recorded = store.db.prepare(`SELECT 1 FROM knowledge_deliveries WHERE owner = ? AND follows IS NOT NULL
       AND commits = ? AND states = ? AND knowledge_tokens = ? LIMIT 1`);
@@ -44386,18 +44752,18 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
 }
 
 // src/hosts/cc/menu-config.ts
-var import_node_fs12 = require("node:fs");
-var import_node_path10 = require("node:path");
+var import_node_fs13 = require("node:fs");
+var import_node_path11 = require("node:path");
 var import_node_crypto16 = require("node:crypto");
 
 // ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/scanner.js
 function createScanner(text, ignoreTrivia = false) {
   const len = text.length;
   let pos = 0, value = "", tokenOffset = 0, token = 16, lineNumber = 0, lineStartOffset = 0, tokenLineStartOffset = 0, prevTokenLineStartOffset = 0, scanError = 0;
-  function scanHexDigits(count2, exact) {
+  function scanHexDigits(count3, exact) {
     let digits = 0;
     let value2 = 0;
-    while (digits < count2 || !exact) {
+    while (digits < count3 || !exact) {
       let ch = text.charCodeAt(pos);
       if (ch >= 48 && ch <= 57) {
         value2 = value2 * 16 + ch - 48;
@@ -44411,7 +44777,7 @@ function createScanner(text, ignoreTrivia = false) {
       pos++;
       digits++;
     }
-    if (digits < count2) {
+    if (digits < count3) {
       value2 = -1;
     }
     return value2;
@@ -45036,9 +45402,9 @@ function format(documentText, range, options) {
   }
   return editOperations;
 }
-function repeat(s, count2) {
+function repeat(s, count3) {
   let result = "";
-  for (let i = 0; i < count2; i++) {
+  for (let i = 0; i < count3; i++) {
     result += s;
   }
   return result;
@@ -45765,25 +46131,25 @@ function editedCcConfig(text, id, value, capacity) {
 }
 function saveCcConfig(path, original, updated) {
   const next = resolveCcHostConfig(JSON.parse(updated));
-  if ((0, import_node_fs12.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
+  if ((0, import_node_fs13.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
   const temporary = `${path}.${process.pid}.${(0, import_node_crypto16.randomUUID)()}`;
   let fd;
   try {
-    fd = (0, import_node_fs12.openSync)(temporary, "wx", 384);
-    (0, import_node_fs12.writeFileSync)(fd, updated);
-    (0, import_node_fs12.fsyncSync)(fd);
-    (0, import_node_fs12.closeSync)(fd);
+    fd = (0, import_node_fs13.openSync)(temporary, "wx", 384);
+    (0, import_node_fs13.writeFileSync)(fd, updated);
+    (0, import_node_fs13.fsyncSync)(fd);
+    (0, import_node_fs13.closeSync)(fd);
     fd = void 0;
-    (0, import_node_fs12.renameSync)(temporary, path);
-    const dir = (0, import_node_fs12.openSync)((0, import_node_path10.dirname)(path), "r");
+    (0, import_node_fs13.renameSync)(temporary, path);
+    const dir = (0, import_node_fs13.openSync)((0, import_node_path11.dirname)(path), "r");
     try {
-      (0, import_node_fs12.fsyncSync)(dir);
+      (0, import_node_fs13.fsyncSync)(dir);
     } finally {
-      (0, import_node_fs12.closeSync)(dir);
+      (0, import_node_fs13.closeSync)(dir);
     }
   } catch (error3) {
-    if (fd !== void 0) (0, import_node_fs12.closeSync)(fd);
-    (0, import_node_fs12.rmSync)(temporary, { force: true });
+    if (fd !== void 0) (0, import_node_fs13.closeSync)(fd);
+    (0, import_node_fs13.rmSync)(temporary, { force: true });
     throw error3;
   }
   return next;
@@ -45902,7 +46268,7 @@ var TRACE_MENU_FIXTURE = {
     today: 5.31
   },
   notices: [],
-  actions: { enabled: true, retryForkAvailable: false }
+  actions: { enabled: true }
 };
 var TRACE_MENU_FIXTURE_WITH_NOTICE = {
   ...TRACE_MENU_FIXTURE,
@@ -45950,13 +46316,13 @@ async function handleCcHook(configInput, input, prepareOnly = false) {
 async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID) {
   const config3 = "coreConfig" in configInput ? configInput : resolveCcHostConfig(configInput);
   const sessionId = validateNativeSessionId(nativeSessionId);
-  const runtimeDirectory = (0, import_node_path11.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path11.join)(runtimeDirectory, `${sessionId}.jsonl`);
-  (0, import_node_fs13.mkdirSync)(runtimeDirectory, { recursive: true });
+  const runtimeDirectory = (0, import_node_path12.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path12.join)(runtimeDirectory, `${sessionId}.jsonl`);
+  (0, import_node_fs14.mkdirSync)(runtimeDirectory, { recursive: true });
   const runtimeEvent = (event, details = {}) => {
     const value = { event, at: Date.now(), pid: process.pid, ...details };
     console.error(`Trace Memory CC: lifecycle ${JSON.stringify(value)}`);
     try {
-      (0, import_node_fs13.appendFileSync)(runtimePath, `${JSON.stringify(value)}
+      (0, import_node_fs14.appendFileSync)(runtimePath, `${JSON.stringify(value)}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -45966,7 +46332,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
   const coordinator = new CcCoordinator(config3, sessionId, (message) => {
     console.error(`Trace Memory CC: ${message}`);
     try {
-      (0, import_node_fs13.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
+      (0, import_node_fs14.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -46077,7 +46443,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
 function readConfig(path) {
   if (!path.startsWith("/")) throw new Error("CC configuration path must be absolute");
   upgradeSettingsFile(path, void 0, (values) => resolveCcHostConfig(values), (message) => console.warn(message));
-  return resolveCcHostConfig(JSON.parse((0, import_node_fs13.readFileSync)(path, "utf8")));
+  return resolveCcHostConfig(JSON.parse((0, import_node_fs14.readFileSync)(path, "utf8")));
 }
 async function readStdin() {
   let input = "";
@@ -46121,8 +46487,14 @@ async function runCcCommand(argv = process.argv.slice(2)) {
   if (command === "hook-fork") {
     const input = JSON.parse(await readStdin());
     validateNativeSessionId(input.session_id);
-    if (!["fork-register", "fork-call", "fork-check", "fork-terminal", "fork-no-start", "fork-disconnect"].includes(input.verb))
+    if (!["fork-register", "fork-call", "fork-check", "fork-terminal", "fork-account", "fork-no-start", "fork-disconnect"].includes(input.verb))
       throw new Error("invalid CC native fork event");
+    if (input.verb === "fork-account") {
+      if (typeof input.agentId !== "string" || !input.agentId) throw new Error("CC fork accounting requires the native agent ID");
+      process.stdout.write(`${JSON.stringify({ allowed: true, warnings: await requestCcForkWarnings(config3, input.session_id, input.agentId) })}
+`);
+      return;
+    }
     const { session_id: _session, verb: _verb, ...detail } = input;
     process.stdout.write(`${JSON.stringify({ allowed: await signalCcForkEvent(config3, input.session_id, input.verb, detail) })}
 `);
@@ -46251,7 +46623,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
     } finally {
       store.close();
     }
-    const original = (0, import_node_fs13.readFileSync)(configPath, "utf8");
+    const original = (0, import_node_fs14.readFileSync)(configPath, "utf8");
     const updated = editedCcConfig(original, id, value, capacity);
     const prepared = resolveCcHostConfig(JSON.parse(updated));
     if (prepared.dbPath !== config3.dbPath || prepared.stateDir !== config3.stateDir) throw new Error("setting cannot change database or state directory");
@@ -46277,7 +46649,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify(result)}
 `);
 }
-var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path11.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
+var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path12.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
 if (direct) void runCcCommand().catch((error3) => {
   console.error(`Trace Memory CC: ${error3 instanceof Error ? error3.message : String(error3)}`);
   process.exitCode = 1;
