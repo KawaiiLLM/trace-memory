@@ -558,15 +558,21 @@ export class CcCoordinator {
     if (observation.batch.length !== batch.length || batch.some((entry, i) => observation.batch![i] !== entry.nativeId))
       return refuse("CC fork batch changed since source observation");
     const memory = this.importer.memory, binding = this.importer.currentBinding();
-    const path = [...memory.store.pathTurns(target)];
+    const remaining = new Set(batch.map(entry => entry.turnId));
+    const ancestry: number[] = [];
+    for (const id of memory.store.pathTurns(target)) {
+      ancestry.push(id);
+      remaining.delete(id);
+      if (!remaining.size) break;
+    }
+    if (remaining.size) throw new Error("CC fork batch has a Turn outside its selected path");
     const compact = new Set((memory.store.db.prepare("SELECT id FROM turns WHERE kind = 'compaction' AND id IN (SELECT value FROM json_each(?))")
-      .all(JSON.stringify(path)) as { id: number }[]).map(row => row.id));
+      .all(JSON.stringify(ancestry)) as { id: number }[]).map(row => Number(row.id)));
     const afterBoundary = new Set<number>();
-    for (const id of path) {
+    for (const id of ancestry) {
       if (compact.has(id)) break;
       afterBoundary.add(id);
     }
-    if (batch.some(entry => !path.includes(entry.turnId))) throw new Error("CC fork batch has a Turn outside its selected path");
     const head = ccDeliveryHead(binding, memory);
     const delivered = deliveredView(memory.store.deliveredKnowledge(head.node));
     const delta = memory.injection(target, delivered);

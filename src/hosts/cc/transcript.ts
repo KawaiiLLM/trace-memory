@@ -91,7 +91,6 @@ export interface CcNativeNode {
   turnId?: number;
   entryId?: number;
   /** Original JSONL bytes, indexed during the existing scan; no Raw body is retained. */
-  byteRange?: { start: number; end: number };
   /** An assistant row's message id and content, or a tool result's content, hashed: what a copy shares
    * with the row it repeats. */
   messageKey?: string;
@@ -605,7 +604,6 @@ export class CcTranscriptCursor {
         completeOffset, lineCount: lines, selectedLeafUuid, terminalUuid, selectedLeafOffset, problems, newProblems });
       let beginning = 0;
       while (beginning < completeLength) {
-        const lineStart = start + beginning;
         const ending = bytes.indexOf(0x0a, beginning);
         const raw = bytes.subarray(beginning, ending).toString("utf8");
         beginning = ending + 1; lines += 1;
@@ -627,7 +625,6 @@ export class CcTranscriptCursor {
           } else {
             if (!prior?.committed) newIds.add(node.uuid);
             if (!prior) {
-              node.byteRange = { start: lineStart, end: start + beginning };
               // After a compaction in the middle of a reply, the model's context continues from the copy
               // of the in-flight message, but Claude Code names the call's original row as its result's parent.
               // ponytail: a result truly resumed from the original after its copy (an SDK resume at a
