@@ -13,6 +13,7 @@ import { activeFunctionHook, bindingMutexPath, bindingPath, markCcFunctionHook, 
 import { controlSession, requestCcForkSources, signalCcTurnEnd, startControlServer } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
+import { CcForegroundTools } from "../../src/hosts/cc/tools.ts";
 import { ccPluginToolNames, ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
 import { CcForkAuthority } from "../../src/hosts/cc/fork-authority.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
@@ -1690,6 +1691,11 @@ test("112: scheduler freezes actual Core Noter instructions and lifecycle emits 
     expect(frozen.forkPrompt).toContain(ccPluginToolNames.memory);
     expect(frozen.forkPrompt).toContain("ToolSearch");
     expect(frozen.tools.map(tool => tool.name)).toEqual(["trace", "search", "note", "memory"]);
+    const pluginName = JSON.parse(readFileSync(new URL("../../plugin/.claude-plugin/plugin.json", import.meta.url), "utf8")).name;
+    const serverName = Object.keys(JSON.parse(readFileSync(new URL("../../plugin/.mcp.json", import.meta.url), "utf8")))[0]!;
+    const registered = new CcForegroundTools(coordinator).list();
+    expect(frozen.tools.map(tool => ccPluginToolNames[tool.name as keyof typeof ccPluginToolNames]))
+      .toEqual(registered.map(tool => `mcp__plugin_${pluginName}_${serverName}__${tool.name}`));
     expect(directive.prompt).toBe(`${frozen.forkPrompt}\n\n${frozen.text}`);
     expect(directive.prompt.split(frozen.prompt)).toHaveLength(2);
     expect(directive.prompt).toContain("Sources:");
