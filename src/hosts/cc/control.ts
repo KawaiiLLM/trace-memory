@@ -299,13 +299,17 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
       // unconfirmed shutdown mark. Resolve ancestry and assignment under the binding lock so
       // a concurrent SessionEnd cannot be replaced by a stale pre-attach snapshot.
       if (current.lastClose && !current.lastClose.confirmed && current.nativeProcess?.startedAt) {
-        const ancestors = processAncestors();
-        const assigned = assignedNativeSession(config, ancestors);
-        const owner = ancestors.find(ancestor => ancestor.pid === assigned?.pid);
-        if (owner?.startedAt && assigned?.startedAt === owner.startedAt &&
-            owner.pid === current.nativeProcess.pid && owner.startedAt === current.nativeProcess.startedAt &&
-            assigned.nativeSessionId === current.nativeSessionId && assigned.transcriptPath === current.transcriptPath)
-          return { ...current, executor, lastClose: null };
+        try {
+          const ancestors = processAncestors();
+          const assigned = assignedNativeSession(config, ancestors);
+          const owner = ancestors.find(ancestor => ancestor.pid === assigned?.pid);
+          if (owner?.startedAt && assigned?.startedAt === owner.startedAt &&
+              owner.pid === current.nativeProcess.pid && owner.startedAt === current.nativeProcess.startedAt &&
+              assigned.nativeSessionId === current.nativeSessionId && assigned.transcriptPath === current.transcriptPath)
+            return { ...current, executor, lastClose: null };
+        } catch (error) {
+          console.error(`Trace Memory CC: native session identity unreadable during executor attach: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
       return { ...current, executor };
     }, bindingTimeoutMs, signal);

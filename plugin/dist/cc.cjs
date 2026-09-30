@@ -41786,11 +41786,15 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
         if (liveness === "unknown") throw new Error(`cannot establish liveness of CC executor process ${current.executor.pid}`);
       }
       if (current.lastClose && !current.lastClose.confirmed && current.nativeProcess?.startedAt) {
-        const ancestors = processAncestors();
-        const assigned = assignedNativeSession(config3, ancestors);
-        const owner = ancestors.find((ancestor) => ancestor.pid === assigned?.pid);
-        if (owner?.startedAt && assigned?.startedAt === owner.startedAt && owner.pid === current.nativeProcess.pid && owner.startedAt === current.nativeProcess.startedAt && assigned.nativeSessionId === current.nativeSessionId && assigned.transcriptPath === current.transcriptPath)
-          return { ...current, executor, lastClose: null };
+        try {
+          const ancestors = processAncestors();
+          const assigned = assignedNativeSession(config3, ancestors);
+          const owner = ancestors.find((ancestor) => ancestor.pid === assigned?.pid);
+          if (owner?.startedAt && assigned?.startedAt === owner.startedAt && owner.pid === current.nativeProcess.pid && owner.startedAt === current.nativeProcess.startedAt && assigned.nativeSessionId === current.nativeSessionId && assigned.transcriptPath === current.transcriptPath)
+            return { ...current, executor, lastClose: null };
+        } catch (error3) {
+          console.error(`Trace Memory CC: native session identity unreadable during executor attach: ${error3 instanceof Error ? error3.message : String(error3)}`);
+        }
       }
       return { ...current, executor };
     }, bindingTimeoutMs, signal);

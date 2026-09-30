@@ -52,9 +52,10 @@ const directControl = (executor: CcExecutorBinding, verb: unknown, fields: Recor
     socket.on("error", reject);
   });
 const childScript = resolve("tests/hosts/cc-binding-child.ts");
-const spawnBindingChild = (mode: "update" | "control" | "hook-identity", input: Record<string, unknown>, explicitPid?: string): ChildProcess => spawn(process.execPath,
+const spawnBindingChild = (mode: "update" | "control" | "hook-identity", input: Record<string, unknown>, explicitPid?: string,
+  captureStderr = false): ChildProcess => spawn(process.execPath,
   [childScript, mode], { cwd: resolve("."), env: { ...process.env, CLAUDE_PID: explicitPid, CC_BINDING_CHILD_INPUT: JSON.stringify(input) },
-    stdio: ["ignore", "ignore", "inherit", "ipc"] });
+    stdio: ["ignore", "ignore", captureStderr ? "pipe" : "inherit", "ipc"] });
 const childMessage = (child: ChildProcess, type: string, timeoutMs = 3_000): Promise<Record<string, unknown>> => new Promise((resolveMessage, reject) => {
   const timer = setTimeout(() => { cleanup(); reject(new Error(`child ${child.pid} did not report ${type}`)); }, timeoutMs);
   const message = (value: unknown) => {
@@ -187,13 +188,15 @@ test("reloaded executor clears only an unconfirmed close for the same live nativ
   const fields = { enrollment: { defaultEnabled: true, choice: true }, branch: "selected", selectedLeafUuid: "a1",
     nativeProcess: owner, functionHookProcess: owner, lastClose: close };
   const restore = async () => updateBinding(f.config, f.nativeSessionId, current => ({ ...current!, ...fields, executor: null }));
-  const attempt = async () => {
-    const child = spawnBindingChild("control", { config: f.config, nativeSessionId: f.nativeSessionId, worker: "reload" });
+  const attempt = async (captureStderr = false) => {
+    const child = spawnBindingChild("control", { config: f.config, nativeSessionId: f.nativeSessionId, worker: "reload" }, undefined, captureStderr);
+    let diagnostic = "";
+    child.stderr?.on("data", chunk => diagnostic += String(chunk));
     try {
       await childMessage(child, "ready"); child.send({ type: "attach" });
       const result = await Promise.race([childMessage(child, "fulfilled"), childMessage(child, "rejected")]);
       if (result.type !== "fulfilled") throw new Error(String(result.error));
-      return { child, executor: result.executor as CcExecutorBinding };
+      return { child, executor: result.executor as CcExecutorBinding, diagnostic: () => diagnostic };
     } catch (error) { child.kill("SIGKILL"); await childExit(child); throw error; }
   };
   const run = async (expected: boolean) => {
@@ -253,13 +256,23 @@ test("reloaded executor clears only an unconfirmed close for the same live nativ
     try { expect(readBinding(f.config, f.nativeSessionId)!.lastClose).toEqual(close); }
     finally { child.send({ type: "close" }); await childExit(child); }
   }
-  await restore(); writeFileSync(assignmentPath, JSON.stringify({ ...assignment, nativeSessionId: 123 }));
-  const malformed = spawnBindingChild("control", { config: f.config, nativeSessionId: f.nativeSessionId, worker: "reload" });
-  try {
-    await childMessage(malformed, "ready"); malformed.send({ type: "attach" });
-    expect((await childMessage(malformed, "rejected")).error).toContain("invalid native session record");
-    expect(readBinding(f.config, f.nativeSessionId)!.lastClose).toEqual(close);
-  } finally { malformed.disconnect(); await childExit(malformed); }
+  for (const [invalid, diagnostic] of [
+    [JSON.stringify({ ...assignment, nativeSessionId: 123 }), "invalid native session record"],
+    ['{"nativeSessionId":', "native session identity unreadable"],
+  ] as const) {
+    await restore(); writeFileSync(assignmentPath, invalid);
+    const { child, executor, diagnostic: stderr } = await attempt(true);
+    try {
+      const current = readBinding(f.config, f.nativeSessionId)!;
+      expect(current).toMatchObject({ lastClose: close, executor, enrollment: fields.enrollment,
+        branch: fields.branch, selectedLeafUuid: fields.selectedLeafUuid,
+        nativeProcess: owner, functionHookProcess: owner });
+      expect(activeFunctionHook(current)).toBe(false);
+      expect(await directControl(executor, "turn-end", { turnId: "next", reason: "answer" }))
+        .toMatchObject({ ok: false, error: expect.stringContaining("registration is not current") });
+      await vi.waitFor(() => expect(stderr()).toContain(diagnostic));
+    } finally { child.send({ type: "close" }); await childExit(child); }
+  }
   writeFileSync(assignmentPath, JSON.stringify(assignment));
   await restore(); rmSync(assignmentPath);
   const { child } = await attempt();
