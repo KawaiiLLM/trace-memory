@@ -181,13 +181,16 @@ const SESSION_ENV_KEYS = new Set([
   "NODE_USE_ENV_PROXY", "CLAUDE_CODE_PROXY_RESOLVES_HOSTS", "CLAUDE_CONFIG_DIR",
 ]);
 
+/** The SDK's query source is on Claude Code's 1h prompt-cache allowlist, so a worker wrote at the 1h
+ * rate (2x input, against 1.25x for 5m). No later run reads it: each run's material changes, and a
+ * run's own requests are seconds apart. FORCE_PROMPT_CACHING_5M wins over every other TTL source. */
 function productionEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(source))
     if (value !== undefined && (OPERATIONAL_ENV_KEYS.has(key) || SESSION_ENV_KEYS.has(key) || key.startsWith("LC_"))) result[key] = value;
   return { ...result, DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1",
-    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", FORCE_PROMPT_CACHING_5M: "1" };
 }
 
 const RESULT_SIZE_META = { "anthropic/maxResultSizeChars": CC_MAX_RESULT_CHARS } as const;

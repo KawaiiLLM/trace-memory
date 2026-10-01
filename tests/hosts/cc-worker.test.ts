@@ -554,7 +554,8 @@ test("production worker forwards only the isolated operational and session envir
   for (const key of [...operational, ...session]) expect(environment?.[key]).toBe(`dummy-${key}`);
   for (const key of excluded) expect(environment).not.toHaveProperty(key);
   expect(environment).toMatchObject({ DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" });
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    FORCE_PROMPT_CACHING_5M: "1" });
 });
 
 const usageCounters = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] as const;
