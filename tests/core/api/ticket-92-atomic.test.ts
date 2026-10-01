@@ -332,6 +332,62 @@ function seedKnowledge(f: ReturnType<typeof fixture>, scope: "session" | "projec
   return { fid, base, tag, advance };
 }
 
+test("Noter review reports rejected slots and pending wrapper errors before a second-pass bounce", async () => {
+  const f = fixture(task => {
+    call(task, "note", { facts: [fact("bad source", "T1#E99")] });
+    f.memory.store.setEnrollment(f.session.id, false);
+    call(task, "memory", { operations: [], skipped: [] });
+    const review = task.passEnd();
+    expect(review).toContain("$1:");
+    expect(review).toContain("memory call error:");
+    expect(review).toContain("Knowledge changes held in this run:\nNone.");
+    f.memory.store.setEnrollment(f.session.id, true);
+  });
+  const result = await f.run();
+  expect(result, JSON.stringify(result)).toMatchObject({ outcome: "bounced" });
+  expect(f.entries.some(entry => f.memory.store.entryNoted(entry.id))).toBe(false);
+});
+
+test("Noter end review lists current create and archive only, with dropped slots absent", async () => {
+  const f = fixture(task => {
+    call(task, "note", { facts: [fact("User withdrew old rule")] });
+    call(task, "memory", { operations: [knowledge(), { op: "archive", kind: "invalid", id: seed.tag,
+      text: "Old rule invalid because the user withdrew it.", supports: ["$1"], reason: "Withdrawal" }], skipped: [] });
+    const first = task.passEnd();
+    expect(first).toContain("M1 (create):\nUse the stated rule");
+    expect(first).toContain(`M2 ${seed.tag} (archive: invalid):\nOld rule invalid`);
+    call(task, "memory", { operations: [], skipped: [], drop: ["M1"] });
+    const second = task.passEnd();
+    expect(second).not.toContain("M1 (create)");
+    expect(second).toContain(`M2 ${seed.tag} (archive: invalid)`);
+  });
+  const seed = seedKnowledge(f);
+  expect((await f.run()).outcome).toBe("success");
+  expect(f.memory.store.currentKnowledge(f.path)).toEqual([]);
+});
+
+test("Noter end review uses accepted held revisions even after their exact parent advances", async () => {
+  const f = fixture(task => {
+    call(task, "note", { facts: [fact("User refined the rule")] });
+    expect(call(task, "memory", { operations: [{ ...knowledge(), id: seed.tag, op: "update",
+      text: "New rule", category: "open", scope: "project", topics: ["current"] }], skipped: [] })).toContain("held: M1");
+    seed.advance();
+    const review = task.passEnd();
+    expect(review).toContain(`M1 ${seed.tag} (update)`);
+    expect(review).toContain("[-Old-]");
+    expect(review).toContain("{+New+}");
+    expect(review).toContain("category: constraint -> open");
+    expect(review).toContain("scope: session -> project");
+    expect(review).toContain('topics: [] -> ["current"]');
+    expect(review).not.toContain("Concurrent rule");
+    expect(review).toContain("Blockers:\nNone.");
+  });
+  const seed = seedKnowledge(f);
+  const result = await f.run();
+  expect(result, JSON.stringify(result)).toMatchObject({ outcome: "success" });
+  expect(f.memory.store.currentKnowledge(f.path).some(item => item.revision.text.includes("New rule"))).toBe(true);
+});
+
 test("99: N stages an invalidation privately and publishes its statement with the fact atomically", async () => {
   const f = fixture(task => {
     expect(call(task, "note", { facts: [fact("User withdrew the rule")] })).toContain("held: $1");

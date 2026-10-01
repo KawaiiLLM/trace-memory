@@ -1,5 +1,6 @@
 import { prepareMemory } from "../knowledge-write/prepare.ts";
-import { KnowledgeVersionProblem, type FactCommitInput, type KnowledgePath, type RunInput, type Store } from "../store/index.ts";
+import { KnowledgeVersionProblem, type FactCommitInput, type KnowledgeOperationInput, type KnowledgePath, type RunInput, type Store } from "../store/index.ts";
+import { renderKnowledgeDiff } from "../render/index.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
 /** Private to a single N binding. Tombstones preserve handle identity; invalid replacements
@@ -67,7 +68,7 @@ class Slots<T> {
 export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
   validateFact: (raw: unknown, slot: number, earlier: (slot: number) => boolean) => FactCommitInput,
   names: ToolNames = canonicalToolNames) {
-  const facts = new Slots<FactCommitInput>("$", names), operations = new Slots<unknown>("M", names);
+  const facts = new Slots<FactCommitInput>("$", names), operations = new Slots<KnowledgeOperationInput>("M", names);
   const fact = (raw: unknown, id: number) => validateFact(raw, id,
     target => target < id && facts.rows.get(target)?.value !== undefined);
   const prepare = (raw: unknown, mapping?: ReadonlyMap<number, number>) => {
@@ -95,11 +96,11 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
     }
   };
   const memory = (raw: unknown) => operations.call(raw, "operations", (value, id) => {
-    prepare(value);
+    const accepted = prepare(value);
     const target = (value as { id?: string }).id;
-    if (target && [...operations.rows].some(([other, row]) => other !== id && row.value !== undefined && (row.value as { id?: string }).id === target))
+    if (target && [...operations.rows].some(([other, row]) => other !== id && row.value !== undefined && (row.raw as { id?: string }).id === target))
       throw new Error("duplicate operation target; replace its existing M slot instead");
-    return value;
+    return accepted;
   }, () => {});
   const note = (raw: unknown) => facts.call(raw, "facts", fact, id => {
     const address = `$${id}`;
@@ -112,7 +113,7 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
   });
   const problems = () => [...facts.problems(), ...operations.problems()];
   const incomplete = () => !facts.used || !operations.used;
-  const status = (toolProblems: ReadonlyMap<string, string>): string => {
+  const blockers = (toolProblems: ReadonlyMap<string, string>): string[] => {
     const blockers: string[] = [];
     for (const [name, slots] of [["note", facts], ["memory", operations]] as const) {
       const exposed = names[name];
@@ -126,9 +127,28 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
       if (toolProblems.has(name) && !slots.problems().length)
         blockers.push(`${exposed} call error: ${toolProblems.get(name)}; make a structurally valid ${exposed} call to clear it`);
     }
-    return blockers.length
-      ? `Not publishable: ${blockers.join("; ")}. Ending now publishes nothing.`
+    return blockers;
+  };
+  const status = (toolProblems: ReadonlyMap<string, string>): string => {
+    const problems = blockers(toolProblems);
+    return problems.length
+      ? `Not publishable: ${problems.join("; ")}. Ending now publishes nothing.`
       : "Publishable: current submission requirements are met; ending normally attempts to publish facts and knowledge together (not a commit guarantee).";
+  };
+  const passEnd = (toolProblems: ReadonlyMap<string, string>): string => {
+    const changes = [...operations.rows].flatMap(([slot, row]) => {
+      if (row.value === undefined) return [];
+      const operation = row.value;
+      if (operation.op === "create") return [`M${slot} (create):\n${operation.text}`];
+      if (operation.op !== "update" && operation.op !== "archive") throw new Error(`Noter cannot hold ${operation.op}`);
+      const address = `K${operation.knowledgeId}#${store.versionTag(operation.knowledgeId, operation.baseCommit)}`;
+      if (operation.op === "archive") return [`M${slot} ${address} (archive: ${operation.kind}):\n${operation.text ?? "No archive text."}`];
+      const parent = store.getKnowledgeRevision(operation.knowledgeId, operation.baseCommit)!;
+      return [`M${slot} ${address} (update):\n${renderKnowledgeDiff(parent,
+        { ...parent, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics },
+        [], Infinity, new Set(["text", "status", "topics"]), undefined, address)}`];
+    });
+    return `Before publication, review this run once.\n\nBlockers:\n${blockers(toolProblems).join("\n") || "None."}\n\nKnowledge changes held in this run:\n${changes.join("\n\n") || "None."}\n\nCheck each knowledge change against your Principles. Correct a change that violates them with a complete replacement under its slot, or drop it. Resolve every blocker. Leave compliant changes as they are. Then end; ending with a blocker left publishes nothing.`;
   };
   const validate = () => {
     if (incomplete()) throw new Error(`incomplete Noting: explicitly call both ${names.note} and ${names.memory}, including empty arrays`);
@@ -136,10 +156,10 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
     // Recheck the final sources/content, including facts cited before a later correction.
     for (const [id, row] of facts.rows) row.value = fact(row.raw, id);
   };
-  return { note, memory, problems, incomplete, status, validate,
+  return { note, memory, problems, incomplete, status, passEnd, validate,
     reject: (name: "note" | "memory", raw: unknown, reason: string) => name === "note"
       ? facts.call(raw, "facts", fact, () => {}, reason)
-      : operations.call(raw, "operations", value => value, () => {}, reason),
+      : operations.call(raw, "operations", value => value as KnowledgeOperationInput, () => {}, reason),
     facts: () => [...facts.rows.values()].map(row => row.value!),
     slots: () => [...facts.rows.keys()],
     knowledge: (mapping: ReadonlyMap<number, number>) => {

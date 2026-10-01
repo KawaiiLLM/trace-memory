@@ -7725,11 +7725,11 @@ function holdNoting(store, run, path, validateFact, names = canonicalToolNames) 
     }
   };
   const memory = (raw) => operations.call(raw, "operations", (value, id) => {
-    prepare(value);
+    const accepted = prepare(value);
     const target = value.id;
-    if (target && [...operations.rows].some(([other, row]) => other !== id && row.value !== void 0 && row.value.id === target))
+    if (target && [...operations.rows].some(([other, row]) => other !== id && row.value !== void 0 && row.raw.id === target))
       throw new Error("duplicate operation target; replace its existing M slot instead");
-    return value;
+    return accepted;
   }, () => {
   });
   const note = (raw) => facts.call(raw, "facts", fact, (id) => {
@@ -7741,20 +7741,56 @@ function holdNoting(store, run, path, validateFact, names = canonicalToolNames) 
   });
   const problems = () => [...facts.problems(), ...operations.problems()];
   const incomplete = () => !facts.used || !operations.used;
-  const status = (toolProblems) => {
-    const blockers = [];
+  const blockers = (toolProblems) => {
+    const blockers2 = [];
     for (const [name, slots] of [["note", facts], ["memory", operations]]) {
       const exposed2 = names[name];
-      if (!slots.used) blockers.push(`${exposed2} not called; call ${exposed2}${name === "note" ? "({facts: []})" : "({operations: [], skipped: []})"}`);
-      if (slots.error) blockers.push(`${exposed2} call error: ${slots.error}; make a structurally valid ${exposed2} call to clear it`);
+      if (!slots.used) blockers2.push(`${exposed2} not called; call ${exposed2}${name === "note" ? "({facts: []})" : "({operations: [], skipped: []})"}`);
+      if (slots.error) blockers2.push(`${exposed2} call error: ${slots.error}; make a structurally valid ${exposed2} call to clear it`);
       for (const [id, row] of slots.rows) if (row.error) {
         const address2 = `${slots.prefix}${id}`;
-        blockers.push(`${address2}: ${row.error}; resubmit with slot: "${address2}" or drop: ["${address2}"] (drop may be refused if referenced)`);
+        blockers2.push(`${address2}: ${row.error}; resubmit with slot: "${address2}" or drop: ["${address2}"] (drop may be refused if referenced)`);
       }
       if (toolProblems.has(name) && !slots.problems().length)
-        blockers.push(`${exposed2} call error: ${toolProblems.get(name)}; make a structurally valid ${exposed2} call to clear it`);
+        blockers2.push(`${exposed2} call error: ${toolProblems.get(name)}; make a structurally valid ${exposed2} call to clear it`);
     }
-    return blockers.length ? `Not publishable: ${blockers.join("; ")}. Ending now publishes nothing.` : "Publishable: current submission requirements are met; ending normally attempts to publish facts and knowledge together (not a commit guarantee).";
+    return blockers2;
+  };
+  const status = (toolProblems) => {
+    const problems2 = blockers(toolProblems);
+    return problems2.length ? `Not publishable: ${problems2.join("; ")}. Ending now publishes nothing.` : "Publishable: current submission requirements are met; ending normally attempts to publish facts and knowledge together (not a commit guarantee).";
+  };
+  const passEnd = (toolProblems) => {
+    const changes = [...operations.rows].flatMap(([slot, row]) => {
+      if (row.value === void 0) return [];
+      const operation = row.value;
+      if (operation.op === "create") return [`M${slot} (create):
+${operation.text}`];
+      if (operation.op !== "update" && operation.op !== "archive") throw new Error(`Noter cannot hold ${operation.op}`);
+      const address2 = `K${operation.knowledgeId}#${store.versionTag(operation.knowledgeId, operation.baseCommit)}`;
+      if (operation.op === "archive") return [`M${slot} ${address2} (archive: ${operation.kind}):
+${operation.text ?? "No archive text."}`];
+      const parent = store.getKnowledgeRevision(operation.knowledgeId, operation.baseCommit);
+      return [`M${slot} ${address2} (update):
+${renderKnowledgeDiff(
+        parent,
+        { ...parent, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics },
+        [],
+        Infinity,
+        /* @__PURE__ */ new Set(["text", "status", "topics"]),
+        void 0,
+        address2
+      )}`];
+    });
+    return `Before publication, review this run once.
+
+Blockers:
+${blockers(toolProblems).join("\n") || "None."}
+
+Knowledge changes held in this run:
+${changes.join("\n\n") || "None."}
+
+Check each knowledge change against your Principles. Correct a change that violates them with a complete replacement under its slot, or drop it. Resolve every blocker. Leave compliant changes as they are. Then end; ending with a blocker left publishes nothing.`;
   };
   const validate = () => {
     if (incomplete()) throw new Error(`incomplete Noting: explicitly call both ${names.note} and ${names.memory}, including empty arrays`);
@@ -7767,6 +7803,7 @@ function holdNoting(store, run, path, validateFact, names = canonicalToolNames) 
     problems,
     incomplete,
     status,
+    passEnd,
     validate,
     reject: (name, raw, reason) => name === "note" ? facts.call(raw, "facts", fact, () => {
     }, reason) : operations.call(raw, "operations", (value) => value, () => {
@@ -8159,6 +8196,10 @@ Status: ${status}`;
     },
     get incomplete() {
       return held?.incomplete() ?? false;
+    },
+    passEnd: () => {
+      if (!held) throw new Error("only a Noter has a held end pass");
+      return held.passEnd(toolProblems);
     },
     get cancelled() {
       return closed;
@@ -8799,6 +8840,7 @@ async function runNoting(store, frozen, runAgent, config3, tools) {
     supplied: structuredClone(supplied),
     entryAudit: structuredClone(entryAudit),
     tools: binding.tools,
+    passEnd: binding.passEnd,
     reportToolRejection: binding.reportToolRejection,
     acknowledgeRequest: binding.acknowledgeRequest,
     reportRequest: binding.reportRequest
@@ -40999,7 +41041,7 @@ var CcAgentWorker = class {
     });
     const results = [], assistantMessages = [];
     let assistantMessagesAfterResult = [];
-    const input = task.kind === "dreaming" ? new CcUserInput() : null;
+    const input = new CcUserInput();
     input?.push(userMessage(task.text));
     let initIdentity = null, nativeSessionId = null;
     let output = "CC worker ended without an SDK result message";
@@ -41022,8 +41064,8 @@ var CcAgentWorker = class {
       const usage2 = observedUsage();
       task.reportProgress?.({ retries: [...retries], ...usage2 ? { usage: usage2 } : {}, ...task.fallbackReason ? { fallbackReason: task.fallbackReason } : {} });
     };
-    let dreamState = "first";
-    const toolsAllowed = () => task.kind !== "dreaming" || dreamState !== "complete";
+    let passState = "first";
+    const toolsAllowed = () => passState !== "complete";
     return runWithCcNativeAbortOwner(
       controller.signal,
       (error3) => this.journal("contained-sdk-control-abort", { taskKind: task.kind, nativeSessionId, error: error3.message }),
@@ -41060,8 +41102,8 @@ var CcAgentWorker = class {
             }
           } });
           for await (const message of execution) {
-            if (task.kind === "dreaming" && dreamState === "complete")
-              throw new Error("CC Dreamer emitted protocol activity after its authorized final pass");
+            if (passState === "complete")
+              throw new Error("CC worker emitted protocol activity after its authorized final pass");
             if (message.type === "system" && message.subtype === "init") {
               assertInit(message, this.worker, allowedTools);
               const identity = JSON.stringify({
@@ -41099,34 +41141,29 @@ var CcAgentWorker = class {
               progress();
               if (message.is_error || message.subtype !== "success")
                 nativeFailureOutput ??= message.subtype === "success" ? message.result : message.errors.join("; ");
-              if (task.kind !== "dreaming") {
-                outcome = message.subtype === "success" && !message.is_error ? "success" : "failure";
-                output = outcome === "failure" && nativeFailureOutput !== null ? nativeFailureOutput : message.subtype === "success" ? message.result : message.errors.join("; ");
+              const pass = results.length;
+              if (pass === 1 && passState !== "first" || pass === 2 && passState !== "repair-authorized" || pass > 2)
+                throw new Error("CC worker emitted a completed pass without core authorization");
+              const succeeded = message.subtype === "success" && !message.is_error && !task.signal?.aborted;
+              output = !succeeded && nativeFailureOutput !== null ? nativeFailureOutput : message.subtype === "success" ? message.result : message.errors.join("; ");
+              outcome = succeeded ? "success" : "failure";
+              if (!succeeded) {
+                passState = "complete";
+                input.close();
               } else {
-                const pass = results.length;
-                if (pass === 1 && dreamState !== "first" || pass === 2 && dreamState !== "repair-authorized" || pass > 2)
-                  throw new Error("CC Dreamer emitted a completed pass without core repair authorization");
-                const succeeded = message.subtype === "success" && !message.is_error;
-                output = !succeeded && nativeFailureOutput !== null ? nativeFailureOutput : message.subtype === "success" ? message.result : message.errors.join("; ");
-                outcome = succeeded ? "success" : "failure";
-                if (!succeeded) {
-                  dreamState = "complete";
-                  input.close();
+                const repair = task.kind === "dreaming" ? task.passEnd(origins.rounds()) : pass === 1 ? task.passEnd() : void 0;
+                if (pass === 1 && typeof repair === "string" && repair.length > 0) {
+                  passState = "repair-authorized";
+                  input.push(userMessage(repair, message.session_id, true));
                 } else {
-                  const repair = task.passEnd(origins.rounds());
-                  if (pass === 1 && typeof repair === "string" && repair.length > 0) {
-                    dreamState = "repair-authorized";
-                    input.push(userMessage(repair, message.session_id, true));
-                  } else {
-                    dreamState = "complete";
-                    input.close();
-                  }
+                  passState = "complete";
+                  input.close();
                 }
               }
             }
           }
-          if (task.kind === "dreaming" && dreamState === "repair-authorized")
-            throw new Error("CC Dreamer ended before completing the core-requested repair pass");
+          if (passState === "repair-authorized")
+            throw new Error("CC worker ended before completing the core-requested review pass");
           if (initIdentity === null) throw new Error("CC worker ended without native init metadata");
           if (protocolError) throw protocolError;
           if (!results.length) throw new Error("CC worker ended without an SDK result message");

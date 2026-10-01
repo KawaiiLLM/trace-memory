@@ -113,6 +113,30 @@ function session() {
   return { s, t };
 }
 
+test("2026-10-01, 117: every normal Noter pass gets one held-state review before atomic publication", async () => {
+  const seen: string[] = [];
+  const fresh = sourceSeededMemory(join(directory, "review.sqlite"), async raw => {
+    const task = raw as NotingAgentInput;
+    const first = task.passEnd();
+    seen.push(first);
+    expect(first).toContain("Blockers:\n");
+    expect(first).toContain("Knowledge changes held in this run:\nNone.");
+    expect(first).toContain(`${canonicalToolNames.note} not called`);
+    task.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    expect(task.passEnd()).toContain("Blockers:\nNone.");
+    return ok("finished");
+  });
+  try {
+    const project = fresh.store.createProject({ name: "review", declaredBy: "mark" });
+    const owner = fresh.store.createSession({ projectId: project.id, enrollmentChoice: true, host: "pi:fixture", startedAt: time, firstReplyAt: time });
+    const turn = fresh.store.appendTurn({ sessionId: owner.id, kind: "turn", userPrompt: "rule", assistantText: "ack", startedAt: time });
+    expect((await fresh.noting({ sessionId: owner.id, branch: "main", headTurnId: turn.id })).outcome).toBe("success");
+    expect(seen).toHaveLength(1);
+    expect(fresh.store.pendingEntries(owner.id, "main", turn.id)).toEqual([]);
+  } finally { fresh.close(); }
+});
+
 test("2026-09-24, 86: 'catchup 选A' and '任务失败后不检查' — retry the failed phase before checking other phases", async () => {
   let attempts = 0;
   const retryMemory = sourceSeededMemory(":memory:", async raw => {

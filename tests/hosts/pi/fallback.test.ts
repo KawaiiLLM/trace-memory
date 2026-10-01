@@ -156,7 +156,9 @@ test("27b 2026-09-10: a provider context-overflow rejection with nothing committ
     // 27c: the fork attempt ran on the session model; the re-admission runs — and is charged — on the
     // configured Noter model, priced by that model's own capacity.
     expect(f.sent.filter(forkAttempt)[0]!.model).toBe("test");
-    expect(f.sent.filter(fresh).map((body: Body) => body.model)).toEqual(["test-mini", "test-mini"]);
+    // 117: the fresh attempt also sends one fixed end-pass review on this same model.
+    expect(f.sent.filter(fresh).map((body: Body) => body.model)).toEqual(["test-mini", "test-mini", "test-mini"]);
+    expect(JSON.stringify(f.sent.filter(fresh).at(-1)!.messages)).toContain("Before publication, review this run once.");
     expect(run!.model).toBe("fake/test-mini");
     expect(response.fallbackReason).toContain("context overflow");
     expect(response.fallbackReason).toContain(OVERFLOW);
@@ -165,10 +167,10 @@ test("27b 2026-09-10: a provider context-overflow rejection with nothing committ
     expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId))
       .toEqual(hydrate(f.h.memory.store.listSourceEntries(1), f.h.memory.store).map(e => e.nativeId));
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
-    // Usage is the fresh child's two real responses and nothing else: the rejected request reported
-    // the SDK's placeholder zeros, which are unknown, never a paid successful generation.
-    expect(response.usage.input).toBe(18);
-    expect(response.usage.output).toBe(5);
+    // 117 adds the review response (7 input, 2 output) to the fresh child's own usage.
+    // The rejected request's placeholder zeros remain unknown, never a paid successful generation.
+    expect(response.usage.input).toBe(25);
+    expect(response.usage.output).toBe(7);
     expect(first.usage).toBeNull(); // and the attempt's record reports its own unknown, not the fresh child's spend
     // One explicit note/memory pair across both attempts: the rejected attempt executed no tool, and its child was
     // disposed before the fresh one started, so nothing of it could still write.
@@ -543,13 +545,14 @@ test("27d 2026-09-10 (user ruling): a fork attempt that sent a round is its own 
     expect(String(first.nativeLog).startsWith(`${f.runsDir}/`)).toBe(true);
     expect(first.fallbackReason).toBeUndefined();
     expect(first.problems.join(" ")).toContain(OVERFLOW);
-    // The re-admitted run records what IT spent — the fresh child's two responses, never 1234 more —
+    // 117: the fresh child records three responses including its fixed review, never 1234 more —
     // and names the record of the attempt it followed, so the two read as the one task they are.
     expect(run!.mode).toBe("subagent");
     expect(run!.model).toBe("fake/test-mini");
     expect(run!.outcome).toBe("success");
-    expect(second.usage.input).toBe(18);
-    expect(second.usage.output).toBe(5);
+    expect(second.usage.input).toBe(25);
+    expect(second.usage.output).toBe(7);
+    expect(JSON.stringify(f.sent.filter(fresh).at(-1)!.messages)).toContain("Before publication, review this run once.");
     expect(second.fallbackReason).toContain("context overflow");
     expect(second.fallbackReason).toContain(`R${attempt!.id}`);
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);

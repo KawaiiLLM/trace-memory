@@ -25,6 +25,7 @@ export class NotForkable extends Error {
 }
 
 interface NativeCommon {
+  kind: "noting" | "dreaming";
   runsDir: string;
   cwd: string;
   agentDir: string;
@@ -233,7 +234,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       let held = false;
       try { held = Array.isArray(JSON.parse(content).held); } catch { /* Ordinary text receipt. */ }
       if (!toolRejected(tool.name, content) && !held) committed ||= tool.name === "note" || tool.name === "memory";
-      return { ...result(content), ...(task.passEnd && task.maxToolRounds > 0 && rounds >= task.maxToolRounds ? { terminate: true } : {}) };
+      return { ...result(content), ...(task.kind === "dreaming" && task.passEnd && task.maxToolRounds > 0 && rounds >= task.maxToolRounds ? { terminate: true } : {}) };
     },
   })) satisfies { name: string }[] as unknown as PiToolDefinition[];
 
@@ -400,15 +401,15 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     await session.waitForIdle();
     // A native prompt includes the whole tool loop and provider retries. Only now is this a pass
     // end. The same child, counters and retry accounting survive the one system-generated repair.
-    if (task.passEnd && !task.signal?.aborted && !failure && terminal?.stopReason !== "error" && terminal?.stopReason !== "aborted") {
+    if (task.passEnd && !task.signal?.aborted && !failure && terminal && !["error", "aborted", "length"].includes(terminal.stopReason ?? "") && !terminal.errorMessage) {
       const followup = task.passEnd(rounds);
-      if (followup && (task.maxToolRounds === 0 || rounds < task.maxToolRounds)) {
+      if (followup && (task.kind === "noting" || task.maxToolRounds === 0 || rounds < task.maxToolRounds)) {
         // A new public prompt reapplies before_agent_start. An idle custom-message turn skips it,
         // so Pi's next-turn refresh would replace the worker instructions with its base prompt.
         // The feedback identifies itself as host-generated, not evidence, in this same child log.
         await session.sendUserMessage(followup, { expandPromptTemplates: false });
         await session.waitForIdle();
-        task.passEnd(rounds);
+        if (task.kind === "dreaming") task.passEnd(rounds);
       }
     }
   } catch (error) {

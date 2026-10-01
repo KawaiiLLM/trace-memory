@@ -336,6 +336,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   };
   return { tools, sequence, fetched, memory, get toolProblems() { return [...toolProblems.values()]; }, get committed() { return committed; }, get problems() { return held ? [...held.problems(), ...toolProblems.values()] : problems; },
     get incomplete() { return held?.incomplete() ?? false; },
+    passEnd: () => { if (!held) throw new Error("only a Noter has a held end pass"); return held.passEnd(toolProblems); },
     get cancelled() { return closed; },
     reportToolRejection: (id: string, name: "note" | "memory", input: unknown, reason: string) => {
       if (closed || !held || rejectedNativeCalls.has(id)) return;

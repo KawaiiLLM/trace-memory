@@ -134,7 +134,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
     // model call, the tool loop, the retry policy and cancellation in both; this adapter keeps only
     // the byte-level gate on a fork's first request.
     const common = {
-      runsDir: binding.runsDir, cwd: binding.cwd, agentDir: binding.agentDir, model,
+      kind: task.kind, runsDir: binding.runsDir, cwd: binding.cwd, agentDir: binding.agentDir, model,
       // 26b: the level the host froze with this task at admission, carried by the frozen task itself
       // (core keeps it opaque), so a foreground switch after admission reaches neither this run's
       // later rounds nor its fallback. This is the *inherited* one, which the fork run below keeps
@@ -207,7 +207,8 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
     // 26d: a fresh child thinks at the phase's own frozen subagent level — the configured preference
     // when it is not `inherit`, the inherited foreground level otherwise (the host resolves that at
     // admission; a host that froze only one level keeps 26b's single-level behaviour here).
-    const native = await runNative({ ...common, thinkingLevel: (task.subagentThinkingLevel ?? task.thinkingLevel) as ThinkingLevel | undefined,
+    const native = await runNative({ ...common, ...(task.kind === "noting" ? { passEnd: task.passEnd } : {}),
+      thinkingLevel: (task.subagentThinkingLevel ?? task.thinkingLevel) as ThinkingLevel | undefined,
       mode: "subagent", systemPrompt: task.prompt, task: task.text });
     mode = "subagent";
     usage = native.usage;

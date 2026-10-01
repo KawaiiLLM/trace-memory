@@ -520,7 +520,7 @@ test("review 2026-09-08: a fresh child runs on any API the SDK can call; only th
     const tools = [{ name: "trace" as const, description: "Read", parameters: { type: "object", properties: {} }, execute: () => "ok" }];
     let error: unknown;
     try {
-      await runNative({ mode: "subagent", model: { ...f.model, api: "google-generative-ai" } as never, cwd: f.h.dir, agentDir: f.agentDir,
+      await runNative({ kind: "noting", mode: "subagent", model: { ...f.model, api: "google-generative-ai" } as never, cwd: f.h.dir, agentDir: f.agentDir,
         runsDir: f.runsDir, systemPrompt: "Test", task: "Reply OK", tools, maxToolRounds: 0, onRequest: () => {}, onProgress: () => {} });
     } catch (caught) { error = caught; }
     // Whatever the unlisted adapter makes of the stubbed wire, the adapter's own fork check is not what
@@ -537,10 +537,11 @@ test("review 2026-09-08: provider retries never spend the tool-round cap; the ca
     f.script(body => !worker(body) ? say("好的。") : attempt++ < 2 ? broken() : toolResults(body) ? say("Done.") : noteAndMemory("n", noteBatch));
     await f.turn();
     const run = await settled(f);
-    // Two failed attempts, one tool round within the cap of one, then the final reply.
+    // Two failed attempts, one tool round within the cap, then a terminal reply and 117's review.
     expect(run.outcome).toBe("success");
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
-    expect(f.sent.filter(body => worker(body))).toHaveLength(4);
+    expect(f.sent.filter(body => worker(body))).toHaveLength(5);
+    expect(JSON.stringify(f.sent.filter(body => worker(body)).at(-1)!.messages)).toContain("Before publication, review this run once.");
     expect(JSON.parse(run.response!).retries).toHaveLength(2);
   } finally { await f.dispose(); }
 }, 20000);
@@ -642,7 +643,7 @@ test("review 2026-09-10 P2: the child's thinking pair is reported through progre
     const tools = [{ name: "trace" as const, description: "Read", parameters: { type: "object", properties: {} }, execute: () => "ok" }];
     const events: string[] = [];
     let first: { thinking?: { requested?: string; effective: string } } | undefined;
-    await runNative({ mode: "subagent", model: f.model as never, cwd: f.h.dir, agentDir: f.agentDir, runsDir: f.runsDir,
+    await runNative({ kind: "noting", mode: "subagent", model: f.model as never, cwd: f.h.dir, agentDir: f.agentDir, runsDir: f.runsDir,
       systemPrompt: "Test", task: "Reply OK", tools, maxToolRounds: 0, thinkingLevel: "low",
       onRequest: () => { events.push("request"); },
       onProgress: state => { if (!first) { first = state; events.push("progress"); } } });

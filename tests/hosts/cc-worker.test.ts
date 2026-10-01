@@ -57,6 +57,36 @@ function phaseWorkerConfig(directory: string) {
     "dreaming.model": "opus-d", "dreaming.thinking": "max", worker: { claudeExecutable: "/opt/homebrew/bin/claude", contextWindows: { sonnet: 120_000, "opus-c": 220_000, "opus-d": 320_000 }, cwd: directory } });
 }
 
+/** Old single-result SDK fixtures still exercise their original contract, followed by a real
+ * synthetic user-message/reply handshake. No completion is invented when the native mock fails. */
+function withNoterReview(queryMock: (request: any) => any, task?: CcAgentTask): any {
+  if (task?.kind === "noting" && !task.passEnd) task.passEnd = vi.fn(() => "Review this run once.");
+  return (request: any) => {
+    const prompt = request.prompt[Symbol.asyncIterator]();
+    let reads = 0;
+    const monitored = { [Symbol.asyncIterator]: () => ({ next: () => { reads++; return prompt.next(); } }) };
+    const original = queryMock({ ...request, prompt: monitored });
+    const stream = (async function* () {
+      let first: any, count = 0;
+      for await (const message of original) {
+        if (message.type === "result") { first = message; count++; }
+        yield message;
+      }
+      if (count === 1 && first?.subtype === "success" && !first.is_error) {
+        if (!reads) await prompt.next(); // The original mock did not inspect its initial user message.
+        const review = await prompt.next();
+        expect(review.done).toBe(false);
+        expect(review.value.isSynthetic).toBe(true);
+        expect(review.value.message.content[0].text.length).toBeGreaterThan(0);
+        yield { ...first, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0 } };
+      }
+    })() as any;
+    stream.supportedModels = () => original.supportedModels();
+    return stream;
+  };
+}
+
 function assistant(id: string, toolIds: string[]) {
   return { type: "assistant", message: { id, content: toolIds.map(toolId => ({ type: "tool_use", id: toolId, name: "note", input: {} })) } } as any;
 }
@@ -98,11 +128,12 @@ test("production worker serves original schemas and raw arguments, publishes the
   const acknowledgeRequest = vi.fn();
   const task = { kind: "noting", text: "material", prompt: loadPrompt("noting.md"), tools: [definition], acknowledgeRequest,
     fallbackReason: "original source is no longer in parent context" } as unknown as CcAgentTask;
-  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 2);
+  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: withNoterReview(fakeQuery, task) }).run(task, 2);
   expect(result).toMatchObject({ outcome: "success", mode: "subagent", fallbackReason: task.fallbackReason });
   expect(result.usage).toEqual({ input: 11, output: 7, cacheRead: 5, cacheWrite: 3, cost: { total: 0.125 } });
   expect(seen).toEqual([{ cursor: "opaque-K" }]);
   expect(acknowledgeRequest).toHaveBeenCalledTimes(1);
+  expect(task.passEnd).toHaveBeenCalledTimes(1);
   expect((listed[0] as any).tools[0]).toMatchObject({ inputSchema: conditional,
     _meta: { "anthropic/maxResultSizeChars": CC_MAX_RESULT_CHARS } });
   expect(optionsSeen[0]).toMatchObject({ settingSources: [], plugins: [], tools: [], strictMcpConfig: true,
@@ -165,13 +196,16 @@ test("worker passes only native retry count, records native events, and preserve
     return stream;
   }) as any;
   const reportProgress = vi.fn();
-  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(), reportProgress } as unknown as CcAgentTask;
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(), reportProgress,
+    passEnd: vi.fn(() => "must not send after provider failure") } as unknown as CcAgentTask;
   const result = await new CcAgentWorker(config, { query: fakeQuery }).run(task, 0);
   expect(environment?.CLAUDE_CODE_MAX_RETRIES).toBe("3");
   expect(result).toMatchObject({ outcome: "failure", output: "API Error: stream closed before response.completed",
     retries: [{ attempt: 1, error: "server_error" }],
     usage: { input: 9, output: 4, cacheRead: 2, cacheWrite: 1, cost: { total: 0.2 } } });
   expect(reportProgress).toHaveBeenCalledWith(expect.objectContaining({ retries: [{ attempt: 1, error: "server_error" }] }));
+  // The SDK emitted a successful result before the stream later threw; this terminal error
+  // still prevents publication, though the first result had already authorized review.
 });
 
 test("106: a run on any Claude Code version succeeds and journals the version it started", async () => {
@@ -190,7 +224,7 @@ test("106: a run on any Claude Code version succeeds and journals the version it
   }) as any;
   const journal: { event: string; details?: Record<string, unknown> }[] = [];
   const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
-  const result = await new CcAgentWorker(config, { query: fakeQuery, journal: (event, details) => journal.push({ event, details }) }).run(task, 0);
+  const result = await new CcAgentWorker(config, { query: withNoterReview(fakeQuery, task), journal: (event, details) => journal.push({ event, details }) }).run(task, 0);
   expect(result.outcome).toBe("success");
   expect(journal).toContainEqual({ event: "worker-run-started",
     details: { taskKind: "noting", nativeSessionId: "version-child", claudeVersion: TEST_CC_VERSION } });
@@ -323,7 +357,7 @@ test("CC worker dispatches fifty-one read calls through simulated MCP with unlim
     return stream;
   }) as any;
   const task = { kind: "noting", text: "material", prompt: "instructions", tools: [definition], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
-  expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 0)).toMatchObject({
+  expect(await new CcAgentWorker(workerConfig(directory, executable), { query: withNoterReview(fakeQuery, task) }).run(task, 0)).toMatchObject({
     outcome: "success", output: "done", verification: { rounds: 51 }, usage: { input: 51, output: 51 },
   });
   expect(execute).toHaveBeenCalledTimes(51);
@@ -394,7 +428,7 @@ test("Dreamer uses one streaming child for one repair, accepts stable repeated i
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-")); dirs.push(directory);
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
-  const prompts: any[] = [], passEnd = vi.fn().mockReturnValueOnce("repair receipt").mockReturnValueOnce(undefined);
+  const prompts: any[] = [], passEnd = vi.fn(() => "repair receipt");
   const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
     const stream = (async function* () {
       const input = request.prompt[Symbol.asyncIterator]();
@@ -550,7 +584,7 @@ test("production worker forwards only the isolated operational and session envir
     return stream;
   }) as any;
   const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
-  expect((await new CcAgentWorker(workerConfig(directory, executable), { environment: source, query: fakeQuery }).run(task, 0)).outcome).toBe("success");
+  expect((await new CcAgentWorker(workerConfig(directory, executable), { environment: source, query: withNoterReview(fakeQuery, task) }).run(task, 0)).outcome).toBe("success");
   for (const key of [...operational, ...session]) expect(environment?.[key]).toBe(`dummy-${key}`);
   for (const key of excluded) expect(environment).not.toHaveProperty(key);
   expect(environment).toMatchObject({ DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
@@ -579,7 +613,7 @@ test.each(invalidUsageCases)("production worker preserves unknown usage for %s",
     return stream;
   }) as any;
   const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
-  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 0);
+  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: withNoterReview(fakeQuery, task) }).run(task, 0);
   expect(result.outcome).toBe("success");
   expect(result.usage).toBeUndefined();
 });
@@ -654,7 +688,7 @@ test("production MCP preserves non-default trace and search cursors through real
     return stream;
   }) as any;
   let memory: ReturnType<typeof TraceMemory>;
-  const prepared = new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
+  const prepared = new CcAgentWorker(workerConfig(directory, executable), { query: withNoterReview(fakeQuery) });
   memory = TraceMemory(join(directory, "memory.sqlite"), task => prepared.run(task as CcAgentTask, 0),
     { noting: { triggerTokens: 1 } });
   const project = memory.store.createProject({ name: "core", declaredBy: "mark" });
@@ -682,8 +716,10 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
   const receipts: string[] = [];
   const valid = { operations: [{ op: "create", text: "Durable CC conclusion", category: "reference", scope: "project",
     topics: ["cc"], supports: ["F1"], reason: "New durable conclusion." }], skipped: [] };
-  const fakeQuery = ((request: { options: Record<string, any> }) => {
+  const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
     const stream = (async function* () {
+      const prompts = request.prompt[Symbol.asyncIterator]();
+      await prompts.next();
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
       const client = new Client({ name: "consolidation-worker-test", version: "1" }); await client.connect(clientTransport);
@@ -713,11 +749,21 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
         receipts.push((result.content as { type: string; text: string }[])[0]!.text);
       };
       if (invalidFirst) yield* submit({ operations: [{ ...valid.operations[0], id: "K1#abcd" }], skipped: [] });
-      yield* submit(invalidFirst ? { operations: [{ ...valid.operations[0], slot: "M1" }], skipped: [] } : valid);
+      else yield* submit(valid);
       expect(memory.store.currentKnowledge()).toHaveLength(0); // held, not a partial publication
-      yield { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: ordinal,
+      const result = { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: ordinal,
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
         modelUsage: {}, total_cost_usd: 0 };
+      yield result;
+      const review = (await prompts.next()).value;
+      expect(review.isSynthetic).toBe(true);
+      expect(review.message.content[0].text).toContain("Before publication, review this run once.");
+      if (invalidFirst) {
+        expect(review.message.content[0].text).toContain("M1:");
+        yield* submit({ operations: [{ ...valid.operations[0], slot: "M1" }], skipped: [] });
+      } else expect(review.message.content[0].text).toContain("Blockers:\nNone.");
+      expect(memory.store.currentKnowledge()).toHaveLength(0);
+      yield { ...result, num_turns: invalidFirst ? ordinal : 0 };
       await client.close();
     })() as any;
     stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
@@ -751,12 +797,14 @@ test("production worker reports launch failure and cancellation without invoking
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const runQuery = vi.fn() as any;
-  const base = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
+  const base = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
+    passEnd: vi.fn(() => "must not send after cancellation") } as unknown as CcAgentTask;
   const controller = new AbortController(); controller.abort(new DOMException("test stop", "AbortError"));
   const cancelled = await new CcAgentWorker(workerConfig(directory, executable), { query: runQuery })
     .run({ ...base, signal: controller.signal } as CcAgentTask, 0);
   expect(cancelled.outcome).toBe("cancelled");
   expect(runQuery).not.toHaveBeenCalled();
+  expect(base.passEnd).not.toHaveBeenCalled();
 });
 
 test("production protocol aborts remain failures while external cancellation stays cancelled and outside the failure streak", async () => {
@@ -867,7 +915,7 @@ test("no custom worker log directory is ever created", async () => {
   }) as any;
   const config = workerConfig(directory, executable);
   const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
-  const result = await new CcAgentWorker(config, { query: fakeQuery }).run(task, 0);
+  const result = await new CcAgentWorker(config, { query: withNoterReview(fakeQuery, task) }).run(task, 0);
   expect(result.outcome).toBe("success");
   expect(existsSync(join(config.stateDir, "workers"))).toBe(false);
 });
@@ -896,7 +944,7 @@ test("nativeLog is the native session file Claude Code itself writes, verified a
   mkdirSync(join(expectedPath, ".."), { recursive: true });
   writeFileSync(expectedPath, `${JSON.stringify({ type: "user", sessionId, message: { role: "user", content: [] } })}\n`);
   const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
-  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery, environment }).run(task, 0);
+  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: withNoterReview(fakeQuery, task), environment }).run(task, 0);
   expect(result.outcome).toBe("success");
   expect(result.nativeLog).toBe(expectedPath);
   expect((result.verification as { nativeLogProblem?: string } | undefined)?.nativeLogProblem).toBeUndefined();
@@ -933,7 +981,7 @@ test("a missing native session file leaves nativeLog absent with an audit note, 
     return stream;
   }) as any;
   const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
-  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery, environment }).run(task, 0);
+  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: withNoterReview(fakeQuery, task), environment }).run(task, 0);
   expect(result).toMatchObject({ outcome: "success", output: "done", usage: { input: 3, output: 2 } });
   expect(result.nativeLog).toBeUndefined();
   expect((result.verification as { nativeLogProblem?: string } | undefined)?.nativeLogProblem).toContain("missing");

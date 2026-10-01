@@ -5,7 +5,7 @@ import { runNative, type NativeSubagentTask } from "../../../src/hosts/pi/native
 import { broken, call, fixture, say, toolResults } from "./native-fixture.ts";
 
 const nativeTask = (f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<NativeSubagentTask> = {}): NativeSubagentTask => ({
-  mode: "subagent", runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, model: f.model as never,
+  kind: "dreaming", mode: "subagent", runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, model: f.model as never,
   systemPrompt: "Offline native worker test.", task: "Complete the scripted task.", maxToolRounds: 0,
   tools: [{ name: "trace", description: "Read synthetic material", parameters: { type: "object", properties: {} }, execute: () => "synthetic material" }],
   onRequest: () => {}, onProgress: () => {}, ...overrides,
@@ -27,6 +27,36 @@ test("68: native Dreamer with an unlimited round count completes more than fifty
     expect(result.calls).toHaveLength(55);
     expect(observed.at(-1)).toBe(55);
     expect(passes).toEqual([55]);
+  } finally { await f.dispose(); }
+});
+
+test("Noter gets one fixed review at the exact tool-round cap; the second normal pass cannot open a third", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1e9 });
+  try {
+    const reviews: number[] = [], requests: unknown[] = [];
+    let responses = 0;
+    f.script(() => ++responses === 1 ? call("first", "trace", {}) : say(responses === 2 ? "First pass done" : "Review done"));
+    const result = await runNative(nativeTask(f, { kind: "noting", maxToolRounds: 1,
+      passEnd: rounds => { reviews.push(rounds); return "Before publication, review this run once."; },
+      onRequest: body => { requests.push(body); } }));
+    expect(result.outcome).toBe("success");
+    expect(result.output, `requests=${requests.length} reviews=${reviews.join(",")}`).toBe("Review done");
+    expect(reviews).toEqual([1]);
+    expect(requests).toHaveLength(3);
+    expect(JSON.stringify(requests.at(-1))).toContain("Before publication, review this run once.");
+  } finally { await f.dispose(); }
+});
+
+test("Noter never sends its end review after a provider error or cancellation", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1e9 });
+  try {
+    const reviews: number[] = [];
+    f.script(() => broken());
+    const task = nativeTask(f, { kind: "noting", passEnd: rounds => { reviews.push(rounds); return "review"; } });
+    expect((await runNative(task)).outcome).toBe("failure");
+    const controller = new AbortController(); controller.abort();
+    expect((await runNative({ ...task, signal: controller.signal })).outcome).toBe("cancelled");
+    expect(reviews).toEqual([]);
   } finally { await f.dispose(); }
 });
 

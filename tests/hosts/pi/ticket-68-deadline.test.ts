@@ -20,7 +20,7 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
   const memory = TraceMemory(":memory:", async input => {
     task = input as DreamingAgentInput;
     task.acknowledgeRequest();
-    const work = runNative({ mode: "subagent", runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir,
+    const work = runNative({ kind: "dreaming", mode: "subagent", runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir,
       model: f.model as never, systemPrompt: task.prompt, task: task.text,
       tools: task.tools, maxToolRounds: 0, signal: task.signal,
       onRequest: () => {}, onProgress: () => {},

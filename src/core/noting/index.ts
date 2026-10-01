@@ -74,6 +74,8 @@ export interface NotingAgentInput extends AgentControl {
   /** The view versions, budgets and omissions core records for this batch. */
   entryAudit: EntryAudit;
   tools: ToolDefinition[];
+  /** One fixed review message after the first normally completed fresh pass. */
+  passEnd(): string;
   /** A host schema refusal must invalidate the same held slot even when execute was not reached. */
   reportToolRejection(id: string, name: "note" | "memory", input: unknown, reason: string): void;
   /** Host-only: a proven later model turn acknowledges review delivery without fabricating an audit
@@ -374,7 +376,7 @@ export async function runNoting(
   const agentInput: NotingAgentInput = { kind: "noting", entryIds: entries.map(e => e.id), sessionId, branch, range,
     model, mode, prompt: frozen.prompt!, promptHash: frozen.promptHash!, forkPrompt: frozen.forkPrompt ?? frozen.prompt!,
     material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit),
-    tools: binding.tools, reportToolRejection: binding.reportToolRejection,
+    tools: binding.tools, passEnd: binding.passEnd, reportToolRejection: binding.reportToolRejection,
     acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
   try { result = await runAgent(agentInput); }

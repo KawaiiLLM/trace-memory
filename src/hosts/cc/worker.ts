@@ -359,7 +359,7 @@ export class CcAgentWorker {
     });
     const results: SDKResultMessage[] = [], assistantMessages: SDKAssistantMessage[] = [];
     let assistantMessagesAfterResult: SDKAssistantMessage[] = [];
-    const input = task.kind === "dreaming" ? new CcUserInput() : null;
+    const input = new CcUserInput();
     input?.push(userMessage(task.text));
     let initIdentity: string | null = null, nativeSessionId: string | null = null;
     let output = "CC worker ended without an SDK result message";
@@ -374,8 +374,8 @@ export class CcAgentWorker {
         cacheRead: settled.cacheRead + tail.cacheRead, cacheWrite: settled.cacheWrite + tail.cacheWrite } : settled;
     };
     const progress = () => { const usage = observedUsage(); task.reportProgress?.({ retries: [...retries], ...(usage ? { usage } : {}), ...(task.fallbackReason ? { fallbackReason: task.fallbackReason } : {}) }); };
-    let dreamState: "first" | "repair-authorized" | "complete" = "first";
-    const toolsAllowed = () => task.kind !== "dreaming" || dreamState !== "complete";
+    let passState: "first" | "repair-authorized" | "complete" = "first";
+    const toolsAllowed = () => passState !== "complete";
     return runWithCcNativeAbortOwner(controller.signal, error =>
       this.journal("contained-sdk-control-abort", { taskKind: task.kind, nativeSessionId, error: error.message }),
       async () => { try {
@@ -405,8 +405,8 @@ export class CcAgentWorker {
           settings: JSON.stringify({ enabledPlugins: { "agents-md@builtin": false } }) },
       } });
       for await (const message of execution) {
-        if (task.kind === "dreaming" && dreamState === "complete")
-          throw new Error("CC Dreamer emitted protocol activity after its authorized final pass");
+        if (passState === "complete")
+          throw new Error("CC worker emitted protocol activity after its authorized final pass");
         if (message.type === "system" && message.subtype === "init") {
           assertInit(message, this.worker, allowedTools);
           const identity = JSON.stringify({ sessionId: message.session_id,
@@ -444,34 +444,28 @@ export class CcAgentWorker {
           progress();
           if (message.is_error || message.subtype !== "success")
             nativeFailureOutput ??= message.subtype === "success" ? message.result : message.errors.join("; ");
-          if (task.kind !== "dreaming") {
-            outcome = message.subtype === "success" && !message.is_error ? "success" : "failure";
-            output = outcome === "failure" && nativeFailureOutput !== null ? nativeFailureOutput
-              : message.subtype === "success" ? message.result : message.errors.join("; ");
-          } else {
-            const pass = results.length;
-            if ((pass === 1 && dreamState !== "first") || (pass === 2 && dreamState !== "repair-authorized") || pass > 2)
-              throw new Error("CC Dreamer emitted a completed pass without core repair authorization");
-            const succeeded = message.subtype === "success" && !message.is_error;
-            output = !succeeded && nativeFailureOutput !== null ? nativeFailureOutput
-              : message.subtype === "success" ? message.result : message.errors.join("; ");
-            outcome = succeeded ? "success" : "failure";
-            if (!succeeded) { dreamState = "complete"; input!.close(); }
-            else {
-              const repair = task.passEnd(origins.rounds());
-              if (pass === 1 && typeof repair === "string" && repair.length > 0) {
-                dreamState = "repair-authorized";
-                input!.push(userMessage(repair, message.session_id, true));
-              } else {
-                dreamState = "complete";
-                input!.close();
-              }
+          const pass = results.length;
+          if ((pass === 1 && passState !== "first") || (pass === 2 && passState !== "repair-authorized") || pass > 2)
+            throw new Error("CC worker emitted a completed pass without core authorization");
+          const succeeded = message.subtype === "success" && !message.is_error && !task.signal?.aborted;
+          output = !succeeded && nativeFailureOutput !== null ? nativeFailureOutput
+            : message.subtype === "success" ? message.result : message.errors.join("; ");
+          outcome = succeeded ? "success" : "failure";
+          if (!succeeded) { passState = "complete"; input.close(); }
+          else {
+            const repair = task.kind === "dreaming" ? task.passEnd(origins.rounds()) : pass === 1 ? task.passEnd() : undefined;
+            if (pass === 1 && typeof repair === "string" && repair.length > 0) {
+              passState = "repair-authorized";
+              input.push(userMessage(repair, message.session_id, true));
+            } else {
+              passState = "complete";
+              input.close();
             }
           }
         }
       }
-      if (task.kind === "dreaming" && dreamState === "repair-authorized")
-        throw new Error("CC Dreamer ended before completing the core-requested repair pass");
+      if (passState === "repair-authorized")
+        throw new Error("CC worker ended before completing the core-requested review pass");
       if (initIdentity === null) throw new Error("CC worker ended without native init metadata");
       if (protocolError) throw protocolError;
       if (!results.length) throw new Error("CC worker ended without an SDK result message");
