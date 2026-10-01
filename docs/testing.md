@@ -36,6 +36,10 @@ Probes, native-host runs, benchmarks and acceptance reproductions written for on
 
 Tests build sessions, Raw, facts and knowledge through the shared builders in `tests/support/`, the one place that knows the public write shape. A legacy fact is seeded with its entry bindings, as production rows have them. A test calls `note` or `memory` directly only when that tool's contract is what it tests.
 
+## Running performance tests
+
+Run each performance test file in its own Vitest process, one at a time: `core/api/ticket-80-append-performance.test.ts`, `hosts/cc-67-performance.test.ts`, `hosts/cc-70-performance.test.ts`, `hosts/cc-performance.test.ts` and `perf-fixture.test.ts`. Run together in one invocation they compete for CPU, which has pushed the 100 ms heartbeat gate to 115–556 ms without a regression.
+
 ## When a change breaks tests
 
 Classify each failure before touching it:
