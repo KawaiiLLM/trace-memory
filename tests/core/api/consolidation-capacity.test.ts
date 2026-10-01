@@ -40,7 +40,7 @@ function fixture(texts: (string | { text: string; category: "constraint" | "open
 test("45: a whole applicable pool fitting its exact rendered capacity has no omission receipt", () => {
   const f = fixture(["whole applicable rule " + "word ".repeat(5_100)]);
   // 101: the block N receives carries its session's header, so the exact capacity prices it.
-  const exact = budgetKnowledge(f.values, Infinity, value => renderKnowledge(value, `K${value.knowledge.id}#${f.memory.store.versionTag(value.knowledge.id, value.revision.id)}`),
+  const exact = budgetKnowledge(f.values, Infinity, value => renderKnowledge(value, `K${value.knowledge.id}#${f.memory.store.versionTag(value.knowledge.id, value.revision.id)}`, true),
     undefined, undefined, undefined, sessionKnowledgeNotice(f.target.sessionId)).cost;
   expect(exact).toBeGreaterThanOrEqual(5_000);
   setKnowledgeCapacity(f.memory, exact);

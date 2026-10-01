@@ -5,7 +5,7 @@ import type { Store, RunInput, FactCommitInput, KnowledgePath, SourceEntry } fro
 import { DEFAULT_READ_TOKENS, MAX_PUBLIC_READ_TOKENS, READ_FIELDS, READ_VERSIONS, SEARCH_PREVIEW_TOKENS, validateBudgets, type ListingOptions, type SearchScope, type TraceRead } from "./read.ts";
 import type { NotingDiagnostic } from "../noting/review.ts";
 import { holdNoting } from "../noting/held.ts";
-import { tokens } from "../render/index.ts";
+import { tokens, WORKER_ITEM_TOKENS } from "../render/index.ts";
 import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
 export interface ToolDefinition {
@@ -238,7 +238,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     }
     const ordered = candidates.flatMap(entry => cited.has(entry.id) ? [cited.get(entry.id)!] : []);
     const text = ordered.map(segment => segment.text).join("\n");
-    if (fact && context.kind === "noting" && tokens(text) > 1000) errors.push(`Fact exceeds 1000-token limit: ${tokens(text)} tokens`);
+    if (fact && context.kind === "noting" && tokens(text) > WORKER_ITEM_TOKENS) errors.push(`Fact exceeds ${WORKER_ITEM_TOKENS}-token limit: ${tokens(text)} tokens`);
     if (errors.length || !fact || !ordered.length) throw new Error(errors.join("; ") || "invalid fact");
     const first = ordered[0]!.hit.entry.turnId;
     return { ...fact, text, source: ordered.map(segment => segment.address), segments: ordered.map(segment => segment.text),

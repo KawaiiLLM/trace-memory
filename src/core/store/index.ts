@@ -15,7 +15,7 @@ import { EXECUTIONS_SQL, migrateTaskPool104, beginExecution, linkExecutionRun, s
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS, dueKnowledgePool, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize, type DueKnowledgePool } from "./processing.ts";
-import { factAddresses, renderKnowledge, renderKnowledgeChange, tokens } from "../render/index.ts";
+import { factAddresses, renderKnowledge, renderKnowledgeChange, tokens, WORKER_ITEM_TOKENS } from "../render/index.ts";
 import { isKnowledgeCategory, substantiveArchiveStatement } from "../model/index.ts";
 import type {
   Actor,
@@ -3799,7 +3799,7 @@ export class Store {
 
   private requireWorkerItemSize(text: string, label: string): void {
     const size = tokens(text);
-    if (size > 1_000) throw new Error(`${label} exceeds 1000-token limit: ${size} tokens`);
+    if (size > WORKER_ITEM_TOKENS) throw new Error(`${label} exceeds ${WORKER_ITEM_TOKENS}-token limit: ${size} tokens`);
   }
 
   private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,

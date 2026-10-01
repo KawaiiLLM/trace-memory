@@ -11,6 +11,8 @@ import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
 // every existing `from ".../render/index.ts"` import of these three names keeps working.
 import { tokens, tokensJoined, JoinedTokens } from "./tokens.ts";
 export { tokens, tokensJoined, JoinedTokens };
+/** The cap on one Fact or Knowledge body written by a worker, in `tokens()` units. */
+export const WORKER_ITEM_TOKENS = 1_000;
 
 export interface TurnOptions { full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean; includeThinking?: boolean; traceName?: string }
 export interface Rendered { content: string; receipts: string[] }
@@ -559,9 +561,10 @@ export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap =
 // Labels are shown as a JSON array (review 2026-09-08): a joined list cannot tell ["a, b"] from ["a", "b"].
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
 
-export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`): string {
+export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`, showSize = false): string {
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
-  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  const size = showSize ? ` (${tokens(r.text)}/${WORKER_ITEM_TOKENS} tokens)` : "";
+  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${size} ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
 export const factAddresses = (ids: number[], titles?: ReadonlyMap<number, string>): string => ids.map(id =>

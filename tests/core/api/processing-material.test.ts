@@ -4,6 +4,7 @@ import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { drainTrace } from "../../trace-pages.ts";
+import { tokens } from "../../../src/core/render/index.ts";
 
 function fixture(agent: (input: NotingAgentInput) => void = () => {}) {
   const memory = sourceSeededMemory(":memory:", async raw => {
@@ -96,5 +97,16 @@ test("92: omitted knowledge stays fully readable while N holds a distinct create
     expect(f.memory.store.currentKnowledge(f.memory.store.knowledgePath(1)).map(value => value.revision.text)).toEqual([
       f.content.text, "A distinct durable rule",
     ]);
+  } finally { f.memory.close(); }
+});
+
+test("N material shows each knowledge body's cap-check token count; injection does not", () => {
+  const f = fixture();
+  try {
+    const body = "Short rule. ".repeat(40);
+    expect(f.tools[3]!.execute({ operations: [{ op: "create", ...f.content, text: body }], skipped: [] })).toContain("committed");
+    setKnowledgeCapacity(f.memory, 20_000);
+    expect(f.freeze().prepared?.text).toContain(`[constraint/project] (${tokens(body)}/1000 tokens) ${body}`);
+    expect(f.memory.injection(f.target).text).not.toContain("tokens) ");
   } finally { f.memory.close(); }
 });

@@ -52,6 +52,8 @@ function seeded() {
   return { s, t, user, read: (address: string) => tools.find(tool => tool.name === "trace")!.execute({ address, cap: Number.MAX_SAFE_INTEGER }) };
 }
 let knowledgeBlock: string;
+/** Fresh N alone shows the body's cap-check token count after the category tag. */
+const withSize = (block: string) => block.replace("[constraint/project] The project uses pnpm", `[constraint/project] (${tokens("The project uses pnpm")}/1000 tokens) The project uses pnpm`);
 const views = (sessionId: number, head: number) =>
   hydrate(memory.pendingEntries(sessionId, "main", head), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
 
@@ -96,7 +98,7 @@ test("92: fresh N names its target and range, then shares compact Knowledge, fac
   expect(input.material.facts[0]).toContain("[F1] Package manager decision");
   expect(input.material.entries.map(entry => entry.id)).toEqual(input.entryIds);
   expect(input.text).toContain(raw);
-  expect(knowledgeBlockOf(input.material)).toBe(knowledgeBlock);
+  expect(knowledgeBlockOf(input.material)).toBe(withSize(knowledgeBlock));
   expect(input.supplied.knowledgeCommitIds).toEqual([1]);
   expect(memory.inject(s.id)).toBe(knowledgeBlock);
   expect(input).not.toHaveProperty("readKnowledgeCommits");
@@ -146,8 +148,8 @@ test("20a/92: N tasks with different Raw and facts retain byte-identical Knowled
   const later = freezeNoting(memory.store, target, memory.config);
   expect(earlier.entries.map(entry => entry.id)).not.toEqual(later.entries.map(entry => entry.id));
   expect(earlier.prepared!.supplied.factIds).not.toEqual(later.prepared!.supplied.factIds);
-  expect(knowledgeBlockOf(earlier.prepared!.material)).toBe(knowledgeBlock);
-  expect(knowledgeBlockOf(later.prepared!.material)).toBe(knowledgeBlock);
+  expect(knowledgeBlockOf(earlier.prepared!.material)).toBe(withSize(knowledgeBlock));
+  expect(knowledgeBlockOf(later.prepared!.material)).toBe(withSize(knowledgeBlock));
   const text = later.prepared!.text;
   expect(text.indexOf("Range: ")).toBeLessThan(text.indexOf("<knowledge>"));
   expect(text.indexOf("</knowledge>")).toBeLessThan(text.indexOf(FACTS_TITLE));
@@ -165,7 +167,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   memory.config.compaction.factsTokens = charge([factReceipt]) + charge(["Receipts:"]);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const noting = calls[0]! as NotingAgentInput;
-  expect(knowledgeBlockOf(noting.material)).toBe(knowledgeBlock);
+  expect(knowledgeBlockOf(noting.material)).toBe(withSize(knowledgeBlock));
   expect(noting.material.facts).toEqual([]);
   expect(noting.material.receipts).toEqual([factReceipt]);
   expect(noting.text.endsWith(`Raw:\n\n${raw}\n</episodic>\n\nReceipts:\n${factReceipt}`)).toBe(true);
@@ -272,7 +274,7 @@ test("45/92: N sends Knowledge within the database-derived cap without borrowing
   const { s, t } = overloaded();
   const knowledge = memory.store.currentKnowledge({ sessionId: s.id, branch: "main", headTurnId: t.id });
   // Leave room for omission receipts but less than another whole item; the receipt must actually emit.
-  const cap = wholeKnowledge(knowledge.slice(-15), value => renderKnowledge(value, tag(value.knowledge.id, value.revision.id))).cost + 200;
+  const cap = wholeKnowledge(knowledge.slice(-15), value => renderKnowledge(value, tag(value.knowledge.id, value.revision.id), true)).cost + 200;
   expect(cap).toBeLessThan(10_000);
   setKnowledgeCapacity(memory, cap);
   const pending = memory.store.pendingEntryIds(s.id, "main", t.id);
@@ -303,7 +305,7 @@ test("21b/92: foreground, compact and N render topics through one renderer, with
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(labelled)).toBe(true);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const noting = calls.at(-1)!;
-  expect(knowledgeBlockOf(noting.material)).toBe(labelled);
+  expect(knowledgeBlockOf(noting.material)).toBe(withSize(labelled));
   // Two subjects, one body in every consumer, not a duplicated line per topic.
   for (const text of [memory.inject(s.id), compacted(memory.compact(s.id, "main", t.id)), noting.text])
     expect(text.match(new RegExp(`\\[${tag(1, changed.commit)}\\]`, "g"))).toHaveLength(1);

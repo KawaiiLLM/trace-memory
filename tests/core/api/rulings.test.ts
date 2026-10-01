@@ -327,6 +327,8 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
 });
 
 /** Knowledge to lead the block with: one manually written fact, consolidated by hand into K1. */
+/** Fresh N alone shows each body's token count after the category tag; everything else in the block is the shared layout. */
+const withSize = (block: string) => block.replace("[constraint/project] The project uses pnpm", `[constraint/project] (${tokens("The project uses pnpm")}/1000 tokens) The project uses pnpm`);
 function seededKnowledge(sessionId: number, turnId: number) {
   const tools = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId });
   const entry = hydrate(memory.store.listSourceEntries(sessionId, turnId), memory.store).find(value => value.role === "user")!;
@@ -346,7 +348,7 @@ test("20a 2026-09-08: core owns the host-neutral domain text and still builds no
   // Domain text, from core, in core's own order — instructions stay their own field, not a system message.
   expect(input.text).toContain(input.material.entries[0]!.view);
   expect(input.text).toContain("The project uses pnpm"); // 92 §6: a seeded, visible knowledge body is actually supplied
-  expect(input.text).toContain(memory.inject(s.id).split("\n\nReceipts:")[0]!);
+  expect(input.text).toContain(withSize(memory.inject(s.id)).split("\n\nReceipts:")[0]!);
   expect(input.prompt).toContain("Noting (facts and knowledge)");
   expect(input.text).not.toContain(input.prompt);
   // What core still does not build: a message sequence, a system slot, a provider body.
@@ -391,7 +393,7 @@ test("20a/92: fresh N shares the leading Knowledge block without copying task fr
   expect(block).toContain("The project uses pnpm");
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const input = calls[0]!;
-  expect(input.text).toContain(block);
+  expect(input.text).toContain(withSize(block));
   expect(input.text).toContain(`Range: ${input.range.from}..${input.range.to}`);
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(`${block}\n\n<episodic>`)).toBe(true);
   expect(block).not.toContain("Range: ");

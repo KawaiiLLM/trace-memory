@@ -246,7 +246,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const assembled = readFacade(store, { ...config, compaction: { ...config.compaction,
       rawTokens: config.noting.batchTokens, factsTokens: history } }, undefined, resultText)
       .compact(session.id, input.branch, endpoint.turnId, [], false,
-        { endpointEntryId: endpoint.id, processedRawRefill: false, renderedEntries: rendered, preparedSources, toolNames: names });
+        { endpointEntryId: endpoint.id, processedRawRefill: false, showKnowledgeSize: true, renderedEntries: rendered, preparedSources, toolNames: names });
     if ("native" in assembled || !assembled.material) throw new Error("Noting material assembly produced no material");
     if (assembled.supplied.entries.length !== entries.length
       || assembled.supplied.entries.some((entry, index) => entry.id !== entries[index]!.id))

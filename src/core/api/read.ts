@@ -678,6 +678,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // rather than escalating to a native delegation. Omitted material stays pending in the store.
     compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = [],
       transport = false, options: { endpointEntryId?: number; processedRawRefill?: boolean; knowledge?: boolean;
+        /** Internal: the Noter's fresh material shows each body's token count against the worker cap. */
+        showKnowledgeSize?: boolean;
         /** Internal: views from this synchronous freeze under this exact profile/extractor. */
         renderedEntries?: ReadonlyMap<number, EntryView>;
         /** Internal: authoritative ordered metadata and processing state of this same freeze. */
@@ -739,8 +741,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const noteOmittedReceipt = noteCost(noteKept) <= knowledgeEnvelope ? noteReceipt(allNotes.length - noteKept) : [];
       const knowledgeNoticeCost = noteTextCost(noteKept) + receiptCharge(noteOmittedReceipt);
       const notice = sessionKnowledgeNotice(sessionId, undefined, options.toolNames);
+      // The count is part of the rendered line, so the budget below charges it like any other text.
+      const line = options.showKnowledgeSize ? (value: KnowledgeWithRevision) => renderKnowledge(value,
+        `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, true) : knowledgeLine;
       const active = budgetKnowledge(knowledge, Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
-        knowledgeLine, "Knowledge base plus shared allowance", new Set(), undefined, notice);
+        line, "Knowledge base plus shared allowance", new Set(), undefined, notice);
       const knowledgeUsed = knowledgeNoticeCost + active.cost;
       const sharedAfterKnowledge = sharedAllowance - Math.max(0, knowledgeUsed - caps.knowledge);
 
@@ -835,7 +840,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           - Math.max(0, factsWindowCost(finalFacts.length, finalFactReceipts) - caps.facts),
         ...(transport ? { transportItems: [
           ...knowledge.filter(item => active.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
-            text: knowledgeLine(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
+            text: line(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
             address: `K${item.knowledge.id}@v${store.versionOrdinal(item.knowledge.id, item.revision.id)}` })),
           ...allNotes.slice(0, noteKept).map(note => ({ kind: "state" as const, text: note.text, receipt: note.receipt,
             address: `K${store.knowledgeRevision(note.receipt.fromCommit)!.knowledgeId}` })),
