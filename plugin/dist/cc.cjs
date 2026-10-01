@@ -6333,18 +6333,18 @@ function prepareMemory(store, sessionId, raw, run, path = store.knowledgePath(se
     const children = op === "split" && Array.isArray(value.children) && value.children.length === 2 ? value.children.map((raw3, childIndex) => {
       const child = raw3 && typeof raw3 === "object" && !Array.isArray(raw3) ? raw3 : {};
       if (Object.keys(child).some((key) => !["text", "category", "topics"].includes(key))) errors.push(`child ${childIndex + 1}: inapplicable field`);
-      if (typeof child.text !== "string" || !child.text.length || /\b[FK]\d+\b/.test(child.text)) errors.push(`child ${childIndex + 1}: expected non-empty text without fact or knowledge ids`);
+      if (typeof child.text !== "string" || !child.text.length) errors.push(`child ${childIndex + 1}: expected non-empty text`);
       if (!isKnowledgeCategory(child.category)) errors.push(`child ${childIndex + 1}: invalid category`);
       return { text: child.text, category: child.category, topics: labels(child.topics, errors) };
     }) : op === "split" ? (errors.push("split requires exactly two complete children"), []) : [];
     if (op === "archive") {
       if (value.kind !== "budget" && value.kind !== "invalid") errors.push("archive kind must be budget or invalid");
-      if (value.kind === "invalid" && (!substantiveArchiveStatement(value.text) || /\b[FK]\d+\b/.test(value.text)))
-        errors.push("invalid archive requires a substantive statement of grounds and evidence without fact or knowledge ids");
+      if (value.kind === "invalid" && !substantiveArchiveStatement(value.text))
+        errors.push("invalid archive requires a substantive statement of grounds and evidence");
     }
     if (op !== "archive" && op !== "split") {
-      if (!(op === "merge" && value.text === void 0) && (typeof value.text !== "string" || !value.text.length || /\b[FK]\d+\b/.test(value.text)))
-        errors.push("text: expected non-empty text without fact or knowledge ids");
+      if (!(op === "merge" && value.text === void 0) && (typeof value.text !== "string" || !value.text.length))
+        errors.push("text: expected non-empty text");
       if (!isKnowledgeCategory(value.category)) errors.push("invalid category");
       if (!KNOWLEDGE_SCOPES.includes(value.scope)) errors.push("invalid scope");
     }

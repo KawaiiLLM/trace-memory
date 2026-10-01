@@ -3062,3 +3062,23 @@ test("97 \"所有计算应该都可以统一基于缓存算\" (2026-09-28): a no
   const at = (headTurnId: number) => memory.store.deliveredKnowledge({ owner: "cc:r97", sessionId: s.id, headTurnId }).knowledgeTokens;
   expect([at(t1.id), at(t2.id), at(t3.id), at(t4.id)]).toEqual([1, 11, 100, 1100]);
 });
+
+/** User, 2026-10-01: the id check on knowledge text is removed, as it was for source text. It could not tell
+ * Trace Memory ids from a conversation's own, such as a project's cognition records K01–K14. */
+test("knowledge text, split child text and invalid-archive text may name F- and K-shaped ids", () => {
+  const { s, t } = session();
+  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
+  const note = tools.find(tool => tool.name === "note")!, mem = tools.find(tool => tool.name === "memory")!;
+  const noted = JSON.parse(note.execute({ facts: [{ title: "Rule", sources: [{ address: `T${t.id}#E1`, text: "rule" }] }] }));
+  const fact = `F${noted.factIds[0]}`;
+  const create = (text: string) => ({ op: "create", text, category: "constraint", scope: "project", supports: [fact], topics: [], reason: "test" });
+  expect(mem.execute({ operations: [create("K14 stays as written; F101 is unrelated."), create("Second item.")], skipped: [] })).toContain("committed");
+  const [a, b] = memory.store.currentKnowledge(memory.store.knowledgePath(s.id)).map(v => `K${v.knowledge.id}#${memory.store.versionTag(v.knowledge.id, v.revision.id)}`);
+  // Split is Dreamer-only, so manual memory still rejects it, but for that reason alone: the ids in the child text add no error.
+  const split = JSON.parse(mem.execute({ operations: [{ op: "split", id: a, supports: [fact], reason: "test",
+    children: [{ text: "Part K14 of it.", category: "constraint", topics: [] }, { text: "Part F2 of it.", category: "constraint", topics: [] }] }], skipped: [] }));
+  expect(split.results).toEqual(["rejected: split belongs to the Dreamer and is not available to manual memory"]);
+  const archive = JSON.parse(mem.execute({ operations: [{ op: "archive", id: b, kind: "invalid", supports: [fact], reason: "test",
+    text: "K7 was based on a misreading of F1, which says the opposite in the quoted source." }], skipped: [] }));
+  expect(archive.results[0]).not.toContain("rejected");
+});

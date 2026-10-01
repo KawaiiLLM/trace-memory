@@ -91,11 +91,6 @@ describe("checkMemoryBatch", async () => {
     expect(problems.some((p) => p.includes("K1"))).toBe(true);
   });
 
-  test("rejects a knowledge item id embedded in knowledge text", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Supersedes K3.", scope: "project", category: "understanding", supports: ["F1"] }], skipped: [] });
-    expect(problems.some((p) => p.includes("text"))).toBe(true);
-  });
-
   test("rejects a malformed update id", async () => {
     const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "5", text: "x", scope: "project", category: "understanding", supports: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("supply an exact K#tag version"))).toBe(true);
