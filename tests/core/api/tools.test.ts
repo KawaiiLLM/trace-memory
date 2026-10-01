@@ -119,10 +119,20 @@ test("116: native schema refusal invalidates only its addressed replacement slot
 test("116: public schemas distinguish full items, scalar drops and empty calls; D retains batches", () => {
   const note = toolDefinitions.find(t => t.name === "note")!.parameters;
   const knowledge = toolDefinitions.find(t => t.name === "memory")!.parameters;
-  expect(note.anyOf).toEqual([{ maxProperties: 0 }, { required: ["drop"], maxProperties: 1 }, { required: ["title", "sources"], not: { required: ["drop"] } }]);
-  expect(knowledge.anyOf).toMatchObject([{ maxProperties: 0 }, { required: ["drop"], maxProperties: 1 },
-    { required: ["op", "supports", "reason"], not: { required: ["drop"] } }]);
-  expect((knowledge.anyOf as any[])[2].allOf).toHaveLength(3);
+  for (const schema of [note, knowledge]) {
+    expect(schema).not.toHaveProperty("anyOf");
+    expect(schema).not.toHaveProperty("oneOf");
+    expect(schema).not.toHaveProperty("allOf");
+    expect(schema).toMatchObject({ if: { required: ["drop"] }, then: { maxProperties: 1 }, else: { if: { minProperties: 1 } } });
+    expect(schema.additionalProperties).toBe(false);
+  }
+  expect(note.else).toMatchObject({ then: { required: ["title", "sources"] } });
+  expect(knowledge.else).toMatchObject({ then: { required: ["op", "supports", "reason"] } });
+  const rules = (knowledge.else as any).then.allOf as any[];
+  expect(rules).toHaveLength(3);
+  expect(rules[0]).toMatchObject({ if: { properties: { op: { const: "create" } } }, else: { required: ["id"] } });
+  expect(rules[2]).toMatchObject({ if: { properties: { op: { const: "archive" } } }, then: { required: ["kind"] },
+    else: { required: ["text", "category", "scope", "topics"] } });
   expect((knowledge.properties as Record<string, unknown>).skipped).toBeUndefined();
   const dreamer = dreamingToolDefinitions().find(t => t.name === "memory")!.parameters;
   expect(dreamer.required).toEqual(["operations", "skipped"]);

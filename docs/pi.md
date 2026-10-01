@@ -408,8 +408,8 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   `memory({})` are explicit empty calls. Noter uses the same flat item fields, with its private
   `slot`/`drop` handles; Dreamer alone keeps `{operations, skipped}` batches. Every operation
   carries `supports` and a `reason`; create/update/merge also
-  carry the revision's complete `topics` set. Consolidator permits only create; manual calls permit
-  fact-backed create/archive; Dreamer alone may update, merge, split or submit support-inheriting
+  carry the revision's complete `topics` set. Noter permits create/update/archive; manual calls permit
+  fact-backed create/archive; Dreamer alone may merge, split or submit support-inheriting
   maintenance operations. Main-agent executions call `tools(context)` with kind `manual` and
   the current session, branch and turn. Writes commit immediately; `tool_result`
   records each raw call once. No prompt asks the main agent to maintain memory.

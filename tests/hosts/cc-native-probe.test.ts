@@ -79,10 +79,11 @@ probe("native file: a real CC worker run writes its transcript under <config dir
     const environment = loopbackEnvironment(configDir, loopback.url);
     const task = { kind: "noting", text: "material", prompt: "instructions",
       tools: [{ name: "trace", description: "read", parameters: { type: "object", properties: {} },
-        execute: () => "tool result text" }], acknowledgeRequest: () => {} } as unknown as CcAgentTask;
+        execute: () => "tool result text" }], acknowledgeRequest: () => {},
+      passEnd: () => "Test host requests one final review." } as unknown as CcAgentTask;
     const journal: { event: string; details?: Record<string, unknown> }[] = [];
     const result = await new CcAgentWorker(workerConfig(cwd), { environment, journal: (event, details) => journal.push({ event, details }) }).run(task, 0);
-    expect(result.outcome).toBe("success");
+    expect(result.outcome, JSON.stringify(result)).toBe("success");
     // 106: the version the worker records is the installed executable's own, not a constant.
     const installed = execFileSync(fencedClaude, ["--version"], { encoding: "utf8" }).match(/\d+\.\d+\.\d+/)?.[0];
     expect(installed).toBeTruthy();
@@ -121,9 +122,9 @@ probe("native file: a real CC worker run writes its transcript under <config dir
     try {
       const entries = await powerline.loadEntriesFromProjects();
       const usageEntries = entries.filter(entry => entry.raw?.sessionId === sessionId && entry.message?.usage);
-      // Two assistant turns (tool_use, then the final text) — each counted exactly once, no duplicate.
-      expect(usageEntries).toHaveLength(2);
-      expect(new Set(usageEntries.map(entry => entry.message!.id)).size).toBe(2);
+      // Ticket 117: tool_use, first end and review end — each counted once, no duplicate.
+      expect(usageEntries).toHaveLength(3);
+      expect(new Set(usageEntries.map(entry => entry.message!.id)).size).toBe(3);
     } finally {
       if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
     }
@@ -141,9 +142,10 @@ probe("isolation: a SessionStart Hook configured for the config directory never 
   try {
     await fence(cwd, [Number(new URL(loopback.url).port)]);
     const environment = loopbackEnvironment(configDir, loopback.url);
-    const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: () => {} } as unknown as CcAgentTask;
+    const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: () => {},
+      passEnd: () => "Test host requests one final review." } as unknown as CcAgentTask;
     const result = await new CcAgentWorker(workerConfig(cwd), { environment }).run(task, 0);
-    expect(result.outcome).toBe("success");
+    expect(result.outcome, JSON.stringify(result)).toBe("success");
     // `settingSources: []` (unchanged isolation) means the worker's session never loads this
     // directory's settings.json at all, so the Hook it declares can never be dispatched — the init
     // message's own isolation check (asserted throughout cc-worker.test.ts) is what would fail first

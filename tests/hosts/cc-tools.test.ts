@@ -64,8 +64,9 @@ test("CC foreground list reuses exactly the four core schemas and no Dreamer cap
     expect(listed.map(tool => tool.name)).toEqual(["trace", "search", "note", "memory"]);
     expect(listed.map(tool => tool.description)).toEqual(expected.map(tool => tool.description));
     expect(listed.map(tool => tool.inputSchema)).toEqual(expected.map(tool => tool.parameters));
-    const note = listed.find(tool => tool.name === "note")!.inputSchema as { properties: Record<string, any>; anyOf: unknown[] };
-    expect(note.anyOf).toContainEqual(expect.objectContaining({ required: ["title", "sources"] }));
+    const note = listed.find(tool => tool.name === "note")!.inputSchema as { properties: Record<string, any>; else: { then: { required: string[] } } };
+    expect(note).not.toHaveProperty("anyOf");
+    expect(note.else.then.required).toEqual(["title", "sources"]);
     expect(note.properties).toHaveProperty("title");
     expect(note.properties.sources).toMatchObject({ type: "string" });
     expect(note.properties).not.toHaveProperty("facts");

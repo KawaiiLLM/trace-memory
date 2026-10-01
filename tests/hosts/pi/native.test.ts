@@ -616,14 +616,15 @@ test("21a 2026-09-08: the memory schema the child re-registers requires reason, 
     expect(f.sent[1]!.tools).toEqual(f.sent[0]!.tools); // byte-identical definitions on both sides of the gate
     const memory = f.sent[1]!.tools.find((t: Body) => t.function.name === "memory")!.function;
     const operation = memory.parameters;
-    expect(operation.anyOf[2].required).toEqual(["op", "supports", "reason"]);
+    expect(operation).not.toHaveProperty("anyOf");
+    expect(operation.else.then.required).toEqual(["op", "supports", "reason"]);
     expect(operation.properties).not.toHaveProperty("because");
     expect(operation.properties).not.toHaveProperty("operations");
     expect(operation.properties.reason).toEqual({ type: "string", minLength: 1 });
     expect(operation.additionalProperties).toBe(false);
     // Topics remain required for content writes and inherited for archives; archive kind is mandatory.
     expect(operation.properties.topics).toEqual({ type: "array", items: { type: "string", minLength: 1 } });
-    const archiveRule = operation.anyOf[2].allOf[2];
+    const archiveRule = operation.else.then.allOf[2];
     expect(archiveRule.else.required).toEqual(["text", "category", "scope", "topics"]);
     expect(archiveRule.then.required).toContain("kind");
     expect(archiveRule.then.allOf[0].not.anyOf).toContainEqual({ required: ["topics"] });
