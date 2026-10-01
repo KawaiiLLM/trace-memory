@@ -212,17 +212,21 @@ export interface CcLineageFile {
   fellBack?(missing: string, parent: string): void;
 }
 
-/** From the nearest earlier main-chain record, up its parents to the first record the importer accepts. */
-const lastMessageBefore = (file: CcLineageFile): string | undefined => {
+/** From the nearest earlier main-chain record, up its parents to the first record the importer accepts.
+ * Each way that can fail is its own explicit error. */
+const lastMessageBefore = (file: CcLineageFile, fail: (cause: string) => never): string => {
   const seen = new Set<string>();
-  for (let id = file.previous(); id !== undefined && !seen.has(id);) {
+  let id = file.previous();
+  if (id === undefined) return fail("no record is written before it");
+  while (id !== undefined) {
+    if (seen.has(id)) return fail(`the walk up from the record before it meets a cycle at ${id}`);
     seen.add(id);
     const step = file.earlier(id);
-    if (!step) return undefined;
+    if (!step) return fail(`ancestor ${id} on the walk up from the record before it is missing`);
     if (step.accepted) return id;
     id = step.parent ?? undefined;
   }
-  return undefined;
+  return fail("no message lies on the walk up from the record before it");
 };
 
 /** Decode native lineage exactly once. A malformed present value is not an absent parent.
@@ -232,8 +236,8 @@ const lastMessageBefore = (file: CcLineageFile): string | undefined => {
  * from its last preserved message written before it, which is what every other boundary names as its
  * logical parent. Claude Code 2.1.284 once named a record it never wrote (S140, 2026-10-01); with no
  * usable preserved message, that boundary continues from the last message before the compaction.
- * A logical parent written after the boundary exists, so it keeps failing as a cycle. Any failure
- * to find that message returns the missing uuid, which the caller reports as it always has. */
+ * A logical parent written after the boundary exists, so it keeps failing as a cycle. A failure to find
+ * that message throws a lineage error that names its cause. */
 export function nativeParentId(record: CcNativeRecord, file?: CcLineageFile): string | null {
   const value = record.logicalParentUuid ?? record.parentUuid;
   if (value === null || value === undefined) return null;
@@ -244,8 +248,12 @@ export function nativeParentId(record: CcNativeRecord, file?: CcLineageFile): st
     const preserved = (record.compactMetadata as { preservedMessages?: { uuids?: unknown } } | undefined)?.preservedMessages?.uuids;
     const earlier = Array.isArray(preserved) ? preserved.filter((id): id is string => typeof id === "string" && !!id && file.before(id)) : [];
     if (earlier.length) return earlier.at(-1)!;
-    const chosen = file.anywhere(value) ? undefined : lastMessageBefore(file);
-    if (chosen) { file.fellBack?.(value, chosen); return chosen; }
+    if (!file.anywhere(value)) {
+      const chosen = lastMessageBefore(file, cause => { throw new CcNativeLineageError(
+        `compaction boundary ${nativeId(record) ?? "without UUID"} names logical parent ${value}, which was never written, and ${cause}`); });
+      file.fellBack?.(value, chosen);
+      return chosen;
+    }
   }
   return value;
 }
@@ -358,6 +366,7 @@ export class CcTranscriptScan {
   readonly terminalUuid: string | null;
   /** The last record read that has a uuid and is not a sidechain: what a compaction boundary read next follows. */
   readonly lastMainUuid: string | null;
+  readonly fallbacks: ReadonlySet<string>;
   /** 97: the byte offset just after the selected leaf's line; everything later is its tail. */
   readonly selectedLeafOffset: number | null;
   readonly problems: string[];
@@ -369,12 +378,12 @@ export class CcTranscriptScan {
 
   constructor(input: { nodes: Map<string, CcNativeNode>; callCarriers: Map<string, Set<string>>; messageKeys: Map<string, string>;
     snapshot: CcTranscriptSnapshot; stamp: FileStamp; reset: boolean; completeOffset: number; lineCount: number; selectedLeafUuid: string | null;
-    terminalUuid: string | null; lastMainUuid: string | null; selectedLeafOffset: number | null; problems?: string[]; newProblems?: Set<string>;
+    terminalUuid: string | null; lastMainUuid: string | null; fallbacks: Set<string>; selectedLeafOffset: number | null; problems?: string[]; newProblems?: Set<string>;
     readIds?: readonly string[]; newIds?: ReadonlySet<string> }) {
     this.nodes = input.nodes; this.callCarriers = input.callCarriers; this.messageKeys = input.messageKeys;
     this.snapshot = input.snapshot; this.stamp = input.stamp; this.reset = input.reset;
     this.completeOffset = input.completeOffset; this.lineCount = input.lineCount; this.selectedLeafUuid = input.selectedLeafUuid;
-    this.terminalUuid = input.terminalUuid; this.lastMainUuid = input.lastMainUuid; this.selectedLeafOffset = input.selectedLeafOffset;
+    this.terminalUuid = input.terminalUuid; this.lastMainUuid = input.lastMainUuid; this.fallbacks = input.fallbacks; this.selectedLeafOffset = input.selectedLeafOffset;
     this.problems = input.problems ?? [];
     this.newProblems = input.newProblems ?? new Set();
     this.readIds = input.readIds ?? []; this.newIds = input.newIds ?? new Set();
@@ -526,6 +535,9 @@ export class CcTranscriptCursor {
   private selectedLeafUuid: string | null = null;
   private terminalUuid: string | null = null;
   private lastMainUuid: string | null = null;
+  /** Logical parents a boundary was continued without; one written later makes the next scan read the whole file. */
+  private fallbacks = new Set<string>();
+  private rebuild = false;
   private selectedLeafOffset: number | null = null;
   private nodes = new Map<string, CcNativeNode>();
   private callCarriers = new Map<string, Set<string>>();
@@ -598,7 +610,7 @@ export class CcTranscriptCursor {
       // A same-size metadata change, replacement, shrink, or broken committed newline is a rebuild.
       // Growth follows the native append contract; metadata cannot prove an arbitrary same-inode
       // prefix mutation that is combined with an append without rereading that prefix.
-      let reset = !this.stamp || replacement || stamp.size < this.completeOffset || stamp.size === this.stamp.size;
+      let reset = this.rebuild || !this.stamp || replacement || stamp.size < this.completeOffset || stamp.size === this.stamp.size;
       if (!reset && this.completeOffset > 0) {
         const marker = Buffer.allocUnsafe(1);
         if (readSync(descriptor, marker, 0, 1, this.completeOffset - 1) !== 1 || marker[0] !== 0x0a) reset = true;
@@ -633,22 +645,37 @@ export class CcTranscriptCursor {
       let selectedLeafUuid = reset ? null : this.selectedLeafUuid;
       let terminalUuid = reset ? null : this.terminalUuid;
       let lastMainUuid = reset ? null : this.lastMainUuid;
+      const fallbacks = reset ? new Set<string>() : new Set(this.fallbacks);
       let selectedLeafOffset = reset ? null : this.selectedLeafOffset;
       let physicalRecords = reset ? 0 : this.recordCount;
       let lines = reset ? 0 : this.lineCount;
       const preliminary = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords,
         incompleteBytes: stamp.size - completeOffset, changed: true, reset });
       const scan = new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, messageKeys: scanKeys, snapshot: preliminary, stamp, reset,
-        completeOffset, lineCount: lines, selectedLeafUuid, terminalUuid, lastMainUuid, selectedLeafOffset, problems, newProblems });
+        completeOffset, lineCount: lines, selectedLeafUuid, terminalUuid, lastMainUuid, fallbacks, selectedLeafOffset, problems, newProblems });
       // A boundary's logical parent may be written later in this very read; found by one lazy parse of it, only when a boundary needs it.
       let chunkIds: Set<string> | undefined, fell: string | undefined;
+      const firstLine = lines;
+      const chunkUuids = (): Set<string> => new Set(bytes.subarray(0, completeLength).toString("utf8").split("\n").flatMap((line, index) => {
+        if (!line) return [];
+        const failed = (why: string) => new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${firstLine + index + 1}: ${why}`));
+        let parsed: unknown;
+        try { parsed = JSON.parse(line); } catch (error) { throw failed(String(error)); }
+        const record = object(parsed);
+        if (!record) throw failed("expected an object");
+        const found = nativeId(record);
+        return found ? [found] : [];
+      }));
       const file: CcLineageFile = {
         before: id => scanNodes.has(id),
-        anywhere: id => scanNodes.has(id) || (chunkIds ??= new Set(bytes.subarray(0, completeLength).toString("utf8").split("\n")
-          .flatMap(line => { try { const found = line ? nativeId(JSON.parse(line)) : null; return found ? [found] : []; } catch { return []; } }))).has(id),
+        anywhere: id => scanNodes.has(id) || (chunkIds ??= chunkUuids()).has(id),
         previous: () => lastMainUuid ?? undefined,
-        earlier: id => { const node = scanNodes.get(id); return node && { parent: node.lineageProblem ? null : node.parentUuid, accepted: node.sourceKind !== null }; },
-        fellBack: missing => { fell = missing; },
+        earlier: id => {
+          const node = scanNodes.get(id);
+          if (node?.lineageProblem) throw new CcNativeLineageError(node.lineageProblem);
+          return node && { parent: node.parentUuid, accepted: node.sourceKind !== null };
+        },
+        fellBack: missing => { fell = missing; fallbacks.add(missing); },
       };
       let beginning = 0;
       while (beginning < completeLength) {
@@ -663,6 +690,8 @@ export class CcTranscriptCursor {
         if (!record) throw new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${lines}: expected an object`));
         physicalRecords += 1;
         let source = classifySourceRecord(record), node = nodeOf(record, file);
+        // A parent this scan continued a boundary without has now been written: the file now reads differently, so read it whole.
+        if (node && !reset && fallbacks.has(node.uuid)) { this.rebuild = true; return this.prepareOrdered(path, collect, onPhase); }
         if (node && fell) { node.missingParent = fell; fell = undefined; }
         if (nativeId(record) && record.isSidechain !== true) lastMainUuid = nativeId(record);
         if (node) {
@@ -726,7 +755,7 @@ export class CcTranscriptCursor {
         const resultSnapshot = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords, records,
           incompleteBytes: stamp.size - completeOffset, changed: true, reset });
         return new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, messageKeys: scanKeys, snapshot: resultSnapshot, stamp, reset,
-          completeOffset, lineCount: lines, selectedLeafUuid, terminalUuid, lastMainUuid, selectedLeafOffset, problems, newProblems,
+          completeOffset, lineCount: lines, selectedLeafUuid, terminalUuid, lastMainUuid, fallbacks, selectedLeafOffset, problems, newProblems,
           readIds: ordered.flatMap(value => value.node ? [value.node.uuid] : []), newIds });
       };
       return { scan, ordered, finish };
@@ -789,7 +818,7 @@ export class CcTranscriptCursor {
     for (const id of scan.readIds) scan.node(id)!.committed = true;
     this.stamp = scan.stamp; this.completeOffset = scan.completeOffset;
     this.lineCount = scan.lineCount; this.recordCount = scan.snapshot.recordCount; this.selectedLeafUuid = scan.selectedLeafUuid;
-    this.terminalUuid = scan.terminalUuid; this.lastMainUuid = scan.lastMainUuid; this.selectedLeafOffset = scan.selectedLeafOffset;
+    this.terminalUuid = scan.terminalUuid; this.lastMainUuid = scan.lastMainUuid; this.fallbacks = new Set(scan.fallbacks); if (scan.reset) this.rebuild = false; this.selectedLeafOffset = scan.selectedLeafOffset;
     this.rejected = null; this.lastSnapshot = problem ? { ...scan.snapshot, problem } : scan.snapshot;
   }
 
@@ -976,7 +1005,7 @@ function* linesBefore(path: string, offset: number): Generator<string> {
       const start = Math.max(0, end - (1 << 20)), chunk = Buffer.allocUnsafe(end - start);
       for (let read = 0; read < chunk.length;) {
         const amount = readSync(descriptor, chunk, read, chunk.length - read, start + read);
-        if (!amount) return;
+        if (!amount) throw new Error("native transcript changed while it was being read");
         read += amount;
       }
       const data = Buffer.concat([chunk, carry]), first = start > 0 ? data.indexOf(0x0a) : -1;
@@ -990,18 +1019,18 @@ function* linesBefore(path: string, offset: number): Generator<string> {
 
 /** ponytail: a uuid found nowhere reads the whole file before the offset; an index would avoid it if that is ever common. */
 export function transcriptHead(path: string, offset: number): CcTranscriptHead {
-  const latest = (mention: string | undefined, accept: (record: CcNativeRecord) => boolean): CcNativeRecord | undefined => {
+  const latest = (accept: (record: CcNativeRecord) => boolean): CcNativeRecord | undefined => {
     for (const line of linesBefore(path, offset)) {
-      if (mention && !line.includes(mention)) continue;
       let parsed: unknown;
-      try { parsed = JSON.parse(line); } catch { continue; }
+      try { parsed = JSON.parse(line); } catch (error) { throw new Error(`invalid completed transcript record before the tail: ${String(error)}`); }
       const record = object(parsed) as CcNativeRecord | null;
-      if (record && accept(record)) return record;
+      if (!record) throw new Error("invalid completed transcript record before the tail: expected an object");
+      if (accept(record)) return record;
     }
     return undefined;
   };
-  return { find: uuid => latest(uuid, record => record.uuid === uuid),
-    last: () => latest(undefined, record => !!nativeId(record) && record.isSidechain !== true) };
+  return { find: uuid => latest(record => record.uuid === uuid),
+    last: () => latest(record => !!nativeId(record) && record.isSidechain !== true) };
 }
 
 /** 97: a node of the selected chain inside a tail: a prompt, by its native prompt id, or a

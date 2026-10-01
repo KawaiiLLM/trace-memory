@@ -267,20 +267,54 @@ test("a tail read reaches the parent a whole-file read gives, however much of th
   expect(tailNodes(readTranscriptTail(namedPath, offset)!, transcriptHead(namedPath, offset)).exit).toBe("td");
 });
 
-test("a boundary with no message to continue from is still reported as having a missing parent", async () => {
+test("a boundary with no message to continue from is reported with the cause, not as a missing parent", async () => {
   const rest = unwrittenParent().slice(8), command = (parent: string) => row("cmd", parent, 4, "<command-name>/compact</command-name>");
-  const cases: Record<string, CcNativeRecord[]> = {
-    "no earlier record": rest,
-    "no message among the earlier records": [{ ...sys("td", "turn_duration", "", 3), parentUuid: null }, command("td"), ...rest],
-    "an ancestor that was never written": [sys("td", "turn_duration", "ghost", 3), command("td"), ...rest],
-    "a cycle among the earlier records": [sys("td", "turn_duration", "cmd", 3), command("td"), ...rest],
+  const start = "compaction boundary boundary names logical parent never-written, which was never written, and ";
+  const cases: Record<string, [CcNativeRecord[], string]> = {
+    "no earlier record": [rest, "no record is written before it"],
+    "no message among the earlier records": [[{ ...sys("td", "turn_duration", "", 3), parentUuid: null }, command("td"), ...rest],
+      "no message lies on the walk up from the record before it"],
+    "an ancestor that was never written": [[sys("td", "turn_duration", "ghost", 3), command("td"), ...rest],
+      "ancestor ghost on the walk up from the record before it is missing"],
+    "a cycle among the earlier records": [[sys("td", "turn_duration", "cmd", 3), command("td"), ...rest],
+      "the walk up from the record before it meets a cycle at cmd"],
   };
-  for (const [name, records] of Object.entries(cases)) {
-    expect(selectedNativePath(records).problem, name).toBe("native lineage parent never-written is missing");
+  for (const [name, [records, cause]] of Object.entries(cases)) {
+    expect(selectedNativePath(records).problem, name).toBe(start + cause);
     const result = await imported(records);
-    expect(result.problems, name).toEqual(["native lineage parent never-written is missing"]);
+    expect(result.problems, name).toEqual([start + cause]);
     expect(result.notices, name).toEqual([]);
   }
+});
+
+test("a logical parent that is written after the boundary only after the boundary was continued without it gives what the finished file gives", async () => {
+  // The parent arrives as a descendant of the boundary. The compaction Turn is already imported, yet the result is the finished file's error.
+  const records = [...unwrittenParent(), attachment("never-written", "a2", 9)], finished = await imported(records);
+  expect(finished).toMatchObject({ state: "not-ready", problems: ["native source a2 is not persisted"], notices: [] });
+  for (let split = 1; split < records.length; split++) {
+    const result = await imported(records, split);
+    expect({ state: result.state, problems: result.problems }, `split at ${split}`).toEqual({ state: finished.state, problems: finished.problems });
+  }
+});
+
+test("a prefix the tail read cannot read through gives an error, never the continued parent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm-cc-auto-compact-")); dirs.push(dir);
+  const records = unwrittenParent(), lines = records.map(record => `${JSON.stringify(record)}\n`);
+  const offset = Buffer.byteLength(lines.slice(0, records.findIndex(record => record.uuid === "boundary")).join(""));
+  const tail = (path: string) => tailNodes(readTranscriptTail(path, offset)!, transcriptHead(path, offset));
+  const intact = join(dir, "intact.jsonl");
+  writeFileSync(intact, lines.join(""));
+  expect(tail(intact).exit).toBe("a1");
+  // A corrupted complete line, however far back, is not an absent record.
+  for (const corrupted of ["u1", "a1", "cmd"]) {
+    const path = join(dir, `corrupted-${corrupted}.jsonl`);
+    writeFileSync(path, lines.map((line, index) => records[index]!.uuid === corrupted ? `${"{".repeat(line.length - 1)}\n` : line).join(""));
+    expect(() => tail(path), corrupted).toThrow("invalid completed transcript record before the tail");
+  }
+  // A prefix that ends before the offset it was asked to read to.
+  const short = join(dir, "short.jsonl");
+  writeFileSync(short, lines.slice(0, 3).join(""));
+  expect(() => tailNodes(readTranscriptTail(intact, offset)!, transcriptHead(short, offset))).toThrow("native transcript changed while it was being read");
 });
 
 test("a logical parent written after the boundary is not taken for a missing one", async () => {

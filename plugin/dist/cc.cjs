@@ -10497,16 +10497,19 @@ Continue the conversation from where it left off without asking the user any fur
 var ccStripAutoContinue = (text) => text.endsWith(CC_AUTO_CONTINUE_SUFFIX) ? text.slice(0, -CC_AUTO_CONTINUE_SUFFIX.length) : text;
 var CcNativeLineageError = class extends Error {
 };
-var lastMessageBefore = (file2) => {
+var lastMessageBefore = (file2, fail) => {
   const seen = /* @__PURE__ */ new Set();
-  for (let id = file2.previous(); id !== void 0 && !seen.has(id); ) {
+  let id = file2.previous();
+  if (id === void 0) return fail("no record is written before it");
+  while (id !== void 0) {
+    if (seen.has(id)) return fail(`the walk up from the record before it meets a cycle at ${id}`);
     seen.add(id);
     const step = file2.earlier(id);
-    if (!step) return void 0;
+    if (!step) return fail(`ancestor ${id} on the walk up from the record before it is missing`);
     if (step.accepted) return id;
     id = step.parent ?? void 0;
   }
-  return void 0;
+  return fail("no message lies on the walk up from the record before it");
 };
 function nativeParentId(record3, file2) {
   const value = record3.logicalParentUuid ?? record3.parentUuid;
@@ -10518,8 +10521,12 @@ function nativeParentId(record3, file2) {
     const preserved = record3.compactMetadata?.preservedMessages?.uuids;
     const earlier = Array.isArray(preserved) ? preserved.filter((id) => typeof id === "string" && !!id && file2.before(id)) : [];
     if (earlier.length) return earlier.at(-1);
-    const chosen = file2.anywhere(value) ? void 0 : lastMessageBefore(file2);
-    if (chosen) {
+    if (!file2.anywhere(value)) {
+      const chosen = lastMessageBefore(file2, (cause) => {
+        throw new CcNativeLineageError(
+          `compaction boundary ${nativeId(record3) ?? "without UUID"} names logical parent ${value}, which was never written, and ${cause}`
+        );
+      });
       file2.fellBack?.(value, chosen);
       return chosen;
     }
@@ -10651,6 +10658,7 @@ var CcTranscriptScan = class {
   terminalUuid;
   /** The last record read that has a uuid and is not a sidechain: what a compaction boundary read next follows. */
   lastMainUuid;
+  fallbacks;
   /** 97: the byte offset just after the selected leaf's line; everything later is its tail. */
   selectedLeafOffset;
   problems;
@@ -10671,6 +10679,7 @@ var CcTranscriptScan = class {
     this.selectedLeafUuid = input.selectedLeafUuid;
     this.terminalUuid = input.terminalUuid;
     this.lastMainUuid = input.lastMainUuid;
+    this.fallbacks = input.fallbacks;
     this.selectedLeafOffset = input.selectedLeafOffset;
     this.problems = input.problems ?? [];
     this.newProblems = input.newProblems ?? /* @__PURE__ */ new Set();
@@ -10819,6 +10828,9 @@ var CcTranscriptCursor = class {
   selectedLeafUuid = null;
   terminalUuid = null;
   lastMainUuid = null;
+  /** Logical parents a boundary was continued without; one written later makes the next scan read the whole file. */
+  fallbacks = /* @__PURE__ */ new Set();
+  rebuild = false;
   selectedLeafOffset = null;
   nodes = /* @__PURE__ */ new Map();
   callCarriers = /* @__PURE__ */ new Map();
@@ -10894,7 +10906,7 @@ var CcTranscriptCursor = class {
       if (this.rejected && sameStamp(this.rejected.stamp, stamp)) return { done: this.rejected.snapshot };
       if (sameStamp(this.stamp, stamp)) return { done: { ...this.lastSnapshot, records: [], changed: false, reset: false } };
       const replacement = !!this.stamp && (stamp.device !== this.stamp.device || stamp.inode !== this.stamp.inode);
-      let reset = !this.stamp || replacement || stamp.size < this.completeOffset || stamp.size === this.stamp.size;
+      let reset = this.rebuild || !this.stamp || replacement || stamp.size < this.completeOffset || stamp.size === this.stamp.size;
       if (!reset && this.completeOffset > 0) {
         const marker = Buffer.allocUnsafe(1);
         if ((0, import_node_fs5.readSync)(descriptor, marker, 0, 1, this.completeOffset - 1) !== 1 || marker[0] !== 10) reset = true;
@@ -10925,6 +10937,7 @@ var CcTranscriptCursor = class {
       let selectedLeafUuid = reset ? null : this.selectedLeafUuid;
       let terminalUuid = reset ? null : this.terminalUuid;
       let lastMainUuid = reset ? null : this.lastMainUuid;
+      const fallbacks = reset ? /* @__PURE__ */ new Set() : new Set(this.fallbacks);
       let selectedLeafOffset = reset ? null : this.selectedLeafOffset;
       let physicalRecords = reset ? 0 : this.recordCount;
       let lines = reset ? 0 : this.lineCount;
@@ -10947,28 +10960,39 @@ var CcTranscriptCursor = class {
         selectedLeafUuid,
         terminalUuid,
         lastMainUuid,
+        fallbacks,
         selectedLeafOffset,
         problems,
         newProblems
       });
       let chunkIds, fell;
+      const firstLine = lines;
+      const chunkUuids = () => new Set(bytes.subarray(0, completeLength).toString("utf8").split("\n").flatMap((line, index) => {
+        if (!line) return [];
+        const failed = (why) => new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${firstLine + index + 1}: ${why}`));
+        let parsed2;
+        try {
+          parsed2 = JSON.parse(line);
+        } catch (error3) {
+          throw failed(String(error3));
+        }
+        const record3 = object3(parsed2);
+        if (!record3) throw failed("expected an object");
+        const found = nativeId(record3);
+        return found ? [found] : [];
+      }));
       const file2 = {
         before: (id) => scanNodes.has(id),
-        anywhere: (id) => scanNodes.has(id) || (chunkIds ??= new Set(bytes.subarray(0, completeLength).toString("utf8").split("\n").flatMap((line) => {
-          try {
-            const found = line ? nativeId(JSON.parse(line)) : null;
-            return found ? [found] : [];
-          } catch {
-            return [];
-          }
-        }))).has(id),
+        anywhere: (id) => scanNodes.has(id) || (chunkIds ??= chunkUuids()).has(id),
         previous: () => lastMainUuid ?? void 0,
         earlier: (id) => {
           const node = scanNodes.get(id);
-          return node && { parent: node.lineageProblem ? null : node.parentUuid, accepted: node.sourceKind !== null };
+          if (node?.lineageProblem) throw new CcNativeLineageError(node.lineageProblem);
+          return node && { parent: node.parentUuid, accepted: node.sourceKind !== null };
         },
         fellBack: (missing) => {
           fell = missing;
+          fallbacks.add(missing);
         }
       };
       let beginning = 0;
@@ -10988,6 +11012,10 @@ var CcTranscriptCursor = class {
         if (!record3) throw new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${lines}: expected an object`));
         physicalRecords += 1;
         let source = classifySourceRecord(record3), node = nodeOf(record3, file2);
+        if (node && !reset && fallbacks.has(node.uuid)) {
+          this.rebuild = true;
+          return this.prepareOrdered(path, collect, onPhase);
+        }
         if (node && fell) {
           node.missingParent = fell;
           fell = void 0;
@@ -11077,6 +11105,7 @@ var CcTranscriptCursor = class {
           selectedLeafUuid,
           terminalUuid,
           lastMainUuid,
+          fallbacks,
           selectedLeafOffset,
           problems,
           newProblems,
@@ -11154,6 +11183,8 @@ var CcTranscriptCursor = class {
     this.selectedLeafUuid = scan.selectedLeafUuid;
     this.terminalUuid = scan.terminalUuid;
     this.lastMainUuid = scan.lastMainUuid;
+    this.fallbacks = new Set(scan.fallbacks);
+    if (scan.reset) this.rebuild = false;
     this.selectedLeafOffset = scan.selectedLeafOffset;
     this.rejected = null;
     this.lastSnapshot = problem ? { ...scan.snapshot, problem } : scan.snapshot;
@@ -11330,7 +11361,7 @@ function* linesBefore(path, offset) {
       const start = Math.max(0, end - (1 << 20)), chunk = Buffer.allocUnsafe(end - start);
       for (let read = 0; read < chunk.length; ) {
         const amount = (0, import_node_fs5.readSync)(descriptor, chunk, read, chunk.length - read, start + read);
-        if (!amount) return;
+        if (!amount) throw new Error("native transcript changed while it was being read");
         read += amount;
       }
       const data = Buffer.concat([chunk, carry]), first = start > 0 ? data.indexOf(10) : -1;
@@ -11348,23 +11379,23 @@ function* linesBefore(path, offset) {
   }
 }
 function transcriptHead(path, offset) {
-  const latest = (mention, accept) => {
+  const latest = (accept) => {
     for (const line of linesBefore(path, offset)) {
-      if (mention && !line.includes(mention)) continue;
       let parsed2;
       try {
         parsed2 = JSON.parse(line);
-      } catch {
-        continue;
+      } catch (error3) {
+        throw new Error(`invalid completed transcript record before the tail: ${String(error3)}`);
       }
       const record3 = object3(parsed2);
-      if (record3 && accept(record3)) return record3;
+      if (!record3) throw new Error("invalid completed transcript record before the tail: expected an object");
+      if (accept(record3)) return record3;
     }
     return void 0;
   };
   return {
-    find: (uuid5) => latest(uuid5, (record3) => record3.uuid === uuid5),
-    last: () => latest(void 0, (record3) => !!nativeId(record3) && record3.isSidechain !== true)
+    find: (uuid5) => latest((record3) => record3.uuid === uuid5),
+    last: () => latest((record3) => !!nativeId(record3) && record3.isSidechain !== true)
   };
 }
 function tailNodes(records, head) {
