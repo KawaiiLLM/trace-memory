@@ -13,10 +13,9 @@ for (const [label, make] of [["subagent", fixture], ["fork", forkFixture]] as co
     f.script(body => {
       if (!worker(body)) return say("好的。");
       if (toolResults(body) >= 2) return say("Done.");
-      if (submitted(body)) return call("memory-empty", "memory", { operations: [], skipped: [] });
+      if (submitted(body)) return call("memory-empty", "memory", {});
       const prior = f.h.memory.store.listSessionFacts(1).length;
-      return call(`note-${prior}`, "note", prior ? { facts: [{ ...noteBatch.facts[0], sources: [{ address: "T2#E1", text: noteBatch.facts[0]!.sources[0]!.text }],
-        support: [["F1", "strong"]] }] } : noteBatch);
+      return call(`note-${prior}`, "note", prior ? { ...noteBatch, sources: noteBatch.sources.replace("[T1#E1]", "[T2#E1]"), support: [["F1", "strong"]] } : noteBatch);
     });
     await f.turn();
     await f.turn();
@@ -33,7 +32,7 @@ test("92: a native held receipt is neither rejected nor marked as committed", as
     f.script(() => say("好的。"));
     const captured = await f.turn();
     const receipt = JSON.stringify({ results: ["held: $1"], held: ["$1"] });
-    f.script(body => toolResults(body) ? say("Done.") : call("near", "note", { facts: [] }));
+    f.script(body => toolResults(body) ? say("Done.") : call("near", "note", {}));
     const result = await runNative(f.task(captured, { tools: [{ name: "note", description: "write", parameters: { type: "object", properties: {} },
       execute: () => receipt }] }));
     expect(result.committed).toBe(false);
@@ -184,7 +183,7 @@ test("19a 2026-09-08: a source entry outside the frozen range is rejected althou
   const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.")
-      : noteAndMemory("t1", { facts: [{ ...noteBatch.facts[0], source: ["T9#E1"] }] }));
+      : noteAndMemory("t1", { ...noteBatch, sources: noteBatch.sources.replace("[T1#E1]", "[T9#E1]") }));
     await f.turn();
     const run = await settled(f);
     expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
@@ -616,18 +615,19 @@ test("21a 2026-09-08: the memory schema the child re-registers requires reason, 
     expect(JSON.parse(run.response!).verification.passed).toBe(true);
     expect(f.sent[1]!.tools).toEqual(f.sent[0]!.tools); // byte-identical definitions on both sides of the gate
     const memory = f.sent[1]!.tools.find((t: Body) => t.function.name === "memory")!.function;
-    const operation = memory.parameters.properties.operations.items;
-    expect(operation.required).toEqual(["op", "supports", "reason"]);
+    const operation = memory.parameters;
+    expect(operation.anyOf[2].required).toEqual(["op", "supports", "reason"]);
     expect(operation.properties).not.toHaveProperty("because");
+    expect(operation.properties).not.toHaveProperty("operations");
     expect(operation.properties.reason).toEqual({ type: "string", minLength: 1 });
     expect(operation.additionalProperties).toBe(false);
     // Topics remain required for content writes and inherited for archives; archive kind is mandatory.
     expect(operation.properties.topics).toEqual({ type: "array", items: { type: "string", minLength: 1 } });
-    expect(operation.allOf.at(-1).else.required).toEqual(["text", "category", "scope", "topics"]);
-    expect(operation.allOf.at(-1).then.required).toContain("kind");
-    expect(operation.allOf.at(-1).then.allOf[0].not.anyOf).toContainEqual({ required: ["topics"] });
-    // The declined-fact protocol keeps its own textual because.
-    expect(memory.parameters.properties.skipped.items.properties.because).toEqual({ type: "string", minLength: 1 });
+    const archiveRule = operation.anyOf[2].allOf[2];
+    expect(archiveRule.else.required).toEqual(["text", "category", "scope", "topics"]);
+    expect(archiveRule.then.required).toContain("kind");
+    expect(archiveRule.then.allOf[0].not.anyOf).toContainEqual({ required: ["topics"] });
+    expect(operation.properties).not.toHaveProperty("skipped");
     expect(memory.description).toContain("reason (commit message, not evidence)");
     expect(memory.description).toContain("complete text/category/scope/topics");
     expect(memory.description).toContain("Manual writers may create/archive only");

@@ -37,10 +37,9 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     backlog(h);
     await h.emit("session_start"); // import only; no automatic trigger (17a/17b)
     const head = h.memory.store.listTurns(1).at(-1)!.id;
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { title: "Pre-existing A", sources: [{ address: "T1#E1", text: "Pre-existing A" }] },
-      { title: "Pre-existing B", sources: [{ address: "T1#E1", text: "Pre-existing B" }] },
-    ] });
+    const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!;
+    note.execute({ title: "Pre-existing A", sources: "[T1#E1] Pre-existing A" });
+    note.execute({ title: "Pre-existing B", sources: "[T1#E1] Pre-existing B" });
     h.provider(async c => notingFact(c));
     await command(h, "catchup");
     await settle(h);
@@ -53,8 +52,7 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     const requestsBefore = h.requests.length;
     // A later ordinary Turn and a later manual fact must stay outside this already-completed target.
     await h.turn();
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { title: "Later unrelated", sources: [{ address: "T1#E1", text: "Later, unrelated" }] } ] });
+    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ title: "Later unrelated", sources: "[T1#E1] Later, unrelated" });
     expect(h.requests.length).toBe(requestsBefore); // nothing auto-triggered (both are far below threshold)
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
     expect(h.memory.store.listSessionFacts(1).some(f => f.text === "Later, unrelated")).toBe(true);
@@ -95,10 +93,9 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
   const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { title: "Consolidation A", sources: [{ address: "T1#E1", text: "Needs consolidation A" }] },
-      { title: "Consolidation B", sources: [{ address: "T1#E1", text: "Needs consolidation B" }] },
-    ] });
+    const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!;
+    note.execute({ title: "Consolidation A", sources: "[T1#E1] Needs consolidation A" });
+    note.execute({ title: "Consolidation B", sources: "[T1#E1] Needs consolidation B" });
     const release = hold(h);
     await h.prompt("new main turn"); await h.answer("word ".repeat(15000)); await h.drain();
     expect(h.requests).toHaveLength(1); // the ordinary automatic Noting run occupies this executor's one Noting slot
@@ -107,12 +104,15 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
     await command(h, "catchup"); // repeating reports the same waiting operation, not a second one
     expect(h.notices.at(-1)).toContain("Catchup: waiting for noting");
     h.provider(async c => emptyNote(c) ?? reply("No durable material."));
-    release[0]!(reply("No durable material.")); // failed ordinary work is not a completion checkpoint
+    release[0]!(reply("No durable material.")); // the ordinary run finishes, but does not chain a catchup batch
     await settle(h);
-    expect(h.requests).toHaveLength(1);
-    await command(h, "catchup"); // explicit recovery resumes the waiting drain after slot release
+    expect(h.requests).toHaveLength(4); // first response plus note, memory and fixed review
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(1);
+    expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
+    await command(h, "catchup"); // the ordinary run exhausted Raw; finish the waiting drain without another launch
     await settle(h);
-    expect(h.requests.length).toBeGreaterThan(1);
+    expect(h.requests).toHaveLength(4);
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(1);
     expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(2);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
@@ -123,8 +123,7 @@ test("18b 2026-09-08: a foreign claim on the target shows Waiting without steali
   const h = host();
   try {
     await h.turn();
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { title: "Foreign claim", sources: [{ address: "T1#E1", text: "Foreign claim target" }] } ] });
+    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ title: "Foreign claim", sources: "[T1#E1] Foreign claim target" });
     const other = TraceMemory(h.dbPath, async () => { throw new Error("no model expected"); });
     try {
       const foreign = other.store.acquireClaim({ sessionId: 1, branch: "main", headTurnId: 1 }, "noting", "foreign-executor")!;
@@ -225,8 +224,7 @@ test("18b 2026-09-08: switching tree paths during catchup ends it; it is never r
   const h = host();
   try {
     await h.turn();
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { title: "Old path", sources: [{ address: "T1#E1", text: "Old path fact" }] } ] });
+    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ title: "Old path", sources: "[T1#E1] Old path fact" });
     h.provider(async (_c, signal) => new Promise<Reply>(resolve => signal!.addEventListener("abort", () => resolve({ ...reply(""), stopReason: "aborted" }), { once: true })));
     await command(h, "catchup");
     await h.drain();
@@ -278,17 +276,17 @@ test("18b 2026-09-08: an ordinary worker's completion does not chain a follow-up
     backlog(h); // several batches' worth of backlog: a chained second attempt has real work to find
     await h.emit("session_start");
     let first = true;
-    h.provider(async (_c, signal) => {
-      if (first) { first = false; return reply("eligible completion handled"); } // the one bounded batch
-      // Any further request is evidence of chaining outside an active manual catchup. Park it (still
-      // recorded in h.requests) instead of letting it complete, so a chained batch is caught
-      // immediately rather than racing a real commit; the abort listener still lets dispose() proceed.
+    h.provider(async (conversation, signal) => {
+      if (first) { first = false; return reply("eligible completion handled"); }
+      if (conversation.messages.some(message => String(message.content).includes("Before publication, review this run once."))) return reply("Reviewed.");
+      // A second logical run would be chaining outside catchup. Park it so the assertion catches it.
       return new Promise<Reply>(resolve => signal!.addEventListener("abort", () => resolve({ ...reply(""), stopReason: "aborted" }), { once: true }));
     });
     await h.prompt("eligible main turn"); await h.answer("eligible completion"); await h.drain();
-    expect(h.requests).toHaveLength(1); // exactly one bounded batch; no manual catchup is active
+    expect(h.requests).toHaveLength(2); // one bounded batch and its fixed review; no catchup is active
     await h.drain(); await h.drain();
-    expect(h.requests).toHaveLength(1); // its own completion alone starts nothing further
+    expect(h.requests).toHaveLength(2); // no second logical run
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(1);
   } finally { await h.dispose(); }
 }, 30000);
 
@@ -314,7 +312,7 @@ test("18b 2026-09-08: stop prevents the next batch from being scheduled even whe
       await settle(h);
     } finally { spy.mockRestore(); }
     expect(stoppedOnce).toBe(true);
-    expect(h.requests).toHaveLength(3); // note, memory and terminal publish one batch; stop forbids a second batch
+    expect(h.requests).toHaveLength(4); // note, memory, terminal reply and fixed review; stop forbids a second batch
     expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(1);
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0);
     await command(h, "");

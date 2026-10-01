@@ -124,10 +124,10 @@ export const NOTING_CAPACITY = "Noting capacity: selected evidence cannot fit th
 export const NOTING_MEMBERSHIP = "Noting membership: the frozen batch is no longer pending in full: ";
 
 /** 26a: the diagnostic of a Noting run that ended without a submission. A batch is completed only by
- * a `note` call, `note({facts: []})` included; final prose is never read as an implicit empty
+ * a `note` call, `note({})` included; final prose is never read as an implicit empty
  * submission. The run is recorded with its usage under the existing `failure` outcome and advances no
  * entry progress, so the same entries stay pending for the next admission. */
-const incompleteTemplate = "incomplete Noting: explicitly call both {{tool.note}}({facts: []}) and {{tool.memory}}({operations: [], skipped: []}) even for empty output. The selected entries stay pending.";
+const incompleteTemplate = "incomplete Noting: explicitly call both {{tool.note}}({}) and {{tool.memory}}({}) even for empty output. The selected entries stay pending.";
 export const NOTING_INCOMPLETE = renderToolNames(incompleteTemplate, canonicalToolNames);
 
 /** The pending entries one task's boundary admits, and the exact-membership form when it has one.

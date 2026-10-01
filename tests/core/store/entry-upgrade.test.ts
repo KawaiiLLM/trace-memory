@@ -78,8 +78,8 @@ test("upgrade isolates recognized malformed rows, preserves evidence and ordinal
     expect(m.trace("T1#E3", { full: true })).toContain("legacy projection");
     expect(m.trace("T1#E5", { full: true })).toContain("original result bytes");
     const legacyNote = m.tools({ kind: "manual", sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }).find(t => t.name === "note")!;
-    expect(legacyNote.execute({ facts: [{ title: "Legacy evidence", sources: [{ address: "T1#E3", text: "Legacy evidence remains usable" }] }] })).toContain("ok: F2");
-    expect(legacyNote.execute({ facts: [{ title: "Retired selector", sources: [{ address: "T1#t7", text: "Legacy tool selectors are read-only" }] }] })).toContain("rejected:");
+    expect(legacyNote.execute({ title: "Legacy evidence", sources: "[T1#E3] Legacy evidence remains usable" })).toContain("ok: F2");
+    expect(legacyNote.execute({ title: "Retired selector", sources: "[T1#t7] Legacy tool selectors are read-only" })).toContain("rejected:");
     expect(m.store.getFact(1)!.source).toEqual(["T1#t7"]);
     // 93 retires block selectors only on the public reader; historical stored citations remain intact.
     expect(() => m.trace("T1#t7", { full: true })).toThrow("invalid public trace address");

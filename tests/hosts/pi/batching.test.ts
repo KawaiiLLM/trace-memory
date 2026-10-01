@@ -43,8 +43,8 @@ test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed
     const entries = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
     const head = h.memory.store.listTurns(1).at(-1)!.id;
     expect(tokens(entries.map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBe(size);
-    // The default script explicitly calls note, then memory, then ends normally.
-    expect(h.requests).toHaveLength(size === 10000 ? 3 : 0);
+    // The default script calls note and memory, ends its first pass, then reviews once.
+    expect(h.requests).toHaveLength(size === 10000 ? 4 : 0);
     const pending = hydrate(h.memory.pendingEntries(1, "main", head), h.memory.store);
     if (size === 9999) expect(pending.map(e => e.id)).toEqual(entries.map(e => e.id));
     else {
@@ -79,7 +79,7 @@ test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): olde
       const ids: number[] = JSON.parse(run.response!).entryAudit.entries.map((e: { id: number }) => e.id);
       const all = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
       expect(ids).toEqual(all.slice(previous, previous + ids.length).map(e => e.id));
-      const sent = batchText(h.conversations[3 * batch]!.messages[0]!.content as string); // note, memory, terminal reply
+      const sent = batchText(h.conversations[4 * batch]!.messages[0]!.content as string); // note, memory, terminal reply, fixed review
       expect(sent).toBe(ids.map(id => renderEntry(h.memory.store.getSourceEntry(id)!, h.memory.config.render).content).join("\n\n"));
       expect(tokens(sent)).toBeLessThanOrEqual(cap);
       if (batch < 2) expect(tokens(sent + "\n\n" + renderEntry(all[previous + ids.length]!, h.memory.config.render).content)).toBeGreaterThan(cap);
@@ -87,7 +87,7 @@ test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): olde
       if (severalTurns) expect(new Set(ids.map(id => h.memory.store.getSourceEntry(id)!.turnId)).size).toBeGreaterThan(1);
       else if (batch === 0) expect(new Set(ids.map(id => h.memory.store.getSourceEntry(id)!.turnId)).size).toBe(1);
       await h.emit("agent_settled"); await h.drain();
-      expect(h.conversations).toHaveLength(3 * (batch + 1)); // settling and completion of the worker start nothing
+      expect(h.conversations).toHaveLength(4 * (batch + 1)); // settling and completion of the worker start nothing
       if (batch < 2) { await h.prompt(`next batch ${batch}`); await h.answer(`completion ${batch}`); await h.drain(); }
     }
     expect(hydrate(h.memory.pendingEntries(1, "main", head), h.memory.store)).toEqual([]);
@@ -107,7 +107,7 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     const fittingWindow = fixed + 3_000 + CONTEXT_HEADROOM;
     h.ctx.model = { ...h.ctx.model!, contextWindow: fittingWindow };
     h.persist(reply("completion")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
-    expect(h.requests).toHaveLength(3); // note, memory, terminal reply
+    expect(h.requests).toHaveLength(4); // note, memory, terminal reply, fixed review
     expect(JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit.entries).toHaveLength(1);
     // 27a, replacing the whole-body estimate plus output reserve: what the child really sent had to
     // satisfy the one rule, measured as Pi measures the child's context — its messages, with no
@@ -117,7 +117,7 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     // Fixed instructions/tools still fit, but the remaining 1k cannot hold the oldest 2k view.
     h.ctx.model = { ...h.ctx.model!, contextWindow: fixed + 1_000 + CONTEXT_HEADROOM };
     await h.prompt("next capacity check"); await h.answer("next completion"); await h.drain();
-    expect(h.requests).toHaveLength(3); // the refused admission adds none
+    expect(h.requests).toHaveLength(4); // the refused admission adds none
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).slice(0, pending.length)).toEqual(pending);
     expect(h.notices.join("\n")).toContain("Noting capacity: selected evidence cannot fit the model context");
   } finally { await h.dispose(); }
@@ -211,7 +211,7 @@ test.each(["user", "toolResult"])("17b 2026-09-08: stale branch capture falls ba
       h.persist(reply("word ".repeat(100))); await h.emit("agent_end");
     }
     await h.emit("agent_settled"); await h.drain();
-    expect(h.requests).toHaveLength(3); // note, memory, terminal reply
+    expect(h.requests).toHaveLength(4); // note, memory, terminal reply, fixed review
     const sent = h.conversations[0]!.messages[0]!.content as string;
     expect(sent).toContain(role === "user" ? "NEW USER EVIDENCE" : "NEW TOOL EVIDENCE");
     const run = h.memory.store.listRuns(1)[0]!;
@@ -257,7 +257,7 @@ test("17b 2026-09-08: capture after compaction does not claim the persisted orig
     await h.emit("session_compact", { compactionEntry: entry });
     await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: compact }] } });
     h.persist(reply("word ".repeat(800))); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
-    expect(h.requests).toHaveLength(3); // note, memory, terminal reply
+    expect(h.requests).toHaveLength(4); // note, memory, terminal reply, fixed review
     expect(h.conversations[0]!.messages[0]!.content).toContain("old pending evidence");
     const run = h.memory.store.listRuns(1)[0]!;
     expect(run.mode).toBe("subagent");
@@ -275,8 +275,8 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
     const input = raw as NotingAgentInput;
     input.reportRequest({ exact: true });
     if (input.kind === "noting") {
-      input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Partial source", sources: [{ address: "T1#E1", text: "partial source fact" }] }] });
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+      input.tools.find(tool => tool.name === "note")!.execute({ title: "Partial source", sources: "[T1#E1] partial source fact" });
+      input.tools.find(tool => tool.name === "memory")!.execute({});
     }
     return { outcome: "success", output: "", request: { exact: true } };
   }, { noting: { batchTokens: 100, forkModeDefault: false } });

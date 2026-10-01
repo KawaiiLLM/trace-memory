@@ -7,7 +7,7 @@ import { skipRest } from "../../dreaming-skips.ts";
 let memory: ReturnType<typeof sourceSeededMemory>, admittedScenarios: AdmittedDreamerScenarios, triggerEntryId: number;
 afterEach(() => memory?.close());
 const create = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
-const batch = { operations: [create], skipped: [] };
+const batch = create;
 function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>) {
   admittedScenarios = new AdmittedDreamerScenarios(raw => agent(raw as NotingAgentInput));
   memory = sourceSeededMemory(":memory:", admittedScenarios.agent);
@@ -30,7 +30,7 @@ const dreamPath = () => ({ sessionId: 1, branch: "main", headTurnId: 1, triggerE
 test("payload-free acknowledgement preserves explicit native request-audit unavailability", async () => {
   setup(async input => {
     input.acknowledgeRequest();
-    input.tools[2]!.execute({ facts: [] });
+    input.tools[2]!.execute({});
     expect(JSON.parse(input.tools[3]!.execute(batch)).held).toHaveLength(1);
     return { outcome: "success", output: "done", audit: { available: false, reason: "native request body unavailable" } };
   });
@@ -44,7 +44,7 @@ test("payload-free acknowledgement preserves explicit native request-audit unava
 test("N publishes its held batch only on normal terminal success", async () => {
   setup(async input => {
     input.reportRequest({ first: true });
-    input.tools[2]!.execute({ facts: [] });
+    input.tools[2]!.execute({});
     expect(input.tools[3]!.execute(batch)).toContain("held");
     expect(memory.store.getKnowledge(1)).toBeNull();
     expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
@@ -63,11 +63,11 @@ test("N publishes its held batch only on normal terminal success", async () => {
 test("a rejected batch can be corrected before the first valid submission", async () => {
   setup(async input => {
     const write = input.tools[3]!; input.reportRequest({ first: true });
-    input.tools[2]!.execute({ facts: [] });
-    expect(write.execute({ operations: [{ ...create, supports: [] }], skipped: [] })).toContain("rejected:");
+    input.tools[2]!.execute({});
+    expect(write.execute({ ...create, supports: [] })).toContain("rejected:");
     expect(memory.store.getKnowledge(1)).toBeNull();
     input.reportRequest({ second: true });
-    expect(JSON.parse(write.execute({ ...batch, operations: [{ ...create, slot: "M1" }] })).held).toHaveLength(1);
+    expect(JSON.parse(write.execute({ ...create, slot: "M1" })).held).toHaveLength(1);
     return success();
   });
   expect((await integrate()).outcome).toBe("success");
@@ -77,7 +77,7 @@ test("a rejected batch can be corrected before the first valid submission", asyn
 for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`N ${mode} after staging publishes nothing`, async () => {
   setup(async input => {
     input.reportRequest({ provider: "captured" });
-    input.tools[2]!.execute({ facts: [{ title: "Additional evidence", sources: [{ address: "T1#E1", text: "Additional evidence" }] }] });
+    input.tools[2]!.execute({ title: "Additional evidence", sources: "[T1#E1] Additional evidence" });
     expect(input.tools[3]!.execute(batch)).toContain("held");
     expect(memory.store.getKnowledge(1)).toBeNull();
     if (mode === "throw" || mode === "abort") { const error = new Error("late provider error"); if (mode === "abort") error.name = "AbortError"; throw error; }
@@ -107,55 +107,55 @@ test("N normal stop without explicit tools is incomplete", async () => {
   expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
 });
 
-test("memory rejects malformed items, obsolete fields and invisible evidence without losing ordered results", () => {
+test("116: manual memory rejects malformed operations independently of valid commits", () => {
   const tool = setup(async () => success());
+  expect(JSON.parse(tool.execute(create)).committed).toHaveLength(1);
   for (const invalid of [null, [], { ...create, op: "mark" }, { ...create, supports: ["F999999"] }, { ...create, id: "K1" }, { ...create, because: "reason" }, { ...create, because: undefined }]) {
-    const result = JSON.parse(tool.execute({ operations: [create, invalid], skipped: [] }));
-    expect(result.results[0]).toBe("ok"); expect(result.results[1]).toContain("rejected:");
-    expect(memory.store.getKnowledge(1)).toBeNull();
+    expect(tool.execute(invalid)).toContain("rejected:");
+    expect(memory.store.currentCommit(1)).toHaveLength(1);
   }
   const p = memory.store.createProject({ name: "foreign", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "secret", startedAt: "now" });
   const foreign = memory.store.listSourceEntries(s.id)[0]!;
   seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "secret", [{ entry: memory.store.getSourceEntry(foreign.id)!, text: "secret" }]);
-  expect(tool.execute({ operations: [{ ...create, supports: ["F2"] }], skipped: [] })).toContain("not an available fact");
+  expect(tool.execute({ ...create, supports: ["F2"] })).toContain("not an available fact");
 });
 
-test("N rejects retired fact skips without publishing a valid sibling operation", async () => {
+test("116: N rejects skipped without publishing its held operation", async () => {
   setup(async input => {
     for (const skipped of [null, { fact: "F999", because: "not durable" }, { fact: "F1", because: "" }, { fact: "F1", because: "skip", id: "F1" }]) {
       expect(input.tools[3]!.execute({ operations: [create], skipped: [skipped] })).toContain("rejected:");
       expect(memory.store.getKnowledge(1)).toBeNull();
     }
-    input.tools[2]!.execute({ facts: [] });
+    input.tools[2]!.execute({});
     return success();
   });
   const result = await integrate();
   expect(result.outcome, JSON.stringify(result)).toBe("failure");
   if (result.outcome !== "failure") throw new Error("expected incomplete rejected batch");
-  expect(result.problems.join(" ")).toContain("memory expects operations, optional drop, and skipped: []");
-  expect(result.problems.join(" ")).toContain("incomplete Noting");
+  expect(result.problems.join(" ")).toContain("expects one item");
   expect(memory.store.getKnowledge(1)).toBeNull();
   expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
 });
 
 test("manual memory accepts create and archive but rejects Dreamer maintenance operations", () => {
   const write = setup(async () => success());
-  expect(JSON.parse(write.execute({ operations: [create, create], skipped: [] })).committed).toHaveLength(2);
+  expect(JSON.parse(write.execute(create)).committed).toHaveLength(1);
+  expect(JSON.parse(write.execute(create)).committed).toHaveLength(1);
   for (const operation of [
     { ...create, op: "update", id: read(1) },
     { ...create, op: "merge", id: read(1), absorb: [read(2)] },
     { op: "split", id: read(1), supports: ["F1"], reason: "split", children: [] },
-  ]) expect(write.execute({ operations: [operation], skipped: [] })).toContain("belongs to the Dreamer");
-  expect(JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", reason: "Retired by the user.", id: read(1), supports: ["F1"] }], skipped: [] })).committed).toHaveLength(1);
+  ]) expect(write.execute(operation)).toContain("belongs to the Dreamer");
+  expect(JSON.parse(write.execute({ op: "archive", kind: "budget", reason: "Retired by the user.", id: read(1), supports: ["F1"] })).committed).toHaveLength(1);
 });
 
 test("N terminal success-audit failure rolls back facts, knowledge and Raw progress", async () => {
   setup(async input => {
     input.reportRequest({ first: true });
-    expect(input.tools[2]!.execute({ facts: [{ title: "New evidence", sources: [{ address: "T1#E1", text: "New evidence" }] }] })).toContain("held");
-    expect(input.tools[3]!.execute({ operations: [{ ...create, supports: ["$1"] }], skipped: [] })).toContain("held");
+    expect(input.tools[2]!.execute({ title: "New evidence", sources: "[T1#E1] New evidence" })).toContain("held");
+    expect(input.tools[3]!.execute({ ...create, supports: ["$1"] })).toContain("held");
     return success();
   });
   memory.store.db.exec(`CREATE TEMP TRIGGER reject_success_audit BEFORE INSERT ON runs
@@ -178,8 +178,8 @@ test("N terminal success-audit failure rolls back facts, knowledge and Raw progr
 test("N post-success claim-release failure reports cleanup without undoing terminal publication", async () => {
   setup(async input => {
     input.reportRequest({ exact: "terminal request" });
-    input.tools[2]!.execute({ facts: [{ title: "New evidence", sources: [{ address: "T1#E1", text: "New evidence" }] }] });
-    input.tools[3]!.execute({ operations: [{ ...create, supports: ["$1"] }], skipped: [] });
+    input.tools[2]!.execute({ title: "New evidence", sources: "[T1#E1] New evidence" });
+    input.tools[3]!.execute({ ...create, supports: ["$1"] });
     return success();
   });
   const release = vi.spyOn(memory.store, "releaseClaim").mockImplementation(() => { throw new Error("cleanup unavailable"); });
@@ -201,7 +201,8 @@ test("N post-success claim-release failure reports cleanup without undoing termi
 
 test("21a 2026-09-08: create, update, merge and archive all carry nonempty supports and a reason", async () => {
   const write = setup(async () => success());
-  expect(JSON.parse(write.execute({ operations: [create, { ...create, text: "Commit the lockfile" }], skipped: [] })).results).toEqual(["ok", "ok"]);
+  expect(JSON.parse(write.execute(create)).results).toEqual(["ok"]);
+  expect(JSON.parse(write.execute({ ...create, text: "Commit the lockfile" })).results).toEqual(["ok"]);
   const path = dreamPath();
   createDreamerTrigger(memory, path, 1, 1, "project");
   const result = await admittedScenarios.run(memory, path, input => {
@@ -223,7 +224,7 @@ test("21a 2026-09-08: create, update, merge and archive all carry nonempty suppo
 
 for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D ${mode} after an immediate update preserves the committed revision`, async () => {
   const manual = setup(async () => success());
-  expect(JSON.parse(manual.execute(batch)).committed).toHaveLength(1);
+  expect(JSON.parse(manual.execute(create)).committed).toHaveLength(1);
   createDreamerTrigger(memory, dreamPath(), 1, 1, "project");
   const result = await admittedScenarios.run(memory, dreamPath(), input => {
     input.reportRequest({ exact: "D request" });
@@ -256,28 +257,27 @@ test("21a 2026-09-08: an omitted, wrongly typed or empty reason or supports reje
   for (const bad of [drop(create, "reason"), drop(create, "supports"), { ...create, reason: "" }, { ...create, reason: "  \n " },
     { ...create, reason: 7 }, { ...create, reason: ["F1"] }, { ...create, supports: [] }, { ...create, supports: "F1" },
     drop(archive, "reason"), drop(archive, "supports"), { ...archive, supports: [] }, { ...archive, reason: " " }]) {
-    const result = JSON.parse(write.execute({ operations: [{ ...create, text: "A second rule" }, bad], skipped: [] }));
-    expect(result.results[0]).toBe("ok"); expect(result.results[1]).toContain("rejected:");
+    expect(write.execute(bad)).toContain("rejected:");
     expect(memory.store.getKnowledge(2)).toBeNull();
     expect(memory.store.currentCommit(1)[0]?.op).toBe("create");
   }
 });
 
-test("21a 2026-09-08: a commit-level because is rejected by name, also beside a valid reason", async () => {
+test("21a/116: removed because is rejected and cannot satisfy a required N memory call", async () => {
   setup(async input => {
     const write = input.tools[3]!;
     for (const bad of [{ ...create, because: ["F1"] }, { ...create, because: [] }, { ...create, because: "prompted by the user" },
       { op: "archive", kind: "budget", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", because: ["F1"] }]) {
-      const result = JSON.parse(write.execute({ operations: [bad], skipped: [] }));
+      const result = JSON.parse(write.execute(bad));
       expect(result.results[0]).toContain("because: removed field");
       expect(result.results[0]).toContain('supply "reason"');
       expect(memory.store.getKnowledge(1)).toBeNull();
     }
-    // Invalid held slots cannot be hidden by normal provider termination.
-    input.tools[2]!.execute({ facts: [] });
+    // Invalid call syntax cannot satisfy the mandatory knowledge-tool call.
+    input.tools[2]!.execute({});
     return success();
   });
-  expect((await integrate()).outcome).toBe("bounced");
+  expect((await integrate()).outcome).toBe("failure");
 });
 
 test("21a 2026-09-08: one supports list holds both the text's grounds and the fact that prompted the change", async () => {
@@ -348,7 +348,7 @@ test("21a 2026-09-08: a reason-only update on a stale base is rejected like any 
 
 test("21b 2026-09-08: labels are trimmed, deduplicated and code-point ordered, and a bad label rejects the whole batch", () => {
   const write = setup(async () => success());
-  expect(JSON.parse(write.execute({ operations: [{ ...create, topics: [" storage ", "auth", "storage", "Auth", "认证"] }], skipped: [] })).committed).toHaveLength(1);
+  expect(JSON.parse(write.execute({ ...create, topics: [" storage ", "auth", "storage", "Auth", "认证"] })).committed).toHaveLength(1);
   // Case, language and spelling are kept as written: no folding, no translation, no synonym merge,
   // no hierarchy read out of punctuation. Order is the set's own code-point order, so the submitted
   // order carries no primary-topic meaning.
@@ -357,20 +357,20 @@ test("21b 2026-09-08: labels are trimmed, deduplicated and code-point ordered, a
   for (const bad of [drop(create, "topics"), { ...create, topics: "auth" }, { ...create, topics: null }, { ...create, topics: {} },
     { ...create, topics: ["auth", 7] }, { ...create, topics: [""] }, { ...create, topics: ["auth", "   "] }, { ...create, topics: [["auth"]] },
     { op: "archive", kind: "budget", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", topics: ["auth"] }]) {
-    const result = JSON.parse(write.execute({ operations: [{ ...create, text: "A second rule" }, bad], skipped: [] }));
-    expect(result.results[0]).toBe("ok"); expect(result.results[1]).toContain("rejected:");
+    expect(write.execute(bad)).toContain("rejected:");
     expect(memory.store.getKnowledge(2)).toBeNull();
     expect(memory.store.currentCommit(1)[0]?.op).toBe("create");
   }
-  expect(JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: "K1", supports: ["F1"], reason: "Retired.", topics: ["auth"] }], skipped: [] })).results[0])
+  expect(JSON.parse(write.execute({ op: "archive", kind: "budget", id: "K1", supports: ["F1"], reason: "Retired.", topics: ["auth"] })).results[0])
     .toContain("topics: inapplicable field");
 });
 
 test("21b 2026-09-08: reordering the same label set stores the same topics; an empty array stays unclassified", () => {
   const write = setup(async () => success());
-  expect(JSON.parse(write.execute({ operations: [{ ...create, topics: ["storage", "auth"] },
+  for (const operation of [{ ...create, topics: ["storage", "auth"] },
     { ...create, text: "Commit the lockfile", topics: [" auth ", "storage"] },
-    { ...create, text: "Run the tests", topics: [] }], skipped: [] })).committed).toHaveLength(3);
+    { ...create, text: "Run the tests", topics: [] }])
+    expect(JSON.parse(write.execute(operation)).committed).toHaveLength(1);
   expect(memory.store.currentCommit(1)[0]!.topics).toEqual(["auth", "storage"]);
   expect(memory.store.currentCommit(2)[0]!.topics).toEqual(memory.store.currentCommit(1)[0]!.topics);
   expect(memory.store.currentCommit(3)[0]!.topics).toEqual([]);
@@ -379,7 +379,8 @@ test("21b 2026-09-08: reordering the same label set stores the same topics; an e
 
 test("21b 2026-09-08: a topic-only update is an ordinary update; old commits keep their labels, clearing is explicit, merge states the survivor's set and archive inherits", async () => {
   const write = setup(async () => success());
-  write.execute({ operations: [{ ...create, topics: ["packaging"] }, { ...create, text: "Commit the lockfile", topics: ["lockfile"] }], skipped: [] });
+  write.execute({ ...create, topics: ["packaging"] });
+  write.execute({ ...create, text: "Commit the lockfile", topics: ["lockfile"] });
   const path = dreamPath();
   // Classification cleanup is a normal update: the complete unchanged text, category, scope and
   // evidence, with a reason. There is no metadata-only path around review or conflict checking.

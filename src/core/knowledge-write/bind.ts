@@ -17,7 +17,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput,
     diagnostics: import("./prepare.ts").ConsolidationDiagnostic[]; output: MemoryBatch } | undefined;
   let failure: { runId: number; problems: string[] } | undefined;
   const sequence: { name: string; input: unknown; result: string; problems?: string[] }[] = [];
-  const execute = (input: unknown) => {
+  const execute = (input: unknown, request: unknown = input) => {
     const prepared = prepareMemory(store, sessionId, input, run, path, eligibleSupport, skippable, undefined, names);
     problems = prepared.results.filter(r => r.startsWith("rejected:"));
     if (problems.length) { failure = undefined; return JSON.stringify({ results: prepared.results }); }
@@ -25,7 +25,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput,
     const receipt = (items: import("../store/index.ts").CommittedKnowledgeOp[]) => JSON.stringify({ results: prepared.results,
       committed: items.map(({ commit, ...item }) => ({ ...item, version: `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, commit)}` })), diagnostics });
     const result = store.commitConsolidationRun({ path, run: { ...run, response: JSON.stringify({ problems: [] }),
-      request: JSON.stringify(input) }, operations: prepared.operations,
+      request: JSON.stringify(request) }, operations: prepared.operations,
       finalizeResponse: ({ committed }) => JSON.stringify({ results: prepared.results, committed, diagnostics }) });
     if (!result.ok) { failure = result; problems = result.readerProblems ?? result.problems;
       return JSON.stringify({ results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }); }

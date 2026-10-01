@@ -9,8 +9,8 @@ function fixture() {
   const memory = sourceSeededMemory(":memory:", async raw => {
     const task = raw as NotingAgentInput; invoked.push(task.kind);
     task.reportRequest({ fixture: "retirement" });
-    task.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    task.tools.find(tool => tool.name === "note")!.execute({});
+    task.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "done", request: { fixture: "retirement" } };
   });
   const store = memory.store;

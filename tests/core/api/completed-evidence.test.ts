@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { TraceMemory, type NotingAgentInput, type SourceEntry } from "../../../src/core/api/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
+import { factSources } from "../../support/seed.ts";
 
 const time = "2026-09-01T00:00:00Z";
 function setup() {
@@ -43,16 +44,16 @@ for (const kind of ["manual", "noting"] as const) test.each(["success", "failure
     try {
       const result = f.append("toolResult", 2, "reused", status), dispatch = f.append("assistant", 2);
       f.select([dispatch, result]);
-      const fact = { title: "Test dispatch and result", sources: [
+      const fact = { title: "Test dispatch and result", sources: factSources([
         { address: address(result), text: `The tool returned ${status}.` },
-        { address: address(dispatch), text: "Pi agent dispatched tests." }] };
-      if (kind === "manual") expect(JSON.parse(f.manual().execute({ facts: [fact] })).factIds).toHaveLength(1);
+        { address: address(dispatch), text: "Pi agent dispatched tests." }]) };
+      if (kind === "manual") expect(JSON.parse(f.manual().execute(fact)).factIds).toHaveLength(1);
       else {
         const done = await f.noting([dispatch, result], input => {
-          expect(input.tools.find(t => t.name === "note")!.execute({ facts: [fact] })).toContain("held");
+          expect(input.tools.find(t => t.name === "note")!.execute(fact)).toContain("held");
           expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]);
           expect(f.m.store.entryNoted(dispatch.id)).toBe(false);
-          input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+          input.tools.find(t => t.name === "memory")!.execute({});
         });
         expect(done.outcome, JSON.stringify(done)).toBe("success");
         expect(f.m.store.entryNoted(dispatch.id)).toBe(true);
@@ -71,15 +72,19 @@ for (const kind of ["manual", "noting"] as const) test.each(["category", "actor"
     const f = setup();
     try {
       const dispatch = f.append("assistant"); f.select([dispatch]);
-      const fact = { title: "Claimed completion", sources: [{ address: address(dispatch), text: "Pi agent reported completion; this is an agent claim." }] };
-      const batch = { facts: [fact, { ...fact, [field]: field === "status" ? "completed" : "user" }] };
-      if (kind === "manual") expect(f.manual().execute(batch)).toContain(`${field}: unexpected field`);
+      const fact = { title: "Claimed completion", sources: factSources([{ address: address(dispatch), text: "Pi agent reported completion; this is an agent claim." }]) };
+      const invalid = { ...fact, [field]: field === "status" ? "completed" : "user" };
+      if (kind === "manual") expect(f.manual().execute(invalid)).toContain(`${field}: unexpected field`);
       else {
         const done = await f.noting([dispatch], input => {
-          expect(input.tools.find(t => t.name === "note")!.execute(batch)).toContain(`${field}: unexpected field`);
-          input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+          const note = input.tools.find(t => t.name === "note")!;
+          note.execute({});
+          expect(note.execute(invalid)).toContain(`${field}: unexpected field`);
+          input.tools.find(t => t.name === "memory")!.execute({});
         });
         expect(done.outcome).toBe("bounced");
+        if (done.outcome !== "bounced") throw new Error(JSON.stringify(done));
+        expect(done.problems.join("\n")).toContain(`${field}: unexpected field`);
       }
       expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]);
       expect(f.m.store.entryNoted(dispatch.id)).toBe(false);
@@ -91,13 +96,12 @@ for (const kind of ["manual", "noting"] as const) test.each(["T1", "T1#assistant
     const f = setup();
     try {
       const dispatch = f.append("assistant"), result = f.append("toolResult"); f.select([dispatch, result]);
-      const facts = [{ title: "Dispatch", sources: [{ address: address(dispatch), text: "Pi agent started tests." }] },
-        { title: "Invalid source shape", sources: [{ address: source, text: "Invalid source shape" }] }];
-      if (kind === "manual") expect(f.manual().execute({ facts })).toContain("invalid source");
+      const invalid = { title: "Invalid source shape", sources: factSources([{ address: source, text: "Invalid source shape" }]) };
+      if (kind === "manual") expect(f.manual().execute(invalid)).toContain("invalid source");
       else {
         const done = await f.noting([dispatch, result], input => {
-          expect(input.tools.find(t => t.name === "note")!.execute({ facts })).toContain("invalid source");
-          input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+          expect(input.tools.find(t => t.name === "note")!.execute(invalid)).toContain("invalid source");
+          input.tools.find(t => t.name === "memory")!.execute({});
         });
         expect(done.outcome).toBe("bounced");
       }
@@ -115,8 +119,8 @@ test.each(["already present", "arrives later"])("92 evidence: N cannot cite a re
     const done = await f.noting([dispatch], input => {
       result ??= f.append("toolResult");
       f.select([dispatch, result]);
-      expect(input.tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Result outside range", sources: [{ address: address(result), text: "The tool returned a result" }] }] })).toContain("invalid source");
-      input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+      expect(input.tools.find(t => t.name === "note")!.execute({ title: "Result outside range", sources: factSources([{ address: address(result), text: "The tool returned a result" }]) })).toContain("invalid source");
+      input.tools.find(t => t.name === "memory")!.execute({});
     });
     expect(done.outcome).toBe("bounced");
     expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]);

@@ -74,11 +74,11 @@ test("92: whole-entry frozen citations bind only that occurrence; block selector
     f.m.selectEntries(f.session.id, "main", [a.id, b.id, c.id]);
     f.setNoter(async input => {
       const noter = input.tools.find(t => t.name === "note")!;
-      const fact = (source: string) => ({ facts: [{ slot: "$1", title: "Statement", sources: [{ address: source, text: "Pi agent reports a statement" }] }] });
-      expect(noter.execute({ facts: [{ title: "Rejected sibling", sources: [{ address: `T${f.turn.id}#E3`, text: "Sibling evidence" }] }] })).toContain("rejected:");
+      const fact = (source: string) => ({ slot: "$1", title: "Statement", sources: `[${source}] Pi agent reports a statement` });
+      expect(noter.execute({ title: "Rejected sibling", sources: `[T${f.turn.id}#E3] Sibling evidence` })).toContain("rejected:");
       for (const source of [`T${f.turn.id}#E2@thinking`, `T${f.turn.id}#E2@nonexistent`, `T${f.turn.id}#E2@text`]) expect(noter.execute(fact(source))).toContain("rejected:");
       expect(noter.execute(fact(`T${f.turn.id}#E2`))).toContain("held: $1");
-      input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+      input.tools.find(t => t.name === "memory")!.execute({});
       expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]);
       return { outcome: "success", output: "done", request: {} };
     });

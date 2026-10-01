@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import { TraceMemory, tokens, type RunAgent } from "../../../src/core/api/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { wholeTrace } from "../../trace-pages.ts";
+import { factSources } from "../../support/seed.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const time = "2026-09-01T00:00:00Z";
@@ -38,7 +39,7 @@ test("92 supersedes completion policing: dispatch and result retain different de
   const { m, sessionId, turn, entry, call } = setup();
   try {
     const note = m.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" }).find(tool => tool.name === "note")!;
-    const fact = (source: string) => ({ facts: [{ title: "Check evidence", sources: [{ address: source, text: "The cited entry describes the check." }] }] });
+    const fact = (source: string) => ({ title: "Check evidence", sources: factSources([{ address: source, text: "The cited entry describes the check." }]) });
     expect(note.execute(fact("T1#E1@actual"))).toContain("invalid source");
     expect(note.execute(fact("T1#E1"))).not.toContain("rejected:");
     expect(m.store.getFact(1)!.roles).toEqual([{ role: "assistant", harness: "Pi agent" }]);
@@ -61,10 +62,9 @@ test("93: Turn reads show only contributed segments; stored ownership and projec
       raw: JSON.stringify({ role: "user", content: "confirmation" }) });
     m.selectEntries(sessionId, "main", [entry.id, user.id]);
     const note = m.tools({ kind: "manual", sessionId, currentTurnId: next.id, branch: "main" }).find(t => t.name === "note")!;
-    const result = JSON.parse(note.execute({ facts: [
-      { title: "First ownership", sources: [{ address: "T1#E1", text: "First ownership" }, { address: "T2#E1", text: "Confirmed ownership" }] },
-      { title: "Second ownership", sources: [{ address: "T2#E1", text: "Second ownership" }] }] }));
-    expect(result.factIds).toEqual([1, 2]);
+    const first = JSON.parse(note.execute({ title: "First ownership", sources: factSources([{ address: "T1#E1", text: "First ownership" }, { address: "T2#E1", text: "Confirmed ownership" }]) }));
+    const second = JSON.parse(note.execute({ title: "Second ownership", sources: factSources([{ address: "T2#E1", text: "Second ownership" }]) }));
+    expect([...first.factIds, ...second.factIds]).toEqual([1, 2]);
     const firstTurn = m.trace("T1", { pageBudget: null });
     const secondTurn = m.trace("T2", { pageBudget: null });
     expect(firstTurn).toContain("[F1] First ownership");
@@ -90,9 +90,9 @@ test("92: partial semantic reads omit tags; full history paging reveals a tag bu
   try {
     const tools = m.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" });
     const note = tools.find(t => t.name === "note")!, memory = tools.find(t => t.name === "memory")!, trace = tools.find(t => t.name === "trace")!;
-    expect(note.execute({ facts: [{ title: "Started check", sources: [{ address: "T1#E1", text: "Started the check." }] }] })).not.toContain("rejected:");
+    expect(note.execute({ title: "Started check", sources: factSources([{ address: "T1#E1", text: "Started the check." }]) })).not.toContain("rejected:");
     const text = "A complete durable claim has its conditions and evidence. ".repeat(500);
-    expect(memory.execute({ operations: [{ op: "create", text, category: "understanding", scope: "project", supports: ["F1"], reason: "Initial evidence", topics: [] }], skipped: [] })).not.toContain("rejected:");
+    expect(memory.execute({ op: "create", text, category: "understanding", scope: "project", supports: ["F1"], reason: "Initial evidence", topics: [] })).not.toContain("rejected:");
     const path = { sessionId, headTurnId: turn.id, branch: "main" };
     const firstTrigger = createDreamerTrigger(m, path, 1, 1, "project");
     const settled = await scenarios.run(m, path, input => {

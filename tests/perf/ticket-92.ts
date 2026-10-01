@@ -107,9 +107,9 @@ if (!process.argv.includes("--fixed-only")) for (const length of lengths) {
       const entry = local!.store.getSourceEntry(first)!;
       const path = local!.store.sourcePath(target.sessionId, target.branch, target.headTurnId);
       const ordinal = path.filter(item => item.turnId === entry.turnId).findIndex(item => item.id === first) + 1;
-      write("note", { facts: [{ text: "Synthetic user specified a durable rule", source: [`T${entry.turnId}#E${ordinal}`] }] });
-      write("memory", { operations: [{ op: "create", text: "Synthetic rule applies", category: "constraint",
-        scope: "session", supports: ["$1"], topics: [], reason: "benchmark", }], skipped: [] });
+      write("note", { title: "Synthetic user rule", sources: `[T${entry.turnId}#E${ordinal}] Synthetic user specified a durable rule` });
+      write("memory", { op: "create", text: "Synthetic rule applies", category: "constraint",
+        scope: "session", supports: ["$1"], topics: [], reason: "benchmark" });
       return { outcome: "success", output: "done", request };
     };
     let local: ReturnType<typeof TraceMemory> | undefined;
@@ -270,11 +270,11 @@ for (const length of lengths) {
     const agent: RunAgent = async raw => {
       const task = raw as { tools: { name: string; execute: (input: unknown) => string }[]; reportRequest: (request: unknown) => void };
       task.reportRequest(request);
-      const note = task.tools.find(tool => tool.name === "note")!.execute({ facts: [{ text: "Synthetic user rule",
-        source: [`T${head - 2}#E1`] }] });
+      const note = task.tools.find(tool => tool.name === "note")!.execute({ title: "Synthetic user rule",
+        sources: `[T${head - 2}#E1] Synthetic user rule` });
       if (!note.includes("held: $1")) throw Error(`note rejected: ${note}`);
-      const knowledge = task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text: "Synthetic rule",
-        category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "benchmark" }], skipped: [] });
+      const knowledge = task.tools.find(tool => tool.name === "memory")!.execute({ op: "create", text: "Synthetic rule",
+        category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "benchmark" });
       if (!knowledge.includes("held: M1")) throw Error(`knowledge rejected: ${knowledge}`);
       return { outcome: "success", output: "done", request };
     };

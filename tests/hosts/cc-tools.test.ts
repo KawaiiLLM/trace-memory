@@ -64,12 +64,13 @@ test("CC foreground list reuses exactly the four core schemas and no Dreamer cap
     expect(listed.map(tool => tool.name)).toEqual(["trace", "search", "note", "memory"]);
     expect(listed.map(tool => tool.description)).toEqual(expected.map(tool => tool.description));
     expect(listed.map(tool => tool.inputSchema)).toEqual(expected.map(tool => tool.parameters));
-    const note = listed.find(tool => tool.name === "note")!.inputSchema as { properties: Record<string, any> };
-    const fact = note.properties.facts.items;
-    expect(fact.required).toContain("title");
-    expect(fact.required).toContain("sources");
-    expect(fact.properties).not.toHaveProperty("text");
-    expect(fact.properties).not.toHaveProperty("source");
+    const note = listed.find(tool => tool.name === "note")!.inputSchema as { properties: Record<string, any>; anyOf: unknown[] };
+    expect(note.anyOf).toContainEqual(expect.objectContaining({ required: ["title", "sources"] }));
+    expect(note.properties).toHaveProperty("title");
+    expect(note.properties.sources).toMatchObject({ type: "string" });
+    expect(note.properties).not.toHaveProperty("facts");
+    expect(note.properties).not.toHaveProperty("text");
+    expect(note.properties).not.toHaveProperty("source");
     const trace = listed.find(tool => tool.name === "trace")!.inputSchema as { properties: Record<string, unknown> };
     expect(trace.properties).not.toHaveProperty("tool");
     expect(trace.properties).not.toHaveProperty("layer");
@@ -82,26 +83,26 @@ test("CC foreground list reuses exactly the four core schemas and no Dreamer cap
 test("CC foreground reads keep one core cursor across calls without a read-authority ledger", async () => {
   const f = await fixture();
   try {
-    const note = await f.tools.call("note", { facts: [{ title: "Persisted write", sources: [{ address: `T${f.exact.headTurnId}#E2`, text: "Claude Code dispatched the persisted write call" }] }] }, { "claudecode/toolUseId": "call-note" });
+    const note = await f.tools.call("note", { title: "Persisted write", sources: `[T${f.exact.headTurnId}#E2] Claude Code dispatched the persisted write call` }, { "claudecode/toolUseId": "call-note" });
     expect(note.isError).toBeUndefined();
     expect(f.importer.memory.store.listTurnFacts(f.exact.headTurnId)[0]?.title).toBe("Persisted write");
     const removedTool = await f.tools.call("trace", { address: `T${f.exact.headTurnId}#E1`, tool: 0 }, undefined);
     expect(removedTool.isError).toBe(true);
-    const create = await f.tools.call("memory", { operations: [{ op: "create", text: "body ".repeat(3000), category: "reference", scope: "session",
-      supports: ["F1"], reason: "fixture", topics: [] }], skipped: [] }, { "claudecode/toolUseId": "call-memory" });
+    const create = await f.tools.call("memory", { op: "create", text: "body ".repeat(3000), category: "reference", scope: "session",
+      supports: ["F1"], reason: "fixture", topics: [] }, { "claudecode/toolUseId": "call-memory" });
     expect(create.isError).toBeUndefined();
     const preview = await f.tools.call("search", { query: "body", layer: "knowledge" }, undefined);
     expect(preview.isError).toBeUndefined();
-    const refused = await f.tools.call("memory", { operations: [{ op: "update", id: "K1@v1", text: "updated", category: "reference", scope: "session",
-      supports: ["F1"], reason: "history is not a write base", topics: [] }], skipped: [] }, { "claudecode/toolUseId": "call-memory" });
+    const refused = await f.tools.call("memory", { op: "update", id: "K1@v1", text: "updated", category: "reference", scope: "session",
+      supports: ["F1"], reason: "history is not a write base", topics: [] }, { "claudecode/toolUseId": "call-memory" });
     expect(refused.isError).toBe(true);
     let page = await f.tools.call("trace", { address: "K1@v1", itemBudget: null, pageBudget: 100 }, undefined);
     expect(text(page)).toContain("cursor=");
     const firstCursor = /cursor=([^\s]+)/.exec(text(page))![1];
     page = await f.tools.call("trace", { address: "", cursor: firstCursor }, undefined);
     while (/cursor=([^\s]+)/.test(text(page))) page = await f.tools.call("trace", { address: "", cursor: /cursor=([^\s]+)/.exec(text(page))![1] }, undefined);
-    const update = await f.tools.call("memory", { operations: [{ op: "update", id: /K1#[a-z]+/.exec(text(page))![0], text: "updated", category: "reference", scope: "session",
-      supports: ["F1"], reason: "tagged base does not grant manual update", topics: [] }], skipped: [] }, { "claudecode/toolUseId": "call-memory" });
+    const update = await f.tools.call("memory", { op: "update", id: /K1#[a-z]+/.exec(text(page))![0], text: "updated", category: "reference", scope: "session",
+      supports: ["F1"], reason: "tagged base does not grant manual update", topics: [] }, { "claudecode/toolUseId": "call-memory" });
     expect(update.isError).toBe(true); expect(text(update)).toContain("update belongs to the Dreamer");
     const second = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
     try {
@@ -117,23 +118,23 @@ test("CC foreground reads keep one core cursor across calls without a read-autho
 test("CC character pages withhold the version tag until the final page, not a read-authority grant", async () => {
   const f = await fixture();
   try {
-    expect((await f.tools.call("note", { facts: [{ title: "Knowledge evidence", sources: [{ address: `T${f.exact.headTurnId}#E1`, text: "large knowledge evidence" }] }] }, { "claudecode/toolUseId": "call-note" })).isError).toBeUndefined();
+    expect((await f.tools.call("note", { title: "Knowledge evidence", sources: `[T${f.exact.headTurnId}#E1] large knowledge evidence` }, { "claudecode/toolUseId": "call-note" })).isError).toBeUndefined();
     const body = `BEGIN${" ".repeat(600_000)}END`;
-    expect((await f.tools.call("memory", { operations: [{ op: "create", text: body, category: "reference", scope: "session",
-      supports: ["F1"], reason: "large fixture", topics: [] }], skipped: [] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
+    expect((await f.tools.call("memory", { op: "create", text: body, category: "reference", scope: "session",
+      supports: ["F1"], reason: "large fixture", topics: [] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
     const first = await f.tools.call("trace", { address: "K1@v1", itemBudget: null, pageBudget: 8_000 }, undefined);
     expect(first.isError).toBeUndefined(); expect(text(first).length).toBeLessThanOrEqual(CC_MAX_RESULT_CHARS);
     expect(text(first)).not.toContain("page limited by");
     const cursor = /cursor=([^\s]+)/.exec(text(first))![1]!;
-    const refused = await f.tools.call("memory", { operations: [{ op: "update", id: "K1@v1", text: "history is not a tagged base", category: "reference",
-      scope: "session", supports: ["F1"], reason: "before final page", topics: [] }], skipped: [] }, { "claudecode/toolUseId": "call-memory" });
+    const refused = await f.tools.call("memory", { op: "update", id: "K1@v1", text: "history is not a tagged base", category: "reference",
+      scope: "session", supports: ["F1"], reason: "before final page", topics: [] }, { "claudecode/toolUseId": "call-memory" });
     expect(refused.isError).toBe(true); expect(text(refused)).toContain("supply an exact K#tag");
     expect(text(first)).not.toMatch(/K1#[a-z]+/);
     const second = await f.tools.call("trace", { address: "", cursor }, undefined);
     expect(second.isError).toBeUndefined(); expect(text(second).length).toBeLessThanOrEqual(CC_MAX_RESULT_CHARS);
     expect(text(second)).not.toContain("cursor=");
-    const update = await f.tools.call("memory", { operations: [{ op: "update", id: /K1#[a-z]+/.exec(text(second))![0], text: "fully read", category: "reference",
-      scope: "session", supports: ["F1"], reason: "after final page", topics: [] }], skipped: [] }, { "claudecode/toolUseId": "call-memory" });
+    const update = await f.tools.call("memory", { op: "update", id: /K1#[a-z]+/.exec(text(second))![0], text: "fully read", category: "reference",
+      scope: "session", supports: ["F1"], reason: "after final page", topics: [] }, { "claudecode/toolUseId": "call-memory" });
     expect(update.isError).toBe(true); expect(text(update)).toContain("update belongs to the Dreamer");
     const hidden = await f.tools.call("trace", { address: "K1@v2", maxChars: 1 }, undefined);
     expect(hidden.isError).toBe(true); expect(text(hidden)).toContain("unexpected parameter");
@@ -143,15 +144,13 @@ test("CC character pages withhold the version tag until the final page, not a re
 test("ticket 41 filters, representatives, cursors and ceilings execute through the CC surface", async () => {
   const f = await fixture();
   try {
-    expect((await f.tools.call("note", { facts: [{ title: "Surface evidence", sources: [{ address: `T${f.exact.headTurnId}#E1`, text: "surface evidence" }] }] }, { "claudecode/toolUseId": "call-note" })).isError).toBeUndefined();
-    expect((await f.tools.call("memory", { operations: [
-      { op: "create", text: "session alpha ".repeat(200), category: "reference", scope: "session", supports: ["F1"], reason: "seed", topics: ["alpha"] },
-      { op: "create", text: "global beta", category: "open", scope: "global", supports: ["F1"], reason: "seed", topics: ["beta"] },
-    ], skipped: [] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
+    expect((await f.tools.call("note", { title: "Surface evidence", sources: `[T${f.exact.headTurnId}#E1] surface evidence` }, { "claudecode/toolUseId": "call-note" })).isError).toBeUndefined();
+    expect((await f.tools.call("memory", { op: "create", text: "session alpha ".repeat(200), category: "reference", scope: "session", supports: ["F1"], reason: "seed", topics: ["alpha"] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
+    expect((await f.tools.call("memory", { op: "create", text: "global beta", category: "open", scope: "global", supports: ["F1"], reason: "seed", topics: ["beta"] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
     let exact = await f.tools.call("trace", { address: "K1@v1", itemBudget: null }, undefined);
     while (/cursor=([^\s]+)/.test(text(exact))) exact = await f.tools.call("trace", { address: "", cursor: /cursor=([^\s]+)/.exec(text(exact))![1] }, undefined);
-    const maintenance = await f.tools.call("memory", { operations: [{ op: "update", id: /K1#[a-z]+/.exec(text(exact))![0], text: "session alpha current",
-      category: "reference", scope: "session", supports: ["F1"], reason: "current", topics: ["alpha"] }], skipped: [] },
+    const maintenance = await f.tools.call("memory", { op: "update", id: /K1#[a-z]+/.exec(text(exact))![0], text: "session alpha current",
+      category: "reference", scope: "session", supports: ["F1"], reason: "current", topics: ["alpha"] },
       { "claudecode/toolUseId": "call-memory" });
     expect(maintenance.isError).toBe(true); expect(text(maintenance)).toContain("update belongs to the Dreamer");
     const defaults = text(await f.tools.call("search", { query: "", layer: "knowledge" }, undefined));
@@ -180,7 +179,7 @@ test("CC foreground writes fail closed on missing, malformed and mismatched nati
   const f = await fixture();
   try {
     for (const meta of [undefined, {}, { "claudecode/toolUseId": 3 }, { "claudecode/toolUseId": "other" }]) {
-      const result = await f.tools.call("note", { facts: [] }, meta);
+      const result = await f.tools.call("note", {}, meta);
       expect(result.isError).toBe(true);
     }
     expect(f.importer.memory.store.listTurnFacts(f.exact.headTurnId)).toEqual([]);
@@ -190,10 +189,10 @@ test("CC foreground writes fail closed on missing, malformed and mismatched nati
 test("expired fork calls never fall through to the persisted main manual write", async () => {
   const f = await fixture("mcp__traceMemory__", id => id === "call-note" ? "retired" : null);
   try {
-    const expired = await f.tools.call("note", { facts: [] }, { "claudecode/toolUseId": "call-note" });
+    const expired = await f.tools.call("note", {}, { "claudecode/toolUseId": "call-note" });
     expect(expired.isError).toBe(true);
     expect(text(expired)).toContain("expired");
-    const manual = await f.tools.call("memory", { operations: [], skipped: [] }, { "claudecode/toolUseId": "call-memory" });
+    const manual = await f.tools.call("memory", {}, { "claudecode/toolUseId": "call-memory" });
     expect(manual.isError).toBeUndefined();
     expect(f.importer.memory.store.listTurnFacts(f.exact.headTurnId)).toEqual([]);
   } finally { f.importer.close(); }
@@ -204,11 +203,11 @@ test("a restarted executor cannot turn an old fork-only call into a manual write
   try {
     // The old fork's native call is not in this main-session transcript. Fresh executor
     // authority has no registration, so the exact persisted main-call check must reject it.
-    const stale = await f.tools.call("note", { facts: [] }, { "claudecode/toolUseId": "old-fork-call" });
+    const stale = await f.tools.call("note", {}, { "claudecode/toolUseId": "old-fork-call" });
     expect(stale.isError).toBe(true);
     expect(text(stale)).toContain("source-not-ready: old-fork-call");
     expect(f.importer.memory.store.listTurnFacts(f.exact.headTurnId)).toEqual([]);
-    const manual = await f.tools.call("memory", { operations: [], skipped: [] }, { "claudecode/toolUseId": "call-memory" });
+    const manual = await f.tools.call("memory", {}, { "claudecode/toolUseId": "call-memory" });
     expect(manual.isError).toBeUndefined();
   } finally { f.importer.close(); }
 });
@@ -231,9 +230,9 @@ test("CC foreground authenticates direct-MCP and installed-plugin identities wit
     writeFileSync(f.transcriptPath, f.records.map(line).join(""));
     await f.importer.reconcile();
     expect(() => f.importer.persistedCall("lookalike-note", "note")).toThrow("not mcp__traceMemory__note or mcp__plugin_trace-memory_traceMemory__note");
-    const late = await f.tools.call("note", { facts: [{ title: "Late source", sources: [{ address: `T${f.exact.headTurnId}#E4`, text: "too late" }] }] }, { "claudecode/toolUseId": "call-note" });
+    const late = await f.tools.call("note", { title: "Late source", sources: `[T${f.exact.headTurnId}#E4] too late` }, { "claudecode/toolUseId": "call-note" });
     expect(late.isError).toBe(true); expect(text(late)).toContain("invalid source");
-    const wrong = await f.tools.call("memory", { operations: [], skipped: [] }, { "claudecode/toolUseId": "call-note" });
+    const wrong = await f.tools.call("memory", {}, { "claudecode/toolUseId": "call-note" });
     expect(wrong.isError).toBe(true); expect(text(wrong)).toContain("not mcp__traceMemory__memory");
     expect(f.importer.memory.store.listTurnFacts(f.exact.headTurnId)).toEqual([]);
   } finally { f.importer.close(); }
@@ -258,9 +257,9 @@ test("write wait timeout and cancellation commit nothing and queue no later writ
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {}), tools = new CcForegroundTools(coordinator);
   await coordinator.start();
   try {
-    const timedOut = await tools.call("note", { facts: [] }, { "claudecode/toolUseId": "late-call" });
+    const timedOut = await tools.call("note", {}, { "claudecode/toolUseId": "late-call" });
     expect(timedOut.isError).toBe(true); expect(text(timedOut)).toContain("source-not-ready");
-    const controller = new AbortController(), pending = tools.call("note", { facts: [] }, { "claudecode/toolUseId": "cancelled-call" }, controller.signal);
+    const controller = new AbortController(), pending = tools.call("note", {}, { "claudecode/toolUseId": "cancelled-call" }, controller.signal);
     setTimeout(() => controller.abort(new DOMException("cancel", "AbortError")), 5);
     const cancelled = await pending;
     expect(cancelled.isError).toBe(true); expect(text(cancelled)).toContain("cancelled");

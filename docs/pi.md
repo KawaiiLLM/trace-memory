@@ -401,8 +401,13 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   continues in lossless Unicode-safe fragments, but a fragment is not a complete
   hit. Follow receipts: continue search with an empty query and trace with its cursor.
   See [the core search contract](core.md) for budget rejection and joining rules.
-  `note({facts})` writes facts and `memory({operations, skipped})` writes Knowledge within the
-  caller's authority. Every operation carries `supports` and a `reason`; create/update/merge also
+  Manual `note({title, sources: "[T1#E1@user] Authored text", ...})` takes one top-level
+  string of `[address] text` segments (multiline segments allowed, no preamble) and writes one fact;
+  `memory({op, supports, reason, ...})`
+  writes one Knowledge operation immediately within the caller's authority; `note({})` and
+  `memory({})` are explicit empty calls. Noter uses the same flat item fields, with its private
+  `slot`/`drop` handles; Dreamer alone keeps `{operations, skipped}` batches. Every operation
+  carries `supports` and a `reason`; create/update/merge also
   carry the revision's complete `topics` set. Consolidator permits only create; manual calls permit
   fact-backed create/archive; Dreamer alone may update, merge, split or submit support-inheriting
   maintenance operations. Main-agent executions call `tools(context)` with kind `manual` and

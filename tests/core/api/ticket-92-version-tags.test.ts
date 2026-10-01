@@ -21,9 +21,9 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "remember", assistantText: "", startedAt: "now" });
   const context = { kind: "manual" as const, sessionId: session.id, currentTurnId: turn.id, branch: "main" };
   const note = memory.tools(context).find(tool => tool.name === "note")!;
-  const fact = JSON.parse(note.execute({ facts: [{ title: "Preserve a rule", sources: [{ address: `T${turn.id}#E1`, text: "User wants to preserve a rule" }] }] })).factIds[0];
+  const fact = JSON.parse(note.execute({ title: "Preserve a rule", sources: `[T${turn.id}#E1] User wants to preserve a rule` })).factIds[0];
   const create = memory.tools(context).find(tool => tool.name === "memory")!;
-  const createdReceipt = create.execute({ operations: [{ op: "create", text: "First rule", category: "constraint", scope: "session", topics: [], reason: "initial", supports: [`F${fact}`] }], skipped: [] });
+  const createdReceipt = create.execute({ op: "create", text: "First rule", category: "constraint", scope: "session", topics: [], reason: "initial", supports: [`F${fact}`] });
   if (createdReceipt.startsWith("rejected:")) throw new Error(createdReceipt);
   const created = JSON.parse(createdReceipt);
   expect(created.committed).toHaveLength(1);
@@ -54,8 +54,7 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
   expect(pages.at(-1)).toContain(`version K${knowledgeId}#${tag}`);
   expect(pages.slice(0, -1).join("\n")).not.toContain(`#${tag}`);
   expect(pages.join("\n").match(new RegExp(`K${knowledgeId}#${tag}`, "g"))).toHaveLength(1);
-  const second = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ operations: [
-    { op: "create", text: "Second rule: " + "long body segment ".repeat(90), category: "reference", scope: "session", topics: [], reason: "second", supports: [`F${fact}`] }], skipped: [] }));
+  const second = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "create", text: "Second rule: " + "long body segment ".repeat(90), category: "reference", scope: "session", topics: [], reason: "second", supports: [`F${fact}`] }));
   const secondId = second.committed[0].knowledgeId;
   const secondVersion = `K${secondId}#${memory.store.versionTag(secondId, memory.store.resolveVersionOrdinal(secondId, 1))}`;
   const both = trace.execute({ address: `K${knowledgeId}@v1,K${second.committed[0].knowledgeId}@v1`, pageBudget: 125 });
@@ -72,11 +71,9 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
   expect(allPages.join("\n").match(new RegExp(secondVersion, "g"))).toHaveLength(1);
   expect(allPages.at(-1)).toContain(secondVersion);
   expect(() => memory.store.resolveVersionTag(knowledgeId, tag.slice(0, 3))).toThrow();
-  expect(memory.tools(context).find(tool => tool.name === "memory")!.execute({ operations: [
-    { op: "archive", kind: "budget", id: `K${knowledgeId}#xxxx`, reason: "bad", supports: [`F${fact}`] }], skipped: [] })).toContain("rejected:");
+  expect(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${knowledgeId}#xxxx`, reason: "bad", supports: [`F${fact}`] })).toContain("rejected:");
   const otherConnection = open();
-  const archived = JSON.parse(otherConnection.tools(context).find(tool => tool.name === "memory")!.execute({ operations: [
-    { op: "archive", kind: "budget", id: `K${knowledgeId}#${tag}`, reason: "retired", supports: [`F${fact}`] }], skipped: [] }));
+  const archived = JSON.parse(otherConnection.tools(context).find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${knowledgeId}#${tag}`, reason: "retired", supports: [`F${fact}`] }));
   expect(archived.committed).toHaveLength(1);
   expect(archived.committed[0]).not.toHaveProperty("commit");
   const next = memory.store.resolveVersionOrdinal(knowledgeId, Number(archived.committed[0].version.split("@v")[1]));
@@ -99,10 +96,10 @@ test("92/03: complete-body tags survive collection and history paging without le
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", assistantText: "", startedAt: "now" });
     const context = { kind: "manual" as const, sessionId: session.id, currentTurnId: turn.id, branch: "main" };
     const tools = memory.tools(context);
-    const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "A paging example", sources: [{ address: `T${turn.id}#E1`, text: "A paging example" }] }] })).factIds[0];
+    const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: "A paging example", sources: `[T${turn.id}#E1] A paging example` })).factIds[0];
     const body = "长行😀 Mixed body. ".repeat(60);
-    const receipt = JSON.parse(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: body,
-      category: "reference", scope: "project", topics: [], reason: "created", supports: [`F${fact}`] }], skipped: [] }));
+    const receipt = JSON.parse(tools.find(t => t.name === "memory")!.execute({ op: "create", text: body,
+      category: "reference", scope: "project", topics: [], reason: "created", supports: [`F${fact}`] }));
     const { knowledgeId } = receipt.committed[0];
     const version = `K${knowledgeId}#${memory.store.versionTag(knowledgeId, memory.store.resolveVersionOrdinal(knowledgeId, 1))}`;
     const trace = tools.find(t => t.name === "trace")!;
@@ -174,7 +171,7 @@ test("92/03+04: concurrent N writers serialize version metadata and convert a st
     const session = memory.store.createSession({ projectId: project.id, host: "pi:writers", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
     const fact = JSON.parse(memory.tools({ kind: "manual", sessionId: session.id, currentTurnId: turn.id, branch: "main" }).find(t => t.name === "note")!
-      .execute({ facts: [{ title: "Rule evidence", sources: [{ address: `T${turn.id}#E1`, text: "Rule evidence" }] }] })).factIds[0];
+      .execute({ title: "Rule evidence", sources: `[T${turn.id}#E1] Rule evidence` })).factIds[0];
     const content = { text: "Unchanged body", category: "constraint" as const, scope: "session" as const, topics: [], supports: [fact], reason: "revision", createdAt: "now" };
     const run = { kind: "manual" as const, sessionId: session.id, branch: "main", createdAt: "now" };
     const created = memory.store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
@@ -247,9 +244,8 @@ test("92/03: an existing collision stays stable; only the later version extends,
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "remember", assistantText: "", startedAt: "now" });
   const context = { kind: "manual" as const, sessionId: session.id, currentTurnId: turn.id, branch: "main" };
   const note = memory.tools(context).find(tool => tool.name === "note")!;
-  const fact = JSON.parse(note.execute({ facts: [{ title: "Archive a rule", sources: [{ address: `T${turn.id}#E1`, text: "Keep an archived rule" }] }] })).factIds[0];
-  const created = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ operations: [
-    { op: "create", text: "An initial body", category: "constraint", scope: "session", topics: [], reason: "initial", supports: [`F${fact}`] }], skipped: [] }));
+  const fact = JSON.parse(note.execute({ title: "Archive a rule", sources: `[T${turn.id}#E1] Keep an archived rule` })).factIds[0];
+  const created = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "create", text: "An initial body", category: "constraint", scope: "session", topics: [], reason: "initial", supports: [`F${fact}`] }));
   const { knowledgeId, version } = created.committed[0];
   const commit = memory.store.resolveVersionOrdinal(knowledgeId, Number(version.split("@v")[1]));
   const expectedNext = commit + 1;
@@ -260,8 +256,7 @@ test("92/03: an existing collision stays stable; only the later version extends,
   // Force a real unique-index collision; don't monkeypatch the production tag generator.
   memory.store.db.prepare("UPDATE knowledge_version_tags SET tag = ? WHERE knowledge_id = ? AND commit_id = ?")
     .run(occupiedTag, knowledgeId, commit);
-  const result = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ operations: [
-    { op: "archive", kind: "budget", id: `K${knowledgeId}#${occupiedTag}`, reason: "archive", supports: [`F${fact}`] }], skipped: [] }));
+  const result = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${knowledgeId}#${occupiedTag}`, reason: "archive", supports: [`F${fact}`] }));
   const later = memory.store.resolveVersionOrdinal(knowledgeId, Number(result.committed[0].version.split("@v")[1]));
   expect(memory.store.versionTag(knowledgeId, commit)).toBe(occupiedTag);
   expect(memory.store.versionTag(knowledgeId, later)).toBe(sequence.padStart(55, "a").slice(0, 5));

@@ -19,8 +19,8 @@ function fixture(native = true) {
     input.reportRequest({ material: input.text });
     if (input.kind !== "noting") throw new Error("unexpected Dreaming");
     inputs.push(input);
-    input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    input.tools.find(tool => tool.name === "note")!.execute({});
+    input.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "done", request: { material: input.text } };
   });
   memories.push(memory);
@@ -146,7 +146,7 @@ test("ticket92material native prefix uses path position, rejects empty/corrupt/s
   const order = [all[0]!.id, all[2]!.id, all[1]!.id];
   f.memory.selectEntries(f.session.id, "main", order);
   const note = f.memory.tools({ kind: "manual", ...f.target, currentTurnId: f.turn.id }).find(tool => tool.name === "note")!;
-  const laterFact = JSON.parse(note.execute({ facts: [{ title: "Later source", sources: [{ address: `T${f.turn.id}#E2`, text: "later source must not leak" }] }] })).factIds[0];
+  const laterFact = JSON.parse(note.execute({ title: "Later source", sources: `[T${f.turn.id}#E2] later source must not leak` })).factIds[0];
   const read = readFacade(f.store, f.memory.config);
   const result = read.compact(f.session.id, "main", f.turn.id, [], false, { endpointEntryId: all[2]!.id, processedRawRefill: false });
   if ("native" in result) throw new Error("unexpected fallback");

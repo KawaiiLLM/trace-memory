@@ -97,8 +97,7 @@ test("26b/92: every N launch path freezes the same level — automatic work, a f
     h.setThinkingLevel("high");
     await h.turn(); // allocates the session; this case explicitly configures fork mode
     const tail = closedTail(h.memory);
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { category: "observation", actor: "user", text: "Own claim", source: ["T1#user"] }] });
+    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ title: "Own claim", sources: "[T1#E1] Own claim" });
     h.provider(async c => notingFact(c));
     await h.prompt("eligible main turn"); await h.answer("word ".repeat(3000)); await settle(h);
     await h.turn(); await settle(h); // a small own backlog lets this turn borrow the closed tail
@@ -206,8 +205,7 @@ test("26d/92: every N subagent path takes its configured level — explicit suba
     h.setThinkingLevel("off"); // the foreground level, which `inherit` would have used
     await h.turn();
     const tail = closedTail(h.memory);
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
-      { category: "observation", actor: "user", text: "Own claim", source: ["T1#user"] }] });
+    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ title: "Own claim", sources: "[T1#E1] Own claim" });
     h.provider(async c => notingFact(c));
     await h.prompt("eligible main turn"); await h.answer("word ".repeat(3000)); await settle(h);
     await h.turn(); await settle(h); // a small own backlog lets this turn borrow the closed tail

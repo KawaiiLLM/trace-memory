@@ -164,8 +164,8 @@ test("host tool maps match registered MCP names and rendered tool descriptions",
     const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: source.turn.id,
       toolNames: ccPluginToolNames });
     for (const tool of tools) expect(tool.description).toBe(listed.find(registered => registered.name === tool.name)!.description);
-    expect(tools.find(tool => tool.name === "note")!.execute({})).toContain(`${ccPluginToolNames.note} expects`);
-    expect(tools.find(tool => tool.name === "memory")!.execute({})).toContain(`${ccPluginToolNames.memory} expects`);
+    expect(tools.find(tool => tool.name === "note")!.execute({ title: "Incomplete" })).toContain("rejected:");
+    expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create" })).toContain("rejected:");
   } finally { memory.close(); }
 });
 
@@ -676,9 +676,9 @@ test("production MCP preserves non-default trace and search cursors through real
         page = await call(`search-${id}`, `search-${id}`, "search", { cursor });
       }
       yield assistant(`note-${++id}`, [`note-${id}`]);
-      await call(`note-${id}`, `note-${id}`, "note", { facts: [] });
+      await call(`note-${id}`, `note-${id}`, "note", {});
       yield assistant(`memory-${++id}`, [`memory-${id}`]);
-      await call(`memory-${id}`, `memory-${id}`, "memory", { operations: [], skipped: [] });
+      await call(`memory-${id}`, `memory-${id}`, "memory", {});
       yield { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: id,
         usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 5, cache_creation_input_tokens: 3 },
         modelUsage: {}, total_cost_usd: 0.125 };
@@ -714,8 +714,8 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const receipts: string[] = [];
-  const valid = { operations: [{ op: "create", text: "Durable CC conclusion", category: "reference", scope: "project",
-    topics: ["cc"], supports: ["F1"], reason: "New durable conclusion." }], skipped: [] };
+  const valid = { op: "create", text: "Durable CC conclusion", category: "reference", scope: "project",
+    topics: ["cc"], supports: ["F1"], reason: "New durable conclusion." };
   const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
     const stream = (async function* () {
       const prompts = request.prompt[Symbol.asyncIterator]();
@@ -732,7 +732,7 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
         expect(exposed.find(name => name.endsWith(`__${role}`))).toBe(ccWorkerToolNames[role]);
         expect(tool.description).not.toContain("{{tool.");
       }
-      const memorySchema = (listed.tools.find(tool => tool.name === "memory") as any).inputSchema.properties.operations.items;
+      const memorySchema = (listed.tools.find(tool => tool.name === "memory") as any).inputSchema;
       // Joint N creates/updates/archives. Invalid replacement is corrected by its stable slot.
       expect(memorySchema.properties.op.enum).toEqual(["create", "update", "archive"]);
       expect(listed.tools.find(tool => tool.name === "memory")!.inputSchema)
@@ -744,11 +744,11 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
       const submit = async function* (arguments_: Record<string, unknown>) {
         const id = `memory-${++ordinal}`;
         yield assistant(id, ordinal === 1 ? ["note-empty", id] : [id]);
-        if (ordinal === 1) await client.callTool({ name: "note", arguments: { facts: [] }, _meta: { "claudecode/toolUseId": "note-empty" } });
+        if (ordinal === 1) await client.callTool({ name: "note", arguments: {}, _meta: { "claudecode/toolUseId": "note-empty" } });
         const result = await client.callTool({ name: "memory", arguments: arguments_, _meta: { "claudecode/toolUseId": id } });
         receipts.push((result.content as { type: string; text: string }[])[0]!.text);
       };
-      if (invalidFirst) yield* submit({ operations: [{ ...valid.operations[0], id: "K1#abcd" }], skipped: [] });
+      if (invalidFirst) yield* submit({ ...valid, id: "K1#abcd" });
       else yield* submit(valid);
       expect(memory.store.currentKnowledge()).toHaveLength(0); // held, not a partial publication
       const result = { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: ordinal,
@@ -760,7 +760,7 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
       expect(review.message.content[0].text).toContain("Before publication, review this run once.");
       if (invalidFirst) {
         expect(review.message.content[0].text).toContain("M1:");
-        yield* submit({ operations: [{ ...valid.operations[0], slot: "M1" }], skipped: [] });
+        yield* submit({ ...valid, slot: "M1" });
       } else expect(review.message.content[0].text).toContain("Blockers:\nNone.");
       expect(memory.store.currentKnowledge()).toHaveLength(0);
       yield { ...result, num_turns: invalidFirst ? ordinal : 0 };
@@ -830,7 +830,7 @@ test("production protocol aborts remain failures while external cancellation sta
         const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
         await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
         client = new Client({ name: "protocol-worker-test", version: "1" }); await client.connect(clientTransport);
-        try { await client.callTool({ name: "note", arguments: { facts: [] } }); } catch {}
+        try { await client.callTool({ name: "note", arguments: {} }); } catch {}
         expect(nativeSignal.aborted).toBe(true);
         throw new DOMException("Claude Code process aborted by user", "AbortError");
       } finally { await client?.close(); }
@@ -1163,10 +1163,9 @@ test("scheduler reserves independent N/D slots and failed worker completion does
     startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
   const seed = append(memory, session.id, "seed", "A pending raw source.");
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: seed.turn.id });
-  expect(manual.find(value => value.name === "note")!.execute({ facts: [{
-    title: "Pending fact", sources: [{ address: `T${seed.turn.id}#E1`, text: "A separate pending fact." }] }] })).toContain("ok: F1");
-  expect(manual.find(value => value.name === "memory")!.execute({ operations: [{ op: "create", text: "Pending maintenance", category: "constraint",
-    scope: "session", topics: [], supports: ["F1"], reason: "Seed D pool" }], skipped: [] })).not.toContain("rejected:");
+  expect(manual.find(value => value.name === "note")!.execute({ title: "Pending fact", sources: `[T${seed.turn.id}#E1] A separate pending fact.` })).toContain("ok: F1");
+  expect(manual.find(value => value.name === "memory")!.execute({ op: "create", text: "Pending maintenance", category: "constraint",
+    scope: "session", topics: [], supports: ["F1"], reason: "Seed D pool" })).not.toContain("rejected:");
   const diagnostics: string[] = [], notingAdmission = vi.spyOn(memory, "noting"), dreamingAdmission = vi.spyOn(memory, "dream");
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, message => diagnostics.push(message));
   const reconcile = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: seed.turn.id,
@@ -1217,10 +1216,11 @@ test("manual catchup drains bounded Noting but leaves below-threshold facts and 
     expect(input.kind).toBe("noting");
     admissions.push({ kind: input.kind, model: input.model, thinking: input.subagentThinkingLevel });
     if (input.kind === "noting") {
-      const facts = input.material.entries.map((entry, index) => ({ title: `Catchup item ${entry.id}`, sources: [{ address: entry.view.match(/\[T\d+#E\d+/)![0].slice(1), text: `Observed catchup item ${entry.id}.` }] }));
-      const note = input.tools.find(tool => tool.name === "note")!, batch = { facts };
-      note.execute(batch);
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+      const facts = input.material.entries.map((entry, index) => ({ title: `Catchup item ${entry.id}`, sources: `${entry.view.match(/\[T\d+#E\d+/)![0]}] Observed catchup item ${entry.id}.` }));
+      const note = input.tools.find(tool => tool.name === "note")!;
+      for (const fact of facts) note.execute(fact);
+      if (!facts.length) note.execute({});
+      input.tools.find(tool => tool.name === "memory")!.execute({});
     }
     return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
   }, { noting: { triggerTokens: 1_000_000, batchTokens: 150 } });
@@ -1261,12 +1261,12 @@ test("86: a bounced N retries the frozen entry before checking other phases afte
     expect(input.kind).toBe("noting");
     const note = input.tools.find(tool => tool.name === "note")!;
     if (++attempts === 1) {
-      expect(note.execute({ facts: [{ title: "Rejected source", sources: [{ address: "T99999#E1", text: "Rejected." }] }] })).toContain("rejected:");
+      expect(note.execute({ title: "Rejected source", sources: "[T99999#E1] Rejected." })).toContain("rejected:");
     } else {
       expect(attempts).toBe(2);
-      expect(note.execute({ facts: [] })).toContain('"held"');
+      expect(note.execute({})).toContain('"held"');
     }
-    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    input.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
   }, { noting: { triggerTokens: 1_000_000 } });
   const project = memory.store.createProject({ name: "fixed-n", declaredBy: "mark" });
@@ -1297,10 +1297,9 @@ test("86: rejected uncorrected N submissions bounce and retry without C/D checks
     expect(input.kind).toBe("noting");
     attempts++;
     if (attempts > 3) throw new Error("N retried beyond automatic off");
-    const result = input.tools.find(tool => tool.name === "note")!.execute({ facts: [{
-      title: "Rejected source", sources: [{ address: "T99999#E1", text: "Rejected source." }] }] });
+    const result = input.tools.find(tool => tool.name === "note")!.execute({ title: "Rejected source", sources: "[T99999#E1] Rejected source." });
     expect(result).toContain("rejected:");
-    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    input.tools.find(tool => tool.name === "memory")!.execute({});
     // The worker ends without correcting this rejected tool call.
     return { outcome: "success", output: "I will not correct it.", audit: { available: false, reason: "test" } };
   }, { noting: { triggerTokens: 1_000_000 } });
@@ -1334,9 +1333,9 @@ test("92: catchup retries failed N without publishing held facts or knowledge tw
     expect(memory.store.listSessionFacts(input.sessionId)).toEqual([]);
     expect(memory.store.currentKnowledge()).toEqual([]);
     const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
-    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Durable evidence", sources: [{ address: source, text: "Durable evidence" }] }] })).toContain("held");
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text: "Durable reference", category: "reference",
-      scope: "session", topics: [], supports: ["$1"], reason: "Supported" }], skipped: [] })).toContain("held");
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ title: "Durable evidence", sources: `[${source}] Durable evidence` })).toContain("held");
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ op: "create", text: "Durable reference", category: "reference",
+      scope: "session", topics: [], supports: ["$1"], reason: "Supported" })).toContain("held");
     return { outcome: attempts === 1 ? "failure" : "success", output: "terminal", audit: { available: false, reason: "test" } };
   }, { noting: { triggerTokens: 1_000_000 } });
   const project = memory.store.createProject({ name: "atomic-n", declaredBy: "mark" });
@@ -1388,8 +1387,8 @@ test("92: stop discards held N output; restart processes the same pending Raw at
     const input = raw as NotingAgentInput;
     expect(input.kind).toBe("noting");
     const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
-    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Held fact", sources: [{ address: source, text: "Held until terminal success" }] }] })).toContain('"held"');
-    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ title: "Held fact", sources: `[${source}] Held until terminal success` })).toContain('"held"');
+    input.tools.find(tool => tool.name === "memory")!.execute({});
     if (++attempts === 1) {
       noted();
       await new Promise<void>(resolve => input.signal!.addEventListener("abort", () => resolve(), { once: true }));
@@ -1570,8 +1569,8 @@ test("scheduler borrows an eligible closed target only at the executor turn end"
   const targets: number[] = [], admissions: NotingAgentInput[] = [];
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
     const task = raw as NotingAgentInput; targets.push(task.sessionId); admissions.push(task);
-    task.tools.find(value => value.name === "note")!.execute({ facts: [] });
-    task.tools.find(value => value.name === "memory")!.execute({ operations: [], skipped: [] });
+    task.tools.find(value => value.name === "note")!.execute({});
+    task.tools.find(value => value.name === "memory")!.execute({});
     return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
   }, { noting: { triggerTokens: 20 }, closedSessionScope: "project" });
   const project = memory.store.createProject({ name: "borrow", declaredBy: "mark" });

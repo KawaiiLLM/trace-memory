@@ -15,9 +15,9 @@ function host(...args: Parameters<typeof createHost>) {
 }
 function seedKnowledge(h: ReturnType<typeof host>) {
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Package choice", sources: [{ address: "T1#E1", text: "Use pnpm" }] }] })).toContain("ok: F1");
-  expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: "Use pnpm", category: "constraint",
-    scope: "session", supports: ["F1"], topics: [], reason: "Rule" }], skipped: [] })).not.toContain("rejected:");
+  expect(tools.find(t => t.name === "note")!.execute({ title: "Package choice", sources: "[T1#E1] Use pnpm" })).toContain("ok: F1");
+  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", text: "Use pnpm", category: "constraint",
+    scope: "session", supports: ["F1"], topics: [], reason: "Rule" })).not.toContain("rejected:");
 }
 const skip = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "m1", name: "memory",
   arguments: { operations: [], skipped: [{ knowledge: "K1@v1", because: "Reviewed unchanged" }] } }] });
@@ -156,7 +156,7 @@ test("installed Pi SDK settles a cancelled turn once and checks again on the nex
     await vi.waitFor(() => expect(observer.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(1));
     const earlier = events.length;
     const pending = f.session.prompt("hold the provider " + "word ".repeat(400));
-    await vi.waitFor(() => expect(f.sent.length).toBeGreaterThan(2));
+    await vi.waitFor(() => expect(typeof release).toBe("function")); // review traffic is not the held main provider
     await f.session.abort();
     release();
     await pending.catch(() => {}); // SDK may reject an aborted prompt; the terminal event is authoritative.

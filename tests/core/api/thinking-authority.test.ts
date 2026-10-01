@@ -3,7 +3,7 @@ import { TraceMemory } from "../../../src/core/api/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { resolveFactSource, sourceAddresses } from "../../../src/core/model/source.ts";
 import { renderEntryIndex } from "../../../src/core/render/index.ts";
-import { legacyFacts } from "../../support/seed.ts";
+import { factSources, legacyFacts } from "../../support/seed.ts";
 
 function fixture() {
   const m = TraceMemory(":memory:", async () => { throw Error("offline only"); }, {}, undefined, piSourceBlocks);
@@ -24,12 +24,12 @@ for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} reject
     const tools = f.m.tools(kind === "manual" ? { kind, sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }
       : { kind, sessionId: f.sessionId, branch: "main", entryIds: f.entries.map(e => e.id), range: { from: "S1/T1", to: "S1/T1" } });
     const note = tools.find(t => t.name === "note")!, trace = tools.find(t => t.name === "trace")!;
-    const fact = (address: string) => ({ title: "Evidence check", sources: [{ address, text: "An observation" }] });
-    expect(note.execute({ facts: [fact("T1#E2"), fact("T1#E1")] })).toContain("invalid source");
+    const fact = (address: string) => ({ title: "Evidence check", sources: `[${address}] An observation` });
+    expect(note.execute(fact("T1#E1"))).toContain("invalid source");
     expect(f.m.store.listTurnFacts(1)).toHaveLength(0);
     expect(f.m.store.entryNoted(f.pure.id)).toBe(false);
     for (const address of ["T1#E1@thinking", "T1#E2@thinking"])
-      expect(note.execute({ facts: [fact(address)] })).toContain("rejected:");
+      expect(note.execute(fact(address))).toContain("rejected:");
     expect(trace.execute({ address: "T1#E1" })).toContain("Private inference");
     expect(trace.execute({ address: "T1#E2@assistant" })).toContain("Private inference");
     expect(trace.execute({ address: "T1", full: true })).toContain("Private inference");
@@ -39,10 +39,10 @@ for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} reject
     expect(renderEntryIndex(f.pure)).toContain("[T1#E1@assistant]");
     expect(renderEntryIndex(f.mixed)).not.toContain("thinking");
     expect(resolveFactSource(f.entries, "T1#E2")[0]!.blocks.map(b => b.kind)).toEqual(["text", "call"]);
-    const accepted = note.execute({ facts: [fact("T1#E2"), fact("T1#E3"), { title: "Mixed evidence", sources: [
-      { address: "T1#E2", text: "Public explanation" }, { address: "T1#E3", text: "Passed" }] }] });
-    if (kind === "manual") expect(JSON.parse(accepted).factIds).toHaveLength(3);
-    else expect(accepted).toContain("held");
+    const accepted = [fact("T1#E2"), fact("T1#E3"), { title: "Mixed evidence", sources: factSources([
+      { address: "T1#E2", text: "Public explanation" }, { address: "T1#E3", text: "Passed" }]) }].map(item => note.execute(item));
+    if (kind === "manual") expect(accepted.map(receipt => JSON.parse(receipt).factIds).flat()).toHaveLength(3);
+    else accepted.forEach(receipt => expect(receipt).toContain("held"));
   } finally { f.m.close(); }
 });
 

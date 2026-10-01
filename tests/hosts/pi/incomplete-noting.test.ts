@@ -30,14 +30,14 @@ test.each(["note", "memory"] as const)("92: an explicit %s-only worker ends with
   try {
     let requests = 0;
     h.provider(async c => {
-      if (++requests > 2) throw new Error("single-tool failure script repeated a request");
+      if (++requests > 3) throw new Error("single-tool failure script repeated a request");
       if (c.messages.some(message => message.role === "toolResult")) return reply("Done.");
       const arguments_: JsonObject = name === "note"
-        ? { facts: [{ title: "Package choice", sources: [{ address: "T1#E1", text: "User prefers pnpm" }] }] } : { operations: [], skipped: [] };
+        ? { title: "Package choice", sources: "[T1#E1] User prefers pnpm" } : {};
       return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `only-${name}`, name, arguments: arguments_ }] };
     }, { autoStop: false });
     await h.turn();
-    expect(requests).toBe(2);
+    expect(requests).toBe(3);
     const run = notingRuns(h)[0]!;
     expect(run.outcome).toBe("failure");
     expect(JSON.parse(run.response!).problems).toEqual([NOTING_INCOMPLETE]);
@@ -117,8 +117,7 @@ test("32c replaces 26a: off preserves committed facts and reads, blocks both pha
   try {
     silent(h); await h.turn();
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(tools.find(t => t.name === "note")!.execute({ facts: [
-      { title: "Retained claim", sources: [{ address: "T1#E1", text: "Retained claim" }] }] })).toContain("ok: F1");
+    expect(tools.find(t => t.name === "note")!.execute({ title: "Retained claim", sources: "[T1#E1] Retained claim" })).toContain("ok: F1");
     await tick(h); await tick(h);
     expect(disabled(h)).toHaveLength(1);
     expect(tools.find(t => t.name === "trace")!.execute({ address: "F1" })).toContain("Retained claim");
@@ -165,7 +164,7 @@ test("32c replaces 26a: real native fork children disable on the third incomplet
     await f.turn("disabled opportunity " + "word ".repeat(400));
     expect(notingRuns(f.h)).toHaveLength(3);
     await command(f.h, "on");
-    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", { facts: [] }));
+    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", {}));
     await f.turn("enabled opportunity " + "word ".repeat(400));
     await vi.waitFor(() => expect(notingRuns(f.h).filter(r => r.outcome === "success")).toHaveLength(1), { timeout: 5000 });
   } finally { await f.dispose(); }

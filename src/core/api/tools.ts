@@ -21,9 +21,8 @@ type Reads = { traceRead(address: string, options?: ListingOptions): TraceRead;
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 const string = { type: "string" };
 const relation = { type: "array", items: { type: "array", prefixItems: [{ type: "string", pattern: "^(F[1-9][0-9]*|\\$[1-9][0-9]*)$" }, { enum: ["strong", "weak"] }], minItems: 2, maxItems: 2 } };
-const factSchema = object({ slot: { type: "string", pattern: "^\\$[1-9][0-9]*$", description: "N only: completely replace this held fact slot." },
-  title: { type: "string", minLength: 1, pattern: "^[^\\r\\n\\u2028\\u2029]+$" },
-  sources: { type: "array", minItems: 1, items: object({ address: { type: "string", pattern: "^T[1-9][0-9]*#E[1-9][0-9]*(?:@(user|assistant|observation))?$" }, text: { type: "string", minLength: 1 } }, ["address", "text"]) },
+const factSchema = object({ title: { type: "string", minLength: 1, pattern: "^[^\\r\\n\\u2028\\u2029]+$" },
+  sources: { type: "string", minLength: 1, description: "Source segments as lines beginning [T12#E3@user] followed by a space and authored text. Each segment continues across lines up to the next marker; no text before the first marker." },
   support: relation, negate: relation }, ["title", "sources"]);
 const pagination = { cursor: string, cap: { type: "integer", minimum: 1 } };
 const contentBudget = { anyOf: [{ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { type: "null" }] };
@@ -36,7 +35,6 @@ const readFilters = { versions: { enum: READ_VERSIONS, default: "current", descr
 const factId = { type: "string", pattern: "^F[1-9][0-9]*$" };
 const knowledgeId = { type: "string", pattern: "^K[1-9][0-9]*#[a-z]{4,}$" };
 const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "archive"] }, id: knowledgeId,
-  slot: { type: "string", pattern: "^M[1-9][0-9]*$", description: "N only: completely replace this held operation." },
   absorb: { type: "array", items: knowledgeId, minItems: 1, maxItems: 1, uniqueItems: true }, kind: { enum: ["budget", "invalid"] }, text: { type: "string", minLength: 1 },
   category: { enum: KNOWLEDGE_CATEGORIES }, scope: { enum: KNOWLEDGE_SCOPES }, supports: { type: "array", items: { type: "string", pattern: "^(F[1-9][0-9]*|\\$[1-9][0-9]*)$", description: "Existing F fact, or N-only accepted local $ fact." }, minItems: 1 },
   reason: { type: "string", minLength: 1 }, topics: { type: "array", items: { type: "string", minLength: 1 } } }, ["op", "supports", "reason"]), allOf: [
@@ -51,8 +49,11 @@ const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "ar
 export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
   { name: "trace", description: "Read evidence by address. For a complete knowledge version include text (the default) and use {{tool.trace}}({address:'K12@v3',itemBudget:null}); pageBudget still applies. A complete body carries its exact K#tag version for writes; a preview, notice or incomplete page does not. T792 is a Turn; T792#E2 is its stable native entry; T792 shows contributing facts, unprocessed Raw, and addresses of processed uncited entries. T792#E2 and T792#E2..E7 show Raw (gaps allowed); @user/@assistant/@observation filter entries by role, including exact-entry role checks. Thinking, tool calls, results and IDs remain within their whole assistant/observation entry, never selectable blocks. Commas separate complete independent addresses; no shorthand or trailing shared selector. itemBudget caps EACH child of the selected container (Turn: entries; one entry: blocks), default 2000; toolCallBudget and toolResultBudget default 100 as additional ceilings. null disables each content ceiling independently; to remove all compression set ALL THREE to null. pageBudget independently defaults to 2000 and is capped at 8000 for every public {{tool.trace}} read. fields defaults to text, supports, topics, status and links for current/exact reads; explicit K history/all additionally default to reason, which appears only on history commit lines. Knowledge identity, exact tagged version, and per-identity history: K1, K1#qfzt, K1@v3, K1@v2..v5. Bare K defaults to one current representative in the reader's context; explicitly named K with versions=history adds applicable superseded and archived revisions, while versions=all additionally adds other branches' revisions, including their history and archives; revisions not applicable here are never write bases. Search and project collections always show one representative per K, selected before paging. Named S reads only that session's Raw. Named projects read that project's facts plus global/project knowledge; scope narrows knowledge and never widens facts. A named project rejects scope=session. Scope never filters knowledge by its author's project when the revision is global. Exact K#tag, history diffs, F and T addresses ignore data filters and remain unrestricted. One address may list several, comma separated, in the order asked and repeats kept: F81,F90,F95, kinds mixable. Fact intervals, negation walks and all-branch K.. are not public addresses. Each page is at most 2000 estimated tokens by default, including receipts; cap counts output lines (default 100). full removes content compression, not pagination. Oversized lines continue in lossless fragments (see receipts). cursor continues that same frozen read alone, retaining its token budget.", parameters: object({ address: string, ...readFilters, fields, ...budgets, full: { type: "boolean" }, ...pagination }, ["address"]) },
   { name: "search", description: `Use literal substring search over facts, raw and knowledge commits. scope controls facts, Raw and knowledge: session selects this session's facts/Raw and session-scoped knowledge; project selects project facts/Raw and project-scoped knowledge; global selects all sessions' facts/Raw and global-scoped knowledge regardless of author. Omitted scope selects project facts/Raw and applicable global/project/session knowledge; unbound omission discovers all owners. Explicit project/session requires context. versions defaults to current applicable tips; history additionally includes applicable superseded and archived revisions; all additionally includes other branches' revisions in scope, including their history and archives. Revisions not applicable here are never write bases, and reading never bypasses write validation. Each K contributes one best matching revision: highest lexical text/topic similarity, then current, then newer commit. Admission stays literal. The batched form selects each query's capped knowledge hits by similarity so cap keeps the closest match; model-visible knowledge results then display oldest first, retaining category labels. Inspect a K's history through {{tool.trace}}. Only category implies layer=knowledge and conflicts with every other layer; scope does not imply a layer. Fact and knowledge hits are one-line previews: fields defaults to text for current searches and to text plus status for knowledge history/all; explicit fields is authoritative. itemBudget defaults to ${SEARCH_PREVIEW_TOKENS}; fact quote/source/relations require {{tool.trace}}. Raw keeps its entry profile. Exact addresses remain unrestricted through {{tool.trace}}. Every receipt states filters and omitted preview fields; no hit does not mean absent. maxTokens defaults to ${DEFAULT_READ_TOKENS} and is capped at ${MAX_PUBLIC_READ_TOKENS} estimated tokens for one response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit frozen options or repeat their original values (changes are rejected). Search previews never count as complete knowledge reads.`, parameters: { ...object({ maxTokens: { type: "integer", minimum: 1, maximum: MAX_PUBLIC_READ_TOKENS, default: DEFAULT_READ_TOKENS }, itemBudget: { ...contentBudget, default: SEARCH_PREVIEW_TOKENS }, fields, query: string, queries: { type: "array", items: string, minItems: 1, description: "Batched form, exclusive with query: one response, each query's own hits under the shared options, at most cap per query (default 1), the query echoed on each hit line, queries with no hit listed as `no hit: \"q\"` lines after the hits and paged like them; a cursor may repeat the original cap." }, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...readFilters, ...pagination }) } },
-  { name: "note", description: "Write each topic's episodic slice with a nonempty single-line title and nonempty sources [{address,text}]. Give each contributing whole native entry (T12#E3, optionally @user/@assistant/@observation) its own segment; Core orders segments by path and joins their texts as the body. End a slice at a topic pivot, batch end or body cap; preserve the reasoning arc and name the actual harness in agent segments. Do not put later interpretations in an earlier source or tool-result segment. Block selectors and fact-level text are not allowed. No model-supplied category, status, quote or actor. Thinking alone is not evidence. Relations are optional; manual $ references name earlier facts in this call, N $ references name accepted earlier stable slots. Manual calls commit immediately and reject slot/drop. N calls hold privately until normal terminal publication: omit slot to append, slot:$n completely replaces including a rejected item, drop:[$n] removes only unreferenced slots. Failed replacement invalidates the prior value; numbers never recycle; accepted siblings survive. Empty facts confirms use, never clears drafts or rejected slots. Receipts list held/rejected handles, including after a native schema refusal; an empty call inspects them. A valid call clears top-level call errors only. Both {{tool.note}} and {{tool.memory}} are required in N.", parameters: object({ facts: { type: "array", items: factSchema }, drop: { type: "array", items: { type: "string", pattern: "^\\$[1-9][0-9]*$" }, description: "N only: drop unreferenced held fact slots." } }, ["facts"]) },
-  { name: "memory", description: "Role-bound knowledge writing. Manual writers may create/archive only and commit a valid batch immediately; rejected batches write nothing and require whole-batch correction. N holds create/update/archive privately until normal termination with both {{tool.note}} and {{tool.memory}} used and every refusal resolved. Merge/split remain D-only. N-only fields: operation slot:Mn fully replaces a held operation; omit it to append; drop:[Mn] removes without recycling numbers; supports may cite accepted local $ fact slots. Manual writers reject slot/drop/local knowledge supports with a reason and have no drafts. N always supplies skipped:[]; empty operations confirms use without clearing drafts or rejected slots. A legitimately advanced tagged base converts N update to annotated create or archive to an audited no-op; other errors do not convert. Update/archive requires exact K#tag. Every operation has nonempty fact supports and reason (commit message, not evidence). Create/update supplies complete text/category/scope/topics; archive requires kind budget (retains exact parent body) or invalid (requires substantive text explaining grounds, evidence and replacement if any). Archive inherits category/scope/topics. Tagged bases still require valid scope, path and evidence. N receipts list held/rejected handles; after native schema refusal an empty call inspects them.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) }, drop: { type: "array", items: { type: "string", pattern: "^M[1-9][0-9]*$" }, description: "N only: drop held knowledge-operation slots." } }, ["operations", "skipped"]) },
+  { name: "note", description: "Write one topic's episodic slice with a nonempty single-line title and one top-level sources string: each segment starts on a line with [T12#E3@user] and a space (role suffix optional), followed by authored text until the next marker. No text may precede the first marker. Give each contributing whole native entry its own segment; Core orders segments by path and joins their texts as the body. End a slice at a topic pivot, batch end or body cap; preserve the reasoning arc and name the actual harness in agent segments. Do not put later interpretations in an earlier source or tool-result segment. Block selectors and fact-level text are not allowed. No model-supplied category, status, quote or actor. Thinking alone is not evidence. Relations are optional; manual calls cite existing F facts, N $ references name accepted earlier stable slots. Manual calls commit one fact immediately and reject slot/drop. N calls hold privately until normal terminal publication: omit slot to append, slot:$n completely replaces including a rejected item, drop:$n removes only an unreferenced slot in its own call. Failed replacement invalidates the prior value; numbers never recycle; accepted siblings survive. An empty call {} confirms use, never clears drafts or rejected slots. Receipts list held/rejected handles, including after a native schema refusal; an empty call inspects them. A valid call clears top-level call errors only. Both {{tool.note}} and {{tool.memory}} are required in N.", parameters: { ...object({ ...(factSchema.properties as Record<string, unknown>), slot: { type: "string", pattern: "^\\$[1-9][0-9]*$", description: "N only: replace one held fact." }, drop: { type: "string", pattern: "^\\$[1-9][0-9]*$", description: "N only: drop one unreferenced held fact in a separate call." } }),
+    anyOf: [{ maxProperties: 0 }, { required: ["drop"], maxProperties: 1 }, { required: factSchema.required, not: { required: ["drop"] } }] } },
+  { name: "memory", description: "Role-bound knowledge writing. Manual writers may create/archive only and commit one valid operation immediately; rejected calls write nothing. N holds create/update/archive privately until normal termination with both {{tool.note}} and {{tool.memory}} used and every refusal resolved. Merge/split remain D-only. N-only fields: operation slot:Mn fully replaces a held operation; omit it to append; drop:Mn removes one in a separate call without recycling numbers; supports may cite accepted local $ fact slots. Manual writers reject slot/drop/local knowledge supports with a reason and have no drafts. N does not send skipped; an empty call {} confirms use without clearing drafts or rejected slots. A legitimately advanced tagged base converts N update to annotated create or archive to an audited no-op; other errors do not convert. Update/archive requires exact K#tag. Every operation has nonempty fact supports and reason (commit message, not evidence). Create/update supplies complete text/category/scope/topics; archive requires kind budget (retains exact parent body) or invalid (requires substantive text explaining grounds, evidence and replacement if any). Archive inherits category/scope/topics. Tagged bases still require valid scope, path and evidence. N receipts list held/rejected handles; after native schema refusal an empty call inspects them.", parameters: { ...object({ ...(memoryOperationSchema.properties as Record<string, unknown>), slot: { type: "string", pattern: "^M[1-9][0-9]*$", description: "N only: replace one held operation." }, drop: { type: "string", pattern: "^M[1-9][0-9]*$", description: "N only: drop one held operation in a separate call." } }),
+    anyOf: [{ maxProperties: 0 }, { required: ["drop"], maxProperties: 1 },
+      { required: memoryOperationSchema.required, not: { required: ["drop"] }, allOf: memoryOperationSchema.allOf }] } },
 ];
 
 export function renderToolDefinitions(definitions: readonly Omit<ToolDefinition, "execute">[], names: ToolNames) {
@@ -69,13 +70,13 @@ export function dreamingToolDefinitions(): Omit<ToolDefinition, "execute">[] {
   const tools = structuredClone(toolDefinitions.filter(t => t.name !== "note"));
   const memory = tools.find(t => t.name === "memory")!;
   memory.description = "Apply one atomic Dreamer maintenance batch immediately. Allowed operations are update, an exactly-two-parent merge, an atomic one-parent/two-child split, and archive; create is forbidden. Every result body is complete. Merge may omit text to copy the later exact parent's body verbatim. Non-empty supports are the exact evidence for the change; empty supports request Store-side inheritance from every exact parent. Every parent requires an exact K#tag base and must belong to this run's frozen owner pool. A base that is not the latest effective applicable revision on the writer path is rejected naming the current revision. skipped uses an exact untagged K@vN history address for a frozen version that was deliberated and intentionally left unchanged; it requires no full-body read and grants no mutation authority; it marks that version processed without changing it. Never skip an untouched reference or an item you did not deliberate. Archive requires kind budget (keeps parent's complete body) or invalid (substantive statement of grounds, evidence and replacement if any); category/scope/topics carry over. Earlier valid batches survive later failure.";
+  memory.parameters = object({ operations: { type: "array", items: structuredClone(memoryOperationSchema) },
+    skipped: { type: "array", items: object({ knowledge: { type: "string", pattern: "^K[1-9][0-9]*@v[1-9][0-9]*$" }, because: { type: "string", minLength: 1 } }, ["knowledge", "because"]) } }, ["operations", "skipped"]);
   const operation = (memory.parameters.properties as any).operations.items;
   operation.properties.op.enum = ["update", "merge", "split", "archive"];
   operation.properties.supports.minItems = 0;
   operation.properties.supports.items = factId;
-  delete operation.properties.slot;
-  delete (memory.parameters.properties as any).drop;
-  (memory.parameters.properties as any).skipped.items = object({ knowledge: { type: "string", pattern: "^K[1-9][0-9]*@v[1-9][0-9]*$" }, because: { type: "string", minLength: 1 } }, ["knowledge", "because"]);
+
   operation.properties.children = { type: "array", minItems: 2, maxItems: 2, items: object({
     text: { type: "string", minLength: 1 }, category: { enum: KNOWLEDGE_CATEGORIES },
     topics: { type: "array", items: { type: "string", minLength: 1 } },
@@ -115,8 +116,8 @@ export function validateReadInput(name: "trace" | "search", raw: unknown): Recor
 }
 
 /** The model-facing result format, read back. A tool result is a refusal when it is a `rejected:`
- * receipt, and a batch writer's JSON `results` array carries one per item — both spellings are
- * produced in this file. Every consumer that must classify a result rather than show it (either Pi
+ * receipt, and a writer's JSON `results` array carries one result per call (D may batch) — both
+ * spellings are produced in this file. Every consumer that must classify a result rather than show it (either Pi
  * adapter deciding whether a call committed, the test host deciding whether a result is an error)
  * reads it here, so the format has one definition and one place to change. */
 export function toolRejected(name: string, content: string): boolean {
@@ -245,38 +246,44 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       turnId: first, createdAt: store.getTurn(first)!.startedAt,
       entryIds: ordered.map(segment => segment.hit.entry.id) };
   };
-  const held = context.kind === "noting" ? holdNoting(store, run, path, validateFact, names) : undefined;
+  const held = context.kind === "noting" ? holdNoting(store, run, path, validateFact, {
+    note: Object.keys(toolDefinitions.find(tool => tool.name === "note")!.parameters.properties as object),
+    memory: Object.keys(toolDefinitions.find(tool => tool.name === "memory")!.parameters.properties as object),
+  }, names) : undefined;
   const rejectedNativeCalls = new Set<string>();
   const note = (input: Record<string, unknown>): string => {
     resolvedSources.clear(); hydratedSources.clear();
     if (held) return held.note(input);
     if (context.kind === "dreaming") return `rejected: ${names.note} is not available to this knowledge worker`;
-    if ("drop" in input || (Array.isArray(input.facts) && input.facts.some(fact => fact && typeof fact === "object" && "slot" in fact))) {
+    if ("drop" in input || "slot" in input) {
       problems = ["slot/drop are N-only held-batch fields; manual note commits immediately and has no draft slots"];
       return `rejected: ${problems[0]}`;
     }
-    if (!Array.isArray(input.facts) || Object.keys(input).some((k) => k !== "facts")) {
-      problems = [`${names.note} expects {facts: [...]} only`]; return `rejected: ${problems[0]}`;
+    const unexpected = Object.keys(input).filter(key => !(key in factSchema.properties));
+    if (unexpected.length) {
+      problems = [`${names.note} expects one fact or {} only; ${unexpected.map(key => `${key}: unexpected field`).join("; ")}`];
+      return `rejected: ${problems[0]}`;
     }
     // Manual validation shares one current path within this synchronous submission only.
     // A later call reads it again; Noting's callback instead retains its frozen initial path.
-    const sourcePath = input.facts.length ? manualEntryIds ? manualEntries
-      : store.sourcePath(session.id, context.branch, path.headTurnId!) : [];
+    const empty = !Object.keys(input).length;
+    const sourcePath = empty ? [] : manualEntryIds ? manualEntries
+      : store.sourcePath(session.id, context.branch, path.headTurnId!);
     const commits: FactCommitInput[] = [];
-    const results = input.facts.map((raw, index) => {
-      try { commits.push(validateFact(raw, index + 1, slot => slot >= 1 && slot <= index, sourcePath)); return "ok"; }
-      catch (error) { return `rejected: ${error instanceof Error ? error.message : String(error)}`; }
-    });
+    const results = empty ? [] : (() => {
+      try { commits.push(validateFact(input, 1, () => false, sourcePath)); return ["ok"]; }
+      catch (error) { return [`rejected: ${error instanceof Error ? error.message : String(error)}`]; }
+    })();
     problems = results.filter((r) => r.startsWith("rejected:"));
     if (problems.length) return JSON.stringify({ results });
-    // 26a: an explicit `note({facts: []})` is how a Noter completes a genuinely empty batch, so its
-    // receipt says the batch committed instead of returning two empty arrays and nothing else.
+    // An explicit empty call confirms use without writing a fact; its receipt
+    // says the call completed instead of returning empty arrays without context.
     const receipt = (ids: number[]) => JSON.stringify(ids.length ? { results: ids.map((id) => `ok: F${id}`), factIds: ids }
       : { results: [], factIds: [], committed: "zero facts; this batch is complete" });
     const committedRun = store.commitNotingRun({ run: { ...run, request: JSON.stringify(input),
       response: JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: "ok" }] }) },
       facts: commits, responseForFacts: receipt });
-    // 26a: an empty submission has no per-item slot to carry a refused commit, so it is refused as a
+    // An empty submission has no per-item slot to carry a refused commit, so it is refused as a
     // plain `rejected:` receipt — the same refusal the reader and `toolRejected` already classify.
     if (!committedRun.ok) { problems = committedRun.problems;
       return results.length ? JSON.stringify({ results: results.map(() => `rejected: ${problems.join("; ")}`) }) : `rejected: ${problems.join("; ")}`; }
@@ -293,7 +300,6 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       try {
         if ((name === "note" || name === "memory") && !store.enabled(session.id)) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
         if (name === "note" && committed) result = "rejected: already committed";
-        else if (name === "memory") result = execute(raw && typeof raw === "object" ? raw as Record<string, unknown> : {});
         else {
           if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
           if (name === "trace" || name === "search") validateReadInput(name, raw);
@@ -329,7 +335,11 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         ...(context.maxReadChars === undefined ? {} : { maxChars: context.maxReadChars }) });
     }),
     ...(dreaming ? [definition("check", input => { if (Object.keys(input).length) throw new Error(`${names.check} expects {} only`); return dreaming.check(); })] : [definition("note", note)]),
-    definition("memory", input => held ? held.memory(input) : memory.execute(input)),
+    definition("memory", input => held ? held.memory(input) : context.kind === "manual"
+      ? (Object.keys(input).length && ("slot" in input || "drop" in input || "operations" in input || "skipped" in input)
+          ? `rejected: manual ${names.memory} expects one create/archive operation or {}`
+          : memory.execute({ operations: Object.keys(input).length ? [input] : [], skipped: [] }, input))
+      : memory.execute(input)),
   ];
   const acknowledgeRequest = () => {
     if (closed) throw new Error("noting run has finished");

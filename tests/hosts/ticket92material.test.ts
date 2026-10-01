@@ -19,8 +19,8 @@ for (const cancel of [false, true]) {
       const request = { text: input.text };
       input.reportRequest(request);
       if (cancel) await new Promise<void>(resolve => { release = resolve; });
-      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+      input.tools.find(tool => tool.name === "note")!.execute({});
+      input.tools.find(tool => tool.name === "memory")!.execute({});
       return { outcome: "success", output: "done", request };
     });
     let scheduler: CcTaskScheduler | undefined;

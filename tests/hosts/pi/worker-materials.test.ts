@@ -19,7 +19,7 @@ const script = (f: Fixture) => {
   f.script(body => {
     if (!worker(body)) return say("好的。");
     if (toolResults(body)) return say("Done.");
-    return noteAndMemory(`n${++workers}`, workers === 1 ? noteBatch : { facts: [] });
+    return noteAndMemory(`n${++workers}`, workers === 1 ? noteBatch : {});
   });
 };
 /** The task message of a worker request: the last message, which is what core's text was placed in. */
@@ -62,7 +62,7 @@ test("92: the Noter fork inherits its stable parent without a Raw or preceding-f
       .toEqual(new Set(toolDefinitions.filter(tool => tool.name !== "check").map(tool => tool.name)));
     expect(child.tools.find((tool: Body) => tool.function.name === canonicalToolNames.note)?.function.parameters)
       .toEqual(toolDefinitions.find(tool => tool.name === "note")!.parameters);
-    expect(instructions).toContain(`\`${canonicalToolNames.note}({facts: []})\``);
+    expect(instructions).toContain(`\`${canonicalToolNames.note}({})\``);
     expect(text(child.messages.at(-1)!)).toContain(`${instructions}\n\n`);
     expect(text(child.messages.at(-1)!).split(instructions)).toHaveLength(2);
     // Mandatory framing, whatever the data delta is: instruction, range, head reply, source index.
@@ -87,7 +87,7 @@ test("25a 2026-09-09: the same task in subagent mode carries full history and ti
     // A fresh child: core's prompt as the system message, the whole fresh material as the task.
     expect(String(child.messages[0].content)).toBe(loadPrompt("noting.md"));
     expect(child.tools.map((tool: Body) => tool.function.name)).toEqual(expect.arrayContaining(["trace", "search", "note", "memory"]));
-    expect(String(child.messages[0].content)).toContain("`note({facts: []})`");
+    expect(String(child.messages[0].content)).toContain("`note({})`");
     const body = text(child.messages.at(-1)!);
     expect(body).toContain("Recent facts (by Turn):");
     expect(body).toContain("[F1]"); // Both modes must supply this missing fact history.

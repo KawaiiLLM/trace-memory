@@ -12,8 +12,8 @@ vi.mock("../../src/hosts/cc/worker.ts", () => ({
     await new Promise<void>(resolve => provider.calls.push({ model: config.worker.phases[task.kind].model,
       thinking: config.worker.phases[task.kind].thinking, task, release: resolve }));
     expect(task.kind).toBe("noting");
-    task.tools.find((tool: any) => tool.name === "note")!.execute({ facts: [] });
-    task.tools.find((tool: any) => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    task.tools.find((tool: any) => tool.name === "note")!.execute({});
+    task.tools.find((tool: any) => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "mock provider completed", request: { mock: true } };
   },
 }));

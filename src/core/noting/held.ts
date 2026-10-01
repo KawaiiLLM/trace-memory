@@ -12,51 +12,52 @@ class Slots<T> {
   error?: string;
   readonly prefix: "$" | "M";
   private readonly names: ToolNames;
-  constructor(prefix: "$" | "M", names: ToolNames) { this.prefix = prefix; this.names = names; }
+  private readonly fields: ReadonlySet<string>;
+  constructor(prefix: "$" | "M", names: ToolNames, fields: readonly string[]) {
+    this.prefix = prefix; this.names = names; this.fields = new Set(fields);
+  }
   id(value: unknown): number {
     const match = typeof value === "string" && (this.prefix === "$" ? /^\$([1-9]\d*)$/ : /^M([1-9]\d*)$/).exec(value);
     if (!match || !this.rows.has(Number(match[1]))) throw new Error(`unknown ${this.prefix} slot ${String(value)}`);
     return Number(match[1]);
   }
-  call(raw: unknown, field: "facts" | "operations", validate: (raw: unknown, id: number) => T,
+  call(raw: unknown, validate: (raw: unknown, id: number) => T,
     droppable: (id: number) => void, rejection?: string): string {
-    const input = raw as Record<string, unknown>;
-    if (!input || typeof input !== "object" || Array.isArray(input) || !Array.isArray(input[field]) ||
-        Object.keys(input).some(key => ![field, "drop", ...(field === "operations" ? ["skipped"] : [])].includes(key)) ||
-        (input.drop !== undefined && (!Array.isArray(input.drop) || input.drop.some(id => typeof id !== "string"))) ||
-        (field === "operations" && (!Array.isArray(input.skipped) || input.skipped.length))) {
-      this.error = `${this.names[field === "facts" ? "note" : "memory"]} expects ${field}, optional drop${field === "operations" ? ", and skipped: []" : ""}`;
-      // A refused envelope still withdraws explicitly named replacement values. Do not
-      // allocate append slots or apply drops from a call whose structure was refused.
-      for (const item of Array.isArray(input?.[field]) ? input[field] as unknown[] : []) {
-        if (!item || typeof item !== "object" || Array.isArray(item) || !("slot" in item)) continue;
-        let id: number;
-        try { id = this.id(item.slot); }
-        catch { continue; } // Unknown handles have no accepted value to invalidate.
-        const { slot: _slot, ...content } = item;
-        this.rows.set(id, { raw: structuredClone(content), error: this.error });
+    const input = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : undefined;
+    const tool = this.names[this.prefix === "$" ? "note" : "memory"];
+    const unexpected = input ? Object.keys(input).filter(key => !this.fields.has(key)) : [];
+    const invalid = !input || unexpected.length > 0 ||
+      ("drop" in input && (Object.keys(input).length !== 1 || typeof input.drop !== "string")) ||
+      ("slot" in input && (typeof input.slot !== "string" || Object.keys(input).length === 1));
+    if (invalid) {
+      this.error = rejection ?? `${tool} expects one item, one scalar drop, or {}${unexpected.length ? `; ${unexpected.map(key => `${key}: unexpected field`).join("; ")}` : ""}`;
+      if (input && "slot" in input) {
+        try { const id = this.id(input.slot); const { slot: _slot, ...content } = input;
+          this.rows.set(id, { raw: structuredClone(content), error: this.error }); }
+        catch { /* Unknown handles cannot invalidate an accepted slot. */ }
       }
       return `rejected: ${this.error}`;
     }
-    // Only a structurally valid call clears a top-level error. It cannot clear slot errors.
-    this.used = true; this.error = undefined;
+    this.used = true;
+    this.error = undefined;
     const results: string[] = [];
-    for (const address of rejection ? [] : input.drop as string[] ?? []) {
-      try { const id = this.id(address); droppable(id); this.rows.delete(id); results.push(`dropped: ${address}`); }
-      catch (error) { this.error = String(error); results.push(`rejected: ${address}: ${this.error}`); }
+    if ("drop" in input) {
+      try { const id = this.id(input.drop); if (rejection) throw new Error(rejection);
+        droppable(id); this.rows.delete(id); results.push(`dropped: ${input.drop}`); }
+      catch (error) { this.error = error instanceof Error ? error.message : String(error); results.push(`rejected: ${input.drop}: ${this.error}`); }
+    } else if (Object.keys(input).length) {
+      let id: number | undefined;
+      try { id = input.slot === undefined ? this.next++ : this.id(input.slot); }
+      catch (error) { this.error = error instanceof Error ? error.message : String(error); results.push(`rejected: ${this.error}`); }
+      if (id !== undefined) {
+        const { slot: _slot, ...content } = input;
+        const row: { raw: unknown; value?: T; error?: string } = { raw: structuredClone(content) };
+        this.rows.set(id, row);
+        try { if (rejection) throw new Error(rejection); row.value = validate(content, id); results.push(`held: ${this.prefix}${id}`); }
+        catch (error) { row.error = error instanceof Error ? error.message : String(error); results.push(`rejected: ${this.prefix}${id}: ${row.error}`); }
+      }
     }
-    for (const raw of input[field] as unknown[]) {
-      const item = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : undefined;
-      let id: number;
-      try { id = item?.slot === undefined ? this.next++ : this.id(item.slot); }
-      catch (error) { this.error = String(error); results.push(`rejected: ${this.error}`); continue; }
-      const { slot: _slot, ...content } = item ?? {};
-      const row: { raw: unknown; value?: T; error?: string } = { raw: structuredClone(content) };
-      this.rows.set(id, row);
-      try { if (rejection) throw new Error(rejection); row.value = validate(content, id); results.push(`held: ${this.prefix}${id}`); }
-      catch (error) { row.error = error instanceof Error ? error.message : String(error); results.push(`rejected: ${this.prefix}${id}: ${row.error}`); }
-    }
-    if (rejection && !(input[field] as unknown[]).length) this.error = rejection;
+    if (rejection && !Object.keys(input).length) this.error = rejection;
     return JSON.stringify({ results, held: [...this.rows].filter(([, row]) => row.value !== undefined).map(([id]) => `${this.prefix}${id}`),
       rejected: Object.fromEntries([...this.rows].filter(([, row]) => row.error).map(([id, row]) => [`${this.prefix}${id}`, row.error])) });
   }
@@ -67,8 +68,8 @@ class Slots<T> {
 
 export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
   validateFact: (raw: unknown, slot: number, earlier: (slot: number) => boolean) => FactCommitInput,
-  names: ToolNames = canonicalToolNames) {
-  const facts = new Slots<FactCommitInput>("$", names), operations = new Slots<KnowledgeOperationInput>("M", names);
+  fields: Readonly<Record<"note" | "memory", readonly string[]>>, names: ToolNames = canonicalToolNames) {
+  const facts = new Slots<FactCommitInput>("$", names, fields.note), operations = new Slots<KnowledgeOperationInput>("M", names, fields.memory);
   const fact = (raw: unknown, id: number) => validateFact(raw, id,
     target => target < id && facts.rows.get(target)?.value !== undefined);
   const prepare = (raw: unknown, mapping?: ReadonlyMap<number, number>) => {
@@ -95,14 +96,14 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
       throw error;
     }
   };
-  const memory = (raw: unknown) => operations.call(raw, "operations", (value, id) => {
+  const memory = (raw: unknown) => operations.call(raw, (value, id) => {
     const accepted = prepare(value);
     const target = (value as { id?: string }).id;
     if (target && [...operations.rows].some(([other, row]) => other !== id && row.value !== undefined && (row.raw as { id?: string }).id === target))
       throw new Error("duplicate operation target; replace its existing M slot instead");
     return accepted;
   }, () => {});
-  const note = (raw: unknown) => facts.call(raw, "facts", fact, id => {
+  const note = (raw: unknown) => facts.call(raw, fact, id => {
     const address = `$${id}`;
     if ([...facts.rows].some(([other, row]) => other !== id && row.value &&
         [...row.value.support ?? [], ...row.value.negate ?? []].some(rel => rel.target === address)) ||
@@ -117,11 +118,11 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
     const blockers: string[] = [];
     for (const [name, slots] of [["note", facts], ["memory", operations]] as const) {
       const exposed = names[name];
-      if (!slots.used) blockers.push(`${exposed} not called; call ${exposed}${name === "note" ? "({facts: []})" : "({operations: [], skipped: []})"}`);
+      if (!slots.used) blockers.push(`${exposed} not called; call ${exposed}({})`);
       if (slots.error) blockers.push(`${exposed} call error: ${slots.error}; make a structurally valid ${exposed} call to clear it`);
       for (const [id, row] of slots.rows) if (row.error) {
         const address = `${slots.prefix}${id}`;
-        blockers.push(`${address}: ${row.error}; resubmit with slot: "${address}" or drop: ["${address}"] (drop may be refused if referenced)`);
+        blockers.push(`${address}: ${row.error}; resubmit with slot: "${address}" or drop: "${address}" (drop may be refused if referenced)`);
       }
       // A wrapper failure can block publication even when the held layer has no error.
       if (toolProblems.has(name) && !slots.problems().length)
@@ -151,15 +152,15 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
     return `Before publication, review this run once.\n\nBlockers:\n${blockers(toolProblems).join("\n") || "None."}\n\nKnowledge changes held in this run:\n${changes.join("\n\n") || "None."}\n\nCheck each knowledge change against your Principles. Correct a change that violates them with a complete replacement under its slot, or drop it. Resolve every blocker. Leave compliant changes as they are. Then end; ending with a blocker left publishes nothing.`;
   };
   const validate = () => {
-    if (incomplete()) throw new Error(`incomplete Noting: explicitly call both ${names.note} and ${names.memory}, including empty arrays`);
+    if (incomplete()) throw new Error(`incomplete Noting: explicitly call both ${names.note} and ${names.memory}, including empty {} calls`);
     if (problems().length) throw new Error(problems().join("; "));
     // Recheck the final sources/content, including facts cited before a later correction.
     for (const [id, row] of facts.rows) row.value = fact(row.raw, id);
   };
   return { note, memory, problems, incomplete, status, passEnd, validate,
     reject: (name: "note" | "memory", raw: unknown, reason: string) => name === "note"
-      ? facts.call(raw, "facts", fact, () => {}, reason)
-      : operations.call(raw, "operations", value => value as KnowledgeOperationInput, () => {}, reason),
+      ? facts.call(raw, fact, () => {}, reason)
+      : operations.call(raw, value => value as KnowledgeOperationInput, () => {}, reason),
     facts: () => [...facts.rows.values()].map(row => row.value!),
     slots: () => [...facts.rows.keys()],
     knowledge: (mapping: ReadonlyMap<number, number>) => {

@@ -175,9 +175,9 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   // A legal oversized manual item pressures the same Knowledge selector used by N.
   const receipt = "omitted 2 constraint knowledge; expand: K2, K1";
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [],
+  tools.find(tool => tool.name === "memory")!.execute({ op: "create", topics: [],
     reason: "Exercise a database-derived omission boundary.", text: "The project uses pnpm " + "word ".repeat(5_200),
-    category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
+    category: "constraint", scope: "project", supports: ["F1"] });
   setKnowledgeCapacity(memory, 5_000);
   seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "Package manager retained", [{ entry: user, text: "Keep pnpm" }]);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
@@ -519,8 +519,8 @@ test("29b 2026-09-10 (case 12): a fork with no newly supplied Raw still commits 
   const noter = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
     calls.push(input);
-    committed = input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Inherited context", sources: [{ address: `T${t.id}#E1`, text: "Noted from the inherited context" }] }] }) as string;
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] })).toContain("held");
+    committed = input.tools.find(tool => tool.name === "note")!.execute({ title: "Inherited context", sources: `[T${t.id}#E1] Noted from the inherited context` }) as string;
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({})).toContain("held");
     return { outcome: "success", output: "", request: { fake: true } };
   });
   try {
@@ -557,8 +557,8 @@ test("29b/92 (case 13): fresh N receives one full material dispatch across its t
     if (input.kind === "noting") {
       // Two tool rounds inside one run: the child keeps its own messages and nothing is resent.
       input.tools.find(tool => tool.name === "trace")!.execute({ address: `T${t.id}#E1@user` }); rounds++;
-      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] }); rounds++;
+      input.tools.find(tool => tool.name === "note")!.execute({});
+      input.tools.find(tool => tool.name === "memory")!.execute({}); rounds++;
     }
     return { outcome: "success", output: "", request: { fake: true } };
   });
@@ -640,11 +640,12 @@ test("64c: recency uses commit order across categories, not identity, timestamp 
 test("64c/92: foreground and fresh N keep the same newer items and receipt omitted older knowledge", () => {
   const { s, t } = seeded();
   const write = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!;
-  const receipt = JSON.parse(write.execute({ operations: ["constraint", "understanding", "reference"].map(category => ({
-    op: "create", category, scope: "project", text: `new ${category} ` + "word ".repeat(2_000),
-    topics: [], supports: ["F1"], reason: "durable conclusion",
-  })), skipped: [] }));
-  const commits = receipt.committed.map((value: { knowledgeId: number; version: string }) =>
+  const committed = ["constraint", "understanding", "reference"].flatMap(category => {
+    const receipt = JSON.parse(write.execute({ op: "create", category, scope: "project", text: `new ${category} ` + "word ".repeat(2_000),
+      topics: [], supports: ["F1"], reason: "durable conclusion" }));
+    return receipt.committed;
+  });
+  const commits = committed.map((value: { knowledgeId: number; version: string }) =>
     memory.store.resolveVersionOrdinal(value.knowledgeId, Number(/@v(\d+)$/.exec(value.version)![1])));
   setKnowledgeCapacity(memory, 5_000);
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };

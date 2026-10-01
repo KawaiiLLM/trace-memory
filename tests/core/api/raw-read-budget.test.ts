@@ -240,7 +240,7 @@ test("79 item 1 (Pi review of 5ee34b5): an empty note hydrates nothing on a thou
     expect(memory.pendingEntries(base.sessionId, base.branch, base.headTurnId).length).toBeGreaterThan(2_000);
     counter.reset();
     const note = memory.tools({ kind: "manual", sessionId: base.sessionId, currentTurnId: base.headTurnId, branch: base.branch })[2]!;
-    expect(JSON.parse(note.execute({ facts: [] }))).toMatchObject({ factIds: [] });
+    expect(JSON.parse(note.execute({}))).toMatchObject({ factIds: [] });
     expect(counter.reads()).toBe(0);
   } finally { memory.close(); counter.restore(); rmSync(copy, { force: true }); }
 });
@@ -261,8 +261,7 @@ test("79 item 1 (Pi review of 5ee34b5): a note citing one entry hydrates only th
   try {
     counter.reset();
     const note = memory.tools({ kind: "manual", sessionId: base.sessionId, currentTurnId: base.headTurnId, branch: base.branch })[2]!;
-    expect(JSON.parse(note.execute({ facts: [{ title: "One entry citation", sources: [
-      { address, text: "one-entry citation" }] }] })).factIds).toHaveLength(1);
+    expect(JSON.parse(note.execute({ title: "One entry citation", sources: `[${address}] one-entry citation` })).factIds).toHaveLength(1);
     const hydrated = counter.reads();
     expect(hydrated).toBeGreaterThan(0); // resolution needed this Turn's body to match the address
     expect(hydrated).toBeLessThan(20); // one Turn's entries, nowhere near the 2,000+ entry path

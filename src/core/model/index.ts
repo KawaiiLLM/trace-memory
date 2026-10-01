@@ -241,13 +241,21 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
 
   if (!isNonEmptyString(f.title) || !f.title.trim() || /[\r\n\u2028\u2029]/u.test(f.title))
     problems.push(`${path}.title: expected a non-empty single-line string`);
-  if (!Array.isArray(f.sources) || !f.sources.length) problems.push(`${path}.sources: expected non-empty source segments`);
-  else f.sources.forEach((source, i) => {
-    if (!source || typeof source !== "object" || Array.isArray(source) ||
-        typeof source.address !== "string" || !source.address || typeof source.text !== "string" || !source.text.trim() ||
-        Object.keys(source).some(key => !["address", "text"].includes(key)))
-      problems.push(`${path}.sources[${i}]: expected {address, non-empty text}`);
-  });
+  const sources: NotingFactInput["sources"] = [];
+  const sourceText = f.sources;
+  if (typeof sourceText !== "string" || !sourceText.length) problems.push(`${path}.sources: expected a non-empty string of marked source segments`);
+  else {
+    const markers = [...sourceText.matchAll(/^\[([^\]\r\n]+)\] /gm)];
+    if (!markers.length || markers[0]!.index !== 0)
+      problems.push(`${path}.sources: text before the first [address] marker is not allowed`);
+    else markers.forEach((marker, i) => {
+      const next = markers[i + 1];
+      const segment = sourceText.slice(marker.index! + marker[0].length, next?.index);
+      const text = next ? segment.replace(/\r?\n$/, "") : segment;
+      if (!text.trim()) problems.push(`${path}.sources[${i}]: expected non-empty text`);
+      sources.push({ address: marker[1]!, text });
+    });
+  }
   for (const key of Object.keys(f)) {
     if (!["title", "sources", "support", "negate"].includes(key)) problems.push(`${path}.${key}: unexpected field`);
   }
@@ -256,7 +264,7 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
 
   return {
     title: f.title as string,
-    sources: (f.sources as NotingFactInput["sources"]) ?? [],
+    sources,
     support,
     negate,
   };

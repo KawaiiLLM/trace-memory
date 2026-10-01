@@ -22,14 +22,13 @@ type ScriptResult = RunAgentResult & { noteInput?: unknown; memoryInput?: unknow
 let script: ((input: NotingAgentInput) => Promise<ScriptResult>)[];
 const time = "2026-08-16 02:54";
 const request = { system: "actual host system", messages: [{ role: "user", content: "actual provider input" }], tools: [] };
-// 26a: a Noter completes its batch by calling `note`, and an empty batch is submitted explicitly as
-// `note({facts: []})`. `silent` is the run that submits nothing at all, which is incomplete.
-const success = (batches: { facts: unknown[] }[]): ScriptResult => ({ outcome: "success", output: "Done.", noteInput: { facts: batches.flatMap((b) => b.facts) }, memoryInput: { operations: [], skipped: [] }, request, usage: { tokens: 12 } });
+// 116: a Noter calls note once per fact, or note({}) for an empty batch.
+// `silent` submits neither tool and remains incomplete.
+const success = (batches: { facts: unknown[] }[]): ScriptResult => ({ outcome: "success", output: "Done.", noteInput: batches.flatMap((b) => b.facts), memoryInput: {}, request, usage: { tokens: 12 } });
 const silent = (): ScriptResult => ({ outcome: "success", output: "Nothing to note.", request, usage: { tokens: 12 } });
-const fact = (extra: Record<string, unknown> = {}) => ({ title: "mapC terrain", sources: [{ address: "T1#E2", text: memories.base }], ...extra });
+const fact = (extra: Record<string, unknown> = {}) => ({ title: "mapC terrain", sources: `[T1#E2] ${memories.base}`, ...extra });
 const batch = (turnId: number, facts = [fact()]) => ({ turn: `S${sessionId}/T${turnId}`, facts: facts.map(f => ({ ...f,
-  sources: f.sources.map(source => source.address === "T1#E2" ? { ...source,
-    address: `T${turnId}#E${hydrate(memory.store.listSourceEntries(sessionId), memory.store).find(e => e.turnId === turnId && e.role === "assistant")!.entryOrdinal}` } : source) })) });
+  sources: f.sources.replace("[T1#E2]", `[T${turnId}#E${hydrate(memory.store.listSourceEntries(sessionId), memory.store).find(e => e.turnId === turnId && e.role === "assistant")!.entryOrdinal}]`) })) });
 function open(config: ConfigOverride = {}) {
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async (raw) => {
     const input = raw as NotingAgentInput;
@@ -40,7 +39,9 @@ function open(config: ConfigOverride = {}) {
     if (result.request !== undefined) input.reportRequest(result.request);
     if (result.noteInput !== undefined) {
       const note = input.tools.find((t) => t.name === "note")!;
-      note.execute(result.noteInput);
+      const items = result.noteInput as unknown[];
+      if (items.length) for (const item of items) note.execute(item);
+      else note.execute({});
     }
     if (result.memoryInput !== undefined) input.tools.find(tool => tool.name === "memory")!.execute(result.memoryInput);
     return result;
@@ -87,7 +88,7 @@ test("worker tool names are rendered before capacity, audit and held-result stat
   const canonical = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent" }, memory.config);
   const priced = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent", toolNames: names }, memory.config);
   expect(priced.prompt).toBe(expected);
-  expect(priced.prompt).toContain("mcp__trace_memory__note({facts: []})");
+  expect(priced.prompt).toContain("mcp__trace_memory__note({})");
   expect(priced.prompt).not.toContain("mcp__trace_memory__check"); // Noter cannot check.
   expect(priced.prompt).not.toContain("`note(");
   expect(priced.prompt).not.toContain("{{tool.");
@@ -104,15 +105,15 @@ test("worker tool names are rendered before capacity, audit and held-result stat
     expect(input.promptHash).toBe(createHash("sha256").update(expected).digest("hex"));
     const note = input.tools.find(tool => tool.name === "note")!;
     expect(note.description).toContain("mcp__trace_memory__memory");
-    missing = JSON.parse(note.execute({ facts: [] })).status;
+    missing = JSON.parse(note.execute({})).status;
     pendingError = note.execute({ facts: [], bogus: true });
-    blocked = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] })).status;
-    clear = JSON.parse(note.execute({ facts: [] })).status;
+    blocked = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({})).status;
+    clear = JSON.parse(note.execute({})).status;
     return { outcome: "success", output: "done", request };
   });
   expect((await memory.noting({ sessionId, branch: "main", headTurnId: first.id, mode: "subagent", toolNames: names })).outcome).toBe("success");
-  expect(missing).toContain("mcp__trace_memory__memory({operations: [], skipped: []})");
-  expect(pendingError).toContain("mcp__trace_memory__note expects facts");
+  expect(missing).toContain("mcp__trace_memory__memory({})");
+  expect(pendingError).toContain("mcp__trace_memory__note expects one item");
   expect(blocked).toContain("mcp__trace_memory__note call error:");
   expect(blocked).not.toContain("call note(");
   expect(clear).toContain("Publishable:");
@@ -158,7 +159,7 @@ test("a turn arriving during the model call waits for the next trigger", async (
   expect(result.outcome).toBe("success");
   expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).length).toBeGreaterThan(0);
   expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  script.push(async () => success([batch(second.id, [fact({ sources: [{ address: `T${second.id}#E1`, text: memories.base }], support: [["F1", "weak"]] })])]));
+  script.push(async () => success([batch(second.id, [fact({ sources: `[T${second.id}#E1] ${memories.base}`, support: [["F1", "weak"]] })])]));
   await noting(second.id);
   expect(calls[1]!.text).toContain(second.userPrompt!);
   expect(calls[1]!.material.facts[0]).toContain("[F1]");
@@ -226,17 +227,18 @@ for (const [label, changes, problem] of [
   ["malformed handle", { support: [["$x", "weak"]] }, "target"],
   ["relation shape", { support: ["F1"] }, "expected [target, strength]"],
   ["event status", { status: "completed" }, "status"],
-] as const) test(`bounces ${label} with problems and only a run record`, async () => {
+] as const) test(`rejects ${label} with problems and only a run record`, async () => {
   const t = turn(), output = [batch(t.id, [fact(changes)])];
   script.push(async () => success(output));
   const result = await noting(t.id);
-  expect(result.outcome).toBe("bounced");
-  if (result.outcome !== "bounced") throw new Error("expected bounce");
-  expect(result.problems.join("\n")).toContain(problem);
+  const structural = ["category", "actor", "event status"].includes(label);
+  expect(result.outcome).toBe(structural ? "failure" : "bounced");
+  if (result.outcome !== "failure" && result.outcome !== "bounced") throw new Error("expected rejection");
+  expect(result.problems.join("\n")).toContain(structural ? "expects one item" : problem);
   unchanged();
   const run = memory.store.getRun(result.runId)!;
-  expect(run.outcome).toBe("bounced");
-  expect(JSON.parse(run.response!).toolCalls[0].input).toEqual({ facts: output.flatMap((b) => b.facts) });
+  expect(run.outcome).toBe(result.outcome);
+  expect(JSON.parse(run.response!).toolCalls[0].input).toEqual(output[0]!.facts[0]);
   expect(JSON.parse(run.response!).problems).toEqual(result.problems);
 });
 

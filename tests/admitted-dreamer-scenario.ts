@@ -46,8 +46,7 @@ export function createDreamerTrigger(memory: TraceMemory, path: TaskTarget, fact
   const operation = (text: string) => ({ op: "create", text, category: "reference" as const,
     scope, supports: [`F${factId}`], topics: ["test-fixture"],
     reason: "Explicit trigger for a genuinely later admitted Dreamer fixture run." });
-  const operations = [operation(`Fixture trigger ${sequence}: ${"trigger ".repeat(5_500)}`)];
-  const receipt = JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ operations, skipped: [] }));
+  const receipt = JSON.parse(tools.find(tool => tool.name === "memory")!.execute(operation(`Fixture trigger ${sequence}: ${"trigger ".repeat(5_500)}`)));
   if (!receipt.committed?.[0]) throw new Error(`could not create Dreamer fixture trigger: ${JSON.stringify(receipt)}`);
   const item = receipt.committed[0] as { knowledgeId: number; version: string };
   return { knowledgeId: item.knowledgeId,

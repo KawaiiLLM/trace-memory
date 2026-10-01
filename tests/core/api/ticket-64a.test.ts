@@ -13,8 +13,7 @@ import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-d
 
 const time = "2026-09-23T00:00:00Z";
 const created = (fact: number, text: string, reason = "New durable conclusion.") => ({
-  operations: [{ op: "create", text, category: "reference", scope: "project", topics: ["release"], supports: [`F${fact}`], reason }],
-  skipped: [],
+  op: "create", text, category: "reference", scope: "project", topics: ["release"], supports: [`F${fact}`], reason,
 });
 
 describe("76/92 Noter updates and archives; Dreamer reviews", () => {
@@ -24,7 +23,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
   function fixture(agent: (input: NotingAgentInput) => Promise<void> | void) {
     memory = sourceSeededMemory(":memory:", async raw => {
       const input = raw as NotingAgentInput;
-      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+      input.tools.find(tool => tool.name === "note")!.execute({});
       await agent(input);
       return { outcome: "success", output: "done", request: { one: "request" } };
     });
@@ -54,16 +53,17 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     const f = fixture(input => {
       calls++;
       input.reportRequest({ one: "request" });
+      if (calls > 1) return;
       const memoryTool = input.tools.find(tool => tool.name === "memory")!;
       const receipt = memoryTool.execute(created(f.fact, "beta.5 is current"));
       expect(receipt).toContain('"held"');
       expect(memory.store.currentKnowledge()).toEqual([]);
-      expect(memoryTool.execute({ operations: [{ ...created(f.fact, "corrected").operations[0], slot: "M1" }], skipped: [] })).toContain("held");
+      expect(memoryTool.execute({ ...created(f.fact, "corrected"), slot: "M1" })).toContain("held");
     });
     const result = await memory.noting({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
     expect(result.outcome).toBe("success");
     expect(memory.store.currentCommit(1)[0]!.text).toBe("corrected");
-    expect(calls).toBe(1);
+    expect(calls).toBe(1); // The host's passEnd channel supplies the second pass; Core invokes runAgent once.
     const run = memory.store.getRun((result as { runId: number }).runId)!;
     expect(JSON.parse(run.request!)).toEqual({ one: "request" });
     expect(JSON.parse(run.response!).toolCalls).toHaveLength(3);
@@ -98,7 +98,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
   test("shared N schema advertises create/update/archive and runtime rejects D-only operations", async () => {
     const f = fixture(input => {
       const definition = input.tools.find(tool => tool.name === "memory")!;
-      const schema = (definition.parameters.properties as any).operations.items;
+      const schema = definition.parameters as any;
       expect(schema.properties.op.enum).toEqual(["create", "update", "archive"]);
       expect(schema.properties).toHaveProperty("id");
       expect(schema.properties).toHaveProperty("absorb"); // Shared writer shape; N enforces operation permissions.
@@ -106,7 +106,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
         { op: "merge", id: "K1#aaaa", absorb: ["K2#bbbb"] },
         { op: "split", id: "K1#aaaa" },
       ]) {
-        const receipt = definition.execute({ operations: [{ ...created(f.fact, "new").operations[0], ...operation }], skipped: [] });
+        const receipt = definition.execute({ ...created(f.fact, "new"), ...operation });
         expect(receipt).toContain("Dreamer");
       }
     });
@@ -697,11 +697,11 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     const f = fixture(() => {});
     const tools = memory.tools({ kind: "manual", sessionId: f.session.id, branch: "main", currentTurnId: f.turn.id });
     const memoryTool = tools.find(tool => tool.name === "memory")!;
-    expect((memoryTool.parameters.properties as any).operations.items.properties.op.enum).toEqual(["create", "update", "archive"]);
+    expect((memoryTool.parameters.properties as any).op.enum).toEqual(["create", "update", "archive"]);
     expect(memoryTool.execute(created(f.fact, "manual item"))).toContain('"committed"');
     const tag = readHandle(tools, "K1");
-    expect(memoryTool.execute({ operations: [{ ...created(f.fact, "changed").operations[0], op: "update", id: tag }], skipped: [] })).toContain("Dreamer");
-    expect(memoryTool.execute({ operations: [{ op: "archive", kind: "budget", id: tag, supports: [`F${f.fact}`], reason: "Retired." }], skipped: [] })).toContain('"committed"');
+    expect(memoryTool.execute({ ...created(f.fact, "changed"), op: "update", id: tag })).toContain("Dreamer");
+    expect(memoryTool.execute({ op: "archive", kind: "budget", id: tag, supports: [`F${f.fact}`], reason: "Retired." })).toContain('"committed"');
   });
 
   test("prompt and material contain no second-round cues", async () => {
@@ -712,7 +712,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       expect(input.prompt).toContain("create, update or archive knowledge");
       expect(input.text).not.toContain("Negated-evidence reminder");
       expect("reminders" in input.material).toBe(false);
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+      input.tools.find(tool => tool.name === "memory")!.execute({});
     });
     expect(loadPrompt("noting.md")).not.toContain("Second-round user message");
     expect(loadPrompt("noting.md")).toContain("create, update or archive knowledge");

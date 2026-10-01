@@ -24,9 +24,12 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
       "dreaming.model": "test", "dreaming.thinking": "medium", worker: { claudeExecutable: executable,
         contextWindows: { test: 200_000 }, cwd: directory } });
     const replies: string[] = [];
+    let reviewDelivered = false;
     let target!: { session: { id: number }; path: { sessionId: number; branch: string; headTurnId: number } };
-    const query = ((request: { options: Record<string, any> }) => {
+    const query = ((request: { options: Record<string, any>; prompt: AsyncIterable<any> }) => {
       const stream = (async function* () {
+        const prompts = request.prompt[Symbol.asyncIterator]();
+        await prompts.next();
         const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
         await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
         const client = new Client({ name: "atomic-test", version: "1" }); await client.connect(clientTransport);
@@ -35,9 +38,9 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
             tools: ["mcp__trace_memory__note", "mcp__trace_memory__memory", "mcp__trace_memory__trace", "mcp__trace_memory__search"],
             plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
           for (const [name, args] of [
-            ["note", { facts: [{ title: "User rule", sources: [{ address: "T1#E1", text: "User set a rule" }] }] }],
-            ["memory", { operations: [{ op: "create", text: "Follow the rule", category: "constraint", scope: "session",
-              topics: [], supports: ["$1"], reason: "User requirement" }], skipped: [] }],
+            ["note", { title: "User rule", sources: "[T1#E1] User set a rule" }],
+            ["memory", { op: "create", text: "Follow the rule", category: "constraint", scope: "session",
+              topics: [], supports: ["$1"], reason: "User requirement" }],
           ] as const) {
             const id = `held-${name}`;
             yield { type: "assistant", message: { id: `response-${name}`, content: [{ type: "tool_use", id, name, input: args }] } };
@@ -49,9 +52,8 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
           }
           if (ending.includes("rejection")) {
             const kind = ending.includes("memory") ? "memory" : "note";
-            const field = kind === "note" ? "facts" : "operations", slot = kind === "note" ? "$1" : "M1";
-            const base = kind === "note" ? {} : { skipped: [] };
-            const args = { ...base, [field]: [{ slot, source: ["T1#E1"] }], ...(ending.includes("envelope") ? { unexpected: true } : {}) };
+            const slot = kind === "note" ? "$1" : "M1";
+            const args = { slot, source: ["T1#E1"], ...(ending.includes("envelope") ? { unexpected: true } : {}) };
             yield { type: "assistant", message: { id: "invalid-response", content: [{ type: "tool_use", id: "invalid-note", name: `mcp__trace_memory__${kind}`, input: args }] } };
             if (ending.includes("direct")) {
               const refused = await client.callTool({ name: "note", arguments: args, _meta: { "claudecode/toolUseId": "invalid-note" } });
@@ -61,15 +63,15 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
               yield refusal; yield refusal; // duplicate native observation must not create another rejected slot
             }
             if (ending.includes("envelope")) {
-              const inspect = { ...base, [field]: [] };
+              const inspect = {};
               yield { type: "assistant", message: { id: "inspect-response", content: [{ type: "tool_use", id: "inspect", name: kind, input: inspect }] } };
               const inspected = await client.callTool({ name: kind, arguments: inspect, _meta: { "claudecode/toolUseId": "inspect" } });
               expect(JSON.stringify(inspected)).toContain(slot);
             }
             if (ending.startsWith("corrected")) {
-              const value = kind === "note" ? { title: "Corrected rule", sources: [{ address: "T1#E1", text: "Corrected rule" }] }
+              const value = kind === "note" ? { title: "Corrected rule", sources: "[T1#E1] Corrected rule" }
                 : { op: "create", text: "Corrected rule", category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "User requirement" };
-              const corrected = { ...base, [field]: [{ slot, ...value }] };
+              const corrected = { slot, ...value };
               yield { type: "assistant", message: { id: "corrected-response", content: [{ type: "tool_use", id: "corrected-note", name: kind, input: corrected }] } };
               expect((await client.callTool({ name: kind, arguments: corrected, _meta: { "claudecode/toolUseId": "corrected-note" } })).isError).not.toBe(true);
             }
@@ -79,6 +81,15 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
             usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 5, cache_creation_input_tokens: 3 },
             modelUsage: {}, total_cost_usd: 0.125 };
           if (ending === "error") throw new Error("late native transport error");
+          if (ending !== "cancel") {
+            const review = (await prompts.next()).value;
+            expect(review.isSynthetic).toBe(true);
+            expect(review.message.content[0].text).toContain("Before publication, review this run once.");
+            reviewDelivered = true;
+            yield { type: "result", subtype: "success", is_error: false, result: "reviewed", errors: [], num_turns: 0,
+              usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+              modelUsage: {}, total_cost_usd: 0 };
+          }
         } finally { await client.close(); }
       })() as any;
       stream.supportedModels = async () => [{ value: "test", supportedEffortLevels: ["medium"] }];
@@ -96,10 +107,12 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
       const result = await memory.noting({ ...path, model: "test", mode: "subagent", toolNames: ccWorkerToolNames });
       expect(replies, JSON.stringify(result)).toHaveLength(2);
       expect(replies[0]).toContain("held: $1"); expect(replies[1]).toContain("held: M1");
+      expect(reviewDelivered).toBe(ending !== "error" && ending !== "cancel");
       const succeeds = ending === "success" || ending.startsWith("corrected");
       expect(result.outcome).toBe(succeeds ? "success" : ending === "cancel" ? "cancelled"
         : ending === "error" || ending.startsWith("unreported") ? "failure" : "bounced");
       expect(memory.store.listSessionFacts(session.id)).toHaveLength(succeeds ? 1 : 0);
       expect(memory.store.currentKnowledge(path)).toHaveLength(succeeds ? 1 : 0);
+      if (ending === "cancel") expect(memory.pendingEntries(session.id, path.branch, path.headTurnId)).toHaveLength(2);
     } finally { memory.close(); }
   });

@@ -179,8 +179,8 @@ test.skipIf(!reader)("24c: the external daily reader charges every new worker re
     const REPLY = 12;
     // Every worker reply is the same three words, so identical text cannot be what tells two
     // responses apart.
-    // 26a: a Noting worker completes its batch by submitting; with nothing to record it sends `{facts: []}`.
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", { facts: [] }));
+    // 116: a Noting worker explicitly calls both tools; with nothing to record each call sends `{}`.
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", {}));
     await f.turn();                        // the parent's own reply, then a fork noting run
     await settled(f);
     await f.h.emit("before_agent_start", { prompt: "tick" });

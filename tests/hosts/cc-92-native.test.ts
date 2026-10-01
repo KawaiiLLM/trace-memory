@@ -24,8 +24,8 @@ const opts = { DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_R
 function config(cwd: string, claudeExecutable: string) { return resolveCcHostConfig({ dbPath: join(cwd, "memory.sqlite"), stateDir: join(cwd, "state"),
   notingModel: "sonnet", notingThinking: "medium", "dreaming.model": "sonnet", "dreaming.thinking": "medium",
   worker: { claudeExecutable, contextWindows: { sonnet: 200_000 }, cwd } }); }
-const fact = (text: string, source = "T2#E1") => ({ title: text, sources: [{ address: source, text }] });
-const empty = { operations: [], skipped: [] };
+const fact = (text: string, source = "T2#E1") => ({ title: text, sources: `[${source}] ${text}` });
+const empty = {};
 const tool = (id: number, name: "note" | "memory", input: unknown): LoopbackTurn => ({
   blocks: [{ type: "tool_use", id: `toolu_${id}`, name: `mcp__trace_memory__${name}`, input }], stopReason: "tool_use",
 });
@@ -45,16 +45,15 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
     let entries!: { id: number }[];
     let oldId = 0, tag = "";
     const steps: LoopbackTurn[] = variant === "nine-corrected" ? [
-      tool(1, "note", { facts: [...Array.from({ length: 8 }, (_, i) => fact(`Episode ${i + 1}`)), fact("Ninth episode", "T2#E99")] }),
-      tool(2, "note", { facts: [{ slot: "$9", ...fact("Corrected ninth episode") }] }),
-      tool(3, "memory", { operations: [
-        { op: "update", id: "BASE", text: "Claude Code retains the user rule", category: "constraint", scope: "session", topics: [], supports: ["OLD", "$9"], reason: "New episode confirms rule" },
-        { op: "create", text: "Claude Code suggests a possible explanation, not a confirmed finding", category: "open", scope: "session", topics: [], supports: ["$1"], reason: "Speculative discussion" },
-      ], skipped: [] }),
-    ] : variant === "empty-knowledge" ? [tool(1, "note", { facts: [fact("Useful discussion with no durable rule")] }), tool(2, "memory", empty)]
-      : [tool(1, "note", { facts: [fact("Original accepted fact")] }),
-        tool(2, "note", { facts: [{ slot: "$1", ...fact("Illegal selected block", "T2#E1@text") }] }),
-        ...(variant === "corrected-block" ? [tool(3, "note", { facts: [{ slot: "$1", ...fact("Claude Code corrected whole entry", "T2#E2") }] })] : []),
+      ...Array.from({ length: 8 }, (_, i) => tool(i + 1, "note", fact(`Episode ${i + 1}`))),
+      tool(9, "note", fact("Ninth episode", "T2#E99")),
+      tool(10, "note", { slot: "$9", ...fact("Corrected ninth episode") }),
+      tool(11, "memory", { op: "update", id: "BASE", text: "Claude Code retains the user rule", category: "constraint", scope: "session", topics: [], supports: ["OLD", "$9"], reason: "New episode confirms rule" }),
+      tool(12, "memory", { op: "create", text: "Claude Code suggests a possible explanation, not a confirmed finding", category: "open", scope: "session", topics: [], supports: ["$1"], reason: "Speculative discussion" }),
+    ] : variant === "empty-knowledge" ? [tool(1, "note", fact("Useful discussion with no durable rule")), tool(2, "memory", empty)]
+      : [tool(1, "note", fact("Original accepted fact")),
+        tool(2, "note", { slot: "$1", ...fact("Illegal selected block", "T2#E1@text") }),
+        ...(variant === "corrected-block" ? [tool(3, "note", { slot: "$1", ...fact("Claude Code corrected whole entry", "T2#E2") })] : []),
         tool(4, "memory", empty)];
     const loopback = await startLoopbackAnthropic((index, body) => {
       requests.push(body);
@@ -90,10 +89,10 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
       const source = memory.store.sourcePath(session.id, "main", first.id).find(entry => entry.entryOrdinal === 1)!;
       oldId = seedFact(memory, memory.store.knowledgePath(session.id, "main", first.id), "Earlier user rule",
         [{ entry: memory.store.getSourceEntry(source.id)!, text: "Earlier user rule" }]).id;
-      expect(manual.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: "Earlier rule", category: "constraint", scope: "session", topics: [], supports: [`F${oldId}`], reason: "Earlier user rule" }], skipped: [] })).toContain("committed");
+      expect(manual.find(t => t.name === "memory")!.execute({ op: "create", text: "Earlier rule", category: "constraint", scope: "session", topics: [], supports: [`F${oldId}`], reason: "Earlier user rule" })).toContain("committed");
       const prior = memory.store.currentKnowledge({ sessionId: session.id, branch: "main", headTurnId: first.id })[0]!;
       tag = `K${prior.knowledge.id}#${memory.store.versionTag(prior.knowledge.id, prior.revision.id)}`;
-      const operation = (steps[2]!.blocks[0] as { input: { operations: { id?: string; supports: string[] }[] } }).input.operations[0]!;
+      const operation = (steps[10]!.blocks[0] as { input: { id?: string; supports: string[] } }).input;
       operation.id = tag; operation.supports[0] = `F${oldId}`;
     }
     const second = memory.store.appendTurn({ sessionId: session.id, parentTurnId: first.id, kind: "turn", userPrompt: "New discussion", assistantText: "Claude Code considered it", startedAt: "later" });
@@ -108,7 +107,7 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
       if (nativeLog) writeFileSync(join(evidenceDir, `${variant}.jsonl`), readFileSync(nativeLog));
       expect(checkpointError).toBeUndefined();
       expect(observed, JSON.stringify(outcome)).toBe(true);
-      expect(requests).toHaveLength(steps.length + 1);
+      expect(requests).toHaveLength(steps.length + 2);
       const succeeded = variant === "nine-corrected" || variant === "empty-knowledge" || variant === "corrected-block";
       expect(outcome.outcome, JSON.stringify(outcome)).toBe(succeeded ? "success" : "bounced");
       const facts = memory.store.listSessionFacts(session.id);

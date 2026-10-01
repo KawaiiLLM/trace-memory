@@ -27,9 +27,9 @@ function fixture(agent: RunAgent) {
   const rootFact=fact(target.id,'old',root.id,'ROOT_COMMON_RULE');
   const liveFact=fact(target.id,'live',live.id,'SIBLING_MUST_NOT_LEAK');
   const exFact=fact(executor.id,'main',ex.id,'EXECUTOR_MUST_NOT_LEAK');
-  const rootKnowledge=memory.tools({kind:'manual',sessionId:target.id,branch:'old',currentTurnId:root.id})[3]!.execute({operations:[{op:'create',category:'constraint',scope:'project',text:'ROOT_KNOWLEDGE',supports:[`F${rootFact.id}`],topics:[],reason:'seed shared knowledge'}],skipped:[]});
+  const rootKnowledge=memory.tools({kind:'manual',sessionId:target.id,branch:'old',currentTurnId:root.id})[3]!.execute({op:'create',category:'constraint',scope:'project',text:'ROOT_KNOWLEDGE',supports:[`F${rootFact.id}`],topics:[],reason:'seed shared knowledge'});
   if(rootKnowledge.includes('rejected:'))throw Error(rootKnowledge);
-  const executorKnowledge=memory.tools({kind:'manual',sessionId:executor.id,branch:'main',currentTurnId:ex.id})[3]!.execute({operations:[{op:'create',category:'constraint',scope:'session',text:'EXECUTOR_PRIVATE_KNOWLEDGE',supports:[`F${exFact.id}`],topics:[],reason:'seed executor-only knowledge'}],skipped:[]});
+  const executorKnowledge=memory.tools({kind:'manual',sessionId:executor.id,branch:'main',currentTurnId:ex.id})[3]!.execute({op:'create',category:'constraint',scope:'session',text:'EXECUTOR_PRIVATE_KNOWLEDGE',supports:[`F${exFact.id}`],topics:[],reason:'seed executor-only knowledge'});
   if(executorKnowledge.includes('rejected:'))throw Error(executorKnowledge);
   recorded(memory,target.id,'old',root.id);
   // Both execution modes must be admitted on the active target. Dead-path admission is forbidden.
@@ -58,12 +58,11 @@ async function execute(borrowed:boolean,dead:boolean) {
     expect(historical, historical).toContain('SIBLING_MUST_NOT_LEAK');
     {
       const note=input.tools.find(t=>t.name==='note')!;
-      const bad=note.execute({facts:[{title:'Wrong sibling',sources:[{address:`T${f.live.id}#E1`,text:'wrong sibling'}]}]});
+      const bad=note.execute({title:'Wrong sibling',sources:`[T${f.live.id}#E1] wrong sibling`});
       expect(bad).toContain('rejected:');checks.push('sibling Raw citation rejected');
-      const badExecutor=note.execute({facts:[{slot:'$1',title:'Wrong executor',sources:[{address:`T${f.ex.id}#E1`,text:'wrong executor'}]}]});
+      const badExecutor=note.execute({slot:'$1',title:'Wrong executor',sources:`[T${f.ex.id}#E1] wrong executor`});
       expect(badExecutor).toContain('rejected:');checks.push('executor Raw citation rejected');
-      const batch={facts:[{slot:'$1',title:'Target statement',sources:[{address:`T${f.old.id}#E1`,text:'Recorded target statement'}]}]};
-      let receipt=note.execute(batch);
+      let receipt=note.execute({slot:'$1',title:'Target statement',sources:`[T${f.old.id}#E1] Recorded target statement`});
       expect(receipt).not.toContain('rejected:');
     }
     {
@@ -71,11 +70,11 @@ async function execute(borrowed:boolean,dead:boolean) {
       const base = `K1#${f.s.versionTag(1, 1)}`;
       expect(trace.execute({address:'K1@v1',itemBudget:null,toolCallBudget:null,toolResultBudget:null})).toContain(base);
       const op={op:'update',id:base,category:'constraint',scope:'project',text:'OLD_BRANCH_RESULT',topics:[],reason:'target evidence changes the rule'};
-      const bad=write.execute({operations:[{...op,supports:[`F${f.liveFact.id}`]}],skipped:[]});
+      const bad=write.execute({...op,supports:[`F${f.liveFact.id}`]});
       expect(bad).toContain('rejected:');checks.push('sibling fact citation rejected');
-      const receipt=write.execute({operations:[{...op,slot:'M1',supports:['$1'] },
-        {op:'create',category:'constraint',scope:'project',text:'SHARED_ANCESTOR_RESULT',topics:[],reason:'shared ancestor remains on active path',supports:[`F${f.rootFact.id}`]}],skipped:[]});
+      const receipt=write.execute({...op,slot:'M1',supports:['$1'] });
       expect(receipt).toContain('held');
+      expect(write.execute({op:'create',category:'constraint',scope:'project',text:'SHARED_ANCESTOR_RESULT',topics:[],reason:'shared ancestor remains on active path',supports:[`F${f.rootFact.id}`]})).toContain('held');
       expect(f.s.currentCommit(1)[0]!.text).toBe('ROOT_KNOWLEDGE');
       expect(f.s.listSessionFacts(f.target.id).some(fact=>fact.text==='Recorded target statement')).toBe(false);
     }

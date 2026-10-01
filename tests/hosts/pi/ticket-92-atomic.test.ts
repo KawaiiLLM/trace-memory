@@ -23,9 +23,9 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker h
       round++;
       expect(memory.store.listSessionFacts(session.id)).toEqual([]);
       expect(memory.store.currentKnowledge(path)).toEqual([]);
-      if (round === 1) return call("note-held", "note", { facts: [{ title: "Durable rule", sources: [{ address: "T1#E1", text: "User set a durable rule" }] }] });
-      if (round === 2) return call("memory-held", "memory", { operations: [{ op: "create", text: "Follow the durable rule", category: "constraint",
-        scope: "session", topics: [], supports: ["$1"], reason: "User requirement" }], skipped: [] });
+      if (round === 1) return call("note-held", "note", { title: "Durable rule", sources: "[T1#E1] User set a durable rule" });
+      if (round === 2) return call("memory-held", "memory", { op: "create", text: "Follow the durable rule", category: "constraint",
+        scope: "session", topics: [], supports: ["$1"], reason: "User requirement" });
       return ending === "success" ? say("Done") : broken();
     });
     const result = await memory.noting({ ...path, mode: "subagent" });
@@ -64,19 +64,22 @@ for (const obsolete of [false, true]) test(`04: real Pi fork shared schemas pres
     const session = memory.store.createSession({ projectId: project.id, host: "pi:fork", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "用 pnpm，不要 npm", assistantText: "Parent reply", startedAt: "now" });
     const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-    const fact = (text: string) => ({ title: text, sources: [{ address: "T1#E1", text }] });
+    const fact = (text: string) => ({ title: text, sources: `[T1#E1] ${text}` });
     const knowledge = (text: string, supports: string[]) => ({ op: "create", text, category: "constraint", scope: "session", topics: [], supports, reason: "user rule" });
     let round = 0;
     f.script(() => {
       round++;
       expect(memory.store.listSessionFacts(session.id)).toEqual([]);
-      if (round === 1) return call("facts", "note", { facts: [fact("original"), fact("drop"), fact("third")] });
-      if (round === 2) return call("edit", "note", { facts: [{ slot: "$1", ...fact("corrected") }], drop: ["$2"] });
-      if (round === 3) return call("knowledge", "memory", { operations: [knowledge("Initial rule", ["$1", "$3"])], skipped: [] });
-      if (round === 4) return call("knowledge-edit", "memory", { operations: [{ slot: "M1", ...knowledge("Final rule", ["$3"]) }, knowledge("drop this", ["$1"])], skipped: [] });
-      if (round === 5) return call("knowledge-drop", "memory", { operations: [], skipped: [], drop: ["M2"] });
-      if (round === 6) return call("append", "note", { facts: [{ ...fact("fourth"), support: [["$3", "strong"]] }] });
-      return say("Done");
+      const calls = [
+        ["note", fact("original")], ["note", fact("drop")], ["note", fact("third")],
+        ["note", { slot: "$1", ...fact("corrected") }], ["note", { drop: "$2" }],
+        ["memory", knowledge("Initial rule", ["$1", "$3"])],
+        ["memory", { slot: "M1", ...knowledge("Final rule", ["$3"]) }],
+        ["memory", knowledge("drop this", ["$1"])], ["memory", { drop: "M2" }],
+        ["note", { ...fact("fourth"), support: [["$3", "strong"]] }],
+      ] as const;
+      const next = calls[round - 1];
+      return next ? call(`item-${round}`, next[0], next[1]) : say("Done");
     });
     const result = await memory.noting({ ...path, mode: "fork" });
     if (obsolete) {
@@ -84,7 +87,7 @@ for (const obsolete of [false, true]) test(`04: real Pi fork shared schemas pres
       expect(round).toBe(0); expect(memory.store.listSessionFacts(session.id)).toEqual([]);
     } else {
       expect(result.outcome, JSON.stringify(result)).toBe("success");
-      expect(round).toBe(7);
+      expect(round).toBe(11);
       expect(memory.store.listSessionFacts(session.id)).toHaveLength(3);
       expect(memory.store.currentKnowledge(path)[0]!.revision).toMatchObject({ text: "Final rule", supports: [2] });
       expect(memory.store.listFactRelations(3)[0]).toMatchObject({ toFact: 2 });
@@ -113,24 +116,27 @@ for (const kind of ["note", "memory"] as const)
         const session = memory.store.createSession({ projectId: project.id, host: "pi:envelope", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
         const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", assistantText: "Explanation", startedAt: "now" });
         const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-        const fact = (text: string) => ({ title: text, sources: [{ address: "T1#E1", text }] });
+        const fact = (text: string) => ({ title: text, sources: `[T1#E1] ${text}` });
         const value = (text: string) => kind === "note" ? fact(text) : { op: "create", text, category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "rule" };
-        const field = kind === "note" ? "facts" : "operations", prefix = kind === "note" ? "$" : "M";
-        const base = kind === "note" ? {} : { skipped: [] };
+        const prefix = kind === "note" ? "$" : "M";
         let round = 0;
         f.script(body => {
           round++;
-          if (round === 1) return call("facts", "note", { facts: kind === "note" ? [value("original"), value("sibling")] : [fact("evidence")] });
-          if (round === 2) return call("memory", "memory", { operations: kind === "memory" ? [value("original"), value("sibling")] : [], skipped: [] });
-          if (round === 3) return call("invalid-envelope", kind, { ...base, [field]: [{ slot: `${prefix}1`, ...value("refused") }],
+          if (round === 1) return call("original", "note", kind === "note" ? fact("original") : fact("evidence"));
+          if (round === 2) return call("sibling-fact", "note", kind === "note" ? fact("sibling") : fact("other evidence"));
+          if (round === 3) return call("original-knowledge", "memory", kind === "memory" ? value("original") : {});
+          if (round === 4 && kind === "memory") return call("sibling-knowledge", "memory", value("sibling"));
+          const invalidRound = kind === "memory" ? 5 : 4;
+          if (round === invalidRound) return call("invalid-item", kind, { slot: `${prefix}1`, ...value("refused"),
             [defect]: defect === "unexpected" ? true : defect === "drop" ? [42] : "wrong" });
-          if (round === 4) return call("inspect", kind, { ...base, [field]: [] });
-          if (round === 5) {
+          if (round === invalidRound + 1) return call("inspect", kind, {});
+          if (round === invalidRound + 2) {
             const receipt = JSON.parse(body.messages.findLast((message: any) => message.role === "tool").content);
             expect(receipt.held).toEqual([`${prefix}2`]);
             expect(Object.keys(receipt.rejected)).toEqual([`${prefix}1`]);
-            if (corrected) return call("correct", kind, { ...base, [field]: [{ slot: `${prefix}1`, ...value("corrected") }, value("appended")] });
+            if (corrected) return call("correct", kind, { slot: `${prefix}1`, ...value("corrected") });
           }
+          if (corrected && round === invalidRound + 3) return call("appended", kind, value("appended"));
           return say("Done");
         });
         const result = await memory.noting({ ...path, mode: "subagent" });
@@ -141,8 +147,8 @@ for (const kind of ["note", "memory"] as const)
         expect(texts.sort()).toEqual(corrected ? ["appended", "corrected", "sibling"] : []);
         if (!("runId" in result)) throw new Error("missing run");
         const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
-        expect(audit.toolCalls.filter((item: any) => item.input?.[field]?.[0]?.[kind === "note" ? "title" : "text"] === "refused")).toHaveLength(1);
-        if (corrected) expect(audit.toolCalls.at(-1).result).toContain(`held: ${prefix}3`);
+        expect(audit.toolCalls.filter((item: any) => item.input?.[kind === "note" ? "title" : "text"] === "refused")).toHaveLength(1);
+        if (corrected) expect(audit.toolCalls.some((item: any) => item.result?.includes(`held: ${prefix}3`))).toBe(true);
       } finally { memory.close(); await f.dispose(); }
     });
 
@@ -162,12 +168,11 @@ for (const [kind, corrected] of [["note", false], ["note", true], ["trace", fals
     let round = 0;
     f.script(() => {
       round++;
-      if (round === 1) return call("valid", "note", { facts: [
-        { title: "original", sources: [{ address: "T1#E1", text: "original" }] },
-        { title: "sibling", sources: [{ address: "T1#E2", text: "sibling" }] }] });
-      if (round === 2) return call("invalid", kind, kind === "note" ? { facts: [{ slot: "$1", title: "invalid" }] } : {});
-      if (round === 3) return call("memory-empty", "memory", { operations: [], skipped: [] });
-      if (round === 4 && corrected) return call("corrected", "note", { facts: [{ slot: "$1", title: "corrected", sources: [{ address: "T1#E1", text: "corrected" }] }] });
+      if (round === 1) return call("valid", "note", { title: "original", sources: "[T1#E1] original" });
+      if (round === 2) return call("sibling", "note", { title: "sibling", sources: "[T1#E2] sibling" });
+      if (round === 3) return call("invalid", kind, kind === "note" ? { slot: "$1", title: "invalid" } : {});
+      if (round === 4) return call("memory-empty", "memory", {});
+      if (round === 5 && corrected) return call("corrected", "note", { slot: "$1", title: "corrected", sources: "[T1#E1] corrected" });
       return say("Done");
     });
     const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: turn.id, mode: "subagent" });
@@ -176,6 +181,6 @@ for (const [kind, corrected] of [["note", false], ["note", true], ["trace", fals
     expect(facts.map(fact => fact.text).sort()).toEqual(corrected ? ["corrected", "sibling"] : kind === "trace" ? ["original", "sibling"] : []);
     if (!("runId" in result)) throw new Error("missing run");
     const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
-    expect(audit.toolCalls.filter((item: any) => item.input?.facts?.[0]?.slot === "$1" && !item.input.facts[0].sources)).toHaveLength(kind === "note" ? 1 : 0);
+    expect(audit.toolCalls.filter((item: any) => item.input?.slot === "$1" && !item.input.sources)).toHaveLength(kind === "note" ? 1 : 0);
   } finally { memory.close(); await f.dispose(); }
 });

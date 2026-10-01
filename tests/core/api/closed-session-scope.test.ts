@@ -7,8 +7,8 @@ const at = "2026-09-09T00:00:00Z";
 const submitted = (raw: unknown) => {
   const input = raw as NotingAgentInput;
   if (input.kind === "noting") {
-    input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    input.tools.find(tool => tool.name === "note")!.execute({});
+    input.tools.find(tool => tool.name === "memory")!.execute({});
   }
 };
 function setup(scope: ClosedSessionScope = "project", agent: Parameters<typeof sourceSeededMemory>[1] = async raw => { submitted(raw); return { outcome: "success", output: "", request: {} }; }) {
@@ -130,9 +130,9 @@ test("a project-scoped borrowed writer cannot commit after its executor moves to
   try {
     const pending = memory.noting({ ...same, borrowed: true, executorSessionId: active.sessionId });
     memory.declareProject(active.sessionId, "different", "mark", active);
-    const receipt = String(await input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Late borrowed write", sources: [{ address: `T${same.headTurnId}#E1`, text: "late write" }] }] }));
+    const receipt = String(await input.tools.find(tool => tool.name === "note")!.execute({ title: "Late borrowed write", sources: `[T${same.headTurnId}#E1] late write` }));
     expect(receipt).toContain("held");
-    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    input.tools.find(tool => tool.name === "memory")!.execute({});
     expect(memory.store.listTurnFacts(same.headTurnId)).toHaveLength(1); // only the prior manual fact
     finish();
     const result = await pending;

@@ -8,6 +8,7 @@ import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { publicTraceTargets } from "../../../src/core/model/address.ts";
 import { renderTrace, renderFactPreview, renderEntry, tokens } from "../../../src/core/render/index.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
+import { factSources } from "../../support/seed.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => cleanup.splice(0).reverse().forEach(fn => fn()));
@@ -79,8 +80,8 @@ test("explicit whole-entry Raw shows stored thinking in block order while automa
     expect(m.branchSummary(sessionId, "main", turnId)).not.toContain("MIDDLE_THINKING");
     const note = m.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId })
       .find(tool => tool.name === "note")!;
-    expect(note.execute({ facts: [{ title: "Invalid thinking evidence", sources: [
-      { address: `T${turnId}#E1`, text: "Private inference" }] }] })).toContain("rejected:");
+    expect(note.execute({ title: "Invalid thinking evidence", sources: factSources([
+      { address: `T${turnId}#E1`, text: "Private inference" }]) })).toContain("rejected:");
     expect(m.store.listTurnFacts(turnId)).toEqual([]);
   } finally { m.close(); }
 });
@@ -123,10 +124,10 @@ test("trace rejects tool selection at direct, bound and continuation boundaries;
 
 test("knowledge injection charges IDs only while explicit trace/search display support titles", () => {
   const { m, first, second, session, note } = fixture();
-  expect(note.execute({ facts: [{ title: "A descriptive episode title", sources: [{ address: `T${first.id}#E1`, text: "User asks a question" }] }] })).toContain("ok: F1");
+  expect(note.execute({ title: "A descriptive episode title", sources: factSources([{ address: `T${first.id}#E1`, text: "User asks a question" }]) })).toContain("ok: F1");
   const memory = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: second.id }).find(tool => tool.name === "memory")!;
-  const result = JSON.parse(memory.execute({ operations: [{ op: "create", text: "A lasting rule", category: "constraint",
-    scope: "project", topics: [], reason: "user choice", supports: ["F1"] }], skipped: [] }));
+  const result = JSON.parse(memory.execute({ op: "create", text: "A lasting rule", category: "constraint",
+    scope: "project", topics: [], reason: "user choice", supports: ["F1"] }));
   expect(result.committed).toHaveLength(1);
   const id = result.committed[0].knowledgeId;
   const injected = m.injection(session.id);
@@ -157,11 +158,11 @@ test("Turn local source selection follows authored path order, not allocated ent
   const firstE2 = entries.find(entry => entry.turnId === first.id && entry.entryOrdinal === 2)!;
   const secondE1 = entries.find(entry => entry.turnId === second.id && entry.entryOrdinal === 1)!;
   m.store.publishSourcePath(session.id, "main", [firstE2.id, firstE1.id, secondE1.id], second.id, "reverse");
-  expect(note.execute({ facts: [{ title: "Reversed native order", sources: [
+  expect(note.execute({ title: "Reversed native order", sources: factSources([
     { address: `T${second.id}#E1`, text: "later" },
     { address: `T${first.id}#E1`, text: "early by allocation" },
     { address: `T${first.id}#E2`, text: "first on path" },
-  ] }] })).toContain("ok: F1");
+  ]) })).toContain("ok: F1");
   const fact = m.store.getFact(1)!;
   expect(fact.segments).toEqual(["first on path", "early by allocation", "later"]);
   const turn = m.trace(`T${first.id}`, { sessionId: session.id, branch: "main", headTurnId: second.id });
@@ -184,19 +185,17 @@ test("plain Turn full and null content ceilings preserve the same uncut pending 
 
 test("a fact backlink groups citing history under visible current identity, including current archive", () => {
   const { m, first, second, session, note } = fixture();
-  expect(note.execute({ facts: [
-    { title: "First finding", sources: [{ address: `T${first.id}#E1`, text: "Original evidence" }] },
-    { title: "Later finding", sources: [{ address: `T${second.id}#E1`, text: "Later evidence" }] },
-  ] })).toContain("ok: F2");
+  expect(note.execute({ title: "First finding", sources: factSources([{ address: `T${first.id}#E1`, text: "Original evidence" }]) })).toContain("ok: F1");
+  expect(note.execute({ title: "Later finding", sources: factSources([{ address: `T${second.id}#E1`, text: "Later evidence" }]) })).toContain("ok: F2");
   const context = { kind: "manual" as const, sessionId: session.id, branch: "main", currentTurnId: second.id };
   const memory = m.tools(context).find(tool => tool.name === "memory")!;
-  const create = JSON.parse(memory.execute({ operations: [{ op: "create", text: "Rule", category: "constraint",
-    scope: "session", topics: [], reason: "first", supports: ["F1"] }], skipped: [] }));
+  const create = JSON.parse(memory.execute({ op: "create", text: "Rule", category: "constraint",
+    scope: "session", topics: [], reason: "first", supports: ["F1"] }));
   const id = create.committed[0].knowledgeId;
   const firstCommit = m.store.resolveVersionOrdinal(id, 1);
   const tag = m.store.versionTag(id, firstCommit);
-  const archive = JSON.parse(memory.execute({ operations: [{ op: "archive", kind: "budget", id: `K${id}#${tag}`,
-    reason: "reconsidered", supports: ["F2"] }], skipped: [] }));
+  const archive = JSON.parse(memory.execute({ op: "archive", kind: "budget", id: `K${id}#${tag}`,
+    reason: "reconsidered", supports: ["F2"] }));
   expect(archive.committed).toHaveLength(1);
   const text = m.trace("F1,F2", { sessionId: session.id, branch: "main", headTurnId: second.id, pageBudget: null });
   expect(text).toContain(`K${id}@v2 — cited by v1; current v2 (archived)`);
@@ -260,7 +259,7 @@ test("missing legacy bindings are corruption; titled corruption remains rejected
     .run(JSON.stringify([`S${session.id}/T${first.id}#assistant`]));
   expect(() => m.trace(`T${first.id}`)).toThrow("F1: missing legacy source bindings");
   expect(() => m.trace("F1")).toThrow("F1: missing legacy source bindings");
-  expect(note.execute({ facts: [{ title: "new", sources: [{ address: `T${first.id}#E1`, text: "segment" }] }] })).toContain("ok: F2");
+  expect(note.execute({ title: "new", sources: factSources([{ address: `T${first.id}#E1`, text: "segment" }]) })).toContain("ok: F2");
   m.store.db.prepare("UPDATE facts SET text = 'damaged' WHERE id=2").run();
   expect(() => m.trace("F2")).toThrow("source segments, roles and body disagree");
 });
@@ -295,14 +294,12 @@ test("a partially lost legacy binding fails every read and is readable after res
 
 test("a paged search keeps the selected fact preview after later writes", () => {
   const { m, first, second, note } = fixture();
-  expect(note.execute({ facts: [
-    { title: "First frozen", sources: [{ address: `T${first.id}#E1`, text: "shared finding first" }] },
-    { title: "Second frozen", sources: [{ address: `T${second.id}#E1`, text: "shared finding second" }] },
-  ] })).toContain("ok: F2");
+  expect(note.execute({ title: "First frozen", sources: factSources([{ address: `T${first.id}#E1`, text: "shared finding first" }]) })).toContain("ok: F1");
+  expect(note.execute({ title: "Second frozen", sources: factSources([{ address: `T${second.id}#E1`, text: "shared finding second" }]) })).toContain("ok: F2");
   const firstPage = m.search("shared finding", "facts", { cap: 1, maxTokens: 500 });
   const cursor = /cursor=([0-9a-f-]+)/.exec(firstPage)?.[1];
   expect(cursor).toBeDefined();
-  expect(note.execute({ facts: [{ title: "Third added", sources: [{ address: `T${second.id}#E2`, text: "shared finding third" }] }] })).toContain("ok: F3");
+  expect(note.execute({ title: "Third added", sources: factSources([{ address: `T${second.id}#E2`, text: "shared finding third" }]) })).toContain("ok: F3");
   const page = m.search("", "facts", { cursor });
   expect(page).toContain("Second frozen");
   expect(page).not.toContain("Third added");
@@ -321,17 +318,17 @@ test("Turn shows pending Raw and processed uncited entries only by address", () 
 
 test("invisible global current successor hides an earlier visible project identity without leaking its version", () => {
   const { m, first, second, session, note } = fixture();
-  expect(note.execute({ facts: [{ title: "Shared source", sources: [{ address: `T${first.id}#E1`, text: "Public evidence" }] }] })).toContain("ok: F1");
+  expect(note.execute({ title: "Shared source", sources: factSources([{ address: `T${first.id}#E1`, text: "Public evidence" }]) })).toContain("ok: F1");
   const memory = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: second.id })
     .find(tool => tool.name === "memory")!;
-  const create = JSON.parse(memory.execute({ operations: [{ op: "create", text: "Project rule", category: "constraint",
-    scope: "project", topics: [], reason: "original", supports: ["F1"] }], skipped: [] }));
+  const create = JSON.parse(memory.execute({ op: "create", text: "Project rule", category: "constraint",
+    scope: "project", topics: [], reason: "original", supports: ["F1"] }));
   const id = create.committed[0].knowledgeId;
   const peer = m.store.createSession({ projectId: m.store.getSession(session.id)!.projectId,
     host: "pi:peer", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const peerTurn = m.store.appendTurn({ sessionId: peer.id, kind: "turn", userPrompt: "private", startedAt: "now" });
   const privateNote = m.tools({ kind: "manual", sessionId: peer.id, branch: "main", currentTurnId: peerTurn.id }).find(tool => tool.name === "note")!;
-  expect(privateNote.execute({ facts: [{ title: "Private source", sources: [{ address: `T${peerTurn.id}#E1`, text: "Private evidence" }] }] })).toContain("ok: F2");
+  expect(privateNote.execute({ title: "Private source", sources: factSources([{ address: `T${peerTurn.id}#E1`, text: "Private evidence" }]) })).toContain("ok: F2");
   const changed = commitNoterKnowledge(m.store, { path: { sessionId: peer.id, branch: "main", headTurnId: peerTurn.id },
     run: { sessionId: peer.id, branch: "main", createdAt: "later" }, operations: [{ op: "update", knowledgeId: id,
       baseCommit: m.store.resolveVersionOrdinal(id, 1), text: "Private successor", category: "constraint", scope: "session",
@@ -345,10 +342,10 @@ test("invisible global current successor hides an earlier visible project identi
 
 test("Turn includes the contributing slice from another Turn's owner; exact entry enforces role", () => {
   const { m, first, second, session, note } = fixture();
-  const result = note.execute({ facts: [{ title: "Conversation advances", sources: [
+  const result = note.execute({ title: "Conversation advances", sources: factSources([
     { address: `T${first.id}#E1`, text: "Question is raised" },
     { address: `T${second.id}#E2`, text: "Pi agent answers" },
-  ] }] });
+  ]) });
   expect(result).toContain("ok: F1");
   const options = { sessionId: session.id, branch: "main", headTurnId: second.id, pageBudget: null };
   const turn = m.trace(`T${second.id}`, options);

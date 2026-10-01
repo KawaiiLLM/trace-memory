@@ -105,8 +105,8 @@ test("34c/92 archive state has a persisted body-free receipt without a write tag
     expect(carrier(notice).supplied.knowledgeStates).toEqual([{ fromCommit: 1, toCommits: [2] }]);
     expect((await h.prompt("archive unchanged"))?.message).toBeUndefined();
     // A state/history address is not a tagged base; there is no complete-read ledger.
-    await expect(h.tools.get("memory")!.execute("call", { operations: [{ op: "update", id: "K1@v2", text: "illegal",
-      category: "constraint", scope: "project", supports: [`F${support}`], topics: [], reason: "no handle" }], skipped: [] }, null, null, h.ctx))
+    await expect(h.tools.get("memory")!.execute("call", { op: "update", id: "K1@v2", text: "illegal",
+      category: "constraint", scope: "project", supports: [`F${support}`], topics: [], reason: "no handle" }, null, null, h.ctx))
       .rejects.toThrow("supply an exact K#tag");
   } finally { await h.dispose(); }
 });

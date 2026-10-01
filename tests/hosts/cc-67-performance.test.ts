@@ -117,9 +117,8 @@ async function fullChain(entries: number, due: boolean) {
     expect(importer.memory.store.db.prepare("SELECT count(*) AS n FROM task_claims").get()!.n).toBeGreaterThan(0);
     if (task.kind === "noting") {
       const input = task as NotingAgentInput, note = input.tools.find(tool => tool.name === "note")!;
-      const batch = { facts: [] };
-      note.execute(batch);
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+      note.execute({});
+      input.tools.find(tool => tool.name === "memory")!.execute({});
     }
     return { outcome: "success", output: "synthetic worker", audit: { available: false, reason: "deterministic fixture" } };
   });

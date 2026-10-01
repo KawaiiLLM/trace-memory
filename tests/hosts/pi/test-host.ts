@@ -124,7 +124,7 @@ function releaseAgentDir(agentDir: string) {
 
 /** An explicit note-only reply. It does not complete N without a separate memory call. */
 export const emptyNoteReply = (): Reply => ({ ...reply(""), stopReason: "toolUse",
-  content: [{ type: "toolCall", id: "note-empty", name: "note", arguments: { facts: [] } }] });
+  content: [{ type: "toolCall", id: "note-empty", name: "note", arguments: {} }] });
 const latestNoteResult = (conversation: Conversation) => conversation.messages
   .filter(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "note").at(-1) as Message | undefined;
 const parsedNoteResult = (conversation: Conversation): Record<string, unknown> | undefined => {
@@ -137,7 +137,7 @@ const parsedNoteResult = (conversation: Conversation): Record<string, unknown> |
 /** Held output is private until normal terminal publication; never treat a tool receipt as committed. */
 export const noteHeld = (conversation: Conversation): boolean => Array.isArray(parsedNoteResult(conversation)?.held);
 const memoryUsed = (conversation: Conversation) => conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "memory");
-const emptyMemoryReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-empty", name: "memory", arguments: { operations: [], skipped: [] } }] });
+const emptyMemoryReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-empty", name: "memory", arguments: {} }] });
 export const emptyNote = (conversation: Conversation): Reply | undefined =>
   conversation.systemPrompt?.startsWith("# Noting") ? !latestNoteResult(conversation) ? emptyNoteReply() : !memoryUsed(conversation) ? emptyMemoryReply() : undefined : undefined;
 
@@ -385,9 +385,7 @@ export function notingFact(conversation: Conversation): Reply {
   const previous = latestNoteResult(conversation);
   if (previous) return memoryUsed(conversation) ? reply("Done.") : emptyMemoryReply();
   return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const,
-    id: previous ? "note-2" : "note-1", name: "note", arguments: { facts: [
-      { title: "选择 pnpm", sources: [{ address: source, text: "用 pnpm，不要 npm" }] },
-    ] } }, { type: "toolCall" as const, id: "memory-empty", name: "memory", arguments: { operations: [], skipped: [] } }] };
+    id: previous ? "note-2" : "note-1", name: "note", arguments: { title: "选择 pnpm", sources: `[${source}] 用 pnpm，不要 npm` } }, { type: "toolCall" as const, id: "memory-empty", name: "memory", arguments: {} }] };
 }
 
 export const consolidationBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };

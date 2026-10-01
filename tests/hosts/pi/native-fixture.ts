@@ -26,7 +26,7 @@ export const noteAndMemory = (id: string, args: unknown, tokens = usage()) => ss
   { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0,
     delta: { role: "assistant", tool_calls: [
       { index: 0, id, type: "function", function: { name: "note", arguments: JSON.stringify(args) } },
-      { index: 1, id: `${id}-memory`, type: "function", function: { name: "memory", arguments: JSON.stringify({ operations: [], skipped: [] }) } },
+      { index: 1, id: `${id}-memory`, type: "function", function: { name: "memory", arguments: JSON.stringify({}) } },
     ] }, finish_reason: "tool_calls" }], usage: tokens }]);
 export const broken = () => new Response(JSON.stringify({ error: { message: "provider exploded" } }), { status: 500, headers: { "content-type": "application/json" } });
 
@@ -39,8 +39,8 @@ export const toolResults = (body: Body) => (body.messages ?? []).filter((m: Body
 export const submitted = (body: Body) => (body.messages ?? []).some((m: Body) =>
   (m.tool_calls ?? []).some((c: Body) => c.function?.name === "note"));
 
-export const noteBatch = { facts: [{ title: "选择 pnpm", sources: [{ address: "T1#E1", text: "用 pnpm，不要 npm" }] }] };
-export const memoryBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
+export const noteBatch = { title: "选择 pnpm", sources: "[T1#E1] 用 pnpm，不要 npm" };
+export const memoryBatch = {};
 
 /** A real Pi parent session that really runs extensions: `DefaultResourceLoader` accepts inline
  * `extensionFactories`, so `compact()` finds real handlers. Nothing here touches ~/.pi or

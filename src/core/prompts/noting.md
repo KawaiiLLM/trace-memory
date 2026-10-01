@@ -70,35 +70,34 @@ Keep enough for a newcomer to recover the discussion's main line, important bran
 
 1. Read the earlier facts, then the batch.
 2. Decide the facts under the Facts principles.
-3. Call `{{tool.note}}({facts})` to hold the facts privately. Omit `slot` to append; correct or edit one slot by supplying its complete replacement with `slot: "$n"`. Do not resend accepted siblings.
+3. Call `{{tool.note}}` once per fact with its title, one `sources` string of `[address] text` segments, and optional relations directly as arguments. Omit `slot` to append; correct one slot by supplying its complete replacement with `slot: "$n"`. Do not resend accepted siblings.
 4. With the Raw entries still available, apply the Knowledge principles. Continue an existing item by updating or archiving its exact `K#tag`.
-5. Call `{{tool.memory}}({operations, skipped: []})`, citing existing `F…` facts or accepted `$n` facts. Omit `slot` to append an operation; `slot: "Mn"` fully replaces it.
+5. Call `{{tool.memory}}` once per knowledge operation with its fields directly as arguments, citing existing `F…` facts or accepted `$n` facts. Omit `slot` to append; `slot: "Mn"` fully replaces it. Do not send `skipped`.
 6. Correct all rejected slots before finishing. Only normal model termination publishes both layers and advances the frozen Raw range together. Final prose is not a third completion tool.
 
 ## Output
 
-`{{tool.note}}({facts})` and `{{tool.memory}}({operations, skipped: []})` hold separate submissions; empty relation fields may be omitted.
+Each `{{tool.note}}` call holds one fact; each `{{tool.memory}}` call holds one knowledge operation. Several calls may be sent in one response; empty relation fields may be omitted.
 
-Explicitly call both tools even with zero output: `{{tool.note}}({facts: []})` and `{{tool.memory}}({operations: [], skipped: []})`.
+Explicitly call both tools even with zero output: `{{tool.note}}({})` and `{{tool.memory}}({})`.
 
 ```json
-{"facts":[{"title":"Pi agent ran the test suite",
-           "sources":[{"address":"T812#E7@assistant","text":"Pi agent ran pnpm test."},
-                      {"address":"T812#E8@observation","text":"The tool reported 12 tests passed."}]}]}
+{"title":"Pi agent ran the test suite",
+ "sources":"[T812#E7@assistant] Pi agent ran pnpm test.\n[T812#E8@observation] The tool reported 12 tests passed."}
 ```
 
 A relation in a later batch — the user withdraws the pnpm rule recorded as F340:
 
 ```json
-{"facts":[{"title":"The user withdrew the pnpm-only rule",
-           "sources":[{"address":"T901#E1@user","text":"The user withdrew the rule: 「Actually, npm is fine too」."}],
-           "negate":[["F340","strong"]]}]}
+{"title":"The user withdrew the pnpm-only rule",
+ "sources":"[T901#E1@user] The user withdrew the rule: 「Actually, npm is fine too」.",
+ "negate":[["F340","strong"]]}
 ```
 
-- Write in the user's language. Segment `text` is plain text, not a list or fenced code.
+- Write in the user's language. `sources` is one string, not an array: each source starts on its own `[address] ` line and may continue on following lines. Put no text before the first marker; markers are not stored. Segment text is plain text, not a list or fenced code.
 - Receipts say `held: $n` / `held: Mn`, never committed. Rejected items keep their slots; a failed replacement invalidates the old value.
 - Correct affected slots with complete replacements; accepted siblings survive. After a native schema refusal, an empty call lists rejected slots without resolving them.
-- `drop: ["$n"]` or `drop: ["Mn"]` removes slots without recycling numbers. A fact referenced by another fact or operation cannot be dropped.
+- `drop: "$n"` or `drop: "Mn"` in its own call removes slots without recycling numbers. A fact referenced by another fact or operation cannot be dropped.
 - A relation names an existing `F<id>` or an accepted earlier `$n` slot. Knowledge supports may cite any accepted fact slot in this run.
 - Empty calls confirm use but neither clear drafts nor resolve rejected slots. A subsequent structurally valid call clears a top-level call error only. Correct or drop rejected slots separately.
 - Knowledge create/update carries complete text, category, scope, topics, nonempty supports and reason. Archive carries op, id, kind, supports and reason, plus text for an invalid archive, and inherits category, scope and topics. Each newly written fact and knowledge body is at most 1,000 estimated tokens.

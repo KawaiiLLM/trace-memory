@@ -67,6 +67,9 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
         yield { type: "result", subtype: "success", session_id: `healthy-${invocation}`, is_error: false,
           result: "healthy", errors: [], usage: { input_tokens: 1, output_tokens: 1,
             cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+        yield { type: "result", subtype: "success", session_id: `healthy-${invocation}`, is_error: false,
+          result: "healthy", errors: [], usage: { input_tokens: 1, output_tokens: 1,
+            cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
         return;
       }
       let client: Client | undefined;
@@ -128,9 +131,11 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
 
     vi.useRealTimers();
     deadlineRun = false;
-    const nextTask = { kind: "noting", text: "next", prompt: "next", tools: [], acknowledgeRequest: vi.fn() } as unknown as NotingAgentInput;
+    const passEnd = vi.fn(() => "Review this run once.");
+    const nextTask = { kind: "noting", text: "next", prompt: "next", tools: [], acknowledgeRequest: vi.fn(), passEnd } as unknown as NotingAgentInput;
     const next = await worker.run(nextTask, 0);
     expect(next).toMatchObject({ outcome: "success", output: "healthy" });
+    expect(passEnd).toHaveBeenCalledTimes(1);
     expect(calls).toBe(2);
   } finally { vi.useRealTimers(); memory.close(); }
 });

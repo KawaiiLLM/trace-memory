@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
+import { factSources } from "../../support/seed.ts";
 import { renderFact, renderFactPreview, renderFactGroups } from "../../../src/core/render/index.ts";
 import { toolDefinitions, canonicalToolNames } from "../../../src/core/api/index.ts";
 import { assignVersionTag } from "../../../src/core/store/version-tags.ts";
@@ -25,15 +26,16 @@ function fixture(host = "pi:fixture") {
   return { memory, session, turn, source, entries, note };
 }
 const slice = (text: string, addresses: string[]) => ({ title: "Source-backed claim",
-  sources: addresses.map((address, index) => ({ address, text: index === 0 ? text : `Contributed at ${address}` })) });
+  sources: factSources(addresses.map((address, index) => ({ address, text: index === 0 ? text : `Contributed at ${address}` }))) });
 
 test("92: one note schema derives ordered entry roles and original harness, not fact-wide actor", () => {
   const f = fixture();
   try {
-    const schema = (toolDefinitions.find(t => t.name === "note")!.parameters.properties as any).facts.items;
-    expect(Object.keys(schema.properties)).toEqual(["slot", "title", "sources", "support", "negate"]);
-    expect(schema.properties.slot.description).toContain("N only");
-    const result = JSON.parse(f.note.execute({ facts: [slice("User proposed A; Pi agent reported B; tool returned C.", f.source)] }));
+    const schema = toolDefinitions.find(t => t.name === "note")!.parameters.properties as any;
+    expect(Object.keys(schema)).toEqual(["title", "sources", "support", "negate", "slot", "drop"]);
+    expect(schema.slot.description).toContain("N only");
+    expect(schema.sources.type).toBe("string");
+    const result = JSON.parse(f.note.execute(slice("User proposed A; Pi agent reported B; tool returned C.", f.source)));
     expect(result.factIds).toHaveLength(1);
     const fact = f.memory.store.getFact(result.factIds[0])!;
     expect(fact).toMatchObject({ category: null, actor: null, quote: null, status: null, source: f.source,
@@ -44,11 +46,48 @@ test("92: one note schema derives ordered entry roles and original harness, not 
     expect(renderFactPreview(fact, new Set(["text"]))).not.toContain("[null/null]");
     const next = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" })
       .find(tool => tool.name === "note")!;
-    const related = JSON.parse(next.execute({ facts: [{ ...slice("User confirmed the proposal", [f.source[0]!]),
-      support: [[`F${fact.id}`, "strong"]] }] }));
+    const related = JSON.parse(next.execute({ ...slice("User confirmed the proposal", [f.source[0]!]),
+      support: [[`F${fact.id}`, "strong"]] }));
     expect(related.factIds).toHaveLength(1);
     expect(f.memory.store.listFactRelationsOnPathOf([related.factIds[0]], { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id })
       .get(related.factIds[0])).toEqual(expect.arrayContaining([expect.objectContaining({ fromFact: related.factIds[0], toFact: fact.id, kind: "support" })]));
+  } finally { f.memory.close(); }
+});
+
+test("116: marked sources parse multiline segments without persisting markers or changing Raw order", () => {
+  const f = fixture();
+  try {
+    const sources = `[${f.source[3]}@observation] Tool returned C.\nThe second line belongs to this entry.\n[${f.source[0]}@user] User proposed A.`;
+    const receipt = JSON.parse(f.note.execute({ title: "Two contributions", sources }));
+    const fact = f.memory.store.getFact(receipt.factIds[0])!;
+    expect(fact.source).toEqual([`${f.source[0]}@user`, `${f.source[3]}@observation`]);
+    expect(fact.segments).toEqual(["User proposed A.", "Tool returned C.\nThe second line belongs to this entry."]);
+    expect(fact.text).toBe("User proposed A.\nTool returned C.\nThe second line belongs to this entry.");
+  } finally { f.memory.close(); }
+});
+
+test("116: the last source retains its authored trailing newline", () => {
+  const f = fixture();
+  try {
+    const sources = factSources([{ address: f.source[0]!, text: "First line\nSecond line\n" }]);
+    const receipt = JSON.parse(f.note.execute({ title: "Preserve source", sources }));
+    expect(f.memory.store.getFact(receipt.factIds[0])!.segments).toEqual(["First line\nSecond line\n"]);
+  } finally { f.memory.close(); }
+});
+
+test("116: malformed source string rejects only its call; existing role, duplicate, and empty checks remain", () => {
+  const f = fixture();
+  try {
+    const cases = [
+      `preamble\n[${f.source[0]}] User proposed A.`,
+      [{ address: f.source[0], text: "User proposed A." }],
+      `[${f.source[0]}@assistant] User proposed A.`,
+      `[${f.source[0]}] A\n[${f.source[0]}@user] B`,
+      `[${f.source[0]}] \n[${f.source[1]}] Pi agent reported B.`,
+    ];
+    for (const sources of cases) expect(f.note.execute({ title: "Rejected", sources })).toContain("rejected:");
+    expect(f.memory.store.listTurnFacts(f.turn.id)).toEqual([]);
+    expect(f.note.execute({ title: "Accepted", sources: `[${f.source[0]}] User proposed A.` })).toContain("ok: F1");
   } finally { f.memory.close(); }
 });
 
@@ -58,12 +97,12 @@ test("92: entry-only citations reject legacy, whole-Turn and multi-entry selecto
     for (const source of [`T${f.turn.id}`, `T${f.turn.id}@assistant`, `T${f.turn.id}#assistant`,
       `T${f.turn.id}#E1..E2`, `T${f.turn.id}#E1,E2`, `T${f.turn.id}#E1@thinking`,
       `${f.source[1]}@text`, `${f.source[2]}@call-1`]) {
-      const receipt = f.note.execute({ facts: [slice("wrong source", [source])] });
+      const receipt = f.note.execute(slice("wrong source", [source]));
       expect(receipt).toContain("rejected:");
     }
     expect(f.memory.store.listTurnFacts(f.turn.id)).toEqual([]);
-    expect(f.note.execute({ facts: [{ ...slice("wrong actor", [f.source[1]!]), actor: "user" }] })).toContain("unexpected field");
-    const accepted = JSON.parse(f.note.execute({ facts: [slice("Claude Code stated B", [f.source[1]!])] }));
+    expect(f.note.execute({ ...slice("wrong actor", [f.source[1]!]), actor: "user" })).toContain("expects one fact or {}");
+    const accepted = JSON.parse(f.note.execute(slice("Claude Code stated B", [f.source[1]!])));
     const fact = f.memory.store.getFact(accepted.factIds[0])!;
     expect(fact.roles).toEqual([{ role: "assistant", harness: "Claude Code" }]);
     expect(renderFact(fact, [])).toContain(`[${f.source[1]}@assistant]`);
@@ -73,7 +112,7 @@ test("92: entry-only citations reject legacy, whole-Turn and multi-entry selecto
 test("92: legacy knowledge is found as understanding in search and exact history without rewriting category", () => {
   const f = fixture();
   try {
-    const written = JSON.parse(f.note.execute({ facts: [slice("User identified a lasting design mechanism", [f.source[0]!])] }));
+    const written = JSON.parse(f.note.execute(slice("User identified a lasting design mechanism", [f.source[0]!])));
     const factId = written.factIds[0];
     const runId = Number((f.memory.store.db.prepare("SELECT run_id FROM facts WHERE id=?").get(factId) as { run_id: number }).run_id);
     const knowledgeId = Number(f.memory.store.db.prepare("INSERT INTO knowledge (project_id,origin_session_id,author) VALUES (?,?,'legacy')")
@@ -90,8 +129,7 @@ test("92: legacy knowledge is found as understanding in search and exact history
     expect(f.memory.store.getKnowledgeRevision(knowledgeId, commit)!.category).toBe("mechanism");
     const tools = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" });
     expect(tools.find(tool => tool.name === "trace")!.execute({ address: `K${knowledgeId}@v1` })).toContain("legacy mechanism needle");
-    const archived = JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ operations: [
-      { op: "archive", kind: "budget", id: `K${knowledgeId}#${f.memory.store.versionTag(knowledgeId, commit)}`, supports: [`F${factId}`], reason: "Legacy item retired" }], skipped: [] }));
+    const archived = JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${knowledgeId}#${f.memory.store.versionTag(knowledgeId, commit)}`, supports: [`F${factId}`], reason: "Legacy item retired" }));
     expect(archived.committed).toHaveLength(1);
     expect(f.memory.store.getKnowledgeRevision(knowledgeId, f.memory.store.resolveVersionOrdinal(knowledgeId, 2))!.category).toBe("mechanism");
   } finally { f.memory.close(); }
@@ -105,8 +143,8 @@ test("92: CC adapter writes against the borrowed target and renders legacy categ
     const adapter = new CcForegroundTools({ forkToolCall: () => null, waitForToolCall: async () => projection,
       toolProjection: async () => ({ memory: f.memory, binding: projection }) } as unknown as CcCoordinator);
     const meta = { "claudecode/toolUseId": "borrowed-call" };
-    expect((await adapter.call("note", { facts: [{ ...slice("wrong", [f.source[1]!]), actor: "agent" }] }, meta)).isError).toBe(true);
-    const written = await adapter.call("note", { facts: [slice("Pi agent explained the rule; the tool returned evidence", [f.source[1]!, f.source[3]!])] }, meta);
+    expect((await adapter.call("note", { ...slice("wrong", [f.source[1]!]), actor: "agent" }, meta)).isError).toBe(true);
+    const written = await adapter.call("note", slice("Pi agent explained the rule; the tool returned evidence", [f.source[1]!, f.source[3]!]), meta);
     expect(written.isError).toBeUndefined();
     const id = JSON.parse(written.content[0]!.text).factIds[0];
     expect(f.memory.store.getFact(id)!.roles).toEqual([{ role: "assistant", harness: "Pi agent" }, { role: "observation" }]);
@@ -122,7 +160,7 @@ test("92: CC adapter writes against the borrowed target and renders legacy categ
     expect(searched.content[0]!.text).toContain(`[K${knowledgeId}@v1] [understanding/session]`);
     const injected = f.memory.injection({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
     const tag = injected.text.match(new RegExp(`K${knowledgeId}#[a-z]{4,}`))![0];
-    const archived = await adapter.call("memory", { operations: [{ op: "archive", kind: "budget", id: tag, supports: [`F${id}`], reason: "retired" }], skipped: [] }, meta);
+    const archived = await adapter.call("memory", { op: "archive", kind: "budget", id: tag, supports: [`F${id}`], reason: "retired" }, meta);
     expect(archived.isError).toBeUndefined();
     expect(JSON.parse(archived.content[0]!.text).committed[0].version).toBe(`K${knowledgeId}@v2`);
     const unbound = new CcForegroundTools({ toolProjection: async () => ({ memory: f.memory }) } as unknown as CcCoordinator);
@@ -136,12 +174,12 @@ test("92: essential quoted identifiers stay literal and legacy groups name only 
   const f = fixture("cc:legacy");
   try {
     const text = 'Claude Code received the error 「unknown knowledge K12」 and 「missing F9」.';
-    const receipt = JSON.parse(f.note.execute({ facts: [slice(text, [f.source[0]!])] }));
+    const receipt = JSON.parse(f.note.execute(slice(text, [f.source[0]!])));
     expect(receipt.factIds).toHaveLength(1);
     expect(f.memory.store.getFact(receipt.factIds[0])!.text).toBe(text);
     expect(f.memory.store.listFactRelations(receipt.factIds[0])).toEqual([]);
     const next = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" }).find(t => t.name === "note")!;
-    expect(next.execute({ facts: [{ ...slice(text, [f.source[0]!]), support: [["F99999", "strong"]] }] })).toContain("rejected:");
+    expect(next.execute({ ...slice(text, [f.source[0]!]), support: [["F99999", "strong"]] })).toContain("rejected:");
     const legacy = f.memory.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: [{
       turnId: f.turn.id, category: "observation", actor: "agent", text: "A pasted discussion", source: [`T${f.turn.id}#assistant`], entryIds: [f.entries[1]!.id], createdAt: "now",
     }] });
@@ -161,8 +199,8 @@ test("92: N material carries legacy owner-session harness context without rewrit
     const input = raw as NotingAgentInput;
     inputText = input.text;
     input.reportRequest({ fixture: "legacy N" });
-    input.tools.find(t => t.name === "note")!.execute({ facts: [] });
-    input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+    input.tools.find(t => t.name === "note")!.execute({});
+    input.tools.find(t => t.name === "memory")!.execute({});
     return { outcome: "success", output: "done", request: { fixture: "legacy N" } };
   });
   try {

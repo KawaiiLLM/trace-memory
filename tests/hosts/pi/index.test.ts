@@ -40,10 +40,10 @@ test("92 Pi registered tool rejects old fields and writes entry roles through th
   const source = `T1#E${user.entryOrdinal}`;
   const note = h.tools.get("note")!;
   await expect(note.execute("bad", { facts: [{ text: "invalid", source: [source], actor: "user" }] }, undefined, undefined, h.ctx))
-    .rejects.toThrow(/unexpected field/);
+    .rejects.toThrow(/note expects one fact or \{\} only/);
   await expect(note.execute("old", { facts: [{ text: "old shape", source: [source] }] }, undefined, undefined, h.ctx))
-    .rejects.toThrow(/title|unexpected field/);
-  const accepted = await note.execute("good", { facts: [{ title: "Newer policy", sources: [{ address: source, text: "User chose the newer policy" }] }] }, undefined, undefined, h.ctx);
+    .rejects.toThrow(/note expects one fact or \{\} only/);
+  const accepted = await note.execute("good", { title: "Newer policy", sources: `[${source}] User chose the newer policy` }, undefined, undefined, h.ctx);
   const result = JSON.parse(accepted.content[0].text);
   expect(h.memory.store.getFact(result.factIds[0])!.roles).toEqual([{ role: "user" }]);
   expect(h.memory.store.getFact(result.factIds[0])!.title).toBe("Newer policy");
@@ -51,14 +51,14 @@ test("92 Pi registered tool rejects old fields and writes entry roles through th
   await expect(trace.execute("tool-removed", { address: source, tool: 0 }, undefined, undefined, h.ctx))
     .rejects.toThrow(/unexpected parameter|unexpected field/);
   const write = h.tools.get("memory")!;
-  const created = await write.execute("create", { operations: [{ op: "create", text: "Keep the chosen policy", category: "constraint", scope: "session",
-    topics: [], supports: [`F${result.factIds[0]}`], reason: "policy" }], skipped: [] }, undefined, undefined, h.ctx);
+  const created = await write.execute("create", { op: "create", text: "Keep the chosen policy", category: "constraint", scope: "session",
+    topics: [], supports: [`F${result.factIds[0]}`], reason: "policy" }, undefined, undefined, h.ctx);
   const identity = JSON.parse(created.content[0].text).committed[0];
   expect(identity.version).toBe(`K${identity.knowledgeId}@v1`);
   const injection = h.memory.injection({ sessionId: 1, branch: "main", headTurnId: 1 });
   const tag = injection.text.match(new RegExp(`K${identity.knowledgeId}#[a-z]{4,}`))![0];
   // The registered adapter never traces or registers this injected version before archive.
-  const archived = await write.execute("archive", { operations: [{ op: "archive", kind: "budget", id: tag, supports: [`F${result.factIds[0]}`], reason: "replaced" }], skipped: [] }, undefined, undefined, h.ctx);
+  const archived = await write.execute("archive", { op: "archive", kind: "budget", id: tag, supports: [`F${result.factIds[0]}`], reason: "replaced" }, undefined, undefined, h.ctx);
   expect(JSON.parse(archived.content[0].text).committed[0].version).toBe(`K${identity.knowledgeId}@v2`);
 });
 
@@ -115,7 +115,8 @@ test("noting through runAgent commits the exact provider request, prompt, model,
   expect(run.outcome).toBe("success");
   expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test");
   expect(JSON.parse(run.request!)).toEqual(h.requests.at(-1));
-  expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult"]);
+  expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult", "assistant", "user"]);
+  expect(String(h.conversations.at(-1)!.messages.at(-1)!.content)).toContain("Before publication, review this run once.");
   expect(h.conversations[0]!.systemPrompt).toBe(loadPrompt("noting.md"));
   expect(h.conversations[0]!.messages).toHaveLength(1);
   expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
@@ -325,7 +326,8 @@ test("core contains no Pi imports and host imports core only through the facade"
 test("17b supersedes watermark growth: compressed source labels count along with CJK content", async () => {
   const h = host({ "noting.triggerTokens": 16 }); // the two labels and their two characters, and nothing else
   await h.prompt("一"); await h.answer("a"); await h.drain();
-  expect(h.requests).toHaveLength(3); // explicit empty note, memory, terminal reply
+  expect(h.requests).toHaveLength(4); // explicit empty note, memory, terminal reply, fixed review reply
+  expect(JSON.stringify((h.requests.at(-1) as { messages: unknown[] }).messages)).toContain("Before publication, review this run once.");
   expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
 });
 
@@ -604,12 +606,13 @@ test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes
   expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   h.provider(async c => notingFact(c));
   await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(2); // completion does not chain; the busy second turn was skipped
+  expect(h.requests).toHaveLength(3); // first run's fixed review, but no chained run for the busy second turn
+  expect(JSON.stringify((h.requests.at(-1) as { messages: unknown[] }).messages)).toContain("Before publication, review this run once.");
   expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(false);
   await h.answer(); await h.drain();
-  expect(h.requests).toHaveLength(4); // the later turn admits one batch
+  expect(h.requests).toHaveLength(6); // the later turn admits one batch and its fixed review
   await h.prompt("fourth"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(4); // a below-threshold turn creates no extra worker
+  expect(h.requests).toHaveLength(6); // a below-threshold turn creates no extra worker
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: "S1/T2", rangeTo: "S1/T3" });
 });
 
@@ -620,8 +623,9 @@ test("spec overflow policy: a subagent noting fetches cut evidence through the t
   const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1#E1..E5", full: true } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.prompt("next main turn"); await h.answer("word ".repeat(1000)); await h.drain();
-  expect(h.conversations).toHaveLength(3);
+  expect(h.conversations).toHaveLength(4);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
+  expect(JSON.stringify(h.conversations.at(-1)!.messages)).toContain("Before publication, review this run once.");
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
   expect(result.toolCallId).toBe("call-1"); expect(result.isError).toBe(false);
   expect(result.content[0]!.text).toBe(h.memory.trace("T1#E1..E5", { full: true }));
@@ -630,7 +634,7 @@ test("spec overflow policy: a subagent noting fetches cut evidence through the t
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
   expect(JSON.parse(run.response!).fetched).toEqual([{ address: "T1#E1..E5", input: { address: "T1#E1..E5", full: true }, content: h.memory.trace("T1#E1..E5", { full: true }) }]);
-  expect(JSON.parse(run.request!)).toEqual(h.requests[2]);
+  expect(JSON.parse(run.request!)).toEqual(h.requests.at(-1));
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
@@ -657,13 +661,13 @@ test("main facade tools bind each call to the current turn, commit immediately a
     await h.emit("tool_result", { toolCallId: name === "note" ? "n1" : undefined, toolName: name, input, ...result, isError: false });
     return result.content[0].text as string;
   };
-  const note = { facts: [{ title: "Package choice", sources: [{ address: "T1#E1", text: "Use pnpm" }] }] };
+  const note = { title: "Package choice", sources: "[T1#E1] Use pnpm" };
   expect(await call("note", note)).toContain("ok: F1");
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
   expect(h.memory.store.listRuns(1)[0]).toMatchObject({ kind: "manual", branch: "main", rangeFrom: "S1/T1", request: JSON.stringify(note) });
   expect(h.memory.store.listToolCalls(1)).toHaveLength(1);
   await h.prompt("Make it durable"); await h.answer();
-  const batch = { operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] };
+  const batch = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
   expect(await call("memory", batch)).not.toContain("rejected:");
   expect(h.memory.store.getKnowledge(1)).not.toBeNull();
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ kind: "manual", rangeFrom: "S1/T2", request: JSON.stringify(batch) });
@@ -774,7 +778,7 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   const note = (text: string) => {
     const current = state(), tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: current.head, branch: current.branch,
       triggerEntryId: target().triggerEntryId });
-    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ title: text, sources: [{ address: `T${current.head}#E1`, text }] }] }));
+    const receipt = JSON.parse(tools[2]!.execute({ title: text, sources: `[T${current.head}#E1] ${text}` }));
     expect(receipt.results[0]).toMatch(/^ok:/);
     return receipt.factIds[0] as number;
   };
@@ -787,8 +791,8 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   h.entries.splice(0, h.entries.length, ...root); await h.emit("session_tree");
   const rootFact = note("Root rule");
   const rootTools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: 1, branch: state().branch, triggerEntryId: target().triggerEntryId });
-  const rootReceipt = JSON.parse(rootTools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Create from the root path.",
-    text: "Root rule", category: "constraint", scope: "project", supports: [`F${rootFact}`] }], skipped: [] }));
+  const rootReceipt = JSON.parse(rootTools[3]!.execute({ op: "create", topics: [], reason: "Create from the root path.",
+    text: "Root rule", category: "constraint", scope: "project", supports: [`F${rootFact}`] }));
   const rootCommit = rootReceipt.committed[0].commit as number;
 
   const update = async (text: string, factId: number, sequence: number) => {
@@ -1007,8 +1011,8 @@ test("N jointly publishes a fact and knowledge; the next prompt delivers only th
     if (c.messages.some(m => m.role === "toolResult")) return reply("Done.");
     const note = notingFact(c).content[0]!;
     return { ...reply(""), stopReason: "toolUse", content: [note, { type: "toolCall", id: "memory-1", name: "memory",
-      arguments: { operations: [{ op: "create", topics: [], reason: "The user chose pnpm.", text: "Use pnpm, never npm",
-        category: "constraint", scope: "session", supports: ["$1"] }], skipped: [] } }] };
+      arguments: { op: "create", topics: [], reason: "The user chose pnpm.", text: "Use pnpm, never npm",
+        category: "constraint", scope: "session", supports: ["$1"] } }] };
   });
   await h.turn();
   expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"]]);

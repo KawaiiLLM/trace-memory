@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, type ToolDefinition } from "../../source-fixture.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>, note: ToolDefinition;
-const fact = (extra = {}) => ({ title: "Package manager choice", sources: [{ address: "T1#E1", text: "Use pnpm." }], ...extra });
+const fact = (extra = {}) => ({ title: "Package manager choice", sources: "[T1#E1] Use pnpm.", ...extra });
 beforeEach(() => {
   memory = sourceSeededMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }));
   const p = memory.store.createProject({ name: "p", declaredBy: "mark" });
@@ -13,7 +13,7 @@ beforeEach(() => {
 afterEach(() => memory.close());
 
 for (const category of ["question", "proposal", "decision", "observation", "interpretation", "event"] as const) test(`legacy category ${category} remains readable but is rejected on new writes`, () => {
-  expect(note.execute({ facts: [fact({ category })] })).toContain("unexpected field");
+  expect(note.execute(fact({ category }))).toContain("expects one fact");
   expect(memory.store.listSessionFacts(1)).toEqual([]);
   const stored = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "source time" },
     facts: [{ turnId: 1, category, actor: "user", text: "Use pnpm.", source: ["T1#user"], entryIds: [memory.store.sourcePath(1, "main", 1)[0]!.id],
@@ -38,10 +38,11 @@ for (const [label, changes, error] of [
   ["caller-selected role", { role: "user" }, "unexpected field"],
   ["retired quote", { quote: "Use pnpm." }, "unexpected field"],
   ["timestamp", { timestamp: "invented" }, "unexpected field"],
-  ["empty source", { sources: [] }, "sources"],
-  ["invalid source", { sources: [{ address: "T1", text: "Use pnpm." }] }, "source"],
-  ["missing entry source", { sources: [{ address: "T1#E99", text: "Use pnpm." }] }, "invalid source"],
-  ["block-selected source", { sources: [{ address: "T1#E1@text", text: "Use pnpm." }] }, "invalid source"],
+  ["empty source", { sources: "" }, "sources"],
+  ["old array source", { sources: [{ address: "T1#E1", text: "Use pnpm." }] }, "sources"],
+  ["invalid source", { sources: "[T1] Use pnpm." }, "source"],
+  ["missing entry source", { sources: "[T1#E99] Use pnpm." }, "invalid source"],
+  ["block-selected source", { sources: "[T1#E1@text] Use pnpm." }, "invalid source"],
   ["self handle", { support: [["$1", "weak"]] }, "earlier"],
   ["zero handle", { support: [["$0", "weak"]] }, "earlier"],
   ["missing fact", { negate: [["F101", "strong"]] }, "existing"],
@@ -49,11 +50,12 @@ for (const [label, changes, error] of [
   ["unknown strength", { support: [["$1", "medium"]] }, "strength"],
   ["invalid relation target", { support: [["K7", "weak"]] }, "target"],
 ] as const) test(`note rejects ${label} and writes nothing`, () => {
-  expect(note.execute({ facts: [fact(changes)] })).toContain(error);
+  expect(note.execute(fact(changes))).toContain(["category", "actor", "status", "role", "quote", "timestamp"].some(key => key in changes)
+    ? "expects one fact" : error);
   expect(memory.store.listSessionFacts(1)).toEqual([]);
 });
 test("new episodes derive the entry role and keep completion wording in the body", () => {
-  expect(note.execute({ facts: [fact({ sources: [{ address: "T1#E1", text: "completed: the user confirmed pnpm" }] })] })).toContain("ok: F1");
+  expect(note.execute(fact({ sources: "[T1#E1] completed: the user confirmed pnpm" }))).toContain("ok: F1");
   const stored = memory.store.getFact(1)!;
   expect(stored).toMatchObject({ title: "Package manager choice", text: "completed: the user confirmed pnpm", source: ["T1#E1"], createdAt: "source time" });
   expect(stored.roles).toEqual([{ role: "user" }]);
@@ -64,9 +66,10 @@ test("new episodes derive the entry role and keep completion wording in the body
   expect(memory.trace("F1")).not.toContain("[null/null]");
 });
 
-test("local handles resolve to earlier facts and existing facts remain valid targets", () => {
-  expect(note.execute({ facts: [fact(), fact({ support: [["$1", "weak"]] })] })).toContain("F2");
-  expect(note.execute({ facts: [fact({ negate: [["F1", "strong"]] })] })).toContain("F3");
+test("manual calls commit separately and can relate to existing facts", () => {
+  expect(note.execute(fact())).toContain("F1");
+  expect(note.execute(fact({ support: [["F1", "weak"]] }))).toContain("F2");
+  expect(note.execute(fact({ negate: [["F1", "strong"]] }))).toContain("F3");
   expect(memory.trace("F2")).toContain("support F1 weak");
   expect(memory.trace("F1")).toContain("negate F3 strong");
 });

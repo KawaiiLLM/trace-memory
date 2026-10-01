@@ -127,7 +127,7 @@ test("19c 2026-09-08: a checkpoint with an unanswered tool call defers the launc
     // No facts in either batch: a noting delivery would pause the next inherited-context task on
     // 17b's own rule, which is not what this test is about.
     // 26a: an empty batch is submitted explicitly, and still creates no delivery.
-    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", { facts: [] }));
+    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", {}));
     await f.turn();
     await vi.waitFor(() => expect(notingRuns(f.h)).toHaveLength(1), { timeout: 5000 });
     // New foreground activity that ends inside an assistant tool-call group: due, but not a safe

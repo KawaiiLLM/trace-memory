@@ -12,11 +12,11 @@ import { skipRest } from "../../dreaming-skips.ts";
 
 function seeded(config: Record<string, unknown> = {}) {
   const calls: NotingAgentInput[] = [];
-  // 26a: a Noting run completes its batch by submitting; an empty one is `{facts: []}`.
+  // 116: explicit empty N output requires one empty call to each tool.
   const fallback = async (raw: unknown) => { const input = raw as NotingAgentInput; calls.push(input);
     if (input.kind === "noting") {
-      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+      input.tools.find(tool => tool.name === "note")!.execute({});
+      input.tools.find(tool => tool.name === "memory")!.execute({});
     }
     return { outcome: "success" as const, output: "", request: { probe: true } }; };
   const scenarios = new AdmittedDreamerScenarios(fallback);
@@ -25,9 +25,8 @@ function seeded(config: Record<string, unknown> = {}) {
   const s = m.store.createSession({ host: "review", startedAt: "2026-09-08", firstReplyAt: "2026-09-08", projectId: p.id, enrollmentChoice: true });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });
   const tools = m.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ facts: [
-    { title: "Review evidence", sources: [{ address: `T${t.id}#E1`, text }], ...extra }] });
-  const knowledge = (text: string) => tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
+  const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ title: "Review evidence", sources: `[T${t.id}#E1] ${text}`, ...extra });
+  const knowledge = (text: string) => tools.find(tool => tool.name === "memory")!.execute({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] });
   return { m, calls, s, t, note, knowledge, scenarios };
 }
 
@@ -181,7 +180,7 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
     expect(f.note("Use SQLite")).toContain("ok: F1");
     const memory = f.m.tools({ kind: "manual", sessionId: f.s.id, branch: "main", currentTurnId: f.t.id }).find(tool => tool.name === "memory")!;
     const content = { text: "Use SQLite", category: "constraint", scope: "project", supports: ["F1"], reason: "Classify this conclusion." };
-    expect(memory.execute({ operations: [{ op: "create", ...content, topics: ["a, b"] }], skipped: [] })).toContain("committed");
+    expect(memory.execute({ op: "create", ...content, topics: ["a, b"] })).toContain("committed");
     const entries = hydrate(f.m.store.sourcePath(f.s.id, "main", f.t.id), f.m.store);
     f.m.selectEntries(f.s.id, "main", entries.map(entry => entry.id));
     const path = { sessionId: f.s.id, branch: "main", headTurnId: f.t.id, triggerEntryId: entries.at(-1)!.id };

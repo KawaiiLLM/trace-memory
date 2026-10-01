@@ -16,23 +16,29 @@ export function entry(store: Store, sessionId: number, turnId: number, nativeId:
     nativeId, role, text, raw: JSON.stringify({ role, content: text }), calls: [] });
 }
 
+/** Authored public note shape; parsing and authority remain the production tool's responsibility. */
+export const factSources = (segments: readonly { address: string; text: string }[]): string =>
+  segments.map(({ address, text }) => `[${address}] ${text}`).join("\n");
+
 type NewSeed = { title: string; sources: readonly { entry: SourceEntry; text: string }[];
   negate?: readonly (readonly [number, "strong" | "weak"])[] };
 
-/** One real manual note call for the supplied batch; Core owns ordering, roles and owning Turn. */
+/** One real manual note call per supplied fact; Core owns ordering, roles and owning Turn. */
 export function facts(memory: TraceMemory, path: KnowledgePath, items: readonly NewSeed[]): Fact[] {
   if (path.headTurnId === null || !path.branch) throw new Error("facts require an explicit headed branch");
   const tool = memory.tools({ kind: "manual", sessionId: path.sessionId, branch: path.branch,
     currentTurnId: path.headTurnId }).find(tool => tool.name === "note")!;
-  const receipt = tool.execute({ facts: items.map(item => ({ title: item.title, sources: item.sources.map(source => ({
-    address: `T${source.entry.turnId}#E${source.entry.entryOrdinal}`, text: source.text,
-  })), ...(item.negate?.length ? { negate: item.negate.map(([id, strength]) => [`F${id}`, strength]) } : {}) })) });
-  if (receipt.startsWith("rejected:")) throw new Error(`fact seed failed: ${receipt}`);
-  const result = JSON.parse(receipt) as { factIds?: number[]; results?: string[] };
-  if (result.factIds?.length !== items.length || result.results?.length !== items.length ||
-      result.results.some((message, index) => message !== `ok: F${result.factIds![index]}`))
-    throw new Error(`fact seed failed: ${JSON.stringify(result)}`);
-  return result.factIds.map(id => {
+  const ids = items.map(item => {
+    const receipt = tool.execute({ title: item.title, sources: factSources(item.sources.map(source => ({
+      address: `T${source.entry.turnId}#E${source.entry.entryOrdinal}`, text: source.text,
+    }))), ...(item.negate?.length ? { negate: item.negate.map(([id, strength]) => [`F${id}`, strength]) } : {}) });
+    if (receipt.startsWith("rejected:")) throw new Error(`fact seed failed: ${receipt}`);
+    const result = JSON.parse(receipt) as { factIds?: number[]; results?: string[] };
+    if (result.factIds?.length !== 1 || result.results?.[0] !== `ok: F${result.factIds[0]}`)
+      throw new Error(`fact seed failed: ${JSON.stringify(result)}`);
+    return result.factIds[0]!;
+  });
+  return ids.map(id => {
     const committed = memory.store.getFact(id);
     if (!committed) throw new Error(`fact seed committed without readable F${id}`);
     return committed;

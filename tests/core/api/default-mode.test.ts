@@ -15,8 +15,8 @@ test.each(choices)("N executes $expected with $name", async ({ config, mode, exp
   const memory = sourceSeededMemory(":memory:", async raw => {
     const input = raw as NotingAgentInput;
     calls.push(input);
-    expect(input.tools.find(t => t.name === "note")!.execute({ facts: [] })).not.toContain("rejected:");
-    expect(input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).not.toContain("rejected:");
+    expect(input.tools.find(t => t.name === "note")!.execute({})).not.toContain("rejected:");
+    expect(input.tools.find(t => t.name === "memory")!.execute({})).not.toContain("rejected:");
     return { outcome: "success", output: "Done.", request: { fake: true } };
   }, config);
   try {

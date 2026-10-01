@@ -187,13 +187,13 @@ test("92: a Noter overflow fallback discards the first held pool and publishes o
     const finalText = "Package trace-memory moved from beta.2 to beta.3";
     f.script((body: Body) => {
       if (!worker(body)) return say("Seeded.");
-      return submitted(body) ? say("Done.") : noteAndMemory("seed", { facts: [{ ...noteBatch.facts[0], sources: [{ address: "T1#E1", text: oldText }] }] });
+      return submitted(body) ? say("Done.") : noteAndMemory("seed", { ...noteBatch, sources: `[T1#E1] ${oldText}` });
     });
     await f.turn("seed source " + "word ".repeat(100));
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual([oldText]);
 
     let inserted = false;
-    const finalBatch = { facts: [{ ...noteBatch.facts[0], sources: [{ address: "T2#E1", text: finalText }] }] };
+    const finalBatch = { ...noteBatch, sources: `[T2#E1] ${finalText}` };
     f.script((body: Body) => {
       if (!worker(body)) return say("Target recorded.");
       if (!fresh(body)) {
@@ -242,7 +242,7 @@ test.each([
 
 test.each([
   ["a nonempty", noteBatch],
-  ["an explicit empty", { facts: [] }],
+  ["an explicit empty", {}],
 ])("92: %s held note followed by overflow can fall back, but neither failed attempt publishes", async (_kind, batch) => {
   const f = await fixture();
   try {
@@ -386,7 +386,7 @@ test("27b 2026-09-10: a capacity fallback latches nothing — the next task requ
     // (25b), and this case is about the fallback latching nothing, not about that pause.
     let submissions = 0;
     f.script((body: Body) => !worker(body) ? say("好的。") : submitted(body) ? say("Done.")
-      : noteAndMemory(`t${++submissions}`, submissions === 1 ? { facts: [] } : { facts: [{ ...noteBatch.facts[0], source: ["T2#E1"] }] }));
+      : noteAndMemory(`t${++submissions}`, submissions === 1 ? {} : { ...noteBatch, sources: noteBatch.sources.replace("[T1#E1]", "[T2#E1]") }));
     await f.turn();
     const first = await settled(f);
     expect(first.mode).toBe("subagent");
@@ -456,7 +456,7 @@ test("27c 2026-09-10: the reported live case — an entry the compaction did not
   const f = await fixture({ notingModel: "fake/test-thinking", notingThinking: "high" });
   try {
     let notes = 0;
-    f.script((body: Body) => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory(`t${++notes}`, notes === 1 ? noteBatch : { facts: [{ ...noteBatch.facts[0], source: ["T2#E1"] }] }));
+    f.script((body: Body) => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory(`t${++notes}`, notes === 1 ? noteBatch : { ...noteBatch, sources: noteBatch.sources.replace("[T1#E1]", "[T2#E1]") }));
     await f.turn(); // an ordinary fork Noting first: fork mode always runs on the session model
     const first = await settled(f);
     expect(first.mode).toBe("fork");

@@ -86,8 +86,8 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
     inputs.push(input);
     input.reportRequest({ offline: true });
     if (input.kind === "noting") {
-      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+      input.tools.find(tool => tool.name === "note")!.execute({});
+      input.tools.find(tool => tool.name === "memory")!.execute({});
     }
     return { outcome: "success", output: "No new knowledge.", request: { offline: true } };
   }, { noting: { triggerTokens: 1_000_000 } });

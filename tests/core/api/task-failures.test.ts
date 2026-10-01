@@ -47,8 +47,8 @@ for (const final of ["success", "failure"] as const) test(`32c: fork refusal + $
   m = open(db, async raw => {
     if (final === "success") {
       const input = raw as NotingAgentInput;
-      input.tools.find(t => t.name === "note")!.execute({ facts: [] });
-      input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+      input.tools.find(t => t.name === "note")!.execute({});
+      input.tools.find(t => t.name === "memory")!.execute({});
     }
     return { outcome: final, output: final, request };
   });
@@ -136,7 +136,7 @@ test("92: N auto-off fences late D writes, settles skips and own output, and pre
     return new Promise(resolve => input.signal!.addEventListener("abort", () => {
       expect(m.store.getClaim(target.sessionId, "dreaming")).toEqual(claim);
       expect(late()).toContain("rejected:");
-      expect(manual.execute({ facts: [{ title: "Late note", sources: [{ address: `T${target.headTurnId}#E1`, text: "late note" }] }] })).toContain("Disabled");
+      expect(manual.execute({ title: "Late note", sources: `[T${target.headTurnId}#E1] late note` })).toContain("Disabled");
       resolve({ outcome: "cancelled", output: "aborted", request });
     }, { once: true }));
   };
@@ -170,12 +170,12 @@ test.each([false, true])("92: corrected refusal resets only after atomic termina
   let attempt = 0;
   const good = open(db, async raw => {
     const tools = (raw as NotingAgentInput).tools;
-    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Invalid citation", sources: [{ address: "T999#E1", text: "invalid citation" }] }] })).toContain("rejected");
-    expect(tools.find(t => t.name === "note")!.execute({ facts: [], drop: ["$1"] })).not.toContain("rejected:");
+    expect(tools.find(t => t.name === "note")!.execute({ title: "Invalid citation", sources: "[T999#E1] invalid citation" })).toContain("rejected");
+    expect(tools.find(t => t.name === "note")!.execute({ drop: "$1" })).not.toContain("rejected:");
     const text = `accepted attempt ${++attempt}`;
-    expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ title: "Held evidence", sources: [{ address: `T${t.headTurnId}#E1`, text }] }] })).toContain("held: $2");
-    expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text,
-      category: "constraint", scope: "session", supports: ["$2"], topics: [], reason: "joint extraction" }], skipped: [] })).toContain("held");
+    expect(tools.find(tool => tool.name === "note")!.execute({ title: "Held evidence", sources: `[T${t.headTurnId}#E1] ${text}` })).toContain("held: $2");
+    expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", text,
+      category: "constraint", scope: "session", supports: ["$2"], topics: [], reason: "joint extraction" })).toContain("held");
     expect(good.store.listSessionFacts(t.sessionId)).toEqual([]);
     expect(good.store.listKnowledgeRevisions()).toEqual([]);
     return { outcome: "success", output: "corrected", request };
@@ -373,8 +373,8 @@ test("92: successful N publication resets its own task in the terminal transacti
   const m = open(":memory:", async raw => {
     if (!succeed) return failed(raw);
     const input = raw as NotingAgentInput;
-    expect(input.tools.find(t => t.name === "note")!.execute({ facts: [] })).not.toContain("rejected:");
-    expect(input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).not.toContain("rejected:");
+    expect(input.tools.find(t => t.name === "note")!.execute({})).not.toContain("rejected:");
+    expect(input.tools.find(t => t.name === "memory")!.execute({})).not.toContain("rejected:");
     return { outcome: "success", output: "done", request };
   }), target = seed(m);
   const oldest = m.pendingEntries(target.sessionId, target.branch, target.headTurnId)[0]!.id;

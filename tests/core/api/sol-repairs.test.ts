@@ -5,6 +5,7 @@ import { renderEntry, renderEntryIndex, renderFact, renderNegationWalk } from ".
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
 import { tracePage, wholeTrace } from "../../trace-pages.ts";
+import { factSources } from "../../support/seed.ts";
 
 const time = "2026-09-01T00:00:00Z";
 function setup(normalized = true) {
@@ -28,7 +29,7 @@ function setup(normalized = true) {
   return { m, sessionId, turn, text, dispatch, result, select, note };
 }
 const slice = (text: string, addresses: string[]) => ({ title: "Evidence slice",
-  sources: addresses.map((address, index) => ({ address, text: index === 0 ? text : `Contributed at ${address}` })) });
+  sources: factSources(addresses.map((address, index) => ({ address, text: index === 0 ? text : `Contributed at ${address}` }))) });
 
 test("Sol 1: bound empty Turn/path never expands; full and unbound reads preserve membership", () => {
   const f = setup();
@@ -90,7 +91,7 @@ test.each(["manual", "noting"] as const)("92 supersedes Sol 4 status policing: %
   try {
     const mixed = f.dispatch("I will start it"), pure = f.dispatch(), delivery = f.text("Here is the requested explanation."), sibling = f.result(), unrelated = f.result("other");
     f.select([mixed.id, pure.id, delivery.id, unrelated.id]);
-    const submit = (sources: string[]) => f.note(kind).execute({ facts: [slice("Pi agent claimed delivery; evidence remains separately attributed.", sources)] });
+    const submit = (sources: string[]) => f.note(kind).execute(slice("Pi agent claimed delivery; evidence remains separately attributed.", sources));
     for (const sources of [["T1#E1@dispatch"], ["T1#t1"], ["T1#E1", "T1#E3@text"], ["T1#E1", "T1#E5@other"], ["T1#assistant"]])
       expect(submit(sources)).toContain("invalid source");
     expect(submit(["T1#E1", "T1#E4"])).toContain("invalid source");
@@ -107,7 +108,7 @@ test("92: an unnormalized whole entry remains assistant evidence; legacy read al
   const f = setup(false);
   try {
     const entry = f.dispatch("Claimed delivery"); f.select([entry.id]);
-    const submit = (source: string) => f.note().execute({ facts: [slice("Pi agent claimed delivery", [source])] });
+    const submit = (source: string) => f.note().execute(slice("Pi agent claimed delivery", [source]));
     expect(submit("T1#E1")).not.toContain("rejected:");
     expect(f.m.store.listTurnFacts(f.turn.id)[0]!.roles).toEqual([{ role: "assistant", harness: "Pi agent" }]);
     expect(submit("T1#assistant")).toContain("invalid source");
@@ -157,8 +158,11 @@ test("Sol 5: semantic groups and walks budget complete framing; automatic facts 
   const f = setup();
   try {
     const entry = f.text("evidence", "user"); f.select([entry.id]);
-    const fact = slice("long evidence ".repeat(180), ["T1#E1"]);
-    expect(f.note().execute({ facts: [fact, { ...fact, negate: [["$1", "strong"]] }] })).not.toContain("rejected:");
+    const body = "long evidence ".repeat(180);
+    const fact = slice(body, ["T1#E1"]);
+    const writer = f.note();
+    expect(writer.execute(fact)).not.toContain("rejected:");
+    expect(writer.execute({ ...fact, negate: [["F1", "strong"]] })).not.toContain("rejected:");
     for (const address of ["F1", "F2", "F1,F2"]) {
       const text = f.m.trace(address, { itemBudget: 100, pageBudget: null });
       const items = text.split(/\n(?=\[F2\])/);
@@ -175,15 +179,15 @@ test("Sol 5: semantic groups and walks budget complete framing; automatic facts 
     expect(walk).toContain("no later strong negation recorded");
     expect(() => renderNegationWalk(steps, 10)).toThrow("semantic item capacity");
     expect(() => f.m.trace("F1..", { itemBudget: 130, pageBudget: null })).toThrow("invalid public trace address");
-    expect(renderFact(facts[0]!, [])).toContain(fact.sources[0]!.text);
-    expect(f.m.trace("F1", { itemBudget: null, pageBudget: null })).toContain(fact.sources[0]!.text);
+    expect(renderFact(facts[0]!, [])).toContain(body);
+    expect(f.m.trace("F1", { itemBudget: null, pageBudget: null })).toContain(body);
     const frozen = freezeNoting(f.m.store, { sessionId: f.sessionId, branch: "main", headTurnId: f.turn.id, mode: "subagent" }, f.m.config).prepared!;
-    expect(frozen.material.facts.join("\n")).toContain(fact.sources[0]!.text);
+    expect(frozen.material.facts.join("\n")).toContain(body);
     expect(frozen.material.facts.join("\n")).not.toContain("truncated");
     const later = f.m.store.appendTurn({ sessionId: f.sessionId, parentTurnId: f.turn.id, kind: "turn", startedAt: "2026-09-02T00:00:00Z" });
     const evidence = f.text("later evidence", "user", later.id); f.select([entry.id, evidence.id]);
-    const writer = f.m.tools({ kind: "manual", sessionId: f.sessionId, currentTurnId: later.id, branch: "main" }).find(t => t.name === "note")!;
-    expect(writer.execute({ facts: [slice(fact.sources[0]!.text, ["T2#E1"])] })).not.toContain("rejected:");
+    const laterWriter = f.m.tools({ kind: "manual", sessionId: f.sessionId, currentTurnId: later.id, branch: "main" }).find(t => t.name === "note")!;
+    expect(laterWriter.execute(slice(body, ["T2#E1"]))).not.toContain("rejected:");
     for (const address of ["F1,F2,F3", "F3,F1", "sol"]) {
       const assembled = f.m.trace(address, { itemBudget: 100, pageBudget: null });
       const grouped = tracePage(assembled).body; // collection receipts spend the page budget, not a fact's item budget
@@ -203,20 +207,20 @@ test("Sol 5: semantic groups and walks budget complete framing; automatic facts 
   } finally { f.m.close(); }
 });
 
-test("Sol 4: one source-path read serves a whole submission, including repeated multi-source citations", () => {
+test("116: each fact call checks its own source path, including repeated multi-source citations", () => {
   const f = setup();
   try {
     const a = f.text("one"), b = f.text("two"); f.select([a.id, b.id]);
     const note = f.note();
     const scan = vi.spyOn(f.m.store, "sourcePath");
-    expect(note.execute({ facts: Array.from({ length: 6 }, () => slice("Claim", ["T1#E1", "T1#E2"])) })).not.toContain("rejected:");
-    expect(scan).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 6; i++) expect(note.execute(slice("Claim", ["T1#E1", "T1#E2"]))).not.toContain("rejected:");
+    expect(scan).toHaveBeenCalledTimes(6);
     expect(f.m.store.factEntries(1)).toEqual([a.id, b.id]);
     f.select([b.id]); // same Turn, different actual entry path; reuse the same manual tool
-    expect(note.execute({ facts: [slice("still present", ["T1#E2"]),
-      slice("no longer on path", ["T1#E1"]) ] })).toContain("invalid source");
-    expect(scan).toHaveBeenCalledTimes(2); // exactly one fresh read on the next call
-    expect(f.m.store.listTurnFacts(f.turn.id)).toHaveLength(6); // no partial write
+    expect(note.execute(slice("still present", ["T1#E2"]))).not.toContain("rejected:");
+    expect(note.execute(slice("no longer on path", ["T1#E1"]))).toContain("invalid source");
+    expect(scan).toHaveBeenCalledTimes(8); // each call reads its current path
+    expect(f.m.store.listTurnFacts(f.turn.id)).toHaveLength(7); // valid calls commit independently
   } finally { f.m.close(); }
 });
 

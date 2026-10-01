@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { hydrate, sourceSeededMemory, toolRejected, type NotingAgentInput, type RunAgent, type ToolContext } from "../../source-fixture.ts";
+import { dreamingToolDefinitions, toolDefinitions } from "../../../src/core/api/tools.ts";
+import { factSources } from "../../support/seed.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>, agent: RunAgent;
 const fact = (source = "T1#E1", extra: { source?: string[]; text?: string; [key: string]: unknown } = {}) => {
   const { source: addresses = [source], text = "project evidence", ...fields } = extra;
-  return { title: "Project evidence", sources: addresses.map((address, index) => ({ address, text: index === 0 ? text : `Evidence at ${address}` })), ...fields };
+  return { title: "Project evidence", sources: factSources(addresses.map((address, index) => ({ address, text: index === 0 ? text : `Evidence at ${address}` }))), ...fields };
 };
 const manual = (sessionId = 1, currentTurnId = 1, branch = "main"): ToolContext => ({ kind: "manual", sessionId, currentTurnId, branch });
 const record = () => memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
@@ -21,8 +23,8 @@ for (const outcome of ["failure", "cancelled"] as const) test(`92: ${outcome} af
   agent = async raw => {
     const input = raw as NotingAgentInput;
     input.reportRequest({ round: 1 });
-    expect(input.tools[2]!.execute({ facts: [fact()] })).toContain("held");
-    expect(input.tools[3]!.execute({ operations: [{ op: "create", text: "Project rule", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" }], skipped: [] })).toContain("held");
+    expect(input.tools[2]!.execute(fact())).toContain("held");
+    expect(input.tools[3]!.execute({ op: "create", text: "Project rule", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" })).toContain("held");
     expect(memory.store.listSessionFacts(1)).toEqual([]);
     expect(memory.store.getKnowledge(1)).toBeNull();
     return { outcome, output: "connection stopped", request: { round: 2 } };
@@ -38,8 +40,8 @@ for (const outcome of ["failure", "cancelled"] as const) test(`92: ${outcome} af
 for (const kind of ["Error", "AbortError"]) test(`92: thrown ${kind} after staging retains audit but publishes no facts`, async () => {
   agent = async raw => {
     const input = raw as NotingAgentInput; input.reportRequest({ actual: true });
-    expect(input.tools[2]!.execute({ facts: [fact()] })).toContain("held");
-    input.tools[3]!.execute({ operations: [], skipped: [] });
+    expect(input.tools[2]!.execute(fact())).toContain("held");
+    input.tools[3]!.execute({});
     const error = new Error("stopped"); error.name = kind; throw error;
   };
   expect((await record()).outcome).toBe(kind === "AbortError" ? "cancelled" : "failure");
@@ -48,25 +50,87 @@ for (const kind of ["Error", "AbortError"]) test(`92: thrown ${kind} after stagi
   expect(memory.store.sourcePath(1, "main", 1).every(e => !memory.store.entryNoted(e.id))).toBe(true);
 });
 
-test("a rejected Noting batch can be corrected in the same provider loop", async () => {
+test("116: one rejected Noter item can be corrected without resending an accepted sibling", async () => {
   agent = async raw => {
     const input = raw as NotingAgentInput, note = input.tools[2]!;
-    expect(JSON.parse(note.execute({ facts: [fact(), fact("T1#E1", { support: [["$3", "strong"]] })] })).results).toEqual([expect.stringContaining("held"), expect.stringContaining("rejected:")]);
-    expect(memory.store.listRuns(1)).toEqual([]);
+    expect(note.execute(fact())).toContain("held: $1");
+    expect(note.execute(fact("T1#E1", { support: [["$3", "strong"]] }))).toContain("rejected: $2");
     expect(memory.store.listSessionFacts(1)).toEqual([]);
-    expect(note.execute({ facts: [fact("T1#E2", { slot: "$2", support: [["$1", "weak"]] })] })).toContain("held");
-    expect(input.tools[3]!.execute({ operations: [], skipped: [] })).toContain("held");
+    expect(note.execute(fact("T1#E2", { slot: "$2", support: [["$1", "weak"]] }))).toContain("held: $2");
+    input.tools[3]!.execute({});
     return { outcome: "success", output: "done", request: { messages: ["request", "rejection", "correction"] } };
   };
   const completed = await record();
   expect(completed.outcome, JSON.stringify(completed)).toBe("success");
-  expect(memory.store.listRuns(1)).toHaveLength(1);
-  expect(JSON.parse(memory.store.getRun(1)!.response!).toolCalls).toHaveLength(3);
+  expect(JSON.parse(memory.store.getRun(1)!.response!).toolCalls).toHaveLength(4);
   expect(memory.store.listSessionFacts(1)).toHaveLength(2);
 });
 
+test("116: scalar drops, empty calls, and malformed calls retain publication blockers", () => {
+  const tools = memory.tools({ kind: "noting", sessionId: 1, branch: "main", range: { from: "S1/T1", to: "S1/T1" } });
+  const note = tools[2]!, knowledge = tools[3]!;
+  expect(note.execute(fact())).toContain("held: $1");
+  expect(note.execute(fact("T1#E1", { support: [["$9", "strong"]] }))).toContain("rejected: $2");
+  expect(note.execute({ slot: "$404", ...fact() })).toContain('"$2"');
+  expect(note.execute({ drop: "$2" })).toContain("dropped: $2");
+  expect(note.execute({ drop: "$1" })).toContain("dropped: $1");
+  expect(knowledge.execute({ op: "create", text: "a", category: "constraint", scope: "project", topics: [], supports: ["F404"], reason: "test" })).toContain("rejected: M1");
+  expect(knowledge.execute({ skipped: [] })).toContain("rejected:");
+  expect(knowledge.execute({ drop: "M1" })).toContain("dropped: M1");
+  expect(knowledge.execute(null)).toContain("Not publishable:");
+  expect(knowledge.execute({})).toContain("Publishable:");
+  for (const tool of [note, knowledge]) {
+    expect(tool.execute({ bad: true })).toContain("rejected:");
+    const recovered = JSON.parse(tool.execute({}));
+    expect(recovered.rejected).toEqual({});
+    expect(recovered.status).toMatch(/^Publishable:/);
+  }
+});
+
+test("116: a refused legal empty call still counts as use but only that tool can clear its error", () => {
+  const tools = memory.tools({ kind: "noting", sessionId: 1, branch: "main", range: { from: "S1/T1", to: "S1/T1" } });
+  tools[2]!.execute({});
+  memory.store.setEnrollment(1, false);
+  const refused = tools[3]!.execute({});
+  expect(refused).toContain("Disabled");
+  expect(refused).not.toContain("memory not called");
+  memory.store.setEnrollment(1, true);
+  expect(tools[2]!.execute({})).toContain("Not publishable:");
+  expect(tools[3]!.execute({})).toContain("Publishable:");
+});
+
+test("116: native schema refusal invalidates only its addressed replacement slot", async () => {
+  agent = async raw => {
+    const input = raw as NotingAgentInput;
+    input.reportRequest({ round: 1 });
+    const note = input.tools[2]!, knowledge = input.tools[3]!;
+    note.execute(fact());
+    note.execute(fact());
+    input.reportToolRejection("native-1", "note", { slot: "$2", title: "missing sources" }, "native schema rejected");
+    expect(note.execute({})).toContain('"$2":"native schema rejected"');
+    expect(note.execute(fact("T1#E1", { slot: "$2" }))).toContain("held: $2");
+    knowledge.execute({});
+    return { outcome: "success", output: "complete", request: { round: 1 } };
+  };
+  expect((await record()).outcome).toBe("success");
+  expect(memory.store.listSessionFacts(1)).toHaveLength(2);
+});
+
+test("116: public schemas distinguish full items, scalar drops and empty calls; D retains batches", () => {
+  const note = toolDefinitions.find(t => t.name === "note")!.parameters;
+  const knowledge = toolDefinitions.find(t => t.name === "memory")!.parameters;
+  expect(note.anyOf).toEqual([{ maxProperties: 0 }, { required: ["drop"], maxProperties: 1 }, { required: ["title", "sources"], not: { required: ["drop"] } }]);
+  expect(knowledge.anyOf).toMatchObject([{ maxProperties: 0 }, { required: ["drop"], maxProperties: 1 },
+    { required: ["op", "supports", "reason"], not: { required: ["drop"] } }]);
+  expect((knowledge.anyOf as any[])[2].allOf).toHaveLength(3);
+  expect((knowledge.properties as Record<string, unknown>).skipped).toBeUndefined();
+  const dreamer = dreamingToolDefinitions().find(t => t.name === "memory")!.parameters;
+  expect(dreamer.required).toEqual(["operations", "skipped"]);
+  expect((dreamer.properties as Record<string, unknown>).operations).toBeDefined();
+});
+
 test("manual input and result are audited; facts enter the branch without advancing Noting", () => {
-  const input = { facts: [fact()] };
+  const input = fact();
   const result = memory.tools(manual())[2]!.execute(input);
   const run = memory.store.listRuns(1)[0]!;
   expect(run).toMatchObject({ kind: "manual", sessionId: 1, branch: "main", rangeFrom: "S1/T1", rangeTo: "S1/T1", outcome: "success" });
@@ -77,27 +141,46 @@ test("manual input and result are audited; facts enter the branch without advanc
   expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
 });
 
+test("116: manual memory commits one operation at a time and rejects Noter-only fields", () => {
+  const tools = memory.tools(manual());
+  expect(tools[2]!.execute(fact())).toContain("F1");
+  const knowledge = tools[3]!;
+  const create = { op: "create", text: "rule", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "evidence" };
+  expect(knowledge.execute({ ...create, skipped: [] })).toContain("rejected:");
+  expect(knowledge.execute({ ...create, supports: ["$1"] })).toContain("rejected:");
+  expect(memory.store.getKnowledge(1)).toBeNull();
+  expect(knowledge.execute(create)).toContain('"committed"');
+  expect(JSON.parse(memory.store.listRuns(1).at(-1)!.request!)).toEqual(create);
+  expect(memory.store.getKnowledgeRevision(1, 1)?.text).toBe("rule");
+  const archive = { op: "archive", id: `K1#${memory.store.versionTag(1, 1)}`, kind: "budget", supports: ["F1"], reason: "superseded" };
+  expect(knowledge.execute(archive)).toContain('"committed"');
+  expect(JSON.parse(memory.store.listRuns(1).at(-1)!.request!)).toEqual(archive);
+  expect(memory.store.getKnowledgeRevision(1, 2)?.op).toBe("archive");
+  expect(knowledge.execute({})).toContain('"committed"');
+  expect(JSON.parse(memory.store.listRuns(1).at(-1)!.request!)).toEqual({});
+});
+
 test("source time follows the first source, including tool sources; all sources are checked", () => {
   memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, assistantText: "later", startedAt: "later source time" });
   memory.store.appendToolCall({ turnId: 2, name: "bash", status: "success", result: "passed" });
   const note = memory.tools(manual(1, 2))[2]!;
   const observation = hydrate(memory.store.listSourceEntries(1, 2), memory.store).find(entry => entry.role === "toolResult")!;
   const cited = `T2#E${observation.entryOrdinal}`;
-  expect(note.execute({ facts: [fact(cited, { source: [cited, "T1#E1"] })] })).toContain("F1");
+  expect(note.execute(fact(cited, { source: [cited, "T1#E1"] }))).toContain("F1");
   expect(memory.store.getFact(1)!.roles).toEqual([{ role: "user" }, { role: "observation" }]);
   expect(memory.store.getFact(1)).toMatchObject({ turnId: 1, createdAt: "first source time" });
   expect(memory.store.db.prepare("SELECT f.source_time, r.kind, r.created_at FROM facts f JOIN runs r ON r.id = f.run_id WHERE f.id = 1").get())
     .toEqual({ source_time: "first source time", kind: "manual", created_at: memory.store.getRun(1)!.createdAt });
-  expect(note.execute({ facts: [fact("T1#E1", { source: ["T1#E1", "T999#E1"] })] })).toContain("rejected:");
+  expect(note.execute(fact("T1#E1", { source: ["T1#E1", "T999#E1"] }))).toContain("rejected:");
   expect(memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
-test("malformed items still produce results for every item, and reject the entire batch", () => {
-  expect(memory.tools(manual())[2]!.execute(null)).toContain("rejected:");
-  expect(memory.store.listBranchFacts(1, "main")).toEqual([]);
-  const result = JSON.parse(memory.tools(manual())[2]!.execute({ facts: [fact(), fact("T1#E1", { support: [[42, "weak"]] }), null] }));
-  expect(result.results).toEqual(["ok", expect.stringContaining("rejected:"), expect.stringContaining("rejected:")]);
-  expect(memory.store.listSessionFacts(1)).toEqual([]);
+test("116: malformed manual call rejects only itself; valid calls commit immediately", () => {
+  const note = memory.tools(manual())[2]!;
+  expect(note.execute(null)).toContain("rejected:");
+  expect(note.execute(fact())).toContain("ok: F1");
+  expect(note.execute(fact("T1#E1", { support: [[42, "weak"]] }))).toContain("rejected:");
+  expect(memory.store.listSessionFacts(1).map(f => f.id)).toEqual([1]);
 });
 
 test("tools freeze the N range, reject sibling sources, and keep no read ledger", async () => {
@@ -107,14 +190,14 @@ test("tools freeze the N range, reject sibling sources, and keep no read ledger"
   const bound = memory.tools(context)[2]!;
   context.range.to = "S1/T2"; context.branch = "mutated";
   context.entryIds!.push(...memory.store.listSourceEntries(1).filter(entry => entry.turnId === 2).map(entry => entry.id));
-  expect(bound.execute({ facts: [fact("T2#E1")] })).toContain("invalid source");
-  expect(bound.execute({ facts: [fact("T1#E1", { slot: "$1" })] })).toContain("held: $1");
+  expect(bound.execute(fact("T2#E1"))).toContain("invalid source");
+  expect(bound.execute(fact("T1#E1", { slot: "$1" }))).toContain("held: $1");
   expect(memory.store.listSessionFacts(1)).toEqual([]); // standalone tools still hold privately
   agent = async raw => {
     const input = raw as NotingAgentInput;
-    expect(input.tools[2]!.execute({ facts: [fact("T2#E1")] })).toContain("rejected:");
-    expect(input.tools[2]!.execute({ facts: [fact("T1#E1", { slot: "$1" })] })).toContain("held");
-    input.tools[3]!.execute({ operations: [], skipped: [] });
+    expect(input.tools[2]!.execute(fact("T2#E1"))).toContain("rejected:");
+    expect(input.tools[2]!.execute(fact("T1#E1", { slot: "$1" }))).toContain("held");
+    input.tools[3]!.execute({});
     return { outcome: "success", output: "corrected", request: {} };
   };
   expect((await record()).outcome).toBe("success");
@@ -125,7 +208,8 @@ test("tools freeze the N range, reject sibling sources, and keep no read ledger"
 
 test("trace and search use parameter options, share scoped pagination, and reject obsolete address flags", () => {
   memory.store.appendToolCall({ turnId: 1, name: "bash", status: "success", result: "x".repeat(2000) });
-  memory.tools(manual())[2]!.execute({ facts: [fact(), fact()] });
+  memory.tools(manual())[2]!.execute(fact());
+  memory.tools(manual())[2]!.execute(fact());
   const [trace, search] = memory.tools(manual());
   expect(trace!.execute({ address: "T1#E4@observation", itemBudget: null, toolResultBudget: null })).toContain("x".repeat(2000));
   expect(trace!.execute({ address: "T1" })).toContain("T1#E4");
@@ -141,18 +225,18 @@ test("reads reach any project's evidence; write sources stay bound to the sessio
   const p = memory.store.createProject({ name: "other", declaredBy: "mark" });
   memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   memory.store.appendTurn({ sessionId: 2, kind: "turn", userPrompt: "private evidence", startedAt: "now" });
-  memory.tools(manual(2, 2))[2]!.execute({ facts: [fact("T2#E1", { text: "private evidence" })] });
+  memory.tools(manual(2, 2))[2]!.execute(fact("T2#E1", { text: "private evidence" }));
   const tools = memory.tools(manual());
   for (const address of ["F1", "T2", "S2", "S2/T2", "T1,T2"]) expect(tools[0]!.execute({ address })).not.toContain("rejected:");
   expect(tools[1]!.execute({ query: "private", layer: "all", scope: "global" })).toContain("private evidence");
-  expect(tools[2]!.execute({ facts: [fact("T2#E1")] })).toContain("rejected:"); // a write may only cite its own session
+  expect(tools[2]!.execute(fact("T2#E1"))).toContain("rejected:"); // a write may only cite its own session
   const page = memory.tools(manual(2, 2))[0]!.execute({ address: "T2", cap: 1 });
   expect(tools[0]!.execute({ address: "T1", cursor: /cursor=(\S+)/.exec(page)![1] })).toContain("rejected:");
 });
 
 
 test("manual facts belong to their turn on every branch containing that turn", async () => {
-  memory.tools(manual(1, 1, "A"))[2]!.execute({ facts: [fact()] });
+  memory.tools(manual(1, 1, "A"))[2]!.execute(fact());
   await memory.noting({ sessionId: 1, branch: "B", headTurnId: 1 });
   expect(memory.store.listBranchFacts(1, "A").map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "B", 1).map(f => f.id)).toEqual([1]);
@@ -169,7 +253,7 @@ test("reads return every knowledge item while injection still applies the scope 
   }
   for (const sessionId of [1, 2, 3]) {
     const note = memory.tools(manual(sessionId, sessionId))[2]!;
-    note.execute({ facts: [fact(`T${sessionId}#E1`)] });
+    note.execute(fact(`T${sessionId}#E1`));
     memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: "now" }, operations:
       (["global", "project", "session"] as const).map((scope, i) => ({ op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "understanding" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
@@ -191,7 +275,7 @@ test("reads return every knowledge item while injection still applies the scope 
 
 test("branch facts apply the full-source path rule: a fact citing a turn off the path stays out", () => {
   memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, userPrompt: "second", startedAt: "now" });
-  memory.tools(manual(1, 2))[2]!.execute({ facts: [fact("T1#E1", { source: ["T1#E1", "T2#E1"] })] });
+  memory.tools(manual(1, 2))[2]!.execute(fact("T1#E1", { source: ["T1#E1", "T2#E1"] }));
   expect(memory.store.listBranchFacts(1, "main", 2).map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "main", 1)).toEqual([]); // T2 is not on the path that ends at T1
 });
@@ -211,6 +295,6 @@ test("one reading of the model-facing result: a `rejected:` receipt and a batch 
   // The real receipts a run produces, classified the same way.
   const [trace, , note] = memory.tools(manual());
   expect(toolRejected("trace", trace!.execute({ address: "F404" }))).toBe(true);
-  expect(toolRejected("note", note!.execute({ facts: [fact("T9#E1")] }))).toBe(true);
-  expect(toolRejected("note", note!.execute({ facts: [fact()] }))).toBe(false);
+  expect(toolRejected("note", note!.execute(fact("T9#E1")))).toBe(true);
+  expect(toolRejected("note", note!.execute(fact()))).toBe(false);
 });

@@ -63,8 +63,9 @@ test("92: held N create/update cap resulting text at 1000; manual memory remains
     const operation = (text: string, id?: string) => ({ op: id ? "update" : "create", ...(id ? { id } : {}),
       text, category: "constraint", scope: "project", supports: ["$1"], topics: [], reason: "User evidence" });
     script = task => {
-      expect(call(task, "note", { facts: [{ title: "Evidence for size rule", sources: [{ address: `T${turn.id}#E1`, text: "User gave evidence" }] }] })).toContain("held: $1");
-      expect(call(task, "memory", { operations: [operation("would roll back"), operation(over)], skipped: [] }))
+      expect(call(task, "note", { title: "Evidence for size rule", sources: `[T${turn.id}#E1] User gave evidence` })).toContain("held: $1");
+      expect(call(task, "memory", operation("would roll back"))).toContain("held: M1");
+      expect(call(task, "memory", operation(over)))
         .toMatch(/Knowledge item.*1000-token limit: 1001 tokens/);
     };
     const pending = store.pendingEntryIds(session.id, "main", turn.id);
@@ -75,8 +76,8 @@ test("92: held N create/update cap resulting text at 1000; manual memory remains
     expect(store.listSessionFacts(session.id)).toEqual([]);
     expect(store.pendingEntryIds(session.id, "main", turn.id)).toEqual(pending);
     script = task => {
-      expect(call(task, "note", { facts: [{ title: "Evidence for size rule", sources: [{ address: `T${turn.id}#E1`, text: "User gave evidence" }] }] })).toContain("held: $1");
-      expect(call(task, "memory", { operations: [operation(exact)], skipped: [] })).toContain("held: M1");
+      expect(call(task, "note", { title: "Evidence for size rule", sources: `[T${turn.id}#E1] User gave evidence` })).toContain("held: $1");
+      expect(call(task, "memory", operation(exact))).toContain("held: M1");
     };
     expect((await memory.noting(path)).outcome).toBe("success");
     const base = store.currentKnowledge(path)[0]!;
@@ -85,8 +86,8 @@ test("92: held N create/update cap resulting text at 1000; manual memory remains
     const nextPath = { ...path, headTurnId: next.id };
     const tag = `K${base.knowledge.id}#${store.versionTag(base.knowledge.id, base.revision.id)}`;
     script = task => {
-      expect(call(task, "note", { facts: [{ title: "Revised size evidence", sources: [{ address: `T${next.id}#E1`, text: "User revised evidence" }] }] })).toContain("held: $1");
-      expect(call(task, "memory", { operations: [operation(over, tag)], skipped: [] }))
+      expect(call(task, "note", { title: "Revised size evidence", sources: `[T${next.id}#E1] User revised evidence` })).toContain("held: $1");
+      expect(call(task, "memory", operation(over, tag)))
         .toMatch(/Knowledge item.*1000-token limit: 1001 tokens/);
     };
     const nextPending = store.pendingEntryIds(session.id, "main", next.id);
@@ -98,8 +99,8 @@ test("92: held N create/update cap resulting text at 1000; manual memory remains
     expect(store.listSessionFacts(session.id)).toEqual(factsBefore);
     expect(store.pendingEntryIds(session.id, "main", next.id)).toEqual(nextPending);
     script = task => {
-      expect(call(task, "note", { facts: [{ title: "Revised size evidence", sources: [{ address: `T${next.id}#E1`, text: "User revised evidence" }] }] })).toContain("held: $1");
-      expect(call(task, "memory", { operations: [operation(exact, tag)], skipped: [] })).toContain("held: M1");
+      expect(call(task, "note", { title: "Revised size evidence", sources: `[T${next.id}#E1] User revised evidence` })).toContain("held: $1");
+      expect(call(task, "memory", operation(exact, tag))).toContain("held: M1");
     };
     expect((await memory.noting(nextPath)).outcome).toBe("success");
     expect(tokens(store.currentKnowledge(nextPath)[0]!.revision.text)).toBe(1000);

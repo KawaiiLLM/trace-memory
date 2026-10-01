@@ -23,8 +23,8 @@ function extract(c: Parameters<typeof notingFact>[0], scope: "global" | "session
   expect(JSON.stringify(results)).not.toContain("rejected:");
   const result = notingFact(c);
   for (const part of result.content) if (part.type === "toolCall" && part.name === "memory") {
-    part.arguments = { operations: [{ op: "create", text: "Rule " + "word ".repeat(120),
-      category: "constraint", scope, topics: [], supports: ["$1"], reason: "Supported conclusion" }], skipped: [] };
+    part.arguments = { op: "create", text: "Rule " + "word ".repeat(120),
+      category: "constraint", scope, topics: [], supports: ["$1"], reason: "Supported conclusion" };
   }
   return result;
 }
@@ -42,9 +42,9 @@ function retain(c: Parameters<typeof notingFact>[0]): Reply {
 }
 function seed(h: ReturnType<typeof host>) {
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-  expect(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Keep conclusion", sources: [{ address: "T1#E1", text: "Keep this conclusion." }] }] })).toContain("ok: F1");
-  expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", topics: [],
-    reason: "Seed pending revision", text: "Rule " + "word ".repeat(120), category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
+  expect(tools.find(t => t.name === "note")!.execute({ title: "Keep conclusion", sources: "[T1#E1] Keep this conclusion." })).toContain("ok: F1");
+  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", topics: [],
+    reason: "Seed pending revision", text: "Rule " + "word ".repeat(120), category: "constraint", scope: "session", supports: ["F1"] })).not.toContain("rejected:");
   return h.memory.store.listKnowledgeRevisions().at(-1)!;
 }
 
@@ -200,10 +200,10 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
       role: "user", text: "foreign", raw: JSON.stringify({ role: "user", content: "foreign" }), calls: [] });
     store.selectSourcePath(foreign.id, "main", [entry.id]);
     const tools = h.memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: turn.id });
-    expect(tools.find(t => t.name === "note")!.execute({ facts: [{ title: "Foreign rule", sources: [{ address: `T${turn.id}#E1`, text: "Foreign rule" }] }] })).toContain("ok:");
+    expect(tools.find(t => t.name === "note")!.execute({ title: "Foreign rule", sources: `[T${turn.id}#E1] Foreign rule` })).toContain("ok:");
     const fact = store.listSessionFacts(foreign.id)[0]!;
-    expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: "Foreign rule", category: "constraint",
-      scope: "session", supports: [`F${fact.id}`], topics: [], reason: "Foreign pending pool" }], skipped: [] })).not.toContain("rejected:");
+    expect(tools.find(t => t.name === "memory")!.execute({ op: "create", text: "Foreign rule", category: "constraint",
+      scope: "session", supports: [`F${fact.id}`], topics: [], reason: "Foreign pending pool" })).not.toContain("rejected:");
     const claim = store.acquireClaim({ sessionId: foreign.id, branch: "main", headTurnId: turn.id }, "dreaming", "foreign-executor")!;
     expect(claim).not.toBeNull();
     h.provider(async c => { if (!dreaming(c)) return notingFact(c); dreams++; return retain(c); });
@@ -230,9 +230,9 @@ for (const correct of [false, true]) test(`86: bounced N ${correct ? "retries th
       if (results.length === 0) {
         attempts++; checks.push(eligibility.mock.calls.length);
         if (attempts > (correct ? 2 : 3)) throw new Error("Noter retried beyond its scripted terminal outcome");
-        return call("note", { facts: correct && attempts > 1 ? [] : [{ title: "Rejected source", sources: [{ address: "T99999#E1", text: "Rejected source" }] }] });
+        return call("note", correct && attempts > 1 ? {} : { title: "Rejected source", sources: "[T99999#E1] Rejected source" });
       }
-      if (!c.messages.some(m => m.role === "toolResult" && m.toolName === "memory")) return call("memory", { operations: [], skipped: [] });
+      if (!c.messages.some(m => m.role === "toolResult" && m.toolName === "memory")) return call("memory", {});
       return reply("Done");
     }, { autoStop: false });
     await command(h, "catchup"); await settle(h);

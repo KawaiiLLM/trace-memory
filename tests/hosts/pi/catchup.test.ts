@@ -16,9 +16,8 @@ function target(memory: Memory, options: { closed?: boolean; enabled?: boolean; 
   const path = { sessionId: session.id, branch: options.branch ?? "main", headTurnId: turn.id };
   memory.selectEntries(session.id, path.branch, [entry.id]);
   if (options.facts) {
-    const result = memory.tools({ kind: "manual", sessionId: session.id, branch: path.branch, currentTurnId: turn.id })[2]!
-      .execute({ facts: Array.from({ length: options.facts }, (_, i) => ({ title: `Target claim ${i}`, sources: [{ address: `T${turn.id}#E1`, text: `Target claim ${i}` }] })) });
-    expect(result).not.toContain("rejected:");
+    const note = memory.tools({ kind: "manual", sessionId: session.id, branch: path.branch, currentTurnId: turn.id })[2]!;
+    for (let i = 0; i < options.facts; i++) expect(note.execute({ title: `Target claim ${i}`, sources: `[T${turn.id}#E1] Target claim ${i}` })).not.toContain("rejected:");
   }
   if (options.noted) expect(memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: path.branch, createdAt: at }, facts: [], entryIds: [entry.id] }).ok).toBe(true);
   if (options.closed !== false) memory.store.closeSession(session.id);
@@ -28,7 +27,8 @@ function target(memory: Memory, options: { closed?: boolean; enabled?: boolean; 
 const tick = async (h: ReturnType<typeof host>) => { await h.prompt("next main turn"); await h.answer("eligible completion"); await h.drain(); };
 function hold(h: ReturnType<typeof host>) {
   const releases: ((reply: Reply) => void)[] = [];
-  h.provider(async () => new Promise(resolve => releases.push(resolve)));
+  h.provider(async c => c.messages.some(m => String(m.content).includes("Before publication, review this run once."))
+    ? reply("Reviewed.") : new Promise(resolve => releases.push(resolve)));
   return releases;
 }
 
@@ -46,7 +46,8 @@ test("own pending N precedes closed tails; busy N does not fan out or chain on c
     expect(h.requests).toHaveLength(1);
     release[0]!(reply("No durable material.")); await h.drain();
     expect(h.memory.store.listRuns(1).filter(r => r.kind !== "manual")).toHaveLength(1);
-    expect(h.requests).toHaveLength(1);
+    expect(h.requests).toHaveLength(2); // one fixed review, no chained tail
+    expect(JSON.stringify((h.requests.at(-1) as { messages: unknown[] }).messages)).toContain("Before publication, review this run once.");
   } finally { await h.dispose(); }
 });
 
@@ -85,7 +86,7 @@ test("closed tiny pending Raw is borrowed below own trigger; noted-only, live an
     const noted = target(h.memory, { noted: true, facts: 1 });
     const pending = target(h.memory);
     await tick(h);
-    expect(h.requests).toHaveLength(3); // explicit note, memory, normal terminal reply
+    expect(h.requests).toHaveLength(4); // explicit note, memory, normal reply, fixed review
     expect(h.memory.store.listRuns(pending.sessionId).filter(r => r.kind === "noting")).toHaveLength(1);
     expect(h.memory.pendingEntries(pending.sessionId, pending.branch, pending.headTurnId)).toEqual([]);
     expect(h.memory.store.listRuns(live.sessionId)).toHaveLength(0);
@@ -130,8 +131,8 @@ test("borrowed N publishes both layers to its target without a special executor 
       const memoryResult = c.messages.some(m => m.role === "toolResult" && m.toolName === "memory");
       if (memoryResult) return reply("Done");
       if (noteResult) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "borrowed-memory", name: "memory",
-        arguments: { operations: [{ op: "create", text: "Target knowledge", category: "understanding", scope: "project",
-          topics: [], reason: "Retain the target's finding.", supports: ["$1"] }], skipped: [] } }] };
+        arguments: { op: "create", text: "Target knowledge", category: "understanding", scope: "project",
+          topics: [], reason: "Retain the target's finding.", supports: ["$1"] } }] };
       const note = notingFact(c);
       return { ...note, content: [note.content[0]!] };
     });
@@ -160,7 +161,7 @@ test("an owned D pool uses a real pending version and keeps its global seat sepa
   try {
     await h.turn();
     const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
-      .execute({ facts: [{ title: "Package choice", sources: [{ address: "T1#E1", text: "User chose pnpm" }] }] });
+      .execute({ title: "Package choice", sources: "[T1#E1] User chose pnpm" });
     expect(receipt).not.toContain("rejected:");
     const path = { sessionId: 1, branch: "main", headTurnId: 1 };
     const due = createDreamerTrigger(h.memory, path, 1, 1);
@@ -202,8 +203,8 @@ test("N commit rejects a replaced borrowed claim token without publishing progre
     h.memory.store.invalidateExecutor(old.executorId);
     const replacement = h.memory.store.acquireClaim(t, "noting", old.executorId, true)!;
     expect(replacement.token).not.toBe(old.token);
-    input.tools[2]!.execute({ facts: [{ title: "Late", sources: [{ address: `T${t.headTurnId}#E1`, text: "Late" }] }] });
-    input.tools[3]!.execute({ operations: [], skipped: [] });
+    input.tools[2]!.execute({ title: "Late", sources: `[T${t.headTurnId}#E1] Late` });
+    input.tools[3]!.execute({});
     finish(); expect((await pending).outcome).not.toBe("success");
     expect(h.memory.store.getClaim(t.sessionId, "noting")!.token).toBe(replacement.token);
     expect(h.memory.pendingEntries(t.sessionId, t.branch, t.headTurnId)).toHaveLength(1);
@@ -217,8 +218,8 @@ test("reopening a closed target replaces borrowed N token and prevents stale pub
   const old = TraceMemory(h.dbPath, async () => { await new Promise<void>(r => { finish = r; }); return { outcome: "success", output: "", request: {} }; });
   const own = TraceMemory(h.dbPath, async raw => {
     const input = raw as NotingAgentInput;
-    input.tools.find(t => t.name === "note")!.execute({ facts: [] });
-    input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+    input.tools.find(t => t.name === "note")!.execute({});
+    input.tools.find(t => t.name === "memory")!.execute({});
     return { outcome: "success", output: "", request: {} }; });
   try {
     await h.turn();
@@ -242,7 +243,7 @@ test("one shutdown deadline fences borrowed N and owned D even when both provide
   try {
     await h.turn();
     const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
-      .execute({ facts: [{ title: "Package choice", sources: [{ address: "T1#E1", text: "User chose pnpm" }] }] });
+      .execute({ title: "Package choice", sources: "[T1#E1] User chose pnpm" });
     expect(receipt).not.toContain("rejected:");
     const due = createDreamerTrigger(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1, 1);
     const t = target(h.memory);
@@ -327,8 +328,8 @@ test("claim-release failure after terminal N publication does not roll back comm
   const worker = TraceMemory(h.dbPath, async raw => {
     const input = raw as NotingAgentInput;
     input.reportRequest({ phase: "noting" });
-    input.tools[2]!.execute({ facts: [] });
-    input.tools[3]!.execute({ operations: [], skipped: [] });
+    input.tools[2]!.execute({});
+    input.tools[3]!.execute({});
     return { outcome: "success", output: "", request: {} };
   });
   try {
@@ -435,7 +436,7 @@ test("failed own capacity admission leaves its N slot free for a smaller closed 
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);
     await tick(h);
-    expect(h.requests, h.notices.join("\n")).toHaveLength(3);
+    expect(h.requests, h.notices.join("\n")).toHaveLength(4);
     expect(h.conversations[0]!.messages[0]!.content).toContain(`S${t.sessionId}/T${t.headTurnId}`);
     expect(h.notices.join(" ")).toContain("Noting capacity: selected evidence cannot fit the model context");
     expect(h.memory.store.getClaim(1, "noting")).toBeNull();

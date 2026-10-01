@@ -16,8 +16,8 @@ beforeEach(() => { calls = 0;
   const fallback = async (raw: unknown) => { calls++;
     const input = raw as { kind: string; tools: { name: string; execute(input: unknown): string }[] };
     if (input.kind === "noting") {
-      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-      input.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+      input.tools.find(tool => tool.name === "note")!.execute({});
+      input.tools.find(tool => tool.name === "memory")!.execute({});
     }
     return { outcome: "success" as const, output: [], request: {} };
   };

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory } from "../../source-fixture.ts";
+import { factSources } from "../../support/seed.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { DatabaseSync } from "node:sqlite";
 import { renderFact, tokens } from "../../../src/core/render/index.ts";
@@ -27,11 +28,11 @@ function setup(worker?: (task: any) => void) {
   const note = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id }).find(t => t.name === "note")!;
   return { db, memory, session, turn, path, note };
 }
-const f = (sources: { address: string; text: string }[], title = "A discussion") => ({ title, sources });
+const f = (sources: { address: string; text: string }[], title = "A discussion") => ({ title, sources: factSources(sources) });
 
 test("manual core sorts segments by native path, derives owner, cites roles and searches title/body", () => {
   const x = setup();
-  const result = x.note.execute({ facts: [f([{ address: `T${x.turn.id}#E2@assistant`, text: "Pi agent responds" }, { address: `T${x.turn.id}#E1@user`, text: "User opens" }])] });
+  const result = x.note.execute(f([{ address: `T${x.turn.id}#E2@assistant`, text: "Pi agent responds" }, { address: `T${x.turn.id}#E1@user`, text: "User opens" }]));
   expect(result).toContain("ok: F1");
   const fact = x.memory.store.getFact(1)!;
   expect(fact).toMatchObject({ title: "A discussion", source: [`T${x.turn.id}#E1@user`, `T${x.turn.id}#E2@assistant`], segments: ["User opens", "Pi agent responds"], text: "User opens\nPi agent responds", turnId: x.turn.id,
@@ -48,7 +49,7 @@ test("manual core sorts segments by native path, derives owner, cites roles and 
 test("branch reads retain every fact's ordered source segments", () => {
   const x = setup();
   const source = `T${x.turn.id}#E1`;
-  expect(x.note.execute({ facts: Array.from({ length: 12 }, (_, i) => f([{ address: source, text: `episode ${i}` }])) })).toContain("ok: F12");
+  for (let i = 0; i < 12; i++) expect(x.note.execute(f([{ address: source, text: `episode ${i}` }]))).toContain(`ok: F${i + 1}`);
   const facts = x.memory.store.listBranchFacts(x.session.id, "main", x.turn.id);
   expect(facts.map(fact => ({ id: fact.id, source: fact.source, segments: fact.segments, text: fact.text })))
     .toEqual(Array.from({ length: 12 }, (_, i) => ({ id: i + 1, source: [source],
@@ -62,7 +63,7 @@ test("public shape, duplicate entry, mismatched role and thinking are rejected",
     f([{ address: `${address}@assistant`, text: "wrong role" }]),
     f([{ address: `${address}@thinking`, text: "wrong block" }]),
     { ...f([{ address, text: "x" }]), actor: "agent" }])
-    expect(x.note.execute({ facts: [fact] })).toContain("rejected:");
+    expect(x.note.execute(fact)).toContain("rejected:");
   expect(x.memory.store.listSessionFacts(x.session.id)).toEqual([]);
 });
 
@@ -71,17 +72,17 @@ test("N rejects assembled body above 1000 tokens while manual keeps exemption; h
   const x = setup(task => {
     const note = task.tools.find((t: any) => t.name === "note")!;
     const address = `T${x.turn.id}#E1`;
-    expect(note.execute({ facts: [f([{ address, text: "word ".repeat(1200) }])] })).toContain("exceeds 1000-token limit");
-    first = note.execute({ facts: [f([{ address, text: "valid" }])] });
+    expect(note.execute(f([{ address, text: "word ".repeat(1200) }]))).toContain("exceeds 1000-token limit");
+    first = note.execute({ slot: "$1", ...f([{ address, text: "valid" }]) });
     expect(first).toContain("held: $1");
-    expect(note.execute({ facts: [{ slot: "$1", ...f([{ address, text: "changed" }, { address: `${address}@user`, text: "duplicate" }]) }] })).toContain("rejected:");
-    task.tools.find((t: any) => t.name === "memory")!.execute({ operations: [], skipped: [] });
+    expect(note.execute({ slot: "$1", ...f([{ address, text: "changed" }, { address: `${address}@user`, text: "duplicate" }]) })).toContain("rejected:");
+    task.tools.find((t: any) => t.name === "memory")!.execute({});
   });
   expect((await x.memory.noting(x.path)).outcome).not.toBe("success");
   expect(x.memory.store.listSessionFacts(x.session.id)).toEqual([]);
   const big = "word ".repeat(1200);
   expect(tokens(big)).toBeGreaterThan(1000);
-  expect(x.note.execute({ facts: [f([{ address: `T${x.turn.id}#E1`, text: big }])] })).toContain("ok: F1");
+  expect(x.note.execute(f([{ address: `T${x.turn.id}#E1`, text: big }]))).toContain("ok: F1");
 });
 
 test("93 columns rollback with schema transaction after an actual later budget failure", () => {
@@ -102,8 +103,8 @@ test("93 columns rollback with schema transaction after an actual later budget f
 test("normal N terminal publishes titled segments and marked Raw together", async () => {
   const x = setup(task => {
     const address = `T${x.turn.id}#E1`;
-    expect(task.tools.find((t: any) => t.name === "note")!.execute({ facts: [f([{ address, text: "User opens" }])] })).toContain("held: $1");
-    task.tools.find((t: any) => t.name === "memory")!.execute({ operations: [], skipped: [] });
+    expect(task.tools.find((t: any) => t.name === "note")!.execute(f([{ address, text: "User opens" }]))).toContain("held: $1");
+    task.tools.find((t: any) => t.name === "memory")!.execute({});
   });
   expect((await x.memory.noting(x.path)).outcome).toBe("success");
   expect(x.memory.store.getFact(1)).toMatchObject({ title: "A discussion", segments: ["User opens"] });

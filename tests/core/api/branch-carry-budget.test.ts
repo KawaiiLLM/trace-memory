@@ -46,11 +46,8 @@ test("entry/cleanup integration: carry budgets only its exact normalized Raw suf
     const source = `T${turn.id}#E${result.entryOrdinal}@observation`;
     const factText = "complete event evidence ".repeat(1000), knowledgeText = "complete conclusion ".repeat(1000);
     const note = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id }).find(t => t.name === "note")!;
-    expect(note.execute({ facts: [
-      { title: "Complete event", sources: [{ address: `T${turn.id}#E${mixed.entryOrdinal}`, text: factText },
-        { address: `T${turn.id}#E${result.entryOrdinal}`, text: "Result evidence" }] },
-      { title: "Later correction", sources: [{ address: `T${turn.id}#E1`, text: "a later correction" }], negate: [["$1", "strong"]] },
-    ] })).not.toContain("rejected:");
+    expect(note.execute({ title: "Complete event", sources: `[T${turn.id}#E${mixed.entryOrdinal}] ${factText}\n[T${turn.id}#E${result.entryOrdinal}] Result evidence` })).not.toContain("rejected:");
+    expect(note.execute({ title: "Later correction", sources: `[T${turn.id}#E1] a later correction`, negate: [["F1", "strong"]] })).not.toContain("rejected:");
     const knowledge = m.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
       run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$k", author: "test", text: knowledgeText,
         category: "understanding", scope: "session", supports: [1], topics: [], reason: "synthetic integration evidence", createdAt: "now" }] });

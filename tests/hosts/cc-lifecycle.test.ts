@@ -429,8 +429,8 @@ test.each(["hook", "transcript"] as const)("accepted CC scan race preserves turn
       expect(input.kind).toBe("noting");
       batches.push(input.entryIds);
       input.reportRequest({ fixture: "CC scan race" });
-      expect(input.tools.find((tool: any) => tool.name === "note").execute({ facts: [] })).toContain("held");
-      expect(input.tools.find((tool: any) => tool.name === "memory").execute({ operations: [], skipped: [] })).toContain("held");
+      expect(input.tools.find((tool: any) => tool.name === "note").execute({})).toContain("held");
+      expect(input.tools.find((tool: any) => tool.name === "memory").execute({})).toContain("held");
       if (mode === "hook" && batches.length === 1) { firstEntered(); await firstHeld; }
       return { outcome: "success", output: "done", request: { fixture: "CC scan race" } };
     };
@@ -1309,7 +1309,7 @@ test("stdio MCP stays protocol-clean and only prompt_input_exit confirms close a
   for (let i = 0; i < 100 && !stdout.includes('"id":2'); i++) await sleep(5);
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "trace", arguments: { address: "T1" } } })}\n`);
   for (let i = 0; i < 100 && !stdout.includes('"id":3'); i++) await sleep(5);
-  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "note", arguments: { facts: [] } } })}\n`);
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "note", arguments: {} } })}\n`);
   for (let i = 0; i < 100 && !stdout.includes('"id":4'); i++) await sleep(5);
   child.kill("SIGINT");
   const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, reject) => {

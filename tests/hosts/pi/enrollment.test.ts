@@ -84,8 +84,8 @@ test("18a 2026-09-08: historical import and pause resume use native identities w
   await command(h, "on"); expect(h.memory.store.listTurns(1)).toHaveLength(4);
   expect(h.memory.pendingEntries(1, "main", state(h).head)).toHaveLength(8); expect(h.requests).toEqual([]);
   await h.answer("eligible completion"); await h.drain();
-  // Joint N explicitly examines facts and knowledge, then terminates normally.
-  expect(h.requests).toHaveLength(3); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
+  // Joint N examines both layers, then performs its fixed end review.
+  expect(h.requests).toHaveLength(4); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
 });
 
 test("18a 2026-09-08: historical tree and newer clone never overwrite the current shared switch", async () => {
@@ -112,8 +112,8 @@ test("18a 2026-09-08: core gates admissions and late commits through another fac
   try {
     const binding = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
     other.store.setEnrollment(1, false);
-    expect(binding.find(t => t.name === "note")!.execute({ facts: [] })).toContain("/trace on");
-    expect(binding.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).toContain("/trace on");
+    expect(binding.find(t => t.name === "note")!.execute({})).toContain("/trace on");
+    expect(binding.find(t => t.name === "memory")!.execute({})).toContain("/trace on");
     expect(await h.memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
     expect(await h.memory.dream({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
     expect(() => h.memory.appendEntry({ ...hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)[0]!, nativeId: "blocked" })).toThrow("/trace on");
@@ -149,8 +149,8 @@ test.each([true, false])("34c: automatic material ignores the Noter mode (%s); d
   // Live N publication is exercised separately by the host atomic and scheduler tests.
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
   expect(seedFact(h, "Shared rule").text).toBe("Shared rule");
-  expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission",
-    text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
+  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", topics: [], reason: "Initial admission",
+    text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"] })).not.toContain("rejected:");
   expect((await h.prompt("no receipts"))?.message?.content ?? "").not.toContain("<noted>");
   await h.answer(); await h.emit("agent_settled"); await h.answer("consolidation opportunity"); await h.drain();
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1);
@@ -299,8 +299,8 @@ test.each([true, false])("92: disable during D rejects late %s mutation and pres
   const h = setup({ "dreaming.triggerTokens": 1 }); await h.turn();
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
   expect(seedFact(h, "Pending knowledge").id).toBe(1);
-  expect(tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: "Retain rule", category: "constraint",
-    scope: "session", topics: [], supports: ["F1"], reason: "Seed pending D revision" }], skipped: [] })).not.toContain("rejected:");
+  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", text: "Retain rule", category: "constraint",
+    scope: "session", topics: [], supports: ["F1"], reason: "Seed pending D revision" })).not.toContain("rejected:");
   const original = h.memory.store.listKnowledgeRevisions()[0]!;
   let release!: (value: ReturnType<typeof reply>) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));

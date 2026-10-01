@@ -43,7 +43,8 @@ for (const moved of [false, true]) {
       expect(first.outcome, first.response ?? "missing audit").toBe("success");
       expect(first.mode, first.response ?? "missing audit").toBe(moved ? "subagent" : "fork");
       if (moved) expect(JSON.parse(first.response!).fallbackReason).toContain("Fork parent changed");
-      expect(f.sent.filter(body => worker(body))).toHaveLength(3);
+      // 117 adds one end review only to the fresh fallback, not the successful fork.
+      expect(f.sent.filter(body => worker(body))).toHaveLength(moved ? 4 : 3);
     } finally { reload.mockRestore(); f.dispose(); observer.close(); rmSync(dir, { recursive: true, force: true }); }
   }, 30_000);
 }
@@ -58,7 +59,7 @@ for (const rejected of [false, true]) {
       const recheck = vi.fn(() => rejected ? "local admission 500: exact parent changed" : undefined);
       const onRequest = vi.fn(), onProgress = vi.fn(), onRetry = vi.fn();
       f.script(body => (body.messages ?? []).some((message: Body) => message.role === "tool")
-        ? say("Done") : call("single-note", "note", { facts: [] }));
+        ? say("Done") : call("single-note", "note", {}));
       const run = runNative(f.task(captured, { recheck, onRequest, onProgress, onRetry,
         tools: [{ name: "note", description: "write", parameters: { type: "object", properties: {} }, execute: () => "held: $1" }] }));
       if (rejected) {
@@ -79,8 +80,8 @@ for (const rejected of [false, true]) {
 
 const emptyProtocol = (body: Body) => {
   const calls = (body.messages ?? []).flatMap((message: Body) => message.tool_calls ?? []);
-  if (!calls.some((item: Body) => item.function?.name === "note")) return call("material-note", "note", { facts: [] });
-  if (!calls.some((item: Body) => item.function?.name === "memory")) return call("material-memory", "memory", { operations: [], skipped: [] });
+  if (!calls.some((item: Body) => item.function?.name === "note")) return call("material-note", "note", {});
+  if (!calls.some((item: Body) => item.function?.name === "memory")) return call("material-memory", "memory", {});
   return say("Done.");
 };
 
@@ -105,7 +106,7 @@ for (const change of ["leaf", "knowledge", "cancel"] as const) {
         else {
           const target = { sessionId: 1, branch: "main", headTurnId: memory.store.listTurns(1).at(-1)!.id };
           const note = memory.tools({ kind: "manual", ...target, currentTurnId: 1 }).find(tool => tool.name === "note")!;
-          const fact = JSON.parse(note.execute({ facts: [{ title: "Evidence", sources: [{ address: "T1#E1", text: "Evidence" }] }] })).factIds[0];
+          const fact = JSON.parse(note.execute({ title: "Evidence", sources: "[T1#E1] Evidence" })).factIds[0];
           const result = memory.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: 1, createdAt: "now" },
             operations: [{ op: "create", handle: "$new", author: "fixture", category: "constraint", scope: "project",
               text: "Knowledge changed during child preparation", supports: [fact], topics: [], reason: "fixture", createdAt: "now" }] });
@@ -117,7 +118,7 @@ for (const change of ["leaf", "knowledge", "cancel"] as const) {
       await f.h.drain();
       expect(reload).toHaveBeenCalled();
       // Refused native preparation adds no failed-attempt run; only one fresh worker is sent.
-      expect(f.sent.slice(sentBefore).filter(body => worker(body))).toHaveLength(change === "cancel" ? 0 : 3);
+      expect(f.sent.slice(sentBefore).filter(body => worker(body))).toHaveLength(change === "cancel" ? 0 : 4);
       const runs = memory.store.listRuns(1).filter(run => run.kind === "noting").sort((a, b) => a.id - b.id);
       expect(runs, JSON.stringify(runs.map(run => ({ id: run.id, mode: run.mode, outcome: run.outcome, response: run.response })))).toHaveLength(2);
       const last = runs.at(-1)!;
@@ -147,7 +148,7 @@ for (const delivery of ["landed", "missing", "offered-only", "budget-omitted"] a
       await vi.waitFor(() => expect(memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(1));
       const target = { sessionId: 1, branch: "main", headTurnId: memory.store.listTurns(1).at(-1)!.id };
       const note = memory.tools({ kind: "manual", ...target, currentTurnId: 1 }).find(tool => tool.name === "note")!;
-      const fact = JSON.parse(note.execute({ facts: [{ title: "Original evidence", sources: [{ address: "T1#E1", text: "User's original evidence" }] }] })).factIds[0];
+      const fact = JSON.parse(note.execute({ title: "Original evidence", sources: "[T1#E1] User's original evidence" })).factIds[0];
       const create = () => {
         const result = memory.store.commitConsolidationRun({ path: target,
           run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$new",

@@ -11,7 +11,7 @@ let directory: string, memory: ReturnType<typeof sourceSeededMemory>, sessionId:
 let calls: NotingAgentInput[], script: ((input: NotingAgentInput) => Promise<RunAgentResult>)[];
 const time = "2026-08-16 02:54";
 const request = { fixture: "joint extraction" };
-const empty = { operations: [], skipped: [] };
+const empty = {};
 const success = (): RunAgentResult => ({ outcome: "success", output: "done", request });
 const session = (project = projectId) => memory.store.createSession({ enrollmentChoice: true, host: "pi:fixture", startedAt: time, firstReplyAt: time, projectId: project }).id;
 beforeEach(() => {
@@ -46,10 +46,12 @@ function knowledge(support: number, text = memories.knowledge) {
   const item = result.committed[0]!;
   return { ...item, tag: `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, item.commit)}` };
 }
-const create = (support: number, text = memories.knowledge) => ({ operations: [{ op: "create", text, category: "understanding", scope: "project", topics: [], supports: [`F${support}`], reason: "Initial admission" }], skipped: [] });
+const create = (support: number, text = memories.knowledge) => ({ op: "create", text, category: "understanding", scope: "project", topics: [], supports: [`F${support}`], reason: "Initial admission" });
 function stage(input: NotingAgentInput, output: unknown) {
-  expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [] })).toContain("held");
-  return input.tools.find(tool => tool.name === "memory")!.execute(output);
+  expect(input.tools.find(tool => tool.name === "note")!.execute({})).toContain("held");
+  const write = input.tools.find(tool => tool.name === "memory")!;
+  if (Array.isArray(output)) return output.map(op => write.execute(op)).at(-1);
+  return write.execute(output);
 }
 function queue(output: unknown) { script.push(async input => { stage(input, output); return success(); }); }
 const run = (owner = sessionId, branch = "main", headTurnId = memory.store.knowledgePath(owner, branch).headTurnId!) => memory.noting({ sessionId: owner, branch, headTurnId, mode: "subagent" });
@@ -92,7 +94,7 @@ for (const bad of ["json", "shape", "failure", "cancelled", "missing request", "
       if (bad === "throw" || bad === "abort") { const error = new Error("stopped"); error.name = bad === "abort" ? "AbortError" : "Error"; throw error; }
       if (bad === "failure" || bad === "cancelled") return { outcome: bad, output: "stopped", request };
       if (bad === "missing request") { stage(input, empty); return { outcome: "success", output: "done" }; }
-      stage(input, bad === "json" ? "{" : { operations: [{ ...create(evidence.id).operations[0], category: "invalid" }], skipped: [] });
+      stage(input, bad === "json" ? "{" : { ...create(evidence.id), category: "invalid" });
       return success();
     });
     const result = await run();
@@ -133,7 +135,7 @@ test("empty Raw ranges create no run; successful explicit empties consume only R
 
 test("N merge refusal creates neither survivor revision nor absorbed links", async () => {
   const a = fact(), b = fact(memories.observation), survivor = knowledge(a.id), absorbed = knowledge(b.id);
-  queue({ operations: [{ op: "merge", id: survivor.tag, absorb: [absorbed.tag], text: memories.editedKnowledge, category: "understanding", scope: "project", topics: [], supports: [`F${a.id}`, `F${b.id}`], reason: "Merge duplicate" }], skipped: [] });
+  queue({ op: "merge", id: survivor.tag, absorb: [absorbed.tag], text: memories.editedKnowledge, category: "understanding", scope: "project", topics: [], supports: [`F${a.id}`, `F${b.id}`], reason: "Merge duplicate" });
   const result = await run();
   expect(result.outcome).toBe("bounced");
   expect("problems" in result && result.problems?.join(" ")).toContain("Dreamer");
@@ -149,10 +151,10 @@ for (const bad of ["missing fact", "foreign fact", "late fact", "untagged base",
   const late = fact();
   const update = { op: "update", id: base.tag, text: memories.editedKnowledge, category: "understanding", scope: "project", topics: [], supports: [`F${evidence.id}`], reason: "Update" };
   const operation = bad === "untagged base" ? { ...update, id: `K${base.knowledgeId}` }
-    : bad === "model handle" ? { ...create(evidence.id).operations[0], handle: "$e1" }
+    : bad === "model handle" ? { ...create(evidence.id), handle: "$e1" }
     : bad === "duplicate target" ? update
-    : create(bad === "missing fact" ? 999999 : bad === "foreign fact" ? foreign.id : late.id).operations[0];
-  resolve({ operations: [bad === "duplicate target" ? update : create(evidence.id).operations[0], operation], skipped: [] });
+    : create(bad === "missing fact" ? 999999 : bad === "foreign fact" ? foreign.id : late.id);
+  resolve([bad === "duplicate target" ? update : create(evidence.id), operation]);
   const result = await pending;
   expect(result.outcome, JSON.stringify(result)).toBe("bounced");
   expect(memory.store.listKnowledgeRevisions()).toHaveLength(1);
@@ -175,8 +177,8 @@ for (const sameProject of [false, true]) test(`independent sessions publish whil
 test("Raw progress failure inside terminal publication rolls back facts, knowledge and success audit", async () => {
   const evidence = fact();
   script.push(async input => {
-    expect(input.tools[2]!.execute({ facts: [{ title: "New episode", sources: [{ address: `T${evidence.turnId}#E1`, text: "New episode" }] }] })).toContain("held");
-    expect(input.tools[3]!.execute({ operations: [{ ...create(evidence.id).operations[0], supports: ["$1"] }], skipped: [] })).toContain("held");
+    expect(input.tools[2]!.execute({ title: "New episode", sources: `[T${evidence.turnId}#E1] New episode` })).toContain("held");
+    expect(input.tools[3]!.execute({ ...create(evidence.id), supports: ["$1"] })).toContain("held");
     return success();
   });
   memory.store.db.exec(`CREATE TEMP TRIGGER reject_progress AFTER INSERT ON noted_entries
@@ -197,7 +199,7 @@ test("simulation v7m Chinese evidence remains traceable through N knowledge publ
   const fixture = JSON.parse(readFileSync(new URL("../../fixtures/consolidation.json", import.meta.url), "utf8"));
   const ids = new Map<number, number>();
   for (const source of fixture.facts) ids.set(source.id, fact(source.text, { actor: source.actor, category: source.category, quote: source.quote, createdAt: source.timestamp }).id);
-  queue({ operations: [{ op: "create", topics: [], reason: "Initial admission", ...fixture.knowledge, category: "understanding", supports: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) }], skipped: [] });
+  queue({ op: "create", topics: [], reason: "Initial admission", ...fixture.knowledge, category: "understanding", supports: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) });
   const result = await run();
   expect(result.outcome, JSON.stringify(result)).toBe("success");
   expect(memory.trace("K1")).toContain(fixture.knowledge.text);
@@ -206,7 +208,7 @@ test("simulation v7m Chinese evidence remains traceable through N knowledge publ
 
 test("N archive and create publish together with Raw progress, leaving historical fact accounting untouched", async () => {
   const withdrawal = fact("The user withdrew the rule"), evidence = fact(), base = knowledge(evidence.id);
-  queue({ operations: [...create(evidence.id).operations, { op: "archive", kind: "budget", id: base.tag, supports: [`F${withdrawal.id}`], reason: "Withdrawn" }], skipped: [] });
+  queue([create(evidence.id), { op: "archive", kind: "budget", id: base.tag, supports: [`F${withdrawal.id}`], reason: "Withdrawn" }]);
   expect((await run()).outcome).toBe("success");
   expect(memory.store.currentCommit(base.knowledgeId)[0]!.op).toBe("archive");
   expect(memory.store.getKnowledge(base.knowledgeId + 1)).not.toBeNull();
@@ -215,8 +217,8 @@ test("N archive and create publish together with Raw progress, leaving historica
 });
 
 test("one malformed reason prevents valid siblings and Raw progress from publishing", async () => {
-  const evidence = fact(), good = create(evidence.id).operations[0]!;
-  queue({ operations: [good, { ...good, text: "Second conclusion", reason: "   " }], skipped: [] });
+  const evidence = fact(), good = create(evidence.id);
+  queue([good, { ...good, text: "Second conclusion", reason: "   " }]);
   const result = await run();
   expect(result.outcome).toBe("bounced");
   expect("problems" in result && result.problems?.join(" ")).toContain("reason");

@@ -93,11 +93,11 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bi
     const read = input.tools.find(t => t.name === "trace")!.execute({ address: `T1#E${lateResult.entryOrdinal}`, full: true });
     expect(read).toContain("late result");
     const note = input.tools.find(t => t.name === "note")!;
-    expect(note.execute({ facts: [{ title: "Late evidence", sources: [{ address: `T1#E${lateResult.entryOrdinal}`, text: "Late evidence" }] }] })).toContain("rejected:");
-    const held = JSON.parse(note.execute({ facts: [{ slot: "$1", title: "First response", sources: [{ address: `T1#E${before[1]!.entryOrdinal}`, text: "The first response was produced." }] }] }));
+    expect(note.execute({ title: "Late evidence", sources: `[T1#E${lateResult.entryOrdinal}] Late evidence` })).toContain("rejected:");
+    const held = JSON.parse(note.execute({ slot: "$1", title: "First response", sources: `[T1#E${before[1]!.entryOrdinal}] The first response was produced.` }));
     expect(held.held).toEqual(["$1"]);
     expect(h.memory.store.listSessionFacts(1)).toEqual([]);
-    input.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] });
+    input.tools.find(t => t.name === "memory")!.execute({});
     release();
     expect((await pending).outcome).toBe("success");
     expect(h.memory.store.factEntries(h.memory.store.listSessionFacts(1)[0]!.id)).toEqual([before[1]!.id]);
@@ -117,8 +117,8 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bi
       // carries is the head reply the captured request cannot contain.
       expect(forkInput.text).not.toContain("T1#user");
       expect(forkInput.text).toContain("late assistant");
-      forkInput.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-      forkInput.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+      forkInput.tools.find(tool => tool.name === "note")!.execute({});
+      forkInput.tools.find(tool => tool.name === "memory")!.execute({});
       return { outcome: "success", output: "", request: {} };
     });
     try {
@@ -175,7 +175,7 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
   try {
     await h.prompt("check"); await h.answer("observed");
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    const written = JSON.parse(tools[2]!.execute({ facts: [{ title: "Useful observation", sources: [{ address: "T1#E1", text: "A useful fact" }] }] }));
+    const written = JSON.parse(tools[2]!.execute({ title: "Useful observation", sources: "[T1#E1] A useful fact" }));
     expect(written.results[0]).not.toMatch(/^rejected:/);
     expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
     await h.emit("tool_result", { toolName: "read", input: { path: "large" }, content: [{ type: "text", text: "head " + "word ".repeat(60000) + " tail" }], isError: false });
@@ -198,10 +198,10 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
 
 test("17a 2026-09-08: forks reuse shared identities and ordinals but native short ids in different lineages never collide", async () => {
   const h = host(quiet);
-  // 26a: a Noting run completes its batch with a submission; nothing to record is `{facts: []}`.
+  // 116: a Noting run calls both tools explicitly; nothing to record is `{}` for each.
   const noter = TraceMemory(join(h.dir, "trace.db"), async raw => {
-    (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!.execute({ facts: [] });
-    (raw as NotingAgentInput).tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [] });
+    (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!.execute({});
+    (raw as NotingAgentInput).tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "", request: {} }; });
   try {
     await h.prompt("same Turn");
@@ -223,7 +223,7 @@ test("17a 2026-09-08: forks reuse shared identities and ordinals but native shor
       .toEqual([{ lineage: "fork-native-session", branch }, { lineage: "pi-test", branch: "main" }]);
     const fork = hydrate(h.memory.pendingEntries(1, branch, 1), h.memory.store)[0]!;
     const manual = h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
-    expect(JSON.parse(manual[2]!.execute({ facts: [{ title: "Sibling result", sources: [{ address: `T1#E${original.entryOrdinal}`, text: "Sibling result" }] }] })).results[0])
+    expect(JSON.parse(manual[2]!.execute({ title: "Sibling result", sources: `[T1#E${original.entryOrdinal}] Sibling result` })).results[0])
       .toMatch(/^rejected: invalid source/);
     expect([original.nativeId, fork.nativeId]).toEqual(["collision", "collision"]);
     expect(original.nativeLineage).not.toBe(fork.nativeLineage);
@@ -334,14 +334,14 @@ test("review 2026-09-08 P1: a sibling entry of the same Turn is off-path for fac
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "sibling-only", name: "bash", arguments: { command: "adopt alpha" } }] });
     await h.emit("agent_end");
     let tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(tools[2]!.execute({ facts: [{ title: "Alpha adopted on sibling", sources: [{ address: "T1#E3", text: "Pi agent adopted alpha." }] }] })).not.toContain("rejected:");
+    expect(tools[2]!.execute({ title: "Alpha adopted on sibling", sources: "[T1#E3] Pi agent adopted alpha." })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(branch).not.toBe("main");
     tools = h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
-    expect(tools[2]!.execute({ facts: [{ title: "Alpha adopted on sibling", sources: [{ address: "T1#E3", text: "Pi agent adopted alpha." }] }] })).toContain("invalid source T1#E3");
+    expect(tools[2]!.execute({ title: "Alpha adopted on sibling", sources: "[T1#E3] Pi agent adopted alpha." })).toContain("invalid source T1#E3");
     expect(h.memory.store.listBranchFacts(1, branch, 1)).toHaveLength(0); // F1 cites the sibling entry: off this path
-    const knowledge = tools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] });
+    const knowledge = tools[3]!.execute({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] });
     expect(knowledge).toContain("rejected:");
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("Always use alpha");
     // On the original path the fact and knowledge built on it are applicable.
@@ -373,12 +373,9 @@ test("64b/P1b: frozen Fact isolation remains reader-path local while Knowledge f
     const common = [...h.entries];
     h.persist(reply("ALPHA_ONLY: adopt alpha.")); await h.emit("agent_end");
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(tools[2]!.execute({ facts: [{ title: "Pi agent proposed alpha", sources: [
-      { address: "T1#E2", text: "Pi agent gave a shared interim observation." },
-      { address: "T1#E3", text: "Pi agent proposed: ALPHA_ONLY: adopt alpha." },
-    ] }] })).not.toContain("rejected:");
+    expect(tools[2]!.execute({ title: "Pi agent proposed alpha", sources: "[T1#E2] Pi agent gave a shared interim observation.\n[T1#E3] Pi agent proposed: ALPHA_ONLY: adopt alpha." })).not.toContain("rejected:");
     expect(h.memory.store.factEntries(1)).toHaveLength(2); // both exact assistant sources remain required by the fact
-    expect(tools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
+    expect(tools[3]!.execute({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(hydrate(h.memory.store.sourcePath(1, branch, 1), h.memory.store).some(e => e.text.includes("ALPHA_ONLY"))).toBe(false);
@@ -418,8 +415,8 @@ test("review 2026-09-08 P3: the Noter's active knowledge follows the branch path
     await h.prompt("Investigate"); await h.answer("Shared interim."); const common = [...h.entries];
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "alpha", name: "bash", arguments: { command: "adopt alpha" } }] }); await h.emit("agent_end");
     const t = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-    expect(t[2]!.execute({ facts: [{ title: "Alpha policy on sibling", sources: [{ address: "T1#E3", text: "Pi agent proposed using alpha." }] }] })).not.toContain("rejected:");
-    expect(t[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "SIBLING_POLICY_ALPHA", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
+    expect(t[2]!.execute({ title: "Alpha policy on sibling", sources: "[T1#E3] Pi agent proposed using alpha." })).not.toContain("rejected:");
+    expect(t[3]!.execute({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "SIBLING_POLICY_ALPHA", category: "constraint", scope: "session", supports: ["F1"] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("SIBLING_POLICY_ALPHA");
@@ -453,16 +450,16 @@ test("64b/21a: an archive follows its support owner's foreground without changin
     const common = [...h.entries];
     const write = (branch: string) => h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
     let tools = write("main");
-    expect(tools[2]!.execute({ facts: [{ title: "Alpha policy", sources: [{ address: "T1#E1", text: "The user asked to investigate alpha." }] }] })).not.toContain("rejected:");
-    expect(tools[3]!.execute({ operations: [{ op: "create", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
-      supports: ["F1"], reason: "Admitted from the shared ancestry." }], skipped: [] })).not.toContain("rejected:");
+    expect(tools[2]!.execute({ title: "Alpha policy", sources: "[T1#E1] The user asked to investigate alpha." })).not.toContain("rejected:");
+    expect(tools[3]!.execute({ op: "create", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
+      supports: ["F1"], reason: "Admitted from the shared ancestry." })).not.toContain("rejected:");
     // The withdrawal is bound to a sibling entry of the same Turn: only this path holds it.
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });
     await h.emit("agent_end");
     tools = write("main");
-    expect(tools[2]!.execute({ facts: [{ title: "Alpha withdrawn", sources: [{ address: "T1#E4", text: "Pi agent withdrew alpha on this path." }] }] })).not.toContain("rejected:");
+    expect(tools[2]!.execute({ title: "Alpha withdrawn", sources: "[T1#E4] Pi agent withdrew alpha on this path." })).not.toContain("rejected:");
     const base = readHandle(tools, "K1");
-    expect(tools[3]!.execute({ operations: [{ op: "archive", kind: "budget", id: base, supports: ["F2"], reason: "The user withdrew the rule on this path." }], skipped: [] })).not.toContain("rejected:");
+    expect(tools[3]!.execute({ op: "archive", kind: "budget", id: base, supports: ["F2"], reason: "The user withdrew the rule on this path." })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(branch).not.toBe("main");

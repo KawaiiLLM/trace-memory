@@ -4,7 +4,7 @@ import { legacyFacts } from "../../support/seed.ts";
 
 // Exercise both explicit N tools and real terminal publication.
 async function checkMemoryBatch(output: unknown | ((tag: (id: number) => string) => unknown)) {
-  const memory = sourceSeededMemory(":memory:", async raw => { const input = raw as NotingAgentInput; input.reportRequest({ fake: true }); input.tools.find(t => t.name === "note")!.execute({ facts: [] }); input.tools.find(t => t.name === "memory")!.execute(typeof output === "function" ? output((id: number) => `K${id}#${memory.store.versionTag(id, id)}`) : output); return { outcome: "success", output: "done", request: { fake: true } }; });
+  const memory = sourceSeededMemory(":memory:", async raw => { const input = raw as NotingAgentInput; input.reportRequest({ fake: true }); input.tools.find(t => t.name === "note")!.execute({}); input.tools.find(t => t.name === "memory")!.execute(typeof output === "function" ? output((id: number) => `K${id}#${memory.store.versionTag(id, id)}`) : output); return { outcome: "success", output: "done", request: { fake: true } }; });
   try {
     const p = memory.store.createProject({ name: "validation", declaredBy: "mark" });
     const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
@@ -25,44 +25,33 @@ async function checkMemoryBatch(output: unknown | ((tag: (id: number) => string)
 
 describe("checkMemoryBatch", async () => {
   test("64a/92: N creates knowledge backed by preceding facts", async () => {
-    const { problems, value } = await checkMemoryBatch({ operations: [
-      { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] },
-    ], skipped: [] });
+    const { problems, value } = await checkMemoryBatch({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] });
     expect(problems).toEqual([]);
-    expect(value!.operations).toHaveLength(1);
-    expect(value!.operations[0]!.op).toBe("create");
+    expect(value!.op).toBe("create");
   });
 
   test("76/92: accepts N archive of a current tagged version", async () => {
-    const { problems, value } = await checkMemoryBatch((tag: (id: number) => string) => ({ operations: [
-      { op: "archive", kind: "budget", reason: "Retire stale knowledge.", id: tag(9), supports: ["F5"] },
-    ], skipped: [] }));
+    const { problems, value } = await checkMemoryBatch((tag: (id: number) => string) => ({ op: "archive", kind: "budget", reason: "Retire stale knowledge.", id: tag(9), supports: ["F5"] }));
     expect(problems).toEqual([]);
-    expect(value!.operations[0]).toMatchObject({ op: "archive", kind: "budget" });
+    expect(value).toMatchObject({ op: "archive", kind: "budget" });
   });
 
   test("76/92: rejects N archive of a nonexistent version", async () => {
-    const { problems } = await checkMemoryBatch({ operations: [
-      { op: "archive", kind: "budget", reason: "Retire stale knowledge.", id: "K99#abcd", supports: ["F5"] },
-    ], skipped: [] });
+    const { problems } = await checkMemoryBatch({ op: "archive", kind: "budget", reason: "Retire stale knowledge.", id: "K99#abcd", supports: ["F5"] });
     expect((problems ?? []).join(" ")).toContain("knowledge version does not exist");
   });
 
   test("76/92: rejects N merge and split with Dreamer guidance", async () => {
-    const { problems: mergeProblems } = await checkMemoryBatch({ operations: [
-      { op: "merge", reason: "Merge duplicates.", id: "K1#abcd", absorb: ["K2#abcd"], text: "merged", category: "understanding", scope: "project", topics: [], supports: ["F5"] },
-    ], skipped: [] });
+    const { problems: mergeProblems } = await checkMemoryBatch({ op: "merge", reason: "Merge duplicates.", id: "K1#abcd", absorb: ["K2#abcd"], text: "merged", category: "understanding", scope: "project", topics: [], supports: ["F5"] });
     expect((mergeProblems ?? []).join(" ")).toContain("Dreamer");
-    const { problems: splitProblems } = await checkMemoryBatch({ operations: [
-      { op: "split", reason: "Split apart.", id: "K1#abcd", supports: ["F5"] },
-    ], skipped: [] });
+    const { problems: splitProblems } = await checkMemoryBatch({ op: "split", reason: "Split apart.", id: "K1#abcd", supports: ["F5"] });
     expect((splitProblems ?? []).join(" ")).toContain("Dreamer");
   });
 
-  test("accepts an empty operations and skipped batch", async () => {
-    const { problems, value } = await checkMemoryBatch({ operations: [], skipped: [] });
+  test("accepts an empty Noter memory call", async () => {
+    const { problems, value } = await checkMemoryBatch({});
     expect(problems).toEqual([]);
-    expect(value).toEqual({ operations: [], skipped: [] }); // The facade audit preserves the exact submitted object.
+    expect(value).toEqual({}); // The facade audit preserves the exact submitted object.
   });
 
   test("rejects a non-object top level", async () => {
@@ -72,27 +61,27 @@ describe("checkMemoryBatch", async () => {
   });
 
   test("rejects a model-supplied knowledge handle", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "e1", text: "x", scope: "project", category: "understanding", supports: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "e1", text: "x", scope: "project", category: "understanding", supports: ["F1"] });
     expect(problems.some((p) => p.includes("handle"))).toBe(true);
   });
 
   test("rejects an unknown scope", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "team", category: "understanding", supports: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "team", category: "understanding", supports: ["F1"] });
     expect(problems.some((p) => p.includes("scope"))).toBe(true);
   });
 
   test("rejects an unknown category", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "noting", supports: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "noting", supports: ["F1"] });
     expect(problems.some((p) => p.includes("category"))).toBe(true);
   });
 
   test("rejects a supports knowledge that is not a fact id", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "understanding", supports: ["K1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "understanding", supports: ["K1"] });
     expect(problems.some((p) => p.includes("K1"))).toBe(true);
   });
 
   test("rejects a malformed update id", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "5", text: "x", scope: "project", category: "understanding", supports: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "5", text: "x", scope: "project", category: "understanding", supports: ["F1"] });
     expect(problems.some((p) => p.includes("supply an exact K#tag version"))).toBe(true);
   });
 
@@ -119,8 +108,8 @@ describe("checkMemoryBatch", async () => {
       const session = memory.store.createSession({ projectId: project.id, host: "pi:test", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
       const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", startedAt: "now" });
       const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
-      expect(tools[2]!.execute({ facts: [{ title: "Rule admission", sources: [{ address: `T${turn.id}#E1`, text: "Rule" }] }] })).toContain("F1");
-      expect(JSON.parse(tools[3]!.execute({ operations: [{ op: "create", text: "Rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Seed" }], skipped: [] })).committed).toHaveLength(1);
+      expect(tools[2]!.execute({ title: "Rule admission", sources: `[T${turn.id}#E1] Rule` })).toContain("F1");
+      expect(JSON.parse(tools[3]!.execute({ op: "create", text: "Rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Seed" })).committed).toHaveLength(1);
       const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: turn.id });
       expect(result.outcome, JSON.stringify(result)).toBe("failure");
       if (result.outcome !== "failure") throw new Error("expected refused D batch");
@@ -132,12 +121,12 @@ describe("checkMemoryBatch", async () => {
   });
 
   test("N rejects retired fact-processing skips", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [], skipped: [{ fact: "F1", because: "different conditions" }] });
+    const { problems = [] } = await checkMemoryBatch({ skipped: [{ fact: "F1", because: "different conditions" }] });
     expect(problems.join(" ")).toContain("skipped");
   });
 
   test("rejects an unknown batch field", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [], skipped: [], extra: [] });
+    const { problems = [] } = await checkMemoryBatch({ extra: [] });
     expect(problems.some((p) => p.includes("memory expects"))).toBe(true);
   });
 });
