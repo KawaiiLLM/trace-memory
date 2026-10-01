@@ -459,6 +459,27 @@ test("Dreamer uses one streaming child for one repair, accepts stable repeated i
     .toEqual([{ text: "frozen material", synthetic: false }, { text: "repair receipt", synthetic: true }]);
 });
 
+test.each(["noting", "dreaming"] as const)("117: CC %s result respects its original cancellation boundary", async kind => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-pass-abort-")); dirs.push(directory);
+  const controller = new AbortController(), passEnd = vi.fn(() => undefined);
+  const fakeQuery = ((request: { prompt: AsyncIterable<any> }) => {
+    const stream = (async function* () {
+      await request.prompt[Symbol.asyncIterator]().next();
+      yield { type: "system", subtype: "init", session_id: "pass-abort", claude_code_version: TEST_CC_VERSION, cwd: directory,
+        tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      controller.abort(new DOMException("external cancellation", "AbortError"));
+      yield { type: "result", subtype: "success", session_id: "pass-abort", is_error: false, result: "completed", errors: [] };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind, text: "material", prompt: "instructions", tools: [], signal: controller.signal,
+    acknowledgeRequest: vi.fn(), reportRounds: vi.fn(), passEnd } as unknown as CcAgentTask;
+  const result = await new CcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0);
+  expect(result.outcome).toBe(kind === "noting" ? "cancelled" : "success");
+  expect(passEnd).toHaveBeenCalledTimes(kind === "noting" ? 0 : 1);
+});
+
 test("Dreamer rejects an unsolicited second pass and does not call passEnd twice", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-unsolicited-")); dirs.push(directory);
   const executable = join(directory, "claude");

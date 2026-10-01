@@ -444,7 +444,7 @@ export class CcAgentWorker {
           progress();
           if (message.is_error || message.subtype !== "success")
             nativeFailureOutput ??= message.subtype === "success" ? message.result : message.errors.join("; ");
-          task.signal?.throwIfAborted();
+          if (task.kind === "noting") task.signal?.throwIfAborted();
           const pass = results.length;
           if ((pass === 1 && passState !== "first") || (pass === 2 && passState !== "repair-authorized") || pass > 2)
             throw new Error("CC worker emitted a completed pass without core authorization");

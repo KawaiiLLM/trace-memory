@@ -6,19 +6,20 @@
 
 The [fact-slice and entry-reading contract](unified-entry.md) is the current public reference. It supersedes the historical source, rendering and address forms recorded in the numbered ticket sections below.
 
-- New `note` items require a single-line `title` and nonempty `sources: [{address, text}]`. Core orders segments by the selected path, joins their bodies, derives source roles and assigns the earliest source Turn. Duplicate resolved entries are rejected. N's 1,000-token cap applies to the body; windows charge the full rendering.
+- Each new `note` call writes one fact with a single-line `title` and one nonempty top-level `sources` string. Each source segment starts on a line with `[T12#E3@user] ` (the role suffix is optional) and may continue across lines; text before the first marker is rejected. Core parses the markers, trims each segment's trailing whitespace, orders segments by the selected path, joins their bodies, derives source roles and assigns the earliest source Turn. Duplicate resolved entries are rejected. N's 1,000-token cap applies to the body; windows charge the full rendering.
 - A bare Turn displays contributing fact segments, pending Raw and addresses of processed uncited entries. Whole-entry/range addresses read Raw. Exact facts include backlinks to reader-visible current knowledge identities, including historical citing versions. Trace/search knowledge supports show fact titles; injection does not.
 - Public `@` selectors are only role filters. Block selectors, E-list shorthand, fact intervals, negation walks, `K..`, `trace.layer` and `trace.tool` are removed. Knowledge versions use tags or `@v` ordinals, not global commit numbers. Search retains its `layer` parameter.
 - Legacy stored bodies, sources and metadata remain unchanged. Display normalizes sources to whole-entry addresses; missing bindings or inconsistent stored segments fail explicitly. New facts still reject thinking-only evidence. Ordinary Turn views omit thinking; explicit full or entry Raw reads retain it.
 
 ## Noter publication (92/04)
 
-This contract supersedes the older immediate-Noting and NEAR descriptions below. Live Consolidation is retired; historical C records remain readable. The numbered sections retain implementation history, not permission to use superseded schemas or stages.
+This contract supersedes the older immediate-Noting and NEAR descriptions below. Live Consolidation is retired; historical C records remain readable. The numbered sections retain implementation history, not permission to use superseded schemas or stages. In particular, ticket 02's `note({facts})`, `note({facts: []})`, immediate N commit and NEAR descriptions below are historical, not current tool guidance.
 
-- Foreground and N advertise identical `note`/`memory` definitions. Core enforces role permissions. Manual writes remain immediate and reject N-only slots, drops and local knowledge supports; manual within-call relation handles still work.
-- N holds facts in stable `$n` slots and knowledge operations in `Mn` slots. Omitted slot appends; explicit slot fully replaces. A rejected replacement invalidates the prior value. Drop leaves a gap and cannot remove a referenced fact. Empty calls confirm use but do not clear drafts or slot errors.
+- Foreground and N advertise identical `note`/`memory` definitions. Each call carries one fact or one knowledge operation in top-level fields, rather than `facts` or `operations` arrays. Core enforces role permissions. Manual writes remain immediate and reject N-only slots, drops and local knowledge supports; manual fact relations cite existing F IDs. Manual `memory` allows fact-backed create/archive only; D retains its own `memory({operations, skipped})` batch contract.
+- N holds facts in stable `$n` slots and knowledge operations in `Mn` slots. Omitted slot appends; explicit slot fully replaces. `drop: "$n"` or `drop: "Mn"` is a separate call. A rejected replacement invalidates the prior value. Drop leaves a gap and cannot remove a referenced fact. N has no `skipped` field. Empty `note({})` and `memory({})` calls confirm use but do not clear drafts or slot errors.
 - A valid call clears top-level errors only. Host schema refusals are correlated by native call ID and original arguments, including failures before core execution. Duplicate refusal events cannot allocate another slot. A missing CC dispatch/refusal fails the run explicitly.
-- Only normal model termination, both tools used and no unresolved refusal permits publication. One short Store transaction revalidates sources, roles, path, enrollment, project, claim, supports and tagged bases; allocates F IDs; maps structured references; writes knowledge, Raw progress and successful execution. Rollback exposes neither layer nor successful progress. Audit keeps final usage and requested/applied operations.
+- Every non-fork N run with a normally completed first pass receives one fixed end-review message, even if publishable or empty. It lists real held blockers (rejected slots, call errors and missing tools with their host-specific empty calls) and every held knowledge change: update parent-to-new-body diff and changed metadata, full create body, or archive kind and text. The model may replace or drop a slot in the second pass. Provider failure and cancellation receive no supplement; a CC fork receives none. There is no third pass; D keeps its existing pass-end conditions.
+- Only normal termination after the review where applicable, both tools used and no unresolved refusal permits publication. Unresolved publication blockers bounce the run without progress; provider failure and cancellation retain their respective outcomes. One short Store transaction revalidates sources, roles, path, enrollment, project, claim, supports and tagged bases; allocates F IDs; maps structured references; writes knowledge, Raw progress and successful execution. Rollback exposes neither layer nor successful progress. Audit keeps final usage and requested/applied operations.
 - An applicable, authorized predecessor consumed by a visible effective descendant permits N's update-to-annotated-create or archive-to-no-op conversion. Missing tags, invalid evidence or authority do not convert. The converted identity enters ordinary D pending accounting.
 - Pi forks preserve captured tool definitions and the existing prefix gate. Incompatible old definitions are refused through the existing fallback path. The SDK's structured pre-execution failures invalidate held slots; no schema is loosened to bypass validation.
 - Live NEAR capture, feedback and its configuration are removed. Historical audit types and reading remain. Explicit `noting.nearThreshold` configuration now reports a removed-setting error.
@@ -43,7 +44,7 @@ the domain prompt and its hash, the frozen range and knowledge commits, the mode
 `reportRequest`, `entryAudit`, one `material` object of rendered, budgeted parts, `text` — one
 prepared string, whatever mode runs the task (29b; the `{fresh, inherited}` pair is gone) — and
 `supplied`, the identities that text actually carries. The host decides which message carries the
-text; it lays out no block of its own and chooses between no representations. Noting additionally supplies `reviewFeedback(toolResult)`, core's own reader of its NEAR receipt: the host delivers returned guidance as a user message but does not parse the protocol. Consolidation has no review round.
+text; it lays out no block of its own and chooses between no representations. Noting additionally supplies `passEnd()`, core's fixed N end-review text built from held operations and blockers; the host delivers it through the existing pass-end channel after the first normal pass. Historical NEAR receipts no longer run. Consolidation is retired.
 
 **Audit availability.** A host that cannot expose a provider request returns
 `audit: {available: false, reason}` instead of `request`; core records the limitation in the run
@@ -108,11 +109,11 @@ historical reads do not make stale revisions writable.
 
 ### Operations and supports
 
-Only the Dreamer may `update`, `merge` or `split`; it also archives but cannot create a parentless identity.
+N may `update` a visible current tagged base; only the Dreamer may `merge` or `split`. Dreamer also archives but cannot create a parentless identity.
 A merge joins two identities of one scope and keeps the older identity. It may omit `text`, in which
 case the later parent's body is copied verbatim. A split atomically creates two continuation
 identities and both inherit the parent's scope. Manual Knowledge writes expose only fact-backed
-`create` and `archive`; Consolidation exposes only `create`.
+`create` and `archive`; the retired Consolidation stage historically exposed only `create`.
 
 Evidence-driven maintenance stores the submitted direct facts. A trusted Dreamer maintenance
 operation may submit empty `supports`; core materializes the parents' supports in the same commit:
@@ -187,7 +188,9 @@ then closes and aborts locally owned target tasks. Only the transitioning settle
 `automaticOff` for the host's single notification. Committed data and backlog survive; other
 targets and a borrowing executor remain enabled. No automatic retry or re-enable follows.
 
-## Noting and trace host contract (ticket 02)
+## Historical Noting and trace host contract (ticket 02)
+
+The tool shapes, publication timing and NEAR behavior in this section describe the retired ticket-02 protocol. Use [Noter publication](#noter-publication-9204) and [Current facts and reads](#current-facts-and-reads-93) for current calls and outcomes.
 
 Hosts pass completed source identities/content through `appendEntry(SourceInput)`
 and select the persisted ancestry with `selectEntries(sessionId, branch, entryIds)`.
@@ -209,9 +212,10 @@ The noting result has `outcome`: `success` with `runId` and facts; `bounced`,
 `failure` or `cancelled` with `runId` and problems; or `dropped`/`empty` without
 a run record. A duplicate is dropped per target session and phase across branches,
 hosts and processes by a thirty-minute SQLite claim. No automatic retry or feedback call follows a bounce.
-A batch is completed only by a `note` call (26a). `note({facts: []})` is the explicit
-empty submission: it commits a successful zero-fact run, processes exactly the frozen
-entries, and closes the batch to later `note` calls.
+Historically, one `note({facts})` submitted a batch; `note({facts: []})` submitted zero facts.
+The current N protocol stages individual `note` and `memory` calls (both required even when
+empty), reviews once after a normal first pass outside CC fork mode, then publishes both
+layers and frozen progress together on normal termination.
 Stopping normally without submitting is **incomplete**: outcome `failure` with the
 exported `NOTING_INCOMPLETE` diagnostic and the oldest frozen entry on
 `incompleteHeadEntryId`, the attempt and its usage recorded, and no business progress —

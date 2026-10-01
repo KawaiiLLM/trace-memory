@@ -251,7 +251,7 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
     else markers.forEach((marker, i) => {
       const next = markers[i + 1];
       const segment = sourceText.slice(marker.index! + marker[0].length, next?.index);
-      const text = next ? segment.replace(/\r?\n$/, "") : segment;
+      const text = segment.trimEnd();
       if (!text.trim()) problems.push(`${path}.sources[${i}]: expected non-empty text`);
       sources.push({ address: marker[1]!, text });
     });

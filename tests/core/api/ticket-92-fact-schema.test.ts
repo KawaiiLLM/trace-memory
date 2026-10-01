@@ -57,7 +57,7 @@ test("92: one note schema derives ordered entry roles and original harness, not 
 test("116: marked sources parse multiline segments without persisting markers or changing Raw order", () => {
   const f = fixture();
   try {
-    const sources = `[${f.source[3]}@observation] Tool returned C.\nThe second line belongs to this entry.\n[${f.source[0]}@user] User proposed A.`;
+    const sources = `[${f.source[3]}@observation] Tool returned C.\nThe second line belongs to this entry. \t\n\n[${f.source[0]}@user] User proposed A. \t\n`;
     const receipt = JSON.parse(f.note.execute({ title: "Two contributions", sources }));
     const fact = f.memory.store.getFact(receipt.factIds[0])!;
     expect(fact.source).toEqual([`${f.source[0]}@user`, `${f.source[3]}@observation`]);
@@ -66,12 +66,12 @@ test("116: marked sources parse multiline segments without persisting markers or
   } finally { f.memory.close(); }
 });
 
-test("116: the last source retains its authored trailing newline", () => {
+test("116 review: sources trim trailing whitespace while retaining internal newlines", () => {
   const f = fixture();
   try {
-    const sources = factSources([{ address: f.source[0]!, text: "First line\nSecond line\n" }]);
-    const receipt = JSON.parse(f.note.execute({ title: "Preserve source", sources }));
-    expect(f.memory.store.getFact(receipt.factIds[0])!.segments).toEqual(["First line\nSecond line\n"]);
+    const sources = factSources([{ address: f.source[0]!, text: "First line\n  Second line \t\r\n\n" }]);
+    const receipt = JSON.parse(f.note.execute({ title: "Normalize source", sources }));
+    expect(f.memory.store.getFact(receipt.factIds[0])!.segments).toEqual(["First line\n  Second line"]);
   } finally { f.memory.close(); }
 });
 

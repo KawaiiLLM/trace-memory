@@ -40,6 +40,22 @@ test("92: a native held receipt is neither rejected nor marked as committed", as
   } finally { await f.dispose(); }
 });
 
+test.each(["noting", "dreaming"] as const)("117: native %s keeps its own pass-end eligibility after a length stop", async kind => {
+  const f = await fixture({ "noting.triggerTokens": 1e9 });
+  try {
+    f.script(body => !worker(body, kind === "noting" ? "Noting" : "Dreaming") ? say("Parent ready.")
+      : JSON.stringify(body.messages).includes("Host followup") ? say("Reviewed.")
+      : sse([{ id: "c", object: "chat.completion.chunk", created: 1, model: "test",
+        choices: [{ index: 0, delta: { role: "assistant", content: "Truncated." }, finish_reason: "length" }], usage: usage() }]));
+    const captured = await f.turn();
+    const passEnd = vi.fn(() => "Host followup");
+    await runNative(f.task(captured, { kind, task: `${kind === "noting" ? "Noting (facts and knowledge)" : "Dreaming (knowledge extraction)"} material`, passEnd }));
+    expect(passEnd).toHaveBeenCalledTimes(kind === "dreaming" ? 2 : 0);
+    expect(f.sent.filter(body => worker(body, kind === "noting" ? "Noting" : "Dreaming") &&
+      JSON.stringify(body.messages).includes("Host followup"))).toHaveLength(kind === "dreaming" ? 1 : 0);
+  } finally { await f.dispose(); }
+});
+
 // ---------------------------------------------------------------- checkbox 1: the gate
 test("19a 2026-09-08: the native child's first request passes prefix verification against the captured parent request", async () => {
   const f = await forkFixture();

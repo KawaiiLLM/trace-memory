@@ -293,7 +293,7 @@ function validateNotingFact(path, raw, problems) {
     else markers.forEach((marker, i) => {
       const next = markers[i + 1];
       const segment = sourceText.slice(marker.index + marker[0].length, next?.index);
-      const text = next ? segment.replace(/\r?\n$/, "") : segment;
+      const text = segment.trimEnd();
       if (!text.trim()) problems.push(`${path}.sources[${i}]: expected non-empty text`);
       sources.push({ address: marker[1], text });
     });
@@ -6132,7 +6132,7 @@ function renderKnowledgeDiff(a, b, revisions, cap = Infinity, fields2, address2 
         `  change supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
         `  change supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`
       ] : [],
-      ...fields2.has("status") && knowledgeCategoryGroup(a.category) !== knowledgeCategoryGroup(b.category) ? [`  category: ${knowledgeCategoryGroup(a.category)} -> ${knowledgeCategoryGroup(b.category)}`] : [],
+      ...fields2.has("status") && a.category !== b.category ? [`  category: ${a.category} -> ${b.category}`] : [],
       ...fields2.has("status") && a.scope !== b.scope ? [`  scope: ${a.scope} -> ${b.scope}`] : [],
       ...fields2.has("reason") && a.reason !== b.reason ? [`  reason: ${a.reason} -> ${b.reason}`] : [],
       ...fields2.has("topics") && JSON.stringify(a.topics) !== JSON.stringify(b.topics) ? [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`] : [],
@@ -6148,7 +6148,7 @@ function renderKnowledgeDiff(a, b, revisions, cap = Infinity, fields2, address2 
     prefix + text,
     `  change supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
     `  change supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
-    ...knowledgeCategoryGroup(a.category) === knowledgeCategoryGroup(b.category) ? [] : [`  category: ${knowledgeCategoryGroup(a.category)} -> ${knowledgeCategoryGroup(b.category)}`],
+    ...a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`],
     ...a.scope === b.scope ? [] : [`  scope: ${a.scope} -> ${b.scope}`],
     ...a.reason === b.reason ? [] : [`  reason: ${a.reason} -> ${b.reason}`],
     ...JSON.stringify(a.topics) === JSON.stringify(b.topics) ? [] : [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`],
@@ -41166,7 +41166,7 @@ var CcAgentWorker = class {
               progress();
               if (message.is_error || message.subtype !== "success")
                 nativeFailureOutput ??= message.subtype === "success" ? message.result : message.errors.join("; ");
-              task.signal?.throwIfAborted();
+              if (task.kind === "noting") task.signal?.throwIfAborted();
               const pass = results.length;
               if (pass === 1 && passState !== "first" || pass === 2 && passState !== "repair-authorized" || pass > 2)
                 throw new Error("CC worker emitted a completed pass without core authorization");

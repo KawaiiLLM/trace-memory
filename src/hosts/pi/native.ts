@@ -401,7 +401,8 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     await session.waitForIdle();
     // A native prompt includes the whole tool loop and provider retries. Only now is this a pass
     // end. The same child, counters and retry accounting survive the one system-generated repair.
-    if (task.passEnd && !task.signal?.aborted && !failure && terminal && !["error", "aborted", "length"].includes(terminal.stopReason ?? "") && !terminal.errorMessage) {
+    if (task.passEnd && !task.signal?.aborted && !failure && terminal?.stopReason !== "error" && terminal?.stopReason !== "aborted" &&
+        (task.kind === "dreaming" || (terminal && terminal.stopReason !== "length" && !terminal.errorMessage))) {
       const followup = task.passEnd(rounds);
       if (followup && (task.kind === "noting" || task.maxToolRounds === 0 || rounds < task.maxToolRounds)) {
         // A new public prompt reapplies before_agent_start. An idle custom-message turn skips it,

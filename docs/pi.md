@@ -8,7 +8,7 @@ its exposed store. Noting uses a fresh subagent by default and may request verif
 Dreamer is always a fresh subagent. Live Consolidation is retired. Automatic N/D checks occur once
 at each main turn end (105), not at entry ingestion or ordinary task completion. Shutdown, tree
 navigation and compaction launch no phase. The current scheduling and publication contracts
-supersede per-entry triggers, chained runs and live C settings in the historical numbered sections below.
+supersede per-entry triggers, chained runs and live C settings in the historical numbered sections below. Historical `note({facts: []})`, immediate N commit and NEAR examples below are not current call guidance.
 
 **One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
 (`native.ts`): fork mode in a child forked from the parent session file at its persisted
@@ -34,6 +34,14 @@ fabricate records. Revision ids, parents, links, Raw and run audit remain intact
 migration contract, not a claim that a production copy has passed acceptance. Stop older executors
 before opening the upgraded database; mixed-runtime writes are unsupported. Preserve backups and
 logs. See the [installation guide](../README.md#install) before loading the package.
+
+## Noter calls and end review (116/117)
+
+Pi exposes the same flat `note` and `memory` definitions to N and manual callers. One `note` call carries one fact in top-level `title` and `sources` fields; `sources` is a string of segments, each beginning on a line with `[T12#E3@user] ` (role optional), with no text before the first marker. Core trims trailing whitespace from each source segment while preserving internal line breaks. One `memory` call carries one top-level operation (`op`, `supports`, `reason` and applicable fields); N allows create/update/archive and has no `skipped`. Manual writes commit each call immediately, with memory limited to fact-backed create/archive. Dreamer alone retains batch `memory({operations, skipped})`.
+
+N stages facts in `$n` slots and knowledge operations in `Mn` slots. A call without `slot` appends, an explicit `slot` replaces the entire item, and `drop: "$n"` or `drop: "Mn"` removes one slot in a separate call. `note({})` and `memory({})` explicitly confirm no item; N must call both tools even when empty. An empty call does not clear a rejected slot.
+
+After the first normal pass, each non-fork N run receives one fixed end-review user message, even if already publishable or empty. It reports real held blockers (including host-specific empty calls for missing tools) and every held knowledge change (update body/metadata diff, full create body or archive kind/text). The second pass can correct a slot, drop it or leave a compliant change untouched. Only after that pass does normal termination attempt atomic publication; unresolved blockers bounce the run. Failure or cancellation gets no review, and there is no third pass. CC fork remains excluded; D keeps its pre-existing pass-end conditions.
 
 ## Automatic checkpoints (105)
 
@@ -259,9 +267,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   `noting.triggerTokens` defaults to **10,000 compressed-view tokens** measured
   with `renderEntry` over `pendingEntries`, including separators. Original Raw size,
   entry count and answered Turns do not trigger runs. Excluded sources contribute nothing.
-  `noting.nearThreshold` defaults to **0.40** and accepts a finite number in [0,1]. It controls
-  the Noter's pre-commit same-session/path lexical review and is not one of the façade's dynamically
-  replaced keys. Consolidation has no lexical threshold.
+  The old `noting.nearThreshold` and pre-commit lexical review are removed. Explicit configuration of that key is rejected.
 - `noting.batchTokens` defaults to **10,000** (ticket 20; it was 50,000 through 17b): the oldest
   contiguous whole-entry prefix, without Turn boundaries. An entry is never skipped so that smaller
   later entries can fill the remaining space, and a partly filled batch is valid. Excess waits for
@@ -989,8 +995,8 @@ older vendored implementation:
 The registry resolves a configured `provider/model-id`; the adapter itself does not implement a
 provider. Noting and Consolidation run in a child `AgentSession`, which executes model tool calls
 through run-bound façade tools and continues until the model stops. Consolidator's first valid
-`memory` submission commits. Noter retains its own NEAR review when a valid candidate has lexical
-neighbours. Rejected submissions may be corrected in later tool rounds.
+`memory` submission commits. Noter receives its fixed end review after a normal first pass (117).
+Rejected calls may be corrected in the second pass.
 
 `agent.onPayload` snapshots the provider-native body of every round; the last request sent
 embeds all earlier rounds and is stored with tool results, output and usage. The child's own
@@ -1155,9 +1161,9 @@ memoizes by leaf id, entry count and binding, so a streaming token re-reads the 
 rewind, a new entry, a compaction and the memory-session allocation each invalidate it. Admission
 passes `visible` to core only for a task whose effective mode is `fork`, beside the
 `capacity.prefixTokens` measure it freezes at the same moment. An explicit subagent, and a fork re-admitted as a subagent after any refusal (`fallbackReason` makes
-the effective mode subagent), pass none and get the complete fresh material. Noter's lexical NEAR
-review remains part of its own write path. Consolidation's first valid submission commits. If a
-later corrective request after a rejected tool call exceeds
+the effective mode subagent), pass none and get the complete fresh material. Noter's fixed end
+review follows a normal first pass; a CC fork receives none. Historical Consolidation's first valid
+submission committed immediately. If a later corrective request after a rejected tool call exceeds
 capacity, the normal overflow/refusal path applies.
 
 ## The runner (19a/19b, sole runner since 19c)
@@ -1193,8 +1199,7 @@ The child is built to reproduce the parent's request bytes through the SDK's own
 - **Identity.** `agent.sessionId` is set to the parent's Pi session id so the provider sees
   the parent's request/transport identity for cache affinity. The child's own SessionManager
   id and file stay its own, as does Trace Memory's target attribution.
-- **Task delivery.** The text core prepared is the child's user prompt. Noter NEAR guidance is delivered
-  as a native user message; ordinary tool rejections remain tool results.
+- **Task delivery.** The text core prepared is the child's user prompt. Noter's fixed end review is delivered as a native user message after a normal first pass; ordinary tool rejections remain tool results.
 - **Thinking level (26b, extended by 26d).** The child is created with Pi's own `thinkingLevel`
   option. Admission freezes **two** levels with the task, beside its model and its material: the
   foreground level the host reads once there (`pi.getThinkingLevel()`), and the phase's subagent
@@ -1821,10 +1826,10 @@ Generation limits, `noting.batchTokens`, `consolidation.batchTokens`, `render.ep
 the database-derived Knowledge capacity and foreground compaction are unchanged by this rule.
 
 Noting freezes entry identities on the selected path, not whole Turns. A
-successful zero-fact run — an explicit `note({facts: []})`, the only way to complete an
-empty batch since 26a — processes only its selected entries; later entries in
-that same Turn remain pending. A run that ends without any submission is incomplete: it
-processes nothing at all. Address aliases are interpreted against the frozen
+successful zero-fact run — after explicit `note({})` and `memory({})` calls, a normal first
+pass and its fixed end review — processes only its selected entries; later entries in that
+same Turn remain pending. A run that ends without calling both tools or with unresolved
+refusals publishes nothing and processes no entries. Address aliases are interpreted against the frozen
 entry set. A later matching source occurrence makes that address ineligible for
 the earlier writer, even if an unrestricted trace fetch can read it. Run records
 include `entryAudit`: native identities, owning Turns, frozen branch, view-budget
