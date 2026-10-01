@@ -38,8 +38,6 @@ for (const [label, changes, error] of [
   ["caller-selected role", { role: "user" }, "unexpected field"],
   ["retired quote", { quote: "Use pnpm." }, "unexpected field"],
   ["timestamp", { timestamp: "invented" }, "unexpected field"],
-  ["fact id in text", { sources: [{ address: "T1#E1", text: "See F12" }] }, "embed"],
-  ["knowledge id in text", { sources: [{ address: "T1#E1", text: "See K7" }] }, "embed"],
   ["empty source", { sources: [] }, "sources"],
   ["invalid source", { sources: [{ address: "T1", text: "Use pnpm." }] }, "source"],
   ["missing entry source", { sources: [{ address: "T1#E99", text: "Use pnpm." }] }, "invalid source"],

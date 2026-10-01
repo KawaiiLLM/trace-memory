@@ -180,8 +180,6 @@ export interface Run {
 
 const LOCAL_FACT_HANDLE_RE = /^\$\d+$/; // $n, noting.md
 const FACT_ID_RE = /^F\d+$/;
-// A bare fact or knowledge id embedded in prose text; ids belong only in relation/supports fields.
-const EMBEDDED_ID_RE = /\b[FK]\d+\b/;
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
@@ -249,8 +247,6 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
         typeof source.address !== "string" || !source.address || typeof source.text !== "string" || !source.text.trim() ||
         Object.keys(source).some(key => !["address", "text"].includes(key)))
       problems.push(`${path}.sources[${i}]: expected {address, non-empty text}`);
-    else if (EMBEDDED_ID_RE.test(source.text.replace(/「[^」]*」/gu, "")))
-      problems.push(`${path}.sources[${i}].text: must not embed a fact or knowledge id`);
   });
   for (const key of Object.keys(f)) {
     if (!["title", "sources", "support", "negate"].includes(key)) problems.push(`${path}.${key}: unexpected field`);

@@ -225,7 +225,6 @@ for (const [label, changes, problem] of [
   ["forward handle", { support: [["$2", "weak"]] }, "$2"],
   ["malformed handle", { support: [["$x", "weak"]] }, "target"],
   ["relation shape", { support: ["F1"] }, "expected [target, strength]"],
-  ["embedded id", { sources: [{ address: "T1#E2", text: "See F101" }] }, "must not embed"],
   ["event status", { status: "completed" }, "status"],
 ] as const) test(`bounces ${label} with problems and only a run record`, async () => {
   const t = turn(), output = [batch(t.id, [fact(changes)])];

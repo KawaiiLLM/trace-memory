@@ -2775,21 +2775,16 @@ test("64b/29/31: an identity disappearance is noticed again after restore and re
   expect(memory.injection(root, visible).text).toContain("K2 no longer applies");
 });
 
-/** Ticket 40 N0 (2026-09-14): a correction keeps the object's identity. The Sol replay read the
- * id-in-text rejection as "delete" and dropped K213@271 and five other audited objects on
- * resubmission; the prompt and the rejection reason now both say where the span goes. */
-test("40 N0/92: the verbatim object span stays inside the episode in corner quotes", () => {
+/** User, 2026-10-01: the embedded-id check on source text is removed (supersedes 40 N0). It could not
+ * tell Trace Memory ids from a conversation's own, rejecting a project's cognition records K01–K14, and
+ * N rewrote them into vaguer prose to get past it. */
+test("source text may name F- and K-shaped ids", () => {
   const { s, t } = session();
   const note = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!;
-  const fact = (text: string) => ({ title: "Audited object", sources: [{ address: `T${t.id}#E1`, text }] });
-  const rejected = JSON.parse(note.execute({ facts: [fact("K213@271 names its object in the text instead of the quote.")] }));
-  expect(rejected.results[0]).toContain("rejected:");
-  expect(rejected.results[0]).toContain("sources[0].text: must not embed a fact or knowledge id");
-  expect(memory.store.listSessionFacts(s.id)).toEqual([]);
-  const accepted = JSON.parse(note.execute({ facts: [fact("The audited item was named as 「K213@271」.")] }));
+  const accepted = JSON.parse(note.execute({ facts: [{ title: "Annotation records",
+    sources: [{ address: `T${t.id}#E1`, text: "K14 gets a placeholder source and F101 is unchanged." }] }] }));
   expect(accepted.results[0]).toMatch(/^ok:/);
-  expect(memory.store.getFact(accepted.factIds[0])!.quote).toBeNull();
-  expect(memory.store.getFact(accepted.factIds[0])!.text).toContain("「K213@271」");
+  expect(memory.store.getFact(accepted.factIds[0])!.text).toContain("K14 gets a placeholder source and F101 is unchanged.");
 });
 
 

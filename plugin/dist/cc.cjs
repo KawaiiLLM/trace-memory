@@ -248,7 +248,6 @@ var RELATION_STRENGTHS = ["strong", "weak"];
 var KNOWLEDGE_SCOPES = ["session", "project", "global"];
 var LOCAL_FACT_HANDLE_RE = /^\$\d+$/;
 var FACT_ID_RE = /^F\d+$/;
-var EMBEDDED_ID_RE = /\b[FK]\d+\b/;
 function isNonEmptyString(v) {
   return typeof v === "string" && v.length > 0;
 }
@@ -288,8 +287,6 @@ function validateNotingFact(path, raw, problems) {
   else f.sources.forEach((source, i) => {
     if (!source || typeof source !== "object" || Array.isArray(source) || typeof source.address !== "string" || !source.address || typeof source.text !== "string" || !source.text.trim() || Object.keys(source).some((key) => !["address", "text"].includes(key)))
       problems.push(`${path}.sources[${i}]: expected {address, non-empty text}`);
-    else if (EMBEDDED_ID_RE.test(source.text.replace(/「[^」]*」/gu, "")))
-      problems.push(`${path}.sources[${i}].text: must not embed a fact or knowledge id`);
   });
   for (const key of Object.keys(f)) {
     if (!["title", "sources", "support", "negate"].includes(key)) problems.push(`${path}.${key}: unexpected field`);
@@ -40838,7 +40835,8 @@ function productionEnvironment(source) {
     DISABLE_ERROR_REPORTING: "1",
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1",
-    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1"
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    FORCE_PROMPT_CACHING_5M: "1"
   };
 }
 var RESULT_SIZE_META2 = { "anthropic/maxResultSizeChars": CC_MAX_RESULT_CHARS };

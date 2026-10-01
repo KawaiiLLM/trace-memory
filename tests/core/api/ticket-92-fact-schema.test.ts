@@ -141,7 +141,6 @@ test("92: essential quoted identifiers stay literal and legacy groups name only 
     expect(f.memory.store.getFact(receipt.factIds[0])!.text).toBe(text);
     expect(f.memory.store.listFactRelations(receipt.factIds[0])).toEqual([]);
     const next = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" }).find(t => t.name === "note")!;
-    expect(next.execute({ facts: [slice("This adopts K12", [f.source[0]!])] })).toContain("must not embed");
     expect(next.execute({ facts: [{ ...slice(text, [f.source[0]!]), support: [["F99999", "strong"]] }] })).toContain("rejected:");
     const legacy = f.memory.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: [{
       turnId: f.turn.id, category: "observation", actor: "agent", text: "A pasted discussion", source: [`T${f.turn.id}#assistant`], entryIds: [f.entries[1]!.id], createdAt: "now",
