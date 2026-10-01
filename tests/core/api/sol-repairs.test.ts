@@ -158,7 +158,8 @@ test("Sol 5: semantic groups and walks budget complete framing; automatic facts 
   const f = setup();
   try {
     const entry = f.text("evidence", "user"); f.select([entry.id]);
-    const body = "long evidence ".repeat(180);
+    // Keep the complete-content expectation independent of normalized trailing source whitespace.
+    const body = "long evidence ".repeat(180).trimEnd();
     const fact = slice(body, ["T1#E1"]);
     const writer = f.note();
     expect(writer.execute(fact)).not.toContain("rejected:");
