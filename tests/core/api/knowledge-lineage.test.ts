@@ -308,8 +308,8 @@ test("34a: bound origin freezes the ordered native path through the exact same-T
     entryIds: [trigger.id], category: "decision", actor: "user", text: "evidence", source: [`T${turn.id}#E2`], createdAt: time }] });
   if (!facts.ok) throw new Error(facts.problems.join());
   const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id, triggerEntryId: trigger.id });
-  const result = tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "create", text: "origin-backed", category: "constraint", scope: "project",
-    topics: [], supports: [`F${facts.facts[0]!.id}`], reason: "initial" }], skipped: [] });
+  const result = tools.find(t => t.name === "memory")!.execute({ op: "create", text: "origin-backed", category: "constraint", scope: "project",
+    topics: [], supports: [`F${facts.facts[0]!.id}`], reason: "initial" });
   expect(result).not.toContain("rejected:");
   const frozen = store.listRuns(session.id).at(-1)!.origin;
   expect(frozen).toEqual({ sessionId: session.id, entryIds: [trigger.id] });

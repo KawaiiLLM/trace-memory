@@ -41,7 +41,10 @@ test("the main thread and its general-purpose and Explore subagents read /tm wit
   const root = realpathSync(mkdtempSync(join(tmpdir(), "tm101-native-"))); dirs.push(root);
   for (const d of ["home", "config", "cwd", "state/bindings"]) mkdirSync(join(root, d), { recursive: true });
   const plugin = join(root, "plugin"), dbPath = join(root, "memory.sqlite"), stateDir = join(root, "state"), cwd = join(root, "cwd");
-  cpSync(resolve("plugin"), plugin, { recursive: true });
+  cpSync(resolve("plugin"), plugin, { recursive: true, dereference: true });
+  for (const path of [join(plugin, "cc.config.json"), join(plugin, "dist", "cc.cjs"), join(plugin, "hooks", "index.tsx")]) {
+    if (!realpathSync(path).startsWith(root + "/")) throw new Error(`writable plugin fixture escapes scenario: ${path}`);
+  }
   // Never the shipped configuration: it would name the default database.
   writeFileSync(join(plugin, "cc.config.json"), JSON.stringify({ dbPath, stateDir, baseline: "2025-01-01T00:00:00.000Z" }));
   writeFileSync(join(cwd, "notes.txt"), "a real file in the working directory\n");

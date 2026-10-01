@@ -70,8 +70,9 @@ test("92/03: branch history owns stable ordinals, membership/status follows the 
     const tools = memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: foreignTurn.id });
     const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: "Outside evidence", sources: `[T${foreignTurn.id}#E1] Outside evidence` })).factIds[0];
     expect(tools.find(t => t.name === "trace")!.execute({ address: `K${id}@v2` })).toContain("Left body");
-    const rejected = tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "archive", kind: "budget", id: `K${id}#${store.versionTag(id, first.commit)}`, supports: [`F${fact}`], reason: "outside" }], skipped: [] });
+    const rejected = tools.find(t => t.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${id}#${store.versionTag(id, first.commit)}`, supports: [`F${fact}`], reason: "outside" });
     expect(rejected).toContain("rejected:");
+    expect(rejected).not.toContain("expects one create/archive operation");
     expect(rejected).not.toMatch(/K\d+@\d+/);
     expect(rejected).not.toContain(`K${id}@v4`);
   } finally { memory.close(); }

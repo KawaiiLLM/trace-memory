@@ -272,8 +272,8 @@ test("25d/92: mixed batch reads keep exact tags without granting manual update a
   const superseded = await updateKnowledge(path, ids[0]!, { knowledgeId, commit }, "second");
   const tip = superseded.commit;
   const tag = `K${knowledgeId}#${store.versionTag(knowledgeId, tip)}`;
-  const update = (base: number) => knowledge!.execute({ operations: [{ op: "update", id: `K${knowledgeId}#${store.versionTag(knowledgeId, base)}`, text: "third",
-    category: "understanding", scope: "session", supports: [`F${ids[0]!}`], reason: "test", topics: [] }], skipped: [] });
+  const update = (base: number) => knowledge!.execute({ op: "update", id: `K${knowledgeId}#${store.versionTag(knowledgeId, base)}`, text: "third",
+    category: "understanding", scope: "session", supports: [`F${ids[0]!}`], reason: "test", topics: [] });
   expect(update(tip)).toContain("update belongs to the Dreamer"); // authority is independent of read completion
   const read = trace!.execute({ address: `K${knowledgeId}@v2,F1,F2,F3` });
   expect(read).toContain("[F2]"); expect(read).toContain(`[${tag}]`);

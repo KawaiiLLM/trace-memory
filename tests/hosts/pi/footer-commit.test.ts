@@ -40,7 +40,9 @@ test("24a review: Noter held output stays pending in the footer until its normal
   let turn: Promise<unknown> | undefined;
   try {
     // Both tools stage output; publication waits for the final reply held open at the wire.
-    f.script(body => !worker(body) ? say("parent reply") : toolResults(body) ? (closing = true, pending) : noteAndMemory("n", noteBatch));
+    f.script(body => !worker(body) ? say("parent reply") : toolResults(body)
+      ? closing ? say("done after review") : (closing = true, pending)
+      : noteAndMemory("n", noteBatch));
     turn = f.turn();
     await vi.waitFor(() => { expect(closing).toBe(true); expect(f.h.memory.store.listSessionFacts(1)).toHaveLength(0); }, { timeout: 5000 });
     expect(f.h.memory.progress(1, "main", 1)).toMatchObject({ entries: 2, facts: 0 });

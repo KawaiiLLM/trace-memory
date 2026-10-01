@@ -232,7 +232,7 @@ test("closed-session scope is saved globally and changes subsequent queue admiss
   await edit(h, "Closed-session scope: off (Global)", "global");
   expect(globalFile(h)["trace-memory"].closedSessionScope).toBe("global");
   expect(h.requests).toEqual([]); // a settings change is not an extraction opportunity
-  await tick(); expect(h.requests).toHaveLength(3); // explicit note, memory, then normal terminal reply
+  await tick(); expect(h.requests).toHaveLength(4); // explicit note, memory, normal terminal reply, fixed end review
   expect(h.memory.store.listRuns(s.id).some(r => r.kind === "noting")).toBe(true);
 });
 

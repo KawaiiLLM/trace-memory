@@ -27,7 +27,8 @@ for (const provider of ["fake", "fakeanthropic"])
         const schema = note.input_schema ?? note.parameters;
         if (defect === "description") note.description += " obsolete";
         if (defect === "drop") delete schema.properties.drop;
-        if (defect === "nested") delete schema.properties.facts.items.additionalProperties;
+        // Both wire serializers retain property constraints; Anthropic omits root anyOf.
+        if (defect === "nested") delete schema.properties.sources.minLength;
         if (defect === "root") schema.additionalProperties = true;
         const sent = f.sent.length;
         let requests = 0;

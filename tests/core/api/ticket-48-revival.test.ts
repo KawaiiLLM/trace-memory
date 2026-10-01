@@ -50,8 +50,8 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
 
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
   manual.find(tool => tool.name === "trace")!.execute({ address: `K${old.knowledgeId}@v1`, itemBudget: null });
-  const archived = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", kind: "budget",
-    id: `K${old.knowledgeId}#${store.versionTag(old.knowledgeId, old.commit)}`, supports: [`F${fact}`], reason: "Widget retired" }], skipped: [] }));
+  const archived = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget",
+    id: `K${old.knowledgeId}#${store.versionTag(old.knowledgeId, old.commit)}`, supports: [`F${fact}`], reason: "Widget retired" }));
   expect(archived.committed[0]!.version).toBe(`K${old.knowledgeId}@v2`);
   archiveCommit = store.resolveVersionOrdinal(old.knowledgeId, 2);
 

@@ -277,11 +277,11 @@ test("92 complete collections expose tags, metadata and history references do no
   const historyMetadata = tools[0]!.execute({ address: "K1", versions: "history", fields: ["status", "supports"] });
   expect(historyMetadata).toContain("K1@v1");
   expect(historyMetadata).not.toMatch(/K1#[a-z]+/);
-  const update = JSON.parse(tools[3]!.execute({ operations: [{ op: "update", id: currentTag,
-    text: "edited", category: "reference", scope: "project", supports: [`F${who.factId}`], topics: [], reason: "Edit" }], skipped: [] }));
-  expect(update.results[0]).toContain("update belongs to the Dreamer");
-  const archive = (id: string) => JSON.parse(tools[3]!.execute({ operations: [{ op: "archive", kind: "budget", id,
-    supports: [`F${who.factId}`], reason: "Retire" }], skipped: [] }));
-  expect(archive(oldTag).results[0]).toContain("base is not the latest effective applicable revision");
-  expect(archive(currentTag).committed).toHaveLength(1);
+  const update = tools[3]!.execute({ op: "update", id: currentTag,
+    text: "edited", category: "reference", scope: "project", supports: [`F${who.factId}`], topics: [], reason: "Edit" });
+  expect(update).toContain("update belongs to the Dreamer");
+  const archive = (id: string) => tools[3]!.execute({ op: "archive", kind: "budget", id,
+    supports: [`F${who.factId}`], reason: "Retire" });
+  expect(archive(oldTag)).toContain("base is not the latest effective applicable revision");
+  expect(JSON.parse(archive(currentTag)).committed).toHaveLength(1);
 });

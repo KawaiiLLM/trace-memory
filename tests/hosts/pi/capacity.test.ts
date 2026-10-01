@@ -119,7 +119,7 @@ test("27a 2026-09-10: the last check admits a later round the headroom exactly f
 
   const equal = await laterRound(measure + CONTEXT_HEADROOM); // measure + 10,000 == window: admitted
   expect(equal.measure).toBeUndefined();
-  expect(equal).toMatchObject({ requests: 2, outcomes: ["failure"], pending: 2 }); // the later round went out; the deliberately incomplete worker advanced nothing
+  expect(equal).toMatchObject({ requests: 3, outcomes: ["failure"], pending: 2 }); // the later round and fixed end review went out; the deliberately incomplete worker advanced nothing
 
   const over = await laterRound(measure + CONTEXT_HEADROOM - 1); // one token more than the rule allows
   expect(over.measure).toBe(measure);

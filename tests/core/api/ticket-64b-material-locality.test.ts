@@ -56,8 +56,8 @@ type Fixture = ReturnType<typeof fixture>;
 
 function create(f: Fixture, branch: string, text: string) {
   const receipt = JSON.parse(f.memory.tools({ kind: "manual", sessionId: f.session.id, branch, currentTurnId: f.turn.id })
-    .find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text, category: "reference", scope: "project",
-      supports: [`F${f.fact}`], topics: ["test-fixture"], reason: "Deterministic Dreamer input." }], skipped: [] }));
+    .find(tool => tool.name === "memory")!.execute({ op: "create", text, category: "reference", scope: "project",
+      supports: [`F${f.fact}`], topics: ["test-fixture"], reason: "Deterministic Dreamer input." }));
   if (!receipt.committed?.[0]) throw new Error(JSON.stringify(receipt));
   const item = receipt.committed[0] as { knowledgeId: number; version: string };
   expect(item.version).toBe(`K${item.knowledgeId}@v1`);

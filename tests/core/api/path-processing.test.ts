@@ -45,8 +45,8 @@ function pathFixture(seedOlderSurvivor = false) {
   }
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "root", currentTurnId: turn.id, triggerEntryId: root.id });
   const create = (text: string) => {
-    const receipt = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text,
-      category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: `Create ${text}.` }], skipped: [] }));
+    const receipt = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ op: "create", text,
+      category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: `Create ${text}.` }));
     expect(receipt.committed).toHaveLength(1);
     const item = receipt.committed[0] as { knowledgeId: number; version: string };
     return { knowledgeId: item.knowledgeId, commit: store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1])) };
@@ -107,8 +107,8 @@ test.each(["archive", "split", "merge-into", "merge-absorb"] as const)(
     const leftPath = f.path("left");
     const stale = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "left", currentTurnId: f.turn.id, triggerEntryId: f.entries.left.id });
     stale.find(tool => tool.name === "trace")!.execute({ address: tagged(f.store, f.base.knowledgeId, f.base.commit), itemBudget: null });
-    expect(stale.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
-      supports: [`F${f.fact}`], reason: "Probe the stale base." }], skipped: [] })).toContain("base is not the latest effective applicable revision");
+    expect(stale.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
+      supports: [`F${f.fact}`], reason: "Probe the stale base." })).toContain("base is not the latest effective applicable revision");
     await runOperation(f, "right", 2, "update", `${operation} divergent result`);
     expect(f.store.currentCommit(f.base.knowledgeId, f.path("right"))[0]!.text).toBe(`${operation} divergent result`);
   },

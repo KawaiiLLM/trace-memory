@@ -20,7 +20,7 @@ test("92: a model switch during Noting does not redirect its admitted run", asyn
     release(); await h.drain();
     const runs = h.memory.store.listRuns(1).filter(r => r.kind === "noting");
     expect(runs.map(r => [r.model, r.outcome])).toEqual([["fake/test", "success"]]);
-    expect(h.requests.map(r => (r as { model: string }).model)).toEqual(["test", "test"]);
+    expect(h.requests.map(r => (r as { model: string }).model)).toEqual(["test", "test", "test"]); // fresh N's fixed end review retains the admitted model
   } finally { release?.(); await h.dispose(); }
 });
 
