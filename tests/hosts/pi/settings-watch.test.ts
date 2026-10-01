@@ -17,7 +17,8 @@ function pair() {
   return { first, second, file: join(first.agentDir, "settings.json") };
 }
 /** macOS registers a new directory watch asynchronously; a write made before that finishes is never reported. The
- * watch has no signal of being live, so a session that is about to see an edit waits this long after starting. */
+ * watch has no signal of being live, so a session that is about to see an edit waits this long after starting.
+ * Accepted product limit (maintainer, 2026-10-01): an edit in that first moment applies at the next edit or restart. */
 const start = async (...hs: ReturnType<typeof host>[]) => { for (const h of hs) await h.emit("session_start"); await sleep(500); };
 const edit = (file: string, values: Record<string, unknown>) => {
   const current = JSON.parse(readFileSync(file, "utf8"));
