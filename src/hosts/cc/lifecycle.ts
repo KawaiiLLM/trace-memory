@@ -757,6 +757,7 @@ export class CcCoordinator {
         }
         if (reason !== "stat wake-up") this.observe("reconcile", { reason, final, state: result?.state ?? "unbound",
           coreSessionId: result?.coreSessionId ?? null, appended: result?.appendedEntryIds.length ?? 0 });
+        for (const notice of result?.notices ?? []) this.diagnostic(notice);
         if (result?.problems.length && reason !== "stat wake-up") this.diagnostic(`${reason}: ${result.problems.join("; ")}`);
         return result;
       } catch (error) {

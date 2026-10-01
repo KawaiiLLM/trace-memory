@@ -38,6 +38,8 @@ export interface CcReconcileResult {
   terminal?: { uuid: string; stopReason?: string; isApiErrorMessage?: boolean; interruptedMessageId?: string;
     entryId: number; /** A newly appended terminal on the live cursor, even when its Raw anchor was already imported. */ fresh?: boolean };
   problems: string[];
+  /** Non-blocking facts for the executor's log, such as a compaction boundary continued from a parent it did not name. */
+  notices?: string[];
 }
 
 export interface CcPersistedCall {
@@ -247,7 +249,7 @@ export class CcProjection {
     if (!this.memory.store.enabled(this.binding.coreSessionId)) return this.result("disabled", bootstrapSnapshot ?? this.transcript.currentSnapshot(this.binding.transcriptPath));
 
     const sessionId = this.binding.coreSessionId, lineage = this.binding.nativeSessionId;
-    const appendedEntryIds: number[] = [], problems: string[] = [], failedNativeIds = new Set<string>();
+    const appendedEntryIds: number[] = [], problems: string[] = [], notices: string[] = [], failedNativeIds = new Set<string>();
     const addProblem = (problem: string): void => { if (!problems.includes(problem)) problems.push(problem); };
     /** The nearest imported source record above `parent`, or null at the root. */
     const importedAbove = (parent: string | null, scan: CcTranscriptScan, seen = new Set<string>()): CcNativeNode | null => {
@@ -325,6 +327,8 @@ export class CcProjection {
         return this.memory.store.transaction(() => {
           const turn = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "compaction", startedAt: timestamp, endedAt: timestamp });
           this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turn.id, "compaction");
+          const missing = scan.node(source.nativeId)?.missingParent;
+          if (missing) notices.push(`compaction boundary ${source.nativeId} names logical parent ${missing}, which was never written; it continues from ${scan.node(source.nativeId)!.parentUuid}`);
           // 97: the supplement the compact hook recorded for the compaction after this record.
           const key = above && this.memory.store.compactionDeliveryKey(coreHostOf(this.binding), above.uuid);
           if (key) this.memory.store.bindDeliveryNode(key, sessionId, turn.id);
@@ -567,7 +571,7 @@ export class CcProjection {
         selectedAppendedEntryIds: projectionReady ? selectedEntryIds === null
           ? selectedDelta.filter(id => newlyImported?.has(id))
           : appendedEntryIds.filter(id => selectedMembership!.has(id)) : [],
-        appendedEntryIds, bootstrap: !this.synchronized }, projectionReady && (selectedEntryIds !== null || selectedDelta.length > 0));
+        appendedEntryIds, notices, bootstrap: !this.synchronized }, projectionReady && (selectedEntryIds !== null || selectedDelta.length > 0));
     if (projectionReady) {
       this.lastResult = ready;
       this.expectedPath = this.memory.store.selectedSourceEntrySnapshot(sessionId, branch)?.state ?? null;

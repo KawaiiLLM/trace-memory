@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
-import { selectedNativePath, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+import { readTranscriptTail, selectedNativePath, tailNodes, transcriptHead, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -34,17 +34,27 @@ const autoCompacted = (): CcNativeRecord[] => [
   attachment("t", "summary", 6), prompt("u2", "t", 7), assistant("a2", "u2", 8),
 ];
 
-async function imported(records: CcNativeRecord[]) {
+/** `split` records are on disk at the first reconcile; the rest arrive before the second. */
+async function imported(records: CcNativeRecord[], split = records.length) {
   const dir = mkdtempSync(join(tmpdir(), "tm-cc-auto-compact-")); dirs.push(dir);
   const transcriptPath = join(dir, "native.jsonl");
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), baseline: "2025-01-01T00:00:00.000Z" });
-  writeFileSync(transcriptPath, records.map(record => `${JSON.stringify(record)}\n`).join(""));
+  writeFileSync(transcriptPath, records.slice(0, split).map(record => `${JSON.stringify(record)}\n`).join(""));
   const binding = await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: "auto-compact", transcript_path: transcriptPath }, at(1));
   const importer = new CcImporter(config, binding);
   try {
-    const result = await importer.reconcile(), store = importer.memory.store;
-    return { problems: result.problems ?? [], path: result.selectedEntryIds.map(id => store.getSourceEntry(id)!.nativeId),
-      turns: store.db.prepare("SELECT kind, parent_turn_id FROM turns ORDER BY id").all() };
+    let result = await importer.reconcile();
+    const notices = [...result.notices ?? []];
+    if (split < records.length) {
+      appendFileSync(transcriptPath, records.slice(split).map(record => `${JSON.stringify(record)}\n`).join(""));
+      result = await importer.reconcile();
+      notices.push(...result.notices ?? []);
+    }
+    const store = importer.memory.store;
+    return { problems: result.problems ?? [], notices, state: result.state, tailed: result.selectedTailId !== null && result.headTurnId !== null,
+      path: result.selectedEntryIds.map(id => store.getSourceEntry(id)!.nativeId),
+      entries: store.listSourceEntries(result.coreSessionId!).map(entry => entry.nativeId),
+      turns: store.db.prepare("SELECT kind, parent_turn_id FROM turns ORDER BY id").all().map(row => ({ ...row })) };
   } finally { importer.close(); }
 }
 
@@ -194,4 +204,88 @@ test("rows arriving one by one across that compaction import the same entries, T
   expect(fresh.turns).toEqual([{ id: 1, kind: "turn", parent_turn_id: null }, { id: 2, kind: "compaction", parent_turn_id: 1 },
     { id: 3, kind: "turn", parent_turn_id: 2 }]);
   expect(await project(records, true)).toEqual(fresh);
+});
+
+const sys = (uuid: string, subtype: string, parentUuid: string, second: number): CcNativeRecord =>
+  ({ uuid, parentUuid, type: "system", subtype, timestamp: at(second) }) as CcNativeRecord;
+const row = (uuid: string, parentUuid: string, second: number, content: string, extra: Record<string, unknown> = {}): CcNativeRecord =>
+  ({ uuid, parentUuid, type: "user", timestamp: at(second), message: { role: "user", content }, ...extra }) as CcNativeRecord;
+const boundary = (logicalParentUuid: string): CcNativeRecord => ({ uuid: "boundary", parentUuid: null, logicalParentUuid, type: "system",
+  subtype: "compact_boundary", timestamp: at(5), compactMetadata: { trigger: "manual" } }) as CcNativeRecord;
+const metadata = (type: string): CcNativeRecord => ({ type }) as CcNativeRecord;
+
+/** Claude Code 2.1.284's manual compaction right after a resume, as recorded in a production transcript (2026-10-01): the boundary's
+ * logical parent is a record Claude Code never wrote, and nothing is preserved. The records before it are the previous turn's end
+ * and the `/compact` row; a sidechain row is the nearest record. */
+const unwrittenParent = (logicalParentUuid = "never-written"): CcNativeRecord[] => [
+  prompt("u1", null, 1), assistant("a1", "u1", 2), sys("hook", "stop_hook_summary", "a1", 3), sys("td", "turn_duration", "hook", 3),
+  metadata("last-prompt"), row("cmd", "td", 4, "<command-name>/compact</command-name>"), metadata("ai-title"),
+  assistant("side", "u1", 4), boundary(logicalParentUuid),
+  row("summary", "boundary", 5, "summary", { isCompactSummary: true }), row("caveat", "summary", 5, "<local-command-caveat>", { isMeta: true }),
+  row("cmd-again", "caveat", 5, "<command-name>/compact</command-name>"), row("stdout", "cmd-again", 5, "<local-command-stdout>Compacted"),
+  prompt("u2", "stdout", 6), assistant("a2", "u2", 7),
+].map(record => record.uuid === "side" ? { ...record, isSidechain: true } : record);
+
+const whole = { problems: [], state: "ready", tailed: true, path: ["u1", "a1", "u2", "a2"], entries: ["u1", "a1", "u2", "a2"],
+  turns: [{ kind: "turn", parent_turn_id: null }, { kind: "compaction", parent_turn_id: 1 }, { kind: "turn", parent_turn_id: 2 }] };
+
+test("a compaction boundary whose logical parent was never written continues from the last message before the compaction", async () => {
+  const records = unwrittenParent();
+  const selected = selectedNativePath(records);
+  expect(selected.problem).toBeUndefined();
+  expect(selected.records.map(record => record.uuid)).toEqual(["u1", "a1", "boundary", "summary", "caveat", "cmd-again", "stdout", "u2", "a2"]);
+
+  // The Turn is the one a boundary naming the record just before the `/compact` row gets: nothing of the command, the summary,
+  // the caveat or the sidechain is imported, and the next prompt follows the compaction. The turn-end check needs a ready path.
+  const result = await imported(records);
+  expect(result).toMatchObject(whole);
+  expect(result.notices).toEqual(["compaction boundary boundary names logical parent never-written, which was never written; it continues from a1"]);
+  expect({ ...result, notices: [] }).toEqual({ ...await imported(unwrittenParent("td")), notices: [] });
+});
+
+test("rows arriving after earlier ones are imported give the same result as one scan of the finished file, wherever the file is split", async () => {
+  const records = unwrittenParent(), finished = await imported(records);
+  expect(finished).toMatchObject(whole);
+  for (let split = 1; split < records.length; split++) expect(await imported(records, split), `split at ${split}`).toEqual(finished);
+});
+
+test("a tail read reaches the parent a whole-file read gives, however much of the file precedes it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm-cc-auto-compact-")); dirs.push(dir);
+  const path = join(dir, "native.jsonl"), records = unwrittenParent();
+  writeFileSync(path, records.map(record => `${JSON.stringify(record)}\n`).join(""));
+  const offsetBefore = (uuid: string) => Buffer.byteLength(records.slice(0, records.findIndex(record => record.uuid === uuid))
+    .map(record => `${JSON.stringify(record)}\n`).join(""));
+  const tail = (uuid: string) => { const offset = offsetBefore(uuid); return tailNodes(readTranscriptTail(path, offset)!, transcriptHead(path, offset)); };
+  const expected = { nodes: [{ follows: "a1" }, { prompt: "prompt-u2" }], exit: "a1", leaf: "a2" };
+  // The suffix starts after the last reply, at the `/compact` row, at the sidechain row, and at the boundary itself.
+  for (const start of ["hook", "cmd", "side", "boundary"]) expect(tail(start), start).toEqual(expected);
+  expect(tailNodes(records, undefined)).toEqual({ ...expected, exit: null, nodes: [{ prompt: "prompt-u1" }, ...expected.nodes] });
+  // A logical parent that lies before the suffix is not missing.
+  const named = unwrittenParent("td"), namedPath = join(dir, "named.jsonl");
+  writeFileSync(namedPath, named.map(record => `${JSON.stringify(record)}\n`).join(""));
+  const offset = Buffer.byteLength(named.slice(0, named.findIndex(record => record.uuid === "cmd")).map(record => `${JSON.stringify(record)}\n`).join(""));
+  expect(tailNodes(readTranscriptTail(namedPath, offset)!, transcriptHead(namedPath, offset)).exit).toBe("td");
+});
+
+test("a boundary with no message to continue from is still reported as having a missing parent", async () => {
+  const rest = unwrittenParent().slice(8), command = (parent: string) => row("cmd", parent, 4, "<command-name>/compact</command-name>");
+  const cases: Record<string, CcNativeRecord[]> = {
+    "no earlier record": rest,
+    "no message among the earlier records": [{ ...sys("td", "turn_duration", "", 3), parentUuid: null }, command("td"), ...rest],
+    "an ancestor that was never written": [sys("td", "turn_duration", "ghost", 3), command("td"), ...rest],
+    "a cycle among the earlier records": [sys("td", "turn_duration", "cmd", 3), command("td"), ...rest],
+  };
+  for (const [name, records] of Object.entries(cases)) {
+    expect(selectedNativePath(records).problem, name).toBe("native lineage parent never-written is missing");
+    const result = await imported(records);
+    expect(result.problems, name).toEqual(["native lineage parent never-written is missing"]);
+    expect(result.notices, name).toEqual([]);
+  }
+});
+
+test("a logical parent written after the boundary is not taken for a missing one", async () => {
+  // 'unwritten' resolves; the same boundary naming a later row of its own chain stays a cycle, in the scan as in the whole-file read.
+  const records = unwrittenParent("u2");
+  expect(selectedNativePath(records).problem).toBe("native lineage cycle at u2");
+  expect(await imported(records)).toMatchObject({ state: "not-ready", notices: [] });
 });

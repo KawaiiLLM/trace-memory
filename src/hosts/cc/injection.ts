@@ -6,7 +6,7 @@ import type { TransportItem } from "../../core/render/material.ts";
 import type { KnowledgePath, Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
-import { CC_AUTO_CONTINUE_SUFFIX, CC_INJECTION_BEGIN, CC_INJECTION_HEADER, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccResultText, ccSourceBlocks, readTranscriptTail, tailNodes } from "./transcript.ts";
+import { CC_AUTO_CONTINUE_SUFFIX, CC_INJECTION_BEGIN, CC_INJECTION_HEADER, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccResultText, ccSourceBlocks, readTranscriptTail, tailNodes, transcriptHead } from "./transcript.ts";
 import { CcProjection } from "./importer.ts";
 import { executorLiveness } from "./control.ts";
 import { ccPluginToolNames } from "./tool-names.ts";
@@ -200,7 +200,7 @@ export function ccDeliveryHead(binding: CcSessionBinding, memory: Memory): { own
   let tail: ReturnType<typeof tailNodes> = { nodes: [], exit: null, leaf: null };
   const offset = binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset;
   if (offset !== undefined) {
-    tail = tailNodes(readTranscriptTail(binding.transcriptPath, offset) ?? []);
+    tail = tailNodes(readTranscriptTail(binding.transcriptPath, offset) ?? [], transcriptHead(binding.transcriptPath, offset));
     if (tail.leaf !== null && tail.exit !== binding.selectedLeafUuid) {
       // The executor has not imported a branch switch yet. A chain that starts in the tail is a new
       // root branch; a branch point the import has reached is its Turn; otherwise the stored head

@@ -96,6 +96,8 @@ export interface CcNativeNode {
   /** An earlier row with the same key: Claude Code wrote this one again across a compaction, under a
    * new uuid. It is that row, not new Raw. */
   copyOf?: string;
+  /** A compaction boundary's logical parent that no record of the file has: it continues from `parentUuid` instead. */
+  missingParent?: string;
   /** The parent a tool result names, when the scan continues it from that parent's later copy. */
   namedParent?: string;
   /** 108: an assistant row's native API message id, shared (unlike `messageKey`) by every row Claude
@@ -195,22 +197,55 @@ export const ccStripAutoContinue = (text: string): string =>
 
 export class CcNativeLineageError extends Error {}
 
+/** What `nativeParentId` may ask of the transcript around a record. Each reader (the scan, the whole-file
+ * path, the tail) answers from what it holds; the rule itself lives only in `nativeParentId`. */
+export interface CcLineageFile {
+  /** Whether `uuid` is written earlier in the file than the record. */
+  before(uuid: string): boolean;
+  /** Whether `uuid` is written anywhere in the file: earlier, later, or before a tail's suffix. */
+  anywhere(uuid: string): boolean;
+  /** The nearest earlier record that has a uuid and is not a sidechain. */
+  previous(): string | undefined;
+  /** An earlier record's resolved parent and whether the importer accepts it as a message; undefined when it is not written earlier. */
+  earlier(uuid: string): { parent: string | null; accepted: boolean } | undefined;
+  /** Told when the fallback below applies: the missing logical parent and the parent chosen instead. */
+  fellBack?(missing: string, parent: string): void;
+}
+
+/** From the nearest earlier main-chain record, up its parents to the first record the importer accepts. */
+const lastMessageBefore = (file: CcLineageFile): string | undefined => {
+  const seen = new Set<string>();
+  for (let id = file.previous(); id !== undefined && !seen.has(id);) {
+    seen.add(id);
+    const step = file.earlier(id);
+    if (!step) return undefined;
+    if (step.accepted) return id;
+    id = step.parent ?? undefined;
+  }
+  return undefined;
+};
+
 /** Decode native lineage exactly once. A malformed present value is not an absent parent.
- * `writtenBefore` says whether a UUID was written earlier in the file than `record`. Claude Code
- * 2.1.280's automatic compaction can name, as the boundary's logical parent, a preserved message
- * written after the boundary and descending from it (a production transcript, 2026-09-23). Such a
- * boundary continues from its last preserved message written before it, which is what every other
- * boundary names as its logical parent. */
-export function nativeParentId(record: CcNativeRecord, writtenBefore?: (uuid: string) => boolean): string | null {
+ * `file` answers where a UUID is written relative to `record`. Claude Code 2.1.280's automatic
+ * compaction can name, as the boundary's logical parent, a preserved message written after the
+ * boundary and descending from it (a production transcript, 2026-09-23). Such a boundary continues
+ * from its last preserved message written before it, which is what every other boundary names as its
+ * logical parent. Claude Code 2.1.284 once named a record it never wrote (S140, 2026-10-01); with no
+ * usable preserved message, that boundary continues from the last message before the compaction.
+ * A logical parent written after the boundary exists, so it keeps failing as a cycle. Any failure
+ * to find that message returns the missing uuid, which the caller reports as it always has. */
+export function nativeParentId(record: CcNativeRecord, file?: CcLineageFile): string | null {
   const value = record.logicalParentUuid ?? record.parentUuid;
   if (value === null || value === undefined) return null;
   if (typeof value !== "string" || !value) throw new CcNativeLineageError(
     `native lineage parent of ${nativeId(record) ?? "record without UUID"} is invalid`);
-  if (writtenBefore && value === record.logicalParentUuid && record.type === "system" &&
-      record.subtype === "compact_boundary" && !writtenBefore(value)) {
+  if (file && value === record.logicalParentUuid && record.type === "system" &&
+      record.subtype === "compact_boundary" && !file.before(value)) {
     const preserved = (record.compactMetadata as { preservedMessages?: { uuids?: unknown } } | undefined)?.preservedMessages?.uuids;
-    const earlier = Array.isArray(preserved) ? preserved.filter((id): id is string => typeof id === "string" && !!id && writtenBefore(id)) : [];
+    const earlier = Array.isArray(preserved) ? preserved.filter((id): id is string => typeof id === "string" && !!id && file.before(id)) : [];
     if (earlier.length) return earlier.at(-1)!;
+    const chosen = file.anywhere(value) ? undefined : lastMessageBefore(file);
+    if (chosen) { file.fellBack?.(value, chosen); return chosen; }
   }
   return value;
 }
@@ -279,13 +314,13 @@ const messageKey = (source: CcSourceRecord | null): string | undefined => {
 const apiMessageId = (source: CcSourceRecord | null): string | undefined =>
   source?.kind === "assistant" && typeof source.record.message?.id === "string" ? source.record.message.id : undefined;
 
-const nodeOf = (record: CcNativeRecord, writtenBefore: (uuid: string) => boolean): CcNativeNode | null => {
+const nodeOf = (record: CcNativeRecord, file: CcLineageFile): CcNativeNode | null => {
   const uuid = nativeId(record);
   if (!uuid) return null;
   const source = classifySourceRecord(record);
   const main = mainRecord(record);
   try {
-    return { uuid, parentUuid: nativeParentId(record, writtenBefore), sourceKind: source?.kind ?? null,
+    return { uuid, parentUuid: nativeParentId(record, file), sourceKind: source?.kind ?? null,
       calls: source?.kind === "assistant" ? source.calls.map(call => ({ id: call.callId, name: call.name })) : [], timestamp: source?.timestamp ?? timestamp(record),
       messageKey: messageKey(source), apiMessageId: apiMessageId(source),
       ...(record.type === "assistant" && typeof record.message?.stop_reason === "string"
@@ -321,6 +356,8 @@ export class CcTranscriptScan {
   readonly selectedLeafUuid: string | null;
   /** Latest native turn terminator, independent of whether that row is a Raw source. */
   readonly terminalUuid: string | null;
+  /** The last record read that has a uuid and is not a sidechain: what a compaction boundary read next follows. */
+  readonly lastMainUuid: string | null;
   /** 97: the byte offset just after the selected leaf's line; everything later is its tail. */
   readonly selectedLeafOffset: number | null;
   readonly problems: string[];
@@ -332,12 +369,12 @@ export class CcTranscriptScan {
 
   constructor(input: { nodes: Map<string, CcNativeNode>; callCarriers: Map<string, Set<string>>; messageKeys: Map<string, string>;
     snapshot: CcTranscriptSnapshot; stamp: FileStamp; reset: boolean; completeOffset: number; lineCount: number; selectedLeafUuid: string | null;
-    terminalUuid: string | null; selectedLeafOffset: number | null; problems?: string[]; newProblems?: Set<string>;
+    terminalUuid: string | null; lastMainUuid: string | null; selectedLeafOffset: number | null; problems?: string[]; newProblems?: Set<string>;
     readIds?: readonly string[]; newIds?: ReadonlySet<string> }) {
     this.nodes = input.nodes; this.callCarriers = input.callCarriers; this.messageKeys = input.messageKeys;
     this.snapshot = input.snapshot; this.stamp = input.stamp; this.reset = input.reset;
     this.completeOffset = input.completeOffset; this.lineCount = input.lineCount; this.selectedLeafUuid = input.selectedLeafUuid;
-    this.terminalUuid = input.terminalUuid; this.selectedLeafOffset = input.selectedLeafOffset;
+    this.terminalUuid = input.terminalUuid; this.lastMainUuid = input.lastMainUuid; this.selectedLeafOffset = input.selectedLeafOffset;
     this.problems = input.problems ?? [];
     this.newProblems = input.newProblems ?? new Set();
     this.readIds = input.readIds ?? []; this.newIds = input.newIds ?? new Set();
@@ -488,6 +525,7 @@ export class CcTranscriptCursor {
   private recordCount = 0;
   private selectedLeafUuid: string | null = null;
   private terminalUuid: string | null = null;
+  private lastMainUuid: string | null = null;
   private selectedLeafOffset: number | null = null;
   private nodes = new Map<string, CcNativeNode>();
   private callCarriers = new Map<string, Set<string>>();
@@ -594,13 +632,24 @@ export class CcTranscriptCursor {
       const problems = reset ? [] : [...this.unresolvedProblems], newProblems = new Set<string>();
       let selectedLeafUuid = reset ? null : this.selectedLeafUuid;
       let terminalUuid = reset ? null : this.terminalUuid;
+      let lastMainUuid = reset ? null : this.lastMainUuid;
       let selectedLeafOffset = reset ? null : this.selectedLeafOffset;
       let physicalRecords = reset ? 0 : this.recordCount;
       let lines = reset ? 0 : this.lineCount;
       const preliminary = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords,
         incompleteBytes: stamp.size - completeOffset, changed: true, reset });
       const scan = new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, messageKeys: scanKeys, snapshot: preliminary, stamp, reset,
-        completeOffset, lineCount: lines, selectedLeafUuid, terminalUuid, selectedLeafOffset, problems, newProblems });
+        completeOffset, lineCount: lines, selectedLeafUuid, terminalUuid, lastMainUuid, selectedLeafOffset, problems, newProblems });
+      // A boundary's logical parent may be written later in this very read; found by one lazy parse of it, only when a boundary needs it.
+      let chunkIds: Set<string> | undefined, fell: string | undefined;
+      const file: CcLineageFile = {
+        before: id => scanNodes.has(id),
+        anywhere: id => scanNodes.has(id) || (chunkIds ??= new Set(bytes.subarray(0, completeLength).toString("utf8").split("\n")
+          .flatMap(line => { try { const found = line ? nativeId(JSON.parse(line)) : null; return found ? [found] : []; } catch { return []; } }))).has(id),
+        previous: () => lastMainUuid ?? undefined,
+        earlier: id => { const node = scanNodes.get(id); return node && { parent: node.lineageProblem ? null : node.parentUuid, accepted: node.sourceKind !== null }; },
+        fellBack: missing => { fell = missing; },
+      };
       let beginning = 0;
       while (beginning < completeLength) {
         const ending = bytes.indexOf(0x0a, beginning);
@@ -613,7 +662,9 @@ export class CcTranscriptCursor {
         const record = object(parsed);
         if (!record) throw new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${lines}: expected an object`));
         physicalRecords += 1;
-        let source = classifySourceRecord(record), node = nodeOf(record, id => scanNodes.has(id));
+        let source = classifySourceRecord(record), node = nodeOf(record, file);
+        if (node && fell) { node.missingParent = fell; fell = undefined; }
+        if (nativeId(record) && record.isSidechain !== true) lastMainUuid = nativeId(record);
         if (node) {
           const prior = scanNodes.get(node.uuid), collected = collectedById.get(node.uuid), identity = nativeIdentity(record);
           if (prior && ((prior.namedParent ?? prior.parentUuid) !== node.parentUuid || prior.sourceKind !== node.sourceKind || prior.lineageProblem !== node.lineageProblem) ||
@@ -675,7 +726,7 @@ export class CcTranscriptCursor {
         const resultSnapshot = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords, records,
           incompleteBytes: stamp.size - completeOffset, changed: true, reset });
         return new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, messageKeys: scanKeys, snapshot: resultSnapshot, stamp, reset,
-          completeOffset, lineCount: lines, selectedLeafUuid, terminalUuid, selectedLeafOffset, problems, newProblems,
+          completeOffset, lineCount: lines, selectedLeafUuid, terminalUuid, lastMainUuid, selectedLeafOffset, problems, newProblems,
           readIds: ordered.flatMap(value => value.node ? [value.node.uuid] : []), newIds });
       };
       return { scan, ordered, finish };
@@ -738,7 +789,7 @@ export class CcTranscriptCursor {
     for (const id of scan.readIds) scan.node(id)!.committed = true;
     this.stamp = scan.stamp; this.completeOffset = scan.completeOffset;
     this.lineCount = scan.lineCount; this.recordCount = scan.snapshot.recordCount; this.selectedLeafUuid = scan.selectedLeafUuid;
-    this.terminalUuid = scan.terminalUuid; this.selectedLeafOffset = scan.selectedLeafOffset;
+    this.terminalUuid = scan.terminalUuid; this.lastMainUuid = scan.lastMainUuid; this.selectedLeafOffset = scan.selectedLeafOffset;
     this.rejected = null; this.lastSnapshot = problem ? { ...scan.snapshot, problem } : scan.snapshot;
   }
 
@@ -795,10 +846,36 @@ export function nativeCreatedAt(records: readonly CcNativeRecord[]): string | nu
   return null;
 }
 
-export function selectedNativePath(records: readonly CcNativeRecord[]): { leafUuid: string | null; records: CcNativeRecord[]; problem?: string } {
-  const byId = new Map(records.flatMap(record => nativeId(record) ? [[record.uuid as string, record] as const] : []));
+/** The records of a whole file, or of a suffix of it when `head` can read what lies before the suffix: each
+ * record's parent from `nativeParentId`, the one resolver. Without `head`, nothing precedes `records`. */
+const recordLineage = (records: readonly CcNativeRecord[], head?: CcTranscriptHead) => {
   const position = new Map<string, number>();
   records.forEach((record, index) => { const id = nativeId(record); if (id && !position.has(id)) position.set(id, index); });
+  const before = new Map<string, CcNativeRecord | undefined>();
+  const inHead = (uuid: string): CcNativeRecord | undefined => {
+    if (!head || position.has(uuid)) return undefined;
+    if (!before.has(uuid)) before.set(uuid, head.find(uuid));
+    return before.get(uuid);
+  };
+  const fileAt = (at: number): CcLineageFile => ({
+    before: uuid => (position.get(uuid) ?? Infinity) < at || !!inHead(uuid),
+    anywhere: uuid => position.has(uuid) || !!inHead(uuid),
+    previous: () => {
+      for (let index = at - 1; index >= 0; index--) { const id = nativeId(records[index]!); if (id && records[index]!.isSidechain !== true) return id; }
+      const last = head?.last();
+      return last ? nativeId(last) ?? undefined : undefined;
+    },
+    earlier: uuid => {
+      const index = position.get(uuid), record = index === undefined ? inHead(uuid) : index < at ? records[index] : undefined;
+      return record && { parent: nativeParentId(record, index === undefined ? undefined : fileAt(index)), accepted: classifySourceRecord(record) !== null };
+    },
+  });
+  return { position, parentOf: (record: CcNativeRecord) => nativeParentId(record, fileAt(position.get(nativeId(record)!)!)) };
+};
+
+export function selectedNativePath(records: readonly CcNativeRecord[]): { leafUuid: string | null; records: CcNativeRecord[]; problem?: string } {
+  const byId = new Map(records.flatMap(record => nativeId(record) ? [[record.uuid as string, record] as const] : []));
+  const { position, parentOf } = recordLineage(records);
   const leaf = [...records].reverse().find(record => classifySourceRecord(record) !== null);
   const leafUuid = leaf ? nativeId(leaf) : null;
   if (!leafUuid) return { leafUuid: null, records: [] };
@@ -810,8 +887,7 @@ export function selectedNativePath(records: readonly CcNativeRecord[]): { leafUu
     if (seen.has(id)) return { leafUuid, records: [], problem: `native lineage cycle at ${id}` };
     seen.add(id); reverse.push(current);
     let rawParent: string | null;
-    const at = position.get(id)!;
-    try { rawParent = nativeParentId(current, uuid => (position.get(uuid) ?? Infinity) < at); }
+    try { rawParent = parentOf(current); }
     catch (error) { return { leafUuid, records: [], problem: error instanceof Error ? error.message : String(error) }; }
     if (rawParent === null) break;
     current = byId.get(rawParent);
@@ -883,16 +959,61 @@ export function readTranscriptTail(path: string, offset: number): CcNativeRecord
   } finally { closeSync(descriptor); }
 }
 
+/** The records of a file before a byte offset, read backward and only as far as a question needs. */
+export interface CcTranscriptHead {
+  /** The latest record before the offset with this uuid. */
+  find(uuid: string): CcNativeRecord | undefined;
+  /** The latest record before the offset that has a uuid and is not a sidechain. */
+  last(): CcNativeRecord | undefined;
+}
+
+/** The complete lines before `offset`, last first, read a megabyte at a time. */
+function* linesBefore(path: string, offset: number): Generator<string> {
+  const descriptor = openSync(path, "r");
+  try {
+    let end = offset, carry = Buffer.alloc(0);
+    while (end > 0) {
+      const start = Math.max(0, end - (1 << 20)), chunk = Buffer.allocUnsafe(end - start);
+      for (let read = 0; read < chunk.length;) {
+        const amount = readSync(descriptor, chunk, read, chunk.length - read, start + read);
+        if (!amount) return;
+        read += amount;
+      }
+      const data = Buffer.concat([chunk, carry]), first = start > 0 ? data.indexOf(0x0a) : -1;
+      if (start > 0 && first < 0) { carry = data; end = start; continue; }
+      carry = start > 0 ? data.subarray(0, first) : Buffer.alloc(0);
+      yield* data.subarray(first + 1).toString("utf8").split("\n").reverse().filter(Boolean);
+      end = start;
+    }
+  } finally { closeSync(descriptor); }
+}
+
+/** ponytail: a uuid found nowhere reads the whole file before the offset; an index would avoid it if that is ever common. */
+export function transcriptHead(path: string, offset: number): CcTranscriptHead {
+  const latest = (mention: string | undefined, accept: (record: CcNativeRecord) => boolean): CcNativeRecord | undefined => {
+    for (const line of linesBefore(path, offset)) {
+      if (mention && !line.includes(mention)) continue;
+      let parsed: unknown;
+      try { parsed = JSON.parse(line); } catch { continue; }
+      const record = object(parsed) as CcNativeRecord | null;
+      if (record && accept(record)) return record;
+    }
+    return undefined;
+  };
+  return { find: uuid => latest(uuid, record => record.uuid === uuid),
+    last: () => latest(undefined, record => !!nativeId(record) && record.isSidechain !== true) };
+}
+
 /** 97: a node of the selected chain inside a tail: a prompt, by its native prompt id, or a
  * compaction boundary, by the source record it follows (null at the root). */
 export type TailNode = { prompt: string } | { follows: string | null };
 
 /** 97: the nodes of the selected chain inside a tail, oldest first; where that chain leaves the tail
  * (the uuid of the first record before it, or null when the chain starts in the tail); and the last
- * source record in the tail, which a compaction written now would follow. */
-export function tailNodes(records: readonly CcNativeRecord[]): { nodes: TailNode[]; exit: string | null; leaf: string | null } {
-  const position = new Map<string, number>();
-  records.forEach((record, index) => { const id = nativeId(record); if (id && !position.has(id)) position.set(id, index); });
+ * source record in the tail, which a compaction written now would follow. A tail read from past the start of the
+ * file passes `head`, so that what lies before the suffix is never mistaken for missing from the file. */
+export function tailNodes(records: readonly CcNativeRecord[], head?: CcTranscriptHead): { nodes: TailNode[]; exit: string | null; leaf: string | null } {
+  const { position, parentOf } = recordLineage(records, head);
   const leaf = [...records].reverse().find(record => classifySourceRecord(record) !== null);
   if (!leaf) return { nodes: [], exit: null, leaf: null };
   const nodes: TailNode[] = [], seen = new Set<string>();
@@ -905,8 +1026,7 @@ export function tailNodes(records: readonly CcNativeRecord[]): { nodes: TailNode
     if (source && awaiting) { awaiting.follows = id; awaiting = null; }
     if (source?.kind === "user" && typeof current.promptId === "string" && current.promptId) nodes.unshift({ prompt: current.promptId });
     if (source?.kind === "compaction") nodes.unshift(awaiting = { follows: null });
-    const at = position.get(id)!;
-    const parent = nativeParentId(current, uuid => (position.get(uuid) ?? -1) < at);
+    const parent = parentOf(current);
     if (parent === null) return { nodes, exit: null, leaf: nativeId(leaf) };
     current = position.has(parent) ? records[position.get(parent)!] : undefined;
     if (!current) {

@@ -307,7 +307,7 @@ function substantiveArchiveStatement(text) {
   return typeof text === "string" && !!text.trim() && !/^(?:invalid|obsolete|无效|过时|失效)[。.!！]?$/iu.test(text.trim());
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/base.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options = {}) {
     let callback;
@@ -509,7 +509,7 @@ var Diff = class {
   }
 };
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/array.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/array.js
 var ArrayDiff = class extends Diff {
   tokenize(value) {
     return value.slice();
@@ -10497,16 +10497,32 @@ Continue the conversation from where it left off without asking the user any fur
 var ccStripAutoContinue = (text) => text.endsWith(CC_AUTO_CONTINUE_SUFFIX) ? text.slice(0, -CC_AUTO_CONTINUE_SUFFIX.length) : text;
 var CcNativeLineageError = class extends Error {
 };
-function nativeParentId(record3, writtenBefore) {
+var lastMessageBefore = (file2) => {
+  const seen = /* @__PURE__ */ new Set();
+  for (let id = file2.previous(); id !== void 0 && !seen.has(id); ) {
+    seen.add(id);
+    const step = file2.earlier(id);
+    if (!step) return void 0;
+    if (step.accepted) return id;
+    id = step.parent ?? void 0;
+  }
+  return void 0;
+};
+function nativeParentId(record3, file2) {
   const value = record3.logicalParentUuid ?? record3.parentUuid;
   if (value === null || value === void 0) return null;
   if (typeof value !== "string" || !value) throw new CcNativeLineageError(
     `native lineage parent of ${nativeId(record3) ?? "record without UUID"} is invalid`
   );
-  if (writtenBefore && value === record3.logicalParentUuid && record3.type === "system" && record3.subtype === "compact_boundary" && !writtenBefore(value)) {
+  if (file2 && value === record3.logicalParentUuid && record3.type === "system" && record3.subtype === "compact_boundary" && !file2.before(value)) {
     const preserved = record3.compactMetadata?.preservedMessages?.uuids;
-    const earlier = Array.isArray(preserved) ? preserved.filter((id) => typeof id === "string" && !!id && writtenBefore(id)) : [];
+    const earlier = Array.isArray(preserved) ? preserved.filter((id) => typeof id === "string" && !!id && file2.before(id)) : [];
     if (earlier.length) return earlier.at(-1);
+    const chosen = file2.anywhere(value) ? void 0 : lastMessageBefore(file2);
+    if (chosen) {
+      file2.fellBack?.(value, chosen);
+      return chosen;
+    }
   }
   return value;
 }
@@ -10584,7 +10600,7 @@ var messageKey = (source) => {
   return identity && (0, import_node_crypto12.hash)("sha256", JSON.stringify(identity), "base64");
 };
 var apiMessageId = (source) => source?.kind === "assistant" && typeof source.record.message?.id === "string" ? source.record.message.id : void 0;
-var nodeOf = (record3, writtenBefore) => {
+var nodeOf = (record3, file2) => {
   const uuid5 = nativeId(record3);
   if (!uuid5) return null;
   const source = classifySourceRecord(record3);
@@ -10592,7 +10608,7 @@ var nodeOf = (record3, writtenBefore) => {
   try {
     return {
       uuid: uuid5,
-      parentUuid: nativeParentId(record3, writtenBefore),
+      parentUuid: nativeParentId(record3, file2),
       sourceKind: source?.kind ?? null,
       calls: source?.kind === "assistant" ? source.calls.map((call) => ({ id: call.callId, name: call.name })) : [],
       timestamp: source?.timestamp ?? timestamp(record3),
@@ -10633,6 +10649,8 @@ var CcTranscriptScan = class {
   selectedLeafUuid;
   /** Latest native turn terminator, independent of whether that row is a Raw source. */
   terminalUuid;
+  /** The last record read that has a uuid and is not a sidechain: what a compaction boundary read next follows. */
+  lastMainUuid;
   /** 97: the byte offset just after the selected leaf's line; everything later is its tail. */
   selectedLeafOffset;
   problems;
@@ -10652,6 +10670,7 @@ var CcTranscriptScan = class {
     this.lineCount = input.lineCount;
     this.selectedLeafUuid = input.selectedLeafUuid;
     this.terminalUuid = input.terminalUuid;
+    this.lastMainUuid = input.lastMainUuid;
     this.selectedLeafOffset = input.selectedLeafOffset;
     this.problems = input.problems ?? [];
     this.newProblems = input.newProblems ?? /* @__PURE__ */ new Set();
@@ -10799,6 +10818,7 @@ var CcTranscriptCursor = class {
   recordCount = 0;
   selectedLeafUuid = null;
   terminalUuid = null;
+  lastMainUuid = null;
   selectedLeafOffset = null;
   nodes = /* @__PURE__ */ new Map();
   callCarriers = /* @__PURE__ */ new Map();
@@ -10904,6 +10924,7 @@ var CcTranscriptCursor = class {
       const problems = reset ? [] : [...this.unresolvedProblems], newProblems = /* @__PURE__ */ new Set();
       let selectedLeafUuid = reset ? null : this.selectedLeafUuid;
       let terminalUuid = reset ? null : this.terminalUuid;
+      let lastMainUuid = reset ? null : this.lastMainUuid;
       let selectedLeafOffset = reset ? null : this.selectedLeafOffset;
       let physicalRecords = reset ? 0 : this.recordCount;
       let lines = reset ? 0 : this.lineCount;
@@ -10925,10 +10946,31 @@ var CcTranscriptCursor = class {
         lineCount: lines,
         selectedLeafUuid,
         terminalUuid,
+        lastMainUuid,
         selectedLeafOffset,
         problems,
         newProblems
       });
+      let chunkIds, fell;
+      const file2 = {
+        before: (id) => scanNodes.has(id),
+        anywhere: (id) => scanNodes.has(id) || (chunkIds ??= new Set(bytes.subarray(0, completeLength).toString("utf8").split("\n").flatMap((line) => {
+          try {
+            const found = line ? nativeId(JSON.parse(line)) : null;
+            return found ? [found] : [];
+          } catch {
+            return [];
+          }
+        }))).has(id),
+        previous: () => lastMainUuid ?? void 0,
+        earlier: (id) => {
+          const node = scanNodes.get(id);
+          return node && { parent: node.lineageProblem ? null : node.parentUuid, accepted: node.sourceKind !== null };
+        },
+        fellBack: (missing) => {
+          fell = missing;
+        }
+      };
       let beginning = 0;
       while (beginning < completeLength) {
         const ending = bytes.indexOf(10, beginning);
@@ -10945,7 +10987,12 @@ var CcTranscriptCursor = class {
         const record3 = object3(parsed2);
         if (!record3) throw new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${lines}: expected an object`));
         physicalRecords += 1;
-        let source = classifySourceRecord(record3), node = nodeOf(record3, (id) => scanNodes.has(id));
+        let source = classifySourceRecord(record3), node = nodeOf(record3, file2);
+        if (node && fell) {
+          node.missingParent = fell;
+          fell = void 0;
+        }
+        if (nativeId(record3) && record3.isSidechain !== true) lastMainUuid = nativeId(record3);
         if (node) {
           const prior = scanNodes.get(node.uuid), collected = collectedById.get(node.uuid), identity = nativeIdentity(record3);
           if (prior && ((prior.namedParent ?? prior.parentUuid) !== node.parentUuid || prior.sourceKind !== node.sourceKind || prior.lineageProblem !== node.lineageProblem) || collected && collected.identity !== identity) {
@@ -11029,6 +11076,7 @@ var CcTranscriptCursor = class {
           lineCount: lines,
           selectedLeafUuid,
           terminalUuid,
+          lastMainUuid,
           selectedLeafOffset,
           problems,
           newProblems,
@@ -11105,6 +11153,7 @@ var CcTranscriptCursor = class {
     this.recordCount = scan.snapshot.recordCount;
     this.selectedLeafUuid = scan.selectedLeafUuid;
     this.terminalUuid = scan.terminalUuid;
+    this.lastMainUuid = scan.lastMainUuid;
     this.selectedLeafOffset = scan.selectedLeafOffset;
     this.rejected = null;
     this.lastSnapshot = problem ? { ...scan.snapshot, problem } : scan.snapshot;
@@ -11171,6 +11220,36 @@ function nativeCreatedAt(records) {
   for (const record3 of records) if (!record3.isSidechain && typeof record3.timestamp === "string" && Number.isFinite(Date.parse(record3.timestamp))) return record3.timestamp;
   return null;
 }
+var recordLineage = (records, head) => {
+  const position = /* @__PURE__ */ new Map();
+  records.forEach((record3, index) => {
+    const id = nativeId(record3);
+    if (id && !position.has(id)) position.set(id, index);
+  });
+  const before = /* @__PURE__ */ new Map();
+  const inHead = (uuid5) => {
+    if (!head || position.has(uuid5)) return void 0;
+    if (!before.has(uuid5)) before.set(uuid5, head.find(uuid5));
+    return before.get(uuid5);
+  };
+  const fileAt = (at) => ({
+    before: (uuid5) => (position.get(uuid5) ?? Infinity) < at || !!inHead(uuid5),
+    anywhere: (uuid5) => position.has(uuid5) || !!inHead(uuid5),
+    previous: () => {
+      for (let index = at - 1; index >= 0; index--) {
+        const id = nativeId(records[index]);
+        if (id && records[index].isSidechain !== true) return id;
+      }
+      const last = head?.last();
+      return last ? nativeId(last) ?? void 0 : void 0;
+    },
+    earlier: (uuid5) => {
+      const index = position.get(uuid5), record3 = index === void 0 ? inHead(uuid5) : index < at ? records[index] : void 0;
+      return record3 && { parent: nativeParentId(record3, index === void 0 ? void 0 : fileAt(index)), accepted: classifySourceRecord(record3) !== null };
+    }
+  });
+  return { position, parentOf: (record3) => nativeParentId(record3, fileAt(position.get(nativeId(record3)))) };
+};
 var ccSourceBlocks = (entry) => {
   let record3;
   try {
@@ -11243,12 +11322,53 @@ function readTranscriptTail(path, offset) {
     (0, import_node_fs5.closeSync)(descriptor);
   }
 }
-function tailNodes(records) {
-  const position = /* @__PURE__ */ new Map();
-  records.forEach((record3, index) => {
-    const id = nativeId(record3);
-    if (id && !position.has(id)) position.set(id, index);
-  });
+function* linesBefore(path, offset) {
+  const descriptor = (0, import_node_fs5.openSync)(path, "r");
+  try {
+    let end = offset, carry = Buffer.alloc(0);
+    while (end > 0) {
+      const start = Math.max(0, end - (1 << 20)), chunk = Buffer.allocUnsafe(end - start);
+      for (let read = 0; read < chunk.length; ) {
+        const amount = (0, import_node_fs5.readSync)(descriptor, chunk, read, chunk.length - read, start + read);
+        if (!amount) return;
+        read += amount;
+      }
+      const data = Buffer.concat([chunk, carry]), first = start > 0 ? data.indexOf(10) : -1;
+      if (start > 0 && first < 0) {
+        carry = data;
+        end = start;
+        continue;
+      }
+      carry = start > 0 ? data.subarray(0, first) : Buffer.alloc(0);
+      yield* data.subarray(first + 1).toString("utf8").split("\n").reverse().filter(Boolean);
+      end = start;
+    }
+  } finally {
+    (0, import_node_fs5.closeSync)(descriptor);
+  }
+}
+function transcriptHead(path, offset) {
+  const latest = (mention, accept) => {
+    for (const line of linesBefore(path, offset)) {
+      if (mention && !line.includes(mention)) continue;
+      let parsed2;
+      try {
+        parsed2 = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const record3 = object3(parsed2);
+      if (record3 && accept(record3)) return record3;
+    }
+    return void 0;
+  };
+  return {
+    find: (uuid5) => latest(uuid5, (record3) => record3.uuid === uuid5),
+    last: () => latest(void 0, (record3) => !!nativeId(record3) && record3.isSidechain !== true)
+  };
+}
+function tailNodes(records, head) {
+  const { position, parentOf } = recordLineage(records, head);
   const leaf = [...records].reverse().find((record3) => classifySourceRecord(record3) !== null);
   if (!leaf) return { nodes: [], exit: null, leaf: null };
   const nodes = [], seen = /* @__PURE__ */ new Set();
@@ -11264,8 +11384,7 @@ function tailNodes(records) {
     }
     if (source?.kind === "user" && typeof current.promptId === "string" && current.promptId) nodes.unshift({ prompt: current.promptId });
     if (source?.kind === "compaction") nodes.unshift(awaiting = { follows: null });
-    const at = position.get(id);
-    const parent = nativeParentId(current, (uuid5) => (position.get(uuid5) ?? -1) < at);
+    const parent = parentOf(current);
     if (parent === null) return { nodes, exit: null, leaf: nativeId(leaf) };
     current = position.has(parent) ? records[position.get(parent)] : void 0;
     if (!current) {
@@ -11319,7 +11438,7 @@ var import_node_fs6 = require("node:fs");
 var import_node_os3 = require("node:os");
 var import_node_path5 = require("node:path");
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -32117,7 +32236,7 @@ function query({
   return queryInstance;
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -32191,7 +32310,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -32870,7 +32989,7 @@ var Class2 = class {
   }
 };
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -32936,7 +33055,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -33016,7 +33135,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -33173,7 +33292,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -33721,7 +33840,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -33757,14 +33876,14 @@ var Doc2 = class {
   }
 };
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -35735,7 +35854,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -35844,7 +35963,7 @@ function en_default3() {
   };
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -35892,7 +36011,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -36696,7 +36815,7 @@ function _stringFormat(Class3, format2, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -37048,7 +37167,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -37524,7 +37643,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -37693,7 +37812,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -37727,7 +37846,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -37768,7 +37887,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -37808,7 +37927,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -37822,7 +37941,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -38901,22 +39020,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -41236,7 +41355,7 @@ var CcProjection = class {
     if (this.binding.coreSessionId === null) return this.result("provisional", bootstrapSnapshot);
     if (!this.memory.store.enabled(this.binding.coreSessionId)) return this.result("disabled", bootstrapSnapshot ?? this.transcript.currentSnapshot(this.binding.transcriptPath));
     const sessionId = this.binding.coreSessionId, lineage = this.binding.nativeSessionId;
-    const appendedEntryIds = [], problems = [], failedNativeIds = /* @__PURE__ */ new Set();
+    const appendedEntryIds = [], problems = [], notices = [], failedNativeIds = /* @__PURE__ */ new Set();
     const addProblem = (problem) => {
       if (!problems.includes(problem)) problems.push(problem);
     };
@@ -41307,6 +41426,8 @@ var CcProjection = class {
         return this.memory.store.transaction(() => {
           const turn = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "compaction", startedAt: timestamp2, endedAt: timestamp2 });
           this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turn.id, "compaction");
+          const missing = scan2.node(source.nativeId)?.missingParent;
+          if (missing) notices.push(`compaction boundary ${source.nativeId} names logical parent ${missing}, which was never written; it continues from ${scan2.node(source.nativeId).parentUuid}`);
           const key = above && this.memory.store.compactionDeliveryKey(coreHostOf(this.binding), above.uuid);
           if (key) this.memory.store.bindDeliveryNode(key, sessionId, turn.id);
           return { association: { turnId: turn.id } };
@@ -41564,6 +41685,7 @@ var CcProjection = class {
         })(),
         selectedAppendedEntryIds: projectionReady ? selectedEntryIds === null ? selectedDelta.filter((id) => newlyImported?.has(id)) : appendedEntryIds.filter((id) => selectedMembership.has(id)) : [],
         appendedEntryIds,
+        notices,
         bootstrap: !this.synchronized
       },
       projectionReady && (selectedEntryIds !== null || selectedDelta.length > 0)
@@ -42239,7 +42361,7 @@ function ccDeliveryHead(binding, memory) {
   let tail = { nodes: [], exit: null, leaf: null };
   const offset = binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset;
   if (offset !== void 0) {
-    tail = tailNodes(readTranscriptTail(binding.transcriptPath, offset) ?? []);
+    tail = tailNodes(readTranscriptTail(binding.transcriptPath, offset) ?? [], transcriptHead(binding.transcriptPath, offset));
     if (tail.leaf !== null && tail.exit !== binding.selectedLeafUuid) {
       const rebased = tail.exit === null ? root2 : turnOf(tail.exit) ?? null;
       if (tail.exit === null || rebased !== null) headTurnId = rebased;
@@ -44101,6 +44223,7 @@ ${task.text}`, turnId: launch.turnId });
           coreSessionId: result?.coreSessionId ?? null,
           appended: result?.appendedEntryIds.length ?? 0
         });
+        for (const notice of result?.notices ?? []) this.diagnostic(notice);
         if (result?.problems.length && reason !== "stat wake-up") this.diagnostic(`${reason}: ${result.problems.join("; ")}`);
         return result;
       } catch (error3) {
@@ -44473,7 +44596,7 @@ async function declareCcProject(config3, nativeSessionId, name) {
 var import_node_fs12 = require("node:fs");
 var import_node_path10 = require("node:path");
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@earendil-works/pi-tui/dist/terminal-image.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@earendil-works/pi-tui/dist/terminal-image.js
 function getPngDimensions(base64Data) {
   try {
     const buffer = Buffer.from(base64Data, "base64");
@@ -44887,7 +45010,7 @@ var import_node_fs13 = require("node:fs");
 var import_node_path11 = require("node:path");
 var import_node_crypto16 = require("node:crypto");
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/scanner.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/scanner.js
 function createScanner(text, ignoreTrivia = false) {
   const len = text.length;
   let pos = 0, value = "", tokenOffset = 0, token = 16, lineNumber = 0, lineStartOffset = 0, tokenLineStartOffset = 0, prevTokenLineStartOffset = 0, scanError = 0;
@@ -45308,7 +45431,7 @@ var CharacterCodes;
   CharacterCodes2[CharacterCodes2["tab"] = 9] = "tab";
 })(CharacterCodes || (CharacterCodes = {}));
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/string-intern.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/string-intern.js
 var cachedSpaces = new Array(20).fill(0).map((_, index) => {
   return " ".repeat(index);
 });
@@ -45339,7 +45462,7 @@ var cachedBreakLinesWithSpaces = {
 };
 var supportedEols = ["\n", "\r", "\r\n"];
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/format.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/format.js
 function format(documentText, range, options) {
   let initialIndentLevel;
   let formatText;
@@ -45575,7 +45698,7 @@ function isEOL(text, offset) {
   return "\r\n".indexOf(text.charAt(offset)) !== -1;
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/parser.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/parser.js
 var ParseOptions;
 (function(ParseOptions2) {
   ParseOptions2.DEFAULT = {
@@ -45997,7 +46120,7 @@ function getNodeType(value) {
   }
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/edit.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/edit.js
 function setProperty(text, originalPath, value, options) {
   const path = originalPath.slice();
   const errors = [];
@@ -46141,7 +46264,7 @@ function applyEdit(text, edit) {
   return text.substring(0, edit.offset) + edit.content + text.substring(edit.offset + edit.length);
 }
 
-// ../../../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/main.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/main.js
 var ScanError;
 (function(ScanError2) {
   ScanError2[ScanError2["None"] = 0] = "None";
