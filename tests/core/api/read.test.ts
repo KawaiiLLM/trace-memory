@@ -3,6 +3,7 @@ import { memoryFiles } from "../../source-fixture.ts";
 import { fact as seedFact, legacyFacts } from "../../support/seed.ts";
 import { readFileSync } from "node:fs";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
+import { readFacade } from "../../../src/core/api/read.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION , hydrate } from "../../source-fixture.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection, setSharedAllowance } from "../../knowledge-budget-fixture.ts";
@@ -252,7 +253,9 @@ test("118: the reading guide is fixed framing, not a Knowledge or shared-window 
   const latest = turn(s.id, "pending raw", t.id);
   setWindows(3, 5_000, 5_000);
   const guided = memory.compact(s.id, "main", latest.id);
-  const bare = memory.compact(s.id, "main", latest.id, [], false, { readingGuide: false });
+  // The no-guide option belongs to worker assembly, not the public host compaction API.
+  const bare = readFacade(memory.store, memory.config).compact(s.id, "main", latest.id, [], false, { readingGuide: false });
+  if ("native" in guided || "native" in bare) throw new Error("expected custom compaction material");
   expect(guided.supplied).toEqual(bare.supplied);
   expect(charged(guided)).toEqual(charged(bare));
   expect(guided.supplied.entries.length).toBeGreaterThan(0);
@@ -263,6 +266,7 @@ test("118: the reading guide is fixed framing, not a Knowledge or shared-window 
   // With Raw disabled, the same tiny Knowledge window cannot consume the independent fact base.
   memory.config.compaction.rawTokens = 0;
   const factOnly = memory.compact(s.id, "main", latest.id);
+  if ("native" in factOnly) throw new Error(factOnly.reason);
   expect(factOnly.supplied.factIds).toEqual([1]);
   expect(charged(factOnly).facts).toBeGreaterThan(0);
   defaultWindows();
@@ -415,6 +419,7 @@ test("73: when the bounded views miss the Raw window compact truncates to the ne
     [...new Set(source.slice(0, -1).map(entry => `/tm/raw/S${s.id}/T${entry.turnId}`))])}`;
   memory.config.compaction.rawTokens = rawWindowTokens([renderEntry(newest, memory.config.render).content], [receipt]);
   const receipted = memory.compact(s.id, "main", parent);
+  if ("native" in receipted) throw new Error(receipted.reason);
   expect(receipted.truncated?.raw).toBeTruthy();
   expect(compacted(receipted)).toContain("earlier entries omitted from the Raw window");
   expect(compacted(receipted)).toContain(renderEntry(newest, memory.config.render).content);
@@ -472,7 +477,8 @@ test("64c/92: the independent facts window bounds history while Knowledge and Ra
   setSharedAllowance(memory, 20_000); // measure the actual pending Raw cost before isolating its window
   // Exclude processed-Raw refill: carrying the original user would cover every fact's sources,
   // making the facts-window assertion vacuous rather than exercising independent history pressure.
-  const measured = charged(memory.compact(s.id, "main", t.id, [], false, { processedRawRefill: false }));
+  const assemble = readFacade(memory.store, memory.config).compact;
+  const measured = charged(assemble(s.id, "main", t.id, [], false, { processedRawRefill: false }));
   const factReceipt = `omitted ${facts.length} older facts; expand: ${expandList(
     [...facts].sort((a, b) => b.id - a.id).map(fact => `/tm/F${fact.id}`))}`;
   const receiptBudget = charge([factReceipt]) + charge(["Receipts:"]);
@@ -480,7 +486,7 @@ test("64c/92: the independent facts window bounds history while Knowledge and Ra
   // Raw and Knowledge remain, while facts are omitted because their own window cannot hold a body.
   setKnowledgeInjection(memory, Math.max(3, measured.knowledge));
   Object.assign(memory.config.compaction, { rawTokens: measured.raw, factsTokens: receiptBudget, sharedAllowanceTokens: 0 });
-  const crowded = memory.compact(s.id, "main", t.id, [], false, { processedRawRefill: false });
+  const crowded = assemble(s.id, "main", t.id, [], false, { processedRawRefill: false });
   expect("native" in crowded).toBe(false); // fact truncation does not delegate compaction
   const text = compacted(crowded);
   for (const entry of pending) expect(text).toContain(renderEntry(entry, memory.config.render).content);
