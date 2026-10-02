@@ -56,7 +56,9 @@ const CLI_OPT_OUTS = { DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1" } as const;
 
 function loopbackEnvironment(configDir: string, baseUrl: string): NodeJS.ProcessEnv {
-  const socketRoot = dirname(dirname(fencedClaude));
+  // An inherited fence returns the installed executable, not a task-local wrapper.
+  const socketRoot = process.env.TM_NATIVE_PREPARED_PORT
+    ? process.env.TM_NATIVE_SOCKET_ROOT! : dirname(dirname(fencedClaude));
   return { PATH: process.env.PATH, HOME: configDir, CLAUDE_CONFIG_DIR: configDir,
     TMPDIR: socketRoot, CLAUDE_CODE_TMPDIR: socketRoot,
     ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: "sk-ant-fake-probe-key", CLAUDE_CODE_MAX_RETRIES: "0", ...CLI_OPT_OUTS };
