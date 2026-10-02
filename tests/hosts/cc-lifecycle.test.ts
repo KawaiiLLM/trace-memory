@@ -179,6 +179,7 @@ test("function-hook child requires the exact live SessionStart assignment and ow
   expect(processStartedAt(process.pid)).toBe(owner.startedAt);
 });
 
+// Thirteen independent child attaches share this test's outer deadline; per-operation waits remain 3s.
 test("reloaded executor clears only an unconfirmed close for the same live native assignment", async () => {
   const f = fixture("reload-close"); f.write();
   const input = { hook_event_name: "SessionStart" as const, session_id: f.nativeSessionId, transcript_path: f.transcriptPath };
@@ -282,7 +283,7 @@ test("reloaded executor clears only an unconfirmed close for the same live nativ
   const { child } = await attempt();
   try { expect(readBinding(f.config, f.nativeSessionId)!.lastClose).toEqual(close); }
   finally { child.send({ type: "close" }); await childExit(child); }
-});
+}, 20_000);
 
 test("live function-hook turns check once across both import orders and do not replay bootstrap", async () => {
   const f = fixture("turn-hook"); enableSyntheticWorker(f);
@@ -1308,7 +1309,7 @@ test("stdio MCP stays protocol-clean and only prompt_input_exit confirms close a
   expect(readBinding(f.config, f.nativeSessionId)).toMatchObject({ executor: { pid: child.pid }, selectedLeafUuid: "a1" });
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" })}\n`);
   for (let i = 0; i < 100 && !stdout.includes('"id":2'); i++) await sleep(5);
-  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "trace", arguments: { address: "T1" } } })}\n`);
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "search", arguments: { query: "question", layer: "raw" } } })}\n`);
   for (let i = 0; i < 100 && !stdout.includes('"id":3'); i++) await sleep(5);
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "note", arguments: {} } })}\n`);
   for (let i = 0; i < 100 && !stdout.includes('"id":4'); i++) await sleep(5);
@@ -1321,13 +1322,17 @@ test("stdio MCP stays protocol-clean and only prompt_input_exit confirms close a
   expect(stdout.trim().split("\n").map(value => JSON.parse(value))).toEqual([
     expect.objectContaining({ jsonrpc: "2.0", id: 1, result: expect.objectContaining({ capabilities: { tools: {} } }) }),
     expect.objectContaining({ jsonrpc: "2.0", id: 2, result: { tools: expect.arrayContaining([
-      expect.objectContaining({ name: "trace" }), expect.objectContaining({ name: "search" }),
+      expect.objectContaining({ name: "search" }),
       expect.objectContaining({ name: "note" }), expect.objectContaining({ name: "memory" }),
     ]) } }),
     expect.objectContaining({ jsonrpc: "2.0", id: 3, result: expect.objectContaining({ content: [expect.objectContaining({ type: "text", text: expect.stringContaining("question") })] }) }),
     expect.objectContaining({ jsonrpc: "2.0", id: 4, result: expect.objectContaining({ isError: true,
       content: [expect.objectContaining({ text: expect.stringContaining("source-not-ready") })] }) }),
   ]);
+  const responses = stdout.trim().split("\n").map(value => JSON.parse(value));
+  expect(responses.find(response => response.id === 2).result.tools.map((tool: { name: string }) => tool.name))
+    .toEqual(["search", "note", "memory"]);
+  expect(responses.find(response => response.id === 3).result.isError ?? false).toBe(false);
   expect(readBinding(f.config, f.nativeSessionId)).toMatchObject({ executor: { pid: child.pid }, lastClose: { confirmed: false, reason: "SIGINT" } });
   expect(await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath, reason: "prompt_input_exit" })).toMatchObject({ confirmed: true });
