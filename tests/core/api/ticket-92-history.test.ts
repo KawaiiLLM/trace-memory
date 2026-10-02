@@ -63,7 +63,10 @@ test("92/118: all-branch history owns stable ordinals, current selection follows
     expect(read(paths[2]!, `K${id}`)).toContain(`[K${id}#${store.versionTag(id, second.commit)}]`);
     expect(store.versionOrdinal(id, first.commit)).toBe(2);
     const archive = write(paths[2]!, [{ op: "archive", kind: "budget", knowledgeId: id, baseCommit: second.commit, supports: [facts[2]!], reason: "retired", createdAt: "now" }]);
-    expect(read(paths[2]!, `K${id}`, "history")).toContain("archived");
+    const archivedHistory = read(paths[2]!, `K${id}`, "history");
+    expect(archivedHistory.split("\n").find(line => line.startsWith(`  K${id}@v4 `)))
+      .toContain("archive kind: budget");
+    expect(memory.injection(paths[2]!).knowledgeCommitIds).toEqual([]);
     expect(store.versionOrdinal(id, archive.commit)).toBe(4);
 
     const foreignProject = store.createProject({ name: "foreign", declaredBy: "mark" });
