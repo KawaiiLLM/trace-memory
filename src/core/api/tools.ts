@@ -240,7 +240,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     }
     const ordered = candidates.flatMap(entry => cited.has(entry.id) ? [cited.get(entry.id)!] : []);
     const text = ordered.map(segment => segment.text).join("\n");
-    if (fact && context.kind === "noting" && tokens(text) > WORKER_ITEM_TOKENS) errors.push(`Fact exceeds ${WORKER_ITEM_TOKENS}-token limit: ${tokens(text)} tokens`);
+    if (fact && context.kind === "noting" && tokens(text) > WORKER_ITEM_TOKENS) errors.push(`Fact exceeds ${WORKER_ITEM_TOKENS}-token limit: ${tokens(text)} tokens. When capacity runs short, first remove repetition and non-key detail; if it still does not fit, split along subtopics.`);
     if (errors.length || !fact || !ordered.length) throw new Error(errors.join("; ") || "invalid fact");
     const first = ordered[0]!.hit.entry.turnId;
     return { ...fact, text, source: ordered.map(segment => segment.address), segments: ordered.map(segment => segment.text),

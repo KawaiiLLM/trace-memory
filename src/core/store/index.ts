@@ -3799,7 +3799,7 @@ export class Store {
 
   private requireWorkerItemSize(text: string, label: string): void {
     const size = tokens(text);
-    if (size > WORKER_ITEM_TOKENS) throw new Error(`${label} exceeds ${WORKER_ITEM_TOKENS}-token limit: ${size} tokens`);
+    if (size > WORKER_ITEM_TOKENS) throw new Error(`${label} exceeds ${WORKER_ITEM_TOKENS}-token limit: ${size} tokens${label === "Knowledge item" ? ". Recheck it against Admission and Division: progress keeps only the necessary goal, the latest evidenced state, key open points and where to check; detail that retained clues lead back to stays in facts, Raw or documents; record separately what must be maintained separately." : ""}`);
   }
 
   private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,

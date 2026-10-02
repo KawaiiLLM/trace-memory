@@ -4297,7 +4297,7 @@ ${annotation}`;
   }
   requireWorkerItemSize(text, label) {
     const size = tokens(text);
-    if (size > WORKER_ITEM_TOKENS) throw new Error(`${label} exceeds ${WORKER_ITEM_TOKENS}-token limit: ${size} tokens`);
+    if (size > WORKER_ITEM_TOKENS) throw new Error(`${label} exceeds ${WORKER_ITEM_TOKENS}-token limit: ${size} tokens${label === "Knowledge item" ? ". Recheck it against Admission and Division: progress keeps only the necessary goal, the latest evidenced state, key open points and where to check; detail that retained clues lead back to stays in facts, Raw or documents; record separately what must be maintained separately." : ""}`);
   }
   applyKnowledgeOperation(op, runId, projectId, sessionId, path, dreaming = false, role = "manual", dreamingPool = null) {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
@@ -8072,7 +8072,7 @@ function bindTools(store, read, supplied, metadata, dreaming, exposedNames = can
     }
     const ordered = candidates.flatMap((entry) => cited.has(entry.id) ? [cited.get(entry.id)] : []);
     const text = ordered.map((segment) => segment.text).join("\n");
-    if (fact && context.kind === "noting" && tokens(text) > WORKER_ITEM_TOKENS) errors.push(`Fact exceeds ${WORKER_ITEM_TOKENS}-token limit: ${tokens(text)} tokens`);
+    if (fact && context.kind === "noting" && tokens(text) > WORKER_ITEM_TOKENS) errors.push(`Fact exceeds ${WORKER_ITEM_TOKENS}-token limit: ${tokens(text)} tokens. When capacity runs short, first remove repetition and non-key detail; if it still does not fit, split along subtopics.`);
     if (errors.length || !fact || !ordered.length) throw new Error(errors.join("; ") || "invalid fact");
     const first = ordered[0].hit.entry.turnId;
     return {
