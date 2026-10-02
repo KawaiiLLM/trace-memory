@@ -335,7 +335,12 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   // 20b charges every rendered line: the labelled revision needs a strictly larger cap than the same
   // revision without them, so labels cannot ride along outside the budget.
   expect(minimum(value)).toBeGreaterThan(minimum(bare));
-  const exactForeground = tokens(memory.inject(s.id));
+  const fullInjection = memory.inject(s.id);
+  const guidePrefix = `${readingGuide(s.id, canonicalToolNames)}\n\n`;
+  expect(fullInjection.startsWith(guidePrefix)).toBe(true);
+  const exactForeground = tokens(fullInjection.slice(guidePrefix.length));
+  setKnowledgeCapacity(memory, exactForeground);
+  expect(memory.inject(s.id)).toContain(`[${tag(1, changed.commit)}]`);
   // Pool budgets trigger maintenance; they do not reject a policy change. Foreground selection
   // omits a whole body that no longer fits without removing it from storage or dropping its topics.
   setKnowledgeCapacity(memory, exactForeground - 1);

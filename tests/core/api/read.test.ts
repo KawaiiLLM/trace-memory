@@ -6,6 +6,8 @@ import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION , hydrate } from "../../source-fixture.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection, setSharedAllowance } from "../../knowledge-budget-fixture.ts";
+import { charge, expandList } from "../../../src/core/render/index.ts";
+import { rawWindowTokens } from "../../../src/core/render/material.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/facts.json", import.meta.url), "utf8"));
@@ -148,7 +150,9 @@ test("64c category display and commit recency retain whole newer items; lines ar
   setKnowledgeCapacity(memory, 5_000);
   expect(memory.inject(s.id)).toBe("");
   // A binding cap drops the oldest commits regardless of category; receipts grant no body visibility.
-  setKnowledgeCapacity(memory, tokens(all) - 50);
+  const guidePrefix = `${readingGuide(s.id, canonicalToolNames)}\n\n`;
+  expect(all.startsWith(guidePrefix)).toBe(true);
+  setKnowledgeCapacity(memory, tokens(all.slice(guidePrefix.length)) - 50);
   const partial = memory.inject(s.id);
   const visibleIds = [...partial.matchAll(/\[K(\d+)#/g)].map(match => Number(match[1]));
   expect(visibleIds.length).toBeGreaterThan(0);
@@ -402,7 +406,19 @@ test("73: when the bounded views miss the Raw window compact truncates to the ne
   expect("native" in outer).toBe(false);
   if ("native" in outer) throw new Error("unreachable");
   expect(outer.truncated?.raw).toBeTruthy();
-  expect(compacted(outer)).toContain("earlier entries omitted from the Raw window");
+  // Below even the path receipt's cost, this window emits nothing and still reports pending loss.
+  expect(outer.supplied.entries).toEqual([]);
+  expect(charged(outer).raw).toBe(0);
+  const source = hydrate(memory.store.sourcePath(s.id, "main", parent), memory.store);
+  const newest = source.at(-1)!;
+  const receipt = `[... ${source.length - 1} earlier entries omitted from the Raw window] ${expandList(
+    [...new Set(source.slice(0, -1).map(entry => `/tm/raw/S${s.id}/T${entry.turnId}`))])}`;
+  memory.config.compaction.rawTokens = rawWindowTokens([renderEntry(newest, memory.config.render).content], [receipt]);
+  const receipted = memory.compact(s.id, "main", parent);
+  expect(receipted.truncated?.raw).toBeTruthy();
+  expect(compacted(receipted)).toContain("earlier entries omitted from the Raw window");
+  expect(compacted(receipted)).toContain(renderEntry(newest, memory.config.render).content);
+  expect(charged(receipted).raw).toBeLessThanOrEqual(memory.config.compaction.rawTokens);
   // 25c: there is no second cap to miss any more. The Noter's batch ceiling is not compact's knob —
   // shrinking it to fifty tokens neither truncates this snapshot nor appears in any receipt — so the
   // three windows and the shared allowance are the only budgets that can bite.
@@ -454,22 +470,29 @@ test("64c/92: the independent facts window bounds history while Knowledge and Ra
   const pending = hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store);
   expect(pending).toHaveLength(10);
   setSharedAllowance(memory, 20_000); // measure the actual pending Raw cost before isolating its window
-  const measured = charged(memory.compact(s.id, "main", t.id));
+  // Exclude processed-Raw refill: carrying the original user would cover every fact's sources,
+  // making the facts-window assertion vacuous rather than exercising independent history pressure.
+  const measured = charged(memory.compact(s.id, "main", t.id, [], false, { processedRawRefill: false }));
+  const factReceipt = `omitted ${facts.length} older facts; expand: ${expandList(
+    [...facts].sort((a, b) => b.id - a.id).map(fact => `/tm/F${fact.id}`))}`;
+  const receiptBudget = charge([factReceipt]) + charge(["Receipts:"]);
   // Size Raw to its complete views, facts to its receipt alone and Knowledge to its measured body.
   // Raw and Knowledge remain, while facts are omitted because their own window cannot hold a body.
   setKnowledgeInjection(memory, Math.max(3, measured.knowledge));
-  Object.assign(memory.config.compaction, { rawTokens: measured.raw, factsTokens: 80, sharedAllowanceTokens: 0 });
-  const crowded = memory.compact(s.id, "main", t.id);
+  Object.assign(memory.config.compaction, { rawTokens: measured.raw, factsTokens: receiptBudget, sharedAllowanceTokens: 0 });
+  const crowded = memory.compact(s.id, "main", t.id, [], false, { processedRawRefill: false });
   expect("native" in crowded).toBe(false); // fact truncation does not delegate compaction
   const text = compacted(crowded);
   for (const entry of pending) expect(text).toContain(renderEntry(entry, memory.config.render).content);
   for (const fact of facts) expect(text).not.toContain(`[F${fact.id}]`);
-  expect(text).toContain(`omitted ${facts.length} older facts; expand: /tm/F1`);
+  expect(text).toContain(factReceipt);
+  expect(charged(crowded).facts).toBe(receiptBudget);
+  expect("native" in crowded ? [] : crowded.supplied.factIds).toEqual([]);
   expect(text.indexOf("Receipts:")).toBeGreaterThan(text.indexOf("</episodic>"));
   // Knowledge keeps its own baseline under that pressure: the block is still there.
   expect(text).toContain("<knowledge>");
   expect(text.indexOf("<knowledge>")).toBeLessThan(text.indexOf("<episodic>"));
-  expect(memory.inject(s.id).startsWith("<knowledge>")).toBe(true);
+  expect(memory.inject(s.id).startsWith(`${readingGuide(s.id, canonicalToolNames)}\n\n<knowledge>`)).toBe(true);
   expect(calls).toBe(0);
   defaultWindows();
 });
@@ -963,6 +986,6 @@ test("28a/92: the independent facts window keeps newest whole facts and receipts
   Object.assign(memory.config.compaction, { factsTokens: Math.ceil(measured.facts * 0.65), sharedAllowanceTokens: 0 });
   const text = compacted(memory.compact(s.id, "main", t.id));
   expect(text).toContain("NEWEST"); expect(text).not.toContain("OLDEST");
-  expect(text).toContain(`omitted 1 older facts; expand: F${older.id}`);
+  expect(text).toContain(`omitted 1 older facts; expand: /tm/F${older.id}`);
   defaultWindows();
 });
